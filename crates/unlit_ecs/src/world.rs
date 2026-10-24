@@ -32,7 +32,7 @@ use core::cell::{Ref, RefCell, RefMut};
 use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
-use crate::bundle::{ArchetypeBuilder, Bundle, BundleComponent};
+use crate::bundle::{Bundle, BundleComponent, DynamicBundle};
 use crate::column::{AnyColumn, borrow_conflict};
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
@@ -108,10 +108,10 @@ impl World {
         // root that is being written here.
         let root = world.entities_write().alloc("root");
         world.root = root;
-        world.insert_row(root, root, crate::ArchetypeBuilder::new());
+        world.insert_row(root, root, crate::DynamicBundle::new());
         let shared = world.entities_write().alloc("shared");
         world.shared = shared;
-        world.insert_row(shared, root, crate::ArchetypeBuilder::new());
+        world.insert_row(shared, root, crate::DynamicBundle::new());
         world.scaffolding = world
             .location(root)
             .expect("the root has a row")
@@ -298,12 +298,13 @@ impl World {
 
     /// Spawn `bundle` in `scope`.
     ///
-    /// The entity is named after the bundle, which for a `bundle!` is the
-    /// source position that wrote it. A builder made by hand carries no name,
-    /// so an entity spawned from one has none.
+    /// The entity is named after the bundle: a type of the caller's own names it
+    /// after itself, and a `bundle!` names it after the source position that
+    /// wrote the bundle. A dynamic bundle made by hand carries no name, so an
+    /// entity spawned from one has none.
     pub(crate) fn spawn_in<B: Bundle>(&mut self, scope: Entity, bundle: B) -> Entity {
-        let bundle = bundle.into_builder();
-        self.spawn_builder_in(scope, bundle.name(), bundle)
+        let name = bundle.name();
+        self.spawn_bundle_in(scope, name, bundle.into_bundle())
     }
 
     /// Spawn a bundle under `name`, whatever name the bundle carries.
@@ -313,14 +314,14 @@ impl World {
         name: &'static str,
         bundle: B,
     ) -> Entity {
-        self.spawn_builder_in(scope, name, bundle.into_builder())
+        self.spawn_bundle_in(scope, name, bundle.into_bundle())
     }
 
-    fn spawn_builder_in(
+    fn spawn_bundle_in(
         &mut self,
         scope: Entity,
         name: &'static str,
-        bundle: ArchetypeBuilder,
+        bundle: DynamicBundle,
     ) -> Entity {
         let entity = self.entities_write().alloc(name);
         self.insert_row(entity, scope, bundle);
@@ -458,7 +459,7 @@ impl World {
     /// Insert a row for `entity` in `scope`, with the [`ScopeOf`] component the
     /// world writes and the ones `bundle` carries.
     fn insert_row<B: Bundle>(&mut self, entity: Entity, scope: Entity, bundle: B) {
-        let mut components = bundle.into_builder().finish();
+        let mut components = bundle.into_bundle().finish();
         // The scope is the world's to write, so a bundle that names it is a
         // programming error rather than a second source for the same fact.
         assert!(

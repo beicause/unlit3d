@@ -437,13 +437,13 @@ impl<'w> ScopeMut<'w> {
 
     /// Spawn `bundle` in this scope.
     ///
-    /// The entity is named after the source position of the `bundle!` that
-    /// built `bundle`, which is what its `Debug` prints. A builder put together
-    /// by hand carries no source position, so an entity spawned from one has no
-    /// name; build it with [`ArchetypeBuilder::named`], or spawn it with
-    /// [`ScopeMut::spawn_named`].
+    /// The entity is named after the bundle, which is what its `Debug` prints:
+    /// a type of the caller's own names it after itself, and a `bundle!` after
+    /// the source position that wrote it. A dynamic bundle put together by hand
+    /// carries no name, so an entity spawned from one has none; build it with
+    /// [`DynamicBundle::named`], or spawn it with [`ScopeMut::spawn_named`].
     ///
-    /// [`ArchetypeBuilder::named`]: crate::ArchetypeBuilder::named
+    /// [`DynamicBundle::named`]: crate::DynamicBundle::named
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
         self.world.spawn_in(self.scope, bundle)
     }
@@ -451,9 +451,8 @@ impl<'w> ScopeMut<'w> {
     /// Spawn `bundle` in this scope under `name`, whatever the bundle was
     /// built from.
     ///
-    /// [`ScopeMut::spawn`] names the entity after the `bundle!` that built it,
-    /// so this is for the objects whose name has to say more than a source
-    /// position does.
+    /// [`ScopeMut::spawn`] names the entity after the bundle itself, so this is
+    /// for the objects whose name has to say more than that does.
     pub fn spawn_named<B: Bundle>(&mut self, name: &'static str, bundle: B) -> Entity {
         self.world.spawn_named_in(self.scope, name, bundle)
     }

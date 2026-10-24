@@ -23,7 +23,7 @@ use facet::Partial;
 
 #[cfg(test)]
 use crate::World;
-use crate::{ArchetypeBuilder, Entity, EntityAccessError, Scope};
+use crate::{DynamicBundle, Entity, EntityAccessError, Scope};
 
 /// One component the JSON bridge can address.
 ///
@@ -42,7 +42,7 @@ pub struct ComponentEntry {
     /// Overwrite the component from JSON text, or a message saying why not.
     set: fn(&Scope<'_>, Entity, &str) -> Result<(), String>,
     /// Push a component decoded from JSON text into a builder.
-    push: fn(&mut ArchetypeBuilder, &str) -> Result<(), String>,
+    push: fn(&mut DynamicBundle, &str) -> Result<(), String>,
     /// Whether a spawn may carry the component, as opposed to one the world
     /// itself writes.
     spawnable: bool,
@@ -160,7 +160,7 @@ pub fn set(scope: &Scope<'_>, entity: Entity, name: &str, patch: &str) -> Result
 }
 
 /// Push a name component decoded from JSON text into builder.
-pub fn push(builder: &mut ArchetypeBuilder, name: &str, patch: &str) -> Result<(), String> {
+pub fn push(builder: &mut DynamicBundle, name: &str, patch: &str) -> Result<(), String> {
     (entry(name)?.push)(builder, patch)
 }
 
@@ -207,7 +207,7 @@ fn apply<C: Facet<'static> + Clone>(base: C, patch: &str) -> Result<C, String> {
 }
 
 fn push_component<C: Facet<'static> + Clone>(
-    builder: &mut ArchetypeBuilder,
+    builder: &mut DynamicBundle,
     patch: &str,
 ) -> Result<(), String> {
     let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
@@ -217,7 +217,7 @@ fn push_component<C: Facet<'static> + Clone>(
 }
 
 fn push_default_component<C: Facet<'static> + Default + Clone>(
-    builder: &mut ArchetypeBuilder,
+    builder: &mut DynamicBundle,
     patch: &str,
 ) -> Result<(), String> {
     builder.push_component(apply(C::default(), patch)?);
@@ -239,7 +239,7 @@ fn set_world_written<C: Facet<'static>>(
 }
 
 fn push_world_written<C: Facet<'static>>(
-    _builder: &mut ArchetypeBuilder,
+    _builder: &mut DynamicBundle,
     _patch: &str,
 ) -> Result<(), String> {
     Err(format!(
@@ -318,7 +318,7 @@ mod tests {
     /// the fields that matter have to be given.
     #[test]
     fn spawning_merges_over_the_default() {
-        let mut builder = ArchetypeBuilder::new().named("reflect test");
+        let mut builder = DynamicBundle::new().named("reflect test");
         push(&mut builder, "Position", r#"{"x":4.0}"#).expect("a partial value is accepted");
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(builder);

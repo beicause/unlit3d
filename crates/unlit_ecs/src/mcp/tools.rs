@@ -13,7 +13,7 @@ use crate::mcp::server::{
     SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, entity, tool,
 };
 use crate::reflect;
-use crate::{ArchetypeBuilder, Entity, Scope, ScopeMut, World};
+use crate::{DynamicBundle, Entity, Scope, ScopeMut, World};
 
 /// A high-level description of a scope.
 fn summarize_world(scope: &Scope<'_>) -> Result<Value, String> {
@@ -72,7 +72,7 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
     let object = components
         .as_object()
         .ok_or_else(|| "components must be an object".to_string())?;
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     for (name, value) in object {
         let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
         reflect::push(&mut builder, name, &patch)?;

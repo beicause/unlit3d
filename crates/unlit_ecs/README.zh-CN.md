@@ -29,7 +29,7 @@
 - **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
   普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
 - **任何 `'static` 类型都是组件。** 不需要 derive，也不需要注册；元组同样是组件。
-  因此 *bundle* 不是「组件的元组」，而是 `bundle!` 写出的、或 `ArchetypeBuilder`
+  因此 *bundle* 不是「组件的元组」，而是 `bundle!` 写出的、或 `DynamicBundle`
   收集的那份组件清单；直接交给 spawn 的 `(a, b)` 是一个组件，即那个二元组。宏在展开期
   遍历语法，所以 `bundle![a, b]` 是两个组件，而带括号的项是一个组件，元组也不例外。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
@@ -148,8 +148,9 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::ar
 
 实体带一个名字，`{:?}` 会把它印在标识句柄的 bits 旁边——
 `Entity { name: "cube", bits: 3 }`——于是 panic 与日志里写的是
-对象本身，而不是一个光秃秃的数字。名字是建该实体 bundle 的那个 `bundle!` 的源码
-位置，由宏填进去：
+对象本身，而不是一个光秃秃的数字。名字来自生成它的 bundle，而 bundle 会给自己
+起名：调用者自己的类型以自己的类型名作答，`bundle!` 则以宏所在的源码位置作答。
+于是 spawn 一个对象，实体就以这个对象命名：
 
 ```rust
 use unlit_ecs::{World, bundle};
@@ -159,7 +160,7 @@ let cube = world.root_scope_mut().spawn(bundle![0u32]);
 assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 ```
 
-运行时拼出来的 builder 没有这样的位置可言，所以由 `ArchetypeBuilder::named`
+运行时拼出来的动态 bundle 没有这样的位置可言，所以由 `DynamicBundle::named`
 自己给它一个标签，`spawn_named` 则把标签直接交给那次 spawn。
 `World::reserve_entity` 的句柄在预留处就已命名，因为预留正是调用者说明这个实体
 是什么的地方。
@@ -177,15 +178,18 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 
 | 实体的来源 | 它的名字 |
 | --- | --- |
+| 实现了 `Bundle` 的自定义类型 | 该类型自己的名字，如 `unlit3d_examples::scenes::spin_cube::Cube` |
 | `bundle!` | 宏所在的源码位置，如 `crates/unlit3d/src/source.rs:514` |
-| `ArchetypeBuilder::named` | 在那里给的标签 |
+| `DynamicBundle::named` | 在那里给的标签 |
 | `spawn_named` | 在那里给的标签 |
 | `World::reserve_entity` | 预留时给的标签 |
-| 以上都不是，手搓 builder | 空 |
+| 以上都不是，手搓动态 bundle | 空 |
+
+这一切都由 `Bundle::name` 一处作答，所以有自己命名规则的 bundle 覆盖它即可。
 
 ## 内容概览
 
-`World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及写出 bundle 的
+`World`、`Entity`、`Location`、`Bundle` / `DynamicBundle`（以及写出 bundle 的
 `bundle!` 宏）、把 world 收窄到一个 scope 的 `ScopeOf` 与
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`，
@@ -274,7 +278,7 @@ world.apply().unwrap();
 assert!(world.root_scope().contains(entity));
 ```
 
-bundle 是 `bundle!` 写出的或 `ArchetypeBuilder` 收集的那份清单；元组不是 bundle，因为
+bundle 是 `bundle!` 写出的或 `DynamicBundle` 收集的那份清单；元组不是 bundle，因为
 元组本身就是组件。清单里每一项都是一个组件——带括号的元组仍然是元组，所以
 `bundle![(a, b), c]` 是一个元组组件加一个 `c`，`bundle![()]` 则是一个空元组组件。宏在本
 crate 与其下游里一律用方括号书写，`bundle![a, b]`，以便与函数调用的实参区分；只有一项
@@ -299,9 +303,9 @@ assert!(!scope.query_one::<Has<u32>>(entity).unwrap());
 裸写的话 bundle 会被当成一个组件：
 
 ```rust
-use unlit_ecs::{ArchetypeBuilder, Has, World, bundle};
+use unlit_ecs::{DynamicBundle, Has, World, bundle};
 
-let mut gathered = ArchetypeBuilder::new();
+let mut gathered = DynamicBundle::new();
 gathered.push_component(1u32);
 
 let mut world = World::new();

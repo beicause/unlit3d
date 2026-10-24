@@ -42,7 +42,7 @@ It is at an **early stage of development** and its API changes freely.
   component of the caller's own.
 - **Every `'static` type is a component.** No derive, no registration: a tuple
   is a component too. A *bundle* is therefore not a tuple of components but the
-  list [`bundle!`] builds or an [`ArchetypeBuilder`] gathers, and a plain
+  list [`bundle!`] builds or a [`DynamicBundle`] gathers, and a plain
   `(a, b)` handed to a spawn is one component, the pair. The macro walks the
   syntax while expanding, so `bundle![a, b]` is two components and a
   parenthesised item is one component, tuples included.
@@ -202,9 +202,11 @@ wants to walk it.
 
 An entity carries a name, and `{:?}` prints it beside the bits that identify
 the handle — `Entity { name: "cube", bits: 3 }` — so a panic or a log line
-names the object it is about instead of a bare number. The name is the source
-position of the `bundle!` that built the entity's bundle, filled in by the
-macro:
+names the object it is about instead of a bare number. The name comes from the
+bundle that spawned it, and a bundle names itself: a type of the caller's own
+answers with its own type name, while a `bundle!` answers with the source
+position of the macro. Spawning an object therefore names the entity after the
+object:
 
 ```rust
 use unlit_ecs::{World, bundle};
@@ -214,8 +216,8 @@ let cube = world.root_scope_mut().spawn(bundle![0u32]);
 assert!(!cube.name().is_empty(), "a bundle names the entity it builds");
 ```
 
-A builder assembled at runtime has no such position to speak of, so
-`ArchetypeBuilder::named` gives it a label of its own, and `spawn_named` gives
+A dynamic bundle assembled at runtime has no such position to speak of, so
+`DynamicBundle::named` gives it a label of its own, and `spawn_named` gives
 one straight to the spawn. A handle from `World::reserve_entity` is named where
 it is reserved, because the reservation is where the caller says what the entity
 is.
@@ -238,15 +240,19 @@ integer.
 
 | The entity was spawned by | Its name |
 | --- | --- |
+| a type implementing `Bundle` | the type's own name, `unlit3d_examples::scenes::spin_cube::Cube` |
 | `bundle!` | the source position of the macro, `crates/unlit3d/src/source.rs:514` |
-| `ArchetypeBuilder::named` | the label given there |
+| `DynamicBundle::named` | the label given there |
 | `spawn_named` | the label given there |
 | `World::reserve_entity` | the label given at the reservation |
-| none of the above, a builder by hand | empty |
+| none of the above, a dynamic bundle by hand | empty |
+
+`Bundle::name` is the one place that answers this, so a bundle with a naming
+rule of its own overrides it.
 
 ## What is in the box
 
-[`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`] (and the
+[`World`], [`Entity`], [`Location`], [`Bundle`] / [`DynamicBundle`] (and the
 [`bundle!`] macro that writes one), [`ScopeOf`] and the
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
@@ -348,7 +354,7 @@ world.apply().unwrap();
 assert!(world.root_scope().contains(entity));
 ```
 
-A bundle is what [`bundle!`] writes or what an [`ArchetypeBuilder`] gathers; a
+A bundle is what [`bundle!`] writes or what a [`DynamicBundle`] gathers; a
 tuple is not one, because a tuple is itself a component. Every item of the list
 is one component — a parenthesised tuple stays a tuple, so `bundle![(a, b), c]`
 is a tuple component and `c`, and `bundle![()]` is an empty tuple component. The
@@ -377,9 +383,9 @@ macro walks the source and cannot tell a bundle from a component — written
 plainly, a bundle is one component:
 
 ```rust
-use unlit_ecs::{ArchetypeBuilder, Has, World, bundle};
+use unlit_ecs::{DynamicBundle, Has, World, bundle};
 
-let mut gathered = ArchetypeBuilder::new();
+let mut gathered = DynamicBundle::new();
 gathered.push_component(1u32);
 
 let mut world = World::new();

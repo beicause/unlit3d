@@ -22,7 +22,7 @@ mod view;
 mod world;
 
 pub use archetype::{Archetype, Archetypes};
-pub use bundle::{ArchetypeBuilder, Bundle};
+pub use bundle::{Bundle, DynamicBundle};
 pub use column::{CellRef, CellRefMut};
 pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]

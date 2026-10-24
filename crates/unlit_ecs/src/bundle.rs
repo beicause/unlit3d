@@ -1,7 +1,8 @@
 //! Bundles: the set of components an entity is spawned with.
 //!
-//! A bundle is built by the [`crate::bundle!`] macro or by an [`ArchetypeBuilder`]. It is
-//! not a tuple: every `'static` type is a component, tuples included, so a bare
+//! A bundle is either a [`DynamicBundle`], which the [`crate::bundle!`] macro writes,
+//! or a type of the caller's own that implements [`Bundle`] over its components. It
+//! is not a tuple: every `'static` type is a component, tuples included, so a bare
 //! `(a, b)` handed to `spawn` names one component rather than two. Writing
 //! `bundle![a, b]` is what names two.
 //!
@@ -32,27 +33,32 @@ pub(crate) struct BundleComponent {
 /// The components of one bundle, sorted by type.
 pub(crate) type Components = Vec<BundleComponent>;
 
-/// Builds the components of one spawn; only [`Bundle`] implementations use it.
+/// A bundle assembled at runtime.
 ///
-/// The builder also carries the name of the entity it will spawn, which by
-/// default is the source position of the [`crate::bundle!`] that built it.
-pub struct ArchetypeBuilder {
+/// This is what [`crate::bundle!`] writes and what a [`Bundle`] implementation
+/// builds its components into. A type of the caller's own is the usual way to
+/// spawn an object; reach for this one when the components are only known once
+/// the program runs.
+///
+/// It also carries the name of the entity it will spawn, which by default is the
+/// source position of the [`crate::bundle!`] that built it.
+pub struct DynamicBundle {
     components: Components,
     name: &'static str,
 }
 
-impl Default for ArchetypeBuilder {
+impl Default for DynamicBundle {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ArchetypeBuilder {
+impl DynamicBundle {
     /// An empty builder with no name, for one built by hand.
     ///
     /// [`crate::bundle!`] is what supplies a name, so a builder filled in by
     /// hand names its entity after nothing: give it one with
-    /// [`ArchetypeBuilder::named`], or spawn it with
+    /// [`DynamicBundle::named`], or spawn it with
     /// [`ScopeMut::spawn_named`](crate::ScopeMut::spawn_named).
     pub fn new() -> Self {
         Self {
@@ -75,11 +81,6 @@ impl ArchetypeBuilder {
         }
     }
 
-    /// The name the spawned entity takes, empty when nobody named the bundle.
-    pub(crate) const fn name(&self) -> &'static str {
-        self.name
-    }
-
     /// Add one component.
     ///
     /// The value is stored under its own type, so a tuple pushed here stays one
@@ -100,7 +101,7 @@ impl ArchetypeBuilder {
     /// contributes that tuple as a single component, exactly as spawning it
     /// alone would.
     pub fn push_bundle<B: Bundle>(&mut self, bundle: B) {
-        self.components.extend(bundle.into_builder().components);
+        self.components.extend(bundle.into_bundle().components);
     }
 
     /// The components in type order.
@@ -137,28 +138,62 @@ fn sort_components(components: &mut [BundleComponent]) {
 
 /// A set of components to spawn an entity with.
 ///
-/// Implemented for an [`ArchetypeBuilder`], which is what the [`crate::bundle!`] macro
+/// Implemented for a [`DynamicBundle`], which is what the [`crate::bundle!`] macro
 /// produces, and for any type of a caller's own that can say what its
 /// components are. It is deliberately not implemented for tuples: every
 /// `'static` type is a component, so a tuple impl would make `(a, b)` mean two
 /// components in one place and one component in another.
+///
+/// A caller's own type is the usual way to spawn an object: give it the fields
+/// it is built from, and build its components in [`Bundle::into_bundle`].
+///
+/// ````rust
+/// # use unlit_ecs::{Bundle, DynamicBundle, World, bundle};
+/// struct Cube {
+///     size: f32,
+/// }
+///
+/// impl Bundle for Cube {
+///     fn into_bundle(self) -> DynamicBundle {
+///         bundle![self.size]
+///     }
+/// }
+///
+/// let mut world = World::new();
+/// let cube = world.root_scope_mut().spawn(Cube { size: 1.0 });
+/// assert!(cube.name().ends_with("::Cube"), "the entity is named after the object");
+/// ````
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a bundle",
-    label = "build it with `bundle!` or an `ArchetypeBuilder`",
+    label = "implement `Bundle` for it, or build it with `bundle!`",
     note = "`(a, b)` is a single component here: every `'static` type is one, tuples included. Write `bundle![a, b]` for two components."
 )]
 pub trait Bundle {
-    /// The builder holding exactly this bundle's components.
+    /// The name the spawned entity takes: the bundle's own type by default.
     ///
-    /// The bundle supplies the whole builder, so there is no target to append
-    /// to or overwrite. A caller gathering several bundles into one spawn
-    /// pushes each onto an [`ArchetypeBuilder`] with
-    /// [`ArchetypeBuilder::push_bundle`].
-    fn into_builder(self) -> ArchetypeBuilder;
+    /// A [`DynamicBundle`] has a name of its own — the source position of the
+    /// [`crate::bundle!`] that wrote it, or the label [`DynamicBundle::named`]
+    /// gave it — and answers with that. A type of the caller's own has no such
+    /// label to speak of, so it names the entity after itself, which is the
+    /// object the entity is.
+    fn name(&self) -> &'static str {
+        core::any::type_name::<Self>()
+    }
+
+    /// The dynamic bundle holding exactly this bundle's components.
+    ///
+    /// The bundle supplies the whole bundle, so there is no target to append to
+    /// or overwrite. A caller gathering several bundles into one spawn pushes
+    /// each onto a [`DynamicBundle`] with [`DynamicBundle::push_bundle`].
+    fn into_bundle(self) -> DynamicBundle;
 }
 
-impl Bundle for ArchetypeBuilder {
-    fn into_builder(self) -> ArchetypeBuilder {
+impl Bundle for DynamicBundle {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn into_bundle(self) -> DynamicBundle {
         self
     }
 }
@@ -196,8 +231,8 @@ impl Bundle for ArchetypeBuilder {
 /// is one component.
 ///
 /// ````rust
-/// # use unlit_ecs::{ArchetypeBuilder, Has, World, bundle};
-/// let mut gathered = ArchetypeBuilder::new();
+/// # use unlit_ecs::{DynamicBundle, Has, World, bundle};
+/// let mut gathered = DynamicBundle::new();
 /// gathered.push_component(1u32);
 /// let mut world = World::new();
 /// let entity = world.root_scope_mut().spawn(bundle![..gathered, true]);
@@ -209,12 +244,12 @@ impl Bundle for ArchetypeBuilder {
 /// fixed count: each item costs a level of macro recursion, so roughly a
 /// hundred components fit at the default limit of 128. A wider bundle is built
 /// by raising `#![recursion_limit]` in the calling crate, or by pushing onto
-/// an [`ArchetypeBuilder`] directly.
+/// a [`DynamicBundle`] directly.
 ///
 /// A type that appears twice panics when the bundle is spawned.
 #[macro_export]
 macro_rules! bundle {
-    [] => { $crate::ArchetypeBuilder::new().named(concat!(file!(), ":", line!())) };
+    [] => { $crate::DynamicBundle::new().named(concat!(file!(), ":", line!())) };
     // A bundle written as `..value`, unwrapped into its own components. It is
     // matched before the `$leaf:expr` arms because `..value` is not an
     // expression.
@@ -232,7 +267,7 @@ macro_rules! bundle {
     [@list $builder:ident,] => {};
     [@list $builder:ident, $leaf:expr] => { $builder.push_component($leaf) };
     [$($item:tt)+] => {{
-        let mut builder = $crate::ArchetypeBuilder::new().named(concat!(file!(), ":", line!()));
+        let mut builder = $crate::DynamicBundle::new().named(concat!(file!(), ":", line!()));
         $crate::bundle![@list builder, $($item)+];
         builder
     }};
@@ -249,7 +284,7 @@ mod tests {
     #[test]
     fn push_bundle_gathers_bundles() {
         let mut world = World::new();
-        let mut builder = ArchetypeBuilder::new();
+        let mut builder = DynamicBundle::new();
         builder.push_component(1u32);
         builder.push_bundle(crate::bundle![2.0f32, true]);
         builder.push_component((7u8, 8u8));
@@ -291,7 +326,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "same component twice")]
     fn a_duplicate_panics_when_the_bundle_is_finished() {
-        let mut builder = ArchetypeBuilder::new();
+        let mut builder = DynamicBundle::new();
         builder.push_component(1u32);
         builder.push_bundle(crate::bundle![2u32]);
         builder.finish();
@@ -300,7 +335,7 @@ mod tests {
     /// A wide bundle still finishes in type order, each component whole.
     #[test]
     fn a_wide_bundle_finishes_in_type_order() {
-        let mut builder = ArchetypeBuilder::new();
+        let mut builder = DynamicBundle::new();
         builder.push_component(1u8);
         builder.push_component(2u16);
         builder.push_component(3u32);
