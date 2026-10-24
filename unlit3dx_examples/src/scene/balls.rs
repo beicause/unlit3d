@@ -447,6 +447,18 @@ impl Balls {
             match waiting(&ball, ticks, stale) {
                 Waiting::Wait => {}
                 Waiting::Reclaim => {
+                    // A reclaim is the one way a ball leaves without anyone
+                    // asking, so it says so: a silent one looks like a ball
+                    // that vanished.
+                    log::debug!(
+                        "reclaiming a ball that was {} ({:?})",
+                        match ball.phase {
+                            BallPhase::Waiting => "waiting for a half",
+                            BallPhase::Requested => "waiting for its show",
+                            BallPhase::Shown => "shown",
+                        },
+                        ball.kind,
+                    );
                     // The halves are taken as they are sent away, so a clear
                     // later in this tick cannot send them a second time.
                     if let Some(handle) = ball.body.take() {
@@ -686,18 +698,28 @@ impl Tick for Balls {
     }
 }
 
-/// What a tick does with a ball that is not shown yet.
+/// What a tick does with a ball.
 ///
-/// The wait is bounded twice: a ball whose halves never arrive is reclaimed
-/// after `PENDING_TIMEOUT_TICKS`, and one whose world ended is reclaimed at
-/// once, because no answer is coming.
+/// The wait is bounded twice: a ball whose half never arrives, or whose show is
+/// never answered, is reclaimed after `PENDING_TIMEOUT_TICKS`, and one whose
+/// world ended is reclaimed at once, because no answer is coming.
+///
+/// The timeout measures a promise still outstanding, so it never reaches a
+/// shown ball: the show it was waiting on was answered. Only a world ending
+/// takes a shown ball away, because the instance it wears went with that world.
 fn waiting(ball: &Ball, ticks: u32, stale: bool) -> Waiting {
-    if stale || ticks.saturating_sub(ball.requested_at) > PENDING_TIMEOUT_TICKS {
+    if stale {
         return Waiting::Reclaim;
     }
-    // A ball whose show is on its way, or already answered, is left alone:
-    // showing it twice would send a second job for the same instance.
-    if ball.phase != BallPhase::Waiting {
+    if ball.phase == BallPhase::Shown {
+        return Waiting::Wait;
+    }
+    if ticks.saturating_sub(ball.requested_at) > PENDING_TIMEOUT_TICKS {
+        return Waiting::Reclaim;
+    }
+    // A ball whose show is on its way is left alone: showing it twice would
+    // send a second job for the same instance.
+    if ball.phase == BallPhase::Requested {
         return Waiting::Wait;
     }
     match (ball.instance, ball.body) {
@@ -859,6 +881,30 @@ mod tests {
             waiting(&requested, PENDING_TIMEOUT_TICKS + 1, false),
             Waiting::Reclaim,
             "a show nobody answered must not keep the ball alive forever"
+        );
+    }
+
+    /// The timeout is for a promise still outstanding, and a shown ball owes
+    /// none: the show it waited on was answered. Measured against the drop
+    /// instead, it reclaimed every ball a fixed time after it landed.
+    #[test]
+    fn a_shown_ball_outlives_the_pending_timeout() {
+        let instance = Entity::from_raw(10, 0);
+        let body = RigidBodyHandle::from_raw_parts(7, 0);
+        let shown = ball(Some(instance), Some(body), true);
+        assert_eq!(
+            waiting(&shown, PENDING_TIMEOUT_TICKS + 1, false),
+            Waiting::Wait
+        );
+        assert_eq!(
+            waiting(&shown, u32::MAX, false),
+            Waiting::Wait,
+            "no amount of ticks reclaims a ball the render world confirmed"
+        );
+        assert_eq!(
+            waiting(&shown, 0, true),
+            Waiting::Reclaim,
+            "a world that ended takes the instance the ball wears with it"
         );
     }
 
