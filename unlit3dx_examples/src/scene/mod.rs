@@ -4,9 +4,9 @@
 //! everything here is world-shaped, free of window and thread plumbing, so the
 //! same objects drive the windowed show and the deterministic headless capture.
 //!
-//! The gameplay world is a set of objects rather than one state blob. Each
-//! object is a component carrying what it owns, plus a [`Tick`] that advances
-//! it, so the scene grows by spawning an object and never by editing a tick:
+//! The gameplay world is a set of objects rather than one state blob. The
+//! `order` module says how one is put together and where it ticks; the objects
+//! themselves are:
 //!
 //! - [`SceneState`] builds the scene's assets once; every drop asks the render
 //!   world for an instance of its own.
@@ -47,6 +47,10 @@ use unlit3dx::ui::UiPanelHost;
 
 use crate::render::{camera_looking_at, mesh_source};
 
+use self::audio::Music;
+use self::balls::BallDrops;
+use self::shared::SceneBuild;
+
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
 pub use balls::{Ball, BallPhase, Balls};
 pub use floor::{
@@ -54,21 +58,21 @@ pub use floor::{
     checker_ground, spawn_floor,
 };
 pub use music::{ELECTRIC_PIANO_PROGRAM, MUSIC_BOX_PROGRAM, SCALE, bgm_midi, sequence_midi};
+pub use order::ScenePhase;
 pub use shapes::{
     BALL_COLORS, BALL_RADIUS, PATTERN_SIZE, SHAPE_KINDS, ShapeKind, pattern_texture, shape_body,
     shape_kind, shape_mesh,
 };
 pub use shared::{SceneAssets, SceneState};
-pub use tick::{ScenePhase, TICK_AUDIO, TICK_BALLS, TICK_SCENE, Tick, Tickable, tick_behaviour};
 pub use ui::{control_panel_job, mount_controls};
 
 mod audio;
 mod balls;
 mod floor;
 mod music;
+mod order;
 mod shapes;
 mod shared;
-mod tick;
 mod ui;
 
 /// The window opens at this size, in logical pixels.
@@ -486,22 +490,10 @@ pub fn spawn_scene<R: WorldRunner>(
                     },
                 ),]);
                 spawn_floor(&scene);
-                world.root_scope_mut().spawn(Tickable {
-                    state: SceneState::new(&scene),
-                    scene: scene.clone(),
-                    order: ScenePhase::Objects.at(TICK_SCENE),
-                });
-                world.root_scope_mut().spawn(Tickable {
-                    state: Balls::new(),
-                    scene: scene.clone(),
-                    order: ScenePhase::Objects.at(TICK_BALLS),
-                });
+                world.root_scope_mut().spawn(SceneBuild::new(&scene));
+                world.root_scope_mut().spawn(BallDrops::new(&scene));
                 if let Some(soundfont) = soundfont {
-                    world.root_scope_mut().spawn(Tickable {
-                        state: SceneAudio::new(soundfont),
-                        scene: scene.clone(),
-                        order: ScenePhase::Objects.at(TICK_AUDIO),
-                    });
+                    world.root_scope_mut().spawn(Music::new(&scene, soundfont));
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the

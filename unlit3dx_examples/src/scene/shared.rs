@@ -5,12 +5,14 @@
 //! for when the drop happens; an instance the camera can no longer see is
 //! despawned by the render world, so nothing is kept hidden for reuse.
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World};
 use unlit3d::components::Transform;
 use unlit3dx::prelude::*;
 
 use super::HIDDEN_POSITION;
 use super::Scene;
+use super::order::{ScenePhase, TICK_SCENE, advancing};
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
 use super::world_ended;
 use crate::render::{
@@ -76,22 +78,45 @@ impl SceneState {
             given_up,
         }
     }
+}
 
-    /// Take the assets once the build job has published them.
+/// The scene's assets and the tick that collects them.
+///
+/// The build lands in the render world, so a state spawned without its tick
+/// would wait for an answer nobody collects, and a tick without its state has
+/// nothing to advance.
+pub(super) struct SceneBuild {
+    /// The state the tick advances.
+    state: SceneState,
+    /// The worlds the build is asked from and reported to.
+    scene: Scene,
+}
+
+impl SceneBuild {
+    /// The build of `scene`, ready to spawn.
+    #[must_use]
+    pub(super) fn new(scene: &Scene) -> Self {
+        Self {
+            state: SceneState::new(scene),
+            scene: scene.clone(),
+        }
+    }
+
+    /// Collect the assets once the build job has published them.
     ///
     /// The scene stays empty if the render world refused the job, and it stops
     /// waiting if the world that owed the answer is gone: a job that panicked
     /// takes its answer with it, and no reader will ever see one.
-    fn poll_build(&mut self, scene: &Scene) {
-        if self.given_up {
+    fn tick(state: &mut SceneState, scene: &Scene) {
+        if state.given_up {
             return;
         }
-        let Some(assets) = self.assets.latest() else {
+        let Some(assets) = state.assets.latest() else {
             if world_ended(&scene.render_state) {
                 log::error!(
                     "the render world ended before it built the scene; the scene stays empty"
                 );
-                self.given_up = true;
+                state.given_up = true;
             }
             return;
         };
@@ -101,15 +126,22 @@ impl SceneState {
             assets.meshes.len(),
             assets.materials.len()
         );
-        self.loaded = Some(assets);
-        self.ready = true;
-        self.given_up = true;
+        state.loaded = Some(assets);
+        state.ready = true;
+        state.given_up = true;
     }
 }
 
-impl super::tick::Tick for SceneState {
-    fn tick(&mut self, _world: &World, _frame: &unlit3d::frame::Frame, scene: &Scene) {
-        self.poll_build(scene);
+impl Bundle for SceneBuild {
+    fn into_bundle(self) -> DynamicBundle {
+        let Self { state, scene } = self;
+        bundle![
+            state,
+            advancing(
+                ScenePhase::Objects.at(TICK_SCENE),
+                move |state, _world, _frame| { Self::tick(state, &scene) }
+            ),
+        ]
     }
 }
 

@@ -95,10 +95,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     let world = host.world_mut();
 
     let input = InputWriter::new();
-    world.root_scope_mut().spawn(bundle![input.clone()]);
-    // The host world dispatches its own key behaviours, so it subscribes for
-    // the events it has not read yet rather than reading a shared list.
-    world.root_scope_mut().spawn(bundle![input.subscribe()]);
+    world.root_scope_mut().spawn(InputFeed(input.clone()));
     world
         .root_scope_mut()
         .spawn(bundle![winit_input_behaviour(WinitInput::new(

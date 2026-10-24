@@ -1061,7 +1061,9 @@ impl InputWriter {
 ///
 /// Spawning it gives a world both halves at once, so the caller keeps feeding
 /// through its own handle while the world's tick reads the events out of the
-/// buffer beside it.
+/// buffer beside it. The buffer holds the events the world has not read yet,
+/// which is what lets a world that dispatches its own key behaviours subscribe
+/// to the same writer without sharing a list with anyone.
 pub struct InputFeed(pub InputWriter);
 
 impl Bundle for InputFeed {

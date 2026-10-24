@@ -18,15 +18,14 @@
 use std::sync::Arc;
 
 use glam::Vec3;
-use unlit_ecs::{Entity, Scope, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World, bundle};
 use unlit3d::components::Transform;
-use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
 use super::Scene;
+use super::order::{ScenePhase, TICK_BALLS, advancing};
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance_job, look};
-use super::tick::Tick;
 use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
 use crate::render::{BallInstance, despawn_instances_job, show_instance_job, sweep_instances_job};
 
@@ -654,9 +653,44 @@ impl Default for Balls {
     }
 }
 
-impl Tick for Balls {
-    fn tick(&mut self, world: &World, _frame: &Frame, scene: &Scene) {
-        self.ticks += 1;
+/// The balls and the tick that drops, poses and sweeps them, spawned together.
+///
+/// The balls hold no world of their own: every instance, body and pose is
+/// asked of the worlds the tick is handed, so a state spawned without its
+/// tick would hold streams nobody reads.
+pub(super) struct BallDrops {
+    /// The state the tick advances.
+    balls: Balls,
+    /// The worlds the balls ask their instances, bodies and poses from.
+    scene: Scene,
+}
+
+impl Bundle for BallDrops {
+    fn into_bundle(self) -> DynamicBundle {
+        let Self { balls, scene } = self;
+        bundle![
+            balls,
+            advancing(
+                ScenePhase::Objects.at(TICK_BALLS),
+                move |balls, world, _frame| { Self::tick(balls, world, &scene) }
+            ),
+        ]
+    }
+}
+
+impl BallDrops {
+    /// The balls for the worlds `scene` reaches.
+    #[must_use]
+    pub(super) fn new(scene: &Scene) -> Self {
+        Self {
+            balls: Balls::new(),
+            scene: scene.clone(),
+        }
+    }
+
+    /// Advance the balls by one tick: fold the answers, drop, pose and sweep.
+    fn tick(balls: &mut Balls, world: &World, scene: &Scene) {
+        balls.ticks += 1;
         let Some((state, ready)) = world
             .root_scope()
             .query::<(&SceneState, Entity)>()
@@ -674,26 +708,26 @@ impl Tick for Balls {
         // first. Folded the other way round, the clear would queue the
         // despawn and the fold would still find the ball, show it, and leave
         // its instance behind when the entity went away.
-        self.fold_answers(world, state, scene);
-        if core::mem::take(&mut self.clear) {
-            self.clear_balls(world, scene);
+        balls.fold_answers(world, state, scene);
+        if core::mem::take(&mut balls.clear) {
+            balls.clear_balls(world, scene);
         }
 
         // Manual requests first, then the automatic cadence. This runs before
         // the pose publish below: a drop is a request to the physics world,
         // not a reaction to its output.
-        while self.requests > 0 {
-            self.requests -= 1;
-            self.drop_ball(world, state, scene);
+        while balls.requests > 0 {
+            balls.requests -= 1;
+            balls.drop_ball(world, state, scene);
         }
-        if self.ticks.is_multiple_of(SPAWN_TICKS) {
-            self.drop_ball(world, state, scene);
+        if balls.ticks.is_multiple_of(SPAWN_TICKS) {
+            balls.drop_ball(world, state, scene);
         }
 
-        self.publish(world, scene);
+        balls.publish(world, scene);
 
-        if self.ticks.is_multiple_of(SWEEP_TICKS) {
-            self.sweep_outside_view(world, scene);
+        if balls.ticks.is_multiple_of(SWEEP_TICKS) {
+            balls.sweep_outside_view(world, scene);
         }
     }
 }
@@ -974,15 +1008,7 @@ mod tests {
         balls.spawns.publish(BodySpawned { ball: entity, body });
         balls.clear = true;
 
-        balls.tick(
-            &world,
-            &Frame {
-                delta_time: 0.0,
-                index: 0,
-                size: (0, 0),
-            },
-            &scene,
-        );
+        BallDrops::tick(&mut balls, &world, &scene);
         let _ = world.apply();
 
         assert_eq!(
@@ -1026,15 +1052,7 @@ mod tests {
             instance,
         });
         balls.spawns.publish(BodySpawned { ball: gone, body });
-        balls.tick(
-            &world,
-            &Frame {
-                delta_time: 0.0,
-                index: 0,
-                size: (0, 0),
-            },
-            &scene,
-        );
+        BallDrops::tick(&mut balls, &world, &scene);
 
         assert_eq!(
             balls.instances,

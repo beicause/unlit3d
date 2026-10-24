@@ -9,13 +9,12 @@
 
 use std::sync::Arc;
 
-use unlit_ecs::{Entity, Scope, World, bundle};
-use unlit3d::frame::Frame;
+use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World, bundle};
 use unlit3dx::prelude::*;
 
 use super::Scene;
 use super::music::{bgm_midi, sequence_midi};
-use super::tick::{ScenePhase, TICK_AUDIO, Tick, Tickable};
+use super::order::{ScenePhase, TICK_AUDIO, advancing};
 use super::world_ended;
 
 /// How a scene's audio world gets its synthesizer and its output.
@@ -74,10 +73,44 @@ pub struct Track {
     pub voice: Entity,
 }
 
-impl Tick for Track {
-    fn tick(&mut self, _world: &World, frame: &Frame, scene: &Scene) {
-        self.midi
-            .advance(f64::from(frame.delta_time), self.voice, &scene.audio);
+/// One track and the tick that advances it, spawned together.
+///
+/// The tick is the only thing that moves the sequence's clock, so a track
+/// spawned without it would never play, and a tick without its track would
+/// find nothing to advance. It is the one scene object whose tick reads the
+/// frame, whose duration is what paces the sequence.
+pub(super) struct PlayingTrack {
+    /// The sequence the tick advances.
+    track: Track,
+    /// The worlds the track's messages are sent to.
+    scene: Scene,
+}
+
+impl PlayingTrack {
+    /// The sequence `midi` playing into `voice`, ready to spawn.
+    #[must_use]
+    fn new(midi: MidiSequencer, voice: Entity, scene: &Scene) -> Self {
+        Self {
+            track: Track { midi, voice },
+            scene: scene.clone(),
+        }
+    }
+}
+
+impl Bundle for PlayingTrack {
+    fn into_bundle(self) -> DynamicBundle {
+        let Self { track, scene } = self;
+        bundle![
+            track,
+            advancing(
+                ScenePhase::Objects.at(TICK_AUDIO),
+                move |track: &mut Track, _world, frame| {
+                    track
+                        .midi
+                        .advance(f64::from(frame.delta_time), track.voice, &scene.audio);
+                },
+            ),
+        ]
     }
 }
 
@@ -99,7 +132,8 @@ pub struct SceneAudio {
 }
 
 impl SceneAudio {
-    /// The music for the worlds `scene` reaches, playing `soundfont`.
+    /// The music state, waiting to ask the audio world for a synthesizer built
+    /// from `soundfont`.
     #[must_use]
     pub fn new(soundfont: Arc<[u8]>) -> Self {
         Self {
@@ -111,43 +145,78 @@ impl SceneAudio {
     }
 }
 
-impl Tick for SceneAudio {
-    fn tick(&mut self, world: &World, _frame: &Frame, scene: &Scene) {
-        if self.installed {
+/// The music and the tick that starts it, spawned together.
+///
+/// Starting the tracks is the answer to the audio world's install, so a
+/// music state spawned without its tick would ask for a voice nobody waits
+/// for.
+pub(super) struct Music {
+    /// The state the tick advances.
+    audio: SceneAudio,
+    /// The worlds the synthesizer is asked from and the tracks are put on.
+    scene: Scene,
+}
+
+impl Music {
+    /// The music for the worlds `scene` reaches, playing `soundfont`.
+    #[must_use]
+    pub(super) fn new(scene: &Scene, soundfont: Arc<[u8]>) -> Self {
+        Self {
+            audio: SceneAudio::new(soundfont),
+            scene: scene.clone(),
+        }
+    }
+
+    /// Ask for the synthesizer's voice once, and start the music on its answer.
+    fn tick(audio: &mut SceneAudio, world: &World, scene: &Scene) {
+        if audio.installed {
             return;
         }
-        if !self.requested {
-            self.requested = true;
-            let soundfont = Arc::clone(&self.soundfont);
+        if !audio.requested {
+            audio.requested = true;
+            let soundfont = Arc::clone(&audio.soundfont);
             match scene
                 .audio
                 .ask(move |world: &mut World| install_synth(world, &soundfont))
             {
-                Ok(voice) => self.voice = Some(voice),
+                Ok(voice) => audio.voice = Some(voice),
                 Err(error) => {
-                    self.installed = true;
+                    audio.installed = true;
                     log::error!("the audio world refused the synthesizer install ({error:?})");
                     return;
                 }
             }
         }
-        let Some(reader) = self.voice.as_ref() else {
+        let Some(reader) = audio.voice.as_ref() else {
             return;
         };
         let Some(voice) = reader.latest().map(|voice| *voice) else {
             // The world that owes the answer is gone: the install job died with
             // it, and no reader will ever see a voice.
             if world_ended(&scene.audio_state) {
-                self.installed = true;
+                audio.installed = true;
                 log::error!("the audio world ended before it installed the synthesizer");
             }
             return;
         };
-        self.installed = true;
+        audio.installed = true;
         if let Some(voice) = voice {
             start_tracks(&world.root_scope(), scene, voice);
             log::info!("the background music is playing");
         }
+    }
+}
+
+impl Bundle for Music {
+    fn into_bundle(self) -> DynamicBundle {
+        let Self { audio, scene } = self;
+        bundle![
+            audio,
+            advancing(
+                ScenePhase::Objects.at(TICK_AUDIO),
+                move |audio, world, _frame| { Self::tick(audio, world, &scene) }
+            ),
+        ]
     }
 }
 
@@ -159,24 +228,10 @@ fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity) {
     let commands = world.queue();
     let mut background = MidiSequencer::new(bgm_midi());
     background.loop_play = true;
-    let background = commands.spawn(Tickable {
-        state: Track {
-            midi: background,
-            voice,
-        },
-        scene: scene.clone(),
-        order: ScenePhase::Objects.at(TICK_AUDIO),
-    });
+    let background = commands.spawn(PlayingTrack::new(background, voice, scene));
     let mut sequence = MidiSequencer::new(sequence_midi());
     sequence.paused = true;
-    let sequence = commands.spawn(Tickable {
-        state: Track {
-            midi: sequence,
-            voice,
-        },
-        scene: scene.clone(),
-        order: ScenePhase::Objects.at(TICK_AUDIO),
-    });
+    let sequence = commands.spawn(PlayingTrack::new(sequence, voice, scene));
     commands.spawn(bundle![SceneTracks {
         background,
         sequence,

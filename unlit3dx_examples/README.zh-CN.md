@@ -89,9 +89,9 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   里、按那个 fill 报出的速率才建出合成器，因此在流还没有速率时就能装上。音乐弹的
   每个音都是发给那个实体的 job。这个 world 对外报告的是它的 `AudioFormat`（示例
   读它来应答安装）与流带来的 `AudioOutputOpen` 标记。
-- **玩法 world** 是唯一知道其余三者的地方，它是一组对象而不是一坨状态。每个对象是一个
-  组件，携带它自己拥有的东西，外加一个推进它的 `Tick`；每个对象都以 `OnFrame` 行为的
-  形式、按各自的 order 推进自己：
+- **玩法 world** 是唯一知道其余三者的地方，它是一组对象而不是一坨状态。每个对象都以
+  一个 bundle 生成：一个组件携带它自己拥有的东西，外加一个按各自 order 推进它的
+  `OnFrame` 行为：
 
   - `SceneState`（tick 100）用一个 job 搭出场景的资源——网格与带图案的材质。每次
     落球都向渲染 world 要一个自己的实例。

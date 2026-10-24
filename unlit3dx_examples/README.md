@@ -120,9 +120,9 @@ it is paced differs.
   `AudioFormat`, which the demo reads to answer the install, and the
   `AudioOutputOpen` marker its stream carries.
 - The **gameplay world** is the only place that knows about all three, and it
-  is a set of objects rather than one state blob. Each object is a component
-  carrying what it owns plus a `Tick` that advances it, and each ticks itself
-  as an `OnFrame` behaviour at an order of its own:
+  is a set of objects rather than one state blob. Each object is spawned as a
+  bundle holding the component that carries what it owns and the `OnFrame`
+  behaviour that advances it at an order of its own:
 
   - `SceneState` (tick 100) builds the scene's assets — meshes and patterned
     materials — as one job of its own. Every drop asks the render world for an
