@@ -10,6 +10,10 @@
 //! component ([`CreateWindowRequest`], [`ExitRequest`]) that the host executes
 //! after the dispatch.
 //!
+//! A request and the behaviour that writes it are one thing, so each pair has a
+//! bundle that spawns both: [`WindowSetup`] opens a window, and [`ExitOn`]
+//! exits on a trigger.
+//!
 //! Two behaviours of the same family must sit on two entities, because a
 //! behaviour is borrowed while it runs. Two behaviours of different families
 //! never conflict.
@@ -56,8 +60,11 @@ pub struct CreateWindowRequest(pub Option<WindowAttributes>);
 
 /// Asks the host to exit the event loop.
 ///
-/// The host clears the flag once it has acted, so a behaviour may set it again
-/// later.
+/// The flag is per entity: the host scans every entity of the root scope, exits
+/// if any of them is set, and clears the ones it read, so a behaviour may set
+/// its own again later. Nothing writes another entity's request, so an
+/// application holding a handle of its own sets that entity's flag instead of
+/// reaching for the one a behaviour watches.
 pub struct ExitRequest(pub bool);
 
 /// Whether the window system has resumed the application.

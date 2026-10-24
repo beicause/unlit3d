@@ -179,7 +179,9 @@ impl Renderer {
     ///
     /// The [`RenderLoadOps`] on each pass entity decide what that pass loads
     /// and clears, so two passes may disagree about it — the usual way to draw
-    /// an overlay over what an earlier pass left. A pass with no attachment to
+    /// an overlay over what an earlier pass left. [`Pass`](crate::pass::Pass)
+    /// spawns the two together, while a pass entity spawned without load ops of
+    /// its own is opened with [`RenderLoadOps::default`]. A pass with no attachment to
     /// draw into is skipped, so a frame always records, and a world with no
     /// camera, no visible mesh or no source at all still applies its clears.
     /// Parking a pass that way leaves the sources under it where they are: a

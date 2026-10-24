@@ -11,7 +11,12 @@
 //! be called from a test — winit offers no way to build one. Instead the host
 //! turns loop actions into request components: a behaviour writes
 //! [`CreateWindowRequest`] or [`ExitRequest`] into the world, and the host reads
-//! and executes it after the whole dispatch. This keeps every callback
+//! and executes it after the whole dispatch. Each request belongs to the entity
+//! that carries it: the host scans the root scope rather than reading one
+//! entity's slot, so an application may keep a flag of its own beside the ones
+//! the behaviours write. [`WindowSetup`](super::builtin::WindowSetup) and
+//! [`ExitOn`](super::builtin::ExitOn) spawn a request together with its
+//! behaviour. This keeps every callback
 //! unit-testable and gives a built-in behaviour no path an application cannot
 //! take.
 //!
