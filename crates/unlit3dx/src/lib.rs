@@ -83,7 +83,7 @@ pub mod prelude {
     pub use crate::mcp::serve_mcp;
     #[cfg(feature = "physics")]
     pub use crate::physics::{
-        BodyDesc, BodyShape, PHYSICS_HZ, PhysicsConfig, PhysicsContacts, RigidBodyHandle,
+        BodyDesc, BodyShape, PHYSICS_HZ, Physics, PhysicsConfig, PhysicsContacts, RigidBodyHandle,
         despawn_body, init_physics_world, spawn_body, spawn_fixed_cuboid, spawn_physics_world_with,
         step_once,
     };

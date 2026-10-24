@@ -187,7 +187,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   组件——这一步开始的碰撞对（含每对相互接近的速度）与结束的碰撞对。它自己不发布
   任何载荷：调用方用收集闭包订阅，由闭包指名要什么状态，再由驱动该 world 的一方发布。
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
-  `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
+  `init_physics_world` 为自行用 `step_once` 内联步进的调用方把同样的 world 作为
+  `Physics` bundle 生成。
 - **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
   持有其流。它的 `OnAudioFill` 组件就是音源，一个实体可以在一个组件里叠加多层，
   每层带着自己的 `AudioFillOrder`：
