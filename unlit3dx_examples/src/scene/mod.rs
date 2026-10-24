@@ -59,7 +59,7 @@ pub use shapes::{
     shape_kind, shape_mesh,
 };
 pub use shared::{SceneAssets, SceneState};
-pub use tick::{ScenePhase, TICK_AUDIO, TICK_BALLS, TICK_SCENE, Tick, tick_behaviour};
+pub use tick::{ScenePhase, TICK_AUDIO, TICK_BALLS, TICK_SCENE, Tick, Tickable, tick_behaviour};
 pub use ui::{control_panel_job, mount_controls};
 
 mod audio;
@@ -486,25 +486,22 @@ pub fn spawn_scene<R: WorldRunner>(
                     },
                 ),]);
                 spawn_floor(&scene);
-                let state = SceneState::new(&scene);
-                world.root_scope_mut().spawn(bundle![
-                    state,
-                    tick_behaviour::<SceneState>(scene.clone(), ScenePhase::Objects.at(TICK_SCENE)),
-                ]);
-                let balls = Balls::new();
-                world.root_scope_mut().spawn(bundle![
-                    balls,
-                    tick_behaviour::<Balls>(scene.clone(), ScenePhase::Objects.at(TICK_BALLS)),
-                ]);
+                world.root_scope_mut().spawn(Tickable {
+                    state: SceneState::new(&scene),
+                    scene: scene.clone(),
+                    order: ScenePhase::Objects.at(TICK_SCENE),
+                });
+                world.root_scope_mut().spawn(Tickable {
+                    state: Balls::new(),
+                    scene: scene.clone(),
+                    order: ScenePhase::Objects.at(TICK_BALLS),
+                });
                 if let Some(soundfont) = soundfont {
-                    let audio = SceneAudio::new(soundfont);
-                    world.root_scope_mut().spawn(bundle![
-                        audio,
-                        tick_behaviour::<SceneAudio>(
-                            scene.clone(),
-                            ScenePhase::Objects.at(TICK_AUDIO)
-                        ),
-                    ]);
+                    world.root_scope_mut().spawn(Tickable {
+                        state: SceneAudio::new(soundfont),
+                        scene: scene.clone(),
+                        order: ScenePhase::Objects.at(TICK_AUDIO),
+                    });
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the

@@ -6,7 +6,7 @@
 //! that ticks it, so adding one to the scene is spawning an entity and never
 //! editing a list.
 
-use unlit_ecs::World;
+use unlit_ecs::{Bundle, DynamicBundle, World, bundle};
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
 
 use super::Scene;
@@ -77,4 +77,25 @@ pub fn tick_behaviour<T: Tick + 'static>(scene: Scene, order: FrameBehaviourOrde
             .query_one::<&mut T>(entity)
             .map(|mut state| state.tick(world, frame, &scene));
     })
+}
+
+/// A scene object and the behaviour that ticks it, spawned as one.
+///
+/// An object is its state plus the tick that advances it: state nothing ticks
+/// never moves, and a tick with no state of its own type has nothing to
+/// advance. Spawning the pair states both halves at once, and the order the
+/// object asks for is the one place it says where in the tick it belongs.
+pub struct Tickable<T> {
+    /// The object's state, spawned as a component of the entity.
+    pub state: T,
+    /// The scene the object reaches its neighbours through.
+    pub scene: Scene,
+    /// Where in the tick the object advances.
+    pub order: FrameBehaviourOrder,
+}
+
+impl<T: Tick + 'static> Bundle for Tickable<T> {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.state, tick_behaviour::<T>(self.scene, self.order)]
+    }
 }

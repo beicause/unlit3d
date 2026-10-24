@@ -15,7 +15,7 @@ use unlit3dx::prelude::*;
 
 use super::Scene;
 use super::music::{bgm_midi, sequence_midi};
-use super::tick::{ScenePhase, TICK_AUDIO, Tick, tick_behaviour};
+use super::tick::{ScenePhase, TICK_AUDIO, Tick, Tickable};
 use super::world_ended;
 
 /// How a scene's audio world gets its synthesizer and its output.
@@ -159,22 +159,24 @@ fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity) {
     let commands = world.queue();
     let mut background = MidiSequencer::new(bgm_midi());
     background.loop_play = true;
-    let background = commands.spawn(bundle![
-        Track {
+    let background = commands.spawn(Tickable {
+        state: Track {
             midi: background,
             voice,
         },
-        tick_behaviour::<Track>(scene.clone(), ScenePhase::Objects.at(TICK_AUDIO)),
-    ]);
+        scene: scene.clone(),
+        order: ScenePhase::Objects.at(TICK_AUDIO),
+    });
     let mut sequence = MidiSequencer::new(sequence_midi());
     sequence.paused = true;
-    let sequence = commands.spawn(bundle![
-        Track {
+    let sequence = commands.spawn(Tickable {
+        state: Track {
             midi: sequence,
             voice,
         },
-        tick_behaviour::<Track>(scene.clone(), ScenePhase::Objects.at(TICK_AUDIO)),
-    ]);
+        scene: scene.clone(),
+        order: ScenePhase::Objects.at(TICK_AUDIO),
+    });
     commands.spawn(bundle![SceneTracks {
         background,
         sequence,
