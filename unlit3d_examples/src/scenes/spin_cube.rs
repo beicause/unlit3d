@@ -5,7 +5,7 @@
 //! default window size, so a rendering regression fails the build.
 
 use super::{BASELINE_SIZE, SceneControl, SceneDef, SceneOptions};
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
@@ -122,16 +122,9 @@ fn build(
             .scope_mut(world.shared())
             .expect("the shared scope exists");
         (
-            shared.spawn(bundle![
-                Spin {
-                    radians_per_second: SPIN,
-                    spinning: true,
-                    angle: 0.0,
-                },
-                SpinReset(false),
-                DragFrom(None),
-                FrameCount(0),
-            ]),
+            shared.spawn(SpinState {
+                radians_per_second: SPIN,
+            }),
             shared.spawn(bundle![CameraOrbit {
                 azimuth: 0.6,
                 elevation: ORBIT_ELEVATION,
@@ -143,12 +136,11 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        bundle![
-            Transform::default(),
+        TexturedCube {
             mesh,
             material,
-            UnlitPipeline::new(key),
-        ],
+            pipeline: UnlitPipeline::new(key),
+        },
     );
 
     if panels {
@@ -384,6 +376,55 @@ fn build(
             }
         }),
         snapshot: Box::new(|frame| (frame == 29).then(|| "spin_cube.webp".to_owned())),
+    }
+}
+
+/// The scene's one visible object: a textured cube turned by the frame loop.
+///
+/// The mesh, the material bound to it and the pipeline that draws it are what
+/// a spawn has to name, so they are the fields; the transform is the bundle's
+/// own, because the frame loop writes the rotation into it.
+struct TexturedCube {
+    mesh: GpuMesh,
+    material: GpuMaterial,
+    pipeline: UnlitPipeline,
+}
+
+impl Bundle for TexturedCube {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Transform::default(),
+            self.mesh,
+            self.material,
+            self.pipeline,
+        ]
+    }
+}
+
+/// The state of the spin, shared between the panel, the pointer behaviour and
+/// the frame loop.
+///
+/// Each of the four components is read or written by one of those three, and
+/// none of them means anything without the others, so one spawn states the
+/// whole thing: the spin itself, the panel's reset request, the drag the
+/// pointer is following and the frame count the panel reads out.
+struct SpinState {
+    /// How fast the cube turns, in radians per second.
+    radians_per_second: f32,
+}
+
+impl Bundle for SpinState {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Spin {
+                radians_per_second: self.radians_per_second,
+                spinning: true,
+                angle: 0.0,
+            },
+            SpinReset(false),
+            DragFrom(None),
+            FrameCount(0),
+        ]
     }
 }
 

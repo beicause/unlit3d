@@ -24,8 +24,7 @@ use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
 use unlit3d::winit::WindowSurface;
 use unlit3d::winit::builtin::{
-    CreateWindowRequest, DisplayHandle, ExitRequest, Resumed, WindowSpec, WinitProxy,
-    create_window_on_resume, exit_on_close_requested, exit_on_escape,
+    DisplayHandle, ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, WinitProxy,
     request_redraw_while_foreground, window, winit_input_behaviour,
 };
 #[cfg(target_os = "android")]
@@ -241,10 +240,7 @@ pub fn bind_offscreen_target(
 /// carries the frame. It is given the default load ops, clearing the surface
 /// before the fullscreen triangle covers it.
 fn mount_blit(world: &mut World, view: ResHandle<TextureView>) -> Blit {
-    let pass = world.root_scope_mut().spawn(bundle![
-        FramePass::new(BLIT_ORDER),
-        RenderLoadOps::default(),
-    ]);
+    let pass = world.root_scope_mut().spawn(Pass::new(BLIT_ORDER));
     let source = world
         .scope_mut(pass)
         .expect("the pass was just spawned")
@@ -370,18 +366,12 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         use winit::platform::web::WindowAttributesExtWebSys;
         attributes = attributes.with_append(true);
     }
-    world.root_scope_mut().spawn(bundle![
-        WindowSpec(attributes),
-        CreateWindowRequest(None),
-        create_window_on_resume(),
-    ]);
+    world.root_scope_mut().spawn(WindowSetup { attributes });
 
     world
         .root_scope_mut()
-        .spawn(bundle![ExitRequest(false), exit_on_close_requested()]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![ExitRequest(false), exit_on_escape()]);
+        .spawn(ExitOn(ExitTrigger::CloseRequested));
+    world.root_scope_mut().spawn(ExitOn(ExitTrigger::Escape));
     world
         .root_scope_mut()
         .spawn(bundle![request_redraw_while_foreground()]);
@@ -1802,9 +1792,10 @@ impl Scene {
             },
             ..RenderLoadOps::default()
         };
-        let pass = world
-            .root_scope_mut()
-            .spawn(bundle![FramePass::new(SCENE_ORDER), load]);
+        let pass = world.root_scope_mut().spawn(Pass {
+            load,
+            ..Pass::new(SCENE_ORDER)
+        });
         // The scene's content is built for the region it will be drawn into,
         // not for the whole target: a camera built for the target's aspect
         // would be sheared back out to it by the viewport. A run that does not

@@ -218,19 +218,20 @@ pub fn build_world(
     let clear = config.output.clear;
     // The frame is one pass: it states what it clears and where it draws, and
     // the mesh source hangs under it, which is what records the source into it.
-    let pass = world.root_scope_mut().spawn(bundle![
-        FramePass::new(FramePassOrder(0)),
-        RenderLoadOps {
-            color: wgpu::LoadOp::Clear(wgpu::Color {
-                r: clear[0],
-                g: clear[1],
-                b: clear[2],
-                a: clear[3],
-            }),
-            depth: depth_clear(),
-            stencil: stencil_clear(),
-        },
-    ]);
+    let load = RenderLoadOps {
+        color: wgpu::LoadOp::Clear(wgpu::Color {
+            r: clear[0],
+            g: clear[1],
+            b: clear[2],
+            a: clear[3],
+        }),
+        depth: depth_clear(),
+        stencil: stencil_clear(),
+    };
+    let pass = world.root_scope_mut().spawn(Pass {
+        load,
+        ..Pass::new(FramePassOrder(0))
+    });
 
     let target = bind_target(
         &world,
@@ -327,10 +328,7 @@ pub fn offscreen_world(
         .spawn(bundle![Renderer::new(context)]);
     // The frame is one pass, drawing into the offscreen target and clearing
     // with the defaults; the mesh source hangs under it.
-    let pass = world.root_scope_mut().spawn(bundle![
-        FramePass::new(FramePassOrder(0)),
-        RenderLoadOps::default(),
-    ]);
+    let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let source_entity = world
@@ -343,7 +341,7 @@ pub fn offscreen_world(
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(bundle![input.clone(), input.subscribe()]);
+        shared_view.spawn(InputFeed(input.clone()));
     }
 
     bind_target(&world, context, pass, &device, size, samples, depth);

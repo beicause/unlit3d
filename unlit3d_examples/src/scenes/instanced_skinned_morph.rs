@@ -14,7 +14,7 @@ use super::{
     BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas,
     rest_pose, unlit_options,
 };
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -22,6 +22,35 @@ const FRAMES: usize = 6;
 
 /// How many entities share the mesh.
 const INSTANCES: usize = 3;
+
+/// One instance of the crowd: the shared mesh drawn at its own place, with
+/// its own pose and its own morph weights.
+///
+/// The pose and the weights name entities of their own, so they are fields:
+/// an instance without them would draw the rest pose of the whole crowd.
+struct Instance {
+    transform: Transform,
+    tint: glam::Vec4,
+    mesh: GpuMesh,
+    pipeline: UnlitPipeline,
+    pose: Entity,
+    weights: Entity,
+}
+
+impl Bundle for Instance {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            self.transform,
+            InstanceColor::new(self.tint),
+            self.mesh,
+            self.pipeline,
+            SkinBinding { pose: self.pose },
+            MorphBinding {
+                weights: self.weights
+            },
+        ]
+    }
+}
 
 /// The scene: a crowd of three instanced cubes, each skinned and morphed on
 /// its own, stored as one snapshot per frame.
@@ -108,20 +137,18 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle![
-                Transform {
+            Instance {
+                transform: Transform {
                     translation: glam::Vec3::new((instance as f32 - 1.0) * 1.3, 0.0, 0.0),
                     scale: glam::Vec3::splat(0.8),
                     ..Default::default()
                 },
-                InstanceColor::new(color),
-                mesh.clone(),
-                UnlitPipeline::new(key.clone()),
-                SkinBinding { pose: pose_entity },
-                MorphBinding {
-                    weights: weight_entity
-                },
-            ],
+                tint: color,
+                mesh: mesh.clone(),
+                pipeline: UnlitPipeline::new(key.clone()),
+                pose: pose_entity,
+                weights: weight_entity,
+            },
         );
         pose_entities.push(pose_entity);
         weight_entities.push(weight_entity);

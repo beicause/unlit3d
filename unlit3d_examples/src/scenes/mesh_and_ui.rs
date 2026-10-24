@@ -6,7 +6,7 @@
 //! second frame.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, unlit_options};
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
 
 /// The colour the scene clears to.
@@ -16,6 +16,29 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     b: 0.02,
     a: 1.0,
 };
+
+/// The scene's one visible object: a cube tilted towards the camera.
+///
+/// The mesh and its pipeline are what a spawn has to name, so they are the
+/// fields; the placement belongs to the scene, so it is the bundle's own.
+struct TiltedCube {
+    mesh: GpuMesh,
+    pipeline: UnlitPipeline,
+}
+
+impl Bundle for TiltedCube {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            self.mesh,
+            self.pipeline,
+        ]
+    }
+}
 
 /// The scene: a cube with the same rich interface over it.
 pub static SCENE: SceneDef = SceneDef {
@@ -70,15 +93,10 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        bundle![
-            Transform {
-                translation: glam::Vec3::new(0.0, 0.2, 0.0),
-                rotation: glam::Quat::from_rotation_y(0.6),
-                scale: glam::Vec3::splat(0.7),
-            },
+        TiltedCube {
             mesh,
-            UnlitPipeline::new(key),
-        ],
+            pipeline: UnlitPipeline::new(key),
+        },
     );
 
     if options.ui {

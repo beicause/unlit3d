@@ -9,7 +9,7 @@
 //! from frame to frame.
 
 use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
 
 /// The grid of cells a cube can occupy, in the XZ plane.
@@ -96,6 +96,28 @@ pub static SCENE: SceneDef = SceneDef {
     build,
 };
 
+/// One cell of the grid: a cube placed at the cell this frame fills.
+///
+/// The transform and the tint change per allocation, so they are the fields;
+/// every cell draws the same way, so the pipeline is built here.
+struct CellCube {
+    transform: Transform,
+    tint: glam::Vec4,
+    mesh: GpuMesh,
+    pipeline: UnlitPipeline,
+}
+
+impl Bundle for CellCube {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            self.transform,
+            InstanceColor::new(self.tint),
+            self.mesh,
+            self.pipeline,
+        ]
+    }
+}
+
 /// Build the animated-grid scene's world content.
 fn build(
     world: &mut World,
@@ -166,12 +188,12 @@ fn build(
                 let entity = super::spawn_in(
                     world,
                     source_entity,
-                    bundle![
-                        cell_transform(cell, step_index),
-                        InstanceColor::new(TINTS[allocated % TINTS.len()]),
-                        mesh.clone(),
-                        UnlitPipeline::new(key.clone()),
-                    ],
+                    CellCube {
+                        transform: cell_transform(cell, step_index),
+                        tint: TINTS[allocated % TINTS.len()],
+                        mesh: mesh.clone(),
+                        pipeline: UnlitPipeline::new(key.clone()),
+                    },
                 );
                 cells[cell] = Some((entity, mesh));
                 allocated += 1;
