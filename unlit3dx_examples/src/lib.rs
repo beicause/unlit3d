@@ -149,10 +149,11 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     };
     let gameplay_sender = worlds.gameplay.sender.clone();
 
-    // The frame's input: the host dispatches its own key behaviours before
-    // anything else in this frame reads them. Nothing clears anything
-    // afterwards — each world and the render world's UI source read their
-    // own copy of the stream.
+    // The frame's input: the host dispatches the events its own key
+    // behaviours react to. Nothing clears anything afterwards — each world and
+    // the render world's UI source read their own copy of the stream — and no
+    // other behaviour in this world reads what a key behaviour wrote, so the
+    // dispatch states no order and joins the default band.
     world
         .root_scope_mut()
         .spawn(bundle![OnFrame::new(|world, _entity, _frame| {

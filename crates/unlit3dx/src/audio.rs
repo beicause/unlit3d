@@ -60,9 +60,11 @@ impl Default for AudioConfig {
 
 /// Where a fill behaviour runs among the world's other sources.
 ///
-/// Sources with the same order fall back to entity order, so a mix is
-/// reproducible while the sources live: the same entities give the same sum,
-/// in the same order, at the same sample offsets.
+/// Lower runs first. Sources at the same order have no order between them: the
+/// dispatcher promises nothing about which of them adds its samples first, so a
+/// source whose contribution another has to follow states a different order.
+/// A source that only adds its own samples does not care where it lands in the
+/// band.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AudioFillOrder(pub i32);
 
@@ -113,7 +115,8 @@ impl OnAudioFill {
     /// Wrap `f` as an [`OnAudioFill`].
     ///
     /// `order` places it among the world's other sources; a source that
-    /// only adds its own samples can keep [`AudioFillOrder::default`].
+    /// only adds its own samples can keep [`AudioFillOrder::default`], since
+    /// the sum does not depend on where it lands in the band.
     #[must_use]
     pub fn new(
         order: AudioFillOrder,
@@ -157,11 +160,12 @@ pub struct GlobalAudioGain(pub f32);
 /// Run every [`OnAudioFill`] in `world` once, mixing their samples into `out`.
 ///
 /// `out` is interleaved frames and is zeroed first; each source adds its
-/// contribution in [`AudioFillOrder`] order, then the world's
-/// [`GlobalAudioGain`] — one when it carries none — scales the sum, which
-/// clamps to the unit range. This is the whole of the audio thread's
-/// per-chunk work, and a caller stepping a world inline calls it the same
-/// way.
+/// contribution in [`AudioFillOrder`] order — the order is the only thing the
+/// dispatcher states, so sources at the same order run in no stated order.
+/// Then the world's [`GlobalAudioGain`] — one when it carries none — scales
+/// the sum, which clamps to the unit range. This is the whole of the audio
+/// thread's per-chunk work, and a caller stepping a world inline calls it the
+/// same way.
 ///
 /// A source must not change the world's set of sources while it runs: it
 /// has a shared `&World`, so structural work goes through
@@ -179,7 +183,7 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
             .query::<(&OnAudioFill, Entity)>()
             .map(|(on_audio_fill, entity)| (on_audio_fill.order(), entity)),
     );
-    sources.sort_unstable_by_key(|(order, entity)| (*order, *entity));
+    sources.sort_unstable_by_key(|(order, _entity)| *order);
     let mut chunk = AudioChunk {
         out,
         sample_rate,

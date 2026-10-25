@@ -29,9 +29,11 @@
 //! this world's own buffer, so the events that move it are the ones this
 //! world's tick dispatched.
 //!
-//! The setup spawns the objects in the order they run — the assets before the
-//! balls that read them, the panel's publish after everything that could change
-//! what it shows — and none of them states an order.
+//! The setup spawns the objects in whatever order reads best, and only the two
+//! that read what another object writes state an order: the balls tick after
+//! the default band the assets are built in, and the panel's publish after both.
+//! Everything else is in the default band, where the dispatch promises nothing
+//! about which of them runs first.
 
 use std::time::Duration;
 
@@ -152,6 +154,14 @@ pub const ORBIT_TARGET: Vec3 = Vec3::new(0.0, 0.6, 0.0);
 
 /// Where the camera's orbit starts, in radians.
 pub const ORBIT_START: f32 = 0.65;
+
+/// The order the balls tick at: after the default band, where the scene's
+/// assets are built, since a tick reads the assets the build wrote.
+pub(super) const BALLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(100);
+
+/// The order the panel publishes at: after every object, the balls included,
+/// since the panel shows what they wrote this frame.
+pub(super) const PUBLISH_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(200);
 
 /// Set up the render sub-world: the resource graph, the renderer, the pass
 /// its sources draw into, and the asset-server source. Answers the renderer
@@ -457,74 +467,73 @@ pub fn spawn_scene<R: WorldRunner>(
     // world's frame. A world the host steps is ticked once per call, so it
     // does not pace itself; a thread of its own runs at the gameplay rate
     // and sleeps between ticks.
-    let gameplay =
-        R::spawn(
-            host,
-            "gameplay",
-            64,
-            {
-                let scene = scene.clone();
-                let soundfont = soundfont.clone();
-                let panels = panels.clone();
-                let input = input.clone();
-                move |world: &mut World| {
-                    // This world is a sibling of the host, not a world nested in
-                    // it, so the host's fan-out never reaches it: it takes its own
-                    // buffer, once, before the first tick reads one.
-                    world.root_scope_mut().spawn(bundle![input.subscribe()]);
-                    world.root_scope_mut().spawn(bundle![OnFrame::new(
-                        |world, _entity, _frame| {
-                            dispatch_input(world);
-                        }
-                    ),]);
-                    spawn_floor(&scene);
-                    world.root_scope_mut().spawn(SceneBuild::new(&scene));
-                    world.root_scope_mut().spawn(BallDrops::new(&scene));
-                    if let Some(soundfont) = soundfont {
-                        world.root_scope_mut().spawn(Music::new(&scene, soundfont));
-                    }
-                    // The panel is the fifth object, and lives here with the rest.
-                    // The host that lays it out is an entity of its own, so the
-                    // world it belongs to is the only thing tying the two
-                    // together. Publishing sits on its own place in this world's
-                    // frame, after everything that could change what the panel
-                    // shows has ticked, and the render world draws whatever is
-                    // there.
-                    world.root_scope_mut().spawn(bundle![UiPanelHost::new(
-                        render.sender.clone(),
-                        panels.target.reader(),
-                        PANEL_SLOT,
-                    ),]);
-                    mount_controls(world);
-                    world.root_scope_mut().spawn(bundle![OnFrame::new(
-                        |world, _entity, _frame| publish_panels(world)
-                    ),]);
+    let gameplay = R::spawn(
+        host,
+        "gameplay",
+        64,
+        {
+            let scene = scene.clone();
+            let soundfont = soundfont.clone();
+            let panels = panels.clone();
+            let input = input.clone();
+            move |world: &mut World| {
+                // This world is a sibling of the host, not a world nested in
+                // it, so the host's fan-out never reaches it: it takes its own
+                // buffer, once, before the first tick reads one.
+                world.root_scope_mut().spawn(bundle![input.subscribe()]);
+                world
+                    .root_scope_mut()
+                    .spawn(bundle![OnFrame::new(|world, _entity, _frame| {
+                        dispatch_input(world);
+                    }),]);
+                spawn_floor(&scene);
+                world.root_scope_mut().spawn(SceneBuild::new(&scene));
+                world.root_scope_mut().spawn(BallDrops::new(&scene));
+                if let Some(soundfont) = soundfont {
+                    world.root_scope_mut().spawn(Music::new(&scene, soundfont));
                 }
-            },
-            {
-                let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAME_HZ));
-                let mut index = 0;
-                move |world: &mut World, control: &ThreadControl, ()| {
-                    if control.stop_requested() {
-                        return false;
-                    }
-                    // A tick is a frame whose duration is the gameplay period:
-                    // the objects read it from the frame like any other
-                    // behaviour, and nothing paces itself off a clock.
-                    let mut frame = Frame {
-                        delta_time: (1.0 / GAME_HZ) as f32,
-                        index,
-                        size: WINDOW_SIZE,
-                    };
-                    index = index.wrapping_add(1);
-                    dispatch_frame(world, &mut frame);
-                    if R::SELF_DRIVEN {
-                        clock.wait(control);
-                    }
-                    true
+                // The panel is the fifth object, and lives here with the rest.
+                // The host that lays it out is an entity of its own, so the
+                // world it belongs to is the only thing tying the two
+                // together. Publishing states an order after every object,
+                // since the panel shows what they wrote this frame, and the
+                // render world draws whatever is there.
+                world.root_scope_mut().spawn(bundle![UiPanelHost::new(
+                    render.sender.clone(),
+                    panels.target.reader(),
+                    PANEL_SLOT,
+                ),]);
+                mount_controls(world);
+                world.root_scope_mut().spawn(bundle![OnFrame::with_order(
+                    PUBLISH_ORDER,
+                    |world, _entity, _frame| publish_panels(world)
+                ),]);
+            }
+        },
+        {
+            let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAME_HZ));
+            let mut index = 0;
+            move |world: &mut World, control: &ThreadControl, ()| {
+                if control.stop_requested() {
+                    return false;
                 }
-            },
-        );
+                // A tick is a frame whose duration is the gameplay period:
+                // the objects read it from the frame like any other
+                // behaviour, and nothing paces itself off a clock.
+                let mut frame = Frame {
+                    delta_time: (1.0 / GAME_HZ) as f32,
+                    index,
+                    size: WINDOW_SIZE,
+                };
+                index = index.wrapping_add(1);
+                dispatch_frame(world, &mut frame);
+                if R::SELF_DRIVEN {
+                    clock.wait(control);
+                }
+                true
+            }
+        },
+    );
 
     SceneHandles {
         physics,

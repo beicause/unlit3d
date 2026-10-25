@@ -122,9 +122,10 @@ it is paced differs.
 - The **gameplay world** is the only place that knows about all three, and it
   is a set of objects rather than one state blob. Each object is spawned as a
   bundle holding the component that carries what it owns and the `OnFrame`
-  behaviour that advances it, and the world's setup spawns them in the order
-  they run: nothing here states an order, so the objects tick in the order the
-  setup puts them in.
+  behaviour that advances it. Most of them state no order and tick in the
+  default band, where the dispatch promises nothing about which of them goes
+  first; the two that read what another object wrote state one — the balls after
+  the assets they read, the panel's publish after every object it shows.
 
   - `SceneState` builds the scene's assets — meshes and patterned
     materials — as one job of its own, before the objects that read them are

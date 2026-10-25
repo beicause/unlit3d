@@ -140,9 +140,13 @@ frame command computes the delta time and dispatches the host world's
 presented, serve the scene switch and the fullscreen request, advance the scene
 and draw it. The scene's own world dispatches the same family for input
 distribution, sequence stepping and the scene's `advance` closure, which runs
-through a queued command because it needs `&mut World`. The setup spawns each
-behaviour in the order it runs and none of them states an order, so a caller
-inserts one between two of them by spawning it between them.
+through a queued command because it needs `&mut World`. Most of them state no
+order: they run in the default band, where the dispatch promises nothing about
+which of them goes first. The ones that read what another wrote state an order
+at both ends — the controls, the advance and the present in the host world, and
+the advance after the index in the scene world — so the dependency holds however
+the setup spawns them. A caller adds a behaviour of its own the same way: spawn
+it, and state an order only if it reads or writes what another behaviour does.
 
 ## Running it
 

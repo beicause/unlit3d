@@ -68,6 +68,27 @@ const SCENE_ORDER: FramePassOrder = FramePassOrder(0);
 /// so one render records the scene first and then presents it.
 const BLIT_ORDER: FramePassOrder = FramePassOrder(1);
 
+/// The order the controls run at.
+///
+/// `ensure_presented` states no order: it is the one that sets the frame's skip
+/// flag, and a behaviour that reads the flag states a later order rather than
+/// leaving the two to chance. The controls come first of those readers, since
+/// switching a scene skips the frame for the two after them.
+const CONTROLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(10);
+
+/// The order the scene advances at: after the controls, which may have skipped
+/// the frame, and before the present, which draws what the advance produced.
+const ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(20);
+
+/// The order the frame presents at: after the advance, so what it draws is the
+/// frame the advance produced.
+const PRESENT_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(30);
+
+/// The order the scene world advances its scene at: after `step_sequence`,
+/// which decides whether this frame advances and records the decision for the
+/// behaviour that runs it.
+const SCENE_ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(10);
+
 /// Whether this build can serve the Model Context Protocol.
 ///
 /// It needs the stdio transport and a tokio runtime, neither of which a
@@ -384,8 +405,10 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         proxy,
         mcp: args.mcp && MCP_SUPPORTED,
     });
-    // The frame's own behaviours, in order: request the GPU, build the scene
-    // and its surface, serve the controls, advance the scene, present it.
+    // The frame's own behaviours. Requesting the GPU and building the scene and
+    // its surface state no order: nothing reads what they write in the same
+    // frame. The three that do state one — the controls, the advance and the
+    // present — since the first of them decides whether the frame runs at all.
     world.root_scope_mut().spawn(bundle![request_gpu(app)]);
     world.root_scope_mut().spawn(bundle![ensure_presented(app)]);
     world
@@ -1322,7 +1345,7 @@ fn step_sequence(entity: Entity) -> OnFrame {
 /// it is queued; the index is captured before it is counted on, so the
 /// behaviour is handed the frame it advances from.
 fn run_scene_advance(entity: Entity) -> OnFrame {
-    OnFrame::new(move |world, _entity, frame| {
+    OnFrame::with_order(SCENE_ADVANCE_ORDER, move |world, _entity, frame| {
         let stepped = world
             .root_scope()
             .query_one::<&SequenceStepped>(entity)
@@ -1407,7 +1430,7 @@ fn open_url(url: &OpenUrl) {
 /// from it when the switch is served: the control state is read in one block
 /// and acted on after.
 fn serve_scene_controls(app: Entity) -> OnFrame {
-    OnFrame::new(move |world, _entity, _frame| {
+    OnFrame::with_order(CONTROLS_ORDER, move |world, _entity, _frame| {
         if FrameSkip::is_skipped(world) {
             return;
         }
@@ -1470,7 +1493,7 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
 
 /// Advance the scene by the frame's delta.
 fn advance_scene(app: Entity) -> OnFrame {
-    OnFrame::new(move |world, _entity, frame| {
+    OnFrame::with_order(ADVANCE_ORDER, move |world, _entity, frame| {
         if FrameSkip::is_skipped(world) {
             return;
         }
@@ -1514,7 +1537,7 @@ fn presenting_pass(scene: &Scene, mcp: bool) -> Option<Entity> {
 /// scene's pass draws into it directly. Either way the frame is one render and
 /// one submission.
 fn present_frame(app: Entity) -> OnFrame {
-    OnFrame::new(move |world, _entity, _frame| {
+    OnFrame::with_order(PRESENT_ORDER, move |world, _entity, _frame| {
         if FrameSkip::is_skipped(world) {
             return;
         }
@@ -1918,9 +1941,10 @@ impl Scene {
             advance,
             step: options.sequence_step,
         });
-        // The frame's own dispatch, in order: run the frame's input, step the
-        // index a fixed sequence holds each frame for, then advance the scene
-        // by the frame the index names.
+        // The frame's own dispatch: the input runs first and states no order,
+        // since nothing else here reads what it dispatched. Stepping the index
+        // and advancing by the frame it names are the one dependency: the
+        // advance states an order after the step that records it.
         world
             .root_scope_mut()
             .spawn(bundle![dispatch_input_on_frame()]);
@@ -1985,10 +2009,11 @@ impl Scene {
 
     /// Advance the scene by `delta_time` seconds.
     ///
-    /// A frame is the dispatch of the scene world's `OnFrame` behaviours, in
-    /// the order they declare: input, the index, and the scene's own behaviour.
-    /// The index and the content size travel in the frame's context, so a
-    /// behaviour reads them without a component of its own.
+    /// A frame is the dispatch of the scene world's `OnFrame` behaviours. The
+    /// input and the index state no order; the scene's own behaviour states one
+    /// after the index, since it advances by the frame the index names. The
+    /// index and the content size travel in the frame's context, so a behaviour
+    /// reads them without a component of its own.
     pub fn advance(&mut self, world: &mut World, delta_time: f32) {
         // Measured before anything else, so the reading covers the whole frame
         // — input, behaviour, render and present — and not just the part

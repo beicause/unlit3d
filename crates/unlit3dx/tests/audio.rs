@@ -97,12 +97,20 @@ fn the_worlds_gain_scales_the_mix() {
     assert!(out.iter().all(|sample| *sample == 1.0));
 }
 
-/// Equal orders fall back to entity order, so a mix built from several
-/// sources stays reproducible.
+/// A stated order runs after the default band, whatever order the two were
+/// spawned in; nothing is asserted about the order within the band, which the
+/// dispatcher promises none about.
 #[test]
-fn equal_orders_run_in_entity_order() {
+fn a_later_order_runs_after_the_default_band() {
     let mut world = World::new();
     let ran: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    let late = Arc::clone(&ran);
+    world.root_scope_mut().spawn(bundle![OnAudioFill::new(
+        AudioFillOrder(1),
+        move |_world, _entity, _chunk| {
+            late.lock().unwrap().push("late");
+        },
+    ),]);
     for (name, level) in [("first", 0.1), ("second", 0.2)] {
         let ran = Arc::clone(&ran);
         world.root_scope_mut().spawn(bundle![OnAudioFill::new(
@@ -115,17 +123,12 @@ fn equal_orders_run_in_entity_order() {
             },
         ),]);
     }
-    // A later order runs after every earlier one.
-    let late = Arc::clone(&ran);
-    world.root_scope_mut().spawn(bundle![OnAudioFill::new(
-        AudioFillOrder(1),
-        move |_world, _entity, _chunk| {
-            late.lock().unwrap().push("late");
-        },
-    ),]);
     let mut out = vec![0.0f32; 2];
     dispatch_audio_fill(&world, &mut out, 48_000, 2);
-    assert_eq!(*ran.lock().unwrap(), vec!["first", "second", "late"]);
+    let ran = ran.lock().unwrap();
+    assert_eq!(ran.len(), 3);
+    assert_eq!(ran[2], "late", "the stated order runs last");
+    assert!(ran[..2].contains(&"first") && ran[..2].contains(&"second"));
 }
 
 /// The audio world runs its jobs and, when the machine has an output

@@ -1,18 +1,16 @@
 //! Frame behaviours: what a frame is made of, as components.
 //!
 //! The other behaviour families react to an event. A frame behaviour *is* the
-//! frame: it runs once per dispatch, and the order they run in is the order the
-//! world spawned them in, so a windowed application's frame loop is one
-//! dispatch plus whatever the behaviours queued. Extending the frame is
+//! frame: it runs once per dispatch, so a windowed application's frame loop is
+//! one dispatch plus whatever the behaviours queued. Extending the frame is
 //! spawning another behaviour, not editing a function.
 //!
 //! One family: [`OnFrame`] is the frame itself, dispatched by whatever owns
 //! the world — a windowed application's host world, or a `Scene` advancing the
-//! world it drives. A behaviour spawned with [`OnFrame::new`] states no order
-//! and runs where its spawn put it; one whose reads or writes another depends
-//! on states the order at both ends with [`OnFrame::with_order`]. unlit3d
-//! declares no order values of its own, so a frame is extended by spawning
-//! behaviours, never by editing a list.
+//! world it drives. A behaviour spawned with [`OnFrame::new`] states no order;
+//! one whose reads or writes another depends on states the order at both ends
+//! with [`OnFrame::with_order`]. unlit3d declares no order values of its own,
+//! so a frame is extended by spawning behaviours, never by editing a list.
 //!
 //! Like every other behaviour, a frame behaviour runs with `&World`, so a
 //! structural change goes through [`unlit_ecs::Scope::queue`] and lands when the driver
@@ -70,11 +68,11 @@ impl FrameClock {
 
 /// When a frame behaviour runs, relative to the others.
 ///
-/// Lower runs first, and behaviours at the same order run in the order they
-/// were spawned. The default is the band that states nothing: a behaviour with
-/// no dependency on another is spawned with [`OnFrame::new`] and runs where its
-/// spawn put it. One that reads what another writes states the order at both
-/// ends with [`OnFrame::with_order`].
+/// Lower runs first. Behaviours at the same order have no order between them:
+/// the dispatch promises nothing about which of them runs first, so a behaviour
+/// whose reads or writes another depends on states a different order with
+/// [`OnFrame::with_order`]. The default is the band a behaviour spawned with
+/// [`OnFrame::new`] joins.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameBehaviourOrder(pub i32);
 
@@ -85,8 +83,9 @@ pub type FrameCallback = Box<dyn FnMut(&World, Entity, &mut Frame)>;
 ///
 /// The frame's behaviours are independent components with no shared stack, so
 /// one that cannot carry the frame further sets this and its later siblings
-/// read it and return. A sibling that reads the flag runs after the one that
-/// sets it, so it states an order instead of leaving that to the spawn.
+/// read it and return. A sibling that reads the flag has to run after the one
+/// that sets it, so it states a later order with [`OnFrame::with_order`]: the
+/// same order would leave the two to chance.
 ///
 /// Spawn one to take part; a world without one has nothing to skip.
 #[derive(Debug, Default)]
@@ -177,11 +176,11 @@ macro_rules! frame_behaviour {
         impl $name {
             #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`].")]
             ///
-            /// It runs after every behaviour ordered before the default band
-            /// and before every behaviour ordered after it, and among the
-            /// behaviours that state no order it runs where it was spawned.
-            /// State an order with `with_order` when another behaviour's reads
-            /// or writes depend on it.
+            /// It joins the band that states no order: it runs after every
+            /// behaviour ordered before that band and before every behaviour
+            /// ordered after it, and the dispatch promises nothing about the
+            /// order within the band. State an order with `with_order` when
+            /// another behaviour's reads or writes depend on it.
             pub fn new(
                 f: impl FnMut(
                     &$crate::frame::World,
@@ -198,8 +197,9 @@ macro_rules! frame_behaviour {
             #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`] that runs at `order`.")]
             ///
             /// For a behaviour whose reads or writes another behaviour depends
-            /// on: stating the order at both ends is what makes the dependency
-            /// survive a change to the order the two are spawned in.
+            /// on: stating a different order at both ends is what makes the
+            /// dependency hold, since two behaviours at the same order have no
+            /// order between them.
             pub fn with_order(
                 order: $crate::frame::FrameBehaviourOrder,
                 f: impl FnMut(
@@ -273,21 +273,21 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     }
 }
 
-/// Run every `B` in `world`, sorted by `(order, entity)`.
+/// Run every `B` in `world`, sorted by order alone.
 ///
-/// So a behaviour that states no order runs where its spawn put it relative to
-/// the others that state none, and a stated order overrides the spawn. A
-/// callback must not change the frame's behaviour set: the list is resolved
-/// before the first one runs, and a change landing inside the dispatch would
-/// leave it stale. Queue structural work instead; the driver applies it after
-/// the dispatch.
+/// Behaviours that state no order sort equal, and the sort is unstable, so the
+/// dispatch promises nothing about which of them runs first: a behaviour that
+/// depends on another states a different order. A callback must not change the
+/// frame's behaviour set: the list is resolved before the first one runs, and a
+/// change landing inside the dispatch would leave it stale. Queue structural
+/// work instead; the driver applies it after the dispatch.
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
         .root_scope()
         .query::<(&B, Entity)>()
         .map(|(b, entity)| (b.order(), entity))
         .collect();
-    order.sort_unstable_by_key(|(order, entity)| (*order, *entity));
+    order.sort_unstable_by_key(|(order, _entity)| *order);
     for (_, entity) in order {
         world
             .root_scope()
@@ -316,6 +316,9 @@ mod tests {
     /// A later order, for the tests that state one after the default band.
     const END: FrameBehaviourOrder = FrameBehaviourOrder(100);
 
+    /// An earlier order, for the tests that state one before the default band.
+    const START: FrameBehaviourOrder = FrameBehaviourOrder(-100);
+
     #[test]
     fn behaviours_run_in_their_declared_order() {
         let mut world = World::new();
@@ -338,22 +341,25 @@ mod tests {
         assert_eq!(*log.borrow(), vec![1, 2]);
     }
 
-    /// A behaviour that states no order runs where it was spawned, which is
-    /// what makes the default band usable for behaviours with no dependency.
+    /// The band that states no order runs between the orders that state one,
+    /// whatever order the three were spawned in. Nothing is asserted about the
+    /// order within the band: the dispatch promises none.
     #[test]
-    fn behaviours_that_state_no_order_run_in_spawn_order() {
+    fn the_default_band_runs_between_the_stated_orders() {
         let mut world = World::new();
-        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
-        for value in [1, 2, 3] {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        for (order, name) in [(Some(END), "end"), (None, "update"), (Some(START), "start")] {
             let log = log.clone();
-            world
-                .root_scope_mut()
-                .spawn(bundle![OnFrame::new(move |_world, _entity, _frame| {
-                    log.borrow_mut().push(value);
-                }),]);
+            let behaviour = match order {
+                Some(order) => OnFrame::with_order(order, move |_world, _entity, _frame| {
+                    log.borrow_mut().push(name)
+                }),
+                None => OnFrame::new(move |_world, _entity, _frame| log.borrow_mut().push(name)),
+            };
+            world.root_scope_mut().spawn(bundle![behaviour]);
         }
         dispatch_frame(&mut world, &mut frame());
-        assert_eq!(*log.borrow(), vec![1, 2, 3]);
+        assert_eq!(*log.borrow(), vec!["start", "update", "end"]);
     }
 
     #[test]

@@ -25,7 +25,7 @@ use unlit3dx::prelude::*;
 use super::Scene;
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance, look};
-use super::tick::advancing;
+use super::tick::advancing_in;
 use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
 use crate::render::{BallInstance, RenderEntity, despawn_instances_job, show, sweep};
 
@@ -660,6 +660,10 @@ impl Balls {
 /// The balls hold no world of their own: every instance, body and pose is
 /// asked of the worlds the tick is handed, so a state spawned without its
 /// tick would hold streams nobody reads.
+///
+/// The tick reads the scene's assets, which the build in the default band
+/// writes, so it states [`BALLS_ORDER`](super::BALLS_ORDER): two behaviours in
+/// one band have no order between them, and the read would find no assets.
 pub(super) struct BallDrops {
     /// The state the tick advances.
     balls: Balls,
@@ -672,7 +676,9 @@ impl Bundle for BallDrops {
         let Self { balls, scene } = self;
         bundle![
             balls,
-            advancing(move |balls, world, _frame| Self::tick(balls, world, &scene)),
+            advancing_in(super::BALLS_ORDER, move |balls, world, _frame| Self::tick(
+                balls, world, &scene
+            )),
         ]
     }
 }
