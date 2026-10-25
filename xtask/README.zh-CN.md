@@ -12,7 +12,7 @@
 ## 任务
 
 ```text
-cargo xtask check          # 对全工作区跑 clippy，随后 cargo fmt --check
+cargo xtask check          # 对全工作区跑 clippy 与 cargo doc，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
 cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
@@ -22,9 +22,10 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask check`
 
-先在整个工作区上运行 clippy，再运行 `cargo fmt --all -- --check`。clippy 排在
-前面，因为它的诊断可能让代码树处于 `rustfmt` 会重写的状态，因此格式化拥有最后
-发言权。接受 `--release`。
+先在整个工作区上运行 clippy，再跑文档构建，最后运行 `cargo fmt --all -- --check`。
+clippy 排在前面，因为它的诊断可能让代码树处于 `rustfmt` 会重写的状态，因此格式化
+拥有最后发言权；文档构建夹在两者之间，因为 rustdoc 的警告与 clippy 的一样属于 lint，
+而它可能重写的文档注释仍归 rustfmt 收尾。接受 `--release`。
 
 clippy 跑三趟，因为每一趟编译的代码集合不同：
 

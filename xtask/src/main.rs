@@ -53,7 +53,8 @@ struct Args {
 #[derive(FromArgs)]
 #[argh(subcommand)]
 enum Task {
-    /// Run clippy over the whole workspace, then check formatting.
+    /// Run clippy and the doc build over the whole workspace, then check
+    /// formatting.
     Check(CheckArgs),
     /// Run the workspace's tests.
     Test(TestArgs),
@@ -72,7 +73,7 @@ enum Task {
 #[argh(
     subcommand,
     name = "check",
-    description = "run clippy over the whole workspace, then check formatting"
+    description = "run clippy and the doc build over the whole workspace, then check formatting"
 )]
 struct CheckArgs {
     /// build in release mode.

@@ -1,13 +1,18 @@
-//! `cargo xtask check`: clippy over the workspace, then a formatting check.
+//! `cargo xtask check`: clippy over the workspace, the doc build, then a
+//! formatting check.
 
 use std::process::Command;
 
 use crate::step;
 
-/// Run clippy over every workspace target, then check formatting.
+/// Run clippy over every workspace target, build the documentation, then check
+/// formatting.
 ///
 /// Clippy first: its warnings and the diagnostics it raises may leave the
 /// tree in a state `rustfmt` would rewrite, so formatting is the last word.
+/// The doc build sits between the two because a rustdoc warning is a lint like
+/// clippy's — it should fail here rather than only in CI — while a doc comment
+/// it would rewrite is still rustfmt's to settle.
 ///
 /// Clippy runs three times, because each builds a different set of code:
 ///
@@ -54,6 +59,25 @@ pub fn run(release: bool) -> Result<(), String> {
         .args(profile)
         .args(deny);
     step::run(&mut all, "clippy (all features)")?;
+
+    // The doc build, so a broken intra-doc link or an undocumented private item
+    // fails here rather than only in CI. `cargo doc` has no `--` for handing
+    // flags to rustdoc — unlike clippy — so denying warnings goes through the
+    // environment, as CI does it. Every feature, because that is the build the
+    // published documentation is generated from: an item behind an optional
+    // feature is one whose docs only that combination compiles.
+    let mut doc = Command::new("cargo");
+    doc.args([
+        "doc",
+        "--workspace",
+        "--no-deps",
+        "--document-private-items",
+        "--keep-going",
+        "--all-features",
+    ])
+    .args(profile)
+    .env("RUSTDOCFLAGS", "-D warnings");
+    step::run(&mut doc, "doc")?;
 
     let mut fmt = Command::new("cargo");
     fmt.args(["fmt", "--all", "--", "--check"]);

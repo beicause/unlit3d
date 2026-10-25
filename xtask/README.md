@@ -14,7 +14,7 @@ cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
 ## Tasks
 
 ```text
-cargo xtask check          # clippy over the whole workspace, then `cargo fmt --check`
+cargo xtask check          # clippy and `cargo doc` over the whole workspace, then `cargo fmt --check`
 cargo xtask test           # nextest over unit and integration tests, then the doctests
 cargo xtask test-wasm      # run the GPU tests in a browser, through wasm and WebGL2
 cargo xtask run-wasm       # build the web examples and serve them for a browser
@@ -24,9 +24,12 @@ cargo xtask publish        # publish the workspace's crates to crates.io, in dep
 
 ### `cargo xtask check`
 
-Runs clippy over the workspace, then `cargo fmt --all -- --check`. Clippy goes
-first because its diagnostics may leave the tree in a state `rustfmt` would
-rewrite, so formatting is the last word. Accepts `--release`.
+Runs clippy over the workspace, then the doc build, then
+`cargo fmt --all -- --check`. Clippy goes first because its diagnostics may
+leave the tree in a state `rustfmt` would rewrite, so formatting is the last
+word; the doc build sits between them because a rustdoc warning is a lint like
+clippy's, and a doc comment rustdoc would rewrite is still rustfmt's to settle.
+Accepts `--release`.
 
 Clippy runs three times, because each compiles a different set of code:
 

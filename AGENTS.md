@@ -54,5 +54,7 @@
 - **代码内的文档注释、git提交信息默认全用英文**。文档注释随代码一并更新，保持最新；注释面向用户，不含无关上下文、特定于用户与Agent的会话内容、显而易见的细节等。
 - **不要看docs/internal/**。这里面是WIP的实施细节，极易过时且可能存在错误。
 - **测试生成的二进制快照文件一律放`unlit3d_asset_files`子模块中**。
+- **快照不匹配的帧写在 `target/` 下，每一趟各占一个目录**：`cargo xtask test` 的默认档位在 `target/snapshot-mismatches`，`UNLIT3D_DEVICE_TIER=webgl2` 那趟在 `target/snapshot-mismatches-webgl2`，`cargo xtask test-wasm` 在 `target/snapshot-mismatches-wasm`。单独跑测试时，目录由 `UNLIT3D_SNAPSHOT_MISMATCH_DIR` 指定，未设置则用 `target/snapshot-mismatches`。
 - **调试examples时，可以用 unlit3d-mcp 技能，绝不用截屏软件**。
-- **常用命令**。见`xtask`包目录 [`README.md`](./README.md) 。
+- **常用命令**。见 `cargo xtask --help`，以及 `xtask` 包目录的 [`README.md`](./xtask/README.md)（每个任务做什么、为什么这么跑）。
+- **跑测试用 `cargo nextest run`，不用 `cargo test`**。唯一例外是 doctest：nextest 不跑 doctest，那部分只能用 `cargo test --doc`，而 `cargo xtask test` 已经把两者都包了。
