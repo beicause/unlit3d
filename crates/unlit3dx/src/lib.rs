@@ -55,6 +55,8 @@ pub mod mcp;
 pub mod physics;
 #[cfg(feature = "render")]
 pub mod present;
+/// Requests a world answers, and the waiting for their answers.
+pub mod request;
 // The recorder exists for the MCP audio tools, which are the only thing that
 // constructs one, so it is compiled exactly where they are.
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
@@ -104,6 +106,7 @@ pub mod prelude {
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, SendError},
+        request::{Pending, Settled},
         thread::{FixedClock, ThreadControl, WorldState, WorldThread},
         world::{
             Stepped, Threaded, WorldName, WorldRunner, spawn_stepped_world_with_init,

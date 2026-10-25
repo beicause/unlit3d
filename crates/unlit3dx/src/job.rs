@@ -7,9 +7,9 @@
 //! A job never answers back directly. What one world learns from another is
 //! state, and state travels the other way: a subscription publishes it, and the
 //! caller reads it on its own tick. A caller that needs the value one job
-//! produces asks for it — [`JobSender::ask`](crate::job::JobSender::ask)
-//! sends the job and hands back the snapshot its answer lands in — or publishes
-//! that value itself, through the snapshot its subscription fills.
+//! produces asks for it under a key — [`Pending`](crate::request::Pending)
+//! sends the job, remembers the key, and answers on the caller's next tick — or
+//! publishes that value itself, through the snapshot its subscription fills.
 
 use std::fmt;
 
@@ -19,8 +19,9 @@ use unlit_ecs::World;
 ///
 /// A job answers nothing: the queue is one way, and a value the caller
 /// wants back travels as state, published by the world that made it and
-/// read on the caller's own tick. [`JobSender::ask`] is that round trip,
-/// made of one job and one snapshot.
+/// read on the caller's own tick. A [`Pending`](crate::request::Pending) is
+/// that round trip: one job per request, and the key its answer comes back
+/// under.
 pub type Job = Box<dyn FnOnce(&mut World) + Send + 'static>;
 
 /// Why a job was not handed to a world.

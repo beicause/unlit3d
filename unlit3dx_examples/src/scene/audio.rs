@@ -15,7 +15,6 @@ use unlit3dx::prelude::*;
 use super::Scene;
 use super::music::{bgm_midi, sequence_midi};
 use super::order::{ScenePhase, TICK_AUDIO, advancing};
-use super::world_ended;
 
 /// How a scene's audio world gets its synthesizer and its output.
 pub enum AudioSetup {
@@ -116,31 +115,47 @@ impl Bundle for PlayingTrack {
 
 /// The music, living on its own entity in the gameplay world.
 ///
-/// It asks the audio world for the synthesizer's voice once, then spends that
-/// voice on the two tracks the scene plays: the background loop, which starts
-/// on its own, and the demo sequence, which waits for the panel.
+/// It asks the audio world for the synthesizer's voice once, when it is built,
+/// then spends that voice on the two tracks the scene plays: the background
+/// loop, which starts on its own, and the demo sequence, which waits for the
+/// panel.
 pub struct SceneAudio {
-    /// The soundfont the voice is built from.
-    soundfont: Arc<[u8]>,
-    /// The voice the install answered with, once it has: no answer until the
-    /// question is asked.
-    voice: Option<SnapshotReader<Option<Entity>>>,
-    /// Whether the question has been asked, so it is not asked again.
-    requested: bool,
+    /// The voice the audio world owes, and the answer once it comes.
+    ///
+    /// The install is one request, asked when the state is built: what it
+    /// names is nothing but itself, so it is asked under no key at all.
+    voice: Pending<(), Option<Entity>>,
+    /// Where the answer lands, reused across ticks.
+    settled: Vec<((), Settled<Option<Entity>>)>,
     /// Whether the answer has landed, so the scene stops looking.
     installed: bool,
 }
 
 impl SceneAudio {
-    /// The music state, waiting to ask the audio world for a synthesizer built
-    /// from `soundfont`.
+    /// The music state, asking the audio world for a synthesizer built from
+    /// `soundfont`.
+    ///
+    /// The install is asked here rather than on a tick because it is asked
+    /// once: the soundfont goes into the job, and the state keeps nothing of
+    /// it.
     #[must_use]
-    pub fn new(soundfont: Arc<[u8]>) -> Self {
+    pub fn new(scene: &Scene, soundfont: Arc<[u8]>) -> Self {
+        let mut voice = Pending::new(scene.audio_state.clone(), None);
+        // The wait has no ticks to run out of: the install is the one thing
+        // the music asks for, so it waits until the world answers or ends.
+        let installed = match voice.request(&scene.audio, (), move |world: &mut World| {
+            install_synth(world, &soundfont)
+        }) {
+            Ok(()) => false,
+            Err(error) => {
+                log::error!("the audio world refused the synthesizer install ({error:?})");
+                true
+            }
+        };
         Self {
-            soundfont,
-            voice: None,
-            requested: false,
-            installed: false,
+            voice,
+            settled: Vec::new(),
+            installed,
         }
     }
 }
@@ -162,48 +177,36 @@ impl Music {
     #[must_use]
     pub(super) fn new(scene: &Scene, soundfont: Arc<[u8]>) -> Self {
         Self {
-            audio: SceneAudio::new(soundfont),
+            audio: SceneAudio::new(scene, soundfont),
             scene: scene.clone(),
         }
     }
 
-    /// Ask for the synthesizer's voice once, and start the music on its answer.
+    /// Start the music on the voice the install answered with.
     fn tick(audio: &mut SceneAudio, world: &World, scene: &Scene) {
         if audio.installed {
             return;
         }
-        if !audio.requested {
-            audio.requested = true;
-            let soundfont = Arc::clone(&audio.soundfont);
-            match scene
-                .audio
-                .ask(move |world: &mut World| install_synth(world, &soundfont))
-            {
-                Ok(voice) => audio.voice = Some(voice),
-                Err(error) => {
-                    audio.installed = true;
-                    log::error!("the audio world refused the synthesizer install ({error:?})");
-                    return;
+        let mut settled = core::mem::take(&mut audio.settled);
+        audio.voice.advance(&mut settled);
+        for (_, settled) in settled.drain(..) {
+            audio.installed = true;
+            match settled {
+                Settled::Answered(Some(voice)) => {
+                    start_tracks(&world.root_scope(), scene, voice);
+                    log::info!("the background music is playing");
+                }
+                // No voice: the soundfont failed to load, and the install said
+                // so on its way.
+                Settled::Answered(None) => {}
+                // The install was asked once and never answered, so this is
+                // the audio world ending with the job still in its queue.
+                Settled::Expired => {
+                    log::error!("the audio world ended before it installed the synthesizer");
                 }
             }
         }
-        let Some(reader) = audio.voice.as_ref() else {
-            return;
-        };
-        let Some(voice) = reader.latest().map(|voice| *voice) else {
-            // The world that owes the answer is gone: the install job died with
-            // it, and no reader will ever see a voice.
-            if world_ended(&scene.audio_state) {
-                audio.installed = true;
-                log::error!("the audio world ended before it installed the synthesizer");
-            }
-            return;
-        };
-        audio.installed = true;
-        if let Some(voice) = voice {
-            start_tracks(&world.root_scope(), scene, voice);
-            log::info!("the background music is playing");
-        }
+        audio.settled = settled;
     }
 }
 

@@ -25,9 +25,9 @@ use unlit3dx::prelude::*;
 use super::Scene;
 use super::order::{ScenePhase, TICK_BALLS, advancing};
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
-use super::shared::{SceneState, create_instance_job, look};
+use super::shared::{SceneState, create_instance, look};
 use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
-use crate::render::{BallInstance, despawn_instances_job, show_instance_job, sweep_instances_job};
+use crate::render::{BallInstance, despawn_instances_job, show, sweep};
 
 /// How long between automatic ball drops, in seconds.
 const SPAWN_PERIOD: f64 = 0.7;
@@ -85,21 +85,10 @@ pub struct Ball {
     pub instance: Option<Entity>,
     /// The body the physics world spawned for it.
     pub body: Option<RigidBodyHandle>,
-    /// The tick the drop was made on, for the wait below.
-    pub requested_at: u32,
     /// How far the ball has come: see [`BallPhase`].
     pub phase: BallPhase,
     /// Where the ball starts, which is where its instance is shown.
     pub transform: Transform,
-}
-
-/// One body answered by the physics world.
-#[derive(Clone, Copy, Debug)]
-struct BodySpawned {
-    /// The ball that asked for the body, in this world.
-    ball: Entity,
-    /// The body the physics world spawned for it.
-    body: RigidBodyHandle,
 }
 
 /// A ball whose two halves have both landed, waiting to be shown.
@@ -142,22 +131,30 @@ enum Waiting {
 /// folded into the balls they name, and the buffers those answers land in, so
 /// a tick that folds nothing allocates nothing but the poses it sends.
 pub struct Balls {
-    /// The answers the physics world publishes when a body is spawned, and
-    /// this world's reader of them.
-    spawns: Stream<BodySpawned>,
-    spawned: StreamReader<BodySpawned>,
-    /// The answers the render world publishes when it creates an instance,
-    /// and this world's reader of them.
-    creates: Stream<BallInstance>,
-    created: StreamReader<BallInstance>,
-    /// The answers the render world publishes when an instance is shown, and
-    /// this world's reader of them.
-    shows: Stream<BallInstance>,
-    shown: StreamReader<BallInstance>,
-    /// The instances the render world despawned because the camera lost sight
-    /// of them, and this world's reader of them.
-    retired: Stream<BallInstance>,
-    retired_instances: StreamReader<BallInstance>,
+    /// The bodies the physics world owes: one request per ball, asked under
+    /// the ball it is for.
+    bodies: Pending<Entity, RigidBodyHandle>,
+    /// The instances the render world owes: one request per ball, asked under
+    /// the ball it is for.
+    instances: Pending<Entity, Entity>,
+    /// The shows the render world owes: one request per ball, asked under the
+    /// ball whose instance is being shown. What it answers is whether the
+    /// instance really wears its assets.
+    shows: Pending<Entity, bool>,
+    /// What a sweep swept away: one request per sweep, asked under no key at
+    /// all, because what it names is the whole scene rather than one ball.
+    retired: Pending<(), Vec<BallInstance>>,
+    /// Where the answers land, reused across ticks.
+    settled_bodies: Vec<(Entity, Settled<RigidBodyHandle>)>,
+    settled_instances: Vec<(Entity, Settled<Entity>)>,
+    settled_shows: Vec<(Entity, Settled<bool>)>,
+    settled_retired: Vec<((), Settled<Vec<BallInstance>>)>,
+    /// The balls a request was given up on this tick, and has to reclaim.
+    expired: Vec<Entity>,
+    /// Whether a sweep is still owed an answer: a second sweep asked before
+    /// the first answered would have its answer dropped, and with it the
+    /// instances the first one retired.
+    sweep_asked: bool,
     /// How many drops have been made, picking each ball's look. The counter
     /// only orders the looks: a ball is found by its entity, not by it.
     drops: u32,
@@ -171,23 +168,16 @@ pub struct Balls {
     ticks: u32,
     /// Pose entries the last job carried, for the status line.
     poses_sent: usize,
-    /// Render answers reused across ticks.
-    created_answers: Vec<BallInstance>,
-    /// Physics answers reused across ticks.
-    spawned_answers: Vec<BodySpawned>,
-    /// Show answers reused across ticks.
-    shown_answers: Vec<BallInstance>,
-    /// Sweep answers reused across ticks.
-    retired_answers: Vec<BallInstance>,
     /// The balls the tick has decided to show, reused across ticks.
     showing: Vec<ShowCandidate>,
     /// The instances a sweep tests against the camera's view, reused across
     /// sweeps.
     sweeping: Vec<BallInstance>,
-    /// The bodies and instances a tick has to send away, kept until a send
-    /// goes through so a full queue only delays the cleanup.
+    /// The bodies a tick has to send away, kept until a send goes through so
+    /// a full queue only delays the cleanup.
     despawns: Vec<RigidBodyHandle>,
-    instances: Vec<Entity>,
+    /// The instances that have nobody left to stand for, kept the same way.
+    orphans: Vec<Entity>,
     /// The xorshift state for spawn placement.
     rng: u64,
 }
@@ -195,38 +185,31 @@ pub struct Balls {
 impl Balls {
     /// The balls, driving the worlds their tick is handed.
     #[must_use]
-    pub fn new() -> Self {
-        let spawns = Stream::new();
-        let spawned = spawns.subscribe();
-        let creates = Stream::new();
-        let created = creates.subscribe();
-        let shows = Stream::new();
-        let shown = shows.subscribe();
-        let retired = Stream::new();
-        let retired_instances = retired.subscribe();
+    pub fn new(scene: &Scene) -> Self {
         Self {
-            spawns,
-            spawned,
-            creates,
-            created,
-            shows,
-            shown,
-            retired,
-            retired_instances,
+            // Each of the three is bounded by the same wait: a half that has
+            // not come within it is given up on, and so is a show the render
+            // world never answered.
+            bodies: Pending::new(scene.physics_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
+            instances: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
+            shows: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
+            retired: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
+            settled_bodies: Vec::new(),
+            settled_instances: Vec::new(),
+            settled_shows: Vec::new(),
+            settled_retired: Vec::new(),
+            expired: Vec::new(),
+            sweep_asked: false,
             drops: 0,
             clear: false,
             last_snapshot: None,
             requests: 0,
             ticks: 0,
             poses_sent: 0,
-            created_answers: Vec::new(),
-            spawned_answers: Vec::new(),
-            shown_answers: Vec::new(),
-            retired_answers: Vec::new(),
             showing: Vec::new(),
             sweeping: Vec::new(),
             despawns: Vec::new(),
-            instances: Vec::new(),
+            orphans: Vec::new(),
             rng: 0x853c49e6748fea9b,
         }
     }
@@ -295,7 +278,6 @@ impl Balls {
             color,
             instance: None,
             body: None,
-            requested_at: self.ticks,
             phase: BallPhase::Waiting,
             transform: Transform {
                 translation: position,
@@ -303,12 +285,13 @@ impl Balls {
             },
         }]);
 
-        if let Err(error) = scene.render.send(create_instance_job(
-            ball,
-            mesh,
-            material,
-            self.creates.clone(),
-        )) {
+        // Both halves are asked for under the ball: the answer names it, and
+        // the wait is bounded, so a ball that hears nothing is reclaimed
+        // rather left waiting forever.
+        if let Err(error) =
+            self.instances
+                .request(&scene.render, ball, create_instance(mesh, material))
+        {
             log::warn!("the render world refused an instance request ({error:?})");
             commands.despawn(ball);
             return;
@@ -320,15 +303,12 @@ impl Balls {
             restitution: 0.65,
             shape: shape_body(SHAPE_KINDS[kind]),
         };
-        // The answer comes back over a stream rather than a reply slot: the
-        // physics world publishes it when it runs the job, and the tick below
-        // folds whatever arrived into the ball it names.
-        let spawns = self.spawns.clone();
-        let sent = scene.physics.send(Box::new(move |world: &mut World| {
-            let handle = spawn_body(world, description);
-            spawns.publish(BodySpawned { ball, body: handle });
-        }));
-        if let Err(error) = sent {
+        if let Err(error) = self
+            .bodies
+            .request(&scene.physics, ball, move |world: &mut World| {
+                spawn_body(world, description)
+            })
+        {
             log::warn!("the physics world refused a body request ({error:?})");
             // The instance already asked for has no ball to be shown on; its
             // answer despawns it when it arrives.
@@ -354,7 +334,7 @@ impl Balls {
                 self.despawns.push(handle);
             }
             if let Some(instance) = ball.instance.take() {
-                self.instances.push(instance);
+                self.orphans.push(instance);
             }
             scope.queue().despawn(entity);
             cleared += 1;
@@ -372,78 +352,93 @@ impl Balls {
     /// Fold the answers the other worlds sent since the last tick into the
     /// balls they name, show the ones that now have both halves, and put away
     /// the ones that waited too long.
+    ///
+    /// Every wait is bounded by the same timeout, so this is the one place a
+    /// request is given up on: an answer that never came names its ball, and
+    /// the ball is reclaimed with whatever halves it did receive.
     fn fold_answers(&mut self, world: &World, state: Entity, scene: &Scene) {
         let scope = world.root_scope();
 
+        // A ball whose request was given up on loses the halves it has, and
+        // the ones still in flight are dropped when they arrive: nothing is
+        // left to fill them into.
+        self.expired.clear();
+
         // A retired instance is already gone from the render world: only its
         // body and its ball entity are left to despawn.
-        let mut retired = std::mem::take(&mut self.retired_answers);
-        retired.clear();
-        self.retired_instances.pump();
-        self.retired_instances.copy_into(&mut retired);
-        for answer in retired.drain(..) {
-            if let Some(handle) = scope
-                .query_one::<&Ball>(answer.ball)
-                .ok()
-                .and_then(|found| found.body)
-            {
-                self.despawns.push(handle);
+        self.retired.advance(&mut self.settled_retired);
+        for (_, answer) in self.settled_retired.drain(..) {
+            let Settled::Answered(answers) = answer else {
+                // A sweep that never answered leaves the instances it was
+                // asked about in the render world rather than retiring them
+                // twice: the next sweep names them again.
+                continue;
+            };
+            for answer in answers {
+                if let Some(handle) = scope
+                    .query_one::<&Ball>(answer.ball)
+                    .ok()
+                    .and_then(|found| found.body)
+                {
+                    self.despawns.push(handle);
+                }
+                scope.queue().despawn(answer.ball);
             }
-            scope.queue().despawn(answer.ball);
         }
-        self.retired_answers = retired;
 
         // An instance whose ball is already gone has nobody to be shown on,
         // so it is despawned rather than leaked.
-        let mut created = std::mem::take(&mut self.created_answers);
-        created.clear();
-        self.created.pump();
-        self.created.copy_into(&mut created);
-        for answer in created.drain(..) {
-            match scope.query_one::<&mut Ball>(answer.ball) {
-                Ok(mut ball) => ball.instance = Some(answer.instance),
-                Err(_) => self.instances.push(answer.instance),
+        self.instances.advance(&mut self.settled_instances);
+        for (ball, answer) in self.settled_instances.drain(..) {
+            match (scope.query_one::<&mut Ball>(ball), answer) {
+                (Ok(mut found), Settled::Answered(instance)) => {
+                    found.instance = Some(instance);
+                }
+                (Err(_), Settled::Answered(instance)) => self.orphans.push(instance),
+                (_, Settled::Expired) => self.expired.push(ball),
             }
         }
-        self.created_answers = created;
 
-        let mut spawned = std::mem::take(&mut self.spawned_answers);
-        spawned.clear();
-        self.spawned.pump();
-        self.spawned.copy_into(&mut spawned);
-        for answer in spawned.drain(..) {
-            match scope.query_one::<&mut Ball>(answer.ball) {
-                Ok(mut ball) => ball.body = Some(answer.body),
-                Err(_) => self.despawns.push(answer.body),
+        self.bodies.advance(&mut self.settled_bodies);
+        for (ball, answer) in self.settled_bodies.drain(..) {
+            match (scope.query_one::<&mut Ball>(ball), answer) {
+                (Ok(mut found), Settled::Answered(handle)) => {
+                    found.body = Some(handle);
+                }
+                (Err(_), Settled::Answered(handle)) => self.despawns.push(handle),
+                (_, Settled::Expired) => self.expired.push(ball),
             }
         }
-        self.spawned_answers = spawned;
 
-        // The show job answers once the instance really wears its assets, so a
-        // job that never reached the render world leaves the ball waiting
-        // instead of marking it shown.
-        let mut shown = std::mem::take(&mut self.shown_answers);
-        shown.clear();
-        self.shown.pump();
-        self.shown.copy_into(&mut shown);
-        for answer in shown.drain(..) {
-            match scope.query_one::<&mut Ball>(answer.ball) {
-                Ok(mut ball) => ball.phase = BallPhase::Shown,
-                // The ball went away while its show was in flight, so the
-                // instance it wore has nobody left to stand for.
-                Err(_) => self.instances.push(answer.instance),
+        // The show answers once the instance really wears its assets, so a
+        // show the render world never answered leaves the ball waiting instead
+        // of marking it shown.
+        self.shows.advance(&mut self.settled_shows);
+        for (ball, answer) in self.settled_shows.drain(..) {
+            match (scope.query_one::<&mut Ball>(ball), answer) {
+                (Ok(mut found), Settled::Answered(true)) => {
+                    found.phase = BallPhase::Shown;
+                }
+                // A show answered no, or a ball that went away while its show
+                // was in flight: the instance it wore has nobody left to
+                // stand for.
+                (Ok(mut found), Settled::Answered(false)) | (Ok(mut found), Settled::Expired) => {
+                    if let Some(instance) = found.instance.take() {
+                        self.orphans.push(instance);
+                    }
+                    self.expired.push(ball);
+                }
+                (Err(_), _) => self.expired.push(ball),
             }
         }
-        self.shown_answers = shown;
 
         // The balls that are ready to show, or that have waited past the point
         // of being worth waiting for.
-        let ticks = self.ticks;
         let stale = world_ended(&scene.physics_state) || world_ended(&scene.render_state);
         let mut showing = std::mem::take(&mut self.showing);
         showing.clear();
         for (mut ball, entity) in scope.query::<(&mut Ball, Entity)>() {
-            match waiting(&ball, ticks, stale) {
+            match waiting(&ball, entity, &self.expired, stale) {
                 Waiting::Wait => {}
                 Waiting::Reclaim => {
                     // A reclaim is the one way a ball leaves without anyone
@@ -464,7 +459,7 @@ impl Balls {
                         self.despawns.push(handle);
                     }
                     if let Some(instance) = ball.instance.take() {
-                        self.instances.push(instance);
+                        self.orphans.push(instance);
                     }
                     scope.queue().despawn(entity);
                 }
@@ -490,15 +485,14 @@ impl Balls {
                 let mesh = assets.meshes[candidate.kind];
                 let material =
                     assets.materials[candidate.kind * BALL_COLORS.len() + candidate.color];
-                let job = show_instance_job(
-                    candidate.ball,
-                    candidate.instance,
-                    mesh,
-                    material,
-                    candidate.transform,
-                    self.shows.clone(),
-                );
-                match scene.render.send(job) {
+                let instance = candidate.instance;
+                let transform = candidate.transform;
+                let sent =
+                    self.shows
+                        .request(&scene.render, candidate.ball, move |world: &mut World| {
+                            show(world, instance, mesh, material, &transform)
+                        });
+                match sent {
                     Ok(()) => {
                         if let Ok(mut ball) = scope.query_one::<&mut Ball>(candidate.ball) {
                             ball.phase = BallPhase::Requested;
@@ -546,12 +540,12 @@ impl Balls {
 
     /// Despawn the instances the tick has collected, in one job.
     fn despawn_instances(&mut self, scene: &Scene) {
-        if self.instances.is_empty() {
+        if self.orphans.is_empty() {
             return;
         }
-        let instances = self.instances.clone();
+        let instances = self.orphans.clone();
         match scene.render.send(despawn_instances_job(instances)) {
-            Ok(()) | Err(SendError::Closed) => self.instances.clear(),
+            Ok(()) | Err(SendError::Closed) => self.orphans.clear(),
             Err(SendError::Full) => {
                 log::debug!("the render world's queue is full; a despawn waits a tick");
             }
@@ -581,16 +575,30 @@ impl Balls {
                 });
             }
         }
-        if !sweeping.is_empty() {
-            let retired = self.retired.clone();
-            match scene
-                .render
-                .send(sweep_instances_job(sweeping.clone(), retired))
-            {
-                Ok(()) | Err(SendError::Closed) => sweeping.clear(),
-                Err(SendError::Full) => {
-                    log::debug!("the render world's queue is full; a sweep waits for the next one");
-                }
+        if sweeping.is_empty() {
+            self.sweeping = sweeping;
+            return;
+        }
+        // One sweep at a time: a second one asked before the first answered
+        // would be dropped on the floor, and with it the instances the first
+        // retired.
+        if self.sweep_asked {
+            self.sweeping = sweeping;
+            return;
+        }
+        match self
+            .retired
+            .request(&scene.render, (), sweep(sweeping.clone()))
+        {
+            Ok(()) => {
+                self.sweep_asked = true;
+                sweeping.clear();
+            }
+            // A closed queue is the scene going away: nothing is left to
+            // sweep, and the instances stay for the next one.
+            Err(SendError::Closed) => {}
+            Err(SendError::Full) => {
+                log::debug!("the render world's queue is full; a sweep waits for the next one");
             }
         }
         self.sweeping = sweeping;
@@ -647,12 +655,6 @@ impl Balls {
     }
 }
 
-impl Default for Balls {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// The balls and the tick that drops, poses and sweeps them, spawned together.
 ///
 /// The balls hold no world of their own: every instance, body and pose is
@@ -683,7 +685,7 @@ impl BallDrops {
     #[must_use]
     pub(super) fn new(scene: &Scene) -> Self {
         Self {
-            balls: Balls::new(),
+            balls: Balls::new(scene),
             scene: scene.clone(),
         }
     }
@@ -734,22 +736,23 @@ impl BallDrops {
 
 /// What a tick does with a ball.
 ///
-/// The wait is bounded twice: a ball whose half never arrives, or whose show is
-/// never answered, is reclaimed after `PENDING_TIMEOUT_TICKS`, and one whose
-/// world ended is reclaimed at once, because no answer is coming.
+/// A ball is reclaimed when one of the requests it is waiting on was given up
+/// on — it waited out `PENDING_TIMEOUT_TICKS`, or a world that owed it an
+/// answer ended — and when the world it wears an instance in ended, because
+/// the instance went with that world.
 ///
-/// The timeout measures a promise still outstanding, so it never reaches a
-/// shown ball: the show it was waiting on was answered. Only a world ending
-/// takes a shown ball away, because the instance it wears went with that world.
-fn waiting(ball: &Ball, ticks: u32, stale: bool) -> Waiting {
+/// The wait is measured by the requests themselves, not by the tick the ball
+/// was dropped on: a ball the render world confirmed owes nothing, and no
+/// number of ticks takes it away.
+fn waiting(ball: &Ball, entity: Entity, expired: &[Entity], stale: bool) -> Waiting {
     if stale {
+        return Waiting::Reclaim;
+    }
+    if expired.contains(&entity) {
         return Waiting::Reclaim;
     }
     if ball.phase == BallPhase::Shown {
         return Waiting::Wait;
-    }
-    if ticks.saturating_sub(ball.requested_at) > PENDING_TIMEOUT_TICKS {
-        return Waiting::Reclaim;
     }
     // A ball whose show is on its way is left alone: showing it twice would
     // send a second job for the same instance.
@@ -814,7 +817,6 @@ mod tests {
             color: 0,
             instance,
             body,
-            requested_at: 0,
             phase: if shown {
                 BallPhase::Shown
             } else {
@@ -890,61 +892,60 @@ mod tests {
     }
 
     /// A ball waits while a half is missing, is shown once both are in, and is
-    /// reclaimed after the timeout or when a world that owed a half ended.
+    /// reclaimed when a request it is waiting on was given up on.
     #[test]
     fn a_ball_waits_shows_and_is_reclaimed() {
+        let entity = Entity::from_raw(1, 0);
         let instance = Entity::from_raw(10, 0);
         let body = RigidBodyHandle::from_raw_parts(7, 0);
+
         let missing_instance = ball(None, Some(body), false);
-        assert_eq!(waiting(&missing_instance, 0, false), Waiting::Wait);
         assert_eq!(
-            waiting(&missing_instance, PENDING_TIMEOUT_TICKS + 1, false),
-            Waiting::Reclaim
+            waiting(&missing_instance, entity, &[], false),
+            Waiting::Wait
+        );
+        assert_eq!(
+            waiting(&missing_instance, entity, &[entity], false),
+            Waiting::Reclaim,
+            "an instance that was given up on takes the ball with it"
         );
 
         let ready = ball(Some(instance), Some(body), false);
-        assert_eq!(waiting(&ready, 0, false), Waiting::Show(instance));
-        assert_eq!(waiting(&ready, 0, true), Waiting::Reclaim);
+        assert_eq!(waiting(&ready, entity, &[], false), Waiting::Show(instance));
+        assert_eq!(waiting(&ready, entity, &[], true), Waiting::Reclaim);
 
         let requested = Ball {
             phase: BallPhase::Requested,
             ..ball(Some(instance), Some(body), false)
         };
-        assert_eq!(waiting(&requested, 0, false), Waiting::Wait);
+        assert_eq!(waiting(&requested, entity, &[], false), Waiting::Wait);
         assert_eq!(
-            waiting(&requested, PENDING_TIMEOUT_TICKS + 1, false),
+            waiting(&requested, entity, &[entity], false),
             Waiting::Reclaim,
             "a show nobody answered must not keep the ball alive forever"
         );
     }
 
-    /// The timeout is for a promise still outstanding, and a shown ball owes
-    /// none: the show it waited on was answered. Measured against the drop
-    /// instead, it reclaimed every ball a fixed time after it landed.
+    /// A shown ball owes no request, so only the world it wears an instance in
+    /// ending takes it away: a wait measured against the tick the ball was
+    /// dropped on would reclaim it a fixed time after it landed.
     #[test]
-    fn a_shown_ball_outlives_the_pending_timeout() {
+    fn a_shown_ball_is_only_taken_by_its_world_ending() {
+        let entity = Entity::from_raw(1, 0);
         let instance = Entity::from_raw(10, 0);
         let body = RigidBodyHandle::from_raw_parts(7, 0);
         let shown = ball(Some(instance), Some(body), true);
+        assert_eq!(waiting(&shown, entity, &[], false), Waiting::Wait);
         assert_eq!(
-            waiting(&shown, PENDING_TIMEOUT_TICKS + 1, false),
-            Waiting::Wait
-        );
-        assert_eq!(
-            waiting(&shown, u32::MAX, false),
-            Waiting::Wait,
-            "no amount of ticks reclaims a ball the render world confirmed"
-        );
-        assert_eq!(
-            waiting(&shown, 0, true),
+            waiting(&shown, entity, &[], true),
             Waiting::Reclaim,
             "a world that ended takes the instance the ball wears with it"
         );
     }
 
-    /// A scene whose every queue is full: the fixture puts one job in each,
-    /// so a later send reports `Full` and the halves a tick sends away stay
-    /// in the lists, where a test can count them.
+    /// A scene whose queues a test runs itself to answer the requests on them,
+    /// and fills again to keep whatever a tick sends away in the lists, where
+    /// the test can count it.
     fn stalled_scene() -> (
         Scene,
         async_channel::Receiver<Job>,
@@ -953,12 +954,6 @@ mod tests {
         let (render_tx, render_rx) = async_channel::bounded(1);
         let (physics_tx, physics_rx) = async_channel::bounded(1);
         let (audio_tx, _audio_rx) = async_channel::bounded(1);
-        for queue in [&render_tx, &physics_tx, &audio_tx] {
-            let job: Job = Box::new(|_: &mut World| {});
-            queue
-                .try_send(job)
-                .expect("the queue the fixture fills is empty");
-        }
         let scene = Scene {
             render: JobSender::new(render_tx),
             physics: JobSender::new(physics_tx),
@@ -971,12 +966,34 @@ mod tests {
         (scene, render_rx, physics_rx)
     }
 
+    /// Run every job waiting on a queue, so the answer it publishes is there
+    /// for the next tick to fold. The world those jobs are for does not exist
+    /// in a test, so each runs against an empty world of its own.
+    fn answer(jobs: &async_channel::Receiver<Job>) {
+        let mut other = World::new();
+        while let Ok(job) = jobs.try_recv() {
+            job(&mut other);
+        }
+    }
+
+    /// Fill every queue, so a send a tick makes on the way out reports `Full`
+    /// and the cleanup stays in the lists, where a test can count it.
+    fn stall(scene: &Scene) {
+        for queue in [&scene.render, &scene.physics, &scene.audio] {
+            let _ = queue.send(Box::new(|_: &mut World| {}));
+        }
+    }
+
     /// A scene state whose assets are loaded, so a tick does not turn back at
     /// the door: no render world builds them in a test.
-    fn ready_scene_state(world: &mut World, scene: &Scene) {
+    fn ready_scene_state(world: &mut World, scene: &Scene, jobs: &async_channel::Receiver<Job>) {
         let entity = world
             .root_scope_mut()
             .spawn(bundle![SceneState::new(scene)]);
+        // The asset build has no render world to run in, so the job it sent is
+        // dropped rather than run: the assets the tick needs are put in by
+        // hand.
+        while jobs.try_recv().is_ok() {}
         let Ok(mut state) = world.root_scope().query_one::<&mut SceneState>(entity) else {
             panic!("the state was just spawned")
         };
@@ -993,19 +1010,28 @@ mod tests {
     #[test]
     fn a_clear_takes_the_halves_a_fold_just_landed() {
         let mut world = World::new();
-        let (scene, _render, _physics) = stalled_scene();
-        ready_scene_state(&mut world, &scene);
+        let (scene, render, physics) = stalled_scene();
+        ready_scene_state(&mut world, &scene, &render);
         let instance = Entity::from_raw(10, 0);
         let body = RigidBodyHandle::from_raw_parts(7, 0);
         let entity = world
             .root_scope_mut()
             .spawn(bundle![ball(None, None, false)]);
-        let mut balls = Balls::new();
-        balls.creates.publish(BallInstance {
-            ball: entity,
-            instance,
-        });
-        balls.spawns.publish(BodySpawned { ball: entity, body });
+        let mut balls = Balls::new(&scene);
+        // Both halves are asked of the worlds the tick is handed and answered
+        // by running what they were sent, so the fold finds them in flight
+        // rather than published by hand.
+        balls
+            .instances
+            .request(&scene.render, entity, move |_: &mut World| instance)
+            .expect("the queue was drained");
+        balls
+            .bodies
+            .request(&scene.physics, entity, move |_: &mut World| body)
+            .expect("the queue was drained");
+        answer(&render);
+        answer(&physics);
+        stall(&scene);
         balls.clear = true;
 
         BallDrops::tick(&mut balls, &world, &scene);
@@ -1022,7 +1048,7 @@ mod tests {
             "the body the fold landed is sent away once"
         );
         assert_eq!(
-            balls.instances,
+            balls.orphans,
             vec![instance],
             "and so is the instance it was shown on"
         );
@@ -1033,8 +1059,8 @@ mod tests {
     #[test]
     fn an_answer_without_its_ball_is_cleaned_up() {
         let mut world = World::new();
-        let (scene, _render, _physics) = stalled_scene();
-        ready_scene_state(&mut world, &scene);
+        let (scene, render, physics) = stalled_scene();
+        ready_scene_state(&mut world, &scene, &render);
         let instance = Entity::from_raw(10, 0);
         let body = RigidBodyHandle::from_raw_parts(7, 0);
         let gone = world
@@ -1046,16 +1072,22 @@ mod tests {
             .expect("the ball the answers are about is gone");
         let _ = world.apply();
 
-        let mut balls = Balls::new();
-        balls.creates.publish(BallInstance {
-            ball: gone,
-            instance,
-        });
-        balls.spawns.publish(BodySpawned { ball: gone, body });
+        let mut balls = Balls::new(&scene);
+        balls
+            .instances
+            .request(&scene.render, gone, move |_: &mut World| instance)
+            .expect("the queue was drained");
+        balls
+            .bodies
+            .request(&scene.physics, gone, move |_: &mut World| body)
+            .expect("the queue was drained");
+        answer(&render);
+        answer(&physics);
+        stall(&scene);
         BallDrops::tick(&mut balls, &world, &scene);
 
         assert_eq!(
-            balls.instances,
+            balls.orphans,
             vec![instance],
             "an instance whose ball is gone is despawned"
         );

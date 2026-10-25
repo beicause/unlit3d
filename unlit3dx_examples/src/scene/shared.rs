@@ -14,10 +14,7 @@ use super::HIDDEN_POSITION;
 use super::Scene;
 use super::order::{ScenePhase, TICK_SCENE, advancing};
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
-use super::world_ended;
-use crate::render::{
-    BallInstance, allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler,
-};
+use crate::render::{allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler};
 
 /// The render entities a shape is built from, in kind-major order.
 ///
@@ -39,8 +36,13 @@ pub struct SceneAssets {
 /// for one, and the render world despawns it once the camera loses sight of
 /// it.
 pub struct SceneState {
-    /// The assets the build job published, read once they land.
-    assets: SnapshotReader<SceneAssets>,
+    /// The build the render world owes, and its answer once it comes.
+    ///
+    /// The whole build is one request, so it is asked under no key at all:
+    /// what it names is nothing but itself.
+    build: Pending<(), SceneAssets>,
+    /// Where the answer lands, reused across ticks.
+    settled: Vec<((), Settled<SceneAssets>)>,
     /// The assets once the build landed, for the jobs that name them.
     pub loaded: Option<SceneAssets>,
     /// Whether the build landed and the scene is live.
@@ -56,23 +58,26 @@ impl SceneState {
     /// The whole build is one question there: it allocates the meshes and the
     /// materials, and the answer is their entities. Until it lands the scene
     /// is empty, and every object that needs a shape stays unspawned.
+    #[must_use]
     pub fn new(scene: &Scene) -> Self {
         log::info!("the gameplay world started; asking the render world for the scene");
-        // The reader comes back before the job has run: a snapshot keeps the
-        // published value, so the build cannot land where nobody will see it.
-        let (assets, given_up) = match scene.render.ask(build) {
-            Ok(assets) => (assets, false),
+        let mut build = Pending::new(scene.render_state.clone(), None);
+        // A build that never lands is never retried: the scene is the whole
+        // of it, so the wait runs until the render world answers or ends.
+        let given_up = match build.request(&scene.render, (), build_assets) {
+            Ok(()) => false,
             Err(error) => {
                 log::error!(
                     "the render world refused the scene build ({error:?}); the scene stays empty"
                 );
-                // The question was never accepted, so no answer is coming:
+                // The request was never accepted, so no answer is coming:
                 // the wait is over before it starts.
-                (Snapshot::new().reader(), true)
+                true
             }
         };
         Self {
-            assets,
+            build,
+            settled: Vec::new(),
             loaded: None,
             ready: false,
             given_up,
@@ -82,14 +87,12 @@ impl SceneState {
 
 /// The scene's assets and the tick that collects them.
 ///
-/// The build lands in the render world, so a state spawned without its tick
-/// would wait for an answer nobody collects, and a tick without its state has
-/// nothing to advance.
+/// The build is asked once, when the state is built, but its answer is folded
+/// on a tick: a state spawned without its tick would wait for an answer
+/// nobody collects, and a tick without its state has nothing to advance.
 pub(super) struct SceneBuild {
     /// The state the tick advances.
     state: SceneState,
-    /// The worlds the build is asked from and reported to.
-    scene: Scene,
 }
 
 impl SceneBuild {
@@ -98,7 +101,6 @@ impl SceneBuild {
     pub(super) fn new(scene: &Scene) -> Self {
         Self {
             state: SceneState::new(scene),
-            scene: scene.clone(),
         }
     }
 
@@ -107,39 +109,46 @@ impl SceneBuild {
     /// The scene stays empty if the render world refused the job, and it stops
     /// waiting if the world that owed the answer is gone: a job that panicked
     /// takes its answer with it, and no reader will ever see one.
-    fn tick(state: &mut SceneState, scene: &Scene) {
+    fn tick(state: &mut SceneState) {
         if state.given_up {
             return;
         }
-        let Some(assets) = state.assets.latest() else {
-            if world_ended(&scene.render_state) {
-                log::error!(
-                    "the render world ended before it built the scene; the scene stays empty"
-                );
-                state.given_up = true;
+        let mut settled = core::mem::take(&mut state.settled);
+        state.build.advance(&mut settled);
+        for (_, settled) in settled.drain(..) {
+            match settled {
+                Settled::Answered(assets) => {
+                    log::info!(
+                        "the scene is live: {} meshes, {} materials",
+                        assets.meshes.len(),
+                        assets.materials.len()
+                    );
+                    state.loaded = Some(assets);
+                    state.ready = true;
+                    state.given_up = true;
+                }
+                // The wait runs until the world answers or ends, so this is
+                // the world ending: a job a panic took never builds a scene.
+                Settled::Expired => {
+                    log::error!(
+                        "the render world ended before it built the scene; the scene stays empty"
+                    );
+                    state.given_up = true;
+                }
             }
-            return;
-        };
-        let assets = assets.as_ref().clone();
-        log::info!(
-            "the scene is live: {} meshes, {} materials",
-            assets.meshes.len(),
-            assets.materials.len()
-        );
-        state.loaded = Some(assets);
-        state.ready = true;
-        state.given_up = true;
+        }
+        state.settled = settled;
     }
 }
 
 impl Bundle for SceneBuild {
     fn into_bundle(self) -> DynamicBundle {
-        let Self { state, scene } = self;
+        let Self { state } = self;
         bundle![
             state,
             advancing(
                 ScenePhase::Objects.at(TICK_SCENE),
-                move |state, _world, _frame| { Self::tick(state, &scene) }
+                move |state, _world, _frame| { Self::tick(state) }
             ),
         ]
     }
@@ -148,7 +157,7 @@ impl Bundle for SceneBuild {
 /// Allocate the scene's meshes and materials, and answer their entities.
 ///
 /// One step, so nothing waits for an answer in between.
-fn build(world: &mut World) -> SceneAssets {
+fn build_assets(world: &mut World) -> SceneAssets {
     let mut meshes = Vec::with_capacity(SHAPE_KINDS.len());
     for kind in SHAPE_KINDS {
         meshes.push(allocate_mesh(world, &shape_mesh(kind)));
@@ -168,18 +177,12 @@ fn build(world: &mut World) -> SceneAssets {
     SceneAssets { meshes, materials }
 }
 
-/// The job that spawns one hidden instance wearing the assets it names, and
-/// publishes it back tagged with `ball`.
+/// Spawn one hidden instance wearing the assets it names, and answer it.
 ///
-/// It stays hidden until its body is ready and the show job puts it in place.
-pub fn create_instance_job(
-    ball: Entity,
-    mesh: Entity,
-    material: Entity,
-    created: Stream<BallInstance>,
-) -> Job {
-    Box::new(move |world: &mut World| {
-        let instance = hidden_instance_of(
+/// It stays hidden until its body is ready and the show puts it in place.
+pub fn create_instance(mesh: Entity, material: Entity) -> impl FnOnce(&mut World) -> Entity {
+    move |world: &mut World| {
+        hidden_instance_of(
             world,
             mesh,
             material,
@@ -187,9 +190,8 @@ pub fn create_instance_job(
                 translation: HIDDEN_POSITION,
                 ..Default::default()
             },
-        );
-        created.publish(BallInstance { ball, instance });
-    })
+        )
+    }
 }
 
 /// The kind and color a drop wears, as indices into [`SceneAssets`].

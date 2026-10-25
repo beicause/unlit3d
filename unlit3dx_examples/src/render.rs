@@ -12,9 +12,9 @@
 //! [`GpuMesh`] or [`GpuMaterial`] component of its own asset entity — the
 //! GPU handles inside carry `Rc`, so they cannot cross a thread, but the
 //! entity can. A simulation world builds through a job that names the assets
-//! by entity, or asks for an entity it does not have yet with an
-//! [`ask`](unlit3dx::prelude::JobSender::ask): the answer comes back as a
-//! snapshot the world published, and the next job names it.
+//! by entity, or asks for an entity it does not have yet with a
+//! [`Pending`](unlit3dx::prelude::Pending): the answer comes back under the
+//! key the request was asked under, and the next job names it.
 
 use glam::{Affine3A, Vec3};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World};
@@ -28,7 +28,6 @@ use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipe
 
 use unlit_ecs::bundle;
 use unlit3dx::job::Job;
-use unlit3dx::prelude::Stream;
 
 /// A mesh description that owns its vertex data, so it can cross a thread
 /// inside a job; [`UnlitMeshDesc`] is what the render world finally sees.
@@ -276,34 +275,35 @@ pub struct BallInstance {
     pub instance: Entity,
 }
 
-/// A job that despawns the instances the camera cannot see, reporting each
-/// one back over `retired` with the ball it belonged to.
+/// Retire the instances the camera cannot see: despawn each one and answer
+/// with the ones that went, each naming the ball it stood for.
 ///
 /// The render world owns the camera and the instances, so the visibility test
 /// happens here: the gameplay world only names the live instances and reacts
 /// to the answer by despawning their bodies. An instance that is already gone
 /// is skipped.
-pub(crate) fn sweep_instances_job(
-    instances: Vec<BallInstance>,
-    retired: Stream<BallInstance>,
-) -> Job {
-    Box::new(move |world: &mut World| {
+///
+/// What it answers is a list rather than a stream of its own: a sweep is one
+/// request naming the whole scene, and the caller is waiting for exactly one
+/// answer, so the answer is the request's own.
+pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> Vec<BallInstance> {
+    move |world: &mut World| {
         let Some(camera) = world
             .root_scope()
             .query::<&Camera>()
             .find(|camera| camera.active)
         else {
-            return;
+            return Vec::new();
         };
         let frustum = FrustumPlanes::from_clip_from_world(camera.clip_from_world());
         drop(camera);
         let Some((source, _)) = mesh_source(world) else {
-            return;
+            return Vec::new();
         };
         let mut outside = instances;
         {
             let Ok(scope) = world.scope(source) else {
-                return;
+                return Vec::new();
             };
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
@@ -318,15 +318,15 @@ pub(crate) fn sweep_instances_job(
             });
         }
         if outside.is_empty() {
-            return;
+            return outside;
         }
         if let Ok(mut scope) = world.scope_mut(source) {
             for answer in &outside {
                 let _ = scope.despawn(answer.instance);
             }
         }
-        retired.publish_all(outside);
-    })
+        outside
+    }
 }
 
 /// A job that despawns the instances it names.
@@ -344,66 +344,56 @@ pub(crate) fn despawn_instances_job(instances: Vec<Entity>) -> Job {
     })
 }
 
-/// A job that points one instance at a mesh and material, shows it at
-/// `transform`, and answers over `shown` with the ball it was asked for.
+/// Show one instance: point it at a mesh and material, place it, and make it
+/// visible.
 ///
-/// The answer is published only once the instance really wears the assets. A
-/// job whose source, assets or instance are gone answers nothing, and the ball
-/// that asked waits for its timeout and is reclaimed, rather than counting
-/// itself shown with nothing on screen.
-pub(crate) fn show_instance_job(
-    ball: Entity,
+/// A frame's show is a request the gameplay world asked for, so it answers by
+/// the ball it was asked for rather than publishing into a stream: the caller
+/// names what it asked for and learns whether it happened. An instance that is
+/// gone, or assets that never landed, answers `false`, which is the difference
+/// between a world that has not answered and one that answered no.
+pub(crate) fn show(
+    world: &mut World,
     instance: Entity,
     mesh: Entity,
     material: Entity,
-    transform: Transform,
-    shown: Stream<BallInstance>,
-) -> Job {
-    Box::new(move |world: &mut World| {
-        let Some((source, _)) = mesh_source(world) else {
-            return;
-        };
-        let Ok(scope) = world.scope(source) else {
-            return;
-        };
-        let Ok(mesh) = scope
-            .query_one::<&GpuMesh>(mesh)
-            .map(|mesh| (*mesh).clone())
-        else {
-            return;
-        };
-        let Ok(material) = scope
-            .query_one::<&GpuMaterial>(material)
-            .map(|material| (*material).clone())
-        else {
-            return;
-        };
-        let is_shown = scope
-            .query_one::<(
-                &mut GpuMesh,
-                &mut GpuMaterial,
-                &mut Transform,
-                &mut InstanceVisibility,
-            )>(instance)
-            .map(
-                |(
-                    mut instance_mesh,
-                    mut instance_material,
-                    mut instance_transform,
-                    mut visibility,
-                )| {
-                    *instance_mesh = mesh;
-                    *instance_material = material;
-                    instance_transform.clone_from(&transform);
-                    visibility.visible = true;
-                    true
-                },
-            )
-            .unwrap_or(false);
-        if is_shown {
-            shown.publish(BallInstance { ball, instance });
-        }
-    })
+    transform: &Transform,
+) -> bool {
+    let Some((source, _)) = mesh_source(world) else {
+        return false;
+    };
+    let Ok(scope) = world.scope(source) else {
+        return false;
+    };
+    let Ok(mesh) = scope
+        .query_one::<&GpuMesh>(mesh)
+        .map(|mesh| (*mesh).clone())
+    else {
+        return false;
+    };
+    let Ok(material) = scope
+        .query_one::<&GpuMaterial>(material)
+        .map(|material| (*material).clone())
+    else {
+        return false;
+    };
+    scope
+        .query_one::<(
+            &mut GpuMesh,
+            &mut GpuMaterial,
+            &mut Transform,
+            &mut InstanceVisibility,
+        )>(instance)
+        .map(
+            |(mut instance_mesh, mut instance_material, mut instance_transform, mut visibility)| {
+                *instance_mesh = mesh;
+                *instance_material = material;
+                instance_transform.clone_from(transform);
+                visibility.visible = true;
+                true
+            },
+        )
+        .unwrap_or(false)
 }
 
 /// A texture of `size.0` by `size.1` RGBA pixels.

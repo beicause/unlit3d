@@ -33,7 +33,8 @@ nothing parses.
 
 ```rust,ignore
 let soundfont: Arc<[u8]> = unlit3dx_asset_bytes::soundfont().into();
-let voice = audio.ask(move |world| install_synth(world, &soundfont));
+let mut voice: Pending<(), Option<Entity>> = Pending::new(audio_state.clone(), None);
+let _ = voice.request(&audio, (), move |world| install_synth(world, &soundfont));
 ```
 
 ## The missing soundfont

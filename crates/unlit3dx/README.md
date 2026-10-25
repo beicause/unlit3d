@@ -100,11 +100,11 @@ instead. A reply would have the sender waiting on a world that may be busy,
 stopped, or already gone, and what comes back is state, which has a channel
 of its own.
 
-One exception is worth its own name. A caller that wants one value once — the
-entity a build created, the handle an install returned — uses
-`JobSender::ask`: it sends a job that publishes its result into a snapshot and
-hands back the reader. Nothing waits, and a queue that refuses the job leaves
-the reader empty rather than blocking or fabricating an answer.
+One exception is worth its own name. A caller that wants a value one job
+produces — the entity a build created, the handle an install returned — asks
+for it through a `Pending`: it sends the job under a key and answers on the
+caller's next tick, under that key. Nothing waits, and a request the world
+never answers is given up on rather than waited out forever.
 
 Every world the framework builds carries a task set as a component, so a task
 lasts as long as the world and belongs to it rather than to the call that
@@ -129,9 +129,10 @@ choice:
   The collector appends to the buffer it is handed, and every value reaches
   every reader's queue.
 
-`JobSender::ask` is the third shape: one job, one answer, published once. A
-reader it returns never goes stale twice, and a world that refuses the job
-leaves it empty.
+Asking through a `Pending` is the third shape: one job per request, one answer
+per job, published once and named by the key the request was made under. A
+request the world never answers, or one whose world ended, is expired instead
+of being left hanging.
 
 Which one to reach for follows from the answer the caller needs:
 
@@ -140,7 +141,7 @@ Which one to reach for follows from the answer the caller needs:
 - Every value, in order — a body that spawned, an instance the renderer
   retired, a note that ended — is `subscribe`.
 - One value, once, from one job — the entity an install created, the assets
-  a build made — is `ask`.
+  a build made — is a `Pending` request.
 
 The payload is the caller's type — the library defines none — so a scene
 collects exactly the data it wants and pays for nothing else.

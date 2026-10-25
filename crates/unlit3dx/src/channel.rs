@@ -15,10 +15,10 @@
 //!   want: input, collisions, a sequence ending. A reader that ticks slower
 //!   than the producer still sees every value, in order.
 //!
-//! A third shape is a question: [`JobSender::ask`](crate::job::JobSender::ask)
-//! sends one job that
-//! publishes its answer once. That is the shape of something built on
-//! request rather than observed: an entity, a set of assets.
+//! A third shape is a question, and it is not here: [`Pending`](crate::request::Pending)
+//! sends one job per request and folds each answer back under the key the
+//! caller asked with. That is the shape of something built on request rather
+//! than observed: an entity, a set of assets, a body spawned for one ball.
 //!
 //! Nothing is collected unasked: a world runs the collectors of its
 //! subscriptions only while someone holds a reader, and a dropped reader is
@@ -94,39 +94,6 @@ impl JobSender {
                 buffer: Vec::new(),
             });
             install(world, entry);
-        }))?;
-        Ok(reader)
-    }
-
-    /// Ask this world a question, and read its answer.
-    ///
-    /// `make` runs once, on the world's own thread, and whatever it returns is
-    /// published to the reader. That is the shape of something built on
-    /// request rather than observed: an entity, a set of assets. The reader
-    /// sees nothing until the job runs, and then sees the answer for as long
-    /// as it lives: the snapshot keeps the newest value, so a late read still
-    /// finds it.
-    ///
-    /// Where [`watch`](JobSender::watch) installs a collector that runs every
-    /// tick, this sends one job that publishes once.
-    ///
-    /// The question is a job, and the answer is only as good as its running:
-    /// the send is refused when the queue is full or the world has stopped.
-    /// If the job panics, or the world ends before its turn comes, the answer
-    /// never arrives and the reader stays empty forever. A caller that must
-    /// not wait on an answer that cannot come also reads the state the world
-    /// publishes ([`WorldState`](crate::thread::WorldState)), which says
-    /// whether the world it asked is still running.
-    pub fn ask<T, F>(&self, make: F) -> Result<SnapshotReader<T>, SendError>
-    where
-        T: Send + Sync + 'static,
-        F: FnOnce(&mut World) -> T + Send + 'static,
-    {
-        let snapshot = Snapshot::new();
-        let reader = snapshot.reader();
-        self.send(Box::new(move |world: &mut World| {
-            let value = make(world);
-            let _ = snapshot.publish(value);
         }))?;
         Ok(reader)
     }
@@ -358,46 +325,5 @@ mod tests {
         // repeating the events of the previous tick.
         reader.pump();
         assert!(reader.with_batch(|batch| batch.to_vec()).is_empty());
-    }
-
-    /// An ask runs its question once and publishes what it answered; the
-    /// answer stays readable afterwards, because the snapshot keeps the
-    /// newest value.
-    #[test]
-    fn an_ask_publishes_its_answer() {
-        let (sender, receiver) = async_channel::unbounded();
-        let jobs = JobSender::new(sender);
-        let mut world = World::new();
-
-        let answer = jobs
-            .ask(|world: &mut World| world.root_scope_mut().spawn(bundle![]))
-            .expect("the job was queued");
-        assert_eq!(answer.latest(), None, "the job has not run yet");
-
-        let job = receiver.try_recv().expect("the job was queued");
-        job(&mut world);
-        assert!(receiver.try_recv().is_err(), "the question ran once");
-
-        let entity = *answer.latest().expect("the answer");
-        assert!(
-            world
-                .root_scope()
-                .query::<(Entity,)>()
-                .any(|(spawned,)| spawned == entity)
-        );
-        // A second read still finds it: nothing is consumed by reading.
-        assert_eq!(*answer.latest().expect("the answer"), entity);
-    }
-
-    /// A world that stopped never answers: the reader is handed back so the
-    /// caller's shape stays the same, and it stays empty.
-    #[test]
-    fn an_ask_refused_by_a_stopped_world_never_answers() {
-        let (sender, receiver) = async_channel::unbounded();
-        let jobs = JobSender::new(sender);
-        drop(receiver);
-
-        let answer = jobs.ask(|_: &mut World| 1);
-        assert_eq!(answer.err(), Some(SendError::Closed));
     }
 }
