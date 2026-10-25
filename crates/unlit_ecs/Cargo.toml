@@ -19,6 +19,7 @@ path = "tests/suite.rs"
 # itself never reads it, so it is off by default. The unconditional
 # dependencies stay few: a hash map behind one trait and the access errors.
 facet = { workspace = true, features = ["reflect"], optional = true }
+facet-format = { workspace = true, optional = true }
 facet-json = { workspace = true, optional = true }
 hashbrown.workspace = true
 inventory = { workspace = true, optional = true }
@@ -57,7 +58,7 @@ mcp = [
 ## codec a JSON bridge addresses components by. Off by default: nothing in the
 ## ECS reads it, and it is the only feature that pulls in a dependency besides
 ## the hasher.
-reflect = ["dep:facet", "dep:facet-json", "dep:inventory"]
+reflect = ["dep:facet", "dep:facet-format", "dep:facet-json", "dep:inventory"]
 
 [lints]
 workspace = true

@@ -26,7 +26,10 @@ pub use proxies::{
     GpuRenderPipelineProxy, InputEventsProxy, Mat4Proxy, Mat4VecProxy, QuatProxy,
     StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
 };
-pub use unlit_ecs::reflect::{ComponentEntry, contains, encode, entries, entry, names, push, set};
+pub use unlit_ecs::reflect::{
+    ComponentEntry, ComponentError, contains, current_partial, default_partial, encode_json,
+    entries, entry, names, push, push_json, set, set_json,
+};
 
 use crate::input::InputEvent;
 
@@ -35,8 +38,8 @@ use crate::input::InputEvent;
 /// # Errors
 ///
 /// Fails when the text is not a JSON array of input events.
-pub fn decode_events(text: &str) -> Result<Vec<InputEvent>, String> {
-    facet_json::from_str(text).map_err(|error| error.to_string())
+pub fn decode_events(text: &str) -> Result<Vec<InputEvent>, facet_json::DeserializeError> {
+    facet_json::from_str(text)
 }
 
 #[cfg(test)]
@@ -122,7 +125,7 @@ mod tests {
             .refresh();
 
         let encoded =
-            encode(&world.root_scope(), entity, "InputEvents").expect("the buffer encodes");
+            encode_json(&world.root_scope(), entity, "InputEvents").expect("the buffer encodes");
         let decoded: InputEventsProxy =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(decoded.events, vec![key, InputEvent::FocusChanged(false)]);

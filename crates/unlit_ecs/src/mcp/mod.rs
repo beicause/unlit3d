@@ -18,7 +18,10 @@ pub mod host;
 mod server;
 mod tools;
 
-pub use crate::reflect::{ComponentEntry, contains, encode, entries, entry, names, push, set};
+pub use crate::reflect::{
+    ComponentEntry, ComponentError, contains, current_partial, default_partial, encode_json,
+    entries, entry, names, push, push_json, set, set_json,
+};
 pub use host::{
     Despawned, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity, WorldEntry,
     WorldId, extension_of, saved_name, to_value, with_extension, write_file,

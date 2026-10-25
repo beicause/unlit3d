@@ -48,7 +48,7 @@ fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value
     if !scope.contains(entity) {
         return Err(format!("no entity {entity:?}"));
     }
-    let text = reflect::encode(scope, entity, name)?;
+    let text = reflect::encode_json(scope, entity, name).map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
@@ -63,7 +63,7 @@ fn write_component(
         return Err(format!("no entity {entity:?}"));
     }
     let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    reflect::set(scope, entity, name, &patch)?;
+    reflect::set_json(scope, entity, name, &patch).map_err(|error| error.to_string())?;
     Ok(Value::Null)
 }
 
@@ -75,7 +75,7 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
     let mut bundle = DynamicBundle::new();
     for (name, value) in object {
         let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-        reflect::push(&mut bundle, name, &patch)?;
+        reflect::push_json(&mut bundle, name, &patch).map_err(|error| error.to_string())?;
     }
     let spawned = scope.entity();
     let name = "mcp spawned";

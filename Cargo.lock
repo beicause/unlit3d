@@ -4780,6 +4780,7 @@ version = "0.1.0-dev.2"
 dependencies = [
  "async-channel",
  "facet",
+ "facet-format",
  "facet-json",
  "hashbrown 0.17.1",
  "inventory",

@@ -494,7 +494,8 @@ fn single_entity<T: 'static>(
 /// it.
 pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
     let entity = single_entity::<InputEvents>(world, entity, "input buffer")?;
-    let text = reflect::encode(&world.root_scope(), entity, "InputEvents")?;
+    let text = reflect::encode_json(&world.root_scope(), entity, "InputEvents")
+        .map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
@@ -504,7 +505,7 @@ pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, Strin
 /// subscribed to it; the dispatch that follows is this world's own tick.
 pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Result<Value, String> {
     let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
-    let decoded = reflect::decode_events(&text)?;
+    let decoded = reflect::decode_events(&text).map_err(|error| error.to_string())?;
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
     let _ = world
         .root_scope()

@@ -34,7 +34,7 @@ inventory::submit! { ComponentEntry::new::<InputEvents>() }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unlit_ecs::reflect::{contains, encode, entry, names, push, set};
+    use unlit_ecs::reflect::{contains, encode_json, entry, names, push_json, set_json};
     use unlit_ecs::{DynamicBundle, Entity, World, bundle};
 
     /// The reflected fields are the codec: a component's own struct is the only
@@ -45,7 +45,7 @@ mod tests {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
 
-        set(
+        set_json(
             &world.root_scope(),
             entity,
             "Transform",
@@ -56,7 +56,7 @@ mod tests {
         // The fields the patch did not name keep their current value, which is
         // the whole point of setting one property at a time.
         let encoded =
-            encode(&world.root_scope(), entity, "Transform").expect("the transform encodes");
+            encode_json(&world.root_scope(), entity, "Transform").expect("the transform encodes");
         let value: Transform = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.translation, glam::Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(value.scale, glam::Vec3::ONE);
@@ -73,7 +73,7 @@ mod tests {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
         assert!(
-            encode(
+            encode_json(
                 &world.root_scope(),
                 entity,
                 "unlit3d::components::Transform"
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn spawning_merges_over_the_default() {
         let mut builder = DynamicBundle::new().named("reflect test");
-        push(
+        push_json(
             &mut builder,
             "Transform",
             r#"{"translation":[4.0,5.0,6.0]}"#,
@@ -96,7 +96,7 @@ mod tests {
         .expect("a partial transform is accepted");
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(builder);
-        let encoded = encode(&world.root_scope(), entity, "Transform")
+        let encoded = encode_json(&world.root_scope(), entity, "Transform")
             .expect("the spawned transform encodes");
         let value: Transform = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.translation, glam::Vec3::new(4.0, 5.0, 6.0));
@@ -108,8 +108,9 @@ mod tests {
     #[test]
     fn an_unknown_component_names_the_known_ones() {
         let error = entry("Nope").expect_err("an unknown component is refused");
-        assert!(error.contains("Nope"), "{error}");
-        assert!(error.contains("Transform"), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("Nope"), "{message}");
+        assert!(message.contains("Transform"), "{message}");
     }
 
     /// A read-only component reflects, but its proxy refuses to be turned back
@@ -148,12 +149,12 @@ mod tests {
             skinned: false,
         };
         let entity = world.root_scope_mut().spawn(bundle![mesh]);
-        let error =
-            set(&world.root_scope(), entity, "GpuMesh", "{}").expect_err("GpuMesh is read-only");
-        assert!(error.contains("read-only"), "{error}");
+        let error = set_json(&world.root_scope(), entity, "GpuMesh", "{}")
+            .expect_err("GpuMesh is read-only");
+        assert!(error.to_string().contains("read-only"), "{error}");
 
         let encoded =
-            encode(&world.root_scope(), entity, "GpuMesh").expect("GpuMesh still encodes");
+            encode_json(&world.root_scope(), entity, "GpuMesh").expect("GpuMesh still encodes");
         assert!(encoded.contains("count"), "{encoded}");
     }
 
@@ -169,7 +170,7 @@ mod tests {
             .root_scope_mut()
             .spawn(bundle![InstanceVisibility::default()]);
 
-        set(
+        set_json(
             &world.root_scope(),
             entity,
             "InstanceVisibility",
@@ -178,7 +179,7 @@ mod tests {
         .expect("visibility is writable");
 
         let encoded =
-            encode(&world.root_scope(), entity, "InstanceVisibility").expect("it encodes");
+            encode_json(&world.root_scope(), entity, "InstanceVisibility").expect("it encodes");
         let value: InstanceVisibility =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert!(!value.visible, "the write did not reach the component");
@@ -190,9 +191,9 @@ mod tests {
     fn a_component_the_entity_lacks_is_reported() {
         let world = World::new();
         let entity = Entity::from_raw(0, 0);
-        let error =
-            encode(&world.root_scope(), entity, "Transform").expect_err("the entity has nothing");
-        assert!(error.contains("has no Transform"), "{error}");
+        let error = encode_json(&world.root_scope(), entity, "Transform")
+            .expect_err("the entity has nothing");
+        assert!(error.to_string().contains("has no Transform"), "{error}");
     }
 
     /// The load ops reflect through a proxy per field, so one may be set while
@@ -203,7 +204,7 @@ mod tests {
         let entity = world
             .root_scope_mut()
             .spawn(bundle![RenderLoadOps::default()]);
-        set(
+        set_json(
             &world.root_scope(),
             entity,
             "RenderLoadOps",

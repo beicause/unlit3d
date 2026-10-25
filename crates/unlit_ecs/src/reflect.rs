@@ -1,9 +1,15 @@
-//! The component registry: which components a JSON bridge can address.
+//! The component registry: which components a bridge can address.
 //!
 //! A component is any `'static` type, so a world alone cannot name one. A
 //! component becomes addressable by submitting a [`ComponentEntry`] to a
-//! link-time table; the entry is the only place its name and its JSON shape are
+//! link-time table; the entry is the only place its name and its codec are
 //! written down.
+//!
+//! The codec speaks [Partial] values rather than text: a caller that has a
+//! component in reflection form writes it without ever spelling it out, and one
+//! that has it as text fills a partial first. JSON is one such spelling, and
+//! [`encode_json`], [`set_json`] and [`push_json`] are that front door; a
+//! bridge of another format uses the partials underneath it.
 //!
 //! For a component that derives [`facet::Facet`] the entry carries no field list
 //! at all: its own struct fields are the JSON shape, and [`ComponentEntry::new`]
@@ -21,12 +27,95 @@
 use facet::Characteristic;
 use facet::Facet;
 use facet::Partial;
+use facet::{AllocError, ReflectError, ShapeMismatchError};
+use facet_format::{DeserializeError, SerializeError};
+use facet_json::JsonSerializeError;
 
 #[cfg(test)]
 use crate::World;
 use crate::{DynamicBundle, Entity, EntityAccessError, Scope};
 
-/// One component the JSON bridge can address.
+/// Why the registry could not address a component.
+///
+/// A lookup fails for its own reason -- an unknown name, a handle the scope
+/// cannot reach, a value that will not fit its shape -- so each case keeps the
+/// handle, the component name and the underlying error rather than flattening
+/// them into one line of text.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ComponentError {
+    /// No submitted entry answers to this name.
+    #[error("unknown component {name:?}; known components: {}", .known.join(", "))]
+    Unknown {
+        /// The name that was looked up.
+        name: String,
+        /// The bare names that are submitted.
+        known: Vec<&'static str>,
+    },
+
+    /// The entity does not carry the component, or this scope cannot reach it.
+    #[error("entity {entity:?} has no {component} component: {source}")]
+    Missing {
+        /// The handle that was looked up.
+        entity: Entity,
+        /// The component that was asked for.
+        component: &'static str,
+        /// Why the lookup was refused: a dead handle, one out of the scope's
+        /// reach, or one whose archetype lacks the component.
+        source: EntityAccessError,
+    },
+
+    /// The component is written by the world, so setting it alone would leave
+    /// two sources of truth disagreeing.
+    #[error("{component} is written by the world, not set directly: link the entity to move it")]
+    WorldWritten {
+        /// The component that was asked for.
+        component: &'static str,
+    },
+
+    /// The component is written by the world, so a spawn cannot carry it.
+    #[error(
+        "{component} is written by the world, not by a spawn: pass the scope to the spawn instead"
+    )]
+    WorldWrittenOnSpawn {
+        /// The component that was asked for.
+        component: &'static str,
+    },
+
+    /// The reflection could not lay out a value for the component.
+    #[error(transparent)]
+    Allocate(#[from] AllocError),
+
+    /// A partial value was navigated or built wrongly.
+    #[error(transparent)]
+    Reflect(#[from] ReflectError),
+
+    /// The built value was not the component it was built as.
+    #[error(transparent)]
+    Materialize(#[from] ShapeMismatchError),
+
+    /// The component could not be written as JSON.
+    #[error("{component} cannot be written as JSON: {}", describe(.source))]
+    Encode {
+        /// The component that was asked for.
+        component: &'static str,
+        /// Why the serializer gave up.
+        source: SerializeError<JsonSerializeError>,
+    },
+
+    /// The text could not be read into the component.
+    #[error("{component} cannot be read from JSON: {source}")]
+    Decode {
+        /// The component that was asked for.
+        component: &'static str,
+        /// Where in the text the read gave up, and why. Boxed: the deserializer
+        /// error is large enough that every result carrying one would grow with
+        /// it.
+        source: Box<DeserializeError>,
+    },
+}
+
+/// One component a bridge can address.
 ///
 /// Build one with [ComponentEntry::new] and submit it with
 /// `inventory::submit!`. The constructor is `const`, so a submission is a
@@ -38,12 +127,18 @@ pub struct ComponentEntry {
     /// The module the type is defined in, which with the name addresses the
     /// component too and tells two same-named types apart.
     module_path: Option<&'static str>,
-    /// The component's JSON text, or a message saying why it could not be read.
-    encode: fn(&Scope<'_>, Entity) -> Result<String, String>,
-    /// Overwrite the component from JSON text, or a message saying why not.
-    set: fn(&Scope<'_>, Entity, &str) -> Result<(), String>,
-    /// Push a component decoded from JSON text into a builder.
-    push: fn(&mut DynamicBundle, &str) -> Result<(), String>,
+    /// The component's value as JSON text, or why it could not be read.
+    encode_json: fn(&Scope<'_>, Entity) -> Result<String, ComponentError>,
+    /// A partial value over the component's [Default], or over nothing when it
+    /// has none.
+    default_partial: fn() -> Result<Partial<'static, false>, ComponentError>,
+    /// A partial value over the entity's current component, or why it cannot be
+    /// read.
+    current_partial: fn(&Scope<'_>, Entity) -> Result<Partial<'static, false>, ComponentError>,
+    /// Overwrite the component with the value a partial holds.
+    set: fn(&Scope<'_>, Entity, Partial<'static, false>) -> Result<(), ComponentError>,
+    /// Push the value a partial holds into a builder.
+    push: fn(&mut DynamicBundle, Partial<'static, false>) -> Result<(), ComponentError>,
     /// Whether a spawn may carry the component, as opposed to one the world
     /// itself writes.
     spawnable: bool,
@@ -62,7 +157,9 @@ impl ComponentEntry {
         Self {
             name: C::SHAPE.type_identifier,
             module_path: C::SHAPE.module_path,
-            encode: encode_component::<C>,
+            encode_json: encode_json_component::<C>,
+            default_partial: default_partial_component::<C>,
+            current_partial: current_partial_component::<C>,
             set: set_component::<C>,
             push: push_component::<C>,
             spawnable: true,
@@ -80,7 +177,9 @@ impl ComponentEntry {
         Self {
             name: <crate::ScopeOf as Facet<'static>>::SHAPE.type_identifier,
             module_path: <crate::ScopeOf as Facet<'static>>::SHAPE.module_path,
-            encode: encode_component::<crate::ScopeOf>,
+            encode_json: encode_json_component::<crate::ScopeOf>,
+            default_partial: default_partial_component::<crate::ScopeOf>,
+            current_partial: current_partial_component::<crate::ScopeOf>,
             set: set_world_written::<crate::ScopeOf>,
             push: push_world_written::<crate::ScopeOf>,
             spawnable: false,
@@ -119,13 +218,12 @@ pub fn contains(name: &str) -> bool {
     find(name).is_some()
 }
 
-/// The entry a name addresses, or a message naming the ones that exist.
-pub fn entry(name: &str) -> Result<&'static ComponentEntry, String> {
-    find(name).ok_or_else(|| {
-        format!(
-            "unknown component {name:?}; known components: {}",
-            names().collect::<Vec<_>>().join(", ")
-        )
+/// The entry a name addresses, or [ComponentError::Unknown] naming the ones
+/// that exist.
+pub fn entry(name: &str) -> Result<&'static ComponentEntry, ComponentError> {
+    find(name).ok_or_else(|| ComponentError::Unknown {
+        name: name.to_owned(),
+        known: names().collect(),
     })
 }
 
@@ -139,117 +237,202 @@ fn find(name: &str) -> Option<&'static ComponentEntry> {
     })
 }
 
-/// Encode entity's name component, or a message if either is missing.
-pub fn encode(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<String, String> {
-    (entry(name)?.encode)(scope, entity)
+/// Entity's name component as JSON text, or why either is missing.
+pub fn encode_json(
+    scope: &Scope<'_>,
+    entity: Entity,
+    name: &str,
+) -> Result<String, ComponentError> {
+    (entry(name)?.encode_json)(scope, entity)
 }
 
 /// Overwrite entity's name component from JSON text.
-pub fn set(scope: &Scope<'_>, entity: Entity, name: &str, patch: &str) -> Result<(), String> {
-    (entry(name)?.set)(scope, entity, patch)
+pub fn set_json(
+    scope: &Scope<'_>,
+    entity: Entity,
+    name: &str,
+    patch: &str,
+) -> Result<(), ComponentError> {
+    let entry = entry(name)?;
+    let partial = fill((entry.current_partial)(scope, entity)?, patch, entry.name)?;
+    (entry.set)(scope, entity, partial)
 }
 
 /// Push a name component decoded from JSON text into builder.
-pub fn push(builder: &mut DynamicBundle, name: &str, patch: &str) -> Result<(), String> {
-    (entry(name)?.push)(builder, patch)
+pub fn push_json(
+    builder: &mut DynamicBundle,
+    name: &str,
+    patch: &str,
+) -> Result<(), ComponentError> {
+    let entry = entry(name)?;
+    let partial = fill((entry.default_partial)()?, patch, entry.name)?;
+    (entry.push)(builder, partial)
+}
+
+/// A partial value over the named component's [Default], ready to be filled and
+/// handed to [push].
+///
+/// A component with a [Default] keeps it in the fields a fill leaves alone,
+/// while one without has to name every field. Which of the two applies is read
+/// from the reflection, so a component that gains a [Default] starts merging
+/// over it without the submission changing.
+pub fn default_partial(name: &str) -> Result<Partial<'static, false>, ComponentError> {
+    (entry(name)?.default_partial)()
+}
+
+/// A partial value over the entity's current component, ready to be filled and
+/// handed back to [set].
+///
+/// The fields a fill leaves alone keep the value the entity holds, which is what
+/// setting one property at a time means.
+pub fn current_partial(
+    scope: &Scope<'_>,
+    entity: Entity,
+    name: &str,
+) -> Result<Partial<'static, false>, ComponentError> {
+    (entry(name)?.current_partial)(scope, entity)
+}
+
+/// Overwrite entity's name component with the value `partial` holds.
+pub fn set(
+    scope: &Scope<'_>,
+    entity: Entity,
+    name: &str,
+    partial: Partial<'static, false>,
+) -> Result<(), ComponentError> {
+    (entry(name)?.set)(scope, entity, partial)
+}
+
+/// Push the name component, taken from `partial`, into builder.
+pub fn push(
+    builder: &mut DynamicBundle,
+    name: &str,
+    partial: Partial<'static, false>,
+) -> Result<(), ComponentError> {
+    (entry(name)?.push)(builder, partial)
+}
+
+/// The partial a JSON patch produces over `partial`.
+fn fill(
+    partial: Partial<'static, false>,
+    patch: &str,
+    component: &'static str,
+) -> Result<Partial<'static, false>, ComponentError> {
+    facet_json::from_str_into(patch, partial).map_err(|source| ComponentError::Decode {
+        component,
+        source: Box::new(source),
+    })
 }
 
 /// A value as JSON text, through the reflection it derives.
-fn to_json<C: Facet<'static>>(value: &C) -> Result<String, String> {
-    facet_json::to_string(value).map_err(|error| error.to_string())
+fn to_json<C: Facet<'static>>(value: &C) -> Result<String, ComponentError> {
+    facet_json::to_string(value).map_err(|source| ComponentError::Encode {
+        component: C::SHAPE.type_identifier,
+        source,
+    })
 }
 
-fn encode_component<C: Facet<'static>>(
+fn encode_json_component<C: Facet<'static>>(
     scope: &Scope<'_>,
     entity: Entity,
-) -> Result<String, String> {
+) -> Result<String, ComponentError> {
     let component = scope
         .query_one::<&C>(entity)
         .map_err(|error| missing::<C>(entity, error))?;
     to_json(&*component)
 }
 
-fn set_component<C: Facet<'static> + Clone>(
+/// A partial over a fresh C, seeded with C's [Default] when it has one.
+fn default_partial_component<C: Facet<'static>>() -> Result<Partial<'static, false>, ComponentError>
+{
+    let partial = Partial::alloc_owned::<C>()?;
+    // A C that is Default merges a fill over its own default, so a spawn may
+    // name only the fields that matter. The reflection says whether C has one,
+    // which keeps this a runtime question rather than a bound on C.
+    if C::SHAPE.is(Characteristic::Default) {
+        Ok(partial.set_default()?)
+    } else {
+        Ok(partial)
+    }
+}
+
+/// A partial over the entity's current C, seeded with a copy of it.
+fn current_partial_component<C: Facet<'static> + Clone>(
     scope: &Scope<'_>,
     entity: Entity,
-    patch: &str,
-) -> Result<(), String> {
-    // Seed the new value with the one the entity holds, then let the patch
-    // overwrite the fields it names: a patch that names some fields keeps the
-    // rest, which is what setting one property at a time means.
+) -> Result<Partial<'static, false>, ComponentError> {
     let current = scope
         .query_one::<&C>(entity)
         .map(|component| (*component).clone())
         .map_err(|error| missing::<C>(entity, error))?;
-    let value: C = apply(current, patch)?;
-    scope
+    let partial = Partial::alloc_owned::<C>()?;
+    Ok(partial.set(current)?)
+}
+
+fn set_component<C: Facet<'static>>(
+    scope: &Scope<'_>,
+    entity: Entity,
+    partial: Partial<'static, false>,
+) -> Result<(), ComponentError> {
+    let mut component = scope
         .query_one::<&mut C>(entity)
-        .map(|mut component| *component = value)
-        .map_err(|error| missing::<C>(entity, error))
+        .map_err(|error| missing::<C>(entity, error))?;
+    *component = materialize(partial)?;
+    Ok(())
 }
 
-/// The value a patch produces over `base`.
-fn apply<C: Facet<'static> + Clone>(base: C, patch: &str) -> Result<C, String> {
-    let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
-    let partial = partial.set(base).map_err(|error| error.to_string())?;
-    let partial = facet_json::from_str_into(patch, partial).map_err(|error| error.to_string())?;
-    materialize(partial)
-}
-
-fn push_component<C: Facet<'static> + Clone>(
+fn push_component<C: Facet<'static>>(
     builder: &mut DynamicBundle,
-    patch: &str,
-) -> Result<(), String> {
-    let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
-    // A C that is Default merges the patch over its own default, so a spawn may
-    // name only the fields that matter. The reflection says whether C has one,
-    // which keeps this a runtime question rather than a bound on C.
-    let partial = if C::SHAPE.is(Characteristic::Default) {
-        partial.set_default().map_err(|error| error.to_string())?
-    } else {
-        partial
-    };
-    let partial = facet_json::from_str_into(patch, partial).map_err(|error| error.to_string())?;
+    partial: Partial<'static, false>,
+) -> Result<(), ComponentError> {
     builder.push_component(materialize::<C>(partial)?);
     Ok(())
 }
 
 fn set_world_written<C: Facet<'static>>(
-    _view: &Scope<'_>,
+    _scope: &Scope<'_>,
     _entity: Entity,
-    _patch: &str,
-) -> Result<(), String> {
+    _partial: Partial<'static, false>,
+) -> Result<(), ComponentError> {
     // Writing the component alone would leave the scope index pointing at the
     // old parent, so the two sources of truth would disagree. The world moves
     // an entity with `link` instead.
-    Err(format!(
-        "{} is written by the world, not set directly: link the entity to move it",
-        C::SHAPE.type_identifier,
-    ))
+    Err(ComponentError::WorldWritten {
+        component: C::SHAPE.type_identifier,
+    })
 }
 
 fn push_world_written<C: Facet<'static>>(
     _builder: &mut DynamicBundle,
-    _patch: &str,
-) -> Result<(), String> {
-    Err(format!(
-        "{} is written by the world, not by a spawn: pass the scope to the spawn instead",
-        C::SHAPE.type_identifier,
-    ))
+    _partial: Partial<'static, false>,
+) -> Result<(), ComponentError> {
+    Err(ComponentError::WorldWrittenOnSpawn {
+        component: C::SHAPE.type_identifier,
+    })
 }
 
-fn materialize<C: Facet<'static>>(partial: Partial<'static, false>) -> Result<C, String> {
-    let heap = partial.build().map_err(|error| error.to_string())?;
-    heap.materialize::<C>().map_err(|error| error.to_string())
+fn materialize<C: Facet<'static>>(partial: Partial<'static, false>) -> Result<C, ComponentError> {
+    let heap = partial.build()?;
+    Ok(heap.materialize::<C>()?)
 }
 
 /// Says which component was asked for and why the lookup failed: the handle
 /// may be dead or out of the scope's reach, and each has its own reply.
-fn missing<C: Facet<'static>>(entity: Entity, error: EntityAccessError) -> String {
-    format!(
-        "entity {entity:?} has no {} component: {error}",
-        C::SHAPE.type_identifier
-    )
+fn missing<C: Facet<'static>>(entity: Entity, error: EntityAccessError) -> ComponentError {
+    ComponentError::Missing {
+        entity,
+        component: C::SHAPE.type_identifier,
+        source: error,
+    }
+}
+
+/// The backend's own message, which [SerializeError]'s [Display](core::fmt::Display)
+/// leaves out of the `Backend` variant.
+fn describe(error: &SerializeError<JsonSerializeError>) -> String {
+    match error {
+        SerializeError::Backend(backend) => backend.to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -286,13 +469,13 @@ mod tests {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(bundle![Position::default()]);
 
-        set(&world.root_scope(), entity, "Position", r#"{"x":1.0}"#)
+        set_json(&world.root_scope(), entity, "Position", r#"{"x":1.0}"#)
             .expect("a partial value is accepted");
 
         // The fields the patch did not name keep their current value, which is
         // the whole point of setting one property at a time.
         let encoded =
-            encode(&world.root_scope(), entity, "Position").expect("the component encodes");
+            encode_json(&world.root_scope(), entity, "Position").expect("the component encodes");
         let value: Position = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.x, 1.0);
         assert_eq!(value.y, 0.0);
@@ -317,11 +500,11 @@ mod tests {
     #[test]
     fn spawning_merges_over_the_default() {
         let mut builder = DynamicBundle::new().named("reflect test");
-        push(&mut builder, "Position", r#"{"x":4.0}"#).expect("a partial value is accepted");
+        push_json(&mut builder, "Position", r#"{"x":4.0}"#).expect("a partial value is accepted");
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(builder);
-        let encoded =
-            encode(&world.root_scope(), entity, "Position").expect("the spawned component encodes");
+        let encoded = encode_json(&world.root_scope(), entity, "Position")
+            .expect("the spawned component encodes");
         let value: Position = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.x, 4.0);
         assert_eq!(value.y, 0.0);
@@ -333,17 +516,39 @@ mod tests {
     #[test]
     fn a_component_without_a_default_must_name_every_field() {
         let mut builder = DynamicBundle::new().named("reflect test");
-        push(&mut builder, "Offset", r#"{"distance":4.0}"#).expect("a whole value is accepted");
+        push_json(&mut builder, "Offset", r#"{"distance":4.0}"#)
+            .expect("a whole value is accepted");
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(builder);
-        let encoded = encode(&world.root_scope(), entity, "Offset").expect("it encodes");
+        let encoded = encode_json(&world.root_scope(), entity, "Offset").expect("it encodes");
         let value: Offset = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.distance, 4.0);
 
         let mut builder = DynamicBundle::new().named("reflect test");
         let error =
-            push(&mut builder, "Offset", "{}").expect_err("there is no default to merge over");
-        assert!(error.contains("distance"), "{error}");
+            push_json(&mut builder, "Offset", "{}").expect_err("there is no default to merge over");
+        assert!(error.to_string().contains("distance"), "{error}");
+    }
+
+    /// A caller that already holds a component in reflection form writes it
+    /// without spelling it out: the entry takes the partial itself, and text is
+    /// only one of the ways to fill one.
+    #[test]
+    fn a_partial_is_written_without_going_through_text() {
+        let mut world = World::new();
+        let entity = world.root_scope_mut().spawn(bundle![Position::default()]);
+
+        let partial = current_partial(&world.root_scope(), entity, "Position")
+            .expect("the entity carries the component");
+        let partial = partial.set_field("y", 2.0_f32).expect("y is a field");
+        set(&world.root_scope(), entity, "Position", partial).expect("the partial is written");
+
+        let value = world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .expect("the component is there");
+        assert_eq!(value.x, 0.0);
+        assert_eq!(value.y, 2.0);
     }
 
     /// A component that is not submitted is reported, and the message names the
@@ -351,8 +556,10 @@ mod tests {
     #[test]
     fn an_unknown_component_names_the_known_ones() {
         let error = entry("Nope").expect_err("an unknown component is refused");
-        assert!(error.contains("Nope"), "{error}");
-        assert!(error.contains("Position"), "{error}");
+        assert!(matches!(error, ComponentError::Unknown { .. }), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("Nope"), "{message}");
+        assert!(message.contains("Position"), "{message}");
     }
 
     /// A component the entity does not carry is reported rather than encoded as
@@ -361,9 +568,11 @@ mod tests {
     fn a_component_the_entity_lacks_is_reported() {
         let world = World::new();
         let entity = Entity::from_raw(0, 0);
-        let error =
-            encode(&world.root_scope(), entity, "Position").expect_err("the entity has nothing");
-        assert!(error.contains("has no Position"), "{error}");
+        let error = encode_json(&world.root_scope(), entity, "Position")
+            .expect_err("the entity has nothing");
+        assert!(matches!(error, ComponentError::Missing { .. }), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("has no Position"), "{message}");
     }
 
     /// The reason the access was refused travels with the message, so a caller
@@ -377,13 +586,49 @@ mod tests {
         let dead = world.root_scope_mut().spawn(bundle![Position::default()]);
         world.root_scope_mut().despawn(dead).unwrap();
 
-        let hidden = encode(&world.scope(scene).unwrap(), outside, "Position")
+        let hidden = encode_json(&world.scope(scene).unwrap(), outside, "Position")
             .expect_err("the scene cannot see it");
-        assert!(hidden.contains("is not visible from"), "{hidden}");
-        assert!(hidden.contains("Position"), "{hidden}");
+        assert!(
+            matches!(
+                hidden,
+                ComponentError::Missing {
+                    source: EntityAccessError::NotVisible { .. },
+                    ..
+                }
+            ),
+            "{hidden}"
+        );
+        let message = hidden.to_string();
+        assert!(message.contains("is not visible from"), "{message}");
+        assert!(message.contains("Position"), "{message}");
 
-        let gone = encode(&world.root_scope(), dead, "Position").expect_err("it is gone");
-        assert!(gone.contains("names no live entity"), "{gone}");
+        let gone = encode_json(&world.root_scope(), dead, "Position").expect_err("it is gone");
+        assert!(
+            matches!(
+                gone,
+                ComponentError::Missing {
+                    source: EntityAccessError::NotAlive { .. },
+                    ..
+                }
+            ),
+            "{gone}"
+        );
+        assert!(gone.to_string().contains("names no live entity"), "{gone}");
+    }
+
+    /// A patch that does not fit the component says which component and why,
+    /// rather than only that something went wrong.
+    #[test]
+    fn a_bad_patch_names_the_component_and_the_field() {
+        let mut world = World::new();
+        let entity = world.root_scope_mut().spawn(bundle![Position::default()]);
+
+        let error = set_json(&world.root_scope(), entity, "Position", r#"{"x":"one"}"#)
+            .expect_err("a number is not a string");
+        assert!(matches!(error, ComponentError::Decode { .. }), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("Position"), "{message}");
+        assert!(message.contains("x"), "{message}");
     }
 
     /// Every submitted name is distinct, so addressing one component by name is
