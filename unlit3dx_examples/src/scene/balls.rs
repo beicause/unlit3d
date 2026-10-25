@@ -27,7 +27,7 @@ use super::order::{ScenePhase, TICK_BALLS, advancing};
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance, look};
 use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
-use crate::render::{BallInstance, despawn_instances_job, show, sweep};
+use crate::render::{BallInstance, RenderEntity, despawn_instances_job, show, sweep};
 
 /// How long between automatic ball drops, in seconds.
 const SPAWN_PERIOD: f64 = 0.7;
@@ -82,7 +82,7 @@ pub struct Ball {
     /// Which color it is, an index into `BALL_COLORS`.
     pub color: usize,
     /// The render instance the render world created for it.
-    pub instance: Option<Entity>,
+    pub instance: Option<RenderEntity>,
     /// The body the physics world spawned for it.
     pub body: Option<RigidBodyHandle>,
     /// How far the ball has come: see [`BallPhase`].
@@ -100,7 +100,7 @@ struct ShowCandidate {
     /// The color, an index into `BALL_COLORS`.
     color: usize,
     /// The instance to point at the assets and show.
-    instance: Entity,
+    instance: RenderEntity,
     /// The transform to show it at.
     transform: Transform,
 }
@@ -114,7 +114,7 @@ enum Waiting {
     ///
     /// The instance travels with the decision, so a ball that reaches this
     /// branch is known to have both halves and needs no second look.
-    Show(Entity),
+    Show(RenderEntity),
     /// It waited too long, or a world that owed a half ended: reclaim it.
     Reclaim,
 }
@@ -136,7 +136,7 @@ pub struct Balls {
     bodies: Pending<Entity, RigidBodyHandle>,
     /// The instances the render world owes: one request per ball, asked under
     /// the ball it is for.
-    instances: Pending<Entity, Entity>,
+    instances: Pending<Entity, RenderEntity>,
     /// The shows the render world owes: one request per ball, asked under the
     /// ball whose instance is being shown. What it answers is whether the
     /// instance really wears its assets.
@@ -146,7 +146,7 @@ pub struct Balls {
     retired: Pending<(), Vec<BallInstance>>,
     /// Where the answers land, reused across ticks.
     settled_bodies: Vec<(Entity, Settled<RigidBodyHandle>)>,
-    settled_instances: Vec<(Entity, Settled<Entity>)>,
+    settled_instances: Vec<(Entity, Settled<RenderEntity>)>,
     settled_shows: Vec<(Entity, Settled<bool>)>,
     settled_retired: Vec<((), Settled<Vec<BallInstance>>)>,
     /// The balls a request was given up on this tick, and has to reclaim.
@@ -177,7 +177,7 @@ pub struct Balls {
     /// a full queue only delays the cleanup.
     despawns: Vec<RigidBodyHandle>,
     /// The instances that have nobody left to stand for, kept the same way.
-    orphans: Vec<Entity>,
+    orphans: Vec<RenderEntity>,
     /// The xorshift state for spawn placement.
     rng: u64,
 }
@@ -783,7 +783,11 @@ fn waiting(ball: &Ball, entity: Entity, expired: &[Entity], stale: bool) -> Wait
 /// The poses are the one buffer a tick does not keep: the job that carries
 /// them runs once in the render world and answers nothing, so the `Vec`
 /// moved into it never comes back. Everything else a tick reuses is a field.
-fn live_poses(scope: &Scope<'_>, snapshot: &GamePhysics, poses: &mut Vec<(Entity, Transform)>) {
+fn live_poses(
+    scope: &Scope<'_>,
+    snapshot: &GamePhysics,
+    poses: &mut Vec<(RenderEntity, Transform)>,
+) {
     for ball in scope.query::<&Ball>() {
         if ball.phase == BallPhase::Waiting {
             continue;
@@ -811,7 +815,7 @@ mod tests {
     use super::*;
     use glam::Quat;
 
-    fn ball(instance: Option<Entity>, body: Option<RigidBodyHandle>, shown: bool) -> Ball {
+    fn ball(instance: Option<RenderEntity>, body: Option<RigidBodyHandle>, shown: bool) -> Ball {
         Ball {
             kind: 0,
             color: 0,
@@ -834,7 +838,7 @@ mod tests {
         let mut world = World::new();
         let handle = RigidBodyHandle::from_raw_parts(7, 0);
         let waiting_body = RigidBodyHandle::from_raw_parts(8, 0);
-        let instance = Entity::from_raw(10, 0);
+        let instance = RenderEntity(Entity::from_raw(10, 0));
         {
             let mut scope = world.root_scope_mut();
             scope.spawn(bundle![ball(Some(instance), Some(handle), true)]);
@@ -842,11 +846,15 @@ mod tests {
         {
             let mut scope = world.root_scope_mut();
             scope.spawn(bundle![ball(
-                Some(Entity::from_raw(11, 0)),
+                Some(RenderEntity(Entity::from_raw(11, 0))),
                 Some(waiting_body),
                 false
             )]);
-            scope.spawn(bundle![ball(Some(Entity::from_raw(12, 0)), None, true)]);
+            scope.spawn(bundle![ball(
+                Some(RenderEntity(Entity::from_raw(12, 0))),
+                None,
+                true
+            )]);
         }
 
         let mut snapshot = GamePhysics::default();
@@ -871,12 +879,16 @@ mod tests {
     fn a_pose_names_the_instance_not_the_ball() {
         let mut world = World::new();
         let handle = RigidBodyHandle::from_raw_parts(7, 0);
-        let instance = Entity::from_raw(10, 0);
+        let instance = RenderEntity(Entity::from_raw(10, 0));
         let ball = {
             let mut scope = world.root_scope_mut();
             scope.spawn(bundle![ball(Some(instance), Some(handle), true)])
         };
-        assert_ne!(ball, instance, "the fixture must not let them coincide");
+        assert_ne!(
+            RenderEntity(ball),
+            instance,
+            "the fixture must not let them coincide"
+        );
 
         let mut snapshot = GamePhysics::default();
         snapshot
@@ -888,7 +900,11 @@ mod tests {
 
         assert_eq!(poses.len(), 1);
         assert_eq!(poses[0].0, instance, "the pose names the render instance");
-        assert_ne!(poses[0].0, ball, "the pose must not name the ball entity");
+        assert_ne!(
+            poses[0].0,
+            RenderEntity(ball),
+            "the pose must not name the ball entity"
+        );
     }
 
     /// A ball waits while a half is missing, is shown once both are in, and is
@@ -896,7 +912,7 @@ mod tests {
     #[test]
     fn a_ball_waits_shows_and_is_reclaimed() {
         let entity = Entity::from_raw(1, 0);
-        let instance = Entity::from_raw(10, 0);
+        let instance = RenderEntity(Entity::from_raw(10, 0));
         let body = RigidBodyHandle::from_raw_parts(7, 0);
 
         let missing_instance = ball(None, Some(body), false);
@@ -932,7 +948,7 @@ mod tests {
     #[test]
     fn a_shown_ball_is_only_taken_by_its_world_ending() {
         let entity = Entity::from_raw(1, 0);
-        let instance = Entity::from_raw(10, 0);
+        let instance = RenderEntity(Entity::from_raw(10, 0));
         let body = RigidBodyHandle::from_raw_parts(7, 0);
         let shown = ball(Some(instance), Some(body), true);
         assert_eq!(waiting(&shown, entity, &[], false), Waiting::Wait);
@@ -999,8 +1015,8 @@ mod tests {
         };
         state.ready = true;
         state.loaded = Some(SceneAssets {
-            meshes: vec![Entity::from_raw(1, 0)],
-            materials: vec![Entity::from_raw(2, 0); BALL_COLORS.len()],
+            meshes: vec![RenderEntity(Entity::from_raw(1, 0))],
+            materials: vec![RenderEntity(Entity::from_raw(2, 0)); BALL_COLORS.len()],
         });
     }
 
@@ -1012,7 +1028,7 @@ mod tests {
         let mut world = World::new();
         let (scene, render, physics) = stalled_scene();
         ready_scene_state(&mut world, &scene, &render);
-        let instance = Entity::from_raw(10, 0);
+        let instance = RenderEntity(Entity::from_raw(10, 0));
         let body = RigidBodyHandle::from_raw_parts(7, 0);
         let entity = world
             .root_scope_mut()
@@ -1061,7 +1077,7 @@ mod tests {
         let mut world = World::new();
         let (scene, render, physics) = stalled_scene();
         ready_scene_state(&mut world, &scene, &render);
-        let instance = Entity::from_raw(10, 0);
+        let instance = RenderEntity(Entity::from_raw(10, 0));
         let body = RigidBodyHandle::from_raw_parts(7, 0);
         let gone = world
             .root_scope_mut()

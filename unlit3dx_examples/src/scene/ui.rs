@@ -20,6 +20,7 @@ use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
 
 use super::{PanelSlots, SceneTracks, Track, clear_balls_in, drop_ball_in};
+use crate::render::RenderEntity;
 
 /// What one of the panel's two track rows shows.
 ///
@@ -173,12 +174,12 @@ pub fn mount_controls(world: &mut World) {
 ///
 /// `pass` is the pass the source draws into: a pass records the sources below
 /// it, so a source spawned anywhere else would never reach the frame.
-pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job {
+pub fn control_panel_job(panels: PanelSlots, pass: RenderEntity) -> Job {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.publish_target(panels.target);
         world
-            .scope_mut(pass)
+            .scope_mut(pass.0)
             .expect("the scene's pass is alive")
             .spawn(bundle![Source::new(source)]);
     })

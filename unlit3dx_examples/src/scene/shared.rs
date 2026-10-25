@@ -6,7 +6,7 @@
 //! despawned by the render world, so nothing is kept hidden for reuse.
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Bundle, DynamicBundle, Entity, World};
+use unlit_ecs::{Bundle, DynamicBundle, World};
 use unlit3d::components::Transform;
 use unlit3dx::prelude::*;
 
@@ -14,19 +14,23 @@ use super::HIDDEN_POSITION;
 use super::Scene;
 use super::order::{ScenePhase, TICK_SCENE, advancing};
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
-use crate::render::{allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler};
+use crate::render::{
+    RenderEntity, allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler,
+};
 
 /// The render entities a shape is built from, in kind-major order.
 ///
 /// The build job allocates them in the render world and publishes them here;
-/// the gameplay world names them when it asks for an instance.
+/// the gameplay world names them when it asks for an instance. They are
+/// [`RenderEntity`]s: the world that built them and the world that names
+/// them are two, so a bare entity is not enough to say which.
 #[derive(Clone, Debug)]
 pub struct SceneAssets {
     /// One mesh per [`SHAPE_KINDS`] entry, in that order.
-    pub meshes: Vec<Entity>,
+    pub meshes: Vec<RenderEntity>,
     /// One material per shape kind and color, kind-major:
     /// `kind * BALL_COLORS.len() + color`.
-    pub materials: Vec<Entity>,
+    pub materials: Vec<RenderEntity>,
 }
 
 /// The scene's assets, on their own entity in the gameplay world.
@@ -180,7 +184,10 @@ fn build_assets(world: &mut World) -> SceneAssets {
 /// Spawn one hidden instance wearing the assets it names, and answer it.
 ///
 /// It stays hidden until its body is ready and the show puts it in place.
-pub fn create_instance(mesh: Entity, material: Entity) -> impl FnOnce(&mut World) -> Entity {
+pub fn create_instance(
+    mesh: RenderEntity,
+    material: RenderEntity,
+) -> impl FnOnce(&mut World) -> RenderEntity {
     move |world: &mut World| {
         hidden_instance_of(
             world,

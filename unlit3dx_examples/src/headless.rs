@@ -118,10 +118,10 @@ pub fn run(
             .expect("the render sub-world exists");
         let context = nested
             .root_scope()
-            .query_one::<&Renderer>(renderer)
+            .query_one::<&Renderer>(renderer.0)
             .expect("the renderer is a resource entity")
             .context();
-        bind_offscreen(&nested, context, pass, device, config.size)
+        bind_offscreen(&nested, context, pass.0, device, config.size)
     };
 
     let mut output = HeadlessOutput {
@@ -182,7 +182,7 @@ pub fn run(
             dispatch_frame(&mut nested, &mut frame);
             let _ = nested
                 .root_scope()
-                .query_one::<&mut Renderer>(renderer)
+                .query_one::<&mut Renderer>(renderer.0)
                 .map(|mut r| {
                     r.render(&nested);
                 });
