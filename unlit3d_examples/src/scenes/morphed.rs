@@ -18,7 +18,7 @@ const FRAMES: usize = 6;
 /// The scene: a cube changing shape frame by frame, each stored as its own
 /// snapshot.
 pub static SCENE: SceneDef = SceneDef {
-    id: "ecs_morphed",
+    id: "morphed",
     title: "Morphed cube",
     description: "a cube blended by two morph targets over six frames",
     size: TEST_SIZE,
@@ -141,7 +141,7 @@ fn build(
             );
         }),
         snapshot: Box::new(|frame| {
-            (frame < FRAMES as u32).then(|| format!("ecs_morphed/frame_{frame:02}.webp"))
+            (frame < FRAMES as u32).then(|| format!("morphed/frame_{frame:02}.webp"))
         }),
     }
 }

@@ -25,19 +25,19 @@ Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
   ui_only                a rich egui panel, no mesh source and no camera
   mesh_and_ui            a cube with the rich egui panel over it, one pass
-  ecs_animated           a grid of cubes filling, moving and recycling over eight frames
-  ecs_skinned            a cube bent by a two-joint skin over six frames
-  ecs_morphed            a cube blended by two morph targets over six frames
+  animated               a grid of cubes filling, moving and recycling over eight frames
+  skinned                a cube bent by a two-joint skin over six frames
+  morphed                a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
-  transparent_zsorted    translucent panes composited back to front over opaque cubes
-  custom_pipeline        a caller-owned sky and particle family, eight frames of an orbit
+  transparent            translucent panes composited back to front over opaque cubes
+  custom_pipeline        a caller-registered sky family and particle family
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
 frame sequence, so the stored snapshots still verify it. `mesh_topologies` and
-`transparent_zsorted` are the exceptions: they are not ported from a test but
+`transparent` are the exceptions: they are not ported from a test but
 add the coverage the ported scenes lack — every primitive topology drawn both
 indexed and non-indexed, and overlapping translucent draws whose composite
 depends on both the z-sort and the blend state. `gltf` is the other exception:
@@ -160,7 +160,7 @@ panel's button, checkbox and slider drive the spin, and dragging with the left
 button orbits the camera. A scene can be selected from the command line instead:
 
 ```text
-cargo run -p unlit3d_examples -- --scene ecs_skinned
+cargo run -p unlit3d_examples -- --scene skinned
 ```
 
 To run the same example in a browser — where WebGPU needs a secure context, so

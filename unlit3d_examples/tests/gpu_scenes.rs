@@ -269,51 +269,51 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
     assert_image_snapshot_with_tolerance(snapshot, &bytes, size.0, size.1, LETTERBOX_TOLERANCE);
 }
 
-async fn ecs_animated_matches_its_snapshots() {
+async fn animated_matches_its_snapshots() {
     compare_scene(
         &scenes::animated::SCENE,
         SCENE_TOLERANCE,
         &snapshots![
-            "ecs_animated/frame_00_alloc3_free0_live3.webp",
-            "ecs_animated/frame_01_alloc2_free0_live5.webp",
-            "ecs_animated/frame_02_alloc0_free0_live5.webp",
-            "ecs_animated/frame_03_alloc3_free0_live8.webp",
-            "ecs_animated/frame_04_alloc0_free1_live7.webp",
-            "ecs_animated/frame_05_alloc1_free0_live8.webp",
-            "ecs_animated/frame_06_alloc0_free2_live6.webp",
-            "ecs_animated/frame_07_alloc2_free0_live8.webp",
+            "animated/frame_00_alloc3_free0_live3.webp",
+            "animated/frame_01_alloc2_free0_live5.webp",
+            "animated/frame_02_alloc0_free0_live5.webp",
+            "animated/frame_03_alloc3_free0_live8.webp",
+            "animated/frame_04_alloc0_free1_live7.webp",
+            "animated/frame_05_alloc1_free0_live8.webp",
+            "animated/frame_06_alloc0_free2_live6.webp",
+            "animated/frame_07_alloc2_free0_live8.webp",
         ],
     )
     .await;
 }
 
-async fn ecs_skinned_matches_its_snapshots() {
+async fn skinned_matches_its_snapshots() {
     compare_scene(
         &scenes::skinned::SCENE,
         SCENE_TOLERANCE,
         &snapshots![
-            "ecs_skinned/frame_00.webp",
-            "ecs_skinned/frame_01.webp",
-            "ecs_skinned/frame_02.webp",
-            "ecs_skinned/frame_03.webp",
-            "ecs_skinned/frame_04.webp",
-            "ecs_skinned/frame_05.webp",
+            "skinned/frame_00.webp",
+            "skinned/frame_01.webp",
+            "skinned/frame_02.webp",
+            "skinned/frame_03.webp",
+            "skinned/frame_04.webp",
+            "skinned/frame_05.webp",
         ],
     )
     .await;
 }
 
-async fn ecs_morphed_matches_its_snapshots() {
+async fn morphed_matches_its_snapshots() {
     compare_scene(
         &scenes::morphed::SCENE,
         SCENE_TOLERANCE,
         &snapshots![
-            "ecs_morphed/frame_00.webp",
-            "ecs_morphed/frame_01.webp",
-            "ecs_morphed/frame_02.webp",
-            "ecs_morphed/frame_03.webp",
-            "ecs_morphed/frame_04.webp",
-            "ecs_morphed/frame_05.webp",
+            "morphed/frame_00.webp",
+            "morphed/frame_01.webp",
+            "morphed/frame_02.webp",
+            "morphed/frame_03.webp",
+            "morphed/frame_04.webp",
+            "morphed/frame_05.webp",
         ],
     )
     .await;
@@ -378,11 +378,11 @@ async fn ui_only_matches_its_snapshot() {
     .await;
 }
 
-async fn transparent_zsorted_matches_its_snapshot() {
+async fn transparent_matches_its_snapshot() {
     compare_scene(
         &scenes::transparent::SCENE,
         SCENE_TOLERANCE,
-        &snapshots!["transparent_zsorted.webp"],
+        &snapshots!["transparent.webp"],
     )
     .await;
 }
@@ -487,15 +487,15 @@ async fn the_default_scene_letterboxes_into_a_narrow_target() {
 }
 
 gpu_tests! {
-    ecs_animated_matches_its_snapshots,
-    ecs_skinned_matches_its_snapshots,
-    ecs_morphed_matches_its_snapshots,
+    animated_matches_its_snapshots,
+    skinned_matches_its_snapshots,
+    morphed_matches_its_snapshots,
     instanced_skinned_morph_matches_its_snapshots,
     gltf_matches_its_snapshots,
     spin_cube_matches_its_snapshot,
     mesh_and_ui_matches_its_snapshot,
     ui_only_matches_its_snapshot,
-    transparent_zsorted_matches_its_snapshot,
+    transparent_matches_its_snapshot,
     mesh_topologies_matches_its_snapshot,
     custom_pipeline_matches_its_snapshots,
     custom_pipeline_animates_between_frames,

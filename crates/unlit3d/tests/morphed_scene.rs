@@ -3,7 +3,7 @@
 //! meshes.
 //!
 //! The multi-frame snapshot coverage that used to live here now runs in
-//! `unlit3d_examples` (the `ecs_morphed` scene), whose snapshot test verifies
+//! `unlit3d_examples` (the `morphed` scene), whose snapshot test verifies
 //! the same frames against the stored snapshots.
 
 use crate::common::*;
@@ -68,7 +68,7 @@ async fn mismatched_morph_weight_count_panics() {
             },
         ],
     );
-    gpu.bind_offscreen_target(&world, "test::ecs_morphed_mismatch");
+    gpu.bind_offscreen_target(&world, "test::morphed_mismatch");
     gpu.render(&world);
 }
 
@@ -85,7 +85,7 @@ async fn morphing_without_a_weight_binding_panics() {
 
     gpu.spawn(&mut world, bundle![camera()]);
     gpu.spawn(&mut world, bundle![mesh, UnlitPipeline::new(key)]);
-    gpu.bind_offscreen_target(&world, "test::ecs_morphed_unbound");
+    gpu.bind_offscreen_target(&world, "test::morphed_unbound");
     gpu.render(&world);
 }
 
@@ -125,7 +125,7 @@ async fn meshes_can_share_one_morph_weights() {
             ],
         );
     }
-    let target = gpu.bind_offscreen_target(&world, "test::ecs_morphed_shared");
+    let target = gpu.bind_offscreen_target(&world, "test::morphed_shared");
 
     // Zero weights and a blended pose must render differently: if the source
     // packed one pose per mesh rather than one per instance, the shared entity

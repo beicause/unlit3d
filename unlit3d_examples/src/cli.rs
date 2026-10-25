@@ -157,15 +157,9 @@ mod tests {
 
     #[test]
     fn the_window_options_are_read() {
-        let args = run(&[
-            "--scene",
-            "ecs_skinned",
-            "--size",
-            "320x240",
-            "--list-scenes",
-        ])
-        .expect("the options parse");
-        assert_eq!(args.scene, "ecs_skinned");
+        let args = run(&["--scene", "skinned", "--size", "320x240", "--list-scenes"])
+            .expect("the options parse");
+        assert_eq!(args.scene, "skinned");
         assert_eq!(args.size, Some((320, 240)));
         assert!(args.list_scenes);
         assert!(!args.mcp);

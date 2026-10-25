@@ -157,11 +157,11 @@ macro_rules! snapshot {
 ///
 /// // A scene storing two frames under its own directory.
 /// let frames = snapshots![
-///     "ecs_animated/frame_00_alloc3_free0_live3.webp",
-///     "ecs_animated/frame_01_alloc2_free0_live5.webp",
+///     "animated/frame_00_alloc3_free0_live3.webp",
+///     "animated/frame_01_alloc2_free0_live5.webp",
 /// ];
 /// assert_eq!(frames.len(), 2);
-/// assert_eq!(frames[0].name(), "ecs_animated/frame_00_alloc3_free0_live3.webp");
+/// assert_eq!(frames[0].name(), "animated/frame_00_alloc3_free0_live3.webp");
 /// ```
 #[macro_export]
 macro_rules! snapshots {

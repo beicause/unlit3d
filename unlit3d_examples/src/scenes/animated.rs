@@ -81,7 +81,7 @@ const STEPS: [Step; 8] = [
 /// The scene: a 3x3 grid of cubes that fills, moves and recycles over eight
 /// frames, each stored as its own snapshot.
 pub static SCENE: SceneDef = SceneDef {
-    id: "ecs_animated",
+    id: "animated",
     title: "Animated grid",
     description: "a grid of cubes filling, moving and recycling over eight frames",
     size: TEST_SIZE,
@@ -232,7 +232,7 @@ fn build(
             });
             let step = &STEPS[frame as usize];
             Some(format!(
-                "ecs_animated/frame_{frame:02}_alloc{}_free{}_live{live}.webp",
+                "animated/frame_{frame:02}_alloc{}_free{}_live{live}.webp",
                 step.allocate.len(),
                 step.free.len(),
             ))

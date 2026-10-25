@@ -105,7 +105,7 @@ impl Bundle for Pane {
 
 /// The scene: opaque cubes behind three overlapping translucent panes.
 pub static SCENE: SceneDef = SceneDef {
-    id: "transparent_zsorted",
+    id: "transparent",
     title: "Transparent z-sorted panes",
     description: "translucent panes composited back to front over opaque cubes",
     size: TEST_SIZE,
@@ -256,6 +256,6 @@ fn build(
         }),
         // The first frame is the snapshot; whichever frame is drawn, the
         // picture is the same.
-        snapshot: Box::new(|frame| (frame == 0).then(|| "transparent_zsorted.webp".to_owned())),
+        snapshot: Box::new(|frame| (frame == 0).then(|| "transparent.webp".to_owned())),
     }
 }

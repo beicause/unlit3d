@@ -22,18 +22,18 @@ Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
   ui_only                a rich egui panel, no mesh source and no camera
   mesh_and_ui            a cube with the rich egui panel over it, one pass
-  ecs_animated           a grid of cubes filling, moving and recycling over eight frames
-  ecs_skinned            a cube bent by a two-joint skin over six frames
-  ecs_morphed            a cube blended by two morph targets over six frames
+  animated               a grid of cubes filling, moving and recycling over eight frames
+  skinned                a cube bent by a two-joint skin over six frames
+  morphed                a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
-  transparent_zsorted    translucent panes composited back to front over opaque cubes
-  custom_pipeline        a caller-owned sky and particle family, eight frames of an orbit
+  transparent            translucent panes composited back to front over opaque cubes
+  custom_pipeline        a caller-registered sky family and particle family
 ```
 
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
-能验证它。`mesh_topologies` 与 `transparent_zsorted` 是两个例外：它们并非从测试移植而
+能验证它。`mesh_topologies` 与 `transparent` 是两个例外：它们并非从测试移植而
 来，而是补上移植场景所缺的覆盖——每种图元拓扑各画一次索引与非索引，以及重叠的半透明
 绘制，其合成结果同时取决于 z 排序与混合状态。`gltf` 是另一个例外：它通过 `UnlitGltf`
 绘制 `unlit3d_asset_files/assets` 下的 glTF 文档，因此加载器的蒙皮与形变目标动画是拿
@@ -116,7 +116,7 @@ cargo run -p unlit3d_examples
 旋转，按住左键拖动可以环绕相机。也可以从命令行选场景：
 
 ```text
-cargo run -p unlit3d_examples -- --scene ecs_skinned
+cargo run -p unlit3d_examples -- --scene skinned
 ```
 
 要在浏览器中运行同一个示例——WebGPU 需要安全上下文，因此要用 `localhost` 而不是

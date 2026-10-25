@@ -2,7 +2,7 @@
 //! joint stream and pose binding, and a pose shared by several meshes.
 //!
 //! The multi-frame snapshot coverage that used to live here now runs in
-//! `unlit3d_examples` (the `ecs_skinned` scene), whose snapshot test verifies
+//! `unlit3d_examples` (the `skinned` scene), whose snapshot test verifies
 //! the same frames against the stored snapshots.
 
 use crate::common::*;
@@ -33,7 +33,7 @@ async fn skinning_without_a_pose_binding_panics() {
 
     gpu.spawn(&mut world, bundle![camera()]);
     gpu.spawn(&mut world, bundle![mesh, UnlitPipeline::new(key)]);
-    gpu.bind_offscreen_target(&world, "test::ecs_skinned_unbound");
+    gpu.bind_offscreen_target(&world, "test::skinned_unbound");
     gpu.render(&world);
 }
 
@@ -74,7 +74,7 @@ async fn meshes_can_share_one_skin_pose() {
             SkinBinding { pose: pose_entity },
         ],
     );
-    let target = gpu.bind_offscreen_target(&world, "test::ecs_skinned_shared");
+    let target = gpu.bind_offscreen_target(&world, "test::skinned_shared");
 
     // The rest pose and a bent one must render differently: if the source
     // packed one pose per mesh rather than one per instance, the shared entity

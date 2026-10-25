@@ -19,7 +19,7 @@ const CAMERA_EYE: glam::Vec3 = glam::Vec3::new(0.9, 1.1, 2.6);
 
 /// The scene: a cube bending frame by frame, each stored as its own snapshot.
 pub static SCENE: SceneDef = SceneDef {
-    id: "ecs_skinned",
+    id: "skinned",
     title: "Skinned cube",
     description: "a cube bent by a two-joint skin over six frames",
     size: TEST_SIZE,
@@ -136,7 +136,7 @@ fn build(
             );
         }),
         snapshot: Box::new(|frame| {
-            (frame < FRAMES as u32).then(|| format!("ecs_skinned/frame_{frame:02}.webp"))
+            (frame < FRAMES as u32).then(|| format!("skinned/frame_{frame:02}.webp"))
         }),
     }
 }
