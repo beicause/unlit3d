@@ -6,6 +6,19 @@ description = "Multi-world extension for unlit3d: physics, audio and gameplay wo
 repository.workspace = true
 license.workspace = true
 keywords = ["audio", "ecs", "gamedev", "multithreading", "physics"]
+# The files under tests/ are modules of the one suite binary below rather than
+# targets of their own; see its docs.
+autotests = false
+
+# One binary for the whole integration suite: the files drive the same
+# multi-world stack, so a link per file would repeat it. The required features
+# are those the cases reach -- an audio world, its synthesis and a physics
+# world -- so the binary is skipped whole while any of them is off. No case
+# takes a GPU, so `render` is not required.
+[[test]]
+name = "unlit3dx"
+path = "tests/suite.rs"
+required-features = ["audio", "physics", "synth"]
 
 [dependencies]
 async-channel.workspace = true

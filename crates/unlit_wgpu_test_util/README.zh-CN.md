@@ -18,28 +18,37 @@
 ## 一个测试，两个运行器
 
 一个测试是不带参数、不返回值的 `async fn`；本 crate 的宏把它注册两份：原生平台上它
-在进程里运行，而在 `wasm32-unknown-unknown` 上同一个文件*本身*就变成一个 wasm 模块，
-由浏览器驱动。
+在进程里运行，而在 `wasm32-unknown-unknown` 上整个套件*本身*就变成一个 wasm 模块，由
+浏览器驱动。
 
 由于 wgpu 的 adapter 与 device 请求是异步的，骨架也是异步的。在宿主机上这一点看不
 出来——`block_on` 会把它们驱动到完成。而在浏览器里没有任何东西可以阻塞等待：页面只
 有一个线程，请求要在它必须让出的微任务上兑现，所以测试本身被投递到浏览器自己的任务
 队列上，其结果再通过 `sessionStorage` 报回。
 
-正是这一差异决定了测试文件末尾要有两次宏调用：
+正是这一差异决定了 `gpu_tests!` 出现在每个文件的末尾，而 `gpu_test_main!` 在套件
+根部只出现一次。文件只登记自己持有的测试：
 
 ```rust,ignore
 gpu_tests! {
     renders_a_cube_over_the_clear_color,
     #[should_panic(expected = "morphing without targets")]
 }
-
-gpu_test_main!(all_tests());
 ```
 
-`gpu_tests!` 列出文件中的测试，并把名字旁边的函数体交给它；`gpu_test_main!` 生成运行
-它们的 `main`。原生测试 target 在 `Cargo.toml` 中声明为 `harness = false`，因为要跑的
-是这个列表，而不是 rustc 生成的那个。
+`gpu_tests!` 列出文件中的测试，并把名字旁边的函数体交给它：它展开成 `all_tests()`，
+即该文件那一份注册表。一个 crate 的整个测试套件只有一个 target——各文件是它的模块——
+根部把这些份额拼接起来，并生成运行它们的 `main`：
+
+```rust,ignore
+#[path = "gpu_unlit.rs"]
+mod gpu_unlit;
+
+gpu_test_main!([gpu_unlit::all_tests()].concat());
+```
+
+原生测试 target 在 `Cargo.toml` 中声明为 `harness = false`，因为要跑的是这个列表，
+而不是 rustc 生成的那个。
 
 `#[should_panic]` 在两个运行器上都可用，但浏览器上到达它的方式不同：宿主机捕获
 unwind，而 wasm 的 panic 会让其实例 trap、根本无法捕获——所以骨架安装一个 panic
@@ -126,7 +135,7 @@ web 上则在浏览器中编码后交给测试 runner——它才是拥有文件
 确有意改动渲染结果后，重新生成快照：
 
 ```text
-SNAPSHOT_UPDATE=1 cargo nextest run -p unlit_wgpu
+SNAPSHOT_UPDATE=1 cargo nextest run -p unlit_wgpu --all-features
 git -C unlit3d_asset_files diff   # 提交前先审查
 ```
 

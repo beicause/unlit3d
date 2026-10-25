@@ -643,8 +643,11 @@ staging buffer 上传，而不是逐次调用 `queue.write_buffer`：
 
 ```text
 cargo xtask test     # 整个工作区：nextest 加 doctest
-cargo nextest run -p unlit_wgpu   # 只跑本 crate
+cargo nextest run -p unlit_wgpu --all-features   # 只跑本 crate
 ```
+
+集成测试是一个二进制，它要求 `unlit` 与 `egui`。不带后者跑并不会报错：Cargo 会把整个
+target 跳过，于是 suite 悄无声息地不在这一趟里，只有单元测试报告结果。
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
 SSIMULACRA2 感知指标比较。该目录是指向

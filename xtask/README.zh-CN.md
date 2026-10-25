@@ -29,7 +29,8 @@ clippy 排在前面，因为它的诊断可能让代码树处于 `rustfmt` 会�
 
 clippy 跑三趟，因为每一趟编译的代码集合不同：
 
-1. 工作区加默认 features——平台产物构建时用的组合。
+1. 工作区加默认 features——平台产物构建时用的组合。需要可选功能的集成 suite 不参加
+   这一趟——required features 不满足的 target 会被整体跳过——检查它们的是第 3 趟。
 2. 每个包各自单独、默认 features、只编库目标。点名一个包会去掉整个工作区构建时
    应用的 feature 统一，因此这一趟能抓出某个 crate 自身代码已不再使用的可选
    feature——别的趟都看不见它，因为 `--all-features` 会把该 feature 在那个包里

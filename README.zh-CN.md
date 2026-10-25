@@ -78,7 +78,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_suite.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.zh-CN.md) | `unlit3d_examples` 所绘制的模型，随身带在二进制里：`include_bytes!` 写在 `#[inline(never)]` 的函数体内，这些字节因此不进任何下游的元数据。 |
 | [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.zh-CN.md) | `unlit3dx_examples` 所演奏的音色库，同样随身携带；文件缺失时其 `build.rs` 换上一个空的 stub。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
@@ -118,10 +118,17 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   离屏渲染后回读像素断言，但不与存储图像比较。
 - **快照测试**：把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知比较。低层 API 的
   快照留在 `unlit_wgpu` 的测试里；高层 ECS 场景的快照由
-  [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的 `tests/gpu_scenes.rs` 运行
+  [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的 `tests/gpu_suite.rs` 运行
   （`SNAPSHOT_UPDATE=1` 重新生成），因为它既是示例也是 CI 的渲染回归检查；而
   [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) 的 `tests/gpu_cli.rs` 通过命令行工具的库
   渲染同一个参考 glTF 场景，与同一批快照比较。
+
+每个 crate 的集成测试都是**一个二进制**，而不是每个源文件一个：`tests/` 下的文件是它们
+旁边那个 suite 文件（`gpu_suite.rs`，纯 `libtest` 的测试则为 `suite.rs`）的模块，用
+`#[path]` 引入。它们共用该 crate 的代码，GPU 那侧还共用同一套骨架，因此把它们拆成多个
+target 就意味着同一份代码按文件各链接一次——此前整个工作区有三十个测试二进制，每一个
+都带着同一套运行时。二进制的名字就是 crate 的名字，其 `required-features` 是它的用例
+所需的功能，因此若某个 suite 用到了可选功能，该功能打开时它才会运行。
 
 快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
 中。它被标记为 `update = none`：把本库当作 git 依赖的项目不会去拉取用不到的快照；
@@ -135,19 +142,23 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 
 ```text
 cargo xtask test                 # 整个工作区：先 nextest，再 doctest
-cargo nextest run -p unlit_wgpu  # 单个 crate
+cargo nextest run -p unlit_wgpu --all-features  # 单个 crate
 cargo nextest run -E 'test(name)'  # 单个测试
 cargo xtask test-wasm            # 同一批 GPU 测试，再在浏览器里跑一遍
 ```
+
+suite 二进制要求它的用例所需的功能，因此不带这些功能单跑一个 crate 会把它整个编掉：
+只跑 `cargo nextest run -p unlit3d` 跑的是该 crate 的单元测试，跳过 GPU suite，因为后者
+需要 `gltf`、`mcp` 与 `ui`。
 
 `nextest` 不跑 doctest，因此 `cargo xtask test` 会在其后追加 `cargo test --doc`。
 用 `cargo nextest run` 筛选只适合迭代时用，它不能替代该任务；CI 跑的就是该任务，
 所以两者不会脱节。
 
 `cargo xtask test-wasm` 把渲染 crate 的 GPU 测试再跑一遍：构建到
-`wasm32-unknown-unknown`，经由 WebGL2 在真实浏览器中运行。测试文件是同一批；
-`harness = false` 的测试 target 本身就是那个 wasm 模块，骨架的宏给它生成页面要调用的
-导出。浏览器提供的是无头设备给不了的东西——一个真实的 WebGL2 实现，带着它自己的
+`wasm32-unknown-unknown`，经由 WebGL2 在真实浏览器中运行。测试文件是同一批：suite
+那个 target 本身就是 wasm 模块，suite 根部唯一的一次 `gpu_test_main!` 给它生成页面要
+调用的导出。浏览器提供的是无头设备给不了的东西——一个真实的 WebGL2 实现，带着它自己的
 limits、自己的着色器翻译和自己的光栅化器。由于该光栅化器并不是采集快照时所用的那个，
 `Tolerance` 可以指定一帧允许相差多少；立方体快照正是这么用的，并附有其阈值的实测依据。
 
@@ -163,7 +174,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。一个端到端 MCP 测试在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_suite.rs` 的渲染快照。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 抵达目标 world、快照与流订阅、world 对自己状态的发布、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |

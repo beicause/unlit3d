@@ -769,15 +769,20 @@ host.run(event_loop)
 ## 测试
 
 ```text
-cargo xtask test                # 整个工作区
-cargo nextest run -p unlit3d    # 只跑本 crate
+cargo xtask test                          # 整个工作区
+cargo nextest run -p unlit3d --all-features  # 只跑本 crate
 ```
+
+集成测试是一个二进制，它的 `required-features` 是 `gltf`、`mcp` 与 `ui`——其用例会用到的
+功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
+`cargo nextest run -p unlit3d` 只报单元测试。要把 suite 放进这一趟，得加
+`--all-features`（或把这三项都点名）。
 
 GPU 集成测试把场景渲染到离屏目标并检查回读的像素。打开 `mcp` feature 后，一个端到端
 测试会在一条线程上建起真实的 GPU world，用一对流把它服务出去，并与之说 JSON-RPC：
 它会列出工具、读取 world、生成网格，再逐像素检查截图。这些场景的多帧快照覆盖现在位于
 [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)：
-它的 `tests/gpu_scenes.rs` 把这些场景与
+它的 `tests/gpu_suite.rs` 把这些场景与
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
 下的 SSIMULACRA2 快照比较。在本仓库用 `git submodule update --init --checkout` 拉取
 submodule（`--checkout` 是为了越过它的 `update = none`）；有意改动

@@ -9,8 +9,9 @@
 //! Living beside the crate they exercise rather than behind a command line is
 //! what lets one body serve every runner: `cargo nextest run` drives them
 //! natively, `UNLIT3D_DEVICE_TIER=webgl2` drives the same tests against the
-//! device a browser has, and on `wasm32-unknown-unknown` the file *is* the
-//! module the test page loads, with the snapshots embedded in the binary.
+//! device a browser has, and on `wasm32-unknown-unknown` the suite this file
+//! belongs to *is* the module the test page loads, with the snapshots embedded
+//! in the binary.
 //!
 //! That last part is why each scene's frame table is written out rather than
 //! built at run time: a web build can only carry the files it was told about at
@@ -18,8 +19,7 @@
 //! the two agree, so the table cannot drift from the scene it describes.
 
 use unlit_wgpu_test_util::{
-    Ctx, Snapshot, Tolerance, assert_image_snapshot_with_tolerance, gpu_test_main, gpu_tests,
-    snapshots,
+    Ctx, Snapshot, Tolerance, assert_image_snapshot_with_tolerance, gpu_tests, snapshots,
 };
 use unlit3d::prelude::*;
 use unlit3d_examples::scenes::{self, SceneDef, SceneOptions};
@@ -501,5 +501,3 @@ gpu_tests! {
     custom_pipeline_animates_between_frames,
     the_default_scene_letterboxes_into_a_narrow_target,
 }
-
-gpu_test_main!(all_tests());

@@ -7,11 +7,9 @@
 //! buffer holding the vertices, indices and a 4x4 PNG (rows red, green, blue,
 //! white) as a buffer view, so `UnlitGltf::from_bytes` needs no base path.
 
-pub mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_ecs::bundle;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::gltf::{GltfNode, GltfResources, UnlitGltf};
 use unlit3d::prelude::*;
 
@@ -986,5 +984,3 @@ gpu_tests! {
     a_double_sided_material_draws_back_faces,
     unload_empties_the_frame,
 }
-
-gpu_test_main!(all_tests());

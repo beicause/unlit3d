@@ -6,13 +6,7 @@
 //! The snapshot tests additionally compare frames against stored references
 //! with the SSIMULACRA2 perceptual metric.
 
-// They exercise the built-in pipeline, so they are built with the feature that
-// provides it.
-#![cfg(feature = "unlit")]
-
-mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
@@ -32,7 +26,7 @@ use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey, SurfaceTarget};
 use unlit_wgpu::texel_array::Array;
 use unlit_wgpu::util::Hashed;
-use unlit_wgpu_test_util::{Tolerance, gpu_test_main, gpu_tests, snapshot};
+use unlit_wgpu_test_util::{Tolerance, gpu_tests, snapshot};
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -1315,8 +1309,9 @@ async fn the_readback_module_returns_a_buffer_slice() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     renders_a_cube_over_the_clear_color,
     base_color_reaches_the_frame,
@@ -1334,5 +1329,3 @@ gpu_tests! {
     the_readback_module_returns_a_texture_as_tight_rows,
     the_readback_module_returns_a_buffer_slice,
 }
-
-gpu_test_main!(all_tests());

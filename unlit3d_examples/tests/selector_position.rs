@@ -11,7 +11,7 @@
 //! The file uses the harness `gpu_scenes.rs` uses, so the same binary runs
 //! natively and as the module a wasm test page loads.
 
-use unlit_wgpu_test_util::{Ctx, gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::{Ctx, gpu_tests};
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
 use unlit3d_examples::scenes::{self, SceneOptions};
@@ -277,5 +277,3 @@ gpu_tests! {
     a_switched_scene_opens_where_the_selector_was_left,
     the_selector_re_seats_in_its_corner_when_the_screen_changes_shape,
 }
-
-gpu_test_main!(all_tests());

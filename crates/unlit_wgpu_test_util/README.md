@@ -22,7 +22,7 @@ behind its `snapshot` feature.
 
 A test is an `async fn` that takes no arguments and returns nothing, and the
 crate's macros register it twice over: natively it runs in a process, and on
-`wasm32-unknown-unknown` the same file *becomes* a wasm module a browser drives.
+`wasm32-unknown-unknown` the suite *becomes* a wasm module a browser drives.
 
 Because wgpu's adapter and device requests are asynchronous, so is the harness.
 On the host that is invisible — [`block_on`] drives them to completion. In a
@@ -31,21 +31,30 @@ resolves on a microtask it has to yield to, so the test itself is spawned onto
 the browser's task queue and its verdict reported back through
 `sessionStorage`.
 
-That asymmetry is why a test file ends with two macro calls:
+That asymmetry is why `gpu_tests!` ends every file while `gpu_test_main!`
+appears once, in the suite's root. A file registers only what it holds:
 
 ```rust,ignore
 gpu_tests! {
     renders_a_cube_over_the_clear_color,
     #[should_panic(expected = "morphing without targets")]
 }
-
-gpu_test_main!(all_tests());
 ```
 
 `gpu_tests!` lists the tests in the file and gives each one the body beside its
-name; `gpu_test_main!` emits the `main` that runs them. Native test targets are
-declared `harness = false` in their `Cargo.toml`, because the list is what the
-harness runs rather than the one rustc generates.
+name: it expands to `all_tests()`, that file's share of the registry. A crate
+has one test target for its whole suite — the files are modules of it — and the
+root joins those shares and emits the `main` that runs them:
+
+```rust,ignore
+#[path = "gpu_unlit.rs"]
+mod gpu_unlit;
+
+gpu_test_main!([gpu_unlit::all_tests()].concat());
+```
+
+Native test targets are declared `harness = false` in their `Cargo.toml`,
+because the list is what the harness runs rather than the one rustc generates.
 
 `#[should_panic]` works on both runners, but the browsers reach it differently:
 the host catches the unwind, while a wasm panic traps its instance and cannot be
@@ -152,7 +161,7 @@ a score.
 To re-bless a snapshot after an intentional rendering change:
 
 ```text
-SNAPSHOT_UPDATE=1 cargo nextest run -p unlit_wgpu
+SNAPSHOT_UPDATE=1 cargo nextest run -p unlit_wgpu --all-features
 git -C unlit3d_asset_files diff   # review before committing
 ```
 

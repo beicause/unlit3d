@@ -1068,9 +1068,15 @@ host.run(event_loop)
 ## Tests
 
 ```text
-cargo xtask test                # the whole workspace
-cargo nextest run -p unlit3d    # just this crate
+cargo xtask test                          # the whole workspace
+cargo nextest run -p unlit3d --all-features  # just this crate
 ```
+
+The integration tests are one binary, and its `required-features` are `gltf`,
+`mcp` and `ui` — the features its cases reach. A run without them does not fail:
+Cargo skips the target whole, so `cargo nextest run -p unlit3d` reports the unit
+tests and nothing else. `--all-features` (or naming all three) is what puts the
+suite in the run.
 
 The GPU integration tests render scenes into offscreen targets and inspect the
 pixels that come back. With the `mcp` feature on, an end-to-end test builds a
@@ -1078,7 +1084,7 @@ real GPU world on a thread, serves it over a pair of streams and speaks
 JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks
 the screenshot pixel by pixel. The multi-frame snapshot coverage of those scenes lives
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
-whose `tests/gpu_scenes.rs` compares them against the SSIMULACRA2 snapshots under
+whose `tests/gpu_suite.rs` compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md).
 Clone the submodule here with `git submodule update --init --checkout`, which is
 what gets past its `update = none`; re-bless intentional

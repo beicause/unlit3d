@@ -108,7 +108,7 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. It also carries the MCP server that exposes a running world over stdio, which each crate extends with its own tools. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_suite.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.md) | The models `unlit3d_examples` draws, carried in the binary: `include_bytes!` sits in an `#[inline(never)]` function body, so those bytes stay out of every dependent's metadata. |
 | [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.md) | The soundfont `unlit3dx_examples` plays, carried the same way; its `build.rs` substitutes an empty stub when the file is absent. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
@@ -211,11 +211,21 @@ The tests fall into three layers, by how close they sit to the code they check:
 - **Snapshot tests** compare a frame (or a multi-frame sequence) against an image
   stored in the repository, using SSIMULACRA2. The low-level API's snapshots stay
   in `unlit_wgpu`'s tests; the high-level ECS scenes' run through
-  [`unlit3d_examples`](unlit3d_examples/README.md)'s `tests/gpu_scenes.rs`,
+  [`unlit3d_examples`](unlit3d_examples/README.md)'s `tests/gpu_suite.rs`,
   because the example is both the demo and the CI rendering check; and
   [`unlit3d_cli`](unlit3d_cli/README.md)'s `tests/gpu_cli.rs` renders the same
   reference glTF scene through the command-line tool's library and compares it
   against the same snapshots. Either is re-blessed with `SNAPSHOT_UPDATE=1`.
+
+Each crate's integration tests are **one binary**, not one per source file: the
+files under `tests/` are modules of the suite file beside them (`gpu_suite.rs`,
+or `suite.rs` where the tests are plain `libtest`), pulled in with `#[path]`.
+They share the crate's code and, on the GPU side, the shared harness, so
+splitting them into targets meant linking that code once per file — thirty
+binaries across the workspace, each carrying its own copy of the same runtime.
+The binary's name is the crate's, and its `required-features` are the features
+its cases need, so a crate whose suite needs an optional feature runs it only
+when that feature is on.
 
 All snapshot baselines therefore live in
 [`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule. It is
@@ -233,10 +243,14 @@ artifacts. The WebGL2 tier still runs after the default one fails.
 
 ```text
 cargo xtask test                 # the whole workspace: nextest, then the doctests
-cargo nextest run -p unlit_wgpu  # one crate
+cargo nextest run -p unlit_wgpu --all-features  # one crate
 cargo nextest run -E 'test(name)'  # one test
 cargo xtask test-wasm            # the GPU tests again, in a browser
 ```
+
+A suite binary requires the features its cases need, so a crate run without them
+builds it out: `cargo nextest run -p unlit3d` on its own would run the crate's
+unit tests and skip the GPU suite, which needs `gltf`, `mcp` and `ui`.
 
 `nextest` does not run doctests, so `cargo xtask test` follows it with
 `cargo test --doc`. Filtering with `cargo nextest run` is for iterating; it is no
@@ -244,8 +258,9 @@ substitute for the task, and CI runs the task so the two cannot drift.
 
 `cargo xtask test-wasm` runs the rendering crates' GPU tests a second time, on
 `wasm32-unknown-unknown` in a real browser through WebGL2. The test files are the
-same ones; a `harness = false` test target is itself the wasm module, and the
-harness's macros give it the export the page calls. What the browser presents is
+same ones: the suite target is itself the wasm module, and the single
+`gpu_test_main!` at the suite's root gives it the export the page calls. What the
+browser presents is
 the part no headless device can — a real WebGL2 implementation, with its own
 limits, its own shader translation and its own rasterizer. Because that
 rasterizer is not the one the snapshots were captured on, a `Tolerance` can name

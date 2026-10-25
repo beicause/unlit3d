@@ -11,11 +11,9 @@
 //! what "no content here" looks like in these frames; the cube is drawn in its
 //! own vertex colours, so any pixel that is not black is content.
 
-pub mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_ecs::bundle;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
 /// The baseline every target here is shaped around: 4:3, the shape the
@@ -261,11 +259,10 @@ async fn the_same_baseline_content_fills_its_region_on_any_target_shape() {
     }
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     a_letterboxed_frame_keeps_the_baseline_picture_and_bars_the_rest,
     the_same_baseline_content_fills_its_region_on_any_target_shape,
 }
-
-gpu_test_main!(all_tests());

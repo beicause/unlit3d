@@ -12,16 +12,19 @@ keywords = ["gamedev", "graphics", "rendering", "webgpu", "wgpu"]
 # README links its diagram by absolute URL, so the packaged copy would go
 # unread.
 exclude = ["/assets", "/tests"]
+# The files under tests/ are modules of the one suite binary below rather than
+# targets of their own; see its docs.
+autotests = false
 
+# One binary for the whole integration suite: both files link the same GPU stack,
+# so a link per file would repeat that work. The unlit pipeline and the egui
+# backend are both required, which is why the binary is skipped whole when the
+# latter is off.
 [[test]]
 harness = false
-name = "gpu_unlit"
-required-features = ["unlit"]
-
-[[test]]
-harness = false
-name = "gpu_ui"
-required-features = ["egui"]
+name = "unlit_wgpu"
+path = "tests/gpu_suite.rs"
+required-features = ["egui", "unlit"]
 
 [dependencies]
 arrayvec.workspace = true

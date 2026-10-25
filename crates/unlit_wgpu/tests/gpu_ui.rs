@@ -4,13 +4,7 @@
 //! that come back, so a broken projection, a wrong blend or a missing texture
 //! shows up as a wrong frame rather than as a passing unit test.
 
-// They exercise the egui backend, so they are built with the feature that
-// provides it.
-#![cfg(feature = "egui")]
-
-mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_wgpu::globals::Globals;
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline, UnlitVariant};
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
@@ -19,7 +13,7 @@ use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
 use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests, snapshot};
+use unlit_wgpu_test_util::{gpu_tests, snapshot};
 
 /// The UI's logical layout, in points. The physical target scales with the
 /// pixel density, so this stays fixed across densities.
@@ -575,8 +569,9 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     text_and_button_render_over_the_clear,
     opaque_rect_reaches_full_red,
@@ -588,5 +583,3 @@ gpu_tests! {
     freeing_a_texture_releases_its_graph_nodes,
     releasing_the_integration_returns_its_graph_nodes,
 }
-
-gpu_test_main!(all_tests());

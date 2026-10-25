@@ -395,6 +395,11 @@ as `src/render.rs`.
 
 ## Tests
 
+The integration tests are one binary, and it requires `audio`, `physics` and
+`synth`. Running `--no-default-features` leaves the suite out of the run
+rather than failing it: Cargo skips a target whose required features are off.
+(No case takes a GPU, so `render` is not required.)
+
 `cargo nextest run -p unlit3dx` covers the core: jobs and their queues,
 subscriptions — several readers each getting their own snapshot, a
 collector that answers nothing leaving the newest in place, a dropped reader

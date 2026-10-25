@@ -8,12 +8,12 @@
 //! exercised, not just the pieces in isolation.
 //!
 //! That body lives in [`native`], because the protocol and the modules it
-//! reaches are native-only. Registering it `#[host_only]` keeps it out of the
-//! wasm suite, and this file still carries the registry and `gpu_test_main!`
-//! so the wasm build has the `run_test` export `wasm-bindgen` binds — a test
-//! binary compiled with no bindings at all is one the CLI refuses.
+//! reaches are native-only. Registering it `#[host_only]` keeps it off the
+//! list the browser is offered. The suite's root is what compiles to a wasm
+//! module carrying the `run_test` export `wasm-bindgen` binds — a test binary
+//! built with no bindings at all is one the CLI refuses.
 
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 mod native;
@@ -23,11 +23,10 @@ async fn the_server_lists_its_tools_and_renders() {
     native::run();
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a browser
-// through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     #[host_only]
     the_server_lists_its_tools_and_renders,
 }
-
-gpu_test_main!(all_tests());

@@ -6,16 +6,14 @@
 //! each. These tests exercise that from the outside: what ends up in each
 //! target, which sources are built at all, and what a shared source draws into.
 
-pub mod common;
-
 use core::cell::Cell;
 use std::rc::Rc;
 
-use common::*;
+use crate::common::*;
 use unlit_ecs::Scope;
 use unlit_ecs::bundle;
 use unlit_wgpu::scene::Scene;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
 /// The side of the solid source texture, in texels.
@@ -343,8 +341,9 @@ async fn a_shared_source_draws_into_every_pass() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     two_passes_draw_their_own_sources,
     a_nested_source_is_built_by_every_pass_above_it,
@@ -352,5 +351,3 @@ gpu_tests! {
     a_parked_pass_draws_nothing,
     a_shared_source_draws_into_every_pass,
 }
-
-gpu_test_main!(all_tests());

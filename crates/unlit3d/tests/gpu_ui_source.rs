@@ -13,13 +13,9 @@
 //! and asserts on the second. Nothing here reads the clock or the layout
 //! feedback, so a frame is reproducible.
 
-#![cfg(feature = "ui")]
-
-pub mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_ecs::bundle;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
 /// The colour a UI-only test clears to, distinguishable from every panel.
@@ -862,8 +858,9 @@ async fn a_patched_texture_shows_the_patch() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     ui_only_with_two_panels,
     ui_only_clears_to_load_ops,
@@ -875,5 +872,3 @@ gpu_tests! {
     a_frame_with_spare_geometry_buffer_room_draws_the_same_picture,
     a_patched_texture_shows_the_patch,
 }
-
-gpu_test_main!(all_tests());

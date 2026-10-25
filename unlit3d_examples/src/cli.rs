@@ -9,7 +9,7 @@
 //! a scene the example does not know.
 //!
 //! The scenes' snapshots are not compared through this command line. That is a
-//! test's job, and it lives in `tests/gpu_scenes.rs`, where the same bodies run
+//! test's job, and it lives in `tests/gpu_suite.rs`, where the same bodies run
 //! natively and in a browser.
 
 use argh::FromArgs;

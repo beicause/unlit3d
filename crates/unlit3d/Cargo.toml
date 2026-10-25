@@ -9,53 +9,20 @@ keywords = ["ecs", "gamedev", "rendering", "webgpu", "wgpu"]
 # The integration tests build against `unlit_wgpu_test_util`, which is not
 # published, so the tests do not travel in a package either.
 exclude = ["/tests"]
+# The files under tests/ are modules of the one suite binary below rather than
+# targets of their own; see its docs.
+autotests = false
 
+# One binary for the whole integration suite: the tests share the harness in
+# tests/common and link the same GPU stack, so a link per file would repeat
+# both. The required features are those its cases use -- glTF documents, the
+# MCP server and the egui-backed UI source -- so the binary is skipped whole
+# while any of them is off.
 [[test]]
 harness = false
-name = "blit"
-
-[[test]]
-harness = false
-name = "custom_instances"
-
-[[test]]
-harness = false
-name = "custom_pipeline"
-
-[[test]]
-harness = false
-name = "gltf_scene"
-required-features = ["gltf"]
-
-[[test]]
-harness = false
-name = "gpu_ecs"
-
-[[test]]
-harness = false
-name = "gpu_ui_source"
-required-features = ["ui"]
-
-[[test]]
-harness = false
-name = "letterbox"
-
-[[test]]
-harness = false
-name = "morphed_scene"
-
-[[test]]
-harness = false
-name = "passes"
-
-[[test]]
-harness = false
-name = "skinned_scene"
-
-[[test]]
-harness = false
-name = "mcp_server"
-required-features = ["mcp"]
+name = "unlit3d"
+path = "tests/gpu_suite.rs"
+required-features = ["gltf", "mcp", "ui"]
 
 [dependencies]
 arc-swap.workspace = true

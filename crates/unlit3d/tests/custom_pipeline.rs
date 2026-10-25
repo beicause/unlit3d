@@ -5,15 +5,13 @@
 //! unlit pipeline, no renderer-provided bindings — to show that registering a
 //! pipeline family and drawing with it needs nothing from the built-in shader.
 
-pub mod common;
-
+use crate::common::*;
 use arrayvec::ArrayVec;
-use common::*;
 use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, VertexLayout,
 };
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::pipeline::{DrawContext, FamilyContext, RenderPipelineFactory};
 use unlit3d::prelude::*;
 
@@ -569,11 +567,10 @@ fn upload(device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[Vertex]) -> wg
     buffer
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     a_custom_pipeline_draws_through_the_ecs,
     one_pipeline_draws_many_meshes,
 }
-
-gpu_test_main!(all_tests());

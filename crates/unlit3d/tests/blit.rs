@@ -6,10 +6,8 @@
 //! texture registered in the graph reaches the rasterizer, and that pointing
 //! the source at another view swaps what the frame shows.
 
-pub mod common;
-
-use common::*;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use crate::common::*;
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
 /// The side of the solid source texture, in texels.
@@ -138,11 +136,10 @@ async fn a_new_view_changes_what_the_frame_shows() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     blit_copies_the_source_texture,
     a_new_view_changes_what_the_frame_shows,
 }
-
-gpu_test_main!(all_tests());

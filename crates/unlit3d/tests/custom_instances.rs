@@ -7,17 +7,15 @@
 //! -- proving the per-instance stream is a general mechanism a caller drives,
 //! not a privilege of the built-in shader.
 
-pub mod common;
-
 use std::sync::Arc;
 
+use crate::common::*;
 use arrayvec::ArrayVec;
-use common::*;
 use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, VertexLayout,
 };
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::pipeline::DrawContext;
 use unlit3d::prelude::*;
 use zerocopy::IntoBytes;
@@ -433,10 +431,9 @@ async fn a_custom_family_owns_its_instance_stream() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a browser
-// through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     a_custom_family_owns_its_instance_stream,
 }
-
-gpu_test_main!(all_tests());

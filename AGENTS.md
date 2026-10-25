@@ -58,3 +58,6 @@
 - **调试examples时，可以用 unlit3d-mcp 技能，绝不用截屏软件**。
 - **常用命令**。见 `cargo xtask --help`，以及 `xtask` 包目录的 [`README.md`](./xtask/README.md)（每个任务做什么、为什么这么跑）。
 - **跑测试用 `cargo nextest run`，不用 `cargo test`**。唯一例外是 doctest：nextest 不跑 doctest，那部分只能用 `cargo test --doc`，而 `cargo xtask test` 已经把两者都包了。
+- **优化二进制程序编译/链接的时间和空间**：本库为编译时间和产物磁盘占用做以下优化：
+  1. 用单独的crate里做`include_bytes!`，并导出带有`#[inline(never)]`的返回静态切片的函数，如：`unlit3d_asset_bytes`、`unlit3dx_asset_bytes`。原因：避免修改库或应用程序时重复编译`include_bytes!`部分，`include_bytes!`大文件编译较慢。
+  2. 每个crate的集成测试都合并为一个。原因：减少二进制程序产出数量，能大幅减少链接时间和磁盘空间。

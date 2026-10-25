@@ -4,7 +4,7 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3d_e
 
 A windowed example with selectable scenes, rendered through
 [`unlit3d::winit::WindowSurface`]. Its scenes are also drawn offscreen by
-`tests/gpu_scenes.rs`, which compares every frame against a stored snapshot, so
+`tests/gpu_suite.rs`, which compares every frame against a stored snapshot, so
 the crate is both the workspace's example program and a rendering regression
 check. The Android APK packages it as one of its two examples, the other
 being [`unlit3dx_examples`](../unlit3dx_examples/README.md).
@@ -16,7 +16,7 @@ parts of them that are still under construction.
 
 The example's scenes are the snapshot scenes the GPU tests used to draw in
 `crates/unlit3d/tests`: every one of them is now a selectable scene, and
-`tests/gpu_scenes.rs` is the check that replaced those tests. The windowed loop
+`tests/gpu_suite.rs` is the check that replaced those tests. The windowed loop
 shows the scene the command line selected and lists every scene in a panel, so
 one can be switched to at runtime. `--list-scenes` prints the table:
 
@@ -250,7 +250,7 @@ context, frame loop — is the example crate's.
 
 ## Snapshot tests
 
-`tests/gpu_scenes.rs` is where the example's rendering is checked. It draws every
+`tests/gpu_suite.rs` is where the example's rendering is checked. It draws every
 scene offscreen, with no window and no event loop, advancing it by a fixed
 timestep so the same code produces the same picture, and compares each frame the
 scene freezes against the scene's stored snapshot:
@@ -364,7 +364,7 @@ before committing them. That submodule is checked out with
 ## Tests
 
 The crate's own tests cover the command line (`src/cli.rs`) and the fixed-step
-playback clock (`src/lib.rs`), and `tests/gpu_scenes.rs` covers the rendering.
+playback clock (`src/lib.rs`), and `tests/gpu_suite.rs` covers the rendering.
 Where each test layer sits across the workspace, and what CI runs, is in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 

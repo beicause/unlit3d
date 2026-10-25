@@ -6,11 +6,9 @@
 //! `unlit3d_examples` (the `ecs_morphed` scene), whose snapshot test verifies
 //! the same frames against the stored snapshots.
 
-pub mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_ecs::bundle;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
 /// The displacement of the two targets, packed the way a mesh stores them:
@@ -150,8 +148,9 @@ async fn meshes_can_share_one_morph_weights() {
     );
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
     #[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
     mismatched_morph_weight_count_panics,
@@ -159,5 +158,3 @@ gpu_tests! {
     morphing_without_a_weight_binding_panics,
     meshes_can_share_one_morph_weights,
 }
-
-gpu_test_main!(all_tests());

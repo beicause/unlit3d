@@ -34,7 +34,9 @@ Accepts `--release`.
 Clippy runs three times, because each compiles a different set of code:
 
 1. The workspace with its default features — the combination the platform
-   artifacts are built with.
+   artifacts are built with. The integration suites that need an optional feature
+   sit this pass out, because a target whose required features are off is skipped
+   whole; pass 3 is what checks them.
 2. Every package on its own, default features, library targets only. Naming a
    package stops the feature unification a workspace-wide run applies, so this
    is the pass that catches an optional feature a crate's own code no longer

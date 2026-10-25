@@ -300,6 +300,10 @@ world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
 
 ## 测试
 
+集成测试是一个二进制，它要求 `audio`、`physics` 与 `synth`。用
+`--no-default-features` 跑不会失败，而是让 suite 不进入这一趟：required features
+不满足的 target 会被 Cargo 整体跳过。（没有用例用到 GPU，因此不要求 `render`。）
+
 `cargo nextest run -p unlit3dx` 覆盖核心：job 及其队列、订阅——多个 reader 各自
 拿到自己的快照、收集闭包返回空时保留最新一份、reader 被丢弃后订阅被清除、队列满时
 订阅被拒绝——线程停止与 panic 报告、独占线程的 world 的已发送 job 运行，以及步进 world 的

@@ -7,6 +7,9 @@ repository.workspace = true
 license.workspace = true
 keywords = ["example", "gamedev", "webgpu", "wgpu"]
 publish = false
+# The files under tests/ are modules of the one suite binary below rather than
+# targets of their own; see its docs.
+autotests = false
 
 # The binary is the command line every desktop and web build runs; the library
 # is what that binary links against, and what the Android shared library links
@@ -22,13 +25,12 @@ name = "unlit3d_examples"
 name = "unlit3d-examples"
 path = "src/main.rs"
 
+# One binary for the whole integration suite: both files link the same GPU
+# stack, so a link per file would repeat that work.
 [[test]]
 harness = false
-name = "gpu_scenes"
-
-[[test]]
-harness = false
-name = "selector_position"
+name = "unlit3d_examples"
+path = "tests/gpu_suite.rs"
 
 [dependencies]
 argh.workspace = true

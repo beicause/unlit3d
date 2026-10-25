@@ -6,6 +6,13 @@ description = "A compact archetype ECS: immutable archetypes, cell-based compone
 repository.workspace = true
 license.workspace = true
 keywords = ["archetype", "ecs", "gamedev"]
+# The files under tests/ are modules of the one suite binary below rather than
+# targets of their own; see its docs.
+autotests = false
+
+[[test]]
+name = "unlit_ecs"
+path = "tests/suite.rs"
 
 [dependencies]
 # Reflection is what a bridge serialises these structures through; the ECS

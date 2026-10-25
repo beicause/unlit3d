@@ -740,8 +740,12 @@ uploads.
 
 ```text
 cargo xtask test     # the whole workspace, through nextest plus the doctests
-cargo nextest run -p unlit_wgpu   # just this crate
+cargo nextest run -p unlit_wgpu --all-features   # just this crate
 ```
+
+The integration tests are one binary, and it requires `unlit` and `egui`. A run
+without the latter does not fail: Cargo skips the target whole, so the suite
+leaves the run silently and only the unit tests report.
 
 The GPU integration tests render meshes into offscreen textures, read them back
 and compare them against the snapshots under `tests/snapshots` with the

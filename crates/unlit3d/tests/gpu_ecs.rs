@@ -4,11 +4,9 @@
 //! frames offscreen, and inspects the returned pixels.  Snapshot tests compare
 //! against stored WebP references with the SSIMULACRA2 perceptual metric.
 
-pub mod common;
-
-use common::*;
+use crate::common::*;
 use unlit_ecs::bundle;
-use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
+use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -349,8 +347,9 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     }
 }
 
-// The registry both runners drive: `cargo nextest` natively, and a
-// browser through the wasm export `gpu_test_main!` adds.
+// This file's share of the suite's registry: the suite root concatenates
+// it with its siblings', and `gpu_test_main!` there runs the result under
+// `cargo nextest` natively and in a browser through the wasm export it adds.
 /// Two mesh sources in one world, each drawing only its own subtree.
 ///
 /// A source queries its own scope, and a scope sees its descendants but not its
@@ -431,5 +430,3 @@ gpu_tests! {
     meshes_allocated_across_frames_survive_pool_growth,
     a_source_draws_only_its_own_subtree,
 }
-
-gpu_test_main!(all_tests());

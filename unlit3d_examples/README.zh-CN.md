@@ -4,7 +4,7 @@
 
 一个带 egui 叠加层、可切换场景的窗口化示例，通过
 [`unlit3d::winit::WindowSurface`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
-渲染。它的场景也会由 `tests/gpu_scenes.rs` 离屏绘制，逐帧与存储的快照比较，因此它既是
+渲染。它的场景也会由 `tests/gpu_suite.rs` 离屏绘制，逐帧与存储的快照比较，因此它既是
 本工作区的示例程序，也是一项渲染回归检查。Android APK 把它作为所打包的两个示例
 之一，另一个是 [`unlit3dx_examples`](../unlit3dx_examples/README.zh-CN.md)。
 
@@ -14,7 +14,7 @@
 ## 场景
 
 示例的场景就是原来 `crates/unlit3d/tests` 里 GPU 测试所画的那些快照场景：现在每一个
-都是可选择的场景，而 `tests/gpu_scenes.rs` 正是取代那些测试的检查。窗口化循环显示
+都是可选择的场景，而 `tests/gpu_suite.rs` 正是取代那些测试的检查。窗口化循环显示
 命令行选中的场景，并在面板里列出所有场景，运行时即可切换。`--list-scenes` 打印场景表：
 
 ```text
@@ -190,7 +190,7 @@ cargo xtask build-android
 
 ## 快照测试
 
-`tests/gpu_scenes.rs` 是检查本示例渲染结果的地方。它不打开窗口、不跑事件循环，把每个
+`tests/gpu_suite.rs` 是检查本示例渲染结果的地方。它不打开窗口、不跑事件循环，把每个
 场景离屏画出来，以固定步长推进（因此同一份代码产生同样的画面），并把场景冻结的每一帧与
 该场景存储的快照比较：
 
@@ -275,7 +275,7 @@ tie-break 规则决定，API 把这件事留给实现。这样零星几个像素
 ## 测试
 
 本 crate 自己的测试覆盖命令行（`src/cli.rs`）与固定步长播放时钟（`src/lib.rs`），
-`tests/gpu_scenes.rs` 则覆盖渲染。测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
+`tests/gpu_suite.rs` 则覆盖渲染。测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
 [根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证
