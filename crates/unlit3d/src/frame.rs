@@ -1,16 +1,18 @@
 //! Frame behaviours: what a frame is made of, as components.
 //!
 //! The other behaviour families react to an event. A frame behaviour *is* the
-//! frame: it runs once per dispatch, in an order its components declare, so a
-//! windowed application's frame loop is one dispatch plus whatever the
-//! behaviours queued. Extending the frame is spawning another behaviour, not
-//! editing a function.
+//! frame: it runs once per dispatch, and the order they run in is the order the
+//! world spawned them in, so a windowed application's frame loop is one
+//! dispatch plus whatever the behaviours queued. Extending the frame is
+//! spawning another behaviour, not editing a function.
 //!
 //! One family: [`OnFrame`] is the frame itself, dispatched by whatever owns
 //! the world — a windowed application's host world, or a `Scene` advancing the
-//! world it drives. The order behaviours run in is the application's to define:
-//! unlit3d declares no order values of its own, so a frame is extended by
-//! spawning behaviours, never by editing a list.
+//! world it drives. A behaviour spawned with [`OnFrame::new`] states no order
+//! and runs where its spawn put it; one whose reads or writes another depends
+//! on states the order at both ends with [`OnFrame::with_order`]. unlit3d
+//! declares no order values of its own, so a frame is extended by spawning
+//! behaviours, never by editing a list.
 //!
 //! Like every other behaviour, a frame behaviour runs with `&World`, so a
 //! structural change goes through [`unlit_ecs::Scope::queue`] and lands when the driver
@@ -68,10 +70,12 @@ impl FrameClock {
 
 /// When a frame behaviour runs, relative to the others.
 ///
-/// Lower runs first. Deliberately has no `Default`: a behaviour states its
-/// ordering intent, and a silent default is what an explicit order exists to
-/// remove.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Lower runs first, and behaviours at the same order run in the order they
+/// were spawned. The default is the band that states nothing: a behaviour with
+/// no dependency on another is spawned with [`OnFrame::new`] and runs where its
+/// spawn put it. One that reads what another writes states the order at both
+/// ends with [`OnFrame::with_order`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameBehaviourOrder(pub i32);
 
 /// A callback that runs once for the entity it is spawned on.
@@ -81,8 +85,8 @@ pub type FrameCallback = Box<dyn FnMut(&World, Entity, &mut Frame)>;
 ///
 /// The frame's behaviours are independent components with no shared stack, so
 /// one that cannot carry the frame further sets this and its later siblings
-/// read it and return. The order they run in is what makes the reads
-/// meaningful, which is why a frame behaviour declares one.
+/// read it and return. A sibling that reads the flag runs after the one that
+/// sets it, so it states an order instead of leaving that to the spawn.
 ///
 /// Spawn one to take part; a world without one has nothing to skip.
 #[derive(Debug, Default)]
@@ -173,10 +177,30 @@ macro_rules! frame_behaviour {
         impl $name {
             #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`].")]
             ///
-            /// `order` places it among the world's other frame behaviours:
-            /// unlit3d supplies no order values, so the caller's are the only
-            /// ones that exist.
+            /// It runs after every behaviour ordered before the default band
+            /// and before every behaviour ordered after it, and among the
+            /// behaviours that state no order it runs where it was spawned.
+            /// State an order with `with_order` when another behaviour's reads
+            /// or writes depend on it.
             pub fn new(
+                f: impl FnMut(
+                    &$crate::frame::World,
+                    $crate::frame::Entity,
+                    &mut $crate::frame::Frame,
+                ) + 'static,
+            ) -> Self {
+                Self($crate::frame::BehaviourSlot::new(
+                    $crate::frame::FrameBehaviourOrder::default(),
+                    Box::new(f),
+                ))
+            }
+
+            #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`] that runs at `order`.")]
+            ///
+            /// For a behaviour whose reads or writes another behaviour depends
+            /// on: stating the order at both ends is what makes the dependency
+            /// survive a change to the order the two are spawned in.
+            pub fn with_order(
                 order: $crate::frame::FrameBehaviourOrder,
                 f: impl FnMut(
                     &$crate::frame::World,
@@ -249,13 +273,14 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     }
 }
 
-/// Run every `B` in `world`, in the order their components declare.
+/// Run every `B` in `world`, sorted by `(order, entity)`.
 ///
-/// Sorted by `(order, entity)`, so the entity breaks a tie between equal
-/// orders. A callback must not change the frame's behaviour set: the list is
-/// resolved before the first one runs, and a change landing inside the dispatch
-/// would leave it stale. Queue structural work instead; the driver applies it
-/// after the dispatch.
+/// So a behaviour that states no order runs where its spawn put it relative to
+/// the others that state none, and a stated order overrides the spawn. A
+/// callback must not change the frame's behaviour set: the list is resolved
+/// before the first one runs, and a change landing inside the dispatch would
+/// leave it stale. Queue structural work instead; the driver applies it after
+/// the dispatch.
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
         .root_scope()
@@ -288,9 +313,7 @@ mod tests {
         }
     }
 
-    /// The order the tests place their behaviours at; unlit3d defines none.
-    const UPDATE: FrameBehaviourOrder = FrameBehaviourOrder(0);
-    /// A later order, for the tests that need one after `UPDATE`.
+    /// A later order, for the tests that state one after the default band.
     const END: FrameBehaviourOrder = FrameBehaviourOrder(100);
 
     #[test]
@@ -299,13 +322,13 @@ mod tests {
         let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         let later = {
             let log = log.clone();
-            OnFrame::new(FrameBehaviourOrder(10), move |_world, _entity, _frame| {
+            OnFrame::with_order(FrameBehaviourOrder(10), move |_world, _entity, _frame| {
                 log.borrow_mut().push(2)
             })
         };
         let earlier = {
             let log = log.clone();
-            OnFrame::new(FrameBehaviourOrder(5), move |_world, _entity, _frame| {
+            OnFrame::with_order(FrameBehaviourOrder(5), move |_world, _entity, _frame| {
                 log.borrow_mut().push(1)
             })
         };
@@ -315,18 +338,19 @@ mod tests {
         assert_eq!(*log.borrow(), vec![1, 2]);
     }
 
+    /// A behaviour that states no order runs where it was spawned, which is
+    /// what makes the default band usable for behaviours with no dependency.
     #[test]
-    fn equal_orders_keep_their_spawn_order() {
+    fn behaviours_that_state_no_order_run_in_spawn_order() {
         let mut world = World::new();
         let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         for value in [1, 2, 3] {
             let log = log.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
-                UPDATE,
-                move |_world, _entity, _frame| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |_world, _entity, _frame| {
                     log.borrow_mut().push(value);
-                }
-            ),]);
+                }),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2, 3]);
@@ -338,12 +362,11 @@ mod tests {
         let seen: Rc<RefCell<Option<Frame>>> = Rc::new(RefCell::new(None));
         {
             let seen = seen.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
-                UPDATE,
-                move |_world, _entity, frame| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |_world, _entity, frame| {
                     *seen.borrow_mut() = Some(*frame);
-                }
-            ),]);
+                }),]);
         }
         let mut frame = Frame {
             delta_time: 0.5,
@@ -366,7 +389,7 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn(bundle![OnFrame::new(UPDATE, |_world, _entity, frame| {
+            .spawn(bundle![OnFrame::new(|_world, _entity, frame| {
                 frame.index += 1;
             }),]);
         let mut frame = frame();
@@ -380,21 +403,22 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn(bundle![OnFrame::new(UPDATE, |world, _entity, _frame| {
+            .spawn(bundle![OnFrame::new(|world, _entity, _frame| {
                 let _ = world.root_scope().queue().spawn(bundle![Marker]);
             }),]);
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
     }
 
-    /// A later order runs after an earlier one, however the two were spawned.
+    /// A stated order runs after the default band, however the two were
+    /// spawned.
     #[test]
-    fn a_later_order_runs_after_an_earlier_one() {
+    fn a_stated_order_runs_after_the_default_band() {
         let mut world = World::new();
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
         {
             let log = log.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::with_order(
                 END,
                 move |_world, _entity, _frame| {
                     log.borrow_mut().push("end");
@@ -403,12 +427,11 @@ mod tests {
         }
         {
             let log = log.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
-                UPDATE,
-                move |_world, _entity, _frame| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |_world, _entity, _frame| {
                     log.borrow_mut().push("update");
-                }
-            ),]);
+                }),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec!["update", "end"]);
@@ -439,15 +462,14 @@ mod tests {
         world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
         {
             let first = first.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
-                UPDATE,
-                move |world, _entity, _frame| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |world, _entity, _frame| {
                     assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
                     if first.replace(false) {
                         FrameSkip::skip(world);
                     }
-                }
-            ),]);
+                }),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert!(FrameSkip::is_skipped(&world));
@@ -465,16 +487,15 @@ mod tests {
         let seen: Rc<RefCell<Vec<FrameClock>>> = Rc::new(RefCell::new(Vec::new()));
         {
             let seen = seen.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
-                UPDATE,
-                move |world, _entity, _frame| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |world, _entity, _frame| {
                     let clock = *world
                         .root_scope()
                         .query_one::<&FrameClock>(clock)
                         .expect("the clock is spawned");
                     seen.borrow_mut().push(clock);
-                }
-            ),]);
+                }),]);
         }
 
         let mut frame = Frame {
@@ -516,12 +537,11 @@ mod tests {
         let ran = Rc::new(Cell::new(0));
         {
             let ran = ran.clone();
-            world.root_scope_mut().spawn(bundle![OnFrame::new(
-                UPDATE,
-                move |_world, _entity, _frame| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |_world, _entity, _frame| {
                     ran.set(ran.get() + 1);
-                }
-            ),]);
+                }),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(ran.get(), 1);

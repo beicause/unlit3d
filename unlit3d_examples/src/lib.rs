@@ -1281,25 +1281,9 @@ fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
     present(world, app);
 }
 
-/// The host frame behaviours' order: the GPU request starts the async setup
-/// before anything looks for a GPU, the present-and-build step runs before the
-/// scene is touched, the controls are served before the scene advances, and the
-/// frame is drawn last.
-const FRAME_GPU: FrameBehaviourOrder = FrameBehaviourOrder(0);
-const FRAME_PRESENT: FrameBehaviourOrder = FrameBehaviourOrder(10);
-const FRAME_CONTROLS: FrameBehaviourOrder = FrameBehaviourOrder(20);
-const FRAME_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(30);
-const FRAME_DRAW: FrameBehaviourOrder = FrameBehaviourOrder(40);
-
-/// The scene world's frame behaviours' order: input is dispatched before the
-/// sequence is stepped, and the sequence before the scene's own behaviour runs.
-const SCENE_INPUT: FrameBehaviourOrder = FrameBehaviourOrder(0);
-const SCENE_SEQUENCE: FrameBehaviourOrder = FrameBehaviourOrder(10);
-const SCENE_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(20);
-
 /// Run the scene world's input dispatch for the frame.
 fn dispatch_input_on_frame() -> OnFrame {
-    OnFrame::new(SCENE_INPUT, |world, _entity, _frame| {
+    OnFrame::new(|world, _entity, _frame| {
         dispatch_input(world);
     })
 }
@@ -1310,7 +1294,7 @@ fn dispatch_input_on_frame() -> OnFrame {
 /// without advances every frame. The decision is recorded in `SequenceStepped`
 /// for the behaviour that runs the advance.
 fn step_sequence(entity: Entity) -> OnFrame {
-    OnFrame::new(SCENE_SEQUENCE, move |world, _entity, frame| {
+    OnFrame::new(move |world, _entity, frame| {
         let stepped = match world
             .root_scope()
             .query_one::<&SequenceStep>(entity)
@@ -1338,7 +1322,7 @@ fn step_sequence(entity: Entity) -> OnFrame {
 /// it is queued; the index is captured before it is counted on, so the
 /// behaviour is handed the frame it advances from.
 fn run_scene_advance(entity: Entity) -> OnFrame {
-    OnFrame::new(SCENE_ADVANCE, move |world, _entity, frame| {
+    OnFrame::new(move |world, _entity, frame| {
         let stepped = world
             .root_scope()
             .query_one::<&SequenceStepped>(entity)
@@ -1361,7 +1345,7 @@ fn run_scene_advance(entity: Entity) -> OnFrame {
 /// `apply`; the surface is built out of that world. Each frame retries, and
 /// the frames that cannot yet draw are skipped.
 fn ensure_presented(app: Entity) -> OnFrame {
-    OnFrame::new(FRAME_PRESENT, move |world, _entity, _frame| {
+    OnFrame::new(move |world, _entity, _frame| {
         let resumed = world
             .root_scope()
             .query::<(Entity, &Resumed)>()
@@ -1423,7 +1407,7 @@ fn open_url(url: &OpenUrl) {
 /// from it when the switch is served: the control state is read in one block
 /// and acted on after.
 fn serve_scene_controls(app: Entity) -> OnFrame {
-    OnFrame::new(FRAME_CONTROLS, move |world, _entity, _frame| {
+    OnFrame::new(move |world, _entity, _frame| {
         if FrameSkip::is_skipped(world) {
             return;
         }
@@ -1486,7 +1470,7 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
 
 /// Advance the scene by the frame's delta.
 fn advance_scene(app: Entity) -> OnFrame {
-    OnFrame::new(FRAME_ADVANCE, move |world, _entity, frame| {
+    OnFrame::new(move |world, _entity, frame| {
         if FrameSkip::is_skipped(world) {
             return;
         }
@@ -1530,7 +1514,7 @@ fn presenting_pass(scene: &Scene, mcp: bool) -> Option<Entity> {
 /// scene's pass draws into it directly. Either way the frame is one render and
 /// one submission.
 fn present_frame(app: Entity) -> OnFrame {
-    OnFrame::new(FRAME_DRAW, move |world, _entity, _frame| {
+    OnFrame::new(move |world, _entity, _frame| {
         if FrameSkip::is_skipped(world) {
             return;
         }
@@ -1618,13 +1602,14 @@ fn present_frame(app: Entity) -> OnFrame {
             });
     })
 }
+
 /// Request the GPU context once a window exists to present through.
 ///
 /// The window is created by the host at the end of the resume callback, so the
 /// request waits for a later frame; a `GpuState` that is no longer idle keeps
 /// a later frame from starting it twice.
 fn request_gpu(app: Entity) -> OnFrame {
-    OnFrame::new(FRAME_GPU, move |world, _entity, _frame| {
+    OnFrame::new(move |world, _entity, _frame| {
         if !world
             .root_scope()
             .query_one::<&GpuState>(app)

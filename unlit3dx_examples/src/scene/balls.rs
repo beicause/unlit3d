@@ -23,9 +23,9 @@ use unlit3d::components::Transform;
 use unlit3dx::prelude::*;
 
 use super::Scene;
-use super::order::{ScenePhase, TICK_BALLS, advancing};
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance, look};
+use super::tick::advancing;
 use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
 use crate::render::{BallInstance, RenderEntity, despawn_instances_job, show, sweep};
 
@@ -672,10 +672,7 @@ impl Bundle for BallDrops {
         let Self { balls, scene } = self;
         bundle![
             balls,
-            advancing(
-                ScenePhase::Objects.at(TICK_BALLS),
-                move |balls, world, _frame| { Self::tick(balls, world, &scene) }
-            ),
+            advancing(move |balls, world, _frame| Self::tick(balls, world, &scene)),
         ]
     }
 }

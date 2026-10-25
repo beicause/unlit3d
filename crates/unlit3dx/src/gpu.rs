@@ -17,9 +17,9 @@ use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
 
-/// The frame-behaviour order the GPU request runs at: before everything
-/// that draws.
-pub(crate) const REQUEST_GPU_ORDER: i32 = 0;
+/// The frame-behaviour order the GPU request runs at: before the default
+/// band, so the GPU is there before any behaviour that states no order runs.
+pub(crate) const REQUEST_GPU_ORDER: i32 = -1;
 
 /// The GPU context a scene draws with.
 ///
@@ -129,7 +129,7 @@ where
     let answer: Rc<RefCell<Option<Result<Gpu, String>>>> = Rc::default();
     let mut state = 0u8;
     let mut ready = Some(ready);
-    OnFrame::new(
+    OnFrame::with_order(
         FrameBehaviourOrder(REQUEST_GPU_ORDER),
         move |world, _entity, _frame| {
             if state == 2 {

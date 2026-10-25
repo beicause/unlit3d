@@ -1033,15 +1033,19 @@ has one family, [`OnFrame`](frame::OnFrame), dispatched by
 [`dispatch_frame`](frame::dispatch_frame); a frame behaviour receives `&World`,
 the entity it sits on, and a `&mut` [`Frame`](frame::Frame) carrying the frame's
 delta time, index and size. That is the same shape as the event families, with
-the frame context in place of an event. Ordering is by
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), then by entity for equal
-orders, and the library declares no order values of its own: what runs before
-what is the application's to define. A windowed application's host world and each
-world it drives dispatch the same family, so the scene side is componentised the
-same way. Spawn a behaviour with [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn).
-A behaviour that needs the rest of the frame
-skipped sets a flag its siblings read; a behaviour that needs structural change
-queues it, because a callback only holds `&World`.
+the frame context in place of an event. A behaviour spawned with
+[`OnFrame::new`](frame::OnFrame::new) states no order and runs where its spawn
+put it, among the other behaviours that state none, so a world's frame order is
+the order its setup spawns behaviours in. One whose reads or writes another
+behaviour depends on states the order at both ends, with
+[`OnFrame::with_order`](frame::OnFrame::with_order) and a
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), and the library declares no
+order values of its own: what runs before what is the application's to define. A
+windowed application's host world and each world it drives dispatch the same
+family, so the scene side is componentised the same way. Spawn a behaviour with
+[`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn). A behaviour that needs the rest
+of the frame skipped sets a flag the siblings spawned after it read; a behaviour
+that needs structural change queues it, because a callback only holds `&World`.
 
 ```rust,no_run
 # use unlit3d::winit::builtin::{ExitOn, ExitTrigger, WindowSetup};

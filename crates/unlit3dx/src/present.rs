@@ -58,8 +58,9 @@ pub const SCENE_PASS_ORDER: FramePassOrder = FramePassOrder(0);
 /// scene's own, so the target it samples holds this frame's picture.
 pub const BLIT_PASS_ORDER: FramePassOrder = FramePassOrder(1);
 
-/// The frame-behaviour order the draw runs at: after any behaviour that
-/// feeds the frame, before behaviours that read its result.
+/// The frame-behaviour order the draw runs at: after the default band, so
+/// every behaviour that feeds the frame has run, and before behaviours that
+/// read its result state an order of their own.
 pub(crate) const DRAW_ORDER: i32 = 10;
 
 /// Everything needed to render a frame and present it.
@@ -440,7 +441,7 @@ impl Command for DrawFrame {
 /// The renderer walks every pass of the world here, so the scene's own pass
 /// and the offscreen path's copying pass both record on this one call.
 pub fn draw_presented() -> OnFrame {
-    OnFrame::new(
+    OnFrame::with_order(
         FrameBehaviourOrder(DRAW_ORDER),
         move |world, _entity, frame| {
             let Some(mut presenter) = world

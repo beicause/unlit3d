@@ -90,18 +90,19 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   每个音都是发给那个实体的 job。这个 world 对外报告的是它的 `AudioFormat`（示例
   读它来应答安装）与流带来的 `AudioOutputOpen` 标记。
 - **玩法 world** 是唯一知道其余三者的地方，它是一组对象而不是一坨状态。每个对象都以
-  一个 bundle 生成：一个组件携带它自己拥有的东西，外加一个按各自 order 推进它的
-  `OnFrame` 行为：
+  一个 bundle 生成：一个组件携带它自己拥有的东西，外加一个推进它的 `OnFrame`
+  行为；初始化按它们运行的顺序生成这些对象，这里没有任何地方声明顺序，因此对象
+  就按初始化的生成顺序 tick：
 
-  - `SceneState`（tick 100）用一个 job 搭出场景的资源——网格与带图案的材质。每次
-    落球都向渲染 world 要一个自己的实例。
+  - `SceneState` 用一个 job 搭出场景的资源——网格与带图案的材质，早于读取它们的
+    对象被生成。每次落球都向渲染 world 要一个自己的实例。
   - `spawn_floor` 在第一次落球可能发生之前排队地面这个固定刚体，并搭建绘制它的
     棋盘格实例。
-  - `Balls`（tick 200）每次落球都 spawn 一个 `Ball` 实体，向渲染 world 要实例、向物理
+  - `Balls` 每次落球都 spawn 一个 `Ball` 实体，向渲染 world 要实例、向物理
     要刚体。两份答复都点名这个球，因此球本身就是身份：两半都到齐、并且渲染 world 确认
     已经显示，球才算显示；找不到自己球的答复会自行清理。镜头再也看不到的实例由渲染
     world despawn 并把球回报，球随之一起消失。
-  - `SceneAudio`（tick 300）向音频 world 索要合成器的音源，拿到答复后在本 world 里
+  - `SceneAudio` 向音频 world 索要合成器的音源，拿到答复后在本 world 里
     生成场景的两条音轨：每条是一个 `MidiSequencer` 加它的时钟、它所弹入的音源，而
     音频 world 的 sender 则来自 tick 时拿到的这个 `Scene`。背景音乐循环立刻开播，
     示例序列则暂停着等面板。

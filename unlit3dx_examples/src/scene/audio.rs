@@ -14,7 +14,7 @@ use unlit3dx::prelude::*;
 
 use super::Scene;
 use super::music::{bgm_midi, sequence_midi};
-use super::order::{ScenePhase, TICK_AUDIO, advancing};
+use super::tick::advancing;
 
 /// How a scene's audio world gets its synthesizer and its output.
 pub enum AudioSetup {
@@ -101,14 +101,11 @@ impl Bundle for PlayingTrack {
         let Self { track, scene } = self;
         bundle![
             track,
-            advancing(
-                ScenePhase::Objects.at(TICK_AUDIO),
-                move |track: &mut Track, _world, frame| {
-                    track
-                        .midi
-                        .advance(f64::from(frame.delta_time), track.voice, &scene.audio);
-                },
-            ),
+            advancing(move |track: &mut Track, _world, frame| {
+                track
+                    .midi
+                    .advance(f64::from(frame.delta_time), track.voice, &scene.audio);
+            }),
         ]
     }
 }
@@ -215,10 +212,7 @@ impl Bundle for Music {
         let Self { audio, scene } = self;
         bundle![
             audio,
-            advancing(
-                ScenePhase::Objects.at(TICK_AUDIO),
-                move |audio, world, _frame| { Self::tick(audio, world, &scene) }
-            ),
+            advancing(move |audio, world, _frame| Self::tick(audio, world, &scene)),
         ]
     }
 }

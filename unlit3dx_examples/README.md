@@ -122,21 +122,23 @@ it is paced differs.
 - The **gameplay world** is the only place that knows about all three, and it
   is a set of objects rather than one state blob. Each object is spawned as a
   bundle holding the component that carries what it owns and the `OnFrame`
-  behaviour that advances it at an order of its own:
+  behaviour that advances it, and the world's setup spawns them in the order
+  they run: nothing here states an order, so the objects tick in the order the
+  setup puts them in.
 
-  - `SceneState` (tick 100) builds the scene's assets — meshes and patterned
-    materials — as one job of its own. Every drop asks the render world for an
-    instance of its own.
+  - `SceneState` builds the scene's assets — meshes and patterned
+    materials — as one job of its own, before the objects that read them are
+    spawned. Every drop asks the render world for an instance of its own.
   - `spawn_floor` queues the fixed ground body and builds the checker
     instance that draws it, before the first drop can happen.
-  - `Balls` (tick 200) spawns a `Ball` entity for every drop and asks the
+  - `Balls` spawns a `Ball` entity for every drop and asks the
     render world for an instance and physics for a body. Both answers name the
     ball, so the ball itself is the identity: it is shown once both halves
     arrive and the render world confirms the show, and an answer that no longer
     finds its ball cleans itself up. The render world despawns an instance the
     camera can no longer see and reports the ball back, and the ball goes away
     with it.
-  - `SceneAudio` (tick 300) asks the audio world for the synthesizer's voice,
+  - `SceneAudio` asks the audio world for the synthesizer's voice,
     and on the answer spawns the scene's two tracks in this world: each is a
     `MidiSequencer` with a clock and the voice it plays into, and it takes
     the audio world's sender from the `Scene` it is ticked with. The

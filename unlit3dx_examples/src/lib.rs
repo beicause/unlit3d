@@ -149,6 +149,16 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     };
     let gameplay_sender = worlds.gameplay.sender.clone();
 
+    // The frame's input: the host dispatches its own key behaviours before
+    // anything else in this frame reads them. Nothing clears anything
+    // afterwards — each world and the render world's UI source read their
+    // own copy of the stream.
+    world
+        .root_scope_mut()
+        .spawn(bundle![OnFrame::new(|world, _entity, _frame| {
+            dispatch_input(world);
+        }),]);
+
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
     if stepped {
@@ -219,16 +229,6 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 drop_ball(&gameplay_sender);
             }
         },),]);
-    // The frame's input: the host dispatches its own key behaviours before
-    // the draw. Nothing clears anything afterwards — each world and the
-    // render world's UI source read their own copy of the stream.
-    world.root_scope_mut().spawn(bundle![OnFrame::new(
-        FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
-        |world, _entity, _frame| {
-            dispatch_input(world);
-        },
-    ),]);
-
     host.run(event_loop).expect("the event loop runs");
 }
 
@@ -239,12 +239,9 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
 /// carries the step remainders, so the worlds keep their rates whatever
 /// the display redraws at.
 fn stepped_frame(worlds: SceneHandles, mut stepper: SceneStepper) -> OnFrame {
-    OnFrame::new(
-        FrameBehaviourOrder(FRAME_INLINE_STEP),
-        move |world, _entity, frame| {
-            stepper.step(world, &worlds, f64::from(frame.delta_time));
-        },
-    )
+    OnFrame::new(move |world, _entity, frame| {
+        stepper.step(world, &worlds, f64::from(frame.delta_time));
+    })
 }
 
 /// The audio setup a windowed run takes when the host steps the worlds.

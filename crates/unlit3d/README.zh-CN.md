@@ -738,11 +738,15 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 [`OnFrame`](frame::OnFrame)，由 [`dispatch_frame`](frame::dispatch_frame) 驱动；
 帧行为拿到 `&World`、它所在实体，以及一个 `&mut`
 [`Frame`](frame::Frame)——里面是这一帧的 delta、序号与尺寸。形状与事件族完全一致，
-只是把「事件」换成了「这一帧的上下文」。排序先按
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder)，同序时再按实体；库自身不声明任何
-顺序值，谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
+只是把「事件」换成了「这一帧的上下文」。用
+[`OnFrame::new`](frame::OnFrame::new) 生成的行为不声明顺序，就跑在它被生成的位置上，
+与其余不声明顺序的行为之间按生成先后排；于是某个 world 一帧内的顺序，就是它的初始化按什么
+顺序生成这些行为。若某个行为的读写被另一个行为依赖，就用
+[`OnFrame::with_order`](frame::OnFrame::with_order) 配一个
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder) 在两端都把顺序声明出来。库自身不声明
+任何顺序值，谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
 所以场景侧也用同样的方式组件化。用 [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn)
-生成行为。需要跳过本帧其余工作的行为写一个兄弟行为会读的标志；需要结构
+生成行为。需要跳过本帧其余工作的行为写一个标志，由生成在它之后的行为去读；需要结构
 变更的行为把变更排队，因为回调只持有 `&World`。
 
 ```rust,no_run

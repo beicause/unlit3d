@@ -12,8 +12,8 @@ use unlit3dx::prelude::*;
 
 use super::HIDDEN_POSITION;
 use super::Scene;
-use super::order::{ScenePhase, TICK_SCENE, advancing};
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
+use super::tick::advancing;
 use crate::render::{
     RenderEntity, allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler,
 };
@@ -150,10 +150,7 @@ impl Bundle for SceneBuild {
         let Self { state } = self;
         bundle![
             state,
-            advancing(
-                ScenePhase::Objects.at(TICK_SCENE),
-                move |state, _world, _frame| { Self::tick(state) }
-            ),
+            advancing(move |state, _world, _frame| Self::tick(state)),
         ]
     }
 }
