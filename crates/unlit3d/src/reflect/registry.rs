@@ -15,20 +15,20 @@ use crate::components::{
 use crate::input::InputEvents;
 use crate::unlit::{InstanceColor, InstanceCutoff, UnlitPipelineKey};
 
-inventory::submit! { ComponentEntry::default::<Transform>() }
+inventory::submit! { ComponentEntry::new::<Transform>() }
 inventory::submit! { ComponentEntry::new::<Camera>() }
 inventory::submit! { ComponentEntry::new::<RenderLoadOps>() }
 inventory::submit! { ComponentEntry::new::<GpuMesh>() }
 inventory::submit! { ComponentEntry::new::<GpuMaterial>() }
 inventory::submit! { ComponentEntry::new::<GpuRenderPipeline<UnlitPipelineKey>>() }
-inventory::submit! { ComponentEntry::default::<ZSortedDrawing>() }
-inventory::submit! { ComponentEntry::default::<InstanceVisibility>() }
-inventory::submit! { ComponentEntry::default::<SkinPose>() }
-inventory::submit! { ComponentEntry::default::<MorphWeights>() }
+inventory::submit! { ComponentEntry::new::<ZSortedDrawing>() }
+inventory::submit! { ComponentEntry::new::<InstanceVisibility>() }
+inventory::submit! { ComponentEntry::new::<SkinPose>() }
+inventory::submit! { ComponentEntry::new::<MorphWeights>() }
 inventory::submit! { ComponentEntry::new::<SkinBinding>() }
 inventory::submit! { ComponentEntry::new::<MorphBinding>() }
-inventory::submit! { ComponentEntry::default::<InstanceColor>() }
-inventory::submit! { ComponentEntry::default::<InstanceCutoff>() }
+inventory::submit! { ComponentEntry::new::<InstanceColor>() }
+inventory::submit! { ComponentEntry::new::<InstanceCutoff>() }
 inventory::submit! { ComponentEntry::new::<InputEvents>() }
 
 #[cfg(test)]

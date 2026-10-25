@@ -294,7 +294,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, facet::Facet)]
     struct Marker(u32);
 
-    inventory::submit! { crate::reflect::ComponentEntry::default::<Marker>() }
+    inventory::submit! { crate::reflect::ComponentEntry::new::<Marker>() }
 
     /// A world with a scene holding one child, and a sibling scene of its own.
     fn fixture() -> (World, Entity, Entity, Entity) {

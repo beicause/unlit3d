@@ -18,6 +18,7 @@
 //! reachable from the binary is not linked in either; a binary that wants a
 //! crate's entries has to name that crate.
 
+use facet::Characteristic;
 use facet::Facet;
 use facet::Partial;
 
@@ -27,9 +28,9 @@ use crate::{DynamicBundle, Entity, EntityAccessError, Scope};
 
 /// One component the JSON bridge can address.
 ///
-/// Build one with [ComponentEntry::new] or [ComponentEntry::default] and submit
-/// it with `inventory::submit!`. Both constructors are `const`, so a submission
-/// is a static initializer and costs nothing at run time.
+/// Build one with [ComponentEntry::new] and submit it with
+/// `inventory::submit!`. The constructor is `const`, so a submission is a
+/// static initializer and costs nothing at run time.
 #[derive(Debug)]
 pub struct ComponentEntry {
     /// The bare type name a client addresses the component by.
@@ -51,8 +52,12 @@ pub struct ComponentEntry {
 impl ComponentEntry {
     /// The entry for C, using the reflection C derives.
     ///
-    /// Spawning a C from a partial value needs a base to merge it over; a C
-    /// that is [Default] is submitted with [ComponentEntry::default] instead.
+    /// Spawning a C from a partial value needs a base to merge it over, which
+    /// is C's own [Default] when it has one: a [Default] C is spawned from only
+    /// the fields that matter, while a C without one has to name every field.
+    /// Which of the two applies is read from the reflection C derives, so a
+    /// component that gains a [Default] starts merging over it without the
+    /// submission changing.
     pub const fn new<C: Facet<'static> + Clone>() -> Self {
         Self {
             name: C::SHAPE.type_identifier,
@@ -60,21 +65,6 @@ impl ComponentEntry {
             encode: encode_component::<C>,
             set: set_component::<C>,
             push: push_component::<C>,
-            spawnable: true,
-        }
-    }
-
-    /// The entry for a [Default] C, using the reflection C derives.
-    ///
-    /// The default is what a partial value given to a spawn is merged over, so
-    /// a C submitted this way can be spawned from only the fields that matter.
-    pub const fn default<C: Facet<'static> + Default + Clone>() -> Self {
-        Self {
-            name: C::SHAPE.type_identifier,
-            module_path: C::SHAPE.module_path,
-            encode: encode_component::<C>,
-            set: set_component::<C>,
-            push: push_default_component::<C>,
             spawnable: true,
         }
     }
@@ -211,16 +201,16 @@ fn push_component<C: Facet<'static> + Clone>(
     patch: &str,
 ) -> Result<(), String> {
     let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
+    // A C that is Default merges the patch over its own default, so a spawn may
+    // name only the fields that matter. The reflection says whether C has one,
+    // which keeps this a runtime question rather than a bound on C.
+    let partial = if C::SHAPE.is(Characteristic::Default) {
+        partial.set_default().map_err(|error| error.to_string())?
+    } else {
+        partial
+    };
     let partial = facet_json::from_str_into(patch, partial).map_err(|error| error.to_string())?;
     builder.push_component(materialize::<C>(partial)?);
-    Ok(())
-}
-
-fn push_default_component<C: Facet<'static> + Default + Clone>(
-    builder: &mut DynamicBundle,
-    patch: &str,
-) -> Result<(), String> {
-    builder.push_component(apply(C::default(), patch)?);
     Ok(())
 }
 
@@ -278,7 +268,15 @@ mod tests {
     #[derive(Clone, Copy, Debug, Default, facet::Facet)]
     struct Name(&'static str);
 
-    inventory::submit! { ComponentEntry::default::<Position>() }
+    /// A component with no [Default], which a spawn therefore cannot merge a
+    /// partial value over.
+    #[derive(Clone, Debug, facet::Facet)]
+    struct Offset {
+        distance: f32,
+    }
+
+    inventory::submit! { ComponentEntry::new::<Position>() }
+    inventory::submit! { ComponentEntry::new::<Offset>() }
 
     /// The reflected fields are the codec: a component's own struct is the only
     /// place its field list is written down, so reading and writing cannot
@@ -327,6 +325,25 @@ mod tests {
         let value: Position = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.x, 4.0);
         assert_eq!(value.y, 0.0);
+    }
+
+    /// A component with no [Default] has nothing to merge a partial value over,
+    /// so a spawn has to name every field. Which of the two applies is read
+    /// from the reflection, not from the submission.
+    #[test]
+    fn a_component_without_a_default_must_name_every_field() {
+        let mut builder = DynamicBundle::new().named("reflect test");
+        push(&mut builder, "Offset", r#"{"distance":4.0}"#).expect("a whole value is accepted");
+        let mut world = World::new();
+        let entity = world.root_scope_mut().spawn(builder);
+        let encoded = encode(&world.root_scope(), entity, "Offset").expect("it encodes");
+        let value: Offset = facet_json::from_str(&encoded).expect("the encoding is JSON");
+        assert_eq!(value.distance, 4.0);
+
+        let mut builder = DynamicBundle::new().named("reflect test");
+        let error =
+            push(&mut builder, "Offset", "{}").expect_err("there is no default to merge over");
+        assert!(error.contains("distance"), "{error}");
     }
 
     /// A component that is not submitted is reported, and the message names the
