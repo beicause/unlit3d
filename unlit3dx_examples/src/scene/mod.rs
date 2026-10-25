@@ -105,7 +105,7 @@ pub const RENDER_HZ: f64 = 60.0;
 /// The entities are the render world's own. Every world numbers its entities
 /// from zero, so an id from the world that sends the job names something
 /// unrelated in the world that runs it, which is why they are
-/// [`RenderEntity`](crate::render::RenderEntity)s rather than bare entities.
+/// [`RenderEntity`]s rather than bare entities.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenePoses(pub Vec<(RenderEntity, Transform)>);
 

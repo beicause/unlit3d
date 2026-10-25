@@ -2,7 +2,7 @@
 //!
 //! A job is one way: what one world says to another is a closure, and nothing
 //! comes back with it. A caller that needs a value the other world makes asks
-//! for it, and [@Pending] is the asking: it sends the job, names what it asked
+//! for it, and [Pending](crate::request::Pending) is the asking: it sends the job, names what it asked
 //! for with a key of the caller's own — a ball's entity, say — and folds
 //! whatever came back into the world on the caller's own tick.
 //!
@@ -20,7 +20,7 @@
 //!   caller's tick, so a caller never blocks, and an answer that arrives for
 //!   a request already given up on is dropped instead of delivered twice.
 //!
-//! A [@Pending] is not a future and the wait is not a wakeup: an answer lands
+//! A [Pending](crate::request::Pending) is not a future and the wait is not a wakeup: an answer lands
 //! in a queue, and the tick that needs it folds it. That is what keeps a
 //! stepped world's wait identical to a threaded one's, and what lets an answer
 //! be applied straight to the world rather than handed to a continuation
@@ -64,7 +64,7 @@ pub enum Settled<T> {
 
 /// The requests one world owes a caller, and the answers that have come back.
 ///
-/// One [@Pending] serves one world: it is built with the state that world
+/// One [Pending] serves one world: it is built with the state that world
 /// publishes, and every request made through it goes to it. A caller that asks
 /// two worlds for two things keeps two.
 ///
@@ -92,7 +92,7 @@ where
     /// Requests for the world `state` reports on, each allowed to go
     /// unanswered for `timeout` ticks.
     ///
-    /// A tick is one [@advance](Self::advance): whatever drives the asking
+    /// A tick is one [advance](Self::advance): whatever drives the asking
     /// world decides what one is worth, so a world stepped at a fixed rate
     /// measures its waits in steps and one paced by a clock measures them in
     /// frames of its own. `None` waits until the world answers or ends.
