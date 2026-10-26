@@ -13,7 +13,7 @@ use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World
 use unlit3d::winit::event::OnAboutToWait;
 
 use crate::sync;
-use crate::world::{WorldName, WorldSender};
+use crate::world::{WorldName, WorldSender, drain_stepped_world};
 
 /// The commands the transport thread has posted for the host to run.
 ///
@@ -61,14 +61,38 @@ pub fn serve_mcp(world: &mut World) {
 /// itself: it is the only one that knows which entities carry a world —
 /// a nested one, or a sender to one that runs apart from it.
 fn drain_mcp() -> OnAboutToWait {
-    OnAboutToWait::new(move |world, _entity, ()| {
-        let Some(inbox) = world.root_scope().query::<&McpInbox>().next() else {
-            return;
-        };
-        while let Ok(command) = inbox.receiver.try_recv() {
-            dispatch_command(world, command);
-        }
-    })
+    OnAboutToWait::new(move |world, _entity, ()| drain(world))
+}
+
+/// Drain the commands the transport posted.
+fn drain(world: &World) {
+    let Some(inbox) = world.root_scope().query::<&McpInbox>().next() else {
+        return;
+    };
+    while let Ok(command) = inbox.receiver.try_recv() {
+        dispatch_command(world, command);
+    }
+}
+
+/// Run one MCP turn without a window event loop.
+///
+/// A headless host calls this between its own frames. Commands are applied
+/// before the next frame, just as they are between two window callbacks. A
+/// command for a world the host steps is queued as a job of that world, so the
+/// turn ends by draining those queues: the reply must not wait for a frame the
+/// client has not asked for yet.
+pub fn pump_mcp(world: &mut World) -> Result<(), EntityAccessError> {
+    drain(world);
+    world.apply()?;
+    let stepped: Vec<Entity> = world
+        .root_scope()
+        .query::<(&WorldSender, Entity)>()
+        .map(|(_sender, entity)| entity)
+        .collect();
+    for entity in stepped {
+        drain_stepped_world(world, entity);
+    }
+    Ok(())
 }
 
 /// Run one MCP command against the world it names.

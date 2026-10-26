@@ -7,13 +7,14 @@
 
 mod bridge;
 
-pub use bridge::serve_mcp;
+pub use bridge::{pump_mcp, serve_mcp};
 
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{
     CommandSender, McpServer, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
 };
 use unlit_ecs::{Entity, World, bundle};
+use unlit3d::winit::builtin::ExitRequest;
 
 use crate::record::{RecordingHandle, start_recording, write_wav};
 
@@ -46,6 +47,16 @@ fn register(router: &mut ToolRouter<McpServer>) {
         cancel_audio_recording,
     ));
     router.add_route(tool(
+        "read_audio_recording",
+        "Stop an audio world's recording and return its captured mix as a base64-encoded 16-bit PCM WAV, without writing a file.",
+        read_audio_recording,
+    ));
+    router.add_route(tool(
+        "request_exit",
+        "Ask the host to exit normally. The host must carry an ExitRequest component.",
+        request_host_exit,
+    ));
+    router.add_route(tool(
         "audio_recording_status",
         "Report what an audio world's recording has captured so far, or that none is in progress.",
         audio_recording_status,
@@ -64,6 +75,27 @@ async fn start_audio_recording(commands: CommandSender, args: StartRecording) ->
 async fn stop_audio_recording(commands: CommandSender, args: StopRecording) -> ToolResult {
     command(&commands, args.world, move |world| {
         stop(world, &args.directory, args.file_name.as_deref())
+    })
+    .await
+}
+
+/// Finish a recording and return its bytes without touching the filesystem.
+async fn read_audio_recording(commands: CommandSender, args: WorldArg) -> ToolResult {
+    command(&commands, args.world, read).await
+}
+
+/// Ask a windowed or headless host to exit normally.
+async fn request_host_exit(commands: CommandSender, args: WorldArg) -> ToolResult {
+    command(&commands, args.world, |world| {
+        let mut found = false;
+        for mut request in world.root_scope().query::<&mut ExitRequest>() {
+            request.0 = true;
+            found = true;
+        }
+        if !found {
+            return Err("the host has no exit request".to_owned());
+        }
+        Ok(serde_json::json!({ "requested": true }))
     })
     .await
 }
@@ -119,6 +151,25 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
         channels: audio.format.channels,
     };
     serde_json::to_value(report).map_err(|error| error.to_string())
+}
+
+/// Stop the recording and encode it in memory.
+fn read(world: &mut World) -> Result<Value, String> {
+    use base64::Engine as _;
+
+    let handle = take(world)?;
+    let Some(audio) = handle.stop(world) else {
+        return Err("the recording captured no fill".to_owned());
+    };
+    let bytes = write_wav(audio.format, &audio.samples);
+    Ok(serde_json::json!({
+        "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        "size": bytes.len(),
+        "frames": audio.frame_count(),
+        "seconds": audio.seconds(),
+        "sample_rate": audio.format.sample_rate,
+        "channels": audio.format.channels,
+    }))
 }
 
 /// Stop the recording and throw its samples away.

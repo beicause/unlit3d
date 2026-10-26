@@ -4713,6 +4713,7 @@ name = "unlit3dx"
 version = "0.1.0-dev.2"
 dependencies = [
  "async-channel",
+ "base64 0.22.1",
  "cpal",
  "futures-executor",
  "futures-util",
@@ -4744,6 +4745,7 @@ dependencies = [
  "android_logger",
  "argh",
  "async-channel",
+ "base64 0.22.1",
  "claxon",
  "console_error_panic_hook",
  "console_log",
@@ -4754,6 +4756,9 @@ dependencies = [
  "image",
  "log",
  "pollster",
+ "schemars",
+ "serde",
+ "serde_json",
  "unlit3d",
  "unlit3dx",
  "unlit3dx_asset_bytes",

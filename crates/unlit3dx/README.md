@@ -318,12 +318,16 @@ The bridges:
   leaves a `WorldSender` and a `WorldName` on the proxy entity beside the
   proxy: the sender is what lets the transport post a command into a world
   it cannot borrow, and the name is what `list_worlds` reports. The crate
-  registers four tools of its own — `start_audio_recording`,
-  `stop_audio_recording`, `cancel_audio_recording` and
-  `audio_recording_status` — which drive a recording in the named world and
-  write the mix out as a WAV file. A recording source mounts at the end of
-  the fill order, so it captures the mix after every other source and the
-  world's `GlobalAudioGain`, and the samples become a RIFF/WAVE file with no extra
+  registers recording tools — `start_audio_recording`,
+  `stop_audio_recording`, `read_audio_recording`, `cancel_audio_recording`
+  and `audio_recording_status` — which drive a recording in the named world
+  and either write the mix out as a WAV file or hand it back in memory, so a
+  test can assert on the samples without touching the disk. `request_exit`
+  asks a host carrying `ExitRequest` to stop, and `pump_mcp` dispatches
+  commands when no window event loop runs, which is what lets a host without
+  winit serve MCP at all. A recording source mounts at the end of the fill
+  order, so it captures the mix after every other source and the world's
+  `GlobalAudioGain`, and the samples become a RIFF/WAVE file with no extra
   dependency. The recorder is compiled only for these tools, so `mcp` turns
   `audio` on itself.
 

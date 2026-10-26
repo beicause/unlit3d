@@ -243,12 +243,15 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   [模型上下文协议](../unlit_ecs/README.zh-CN.md)对外服务，场景
   运行时即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
   `WorldSender` 与一个 `WorldName`：前者让传输层能把命令投进一个它借不到的
-  world，后者就是 `list_worlds` 报告的名字。本 crate 自带的四个工具——
-  `start_audio_recording`、`stop_audio_recording`、`cancel_audio_recording`
-  与 `audio_recording_status`——在指名的 world 上驱动一次录音，并把混音写成
-  WAV 文件。录音音源挂在填充顺序的最末，因此它捕获到的是所有其他音源与 world 的
-  `GlobalAudioGain` 之后的混音，样本写成一个 RIFF/WAVE 文件，无需额外依赖。录音器只为这
-  些工具编译，故 `mcp` 自身蕴含 `audio`。
+  world，后者就是 `list_worlds` 报告的名字。录音工具——
+  `start_audio_recording`、`stop_audio_recording`、`read_audio_recording`、
+  `cancel_audio_recording` 与 `audio_recording_status`——在指名的 world 上驱动一次录音，
+  并把混音写成 WAV 文件或直接在内存中返回，测试因此无需落盘就能断言样本。`request_exit`
+  请求携带 `ExitRequest` 的宿主退出；没有窗口事件循环时，`pump_mcp` 负责分发命令，
+  这也正是没有 winit 的宿主仍能对外服务 MCP 的原因。录音音源挂在填充顺序的最末，
+  因此它捕获到的是所有其他音源与 world 的 `GlobalAudioGain` 之后的混音，
+  样本写成一个 RIFF/WAVE 文件，无需额外依赖。录音器只为这些工具编译，
+  故 `mcp` 自身蕴含 `audio`。
 
 ## 最佳实践
 

@@ -22,6 +22,7 @@ required-features = ["audio", "physics", "synth"]
 
 [dependencies]
 async-channel.workspace = true
+base64 = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
 futures-executor.workspace = true
 futures-util.workspace = true
@@ -59,6 +60,7 @@ audio = ["dep:cpal", "dep:ringbuf"]
 ## leaving a caller to pair the two — the recorder is compiled only for them.
 mcp = [
   "audio",
+  "dep:base64",
   "dep:schemars",
   "dep:serde",
   "unlit_ecs/mcp",

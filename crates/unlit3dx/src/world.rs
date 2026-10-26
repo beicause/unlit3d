@@ -368,22 +368,8 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
         stepped.inbox.close();
         return;
     }
-    loop {
-        let Ok(job) = stepped.inbox.try_recv() else {
-            break;
-        };
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut stepped.world)));
-        if let Err(payload) = outcome {
-            let message = panic_message(payload.as_ref());
-            log::error!("the stepped world {} panicked: {message}", stepped.name);
-            stepped.status.record_panic(message);
-            // The world is over. Close the queue so a sender learns it from
-            // the send, as a threaded world's departed receiver already
-            // taught it.
-            stepped.inbox.close();
-            return;
-        }
+    if !run_queued_jobs(&mut *stepped) {
+        return;
     }
     let SteppedWorld {
         world,
@@ -416,6 +402,46 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
         }
     }
     publish_collected(world);
+}
+
+/// Run every job queued for a stepped world, without ticking it.
+///
+/// This is the first half of [`step_stepped_world`]: a host that must answer a
+/// command before its next frame drains the queue with it instead of running a
+/// whole tick. Returns `false` when a job panicked, which ends the world the
+/// same way a panicking tick does.
+pub fn drain_stepped_world(host: &World, entity: Entity) -> bool {
+    let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
+        return true;
+    };
+    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+        return true;
+    };
+    if stepped.status.is_finished() || stepped.control.stop_requested() {
+        return true;
+    }
+    run_queued_jobs(stepped)
+}
+
+/// Run the jobs a stepped world has queued, stopping at the first panic.
+fn run_queued_jobs(stepped: &mut SteppedWorld) -> bool {
+    loop {
+        let Ok(job) = stepped.inbox.try_recv() else {
+            return true;
+        };
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut stepped.world)));
+        if let Err(payload) = outcome {
+            let message = panic_message(payload.as_ref());
+            log::error!("the stepped world {} panicked: {message}", stepped.name);
+            stepped.status.record_panic(message);
+            // The world is over. Close the queue so a sender learns it from
+            // the send, as a threaded world's departed receiver already
+            // taught it.
+            stepped.inbox.close();
+            return false;
+        }
+    }
 }
 
 /// Run `f` against a stepped world's world, if `entity` names one.
