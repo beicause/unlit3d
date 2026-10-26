@@ -1,11 +1,14 @@
 [package]
 name = "unlit3dx"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 edition.workspace = true
 description = "Multi-world extension for unlit3d: physics, audio and gameplay worlds on their own threads, joined by jobs and snapshots."
 repository.workspace = true
 license.workspace = true
 keywords = ["audio", "ecs", "gamedev", "multithreading", "physics"]
+# The integration tests read their soundfont from the workspace's `assets`,
+# which is not published, so the tests do not travel in a package either.
+exclude = ["/tests"]
 # The files under tests/ are modules of the one suite binary below rather than
 # targets of their own; see its docs.
 autotests = false
@@ -34,9 +37,9 @@ rustysynth-ext = { workspace = true, optional = true }
 # The audio tools describe their JSON arguments and results to an MCP client.
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
-unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"], optional = true }
-unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false }
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3" }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"], optional = true }
+unlit3d = { path = "../unlit3d", version = "0.1.0-dev.3", default-features = false }
 web-time.workspace = true
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }

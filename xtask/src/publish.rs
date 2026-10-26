@@ -11,8 +11,8 @@
 //! cannot verify them (rust-lang/cargo#16525), and a release is worth checking
 //! before it is uploaded; going crate by crate keeps that check.
 //!
-//! The test harness, the example and the task runner are `publish = false`, so
-//! they are not in the list and are never uploaded.
+//! The test harness, the examples and the task runner are `publish = false`,
+//! so they are not in the list and are never uploaded.
 //!
 //! Arguments after `--` are forwarded to every `cargo publish`, so a flag cargo
 //! gains does not need adding here.
@@ -26,7 +26,7 @@ use super::{PublishArgs, step};
 /// Each crate depends on the ones before it and so goes after them. A crate
 /// added to the workspace belongs here if and only if it is meant to reach
 /// crates.io.
-const CRATES: [&str; 3] = ["unlit_ecs", "unlit_wgpu", "unlit3d"];
+const CRATES: [&str; 4] = ["unlit_ecs", "unlit_wgpu", "unlit3d", "unlit3dx"];
 
 /// Publish every crate, in order.
 pub fn run(args: &PublishArgs) -> Result<(), String> {

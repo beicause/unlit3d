@@ -1,6 +1,6 @@
 [package]
 name = "unlit_wgpu"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 edition.workspace = true
 description = "A compact, opinionated WebGPU renderer for unlit draws: resource graph, vertex compression, pooled buffers and a declarative scene, with a built-in unlit pipeline and an egui backend."
 repository.workspace = true

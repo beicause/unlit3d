@@ -1,6 +1,6 @@
 [package]
 name = "unlit3d_asset_bytes"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 edition.workspace = true
 description = "The glTF documents unlit3d_examples embeds, in a crate of their own."
 repository.workspace = true

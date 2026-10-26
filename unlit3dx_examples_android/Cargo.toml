@@ -1,6 +1,6 @@
 [package]
 name = "unlit3dx_examples_android"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 edition.workspace = true
 description = "The Android shared library that exports unlit3dx_examples' activity entry point."
 repository.workspace = true
@@ -21,7 +21,7 @@ name = "unlit3dx_examples"
 # wraps is behind the same `cfg` in the example, and so is the activity type it
 # takes. Every other target sees an empty crate rather than a dependency graph.
 [target.'cfg(target_os = "android")'.dependencies]
-unlit3dx_examples = { path = "../unlit3dx_examples", version = "0.1.0-dev.2" }
+unlit3dx_examples = { path = "../unlit3dx_examples", version = "0.1.0-dev.3" }
 winit = { workspace = true, features = ["android-game-activity"] }
 
 [lints]

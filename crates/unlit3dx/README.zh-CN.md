@@ -250,8 +250,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   它被布局时拿到的 id，GPU 集成按来源与 id 建键——不重编号任何东西。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的
   子 world，或自有一条线程的 world——通过
-  [模型上下文协议](../unlit_ecs/README.zh-CN.md)对外服务，场景
-  运行时即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
+  [模型上下文协议](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md)对外服务，
+  场景运行时即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
   `WorldSender` 与一个 `WorldName`：前者让传输层能把命令投进一个它借不到的
   world，后者就是 `list_worlds` 报告的名字。录音工具——
   `start_audio_recording`、`stop_audio_recording`、`read_audio_recording`、

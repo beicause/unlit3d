@@ -1,6 +1,6 @@
 [package]
 name = "unlit3dx_asset_bytes"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 edition.workspace = true
 description = "The soundfont unlit3dx_examples embeds, in a crate of its own."
 repository.workspace = true

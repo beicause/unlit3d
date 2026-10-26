@@ -1,6 +1,6 @@
 [package]
 name = "unlit3d_cli"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 edition.workspace = true
 description = "A command-line tool that renders glTF documents to an image."
 repository.workspace = true
@@ -28,21 +28,21 @@ serde.workspace = true
 serde_json.workspace = true
 # The MCP server lives in the ECS crate; the render tools reach the command
 # types through `unlit_ecs::mcp`.
-unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2", features = ["mcp"] }
-unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["gltf"] }
+unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", features = ["mcp"] }
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf"] }
 wgpu.workspace = true
 
 [dev-dependencies]
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"] }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["gltf"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf"] }
 
 # `--mcp` serves the Model Context Protocol, which is a native command line's
 # concern: rmcp's stdio transport runs on tokio, which has no stdio to read in a
 # browser. The switch stays in the parsed arguments everywhere, so the two
 # targets differ only in what the branch does.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["gltf", "mcp"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf", "mcp"] }
 
 # The workspace builds every member's test targets for wasm too, and the export
 # `gpu_test_main!` generates expands to an attribute naming `wasm-bindgen`. The

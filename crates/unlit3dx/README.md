@@ -326,13 +326,13 @@ The bridges:
   integration keys textures by origin and id — nothing renumbers them.
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
-  over the [Model Context Protocol](../unlit_ecs/README.md), so a live scene
-  can be
-  inspected and screenshotted from a terminal while it runs. Each spawn
-  leaves a `WorldSender` and a `WorldName` on the proxy entity beside the
-  proxy: the sender is what lets the transport post a command into a world
-  it cannot borrow, and the name is what `list_worlds` reports. The crate
-  registers recording tools — `start_audio_recording`,
+  over the
+  [Model Context Protocol](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md),
+  so a live scene can be inspected and screenshotted from a terminal while
+  it runs. Each spawn leaves a `WorldSender` and a `WorldName` on the proxy
+  entity beside the proxy: the sender is what lets the transport post a
+  command into a world it cannot borrow, and the name is what `list_worlds`
+  reports. The crate registers recording tools — `start_audio_recording`,
   `stop_audio_recording`, `read_audio_recording`, `cancel_audio_recording`
   and `audio_recording_status` — which drive a recording in the named world
   and either write the mix out as a WAV file or hand it back in memory, so a

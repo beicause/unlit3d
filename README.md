@@ -179,7 +179,7 @@ Commands follow the `cargo xtask` convention:
   default; `--release` builds an unsigned release APK. Needs JDK 17+ and
   `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
 - **`cargo xtask publish`** — upload the publishable crates (`unlit_ecs`,
-  `unlit_wgpu`, `unlit3d`) to crates.io in dependency order,
+  `unlit_wgpu`, `unlit3d`, `unlit3dx`) to crates.io in dependency order,
   waiting for each to reach the index before packaging the next. Arguments
   after `--` are passed through to each `cargo publish`, so `-- --dry-run`
   runs every check without uploading.
