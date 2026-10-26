@@ -323,6 +323,13 @@ impl Renderer {
                         scene.record(&mut render_pass, Some(whole));
                     }
                 }
+                // The scissor is pass state too, and unlike the viewport it has
+                // a survivor: the multisample resolve that ends this pass is a
+                // blit on the GL backend, and a blit there is clipped by the
+                // scissor. A clipped draw left last — the UI window, say — would
+                // resolve only that rectangle and leave the rest of the frame
+                // stale. Cover the whole target so the pass ends unclipped.
+                render_pass.set_scissor_rect(0, 0, attachments.width(), attachments.height());
             }
         }
 

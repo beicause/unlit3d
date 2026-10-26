@@ -607,8 +607,8 @@ async fn mesh_and_ui_respects_source_order() {
 
 /// The UI's clip rectangle must not clip the mesh drawn before it.
 ///
-/// Scissor state is a local of each `Scene::record`, not of the pass, so a
-/// panel's clip cannot reach the earlier 3D draws.
+/// A panel's clip is its own draws' scissor, and every draw sets one before it
+/// draws, so the 3D draws recorded earlier keep the whole target.
 async fn ui_does_not_clip_the_mesh() {
     /// A clip region in one corner, far from the cube.
     const CLIP: f32 = 32.0;
@@ -651,6 +651,65 @@ async fn ui_does_not_clip_the_mesh() {
         "the cube must survive the UI's clip rectangle: {cube_pixels}/{counted} \
          pixels drawn outside the clip region"
     );
+}
+
+/// A clipped panel must not clip the pass's multisample resolve.
+///
+/// The resolve that ends a multisampled pass is a blit on the GL and WebGL2
+/// backends, and a blit there is clipped by the scissor rectangle the pass
+/// still holds when it ends. A panel is the last source recorded and every one
+/// of its draws sets a scissor, so a clipped panel used to resolve its own
+/// rectangle alone and leave the rest of the target as it was, which is a
+/// frame that only repaints where the UI window sits. Covering the whole
+/// target once the sources are recorded is what keeps the resolve whole.
+async fn a_clipped_panel_does_not_clip_the_resolve() {
+    const SAMPLES: u32 = 4;
+    /// The clip region, in one corner and far from every pixel sampled below.
+    const CLIP: f32 = 32.0;
+
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    spawn_load_ops(&world, &gpu);
+
+    let rect = Rect::new(0.0, 0.0, CLIP, CLIP);
+    spawn_panel(
+        &mut world,
+        ui,
+        UiPanel::new(move |_world, _entity, ui| {
+            ui.painter()
+                .with_clip_rect(rect.egui())
+                .rect_filled(rect.egui(), 0.0, RED);
+        }),
+    );
+
+    let target = gpu.bind_offscreen_target_with(&world, SAMPLES, false);
+    gpu.render_frames(&world, 2);
+    let frame = read(&ctx, &target);
+
+    // The panel is inside its clip, which proves the clipped draw ran.
+    let (x, y) = pixel_of(rect.centre(), 1.0);
+    assert!(
+        near(frame.pixel_u8(x, y), RED, 8),
+        "the panel draws inside its own clip, got {:?}",
+        frame.pixel_u8(x, y)
+    );
+
+    // Everywhere else the resolve must have carried the clear over. A resolve
+    // held to the clip leaves these pixels as the target started out, which is
+    // not the colour the pass cleared to.
+    for (x, y) in [
+        (WIDTH - 3, HEIGHT - 3),
+        (WIDTH / 2, HEIGHT / 2),
+        (4, HEIGHT - 4),
+    ] {
+        let pixel = frame.pixel_u8(x, y);
+        assert!(
+            is_clear(pixel, 4),
+            "the resolve must cover the whole target: ({x}, {y}) is {pixel:?}, not the clear colour {:?}",
+            clear_rgb()
+        );
+    }
 }
 
 /// Two frames of a static scene are pixel-identical.
@@ -868,6 +927,7 @@ gpu_tests! {
     ui_only_at_high_pixel_density,
     mesh_and_ui_respects_source_order,
     ui_does_not_clip_the_mesh,
+    a_clipped_panel_does_not_clip_the_resolve,
     mesh_and_ui_survive_a_second_frame,
     a_frame_with_spare_geometry_buffer_room_draws_the_same_picture,
     a_patched_texture_shows_the_patch,

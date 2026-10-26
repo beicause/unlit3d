@@ -154,8 +154,14 @@ without the tree changing.
 
 - A pass is an ordinary entity: it carries the attachments it draws into, the
   [`RenderLoadOps`](components::RenderLoadOps) it is opened with, and the viewport its
-  scenes are clipped to. The sources under it are the ones it records, so a
-  world holds as many passes as the frame needs — a pass drawing into an
+  scenes are clipped to. The viewport is pass state, so the renderer sets it
+  back to the whole target before each scene; the scissor a scene's draws set
+  is pass state as well, and it is left set until the pass closes, so the
+  renderer covers the whole target with it once every source is recorded. A
+  pass that ends with a clipped draw would otherwise resolve only that
+  rectangle on the GL backend, where the multisample resolve is a blit and a
+  blit is clipped by the scissor. The sources under it are the ones it records,
+  so a world holds as many passes as the frame needs — a pass drawing into an
   offscreen target and a pass copying that target onto the swap chain are two
   entities in one world, not two worlds.
 - A pass names views; it does not own them. Attachments come from a
