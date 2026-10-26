@@ -21,11 +21,14 @@ let mut host = World::new();
 // 独占一条线程的 world：一个 `World` 加一条线程，由这个闭包驱动 tick。
 // spawn 返回一个 `WorldHandle`——代理所在的实体、命令队列与线程状态
 // 合于一身。
-let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, control| {
+// 由时钟把循环压在 60 Hz：每次 wait 睡到下一步到期，
+// 因此偶尔跑快的一轮不会把节拍推乱。
+let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / 60.0));
+let simulation = spawn_threaded_world(&mut host, "simulation", 16, move |world, control, _| {
     // ... 在 `world` 里推进模拟 ...
     // 驱动 world 的一方在 tick 跑完后替它向订阅者发布快照，
     // 因此 tick 体不需要自己发布。
-    control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
+    clock.wait(control);
     !control.stop_requested()
 });
 
@@ -168,6 +171,12 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
 一个挂钟期限过去，在 `Stepped` 下这次 tick 在下次调用时就又到期了。因此步进一个
 world 的调用方自己拥有节奏——由它决定一帧值多少步，示例里的 `SceneStepper` 正是
 这么做的。
+
+两种模式用同一条规则把实测的间隔换成整数步：`fixed_steps` 把一次 tick 没花掉的
+零头记到下一次，超过 `MAX_CATCH_UP_STEPS`（四步）的部分则直接丢弃，于是停摆的宿主
+是恢复运行而不是重放停摆。tick 以秒为单位拿到这个间隔——`spawn_threaded_world`
+及其 `_with_init` 版本把它作为 tick 的最后一个参数传入——因此 tick 体不必假设
+自己是以请求的速率被唤醒的。
 
 浏览器与离屏运行用的就是步进模式。`wasm32-unknown-unknown` 没有线程可生成，而快照
 测试想要自己掌控的帧数，而不是由时钟决定的那一个。

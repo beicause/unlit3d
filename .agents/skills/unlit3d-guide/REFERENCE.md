@@ -137,7 +137,7 @@
 | runner | `trait WorldRunner { const SELF_DRIVEN: bool; fn spawn<I, S, T>(host: &mut World, name, command_capacity, init, tick) -> WorldHandle; }` | `crates/unlit3dx/src/world.rs` |
 | 自带线程 | `spawn_threaded_world<T: FnMut(&mut World, &ThreadControl, f32) -> bool + Send>(host, name, cap, tick)`、`..._with_init` | 同上 |
 | 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world(host: &World, entity, delta_seconds: f32)`、`with_stepped_world` | 同上 |
-| 节拍 | `ThreadControl::self_driven()`、`wait_timeout(Duration)`、`FixedClock::{new, set_step, wait, step_seconds}` | `crates/unlit3dx/src/thread.rs` |
+| 节拍 | `ThreadControl::self_driven()`、`wait_timeout(Duration)`、`FixedClock::{new, set_step, wait}`、`fixed_steps(&mut debt, delta_seconds, step_seconds) -> u32` 与 `MAX_CATCH_UP_STEPS = 4` | `crates/unlit3dx/src/thread.rs` |
 | 子 world | `spawn_sub_world(host: &mut World, name, cap) -> WorldHandle`、`drain_sub_world(&mut World)` | `crates/unlit3dx/src/host.rs` |
 | 句柄 | `WorldHandle { entity, sender: JobSender, state: SnapshotReader<WorldState> }`、`new`、`is_finished()`、`stop()` | `crates/unlit3dx/src/handle.rs`、`world.rs` |
 | 名字 | `WorldName(&'static str)` 组件；`Threaded` / `Stepped`；`WorldState = Running\|Stopped\|Panicked` | `crates/unlit3dx/src/world.rs` |

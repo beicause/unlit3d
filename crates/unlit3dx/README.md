@@ -22,11 +22,14 @@ let mut host = World::new();
 // A world on its own thread: a `World` plus a thread, ticked by this closure.
 // The spawn returns a `WorldHandle` — the entity the proxy lives on,
 // the command queue and the thread's status in one value.
-let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, control| {
+// A clock paces the loop at 60 Hz: each wait sleeps until the next step is
+// due, keeping the schedule where a short tick does not shift it.
+let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / 60.0));
+let simulation = spawn_threaded_world(&mut host, "simulation", 16, move |world, control, _| {
     // ... advance the simulation inside `world` ...
     // Whoever drives the world publishes to its subscribers once the
     // tick has run, so a tick body never publishes by hand.
-    control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
+    clock.wait(control);
     !control.stop_requested()
 });
 
@@ -204,6 +207,14 @@ tick body serves both: `FixedClock` waits out a wall-clock deadline under
 `Threaded`, and under `Stepped` the tick is simply due again on the next
 call. A caller stepping a world therefore owns the rate — it decides how many
 steps a frame is worth, which is what the demo's `SceneStepper` does.
+
+Both modes turn a measured interval into whole steps with the same rule:
+`fixed_steps` carries the fraction of a step a tick did not spend into the
+next one, and discards anything past `MAX_CATCH_UP_STEPS` (four) steps, so a
+stalled host resumes instead of replaying the stall. A tick receives the
+interval in seconds — `spawn_threaded_world` and its `_with_init` form pass
+it as the tick's last argument — so a tick body never has to assume the rate
+it asked to be woken at.
 
 The stepped mode is what a browser and a headless run use.
 `wasm32-unknown-unknown` has no thread to spawn, and a snapshot test wants a
