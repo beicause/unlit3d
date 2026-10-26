@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn list_worlds_names_a_world_on_its_own_thread() {
         let (mut host, transport) = host_with_inbox();
-        let threaded = spawn_threaded_world(&mut host, "listed", 8, |_, control| {
+        let threaded = spawn_threaded_world(&mut host, "listed", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
         });
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn a_command_runs_against_a_world_on_its_own_thread() {
         let (mut host, transport) = host_with_inbox();
-        let threaded = spawn_threaded_world(&mut host, "counted", 8, |_, control| {
+        let threaded = spawn_threaded_world(&mut host, "counted", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
         });

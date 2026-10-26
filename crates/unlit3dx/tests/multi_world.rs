@@ -12,7 +12,7 @@ use unlit3dx::prelude::*;
 /// A threaded world that idles between ticks, for the tests to drive.
 fn idle_host() -> (World, WorldHandle) {
     let mut host = World::new();
-    let world = spawn_threaded_world(&mut host, "test", 64, |_, control| {
+    let world = spawn_threaded_world(&mut host, "test", 64, |_, control, _| {
         control.wait_timeout(Duration::from_millis(1));
         true
     });
@@ -311,7 +311,7 @@ fn threaded_world_state_persists_between_jobs() {
 #[test]
 fn a_finished_world_drops_jobs_quietly() {
     let mut host = World::new();
-    let world = spawn_threaded_world(&mut host, "test", 8, |_, _| false);
+    let world = spawn_threaded_world(&mut host, "test", 8, |_, _, _| false);
 
     assert!(
         wait_for(|| world.is_finished()),
@@ -331,7 +331,7 @@ fn a_finished_world_drops_jobs_quietly() {
 #[test]
 fn despawning_the_proxy_stops_the_world() {
     let mut host = World::new();
-    let world = spawn_threaded_world(&mut host, "test", 8, |_, control| {
+    let world = spawn_threaded_world(&mut host, "test", 8, |_, control, _| {
         control.wait_timeout(Duration::from_millis(1));
         true
     });
@@ -360,7 +360,7 @@ fn subscriptions_flow_from_thread_to_host() {
     let mut host = World::new();
     // The world's own tick is what runs its subscribers: a world that never
     // publishes collects nothing, whatever it carries.
-    let world = spawn_threaded_world(&mut host, "test", 8, |_world, control| {
+    let world = spawn_threaded_world(&mut host, "test", 8, |_world, control, _| {
         control.wait_timeout(Duration::from_millis(1));
         true
     });

@@ -23,15 +23,12 @@ pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::{Bundle, DynamicBundle, World};
 
 use crate::handle::WorldHandle;
-use crate::thread::FixedClock;
+use crate::thread::{FixedClock, fixed_steps};
 use crate::world::WorldRunner;
 use unlit_ecs::bundle;
 
 /// The simulation's default step rate, in hertz.
 pub const PHYSICS_HZ: f64 = 60.0;
-
-/// The most simulation steps one threaded tick may run to catch up.
-const MAX_CATCH_UP_STEPS: u32 = 4;
 
 /// How the physics world is set up before its first step.
 #[derive(Clone, Debug)]
@@ -343,14 +340,6 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = Physics::new(config.gravity);
     physics.world.integration_parameters.dt = 1.0 / config.hz as f32;
     world.root_scope_mut().spawn(physics);
-}
-
-/// Turn elapsed time into at most four fixed steps, discarding excess debt.
-fn fixed_steps(debt: &mut f32, delta_seconds: f32, step_seconds: f32) -> u32 {
-    *debt = (*debt + delta_seconds.max(0.0)).min(step_seconds * MAX_CATCH_UP_STEPS as f32);
-    let steps = (*debt / step_seconds) as u32;
-    *debt -= steps as f32 * step_seconds;
-    steps
 }
 
 /// Step the rapier world once, draining its contacts into

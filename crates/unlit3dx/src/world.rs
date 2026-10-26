@@ -193,6 +193,10 @@ impl WorldRunner for Stepped {
 /// returned carries the handle every later job goes through, and
 /// dropping the host entity it names stops the thread.
 ///
+/// `tick` takes the whole seconds since the previous tick, so a tick body
+/// can advance by the time that really passed rather than assume the
+/// rate it asked to be woken at.
+///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
 pub fn spawn_threaded_world<T>(
@@ -202,14 +206,14 @@ pub fn spawn_threaded_world<T>(
     mut tick: T,
 ) -> WorldHandle
 where
-    T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
+    T: FnMut(&mut World, &ThreadControl, f32) -> bool + Send + 'static,
 {
     spawn_threaded_world_with_init(
         host,
         name,
         command_capacity,
         |_| (),
-        move |world, control, (), _| tick(world, control),
+        move |world, control, (), delta_seconds| tick(world, control, delta_seconds),
     )
 }
 
@@ -478,7 +482,7 @@ mod tests {
     #[test]
     fn sent_jobs_run_and_publish_back() {
         let mut host = World::new();
-        let handle = spawn_threaded_world(&mut host, "test", 8, |_, control| {
+        let handle = spawn_threaded_world(&mut host, "test", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
         });
@@ -560,7 +564,7 @@ mod tests {
     #[test]
     fn a_full_queue_fails_the_send() {
         let mut host = World::new();
-        let handle = spawn_threaded_world(&mut host, "test", 1, |_, _| true);
+        let handle = spawn_threaded_world(&mut host, "test", 1, |_, _, _| true);
         let mut results = Vec::new();
         for _ in 0..64 {
             results.push(handle.sender.send(Box::new(|_| {})));

@@ -115,7 +115,9 @@ pub mod prelude {
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, SendError},
         request::{Pending, Settled},
-        thread::{FixedClock, ThreadControl, WorldState, WorldThread},
+        thread::{
+            FixedClock, MAX_CATCH_UP_STEPS, ThreadControl, WorldState, WorldThread, fixed_steps,
+        },
         world::{
             Stepped, Threaded, WorldName, WorldRunner, spawn_stepped_world_with_init,
             spawn_threaded_world, spawn_threaded_world_with_init, step_stepped_world,

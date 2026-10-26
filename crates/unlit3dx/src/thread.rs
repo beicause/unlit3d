@@ -416,11 +416,29 @@ impl FixedClock {
             self.next = now + step;
         }
     }
+}
 
-    /// Seconds per step.
-    pub fn step_seconds(&self) -> f32 {
-        self.step.as_secs_f32()
-    }
+/// The most fixed steps one tick may run to catch up with the time that
+/// passed.
+pub const MAX_CATCH_UP_STEPS: u32 = 4;
+
+/// Turn elapsed time into a whole number of fixed steps, carrying the rest
+/// into the next tick as debt.
+///
+/// `debt` is what earlier ticks owed and did not spend; the returned count
+/// is how many steps the accumulated time now covers, and `debt` keeps the
+/// fraction of a step left over. Debt past [`MAX_CATCH_UP_STEPS`] steps is
+/// discarded rather than owed: a world that stalled for a long while - a
+/// suspended process, a debugger pause - would otherwise run a burst of
+/// steps to catch up, and simulating a pause that long is neither cheap nor
+/// wanted.
+///
+/// A negative `delta_seconds` - a clock that went backwards - adds no time.
+pub fn fixed_steps(debt: &mut f32, delta_seconds: f32, step_seconds: f32) -> u32 {
+    *debt = (*debt + delta_seconds.max(0.0)).min(step_seconds * MAX_CATCH_UP_STEPS as f32);
+    let steps = (*debt / step_seconds) as u32;
+    *debt -= steps as f32 * step_seconds;
+    steps
 }
 
 /// A control and status pair for a world the host steps.
@@ -612,5 +630,49 @@ mod tests {
         assert!(thread.join_timeout(Duration::from_secs(2)));
         thread.detach();
         assert!(thread.is_finished());
+    }
+
+    /// The step the fixed-step tests accumulate debt against.
+    const STEP: f32 = 1.0 / 60.0;
+
+    /// One step of time runs exactly one step and leaves nothing owed.
+    #[test]
+    fn a_step_of_time_runs_one_fixed_step() {
+        let mut debt = 0.0;
+        assert_eq!(fixed_steps(&mut debt, STEP, STEP), 1);
+        assert_eq!(debt, 0.0);
+    }
+
+    /// The fraction of a step a tick did not spend waits for the next one
+    /// instead of being rounded away.
+    #[test]
+    fn an_unspent_fraction_waits_for_the_next_tick() {
+        let mut debt = 0.0;
+        assert_eq!(fixed_steps(&mut debt, STEP * 0.5, STEP), 0);
+        assert!((debt - STEP * 0.5).abs() < STEP * 1e-4);
+        assert_eq!(fixed_steps(&mut debt, STEP * 0.6, STEP), 1);
+        assert!((debt - STEP * 0.1).abs() < STEP * 1e-4);
+    }
+
+    /// A stall past the catch-up limit runs the limit and drops the rest, so
+    /// a world that was paused resumes instead of replaying the pause.
+    #[test]
+    fn debt_past_the_catch_up_limit_is_discarded() {
+        let mut debt = 0.0;
+        assert_eq!(
+            fixed_steps(&mut debt, STEP * 100.0, STEP),
+            MAX_CATCH_UP_STEPS
+        );
+        assert_eq!(debt, 0.0);
+        // Just short of the limit still runs every whole step it covers.
+        assert_eq!(fixed_steps(&mut debt, STEP * 3.5, STEP), 3);
+    }
+
+    /// A clock that went backwards owes nothing.
+    #[test]
+    fn a_negative_interval_adds_no_time() {
+        let mut debt = 0.0;
+        assert_eq!(fixed_steps(&mut debt, -1.0, STEP), 0);
+        assert_eq!(debt, 0.0);
     }
 }

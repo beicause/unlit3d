@@ -614,11 +614,11 @@ fn publish_panels(world: &World) {
 /// reproducible.
 pub struct SceneStepper {
     /// The physics time the last frame did not spend.
-    physics_debt: f64,
+    physics_debt: f32,
     /// The audio time the last frame did not spend.
     audio_debt: f64,
     /// How long one physics step lasts.
-    physics_period: f64,
+    physics_period: f32,
     /// How long one audio frame lasts, or none when the host pulls no
     /// audio.
     sample_period: Option<f64>,
@@ -635,7 +635,7 @@ impl SceneStepper {
         Self {
             physics_debt: 0.0,
             audio_debt: 0.0,
-            physics_period: 1.0 / physics_hz,
+            physics_period: 1.0 / physics_hz as f32,
             sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
         }
     }
@@ -651,10 +651,13 @@ impl SceneStepper {
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
         step_stepped_world(host, worlds.gameplay.entity, delta_seconds as f32);
-        self.physics_debt += delta_seconds;
-        while self.physics_debt >= self.physics_period {
-            step_stepped_world(host, worlds.physics.entity, self.physics_period as f32);
-            self.physics_debt -= self.physics_period;
+        let steps = fixed_steps(
+            &mut self.physics_debt,
+            delta_seconds as f32,
+            self.physics_period,
+        );
+        for _ in 0..steps {
+            step_stepped_world(host, worlds.physics.entity, self.physics_period);
         }
         step_stepped_world(host, worlds.audio.entity, delta_seconds as f32);
     }
