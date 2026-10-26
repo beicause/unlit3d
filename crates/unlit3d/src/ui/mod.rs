@@ -654,11 +654,23 @@ impl ExternalFrames {
     /// frame drawn will show. Slots are grown on demand, so a publisher may
     /// write a slot number the drawing side has never looked at.
     ///
-    /// The displaced frame is dropped here, and a frame that is dropped
-    /// without being drawn clears its own texture deltas.
-    pub fn publish(&mut self, slot: usize, frame: ExternalFrame) {
+    /// A frame displaced before it was drawn hands its texture updates to its
+    /// successor, because egui sends a texture once — on the frame that first
+    /// writes it — while every later frame of the same context carries none.
+    /// Dropping the displaced frame outright would therefore drop the update
+    /// that makes the slot's textures exist, and every draw of the successor
+    /// would find no material to bind: a publisher that lays frames out faster
+    /// than they are drawn would never put anything on screen. A frame that
+    /// *was* drawn has already had its updates taken, so a slot keeping up with
+    /// its publisher carries nothing.
+    pub fn publish(&mut self, slot: usize, mut frame: ExternalFrame) {
         if self.0.len() <= slot {
             self.0.resize_with(slot + 1, || None);
+        }
+        if let Some(displaced) = self.0[slot].as_mut() {
+            let mut carried = core::mem::take(&mut displaced.textures);
+            carried.append(core::mem::take(&mut frame.textures));
+            frame.textures = carried;
         }
         self.0[slot] = Some(frame);
     }
@@ -1250,6 +1262,56 @@ mod tests {
         assert!(
             !scene.draws.is_empty(),
             "the same frame is drawn again while no newer one arrives"
+        );
+    }
+    /// A publisher that lays frames out faster than the drawing side draws
+    /// them replaces its own slot before the frame is ever drawn, and egui
+    /// sends a texture once — on the frame that first writes it. The displaced
+    /// frame therefore hands its updates over; dropping them would leave every
+    /// later draw with no material to bind.
+    #[test]
+    fn a_displaced_frame_hands_its_textures_to_its_successor() {
+        let (world, ctx) = test_world();
+        let info = test_target();
+        // One context, laid out twice: the second pass writes no texture, and
+        // is what a publisher outrunning the drawing side publishes over the
+        // first.
+        let context = egui::Context::default();
+        let mut other = World::new();
+        other
+            .root_scope_mut()
+            .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+                ui.label("a panel with text");
+            }),]);
+        let target = test_ui_target();
+        let run = |time: f64| {
+            lay_out(
+                &other,
+                &context,
+                raw_input(target, Some(time), true, Vec::new()),
+                target.screen,
+            )
+        };
+        let first = run(0.0);
+        let second = run(1.0);
+        assert!(
+            !first.textures.is_empty(),
+            "the first pass writes the font atlas"
+        );
+        assert!(
+            second.textures.is_empty(),
+            "the second pass writes nothing new"
+        );
+
+        let mut source = UiSource::new();
+        source.frames.publish(0, first);
+        source.frames.publish(0, second);
+        let mut encoder = encoder(&world, ctx);
+        let mut scene = Scene::new();
+        source.build_scene(&world.root_scope(), ctx, info, &mut scene, &mut encoder);
+        assert!(
+            !scene.draws.is_empty(),
+            "the frame that survived carries the atlas its predecessor wrote"
         );
     }
     /// Two contexts allocate texture ids from zero, so the same id names
