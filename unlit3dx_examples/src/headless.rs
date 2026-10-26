@@ -93,6 +93,7 @@ pub fn run(
     } else {
         AudioSetup::Pulled {
             soundfont: config.soundfont.clone(),
+            autoplay_background: true,
         }
     };
     // Nothing feeds input to a run with no window, but the gameplay world
@@ -105,6 +106,7 @@ pub fn run(
         audio_setup,
         PanelSlots::default(),
         &input,
+        true,
     );
     let (renderer, pass) =
         setup_render_world(&mut host, render.entity, device, queue, capabilities);

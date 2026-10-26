@@ -38,6 +38,9 @@ pub mod headless;
 pub mod render;
 pub mod scene;
 
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+pub mod mcp;
+
 #[cfg(target_os = "android")]
 pub mod android;
 
@@ -137,6 +140,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             stepped_audio(),
             panels.clone(),
             &input,
+            true,
         )
     } else {
         spawn_scene::<Threaded>(
@@ -145,6 +149,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             AudioSetup::Device,
             panels.clone(),
             &input,
+            true,
         )
     };
     let gameplay_sender = worlds.gameplay.sender.clone();
@@ -343,6 +348,10 @@ pub fn run() -> ExitCode {
     };
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     if args.headless {
+        if args.mcp {
+            mcp::run(unlit3dx_asset_bytes::soundfont().into());
+            return ExitCode::SUCCESS;
+        }
         return run_headless(&args);
     }
     let event_loop = EventLoop::<()>::with_user_event()

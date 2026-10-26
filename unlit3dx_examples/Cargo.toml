@@ -7,6 +7,9 @@ repository.workspace = true
 license.workspace = true
 keywords = ["audio", "example", "gamedev", "physics", "webgpu"]
 publish = false
+# The suite's modules sit under tests/ beside the suite itself, so cargo
+# must not take each of them for a target of its own.
+autotests = false
 
 # The library is what the binary and the Android shared library both link
 # against. That shared library is a crate of its own
@@ -22,10 +25,13 @@ name = "unlit3dx-examples"
 path = "src/main.rs"
 
 # The snapshot tests step the same worlds the windowed binary runs, so the
-# page the wasm suite loads is a test target rather than the binary.
+# page the wasm suite loads is a test target rather than the binary. One target
+# holds them all, the way every other crate's suite does: they share the
+# harness, and each target of its own would link the GPU stack again.
 [[test]]
 harness = false
-name = "headless"
+name = "unlit3dx_examples"
+path = "tests/gpu_suite.rs"
 
 [dependencies]
 argh.workspace = true
@@ -47,6 +53,8 @@ winit.workspace = true
 # The tests build a `Scene` without spawning a world, so they need the
 # queue a `JobSender` wraps themselves.
 async-channel.workspace = true
+base64.workspace = true
+serde_json.workspace = true
 # The headless run's snapshot tests compare captured frames and audio
 # against baselines kept in the asset submodule.
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.2", features = ["snapshot"] }
@@ -67,6 +75,10 @@ unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2", features = ["
 flacenc.workspace = true
 # The headless mode encodes its last frame as a PNG on the way out.
 image = { workspace = true, default-features = false, features = ["png"] }
+# The interactive headless host describes its own tools to MCP, which needs a
+# JSON schema and a deserializer for each tool's arguments.
+schemars.workspace = true
+serde.workspace = true
 
 # The GPU request runs off the main thread: `pollster` drives it on a worker
 # thread on native, and the browser's task queue drives it on the web.

@@ -166,6 +166,8 @@ pub struct Balls {
     requests: u32,
     /// Ticks since the world started, driving the auto drop and the sweep.
     ticks: u32,
+    /// Whether the spawn cadence drops balls without a panel request.
+    pub automatic_drops: bool,
     /// Pose entries the last job carried, for the status line.
     poses_sent: usize,
     /// The balls the tick has decided to show, reused across ticks.
@@ -205,6 +207,7 @@ impl Balls {
             last_snapshot: None,
             requests: 0,
             ticks: 0,
+            automatic_drops: true,
             poses_sent: 0,
             showing: Vec::new(),
             sweeping: Vec::new(),
@@ -686,9 +689,11 @@ impl Bundle for BallDrops {
 impl BallDrops {
     /// The balls for the worlds `scene` reaches.
     #[must_use]
-    pub(super) fn new(scene: &Scene) -> Self {
+    pub(super) fn new(scene: &Scene, automatic_drops: bool) -> Self {
+        let mut balls = Balls::new(scene);
+        balls.automatic_drops = automatic_drops;
         Self {
-            balls: Balls::new(scene),
+            balls,
             scene: scene.clone(),
         }
     }
@@ -725,7 +730,7 @@ impl BallDrops {
             balls.requests -= 1;
             balls.drop_ball(world, state, scene);
         }
-        if balls.ticks.is_multiple_of(SPAWN_TICKS) {
+        if balls.automatic_drops && balls.ticks.is_multiple_of(SPAWN_TICKS) {
             balls.drop_ball(world, state, scene);
         }
 

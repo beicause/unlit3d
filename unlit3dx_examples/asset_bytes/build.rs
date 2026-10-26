@@ -16,8 +16,8 @@ fn main() {
         env::var("CARGO_MANIFEST_DIR").expect("cargo always sets CARGO_MANIFEST_DIR"),
     )
     .join("../../assets/FluidR3Mono_GM.sf3");
+    println!("cargo:rerun-if-changed={}", workspace.display());
     let (file, missing) = if workspace.is_file() {
-        println!("cargo:rerun-if-changed={}", workspace.display());
         (workspace, false)
     } else {
         // A soundfont parser rejects an empty file, so the demo reports the

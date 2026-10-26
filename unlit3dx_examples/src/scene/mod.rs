@@ -406,6 +406,16 @@ pub struct PanelSlots {
     pub target: Snapshot<UiTarget>,
 }
 
+/// The clickable rectangles the control panel laid out most recently.
+///
+/// A headless client uses these positions to send the same pointer input a
+/// window receives, without duplicating egui's layout in the client.
+#[derive(Default)]
+pub struct PanelLayout {
+    /// The button rectangles, keyed by their visible labels.
+    pub buttons: HashMap<&'static str, unlit3d::ui::egui::Rect>,
+}
+
 /// Build the scene's worlds with the runner `R`: on their own threads, or
 /// stepped by the host.
 ///
@@ -424,6 +434,7 @@ pub fn spawn_scene<R: WorldRunner>(
     audio_setup: AudioSetup,
     panels: PanelSlots,
     input: &InputWriter,
+    automatic_drops: bool,
 ) -> SceneHandles {
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
@@ -447,10 +458,13 @@ pub fn spawn_scene<R: WorldRunner>(
     // is the entity the scenes' sequences address. The soundfont is kept for
     // that job rather than loaded here, so the decode runs where the job
     // runs instead of stalling the host's setup.
-    let soundfont = match audio_setup {
-        AudioSetup::Silent => None,
-        AudioSetup::Pulled { soundfont } => Some(soundfont),
-        AudioSetup::Device => Some(unlit3dx_asset_bytes::soundfont().into()),
+    let (soundfont, autoplay_background) = match audio_setup {
+        AudioSetup::Silent => (None, true),
+        AudioSetup::Pulled {
+            soundfont,
+            autoplay_background,
+        } => (Some(soundfont), autoplay_background),
+        AudioSetup::Device => (Some(unlit3dx_asset_bytes::soundfont().into()), true),
     };
 
     let scene = Scene {
@@ -488,9 +502,15 @@ pub fn spawn_scene<R: WorldRunner>(
                     }),]);
                 spawn_floor(&scene);
                 world.root_scope_mut().spawn(SceneBuild::new(&scene));
-                world.root_scope_mut().spawn(BallDrops::new(&scene));
+                world
+                    .root_scope_mut()
+                    .spawn(BallDrops::new(&scene, automatic_drops));
                 if let Some(soundfont) = soundfont {
-                    world.root_scope_mut().spawn(Music::new(&scene, soundfont));
+                    world.root_scope_mut().spawn(Music::new(
+                        &scene,
+                        soundfont,
+                        autoplay_background,
+                    ));
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the
@@ -699,7 +719,8 @@ mod tests {
         // a snapshot keeps its newest value, so the panel finds it on its
         // first tick instead of waiting for another draw.
         panels.target.publish(measured_target());
-        let worlds = spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input);
+        let worlds =
+            spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input, true);
         let runs = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&runs);
         worlds
@@ -757,7 +778,8 @@ mod tests {
         panels.target.publish(measured_target());
         // The wiring is the scene's, but the panel is this test's: it counts
         // the space presses it saw, the way the real one reads a click.
-        let worlds = spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input);
+        let worlds =
+            spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input, true);
         let counted = Arc::clone(&pressed);
         worlds
             .gameplay

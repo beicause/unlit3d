@@ -29,6 +29,8 @@ pub enum AudioSetup {
     Pulled {
         /// The soundfont to build the synthesizer from.
         soundfont: Arc<[u8]>,
+        /// Start the background track once the synthesizer is ready.
+        autoplay_background: bool,
     },
 }
 
@@ -167,20 +169,23 @@ pub(super) struct Music {
     audio: SceneAudio,
     /// The worlds the synthesizer is asked from and the tracks are put on.
     scene: Scene,
+    /// Whether the background track starts with the scene.
+    autoplay_background: bool,
 }
 
 impl Music {
     /// The music for the worlds `scene` reaches, playing `soundfont`.
     #[must_use]
-    pub(super) fn new(scene: &Scene, soundfont: Arc<[u8]>) -> Self {
+    pub(super) fn new(scene: &Scene, soundfont: Arc<[u8]>, autoplay_background: bool) -> Self {
         Self {
             audio: SceneAudio::new(scene, soundfont),
             scene: scene.clone(),
+            autoplay_background,
         }
     }
 
     /// Start the music on the voice the install answered with.
-    fn tick(audio: &mut SceneAudio, world: &World, scene: &Scene) {
+    fn tick(audio: &mut SceneAudio, world: &World, scene: &Scene, autoplay_background: bool) {
         if audio.installed {
             return;
         }
@@ -190,8 +195,8 @@ impl Music {
             audio.installed = true;
             match settled {
                 Settled::Answered(Some(voice)) => {
-                    start_tracks(&world.root_scope(), scene, voice);
-                    log::info!("the background music is playing");
+                    start_tracks(&world.root_scope(), scene, voice, autoplay_background);
+                    log::info!("the scene tracks are ready");
                 }
                 // No voice: the soundfont failed to load, and the install said
                 // so on its way.
@@ -209,10 +214,16 @@ impl Music {
 
 impl Bundle for Music {
     fn into_bundle(self) -> DynamicBundle {
-        let Self { audio, scene } = self;
+        let Self {
+            audio,
+            scene,
+            autoplay_background,
+        } = self;
         bundle![
             audio,
-            advancing(move |audio, world, _frame| Self::tick(audio, world, &scene)),
+            advancing(move |audio, world, _frame| {
+                Self::tick(audio, world, &scene, autoplay_background)
+            }),
         ]
     }
 }
@@ -221,10 +232,11 @@ impl Bundle for Music {
 ///
 /// The background loop runs from the first frame it can; the one-shot
 /// sequence is spawned paused, so the panel's Play is what starts it.
-fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity) {
+fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity, autoplay_background: bool) {
     let commands = world.queue();
     let mut background = MidiSequencer::new(bgm_midi());
     background.loop_play = true;
+    background.paused = !autoplay_background;
     let background = commands.spawn(PlayingTrack::new(background, voice, scene));
     let mut sequence = MidiSequencer::new(sequence_midi());
     sequence.paused = true;

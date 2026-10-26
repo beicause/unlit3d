@@ -19,7 +19,7 @@ use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
 
-use super::{PanelSlots, SceneTracks, Track, clear_balls_in, drop_ball_in};
+use super::{PanelLayout, PanelSlots, SceneTracks, Track, clear_balls_in, drop_ball_in};
 use crate::render::RenderEntity;
 
 /// What one of the panel's two track rows shows.
@@ -96,11 +96,20 @@ impl TrackButton {
 /// The row names the track so the buttons need no suffix of their own. A
 /// sequence that played to its end is idle again, so its row offers the same
 /// Play, which returns it to its start before starting it.
-fn track_controls(ui: &mut egui::Ui, label: &str, sequencer: &mut MidiSequencer) {
+fn track_controls(
+    ui: &mut egui::Ui,
+    label: &str,
+    sequencer: &mut MidiSequencer,
+    layout: &mut PanelLayout,
+) {
     ui.horizontal(|ui| {
         ui.label(label);
         for button in TrackStatus::of(sequencer).buttons() {
-            if !ui.button(button.label()).clicked() {
+            let response = ui.button(button.label());
+            if label == "MIDI sequence" {
+                layout.buttons.insert(button.label(), response.rect);
+            }
+            if !response.clicked() {
                 continue;
             }
             match button {
@@ -138,7 +147,14 @@ fn track_controls(ui: &mut egui::Ui, label: &str, sequencer: &mut MidiSequencer)
 pub fn mount_controls(world: &mut World) {
     world
         .root_scope_mut()
+        .spawn(bundle![PanelLayout::default()]);
+    world
+        .root_scope_mut()
         .spawn(bundle![UiPanel::new(|world, _entity, ui| {
+            let Some(mut layout) = world.query::<&mut PanelLayout>().next() else {
+                return;
+            };
+            layout.buttons.clear();
             egui::Window::new("Controls").show(ui.ctx(), |ui| {
                 // The tracks are spawned once the audio world has answered
                 // with its voice, so a scene whose soundfont failed to load
@@ -147,18 +163,22 @@ pub fn mount_controls(world: &mut World) {
                     // One row at a time: the borrow each one takes is given
                     // back before the next asks for its own.
                     if let Ok(mut track) = world.query_one::<&mut Track>(tracks.background) {
-                        track_controls(ui, "Background music", &mut track.midi);
+                        track_controls(ui, "Background music", &mut track.midi, &mut layout);
                     }
                     if let Ok(mut track) = world.query_one::<&mut Track>(tracks.sequence) {
-                        track_controls(ui, "MIDI sequence", &mut track.midi);
+                        track_controls(ui, "MIDI sequence", &mut track.midi, &mut layout);
                     }
                     ui.separator();
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Drop the next ball").clicked() {
+                    let drop = ui.button("Drop the next ball");
+                    layout.buttons.insert("Drop the next ball", drop.rect);
+                    if drop.clicked() {
                         drop_ball_in(&world);
                     }
-                    if ui.button("Clear the balls").clicked() {
+                    let clear = ui.button("Clear the balls");
+                    layout.buttons.insert("Clear the balls", clear.rect);
+                    if clear.clicked() {
                         clear_balls_in(&world);
                     }
                 });
