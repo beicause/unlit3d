@@ -93,10 +93,11 @@ host.run(event_loop)?;
 无窗口 / 定步长（测试、离屏、wasm）——进程自己驱动每一帧：
 
 ```rust
-let mut frame = Frame { delta_time: 1.0 / RENDER_HZ as f32, index: 0, size };
+let step = 1.0 / HEADLESS_HZ;                                 // 每帧时长（秒）
+let mut frame = Frame { delta_time: step as f32, index: 0, size };
 for index in 0..frames {
     frame.index = index;
-    stepper.step(&host, &worlds, 1.0 / RENDER_HZ);            // 玩法 → 物理 → 音频
+    stepper.step(&host, &worlds, step);                       // 玩法 → 物理 → 音频
     let mut nested = host.root_scope().query_one::<&mut World>(render.entity).unwrap();
     drain_sub_world(&mut nested);                             // render world 的 job 在宿主线程跑
     dispatch_frame(&mut nested, &mut frame);

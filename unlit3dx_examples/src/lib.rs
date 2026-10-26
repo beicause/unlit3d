@@ -46,6 +46,7 @@ pub mod android;
 
 use argh::FromArgs;
 use std::process::ExitCode;
+use std::sync::atomic::Ordering;
 use unlit_ecs::bundle;
 
 use crate::scene::*;
@@ -54,7 +55,7 @@ use image::ImageEncoder;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::winit::builtin::{
-    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground,
+    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground, window,
     winit_input_behaviour,
 };
 use unlit3d::winit::event::WinitHost;
@@ -165,10 +166,26 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             dispatch_input(world);
         }),]);
 
+    // The display the window is on paces the gameplay thread, and the
+    // frame loop reads its refresh rate every frame: it moves the window to
+    // another display, or the display changes mode, the next frame follows.
+    // A display that reports nothing leaves the rate at zero, which the
+    // gameplay world reads as "keep the default".
+    let refresh_millihertz = worlds.refresh_millihertz.clone();
+    world
+        .root_scope_mut()
+        .spawn(bundle![OnFrame::new(move |world, _entity, _frame| {
+            let rate = window(world)
+                .and_then(|window| window.current_monitor())
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+                .unwrap_or(0);
+            refresh_millihertz.store(rate, Ordering::Relaxed);
+        }),]);
+
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
     if stepped {
-        let stepper = SceneStepper::new(GAME_HZ, PHYSICS_HZ, None);
+        let stepper = SceneStepper::new(PHYSICS_HZ, None);
         world
             .root_scope_mut()
             .spawn(bundle![stepped_frame(worlds, stepper)]);

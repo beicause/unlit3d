@@ -225,9 +225,12 @@ derived from the mesh source's device.
 The bridges:
 
 - **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
-  `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64). Each step drains rapier's
-  contacts into a `PhysicsContacts` component — the collision pairs that
-  started, with the speed each pair was closing at, and those that stopped.
+  `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 60 Hz). A world on a thread of
+  its own catches up to the time that really passed, at most four steps a
+  tick; a world the host steps takes one step per step it is given. Each step
+  drains rapier's contacts into a `PhysicsContacts` component — the collision
+  pairs that started, with the speed each pair was closing at, and those that
+  stopped.
   It publishes no payload of its own: a caller subscribes with the collector
   that names the state it wants, and whoever drives the world publishes it.
   `spawn_body` (a `BodyDesc` with a `BodyShape`) and `spawn_fixed_cuboid` are

@@ -219,6 +219,7 @@ mod tests {
     use unlit_ecs::mcp::Output;
 
     use super::*;
+    use crate::FRAME_SECONDS;
     use crate::thread::ThreadControl;
     use crate::world::{spawn_stepped_world_with_init, spawn_threaded_world, step_stepped_world};
 
@@ -436,7 +437,7 @@ mod tests {
             |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Marker]);
             },
-            |_, _: &ThreadControl, ()| true,
+            |_, _: &ThreadControl, (), _: f32| true,
         );
 
         let (command, reply) = McpCommand::new(|world| {
@@ -446,7 +447,7 @@ mod tests {
         let command = command.with_world(WorldId::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
-        step_stepped_world(&host, stepped.entity);
+        step_stepped_world(&host, stepped.entity, FRAME_SECONDS);
 
         let answer = reply.recv_blocking().expect("the command was answered");
         let Ok(Output::Json(value)) = answer else {
@@ -465,9 +466,9 @@ mod tests {
             "ended",
             8,
             |_: &mut World| (),
-            |_, _: &ThreadControl, ()| false,
+            |_, _: &ThreadControl, (), _: f32| false,
         );
-        step_stepped_world(&host, stepped.entity);
+        step_stepped_world(&host, stepped.entity, FRAME_SECONDS);
         assert!(stepped.is_finished(), "the tick ended the world");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
@@ -495,7 +496,7 @@ mod tests {
             "busy",
             1,
             |_: &mut World| (),
-            |_, _: &ThreadControl, ()| true,
+            |_, _: &ThreadControl, (), _: f32| true,
         );
         stepped
             .sender

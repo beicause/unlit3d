@@ -35,6 +35,8 @@
 //! Everything else is in the default band, where the dispatch promises nothing
 //! about which of them runs first.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
@@ -91,14 +93,17 @@ pub const RENDER_COMMAND_CAPACITY: usize = 64;
 /// Where a hidden instance waits, far below everything the camera sees.
 pub const HIDDEN_POSITION: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
 
-/// The gameplay world's tick rate, in hertz: a little above the physics
-/// rate and the render pace, so the world that drives the others is not
-/// the slowest of them.
-pub const GAME_HZ: f64 = 68.0;
+/// The rate a run without a window steps its frames at, in hertz.
+pub const HEADLESS_HZ: f64 = 60.0;
 
-/// The render pace, in hertz: the windowed mode draws as fast as the
-/// compositor asks, but the headless run steps its frames at this rate.
-pub const RENDER_HZ: f64 = 60.0;
+/// The gameplay world's pacing rate, in hertz, until the window reports the
+/// refresh rate of the display it is on.
+///
+/// The rate is a ceiling on how often the world wakes, not a simulation rate:
+/// a tick's duration is the one it measured, so a display that redraws
+/// slower or faster changes how long the thread sleeps, never how the scene
+/// behaves.
+pub const GAMEPLAY_HZ: f64 = 60.0;
 
 /// The poses gameplay sends the render world every frame: one [`Transform`]
 /// per live body, at its physics pose. An instance that is hidden or waiting
@@ -388,6 +393,13 @@ pub struct SceneHandles {
     /// The world the scene's objects live in; its sender is the control
     /// panel's handle on them.
     pub gameplay: WorldHandle,
+    /// The refresh rate of the display the window is on, in millihertz, as
+    /// the frame loop last read it; zero until a window reports one.
+    ///
+    /// It paces the gameplay thread, nothing else: a tick's duration is the
+    /// one it measured, so a stale rate only makes the thread wake more or
+    /// less often than the display redraws.
+    pub refresh_millihertz: Arc<AtomicU32>,
 }
 
 /// The slot a panel publishes its frames into.
@@ -479,8 +491,9 @@ pub fn spawn_scene<R: WorldRunner>(
 
     // The gameplay world: one entity per object, each ticking itself as the
     // world's frame. A world the host steps is ticked once per call, so it
-    // does not pace itself; a thread of its own runs at the gameplay rate
-    // and sleeps between ticks.
+    // does not pace itself; a thread of its own wakes as often as the
+    // display redraws and sleeps between ticks.
+    let refresh_millihertz = Arc::new(AtomicU32::new(0));
     let gameplay = R::spawn(
         host,
         "gameplay",
@@ -531,23 +544,35 @@ pub fn spawn_scene<R: WorldRunner>(
             }
         },
         {
-            let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAME_HZ));
+            let refresh_millihertz = refresh_millihertz.clone();
+            let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAMEPLAY_HZ));
             let mut index = 0;
-            move |world: &mut World, control: &ThreadControl, ()| {
+            move |world: &mut World, control: &ThreadControl, (), delta_seconds: f32| {
                 if control.stop_requested() {
                     return false;
                 }
-                // A tick is a frame whose duration is the gameplay period:
+                // A tick is a frame whose duration is the one it measured:
                 // the objects read it from the frame like any other
                 // behaviour, and nothing paces itself off a clock.
                 let mut frame = Frame {
-                    delta_time: (1.0 / GAME_HZ) as f32,
+                    delta_time: delta_seconds,
                     index,
                     size: WINDOW_SIZE,
                 };
                 index = index.wrapping_add(1);
                 dispatch_frame(world, &mut frame);
                 if R::SELF_DRIVEN {
+                    // Waking faster than the display redraws only burns
+                    // frames nobody sees, so the refresh rate the frame loop
+                    // last read sets the pace; a run with no window, or one
+                    // whose display reports nothing, keeps the default.
+                    let millihertz = refresh_millihertz.load(Ordering::Relaxed);
+                    let hz = if millihertz == 0 {
+                        GAMEPLAY_HZ
+                    } else {
+                        f64::from(millihertz) / 1000.0
+                    };
+                    clock.set_step(Duration::from_secs_f64(1.0 / hz));
                     clock.wait(control);
                 }
                 true
@@ -559,6 +584,7 @@ pub fn spawn_scene<R: WorldRunner>(
         physics,
         audio,
         gameplay,
+        refresh_millihertz,
     }
 }
 
@@ -587,14 +613,10 @@ fn publish_panels(world: &World) {
 /// exact step instead of a measured one, which is what makes it
 /// reproducible.
 pub struct SceneStepper {
-    /// The gameplay time the last frame did not spend.
-    gameplay_debt: f64,
     /// The physics time the last frame did not spend.
     physics_debt: f64,
     /// The audio time the last frame did not spend.
     audio_debt: f64,
-    /// How long one gameplay tick lasts.
-    gameplay_period: f64,
     /// How long one physics step lasts.
     physics_period: f64,
     /// How long one audio frame lasts, or none when the host pulls no
@@ -603,15 +625,16 @@ pub struct SceneStepper {
 }
 
 impl SceneStepper {
-    /// A stepper for a scene simulated at `gameplay_hz` and `physics_hz`,
-    /// and — when `sample_rate` is given — mixed at that rate.
+    /// A stepper for a scene whose physics world runs at `physics_hz`, and
+    /// — when `sample_rate` is given — whose synthesizer runs at that rate.
+    ///
+    /// Gameplay has no rate here: its world ticks once per frame, with the
+    /// frame's own duration.
     #[must_use]
-    pub fn new(gameplay_hz: f64, physics_hz: f64, sample_rate: Option<u32>) -> Self {
+    pub fn new(physics_hz: f64, sample_rate: Option<u32>) -> Self {
         Self {
-            gameplay_debt: 0.0,
             physics_debt: 0.0,
             audio_debt: 0.0,
-            gameplay_period: 1.0 / gameplay_hz,
             physics_period: 1.0 / physics_hz,
             sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
         }
@@ -624,19 +647,16 @@ impl SceneStepper {
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.
     pub fn step(&mut self, host: &World, worlds: &SceneHandles, delta_seconds: f64) {
-        // Gameplay first: its requests reach the other worlds before they
-        // step.
-        self.gameplay_debt += delta_seconds;
-        while self.gameplay_debt >= self.gameplay_period {
-            step_stepped_world(host, worlds.gameplay.entity);
-            self.gameplay_debt -= self.gameplay_period;
-        }
+        // Gameplay runs once per host frame with its measured duration: its
+        // requests reach the other worlds before they step, and a slow frame
+        // never causes a burst of catch-up ticks.
+        step_stepped_world(host, worlds.gameplay.entity, delta_seconds as f32);
         self.physics_debt += delta_seconds;
         while self.physics_debt >= self.physics_period {
-            step_stepped_world(host, worlds.physics.entity);
+            step_stepped_world(host, worlds.physics.entity, self.physics_period as f32);
             self.physics_debt -= self.physics_period;
         }
-        step_stepped_world(host, worlds.audio.entity);
+        step_stepped_world(host, worlds.audio.entity, delta_seconds as f32);
     }
 
     /// The audio frames this frame's duration asks for, carrying the
@@ -740,7 +760,7 @@ mod tests {
         // input arriving, no frame is laid out at all.
         let mut settled = 0;
         for _ in 0..8 {
-            step_stepped_world(&host, worlds.gameplay.entity);
+            step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS);
             let now = runs.load(Ordering::Relaxed);
             if now == settled {
                 break;
@@ -756,7 +776,7 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity);
+        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS);
 
         assert!(
             runs.load(Ordering::Relaxed) > settled,
@@ -803,7 +823,7 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity);
+        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS);
 
         assert_eq!(
             pressed.load(Ordering::Relaxed),

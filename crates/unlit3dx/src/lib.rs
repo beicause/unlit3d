@@ -72,6 +72,13 @@ pub mod ui;
 /// Threaded worlds, which run on their own thread.
 pub mod world;
 
+/// The duration of a frame at 60 Hz, in seconds.
+///
+/// A stepped world takes the duration of the frame it is stepped with, so a
+/// caller driving one at the display's rate passes the real frame time; this
+/// is the round number the tests and the runs without a window use.
+pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
+
 /// The types most callers of the multi-world model need.
 pub mod prelude {
     #[cfg(feature = "audio")]
@@ -101,6 +108,7 @@ pub mod prelude {
         load_midi_file_with_loop_type, load_soundfont, midi_file, midi_job,
     };
     pub use crate::{
+        FRAME_SECONDS,
         channel::{Snapshot, SnapshotReader, Stream, StreamReader, publish_collected},
         executor::{LocalPool, LocalSpawnExt, LocalTasks},
         handle::WorldHandle,

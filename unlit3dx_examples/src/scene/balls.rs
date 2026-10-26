@@ -26,27 +26,21 @@ use super::Scene;
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance, look};
 use super::tick::advancing_in;
-use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
+use super::{GamePhysics, ScenePoses, pose_job, world_ended};
 use crate::render::{BallInstance, RenderEntity, despawn_instances_job, show, sweep};
 
 /// How long between automatic ball drops, in seconds.
-const SPAWN_PERIOD: f64 = 0.7;
+const SPAWN_PERIOD: f32 = 0.7;
 
-/// How many gameplay ticks pass between automatic ball drops.
-const SPAWN_TICKS: u32 = (SPAWN_PERIOD * GAME_HZ) as u32;
-
-/// How long a ball may wait for its two halves, in seconds.
-const PENDING_TIMEOUT: f64 = 5.0;
-
-/// How many gameplay ticks a ball may wait for its two halves before its
-/// instance and body are reclaimed.
-const PENDING_TIMEOUT_TICKS: u32 = (PENDING_TIMEOUT * GAME_HZ) as u32;
+/// How long a ball may wait for its two halves before its instance and body
+/// are reclaimed, in seconds.
+const PENDING_TIMEOUT: f32 = 5.0;
 
 /// How often live instances are tested against the camera's view, in seconds.
-const SWEEP_PERIOD: f64 = 0.5;
+const SWEEP_PERIOD: f32 = 0.5;
 
-/// How many gameplay ticks pass between view sweeps.
-const SWEEP_TICKS: u32 = (SWEEP_PERIOD * GAME_HZ) as u32;
+/// How often the ball flow reports its own status, in seconds.
+const STATUS_PERIOD: f32 = 1.0;
 
 /// Where balls spawn, in metres above the ground.
 const SPAWN_HEIGHT: f32 = 7.0;
@@ -164,8 +158,12 @@ pub struct Balls {
     last_snapshot: Option<Arc<GamePhysics>>,
     /// Ball drops requested but not yet consumed by the tick.
     requests: u32,
-    /// Ticks since the world started, driving the auto drop and the sweep.
-    ticks: u32,
+    /// Seconds since the previous automatic drop.
+    spawn_elapsed: f32,
+    /// Seconds since the previous view sweep.
+    sweep_elapsed: f32,
+    /// Seconds since the previous status line.
+    status_elapsed: f32,
     /// Whether the spawn cadence drops balls without a panel request.
     pub automatic_drops: bool,
     /// Pose entries the last job carried, for the status line.
@@ -192,10 +190,10 @@ impl Balls {
             // Each of the three is bounded by the same wait: a half that has
             // not come within it is given up on, and so is a show the render
             // world never answered.
-            bodies: Pending::new(scene.physics_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
-            instances: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
-            shows: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
-            retired: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT_TICKS)),
+            bodies: Pending::new(scene.physics_state.clone(), Some(PENDING_TIMEOUT)),
+            instances: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT)),
+            shows: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT)),
+            retired: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT)),
             settled_bodies: Vec::new(),
             settled_instances: Vec::new(),
             settled_shows: Vec::new(),
@@ -206,7 +204,9 @@ impl Balls {
             clear: false,
             last_snapshot: None,
             requests: 0,
-            ticks: 0,
+            spawn_elapsed: 0.0,
+            sweep_elapsed: 0.0,
+            status_elapsed: 0.0,
             automatic_drops: true,
             poses_sent: 0,
             showing: Vec::new(),
@@ -359,7 +359,7 @@ impl Balls {
     /// Every wait is bounded by the same timeout, so this is the one place a
     /// request is given up on: an answer that never came names its ball, and
     /// the ball is reclaimed with whatever halves it did receive.
-    fn fold_answers(&mut self, world: &World, state: Entity, scene: &Scene) {
+    fn fold_answers(&mut self, world: &World, state: Entity, scene: &Scene, delta_seconds: f32) {
         let scope = world.root_scope();
 
         // A ball whose request was given up on loses the halves it has, and
@@ -369,7 +369,8 @@ impl Balls {
 
         // A retired instance is already gone from the render world: only its
         // body and its ball entity are left to despawn.
-        self.retired.advance(&mut self.settled_retired);
+        self.retired
+            .advance(delta_seconds, &mut self.settled_retired);
         for (_, answer) in self.settled_retired.drain(..) {
             let Settled::Answered(answers) = answer else {
                 // A sweep that never answered leaves the instances it was
@@ -391,7 +392,8 @@ impl Balls {
 
         // An instance whose ball is already gone has nobody to be shown on,
         // so it is despawned rather than leaked.
-        self.instances.advance(&mut self.settled_instances);
+        self.instances
+            .advance(delta_seconds, &mut self.settled_instances);
         for (ball, answer) in self.settled_instances.drain(..) {
             match (scope.query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(instance)) => {
@@ -402,7 +404,7 @@ impl Balls {
             }
         }
 
-        self.bodies.advance(&mut self.settled_bodies);
+        self.bodies.advance(delta_seconds, &mut self.settled_bodies);
         for (ball, answer) in self.settled_bodies.drain(..) {
             match (scope.query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(handle)) => {
@@ -416,7 +418,7 @@ impl Balls {
         // The show answers once the instance really wears its assets, so a
         // show the render world never answered leaves the ball waiting instead
         // of marking it shown.
-        self.shows.advance(&mut self.settled_shows);
+        self.shows.advance(delta_seconds, &mut self.settled_shows);
         for (ball, answer) in self.settled_shows.drain(..) {
             match (scope.query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(true)) => {
@@ -626,8 +628,10 @@ impl Balls {
 
         // One status line a second: the ball flow passes through the answers,
         // the ball entities and the physics snapshot, and a stall in any of
-        // the three hides every ball.
-        if self.ticks.is_multiple_of(SPAWN_TICKS) {
+        // the three hides every ball. It keeps its own clock, so the line
+        // stays once a second whatever the drop cadence is.
+        if self.status_elapsed >= STATUS_PERIOD {
+            self.status_elapsed %= STATUS_PERIOD;
             log::debug!(
                 "shown balls: {}; snapshot bodies: {}; posed last tick: {}",
                 world
@@ -679,8 +683,11 @@ impl Bundle for BallDrops {
         let Self { balls, scene } = self;
         bundle![
             balls,
-            advancing_in(super::BALLS_ORDER, move |balls, world, _frame| Self::tick(
-                balls, world, &scene
+            advancing_in(super::BALLS_ORDER, move |balls, world, frame| Self::tick(
+                balls,
+                world,
+                &scene,
+                frame.delta_time
             )),
         ]
     }
@@ -699,8 +706,10 @@ impl BallDrops {
     }
 
     /// Advance the balls by one tick: fold the answers, drop, pose and sweep.
-    fn tick(balls: &mut Balls, world: &World, scene: &Scene) {
-        balls.ticks += 1;
+    fn tick(balls: &mut Balls, world: &World, scene: &Scene, delta_seconds: f32) {
+        balls.spawn_elapsed += delta_seconds;
+        balls.sweep_elapsed += delta_seconds;
+        balls.status_elapsed += delta_seconds;
         let Some((state, ready)) = world
             .root_scope()
             .query::<(&SceneState, Entity)>()
@@ -718,7 +727,7 @@ impl BallDrops {
         // first. Folded the other way round, the clear would queue the
         // despawn and the fold would still find the ball, show it, and leave
         // its instance behind when the entity went away.
-        balls.fold_answers(world, state, scene);
+        balls.fold_answers(world, state, scene, delta_seconds);
         if core::mem::take(&mut balls.clear) {
             balls.clear_balls(world, scene);
         }
@@ -730,13 +739,15 @@ impl BallDrops {
             balls.requests -= 1;
             balls.drop_ball(world, state, scene);
         }
-        if balls.automatic_drops && balls.ticks.is_multiple_of(SPAWN_TICKS) {
+        if balls.automatic_drops && balls.spawn_elapsed >= SPAWN_PERIOD {
+            balls.spawn_elapsed %= SPAWN_PERIOD;
             balls.drop_ball(world, state, scene);
         }
 
         balls.publish(world, scene);
 
-        if balls.ticks.is_multiple_of(SWEEP_TICKS) {
+        if balls.sweep_elapsed >= SWEEP_PERIOD {
+            balls.sweep_elapsed %= SWEEP_PERIOD;
             balls.sweep_outside_view(world, scene);
         }
     }
@@ -745,7 +756,7 @@ impl BallDrops {
 /// What a tick does with a ball.
 ///
 /// A ball is reclaimed when one of the requests it is waiting on was given up
-/// on — it waited out `PENDING_TIMEOUT_TICKS`, or a world that owed it an
+/// on — it waited out `PENDING_TIMEOUT`, or a world that owed it an
 /// answer ended — and when the world it wears an instance in ended, because
 /// the instance went with that world.
 ///
@@ -1058,7 +1069,7 @@ mod tests {
         stall(&scene);
         balls.clear = true;
 
-        BallDrops::tick(&mut balls, &world, &scene);
+        BallDrops::tick(&mut balls, &world, &scene, FRAME_SECONDS);
         let _ = world.apply();
 
         assert_eq!(
@@ -1108,7 +1119,7 @@ mod tests {
         answer(&render);
         answer(&physics);
         stall(&scene);
-        BallDrops::tick(&mut balls, &world, &scene);
+        BallDrops::tick(&mut balls, &world, &scene, FRAME_SECONDS);
 
         assert_eq!(
             balls.orphans,

@@ -53,6 +53,8 @@ pub struct ThreadControl {
     /// A world the host steps has no thread to sleep on: its waits return
     /// at once, and the host paces it by stepping it when a step is due.
     self_driven: bool,
+    /// When the previous tick started, for a self-driven world's elapsed time.
+    last_tick: Mutex<Option<Instant>>,
 }
 
 impl ThreadControl {
@@ -70,6 +72,15 @@ impl ThreadControl {
     #[must_use]
     pub fn self_driven(&self) -> bool {
         self.self_driven
+    }
+
+    /// Seconds since the previous tick, measured once per turn.
+    pub(crate) fn elapsed_seconds(&self) -> f32 {
+        let now = Instant::now();
+        let mut last = sync::lock(&self.last_tick);
+        let elapsed = last.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        *last = Some(now);
+        elapsed
     }
 
     /// Sleep for at most `timeout`, returning early when a stop is requested.
@@ -251,6 +262,7 @@ impl WorldThread {
                 let control = ThreadControl {
                     stop: thread_stop,
                     self_driven: true,
+                    last_tick: Mutex::new(None),
                 };
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let mut world = World::new();
@@ -392,6 +404,19 @@ impl FixedClock {
         }
     }
 
+    /// Change how long a step lasts, keeping the schedule where it is.
+    ///
+    /// The next step is due one new step from now when the current one has
+    /// already passed, so a shortened step never asks for a burst of waits
+    /// to catch up.
+    pub fn set_step(&mut self, step: Duration) {
+        self.step = step;
+        let now = Instant::now();
+        if self.next <= now {
+            self.next = now + step;
+        }
+    }
+
     /// Seconds per step.
     pub fn step_seconds(&self) -> f32 {
         self.step.as_secs_f32()
@@ -408,6 +433,7 @@ pub(crate) fn stepped_control() -> (ThreadControl, ThreadStatus) {
     let control = ThreadControl {
         stop,
         self_driven: false,
+        last_tick: Mutex::new(None),
     };
     (control, status)
 }

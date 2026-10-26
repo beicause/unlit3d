@@ -28,7 +28,10 @@ use crate::world::WorldRunner;
 use unlit_ecs::bundle;
 
 /// The simulation's default step rate, in hertz.
-pub const PHYSICS_HZ: f64 = 64.0;
+pub const PHYSICS_HZ: f64 = 60.0;
+
+/// The most simulation steps one threaded tick may run to catch up.
+const MAX_CATCH_UP_STEPS: u32 = 4;
 
 /// How the physics world is set up before its first step.
 #[derive(Clone, Debug)]
@@ -300,26 +303,31 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
     host: &mut World,
     config: PhysicsConfig,
 ) -> WorldHandle {
-    let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / config.hz));
+    let step_seconds = 1.0 / config.hz as f32;
+    let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
+    let mut debt = 0.0;
     let mut started = false;
     R::spawn(
         host,
         "physics",
         config.command_capacity,
         move |world| init_physics_world(world, &config),
-        move |world, control, ()| {
+        move |world, control, (), delta_seconds| {
             if control.stop_requested() {
                 return false;
             }
-            // Pace before stepping, so the step is the last thing a turn does
-            // and the runner publishes its poses at once. The first turn runs
-            // straight away: a world that came up with its geometry already
-            // queued does not wait a step to move it.
-            if started {
+            if control.self_driven() {
+                let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
+                // The first turn steps immediately, before its first wait.
+                for _ in 0..steps.max(u32::from(!started)) {
+                    step_once(world);
+                }
+                started = true;
                 clock.wait(control);
+            } else {
+                // A stepped host has already decided that one step is due.
+                step_once(world);
             }
-            started = true;
-            step_once(world);
             true
         },
     )
@@ -332,7 +340,17 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 /// deterministic tests, offline rendering — call this to get the world
 /// [`spawn_physics_world_with`] builds, contact events included.
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
-    world.root_scope_mut().spawn(Physics::new(config.gravity));
+    let mut physics = Physics::new(config.gravity);
+    physics.world.integration_parameters.dt = 1.0 / config.hz as f32;
+    world.root_scope_mut().spawn(physics);
+}
+
+/// Turn elapsed time into at most four fixed steps, discarding excess debt.
+fn fixed_steps(debt: &mut f32, delta_seconds: f32, step_seconds: f32) -> u32 {
+    *debt = (*debt + delta_seconds.max(0.0)).min(step_seconds * MAX_CATCH_UP_STEPS as f32);
+    let steps = (*debt / step_seconds) as u32;
+    *debt -= steps as f32 * step_seconds;
+    steps
 }
 
 /// Step the rapier world once, draining its contacts into

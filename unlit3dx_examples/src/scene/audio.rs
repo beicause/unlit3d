@@ -190,7 +190,7 @@ impl Music {
             return;
         }
         let mut settled = core::mem::take(&mut audio.settled);
-        audio.voice.advance(&mut settled);
+        audio.voice.advance(0.0, &mut settled);
         for (_, settled) in settled.drain(..) {
             audio.installed = true;
             match settled {

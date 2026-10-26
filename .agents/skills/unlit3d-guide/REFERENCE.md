@@ -135,8 +135,9 @@
 | 项 | 签名 | 源 |
 | --- | --- | --- |
 | runner | `trait WorldRunner { const SELF_DRIVEN: bool; fn spawn<I, S, T>(host: &mut World, name, command_capacity, init, tick) -> WorldHandle; }` | `crates/unlit3dx/src/world.rs` |
-| 自带线程 | `spawn_threaded_world<T: FnMut(&mut World, &ThreadControl) -> bool + Send>(host, name, cap, tick)`、`..._with_init` | 同上 |
-| 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world(host: &World, entity)`、`with_stepped_world` | 同上 |
+| 自带线程 | `spawn_threaded_world<T: FnMut(&mut World, &ThreadControl, f32) -> bool + Send>(host, name, cap, tick)`、`..._with_init` | 同上 |
+| 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world(host: &World, entity, delta_seconds: f32)`、`with_stepped_world` | 同上 |
+| 节拍 | `ThreadControl::self_driven()`、`wait_timeout(Duration)`、`FixedClock::{new, set_step, wait, step_seconds}` | `crates/unlit3dx/src/thread.rs` |
 | 子 world | `spawn_sub_world(host: &mut World, name, cap) -> WorldHandle`、`drain_sub_world(&mut World)` | `crates/unlit3dx/src/host.rs` |
 | 句柄 | `WorldHandle { entity, sender: JobSender, state: SnapshotReader<WorldState> }`、`new`、`is_finished()`、`stop()` | `crates/unlit3dx/src/handle.rs`、`world.rs` |
 | 名字 | `WorldName(&'static str)` 组件；`Threaded` / `Stepped`；`WorldState = Running\|Stopped\|Panicked` | `crates/unlit3dx/src/world.rs` |
@@ -166,7 +167,7 @@
 | --- | --- | --- |
 | 物理 | `Physics::new(gravity)`、`init_physics_world(world, &PhysicsConfig)`、`spawn_physics_world_with::<R>(host, config)` | `crates/unlit3dx/src/physics.rs` |
 | 刚体 | `spawn_body(world, BodyDesc) -> RigidBodyHandle`、`spawn_fixed_cuboid(world, position, half_extents, friction)`、`despawn_body`、`step_once(world) -> bool` | 同上 |
-| 常量 | `PHYSICS_HZ = 64.0` | 同上 |
+| 常量 | `PHYSICS_HZ = 60.0`、`FRAME_SECONDS` | 同上 / `crates/unlit3dx/src/lib.rs` |
 | 音频 | `spawn_audio_world_with::<R>(host, AudioConfig)`、`dispatch_audio_fill(world, out, sample_rate, channels)`、`OnAudioFill::new(f)`、`AudioFillOrder(i32)`、`GlobalAudioGain(f32)` | `crates/unlit3dx/src/audio.rs` |
 | 合成 | `load_soundfont(bytes)`、`load_midi_file(bytes)`、`SynthVoice::from_font(world, &Arc<SoundFont>)`、`MidiSequencer::new(file: Arc<MidiFile>) / advance(delta, voice, audio)`、`midi_job(voice, kind, delay)` | `crates/unlit3dx/src/synth.rs` |
 

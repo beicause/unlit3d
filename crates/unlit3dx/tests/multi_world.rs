@@ -192,8 +192,8 @@ fn despawning_a_sub_world_ends_it() {
 #[test]
 fn despawning_a_stepped_world_ends_it() {
     let mut host = World::new();
-    let world = spawn_stepped_world_with_init(&mut host, "stepped", 8, |_| (), |_, _, ()| true);
-    step_stepped_world(&host, world.entity);
+    let world = spawn_stepped_world_with_init(&mut host, "stepped", 8, |_| (), |_, _, (), _| true);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS);
     assert!(!world.is_finished(), "the world is still running");
 
     assert!(
@@ -255,8 +255,8 @@ fn stopping_a_sub_world_publishes_its_last_state() {
 #[test]
 fn a_finished_stepped_world_refuses_jobs() {
     let mut host = World::new();
-    let world = spawn_stepped_world_with_init(&mut host, "stepped", 8, |_| (), |_, _, ()| false);
-    step_stepped_world(&host, world.entity);
+    let world = spawn_stepped_world_with_init(&mut host, "stepped", 8, |_| (), |_, _, (), _| false);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS);
 
     assert!(world.is_finished(), "the tick ended the world");
     assert_eq!(

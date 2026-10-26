@@ -13,7 +13,7 @@
 //!   back under, so a ball finds its own instance however many others were
 //!   asked for at the same time.
 //! - **The wait is bounded.** A request whose answer has not come within
-//!   `timeout` ticks of the world that asked is given up on, and so is every
+//!   `timeout` seconds is given up on, and so is every
 //!   request still outstanding when the world that owes them ends: a job a
 //!   panic took with it never answers, and neither does a world that stopped.
 //! - **Nothing waits on an empty slot.** The answers are folded on the
@@ -57,7 +57,7 @@ pub enum Settled<T> {
     /// nothing, so the caller learns the difference between a world that has
     /// not answered and one that answered no.
     Answered(T),
-    /// The wait is over and nothing came: the request's ticks ran out, or the
+    /// The wait is over and nothing came: the request's time ran out, or the
     /// world that owed it ended.
     Expired,
 }
@@ -77,11 +77,11 @@ pub struct Pending<K, T> {
     answers: Receiver<(K, T)>,
     /// The state of the world that owes the answers.
     state: SnapshotReader<WorldState>,
-    /// How many ticks a request may go unanswered; `None` waits for as long
+    /// How many seconds a request may go unanswered; `None` waits for as long
     /// as the world owes it.
-    timeout: Option<u32>,
-    /// The requests still outstanding, and how many ticks each has left.
-    outstanding: Vec<(K, Option<u32>)>,
+    timeout: Option<f32>,
+    /// The requests still outstanding, and how many seconds each has left.
+    outstanding: Vec<(K, Option<f32>)>,
 }
 
 impl<K, T> Pending<K, T>
@@ -90,14 +90,10 @@ where
     T: Send + 'static,
 {
     /// Requests for the world `state` reports on, each allowed to go
-    /// unanswered for `timeout` ticks.
-    ///
-    /// A tick is one [advance](Self::advance): whatever drives the asking
-    /// world decides what one is worth, so a world stepped at a fixed rate
-    /// measures its waits in steps and one paced by a clock measures them in
-    /// frames of its own. `None` waits until the world answers or ends.
+    /// unanswered for `timeout` seconds. `None` waits until the world answers
+    /// or ends.
     #[must_use]
-    pub fn new(state: SnapshotReader<WorldState>, timeout: Option<u32>) -> Self {
+    pub fn new(state: SnapshotReader<WorldState>, timeout: Option<f32>) -> Self {
         let (answerer, answers) = unbounded();
         Self {
             answerer,
@@ -143,20 +139,21 @@ where
     ///
     /// Call it once per tick of the asking world, and take every item it
     /// writes: an unanswered request is given up on only once, and an answer
-    /// is handed out only once. A request is expired when its ticks ran out,
-    /// or at once when the world that owed it ended — a job that panicked
-    /// takes its answer with it, and a world that stopped never runs another.
+    /// is handed out only once. A request is expired when the time it was
+    /// given runs out, or at once when the world that owed it ended — a job
+    /// that panicked takes its answer with it, and a world that stopped never
+    /// runs another.
     ///
     /// An answer that arrived for a request no longer outstanding is dropped:
     /// the request was given up on, and whatever it asked for has already been
     /// dealt with. Requests come out oldest first — the answered in the order
     /// the world published them, then the expired in the order they were
-    /// asked — so two runs of the same ticks settle the same requests in the
-    /// same order.
+    /// asked — so two runs of the same durations settle the same requests in
+    /// the same order.
     ///
     /// `settled` is cleared and reused, so a caller that keeps one allocates
     /// nothing per tick but what the answers themselves weigh.
-    pub fn advance(&mut self, settled: &mut Vec<(K, Settled<T>)>) {
+    pub fn advance(&mut self, delta_seconds: f32, settled: &mut Vec<(K, Settled<T>)>) {
         settled.clear();
         while let Ok((key, value)) = self.answers.try_recv() {
             if self.take_outstanding(&key) {
@@ -173,8 +170,8 @@ where
             let Some(left) = remaining else {
                 return true;
             };
-            *left = left.saturating_sub(1);
-            if *left == 0 {
+            *left -= delta_seconds.max(0.0);
+            if *left <= 0.0 {
                 settled.push((key.clone(), Settled::Expired));
                 return false;
             }
@@ -202,7 +199,7 @@ mod tests {
     /// Requests for a world in `state`, and the queue its requests go through.
     fn asking(
         state: WorldState,
-        timeout: Option<u32>,
+        timeout: Option<f32>,
     ) -> (Pending<u32, u32>, JobSender, async_channel::Receiver<Job>) {
         let snapshot = Snapshot::new();
         snapshot.publish(state);
@@ -218,10 +215,10 @@ mod tests {
         }
     }
 
-    /// What one advance settled.
-    fn settled(pending: &mut Pending<u32, u32>) -> Vec<(u32, Settled<u32>)> {
+    /// What one advance of `delta_seconds` settled.
+    fn settled(pending: &mut Pending<u32, u32>, delta_seconds: f32) -> Vec<(u32, Settled<u32>)> {
         let mut settled = Vec::new();
-        pending.advance(&mut settled);
+        pending.advance(delta_seconds, &mut settled);
         settled
     }
 
@@ -239,7 +236,7 @@ mod tests {
         drain(&receiver, &mut world);
 
         assert_eq!(
-            settled(&mut pending),
+            settled(&mut pending, 1.0),
             vec![
                 (0, Settled::Answered(0)),
                 (1, Settled::Answered(10)),
@@ -248,35 +245,38 @@ mod tests {
             ]
         );
         assert!(
-            settled(&mut pending).is_empty(),
+            settled(&mut pending, 1.0).is_empty(),
             "an answer is handed out once"
         );
     }
 
-    /// A request whose job never ran is given up on once its ticks ran out,
+    /// A request whose job never ran is given up on once its time runs out,
     /// and not before.
     #[test]
-    fn a_request_is_given_up_on_after_its_ticks() {
-        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2));
+    fn a_request_is_given_up_on_after_its_time_runs_out() {
+        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2.0));
         pending
             .request(&jobs, 1, |_: &mut World| 0)
             .expect("the queue has room");
 
-        assert!(settled(&mut pending).is_empty(), "one tick of two is spent");
-        assert_eq!(settled(&mut pending), vec![(1, Settled::Expired)]);
+        assert!(
+            settled(&mut pending, 1.0).is_empty(),
+            "one tick of two is spent"
+        );
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
     }
 
     /// A world that ended owes nothing: every request still outstanding is
-    /// given up on at once, without waiting for its ticks to run out.
+    /// given up on at once, without waiting for its time to run out.
     #[test]
     fn an_ended_world_answers_nothing() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Stopped, Some(100));
+        let (mut pending, jobs, receiver) = asking(WorldState::Stopped, Some(100.0));
         pending
             .request(&jobs, 1, |_: &mut World| 0)
             .expect("the queue has room");
 
         assert_eq!(
-            settled(&mut pending),
+            settled(&mut pending, 1.0),
             vec![(1, Settled::Expired)],
             "the job sat in the queue of a world that never ran it"
         );
@@ -287,33 +287,33 @@ mod tests {
     /// world owed it and paid, and ending afterwards takes nothing back.
     #[test]
     fn an_answer_published_before_the_world_ended_is_delivered() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Stopped, Some(100));
+        let (mut pending, jobs, receiver) = asking(WorldState::Stopped, Some(100.0));
         let mut world = World::new();
         pending
             .request(&jobs, 1, |_: &mut World| 7)
             .expect("the queue has room");
         drain(&receiver, &mut world);
 
-        assert_eq!(settled(&mut pending), vec![(1, Settled::Answered(7))]);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Answered(7))]);
     }
 
     /// An answer that arrived for a request already given up on is dropped
     /// rather than delivered late.
     #[test]
     fn an_answer_for_a_request_given_up_on_is_dropped() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1));
+        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
         let mut world = World::new();
         pending
             .request(&jobs, 1, |_: &mut World| 7)
             .expect("the queue has room");
 
-        assert_eq!(settled(&mut pending), vec![(1, Settled::Expired)]);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
 
         // The job runs on a drain after the wait is over, which is what a
         // world that was a tick behind looks like from here.
         drain(&receiver, &mut world);
         assert!(
-            settled(&mut pending).is_empty(),
+            settled(&mut pending, 1.0).is_empty(),
             "the late answer was dropped"
         );
     }
@@ -322,32 +322,35 @@ mod tests {
     /// nothing and expires to nobody.
     #[test]
     fn a_refused_request_waits_for_nothing() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1));
+        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
         drop(receiver);
         assert_eq!(
             pending.request(&jobs, 1, |_: &mut World| 0).err(),
             Some(SendError::Closed)
         );
 
-        assert!(settled(&mut pending).is_empty(), "nothing was ever asked");
+        assert!(
+            settled(&mut pending, 1.0).is_empty(),
+            "nothing was ever asked"
+        );
     }
 
     /// Asking again under a key already outstanding does not lengthen its
     /// wait: the tick the first was asked on is the one that counts.
     #[test]
     fn asking_again_keeps_the_first_wait() {
-        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2));
+        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2.0));
         pending
             .request(&jobs, 1, |_: &mut World| 0)
             .expect("the queue has room");
-        settled(&mut pending);
+        settled(&mut pending, 1.0);
         pending
             .request(&jobs, 1, |_: &mut World| 0)
             .expect("the queue has room");
 
         // One tick stood between the first ask and this one, so the wait the
         // first ask was given runs out here however recently it was repeated.
-        assert_eq!(settled(&mut pending), vec![(1, Settled::Expired)]);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
     }
 
     /// A request with no timeout waits as long as the world owes it.
@@ -359,7 +362,7 @@ mod tests {
             .expect("the queue has room");
 
         for _ in 0..10 {
-            assert!(settled(&mut pending).is_empty(), "the wait has no end");
+            assert!(settled(&mut pending, 1.0).is_empty(), "the wait has no end");
         }
     }
 }

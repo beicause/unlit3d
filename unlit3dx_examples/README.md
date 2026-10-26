@@ -67,11 +67,13 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 The `--headless` switch runs the very same scene without a window, threads
 or an audio device. It is the browser's path with the frames handed over by
 the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
-in the host's own world, and `SceneStepper` advances them at their fixed
-rates — gameplay at 68 Hz, physics at 64 Hz, render at 60 Hz — for
-`--frames` frames, then the run's last frame and its whole audio mix land
-in `--out` as `screenshot.png` and `audio.flac`. Because the stepping is
-fixed-rate and the spawn rolls are seeded, a run is reproducible, which is
+in the host's own world, and `SceneStepper` advances them one frame at a
+time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes due, the
+synth fills as its sample rate does, and gameplay ticks once per frame with
+the duration the run gives it (`HEADLESS_HZ`). After `--frames` frames the
+run's last frame and its whole audio mix land in `--out` as
+`screenshot.png` and `audio.flac`. Because every frame is the same length
+and the spawn rolls are seeded, a run is reproducible, which is
 what the snapshot tests ([English](tests/headless.rs),
 [简体中文](tests/headless.rs)) build on: rendered frames compare against
 webp baselines and the mix against a FLAC baseline, both kept in the
@@ -122,8 +124,9 @@ it is paced differs.
   retires what the camera cannot see, and the camera helpers — is this crate's own
   built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
   render bridge.
-- The **physics world** steps rapier at 64 Hz and drains its contacts each
-  step. The balls subscribe to it with a collector of their own — the
+- The **physics world** steps rapier at a fixed rate (`PHYSICS_HZ`, 60 Hz)
+  and drains its contacts each step. The balls subscribe to it with a
+  collector of their own — the
   `GamePhysics` payload lives in this crate, not in the library — and the
   collector answers nothing while the poses are unchanged, so a scene whose
   bodies are asleep publishes no snapshot at all. The ground is its first job.
@@ -168,7 +171,10 @@ it is paced differs.
   that never talks to the audio world keeps no sender for it.
 
 
-  The world ticks at a fixed 68 Hz, independent of the frame rate.
+  The world ticks once per frame and takes that frame's measured duration,
+  so gameplay runs as fast as the display drives it; the display's refresh
+  rate only bounds how often its thread wakes, and never how far time
+  advances.
 
 The control panel is the fifth object, and it lives in the **gameplay world**
 with the rest. A panel can only be built where its egui context runs, so this

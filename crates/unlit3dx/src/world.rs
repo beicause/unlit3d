@@ -81,7 +81,7 @@ impl WorldSender {
 }
 
 /// The tick a world runs, with its one-time state already captured.
-type Tick = Box<dyn FnMut(&mut World, &ThreadControl) -> bool>;
+type Tick = Box<dyn FnMut(&mut World, &ThreadControl, f32) -> bool>;
 
 /// A world the host steps: the world, its command queue and its tick.
 ///
@@ -137,7 +137,7 @@ pub trait WorldRunner: 'static {
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static;
+        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static;
 }
 
 /// A world on its own thread.
@@ -159,7 +159,7 @@ impl WorldRunner for Threaded {
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
     {
         spawn_threaded_world_with_init(host, name, command_capacity, init, tick)
     }
@@ -178,7 +178,7 @@ impl WorldRunner for Stepped {
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
     {
         spawn_stepped_world_with_init(host, name, command_capacity, init, tick)
     }
@@ -209,7 +209,7 @@ where
         name,
         command_capacity,
         |_| (),
-        move |world, control, ()| tick(world, control),
+        move |world, control, (), _| tick(world, control),
     )
 }
 
@@ -234,14 +234,14 @@ pub fn spawn_threaded_world_with_init<I, S, T>(
 where
     I: FnOnce(&mut World) -> S + Send + 'static,
     S: 'static,
-    T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     let thread = WorldThread::spawn_with(name, init, move |world, control, state| {
         while let Ok(job) = inbox.try_recv() {
             job(world);
         }
-        let running = tick(world, control, state);
+        let running = tick(world, control, state, control.elapsed_seconds());
         // The turn is over: the driver publishes what the world's collectors
         // returned, so a tick body collects nothing by hand.
         publish_collected(world);
@@ -283,7 +283,7 @@ pub fn spawn_stepped_world_with_init<I, S, T>(
 where
     I: FnOnce(&mut World) -> S + 'static,
     S: 'static,
-    T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     let mut world = World::new();
@@ -292,9 +292,11 @@ where
     LocalTasks::install(&mut world);
     let mut state = init(&mut world);
     let (control, status) = stepped_control();
-    let tick = Box::new(move |world: &mut World, control: &ThreadControl| {
-        tick(world, control, &mut state)
-    });
+    let tick = Box::new(
+        move |world: &mut World, control: &ThreadControl, delta_seconds: f32| {
+            tick(world, control, &mut state, delta_seconds)
+        },
+    );
     let stepped = SteppedWorld {
         world,
         inbox,
@@ -341,7 +343,7 @@ impl Bundle for WorldEntity {
     }
 }
 
-/// Drain a stepped world's jobs and run its tick once.
+/// Drain a stepped world's jobs and run its tick once with `delta_seconds`.
 ///
 /// Does nothing when `entity` does not name a world the host steps, or when
 /// that world has already stopped. A tick that returns `false` stops the
@@ -350,7 +352,7 @@ impl Bundle for WorldEntity {
 ///
 /// The step publishes what the world's subscriptions collected, the same as
 /// a threaded world's loop does, so a tick body never publishes by hand.
-pub fn step_stepped_world(host: &World, entity: Entity) {
+pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
     let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
         return;
     };
@@ -380,7 +382,9 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
         name,
     } = &mut **stepped;
     LocalTasks::pump(world);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(world, control)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tick(world, control, delta_seconds)
+    }));
     match outcome {
         Ok(true) => {}
         Ok(false) => {
@@ -464,6 +468,7 @@ pub fn with_stepped_world<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FRAME_SECONDS;
     use crate::job::SendError;
     use std::time::Duration;
     use unlit_ecs::bundle;
@@ -526,7 +531,7 @@ mod tests {
             |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Count(0)]);
             },
-            |_, control, ()| {
+            |_, control, (), _| {
                 control.wait_timeout(Duration::from_millis(1));
                 true
             },
@@ -577,7 +582,7 @@ mod tests {
             |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Count(0)]);
             },
-            |world: &mut World, _control: &ThreadControl, ()| {
+            |world: &mut World, _control: &ThreadControl, (), _: f32| {
                 world
                     .root_scope()
                     .query::<&mut Count>()
@@ -599,9 +604,9 @@ mod tests {
         };
         // Nothing has run yet: the host has not stepped the world.
         assert_eq!(count(&host), Some(0));
-        step_stepped_world(&host, handle.entity);
+        step_stepped_world(&host, handle.entity, FRAME_SECONDS);
         assert_eq!(count(&host), Some(1));
-        step_stepped_world(&host, handle.entity);
+        step_stepped_world(&host, handle.entity, FRAME_SECONDS);
         assert_eq!(count(&host), Some(2));
     }
 
@@ -614,9 +619,9 @@ mod tests {
             "stepped",
             8,
             |_| (),
-            |_, _: &ThreadControl, ()| false,
+            |_, _: &ThreadControl, (), _: f32| false,
         );
-        step_stepped_world(&host, handle.entity);
+        step_stepped_world(&host, handle.entity, FRAME_SECONDS);
         assert!(handle.is_finished(), "a false tick ends a stepped world");
     }
 
@@ -625,7 +630,7 @@ mod tests {
     fn stepping_a_foreign_entity_does_nothing() {
         let mut host = World::new();
         let plain = host.root_scope_mut().spawn(bundle![Count(0)]);
-        step_stepped_world(&host, plain);
+        step_stepped_world(&host, plain, 0.0);
     }
 
     /// The counter the tests share with their worlds.

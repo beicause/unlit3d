@@ -20,7 +20,7 @@ use unlit3dx::prelude::*;
 
 use crate::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use crate::scene::{
-    AudioSetup, Ball, GAME_HZ, PanelLayout, PanelSlots, RENDER_HZ, SceneHandles, SceneStepper,
+    AudioSetup, Ball, HEADLESS_HZ, PanelLayout, PanelSlots, SceneHandles, SceneStepper,
     SceneTracks, WINDOW_SIZE, mount_scene_content, setup_render_world, spawn_scene,
 };
 
@@ -73,9 +73,9 @@ pub fn run(soundfont: std::sync::Arc<[u8]>) {
         render: render.entity,
         renderer: renderer.0,
         target: target.view.id().to_bits(),
-        stepper: SceneStepper::new(GAME_HZ, PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
+        stepper: SceneStepper::new(PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
         frame: Frame {
-            delta_time: (1.0 / RENDER_HZ) as f32,
+            delta_time: (1.0 / HEADLESS_HZ) as f32,
             index: 0,
             size: WINDOW_SIZE,
         },
@@ -110,8 +110,8 @@ impl Interactive {
     fn step(&mut self, host: &World, frames: u32) {
         for _ in 0..frames {
             dispatch_input(host);
-            self.stepper.step(host, &self.worlds, 1.0 / RENDER_HZ);
-            let frames = self.stepper.audio_frames(1.0 / RENDER_HZ);
+            self.stepper.step(host, &self.worlds, 1.0 / HEADLESS_HZ);
+            let frames = self.stepper.audio_frames(1.0 / HEADLESS_HZ);
             if frames > 0 {
                 self.samples.clear();
                 self.samples.resize(frames * AUDIO_CHANNELS, 0.0);
@@ -189,7 +189,7 @@ impl Interactive {
 struct StepFrames {
     #[serde(default)]
     world: unlit_ecs::mcp::WorldId,
-    /// How many fixed 60 Hz frames to advance.
+    /// How many fixed-length frames to advance.
     frames: u32,
 }
 

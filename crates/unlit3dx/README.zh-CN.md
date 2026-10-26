@@ -183,8 +183,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
 各桥如下：
 
-- **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，64）
-  驱动 rapier 的 `PhysicsWorld`。每一步把 rapier 的碰撞事件排空进 `PhysicsContacts`
+- **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，60 Hz）
+  驱动 rapier 的 `PhysicsWorld`。自驱动的 world 按实际流逝的时间追赶，一次 tick 至多四步；
+  由宿主步进的 world 每被步进一次就走一步。每一步把 rapier 的碰撞事件排空进 `PhysicsContacts`
   组件——这一步开始的碰撞对（含每对相互接近的速度）与结束的碰撞对。它自己不发布
   任何载荷：调用方用收集闭包订阅，由闭包指名要什么状态，再由驱动该 world 的一方发布。
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；

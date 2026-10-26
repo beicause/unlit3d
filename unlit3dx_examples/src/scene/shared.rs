@@ -118,7 +118,7 @@ impl SceneBuild {
             return;
         }
         let mut settled = core::mem::take(&mut state.settled);
-        state.build.advance(&mut settled);
+        state.build.advance(0.0, &mut settled);
         for (_, settled) in settled.drain(..) {
             match settled {
                 Settled::Answered(assets) => {

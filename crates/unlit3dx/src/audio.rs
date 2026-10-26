@@ -300,7 +300,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
         "audio",
         config.command_capacity,
         |_| (),
-        move |world, control, ()| {
+        move |world, control, (), _| {
             if control.stop_requested() {
                 return false;
             }

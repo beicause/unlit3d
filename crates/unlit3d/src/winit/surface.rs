@@ -372,11 +372,17 @@ fn surface_config(
         // A surface cannot be configured with a zero dimension.
         width: width.max(1),
         height: height.max(1),
-        present_mode: caps
-            .present_modes
-            .first()
-            .copied()
-            .unwrap_or(wgpu::PresentMode::Fifo),
+        // Fifo is the only present mode every backend guarantees, and it is
+        // the one that ties a frame to the display: prefer it over an adaptive
+        // or immediate mode a driver offers first.
+        present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+            wgpu::PresentMode::Fifo
+        } else {
+            caps.present_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::PresentMode::Fifo)
+        },
         alpha_mode: caps
             .alpha_modes
             .first()

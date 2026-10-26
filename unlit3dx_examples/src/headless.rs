@@ -21,8 +21,8 @@ use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
 use crate::scene::{
-    AudioSetup, GAME_HZ, PanelSlots, RENDER_HZ, SceneStepper, mount_scene_content,
-    setup_render_world, spawn_scene,
+    AudioSetup, HEADLESS_HZ, PanelSlots, SceneStepper, mount_scene_content, setup_render_world,
+    spawn_scene,
 };
 
 /// The audio sample rate the headless run renders at, in hertz.
@@ -131,16 +131,17 @@ pub fn run(
         audio: Vec::new(),
     };
     let mut frame = Frame {
-        delta_time: (1.0 / RENDER_HZ) as f32,
+        delta_time: (1.0 / HEADLESS_HZ) as f32,
         index: 0,
         size: config.size,
     };
-    // The stepper carries the step remainders: physics runs at 64 Hz and
-    // the synthesizer at its own sample rate, neither an integer multiple
-    // of the render rate, so both accumulate their fractional steps across
-    // frames. The frame's duration is the exact render step, not a
-    // measured one, so the same frames give the same steps every run.
-    let mut stepper = SceneStepper::new(GAME_HZ, PHYSICS_HZ, Some(config.audio_sample_rate));
+    // The stepper carries the step remainders: physics runs at PHYSICS_HZ
+    // and the synthesizer at its own sample rate, neither necessarily an
+    // integer multiple of the frame rate, so both accumulate their
+    // fractional steps across frames. The frame's duration is the exact
+    // step the run asks for, not a measured one, so the same frames give the
+    // same steps every run.
+    let mut stepper = SceneStepper::new(PHYSICS_HZ, Some(config.audio_sample_rate));
     // The interleaved sample buffer, reused across frames so the audio
     // loop does not allocate one per frame.
     let mut samples_out: Vec<f32> = Vec::new();
@@ -151,10 +152,10 @@ pub fn run(
         // The worlds step once for this frame: gameplay first, so the notes
         // its sequences play reach the audio world before it steps, then
         // physics as its rate comes due and audio for the jobs booked.
-        stepper.step(&host, &worlds, 1.0 / RENDER_HZ);
+        stepper.step(&host, &worlds, 1.0 / HEADLESS_HZ);
 
         // Audio: render whatever samples the frame's duration asks for.
-        let frames = stepper.audio_frames(1.0 / RENDER_HZ);
+        let frames = stepper.audio_frames(1.0 / HEADLESS_HZ);
         if frames > 0 {
             samples_out.clear();
             samples_out.resize(frames * AUDIO_CHANNELS, 0.0);

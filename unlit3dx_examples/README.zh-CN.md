@@ -54,10 +54,11 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
 `--headless` 开关运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
-宿主自己的 world，`SceneStepper` 按各自的固定频率推进它们——玩法 68 Hz、
-物理 64 Hz、渲染 60 Hz——共 `--frames` 帧，随后这一运行的最后一帧与整段混音
-写入 `--out` 下的 `screenshot.png` 与 `audio.flac`。步进是固定频率的，生成骰子也是
-确定的，因此每次运行都可复现——快照测试（[English](tests/headless.rs)、
+宿主自己的 world，`SceneStepper` 一帧一帧地推进它们：物理按它自己的频率
+（`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
+时长就是这个运行给定的 `HEADLESS_HZ`。走满 `--frames` 帧后，这一运行的最后一帧
+与整段混音写入 `--out` 下的 `screenshot.png` 与 `audio.flac`。每一帧长度都相同、
+生成骰子也是确定的，因此每次运行都可复现——快照测试（[English](tests/headless.rs)、
 [简体中文](tests/headless.rs)）正建立在此之上：渲染帧与 webp 基准比较，
 混音与 FLAC 基准比较，基准都保存在
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
@@ -90,7 +91,8 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   与 mesh source。资源服务器本身——网格、材质与实例的分配，回收镜头看不见的实例的
   那一轮清扫，以及相机辅助——就是本 crate 自己的 `src/render.rs`，
   建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
-- **物理 world** 以 64 Hz 步进 rapier，每一步排空碰撞事件。球们用自己的收集闭包
+- **物理 world** 以固定频率（`PHYSICS_HZ`，60 Hz）步进 rapier，每一步排空碰撞事件。
+  球们用自己的收集闭包
   订阅它——`GamePhysics` 载荷属于本 crate，不属于库——闭包在姿态未变时什么都不
   返回，因此刚体都睡着的场景根本不发布快照。地面是它的第一个 job。
 - **音频 world** 持有输出流，混音它所携带的任意音源，欠载时静音。它持有一台
@@ -122,7 +124,8 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   tick。从不对音频 world 说话的对象也就不会持有它的 sender。
 
 
-  它以固定 68 Hz 步进，独立于帧率。
+  它每帧 tick 一次，时长取这一帧的实测值，因此玩法跑得像显示器驱动得那么快；
+  显示器的刷新率只约束它的线程多久醒一次，从不决定时间前进多少。
 
 控制面板是第五个对象，和其余对象一样住在**玩法 world** 里。面板只能在它自己的
 egui context 所运行的地方构建，所以由这个 world 负责布局并发布帧，渲染 world 负责绘制
