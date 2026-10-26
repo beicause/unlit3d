@@ -434,8 +434,8 @@ impl FrameSource for UiSource {
         // renumbered twice.
         //
         // One upload carries them all, which means one screen descriptor packs
-        // every clip rectangle: a frame laid out at another size is dropped
-        // instead, because its rectangles would be computed in the wrong
+        // every clip rectangle: a frame laid out at another size adds no
+        // geometry, because its rectangles would be computed in the wrong
         // pixels. The world that published it lays a new one out at the size
         // this source now draws at.
         //
@@ -444,6 +444,8 @@ impl FrameSource for UiSource {
         // so the gather borrows the slots for as long as the upload takes.
         let own = self.ctx.tessellate(output.shapes, screen.pixels_per_point);
         let own_textures = core::mem::take(&mut output.textures_delta);
+        // What a frame contributes in geometry when its slice is left empty.
+        const NO_PRIMITIVES: [egui::ClippedPrimitive; 0] = [];
         let gpu = &mut self.targets[index].gpu;
         self.frames.with_frames(|slots| {
             let mut sources = Vec::with_capacity(slots.len() + 1);
@@ -453,20 +455,25 @@ impl FrameSource for UiSource {
                 primitives: &own,
             });
             for (index, slot) in slots.iter_mut().enumerate() {
-                // A frame laid out at another size is dropped rather than
-                // drawn: its clip rectangles were computed in the wrong
-                // pixels, and the world that published it lays a new one out
-                // at the size this source now draws at.
-                if slot.as_ref().is_some_and(|frame| frame.screen != screen) {
-                    *slot = None;
-                }
                 let Some(frame) = slot else {
                     continue;
+                };
+                // A frame laid out at another size is not drawn: its clip
+                // rectangles were computed in the wrong pixels, and the world
+                // that published it lays a new one out at the size this source
+                // now draws at. Its textures still go through, because egui
+                // sends a texture on the frame that first writes it and never
+                // again — dropping the delta would lose that image for good,
+                // leaving every later draw of the slot with nothing to sample.
+                let primitives = if frame.screen == screen {
+                    &frame.primitives[..]
+                } else {
+                    &NO_PRIMITIVES[..]
                 };
                 sources.push(UiFrame {
                     source: Source::published(index),
                     textures: core::mem::take(&mut frame.textures),
-                    primitives: &frame.primitives,
+                    primitives,
                 });
             }
             gpu.integration
@@ -620,9 +627,9 @@ impl Drop for ExternalFrame {
     fn drop(&mut self) {
         // egui panics when a texture delta is dropped unapplied, and a frame
         // that crosses worlds can legitimately be dropped: a publisher that
-        // replaced an older frame, or a drawing side that dropped one laid out
-        // at another target. What it carries was never uploaded, so the
-        // deltas are simply forgotten.
+        // replaced an older frame, or a drawing side that dropped the frame of
+        // a slot whose publisher is gone. What it carries was never uploaded,
+        // so the deltas are simply forgotten.
         self.textures.clear();
     }
 }
@@ -1312,6 +1319,72 @@ mod tests {
         assert!(
             !scene.draws.is_empty(),
             "the frame that survived carries the atlas its predecessor wrote"
+        );
+    }
+    /// A frame laid out at another size is not drawn, because its clip
+    /// rectangles belong to pixels the pass does not have — but its texture
+    /// updates still go through. egui sends a texture once, on the frame that
+    /// first writes it, so losing them at a resize would leave the slot with
+    /// nothing to sample once its publisher had caught up with the new size.
+    #[test]
+    fn a_frame_laid_out_at_another_size_hands_its_textures_over() {
+        let (world, ctx) = test_world();
+        let target = test_ui_target();
+        let mut other = World::new();
+        other
+            .root_scope_mut()
+            .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+                ui.label("a panel with text");
+            }),]);
+        let frame = lay_out(
+            &other,
+            &egui::Context::default(),
+            raw_input(target, Some(0.0), true, Vec::new()),
+            target.screen,
+        );
+        assert!(
+            !frame.textures.is_empty(),
+            "the first pass writes the font atlas"
+        );
+
+        let mut source = UiSource::new();
+        source.frames.publish(0, frame);
+        let mut encoder = encoder(&world, ctx);
+        let mut scene = Scene::new();
+
+        // A target of another size: the frame contributes no geometry, and its
+        // updates are taken anyway.
+        let [width, height] = target.screen.size_in_pixels;
+        let resized = PassInfo {
+            width: 2 * width,
+            height: 2 * height,
+            ..test_target()
+        };
+        source.build_scene(&world.root_scope(), ctx, resized, &mut scene, &mut encoder);
+        assert!(
+            scene.draws.is_empty(),
+            "a frame laid out at another size is not drawn"
+        );
+        source.frames.with_frames(|slots| {
+            let frame = slots[0].as_ref().expect("the frame stays in its slot");
+            assert!(
+                frame.textures.is_empty(),
+                "its updates were taken and uploaded"
+            );
+        });
+
+        // Back at the size it was laid out for, the same frame draws: the
+        // atlas it wrote is there because the other-size pass uploaded it.
+        source.build_scene(
+            &world.root_scope(),
+            ctx,
+            test_target(),
+            &mut scene,
+            &mut encoder,
+        );
+        assert!(
+            !scene.draws.is_empty(),
+            "its textures were not lost to the pass that could not draw it"
         );
     }
     /// Two contexts allocate texture ids from zero, so the same id names
