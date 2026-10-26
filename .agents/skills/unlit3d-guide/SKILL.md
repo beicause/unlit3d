@@ -244,6 +244,7 @@ world.apply().expect("the queue is drained");
 | 透明面发黑 / 错位 | 没开 blend、`depth_write_enabled` 没关，或没加 `ZSortedDrawing` |
 | 画面拉伸 | viewport 的宽高比与相机的不一致 |
 | 面板看不见 | `UiPanel` 不在 `UiSource` 子树里，或 UI source 挂在场景构建之后 |
+| 面板有 draw 但一个材质都没有 | 发布方比绘制方快，携带纹理增量的那一帧被下一帧顶掉了。`ExternalFrames::publish` 会把被顶掉帧的 `textures` 交给继任者；自己绕过它换帧就会丢图集 |
 | job 丢了 | `send` 的 `Full` / `Closed` 被忽略 |
 | snapshot 一直是 None | 目标 world 还没跑完一次 tick（发布在 tick 之后），或 reader 已 drop（drop 即退订） |
 | 集成测试没跑 | 本仓库用 `cargo nextest run`；带 required-features 的套件要 `--all-features` 或点名 feature |
@@ -253,11 +254,12 @@ world.apply().expect("the queue is drained");
 | 目的 | 命令 |
 | --- | --- |
 | 单 world 的窗口示例 | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --scene spin_cube`（`--list-scenes` 看全部，`--mcp` 开调试宿主） |
-| 多 world 的示例 | `cargo run -p unlit3dx_examples --bin unlit3dx-examples`（另有 `--mcp` / `--stepped` / `--headless`） |
+| 多 world 的示例 | `cargo run -p unlit3dx_examples --bin unlit3dx-examples`（另有 `--mcp` / `--stepped` / `--headless`；`--headless --mcp` 是无窗口、按帧驱动的 MCP 宿主） |
 | glTF 出图 | `cargo run -p unlit3d_cli --bin unlit3d-cli` |
 | 整个工作区测试 | `cargo xtask test`（内部是 `cargo nextest run` 加 `cargo test --doc`） |
 | 单 crate | `cargo nextest run -p unlit3d --all-features` |
 | 重存快照 | `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples`，再审快照的 diff |
+| 多 world 的端到端测试 | `cargo nextest run -p unlit3dx_examples`：离屏渲染帧、混音，以及起真实进程走 MCP 的四步交互（三张图 + 一段音频） |
 | 校验与格式 | 先 `cargo clippy` 再 `cargo fmt` |
 
 快照不匹配的帧写在 `target/snapshot-mismatches`（webgl2 档 `target/snapshot-mismatches-webgl2`，wasm 档 `target/snapshot-mismatches-wasm`；单独跑时由 `UNLIT3D_SNAPSHOT_MISMATCH_DIR` 指定）。
@@ -293,4 +295,6 @@ world.apply().expect("the queue is drained");
 - 多 world：`crates/unlit3dx/README.md`，代码在 `crates/unlit3dx/src/world.rs`、`host.rs`、`job.rs`、`channel.rs`、`request.rs`。
 - 展示路径与 GPU 请求：`crates/unlit3dx/src/present.rs`、`crates/unlit3dx/src/gpu.rs`。
 - 参考装配（真正的骨架长什么样）：`unlit3dx_examples/src/lib.rs`、`scene/mod.rs`、`render.rs`、`headless.rs`。
+- 无窗口的交互式 MCP 宿主（按帧驱动、离屏渲染、自有工具）：`unlit3dx_examples/src/mcp.rs`。
+- 端到端快照测试的写法（起子进程 + 手写 JSON-RPC 客户端）：`unlit3dx_examples/tests/mcp_input/native.rs`。
 - 单 world 的完整可跑实现：`unlit3d_cli/src/lib.rs` 的 `build_world` / `offscreen_world`。

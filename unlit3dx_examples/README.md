@@ -78,6 +78,22 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 [`unlit3d_asset_files`](../unlit3d_asset_files) submodule;
 `SNAPSHOT_UPDATE=1` re-stores them.
 
+`--headless --mcp` goes one step further: instead of running a fixed number
+of frames it waits for MCP commands, and only the `step_frames` tool advances
+time. The scene renders into an offscreen texture the client reads with
+`read_texture_as_image`, `scene_status` reports the frame, the ball count,
+the MIDI sequence and the centre of every panel button, and `request_exit`
+stops the process. Automatic ball drops and the background track's autoplay
+are off in this mode, so every visible and audible change comes from the
+client. The `mcp_input` test ([English](tests/mcp_input/main.rs),
+[简体中文](tests/mcp_input/main.rs)) starts that binary and never touches its
+internals: it clicks the panel through `send_input`, captures three image
+snapshots, compares the mix it recorded while the sequence played against a
+fourth baseline, asserts that the mix recorded after the pause is silent
+without storing it, and asks the process to exit. Both snapshot tests are
+modules of one test target, [tests/gpu_suite.rs](tests/gpu_suite.rs), so the
+GPU stack links once.
+
 ## How the worlds are wired
 
 Five worlds, per the `unlit3dx` protocol: jobs go out, snapshots come back.

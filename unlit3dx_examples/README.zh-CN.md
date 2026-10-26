@@ -63,6 +63,15 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
 `SNAPSHOT_UPDATE=1` 重新保存基准。
 
+`--headless --mcp` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
+离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告帧号、球数、MIDI
+序列状态与每个面板按钮的中心，`request_exit` 让进程退出。该模式下自动掉球与背景自动播放
+均关闭，因此每个可见与可听的变化都来自客户端。`mcp_input` 集成测试（[English](tests/mcp_input/main.rs)、
+[简体中文](tests/mcp_input/main.rs)）启动这个二进制，只通过 MCP 点击面板、捕获三张图片
+快照、把序列播放期间录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，
+并请求进程正常退出。两个快照测试都是单一测试目标（[tests/gpu_suite.rs](tests/gpu_suite.rs)）
+的模块。
+
 ## 各 world 如何相连
 
 五个 world，遵循 `unlit3dx` 的协议：job 发出去，快照传回来。其余 world

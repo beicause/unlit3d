@@ -118,7 +118,7 @@
 | --- | --- | --- |
 | source | `UiSource::new()`、`publish_target(Snapshot<UiTarget>)`、`context()`、`context_mut()` | `crates/unlit3d/src/ui/mod.rs` |
 | 面板 | `UiPanel::new(f)`，f 形如 `FnMut(Scope<'_>, Entity, &mut egui::Ui)` | 同上 |
-| 跨 world | `ExternalFrame`、`ExternalFrames::new() / publish(slot, frame) / with_frames`、`UiTarget { screen, max_texture_side }`、`lay_out(..)`、`raw_input(..)` | 同上 |
+| 跨 world | `ExternalFrame`、`ExternalFrames::new() / publish(slot, frame) / with_frames`、`UiTarget { screen, max_texture_side }`、`lay_out(..)`、`raw_input(..)`。`publish` 把被顶掉帧的纹理增量 `append` 给继任者——egui 只在写出纹理的那一帧带增量，丢掉它就没材质可绑 | 同上 |
 
 ## winit 桥
 
