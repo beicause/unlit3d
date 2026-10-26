@@ -156,6 +156,20 @@ jobs:
       - name: Check out the asset submodule
         run: git submodule update --init --checkout
 
+      # The demo's soundfont is a 14 MB asset the repository keeps out of
+      # version control, and `asset_bytes` embeds it with `include_bytes!`.
+      # Without it the build substitutes an empty stub, and the APK this job
+      # publishes has no sound and no track controls at all — so the fetch is
+      # what makes the demo play, and `UNLIT3D_REQUIRE_SOUNDFONT` on the
+      # cross-build below is what keeps a checkout that lost the asset from
+      # producing a silent one.
+      - name: Fetch the demo soundfont
+        run: |
+          mkdir -p assets
+          gh api -H "Accept: application/vnd.github.raw" repos/beicause/soundfont/contents/FluidR3Mono_GM.sf3 > assets/FluidR3Mono_GM.sf3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
@@ -227,6 +241,10 @@ jobs:
       # here is a build error one step later, reported with a line.
       - name: Clippy (Android target)
         run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings
+        env:
+          # The soundfont was fetched above; requiring it here is what turns a
+          # checkout that lost the asset from a silent stub into a failure.
+          UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       # One command for both halves: `cargo ndk` builds the example's shared
       # library into the APK's `jniLibs` directory, then the task runs the
@@ -238,6 +256,8 @@ jobs:
       # is what Gradle's own `ndkVersion` asks for.
       - name: Build the APK
         run: cargo xtask build-android
+        env:
+          UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       - name: Upload the APK
         uses: actions/upload-artifact@v7.0.1

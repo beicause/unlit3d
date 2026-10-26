@@ -44,6 +44,13 @@ resolves it next to the workspace root and exports its path as
 `SOUNDFONT_FILE`; when the file is absent it writes an empty stub instead and
 the demo starts up silent rather than failing to compile.
 
+That fallback is for a working copy. A build that publishes the demo — the
+Pages site and the APK — sets `UNLIT3D_REQUIRE_SOUNDFONT` instead, and
+`build.rs` then fails rather than substituting the stub: a demo without the
+soundfont has neither sound nor the track controls in its panel, which is not
+something to ship by accident. The workflows fetch the file before they build
+and set the variable, so a checkout that loses the asset turns red instead.
+
 ## License
 
 Dual-licensed under either of MIT or Apache-2.0, at your option, as declared in

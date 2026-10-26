@@ -110,7 +110,7 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_suite.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.md) | The models `unlit3d_examples` draws, carried in the binary: `include_bytes!` sits in an `#[inline(never)]` function body, so those bytes stay out of every dependent's metadata. |
-| [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.md) | The soundfont `unlit3dx_examples` plays, carried the same way; its `build.rs` substitutes an empty stub when the file is absent. |
+| [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.md) | The soundfont `unlit3dx_examples` plays, carried the same way; its `build.rs` substitutes an empty stub when the file is absent, or fails where `UNLIT3D_REQUIRE_SOUNDFONT` demands the real one. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: one-way jobs out, subscriptions back — snapshots for state, streams for events — joining a render sub-world with physics, audio and gameplay worlds, each on a thread of its own or stepped by the host's frames. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |

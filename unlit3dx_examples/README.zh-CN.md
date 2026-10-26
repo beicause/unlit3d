@@ -31,8 +31,9 @@ cargo run -p unlit3dx_examples
 `assets/FluidR3Mono_GM.sf3`（仓库不把它纳入版本控制），该 crate 的 `soundfont()`
 用 `include_bytes!` 把它带进二进制，同一份字节在任何平台都能用，wasm 也不例外。
 这些字节之所以不放在本 crate 里，是因为用常量装着它们会把这十四兆字节拷进本 crate 的
-元数据，拖慢每一次重新构建。文件缺失时构建发出警告，示例静音运行。把任何 SF3 音色库
-放到该路径并重新构建即可换音色，例如
+元数据，拖慢每一次重新构建。文件缺失时构建发出警告，示例静音运行；但设置
+`UNLIT3D_REQUIRE_SOUNDFONT` 后这行警告变成构建失败，发布站点与 APK 的 workflow 就是这么做的。
+把任何 SF3 音色库放到该路径并重新构建即可换音色，例如
 [FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3)。
 
 `--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit_ecs/README.zh-CN.md)

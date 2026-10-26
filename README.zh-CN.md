@@ -80,7 +80,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_suite.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.zh-CN.md) | `unlit3d_examples` 所绘制的模型，随身带在二进制里：`include_bytes!` 写在 `#[inline(never)]` 的函数体内，这些字节因此不进任何下游的元数据。 |
-| [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.zh-CN.md) | `unlit3dx_examples` 所演奏的音色库，同样随身携带；文件缺失时其 `build.rs` 换上一个空的 stub。 |
+| [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.zh-CN.md) | `unlit3dx_examples` 所演奏的音色库，同样随身携带；文件缺失时其 `build.rs` 换上一个空的 stub，而在 `UNLIT3D_REQUIRE_SOUNDFONT` 要求真货时直接失败。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：job 单向发出、订阅把状态带回来——状态用快照、事件用流——连接渲染子 world 与物理、音频、玩法 world，各占一条线程或由宿主的帧步进。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |

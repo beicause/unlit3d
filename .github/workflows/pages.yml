@@ -53,6 +53,20 @@ jobs:
       - name: Check out the asset submodule
         run: git submodule update --init --checkout
 
+      # The demo's soundfont is a 14 MB asset the repository keeps out of
+      # version control, and `asset_bytes` embeds it with `include_bytes!`.
+      # Without it the build substitutes an empty stub, and what this step
+      # publishes has no sound and no track controls at all — so the fetch is
+      # what makes the page play, and `UNLIT3D_REQUIRE_SOUNDFONT` on the build
+      # below is what keeps a checkout that lost the asset from publishing a
+      # silent demo.
+      - name: Fetch the demo soundfont
+        run: |
+          mkdir -p assets
+          gh api -H "Accept: application/vnd.github.raw" repos/beicause/soundfont/contents/FluidR3Mono_GM.sf3 > assets/FluidR3Mono_GM.sf3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal
@@ -90,6 +104,8 @@ jobs:
       # writes the landing page that links the examples and the docs.
       - name: Build the web examples
         run: cargo xtask run-wasm --no-serve
+        env:
+          UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       # `--all-features` below turns on the audio bridge, whose Linux backend
       # is built by `alsa-sys`; its build script needs ALSA's headers, which

@@ -36,6 +36,11 @@ let _ = voice.request(&audio, (), move |world| install_synth(world, &soundfont))
 根目录旁解析它，并把路径导出为 `SOUNDFONT_FILE`；文件不存在时它改写一个空桩，示例静音
 启动，而不是编译失败。
 
+这个兜底只面向开发用的工作副本。发布版本——Pages 站点与 APK——的构建会设置
+`UNLIT3D_REQUIRE_SOUNDFONT`，此时 `build.rs` 直接失败而不再换上空桩：缺少音色库的示例既没有
+声音、面板里也没有音轨控件，不该被无意发布出去。相关 workflow 在构建前取回该文件并设置
+这个变量，于是丢了资源的 checkout 会直接变红。
+
 ## 许可证
 
 双许可：MIT 或 Apache-2.0，任选其一，如工作区 manifest 所声明。
