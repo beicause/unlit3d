@@ -256,12 +256,14 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   world，后者就是 `list_worlds` 报告的名字。录音工具——
   `start_audio_recording`、`stop_audio_recording`、`read_audio_recording`、
   `cancel_audio_recording` 与 `audio_recording_status`——在指名的 world 上驱动一次录音，
-  并把混音写成 WAV 文件或直接在内存中返回，测试因此无需落盘就能断言样本。`request_exit`
+  并把混音写成文件或直接在内存中返回，测试因此无需落盘就能断言样本。两种回答携带的是
+  同一批样本，格式由调用方指定，与图片工具一致：落盘时由文件名的扩展名决定，在回复里
+  直接返回的工具则接受一个 `format` 参数；调用方什么都不指名时拿到的是 `.flac`——无损
+  且体积更小——另有 `.wav` 可选。`request_exit`
   请求携带 `ExitRequest` 的宿主退出；没有窗口事件循环时，`pump_mcp` 负责分发命令，
   这也正是没有 winit 的宿主仍能对外服务 MCP 的原因。录音音源挂在填充顺序的最末，
-  因此它捕获到的是所有其他音源与 world 的 `GlobalAudioGain` 之后的混音，
-  样本写成一个 RIFF/WAVE 文件，无需额外依赖。录音器只为这些工具编译，
-  故 `mcp` 自身蕴含 `audio`。
+  因此它捕获到的是所有其他音源与 world 的 `GlobalAudioGain` 之后的混音。
+  录音器只为这些工具编译，故 `mcp` 自身蕴含 `audio`。
 
 ## 最佳实践
 
@@ -325,7 +327,9 @@ world 的实体什么也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、订阅者把两次分别落地的碰撞都排进队列（信箱会把它们并成
 一次）、音频 world 运行 job 并报告输出已打开、多 world 的 job 与
 快照往来，以及一个 panic 的 job 结束它的 world、排在它后面的 job 不再运行。录音也有覆盖：它捕获设备本会播放的
-混音并把样本排成 RIFF/WAVE 文件，音频 MCP 工具则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
+混音，两个编码器都对着自己写出的东西做了校验——WAV 逐字节比对，FLAC 流则解回编码前的
+样本，顺带也挡住「声明了一个自己并不使用的块大小」的流。音频 MCP 工具则把两者串进
+下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
 以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败；
 音频录音工具同样有覆盖，从开始录音、拒绝第二次录音，到把捕获的混音写出去。

@@ -11,8 +11,6 @@
 //! every world stepped at a fixed rate, a run is reproducible down to
 //! the captured frames and audio samples.
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-use std::path::Path;
 use std::sync::Arc;
 
 use unlit_wgpu::readback::readback_texture;
@@ -31,11 +29,6 @@ pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 /// How many channels the headless run mixes: the interleaved samples the
 /// audio world's fill dispatch writes, and the stream the encoder reads.
 pub const AUDIO_CHANNELS: usize = 2;
-
-/// The resolution the mix is quantized to, in bits per sample. Only the
-/// FLAC encoder, which a browser cannot run, needs it.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-const BITS_PER_SAMPLE: usize = i16::BITS as usize;
 
 /// The headless run's settings.
 pub struct HeadlessConfig {
@@ -199,55 +192,4 @@ pub fn run(
     }
 
     output
-}
-
-/// Write interleaved stereo samples as a lossless FLAC stream.
-///
-/// The samples clamp into the 16-bit range first, exactly as a PCM16 WAV
-/// would, so the stream decodes back to the same samples it was written
-/// from. FLAC is the smaller deliverable: the same ten-second mix takes a
-/// third of the WAV's bytes, which is why the stored baselines are streams
-/// rather than a raw header and samples.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-pub fn write_flac(path: &Path, samples: &[f32], sample_rate: u32) -> std::io::Result<()> {
-    std::fs::write(path, encode_flac(samples, sample_rate)?)
-}
-
-/// Quantize interleaved samples to 16 bits and encode them as FLAC.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-fn encode_flac(samples: &[f32], sample_rate: u32) -> std::io::Result<Vec<u8>> {
-    use flacenc::component::BitRepr;
-    use flacenc::error::Verify;
-
-    let quantized: Vec<i32> = samples
-        .iter()
-        .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16 as i32)
-        .collect();
-    let config = flacenc::config::Encoder::default();
-    let block_size = config.block_size;
-    let verified = config
-        .into_verified()
-        .map_err(|(_, error)| std::io::Error::other(error.to_string()))?;
-    let source = flacenc::source::MemSource::from_samples(
-        &quantized,
-        AUDIO_CHANNELS,
-        BITS_PER_SAMPLE,
-        sample_rate as usize,
-    );
-    let mut stream = flacenc::encode_with_fixed_block_size(&verified, source, block_size)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    // The trailing frame holds whatever samples the mix's length leaves over,
-    // and the encoder lets that drag the stream's declared minimum block size
-    // down. The reference encoder declares one block size for the whole
-    // stream, and a decoder that trusts the declaration to seek cannot tell
-    // the two apart, so say the same thing here.
-    stream
-        .stream_info_mut()
-        .set_block_sizes(block_size, block_size)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut sink = flacenc::bitsink::ByteSink::new();
-    stream
-        .write(&mut sink)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    Ok(sink.into_inner())
 }

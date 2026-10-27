@@ -12,8 +12,9 @@
 //! told one: an audio world publishes its rate only once a device is open, and
 //! a world that opens none fills at the rate its sources were built for. A
 //! recording stops at `max_seconds` of audio and keeps what it captured, so an
-//! unattended recording cannot grow without bound. [`write_wav`] turns the
-//! captured samples into a RIFF/WAVE file.
+//! unattended recording cannot grow without bound. A finished recording is
+//! written in the [`RecordingFormat`] its caller names: a RIFF/WAVE file of
+//! the samples themselves, or the same samples in a lossless FLAC stream.
 
 use std::sync::{Arc, Mutex};
 
@@ -119,6 +120,15 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
     RecordingHandle { entity, state }
 }
 
+/// How many bits one quantized sample takes, the resolution both encoders
+/// declare for the samples they hold.
+const BITS_PER_SAMPLE: usize = i16::BITS as usize;
+
+/// Quantize a sample into the 16-bit range both encoders write.
+fn quantize(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
+}
+
 /// Write interleaved samples as a 16-bit PCM RIFF/WAVE file.
 ///
 /// Each sample clamps to the unit range and then scales to `i16`, the same
@@ -143,10 +153,111 @@ pub(crate) fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data_len.to_le_bytes());
     for &sample in samples {
-        let scaled = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16;
-        bytes.extend_from_slice(&scaled.to_le_bytes());
+        bytes.extend_from_slice(&quantize(sample).to_le_bytes());
     }
     bytes
+}
+
+/// Write interleaved samples as a lossless FLAC stream.
+///
+/// The samples quantize to 16 bits first, exactly as [`write_wav`] does, so
+/// the stream decodes back to the same samples the WAV would hold. It is the
+/// smaller of the two answers — a mix takes a third of the WAV's bytes —
+/// which is why it is the format a caller gets when it names none.
+pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>, String> {
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+
+    let channels = usize::from(format.channels.max(1));
+    let quantized: Vec<i32> = samples
+        .iter()
+        .map(|sample| i32::from(quantize(*sample)))
+        .collect();
+    let config = flacenc::config::Encoder::default();
+    let block_size = config.block_size;
+    let verified = config
+        .into_verified()
+        .map_err(|(_, error)| error.to_string())?;
+    let source = flacenc::source::MemSource::from_samples(
+        &quantized,
+        channels,
+        BITS_PER_SAMPLE,
+        format.sample_rate.max(1) as usize,
+    );
+    let mut stream = flacenc::encode_with_fixed_block_size(&verified, source, block_size)
+        .map_err(|error| error.to_string())?;
+    // The trailing frame holds whatever samples the mix's length leaves over,
+    // and the encoder lets that drag the stream's declared minimum block size
+    // down. The reference encoder declares one block size for the whole
+    // stream, and a decoder that trusts the declaration to seek cannot tell
+    // the two apart, so say the same thing here.
+    stream
+        .stream_info_mut()
+        .set_block_sizes(block_size, block_size)
+        .map_err(|error| error.to_string())?;
+    let mut sink = flacenc::bitsink::ByteSink::new();
+    stream.write(&mut sink).map_err(|error| error.to_string())?;
+    Ok(sink.into_inner())
+}
+
+/// The file format a recording is written in.
+///
+/// Both hold the same quantized samples: a WAV is a short header in front of
+/// them, a FLAC stream is them compressed losslessly. A caller picks one the
+/// same way it picks an image format — by the extension of the file it names,
+/// or by the format argument of the tool that answers inline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingFormat {
+    /// A 16-bit PCM RIFF/WAVE file.
+    Wav,
+    /// A lossless FLAC stream.
+    Flac,
+}
+
+impl RecordingFormat {
+    /// The format a recording is written in when its caller names none.
+    ///
+    /// FLAC is it because it is the smaller answer to carry across a
+    /// transport and the one the stored baselines are compared in.
+    pub const DEFAULT: Self = Self::Flac;
+
+    /// The format `name` names, which is an extension or a tool argument and
+    /// so is matched without regard to case.
+    pub fn from_name(name: &str) -> Result<Self, String> {
+        match name.to_ascii_lowercase().as_str() {
+            "wav" | "wave" => Ok(Self::Wav),
+            "flac" => Ok(Self::Flac),
+            other => Err(format!(
+                "cannot write a {other:?} recording; use .flac or .wav"
+            )),
+        }
+    }
+
+    /// The format the extension of `file_name` names.
+    pub fn of(file_name: &str) -> Result<Self, String> {
+        unlit_ecs::mcp::extension_of(file_name).map_or_else(
+            || Err(format!("the file name {file_name:?} has no extension")),
+            Self::from_name,
+        )
+    }
+
+    /// The format as a MIME type, for the audio content block a tool that
+    /// answers inline sends it in.
+    #[must_use]
+    pub fn mime_type(self) -> &'static str {
+        match self {
+            Self::Wav => "audio/wav",
+            Self::Flac => "audio/flac",
+        }
+    }
+
+    /// Encode interleaved samples in this format.
+    pub fn encode(self, format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Wav => Ok(write_wav(format, samples)),
+            Self::Flac => write_flac(format, samples),
+        }
+    }
 }
 
 impl RecordingHandle {
@@ -300,5 +411,75 @@ mod tests {
             i16::from_le_bytes(bytes[50..52].try_into().unwrap()),
             i16::MAX
         );
+    }
+
+    #[test]
+    fn a_flac_stream_decodes_back_to_the_quantized_samples() {
+        let format = AudioFormat {
+            sample_rate: 8000,
+            channels: 2,
+        };
+        let samples = [0.0, -1.0, 1.0, 2.0];
+        let bytes = write_flac(format, &samples).expect("the stream encodes");
+        assert_eq!(&bytes[0..4], b"fLaC");
+        let mut reader =
+            claxon::FlacReader::new(bytes.as_slice()).expect("the stream is decodable");
+        let info = reader.streaminfo();
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.sample_rate, 8000);
+        assert_eq!(
+            info.bits_per_sample, BITS_PER_SAMPLE as u32,
+            "the stream holds 16-bit samples"
+        );
+        // The trailing frame held fewer samples than a whole block, which
+        // without the fixup would leave the stream declaring a smaller
+        // minimum block size than it uses.
+        assert_eq!(info.min_block_size, info.max_block_size);
+        let decoded: Vec<i16> = reader
+            .samples()
+            .map(|sample| sample.expect("a decodable sample") as i16)
+            .collect();
+        assert_eq!(decoded, vec![0, -i16::MAX, i16::MAX, i16::MAX]);
+    }
+
+    #[test]
+    fn an_extension_or_name_names_the_recording_format() {
+        assert_eq!(RecordingFormat::of("take.flac"), Ok(RecordingFormat::Flac));
+        assert_eq!(RecordingFormat::of("take.wav"), Ok(RecordingFormat::Wav));
+        assert_eq!(RecordingFormat::of("TAKE.FLAC"), Ok(RecordingFormat::Flac));
+        assert_eq!(RecordingFormat::from_name("wave"), Ok(RecordingFormat::Wav));
+        assert_eq!(
+            RecordingFormat::from_name("flac"),
+            Ok(RecordingFormat::Flac)
+        );
+        assert!(RecordingFormat::of("take").is_err());
+        assert!(RecordingFormat::of("take.mp3").is_err());
+    }
+
+    #[test]
+    fn both_formats_hold_the_same_samples() {
+        let format = AudioFormat {
+            sample_rate: 8000,
+            channels: 1,
+        };
+        let samples = [0.0, -1.0, 1.0, 2.0];
+        let wav = RecordingFormat::Wav
+            .encode(format, &samples)
+            .expect("the WAV encodes");
+        let flac = RecordingFormat::Flac
+            .encode(format, &samples)
+            .expect("the stream encodes");
+        let mut reader = claxon::FlacReader::new(flac.as_slice()).expect("the stream is decodable");
+        let decoded: Vec<i16> = reader
+            .samples()
+            .map(|sample| sample.expect("a decodable sample") as i16)
+            .collect();
+        let pcm: Vec<i16> = wav[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|sample| i16::from_le_bytes(*sample))
+            .collect();
+        assert_eq!(decoded, pcm);
     }
 }

@@ -2,10 +2,11 @@
 //!
 //! Each tool turns its JSON arguments into a [McpCommand] and sends it to the
 //! thread that owns the world. The tool then awaits the result: structured JSON
-//! for most tools, an image content block for the ones that read pixels back
-//! inline, and a written path for the ones that save to a file. A tool that
-//! fails returns a tool-level error result rather than a protocol error, so a
-//! model sees the message instead of a transport failure.
+//! for most tools, an image or audio content block for the ones that read
+//! pixels or samples back inline, and a written path for the ones that save
+//! to a file. A tool that fails returns a tool-level error result rather
+//! than a protocol error, so a model sees the message instead of a transport
+//! failure.
 //!
 //! The router starts empty and the engine crates fill it in: a crate submits a
 //! [ToolSource] whose `extend` registers the tools that crate defines. The
@@ -147,6 +148,15 @@ pub async fn run(
             let mut result =
                 CallToolResult::success(vec![ContentBlock::image(image.data, image.mime_type)]);
             result.structured_content = Some(image.structured);
+            Ok(result)
+        }
+        // A sound answers the same way, in an audio content block, so a
+        // client decodes the stream itself rather than a base64 field it has
+        // to find in the JSON.
+        Ok(Output::Audio(audio)) => {
+            let mut result =
+                CallToolResult::success(vec![ContentBlock::audio(audio.data, audio.mime_type)]);
+            result.structured_content = Some(audio.structured);
             Ok(result)
         }
         Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),

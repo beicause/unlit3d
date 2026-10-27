@@ -58,9 +58,11 @@ pub mod present;
 /// Requests a world answers, and the waiting for their answers.
 pub mod request;
 // The recorder exists for the MCP audio tools, which are the only thing that
-// constructs one, so it is compiled exactly where they are.
+// constructs one, so it is compiled exactly where they are. The format it
+// writes the samples in is public there: the demo's headless run encodes its
+// mix through it rather than carrying an encoder of its own.
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
-mod record;
+pub mod record;
 mod sync;
 #[cfg(feature = "synth")]
 pub mod synth;
@@ -101,6 +103,8 @@ pub mod prelude {
         BLIT_PASS_ORDER, OffscreenTarget, Presenter, SCENE_PASS_ORDER, bind_offscreen,
         draw_presented, pump_presented, resize_presented, setup_presenter,
     };
+    #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+    pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]
     pub use crate::synth::{
         MidiEvent, MidiEventKind, MidiFile, MidiFileLoopType, MidiMessage, MidiSequencer,

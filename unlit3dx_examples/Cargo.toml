@@ -70,9 +70,6 @@ env_logger.workspace = true
 # demo serves with --mcp.
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", features = ["mcp"] }
 
-# The headless run encodes its audio deliverable losslessly. Both this and
-# the decoder below write and read files, which a browser cannot do.
-flacenc.workspace = true
 # The headless mode encodes its last frame as a PNG on the way out.
 image = { workspace = true, default-features = false, features = ["png"] }
 # The interactive headless host describes its own tools to MCP, which needs a
@@ -86,7 +83,8 @@ serde.workspace = true
 pollster.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# The audio baseline is a FLAC stream, so the tests decode it to compare.
+# The recording a test reads back is a FLAC stream, so it decodes one to
+# assert on the samples.
 claxon.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

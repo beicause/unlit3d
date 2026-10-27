@@ -13,6 +13,7 @@
 use std::path::Path;
 
 use unlit_wgpu_test_util::snapshot_path;
+use unlit3dx::prelude::{AudioFormat, RecordingFormat};
 use unlit3dx_examples::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 
 /// How far a sample may sit from its baseline.
@@ -50,12 +51,18 @@ pub fn check_audio_baseline(name: &str, samples: &[i16]) {
         // The frame checks may be creating the directory concurrently.
         std::fs::create_dir_all(path.parent().expect("a parent directory"))
             .expect("the snapshot directory creates");
+        let format = AudioFormat {
+            sample_rate: AUDIO_SAMPLE_RATE,
+            channels: AUDIO_CHANNELS as u16,
+        };
         let audio: Vec<f32> = samples
             .iter()
             .map(|sample| f32::from(*sample) / f32::from(i16::MAX))
             .collect();
-        unlit3dx_examples::headless::write_flac(&path, &audio, AUDIO_SAMPLE_RATE)
-            .expect("the audio baseline stores");
+        let flac = RecordingFormat::Flac
+            .encode(format, &audio)
+            .expect("the audio baseline encodes");
+        std::fs::write(&path, flac).expect("the audio baseline stores");
         return;
     }
     let expected = read_flac(&snapshot_path(name));

@@ -4714,7 +4714,9 @@ version = "0.1.0-dev.3"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
+ "claxon",
  "cpal",
+ "flacenc",
  "futures-executor",
  "futures-util",
  "glam 0.33.12",
@@ -4750,7 +4752,6 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "env_logger",
- "flacenc",
  "glam 0.33.12",
  "hashbrown 0.17.1",
  "image",

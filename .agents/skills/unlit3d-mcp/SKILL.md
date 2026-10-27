@@ -155,14 +155,16 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 | 工具 | 作用 | 关键参数 |
 | --- | --- | --- |
 | `start_audio_recording` | 开始录一个音频 world 填出的混音 | `duration_seconds`（默认 60） |
-| `stop_audio_recording` | 停止录音并把捕获的混音写成 16-bit PCM WAV | `directory`(必填)、`file_name` |
-| `read_audio_recording` | 停止录音并**在回复里**返回 base64 的 WAV，不碰文件系统 | 无 |
+| `stop_audio_recording` | 停止录音并把捕获的混音写成文件（格式看扩展名） | `directory`(必填)、`file_name` |
+| `read_audio_recording` | 停止录音并**在回复里**返回音频内容块，不碰文件系统 | `format`（默认 `flac`） |
 | `cancel_audio_recording` | 停止录音并丢弃已捕获的内容 | 无 |
 | `audio_recording_status` | 报告当前录到的帧数与秒数 | 无 |
 
 录音器排在填充顺序的最末，录到的是所有音源与 world 的 `GlobalAudioGain` 之后的混音；格式
 （采样率与声道数）在第一次填充时学到，所以 `--stepped` 或设备尚未打开时也能录。同一
-个 world 同时只允许一段录音，第二段会被拒绝。`read_audio_recording` 是给自动化断言用的：
+个 world 同时只允许一段录音，第二段会被拒绝。两种格式装的是同一批 16-bit 样本，选法与
+图片工具一致：落盘时看 `file_name` 的扩展名（`.flac` 无损且更小，是无扩展名时的默认，
+另有 `.wav`），内联返回时看 `format` 参数。`read_audio_recording` 是给自动化断言用的：
 要在内存里判断「这段混音是不是静音」时，别先落盘再读回来。
 
 ### 宿主控制
@@ -220,7 +222,9 @@ python3 $D --bin ./target/debug/unlit3dx-examples --args='--headless --mcp' '[
 - **读图用 `read_texture_as_image` 而不是 `save_screenshot`**：后者会先 `render_frame`，
   在离屏宿主里会重入 present 路径并把进程打崩。`id` 用 `scene_status` 的 `target`。
 - **录音在内存里取**：`start_audio_recording`（给音频 world）→ `step_frames` →
-  `read_audio_recording`。暂停一个 MIDI 序列后，被按下的音符还要走完 patch 的 release，
+  `read_audio_recording`，回复里是 `type` 为 `audio` 的内容块，解出来就是样本；结构化
+  内容里另有帧数、秒数、采样率与声道数。暂停一个 MIDI 序列后，被按下的音符还要走完
+  patch 的 release，
   所以要再推进一段（几十到几百帧）才真正静音。
 - **收尾用 `request_exit`**，然后断言进程退出码与 stderr 没有错误。
 

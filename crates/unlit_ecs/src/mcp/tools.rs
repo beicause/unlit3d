@@ -112,6 +112,10 @@ async fn list_worlds(commands: CommandSender, _args: NoArgs) -> ToolResult {
             "list_worlds was answered with an image",
             None,
         )),
+        Ok(Ok(Output::Audio(_))) => Err(ErrorData::internal_error(
+            "list_worlds was answered with a sound",
+            None,
+        )),
         Ok(Err(message)) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         Err(_) => Err(ErrorData::internal_error(
             "the world thread dropped the command",

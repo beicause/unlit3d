@@ -392,6 +392,8 @@ pub fn run() -> ExitCode {
 /// and the run's last frame and audio mix are written as files.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 fn run_headless(args: &Args) -> ExitCode {
+    use crate::headless::AUDIO_CHANNELS;
+
     if args.frames == 0 {
         log::error!("--frames must be at least 1");
         return ExitCode::FAILURE;
@@ -428,8 +430,19 @@ fn run_headless(args: &Args) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let flac_path = out.join("audio.flac");
-    if let Err(error) = headless::write_flac(&flac_path, &output.audio, config.audio_sample_rate) {
-        log::error!("could not write the audio: {error}");
+    let format = AudioFormat {
+        sample_rate: config.audio_sample_rate,
+        channels: AUDIO_CHANNELS as u16,
+    };
+    let flac = match RecordingFormat::Flac.encode(format, &output.audio) {
+        Ok(flac) => flac,
+        Err(error) => {
+            log::error!("could not encode the audio: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = std::fs::write(&flac_path, flac) {
+        log::error!("could not write {}: {error}", flac_path.display());
         return ExitCode::FAILURE;
     }
     if let Err(error) = std::fs::write(&png_path, png) {

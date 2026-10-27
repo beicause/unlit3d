@@ -38,7 +38,8 @@ cargo run -p unlit3dx_examples
 
 `--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit_ecs/README.zh-CN.md)
 对外服务，而不是随窗口一起退出：工具随后可以检视每个 world，为渲染 world 保存截图，
-并把音频 world 的混音录成 WAV 文件。
+并把音频 world 的混音录成文件——默认 FLAC（两者中更小的那个），文件名另有要求时
+则录成 WAV。
 
 在 web 上它是 `cargo xtask run-wasm` 构建、并由 Pages 工作流发布的两个页面之一。
 浏览器没有可放置 world 的线程，于是改由库的步进 runner 从帧循环驱动它们全部。

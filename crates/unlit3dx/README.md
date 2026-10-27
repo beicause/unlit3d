@@ -335,15 +335,18 @@ The bridges:
   reports. The crate registers recording tools — `start_audio_recording`,
   `stop_audio_recording`, `read_audio_recording`, `cancel_audio_recording`
   and `audio_recording_status` — which drive a recording in the named world
-  and either write the mix out as a WAV file or hand it back in memory, so a
-  test can assert on the samples without touching the disk. `request_exit`
+  and either write the mix out to a file or hand it back in memory, so a test
+  can assert on the samples without touching the disk. Both answers carry the
+  same samples in the format the caller names, the way the image tools do: a
+  file name's extension picks it, and a tool that answers inline takes a
+  `format` argument, so `.flac` — lossless, and the smaller of the two — is
+  what a caller gets when it names none, with `.wav` beside it. `request_exit`
   asks a host carrying `ExitRequest` to stop, and `pump_mcp` dispatches
   commands when no window event loop runs, which is what lets a host without
   winit serve MCP at all. A recording source mounts at the end of the fill
   order, so it captures the mix after every other source and the world's
-  `GlobalAudioGain`, and the samples become a RIFF/WAVE file with no extra
-  dependency. The recorder is compiled only for these tools, so `mcp` turns
-  `audio` on itself.
+  `GlobalAudioGain`. The recorder is compiled only for these tools, so `mcp`
+  turns `audio` on itself.
 
 ## Best practices
 
@@ -431,9 +434,11 @@ separate landings that a mailbox would have collapsed into one, the audio
 world running jobs and reporting its output opening, multi-world job and
 snapshot traffic, and a panicking job ending its world with the jobs behind
 it left unrun.
-Recording is covered too: it captures the mix the device would play and lays
-the samples out as a RIFF/WAVE file, and the audio MCP tools drive both
-through the dispatch coverage below. With the `mcp` feature on, the MCP command dispatch
+Recording is covered too: it captures the mix the device would play, and both
+encoders are checked against what they wrote — the WAV byte by byte, the FLAC
+stream by decoding it back to the samples it was given, which also catches a
+stream that declares a block size it does not use. The audio MCP tools drive
+both through the dispatch coverage below. With the `mcp` feature on, the MCP command dispatch
 is covered too: world listing, routing to a nested world, and routing to one
 on a thread of its own or one the host steps — plus a readable failure for
 an entity that carries no world, a world that has stopped, and a queue that

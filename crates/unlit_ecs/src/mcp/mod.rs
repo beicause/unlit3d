@@ -23,8 +23,8 @@ pub use crate::reflect::{
     entries, entry, names, push, push_json, set, set_json,
 };
 pub use host::{
-    Despawned, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity, WorldEntry,
-    WorldId, extension_of, saved_name, to_value, with_extension, write_file,
+    Despawned, EncodedAudio, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity,
+    WorldEntry, WorldId, extension_of, saved_name, to_value, with_extension, write_file,
 };
 pub use inventory;
 pub use server::{

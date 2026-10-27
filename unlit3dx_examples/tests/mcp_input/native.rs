@@ -257,13 +257,19 @@ impl Mcp {
         }
     }
 
-    fn tool(&mut self, name: &str, arguments: Value) -> Value {
+    /// The whole result of a tool call, content blocks included.
+    fn call(&mut self, name: &str, arguments: Value) -> Value {
         let result = self.request(
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
         );
         assert_ne!(result["isError"], true, "MCP tool {name} failed: {result}");
-        result["structuredContent"].clone()
+        result
+    }
+
+    /// The structured content of a tool call that answers with JSON alone.
+    fn tool(&mut self, name: &str, arguments: Value) -> Value {
+        self.call(name, arguments)["structuredContent"].clone()
     }
 
     fn step(&mut self, frames: u32) {
@@ -296,20 +302,13 @@ impl Mcp {
     }
 
     fn image(&mut self, status: &Value) -> Vec<u8> {
-        let result = self.request(
-            "tools/call",
+        let result = self.call(
+            "read_texture_as_image",
             json!({
-                "name": "read_texture_as_image",
-                "arguments": {
-                    "world": status["render_world"],
-                    "id": status["target"],
-                    "format": "png"
-                }
+                "world": status["render_world"],
+                "id": status["target"],
+                "format": "png"
             }),
-        );
-        assert_ne!(
-            result["isError"], true,
-            "the offscreen capture failed: {result}"
         );
         let block = result["content"]
             .as_array()
@@ -326,27 +325,32 @@ impl Mcp {
         image.into_raw()
     }
 
+    /// Stop the recording and take its mix, as 16-bit samples.
+    ///
+    /// The tool answers with an audio content block, so the samples come back
+    /// as a FLAC stream a decoder reads rather than as a base64 field the test
+    /// would have to parse out of the JSON.
     fn recording(&mut self, status: &Value) -> Vec<i16> {
-        let result = self.tool(
+        let result = self.call(
             "read_audio_recording",
-            json!({ "world": status["audio_world"] }),
+            json!({ "world": status["audio_world"], "format": "flac" }),
         );
-        assert_eq!(result["sample_rate"], AUDIO_SAMPLE_RATE);
-        assert_eq!(result["channels"], AUDIO_CHANNELS);
-        assert!(result["frames"].as_u64().unwrap() > 0);
-        let wav = STANDARD.decode(result["data"].as_str().unwrap()).unwrap();
-        assert_eq!(&wav[..4], b"RIFF");
-        assert_eq!(&wav[8..12], b"WAVE");
-        let data = wav
-            .windows(4)
-            .position(|chunk| chunk == b"data")
-            .expect("the WAV has PCM data");
-        let size = u32::from_le_bytes(wav[data + 4..data + 8].try_into().unwrap()) as usize;
-        wav[data + 8..data + 8 + size]
-            .as_chunks::<2>()
-            .0
+        let block = result["content"]
+            .as_array()
+            .unwrap()
             .iter()
-            .map(|sample| i16::from_le_bytes(*sample))
+            .find(|block| block["type"] == "audio")
+            .expect("the MCP result contains a sound");
+        assert_eq!(block["mimeType"], "audio/flac");
+        let structured = result["structuredContent"].clone();
+        assert_eq!(structured["sample_rate"], AUDIO_SAMPLE_RATE);
+        assert_eq!(structured["channels"], AUDIO_CHANNELS);
+        assert!(structured["frames"].as_u64().unwrap() > 0);
+        let flac = STANDARD.decode(block["data"].as_str().unwrap()).unwrap();
+        let mut reader = claxon::FlacReader::new(flac.as_slice()).expect("the MCP sound decodes");
+        reader
+            .samples()
+            .map(|sample| sample.expect("a decodable sample") as i16)
             .collect()
     }
 }

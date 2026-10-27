@@ -49,7 +49,8 @@ rebuild — for example
 The `--mcp` switch serves the worlds over the [Model Context
 Protocol](../crates/unlit_ecs/README.md) instead of exiting with the
 window: tools can then inspect every world, save screenshots of the render
-world, and record the audio world's mix to a WAV file.
+world, and record the audio world's mix to a file — FLAC, the smaller of the
+two, unless the file name asks for a WAV.
 
 On the web it is one of the two pages `cargo xtask run-wasm` builds and the
 Pages workflow publishes. A browser has no thread to put a world on, so the

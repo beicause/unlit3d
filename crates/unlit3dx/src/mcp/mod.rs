@@ -11,12 +11,13 @@ pub use bridge::{pump_mcp, serve_mcp};
 
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{
-    CommandSender, McpServer, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
+    CommandSender, EncodedAudio, McpServer, Output, ToolResult, ToolRouter, ToolSource, WorldArg,
+    command, run, tool,
 };
 use unlit_ecs::{Entity, World, bundle};
 use unlit3d::winit::builtin::ExitRequest;
 
-use crate::record::{RecordingHandle, start_recording, write_wav};
+use crate::record::{RecordingFormat, RecordingHandle, start_recording};
 
 /// How long a recording lasts when its caller names no limit.
 const DEFAULT_RECORDING_SECONDS: f32 = 60.0;
@@ -38,7 +39,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "stop_audio_recording",
-        "Stop an audio world's recording and write what it captured as a 16-bit PCM WAV file.",
+        "Stop an audio world's recording and write what it captured to a file in a directory, returning the written path and size. The file name's extension picks the format: .flac (lossless, the default when it has none) or .wav. Prefer this over read_audio_recording, which returns the mix inline.",
         stop_audio_recording,
     ));
     router.add_route(tool(
@@ -48,7 +49,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "read_audio_recording",
-        "Stop an audio world's recording and return its captured mix as a base64-encoded 16-bit PCM WAV, without writing a file.",
+        "Stop an audio world's recording and return its captured mix as an audio content block, without writing a file. The format argument picks the encoding: \"flac\" (lossless, the default) or \"wav\".",
         read_audio_recording,
     ));
     router.add_route(tool(
@@ -79,9 +80,12 @@ async fn stop_audio_recording(commands: CommandSender, args: StopRecording) -> T
     .await
 }
 
-/// Finish a recording and return its bytes without touching the filesystem.
-async fn read_audio_recording(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, read).await
+/// Finish a recording and return its sound without touching the filesystem.
+async fn read_audio_recording(commands: CommandSender, args: ReadRecording) -> ToolResult {
+    run(&commands, args.world, move |world| {
+        read(world, args.format.as_deref())
+    })
+    .await
 }
 
 /// Ask a windowed or headless host to exit normally.
@@ -133,14 +137,18 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
 
 /// Stop the recording, write its samples and report the file.
 fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<Value, String> {
+    // The name is settled before the recording is taken: an extension the
+    // server cannot write is a mistake to report while the mix is still in the
+    // world, not after it has been despawned.
+    let name = unlit_ecs::mcp::saved_name(file_name, "audio", "flac");
+    let format = RecordingFormat::of(&name)?;
     let handle = take(world)?;
     let Some(audio) = handle.stop(world) else {
         return Err(
             "the recording captured no fill; check that the world has sources to play".to_owned(),
         );
     };
-    let bytes = write_wav(audio.format, &audio.samples);
-    let name = unlit_ecs::mcp::saved_name(file_name, "audio", "wav");
+    let bytes = format.encode(audio.format, &audio.samples)?;
     let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes)?;
     let report = Recorded {
         path: saved.path,
@@ -153,22 +161,29 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
     serde_json::to_value(report).map_err(|error| error.to_string())
 }
 
-/// Stop the recording and encode it in memory.
-fn read(world: &mut World) -> Result<Value, String> {
+/// Stop the recording and answer with its sound in memory.
+fn read(world: &mut World, format: Option<&str>) -> Result<Output, String> {
     use base64::Engine as _;
 
+    let format = match format {
+        Some(name) => RecordingFormat::from_name(name)?,
+        None => RecordingFormat::DEFAULT,
+    };
     let handle = take(world)?;
     let Some(audio) = handle.stop(world) else {
         return Err("the recording captured no fill".to_owned());
     };
-    let bytes = write_wav(audio.format, &audio.samples);
-    Ok(serde_json::json!({
-        "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
-        "size": bytes.len(),
-        "frames": audio.frame_count(),
-        "seconds": audio.seconds(),
-        "sample_rate": audio.format.sample_rate,
-        "channels": audio.format.channels,
+    let bytes = format.encode(audio.format, &audio.samples)?;
+    Ok(Output::Audio(EncodedAudio {
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        mime_type: format.mime_type().to_owned(),
+        structured: serde_json::json!({
+            "size": bytes.len(),
+            "frames": audio.frame_count(),
+            "seconds": audio.seconds(),
+            "sample_rate": audio.format.sample_rate,
+            "channels": audio.format.channels,
+        }),
     }))
 }
 
@@ -240,10 +255,23 @@ pub(crate) struct StopRecording {
     pub world: unlit_ecs::mcp::WorldId,
     /// The directory to write the file into; created when it does not exist.
     pub directory: String,
-    /// The file name to write; it is given a `.wav` extension when it carries
-    /// none.
+    /// The file name to write; it is given a `.flac` extension when it
+    /// carries none.
     #[serde(default)]
     pub file_name: Option<String>,
+}
+
+/// Arguments for finishing a recording in memory.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct ReadRecording {
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    #[serde(default)]
+    pub world: unlit_ecs::mcp::WorldId,
+    /// The audio format to answer with: `"flac"` (lossless, the default) or
+    /// `"wav"`.
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// A recording that has just started.
@@ -338,6 +366,83 @@ mod tests {
         let bytes = std::fs::read(path).expect("the file is written");
         assert_eq!(&bytes[0..4], b"RIFF");
         assert_eq!(bytes.len(), 44 + 8);
+    }
+
+    #[test]
+    fn a_name_without_an_extension_is_written_as_flac() {
+        let (mut world, format) = audio_world(0.5);
+        start(&mut world, Some(1.0)).expect("the recording starts");
+        let mut out = [0.0f32; 4];
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+
+        let directory =
+            std::env::temp_dir().join(format!("unlit3dx-mcp-{}-flac", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let recorded = stop(&mut world, &directory.to_string_lossy(), Some("take"))
+            .expect("the recording is written");
+        let path = recorded["path"].as_str().expect("the file has a path");
+        assert!(
+            path.ends_with("take.flac"),
+            "the name is given the default extension: {path}"
+        );
+        let bytes = std::fs::read(path).expect("the file is written");
+        assert_eq!(&bytes[0..4], b"fLaC");
+    }
+
+    #[test]
+    fn a_name_the_server_cannot_write_leaves_the_recording_in_the_world() {
+        let (mut world, format) = audio_world(0.5);
+        start(&mut world, Some(1.0)).expect("the recording starts");
+        let mut out = [0.0f32; 4];
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+
+        let directory =
+            std::env::temp_dir().join(format!("unlit3dx-mcp-{}-refused", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let refused = stop(&mut world, &directory.to_string_lossy(), Some("take.mp3"))
+            .expect_err("an extension the server cannot write is refused");
+        assert!(refused.contains("mp3"), "{refused}");
+        assert_eq!(
+            status(&mut world).expect("the recording is still there")["frames"],
+            4,
+            "a refused name keeps the mix it could not write"
+        );
+
+        let recorded = stop(&mut world, &directory.to_string_lossy(), Some("take.flac"))
+            .expect("a name the server can write finishes the recording");
+        assert_eq!(recorded["frames"], 4);
+    }
+
+    #[test]
+    fn a_finished_recording_is_answered_with_its_sound() {
+        use base64::Engine as _;
+
+        let (mut world, format) = audio_world(0.5);
+        start(&mut world, Some(1.0)).expect("the recording starts");
+        let mut out = [0.0f32; 4];
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+
+        let Output::Audio(sound) = read(&mut world, None).expect("the recording is read") else {
+            panic!("the answer carries a sound");
+        };
+        assert_eq!(sound.mime_type, "audio/flac");
+        assert_eq!(sound.structured["frames"], 4);
+        let flac = base64::engine::general_purpose::STANDARD
+            .decode(&sound.data)
+            .expect("the sound is base64");
+        assert_eq!(&flac[0..4], b"fLaC");
+
+        start(&mut world, Some(1.0)).expect("the recording starts");
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        let Output::Audio(sound) = read(&mut world, Some("wav")).expect("the recording is read")
+        else {
+            panic!("the answer carries a sound");
+        };
+        assert_eq!(sound.mime_type, "audio/wav");
+        let wav = base64::engine::general_purpose::STANDARD
+            .decode(&sound.data)
+            .expect("the sound is base64");
+        assert_eq!(&wav[0..4], b"RIFF");
     }
 
     #[test]

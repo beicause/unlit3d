@@ -26,12 +26,16 @@ use crate::{Entity, World};
 /// Most tools answer with structured JSON that the transport serialises
 /// through the value's reflection. Image tools answer with an encoded image
 /// that the transport sends as an MCP image content block, so a client
-/// renders the picture instead of decoding JSON.
+/// renders the picture instead of decoding JSON; audio tools answer the same
+/// way, with a sound in an audio content block, so a client plays or decodes
+/// the mix instead of unbase64-ing a JSON field.
 pub enum Output {
     /// A structured JSON result.
     Json(Value),
     /// An encoded image.
     Image(EncodedImage),
+    /// An encoded sound.
+    Audio(EncodedAudio),
 }
 
 impl From<Value> for Output {
@@ -47,6 +51,17 @@ pub struct EncodedImage {
     /// The format the bytes are in, as a MIME type.
     pub mime_type: String,
     /// The image's metadata — its size — as structured JSON.
+    pub structured: Value,
+}
+
+/// A sound the transport sends as an audio content block.
+pub struct EncodedAudio {
+    /// The encoded bytes, base64-encoded.
+    pub data: String,
+    /// The format the bytes are in, as a MIME type.
+    pub mime_type: String,
+    /// The sound's metadata — its length, rate and channel count — as
+    /// structured JSON.
     pub structured: Value,
 }
 
