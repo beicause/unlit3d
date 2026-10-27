@@ -137,9 +137,12 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
 /// Reuses a browser when `CHROME_PATH` names one, which is how a developer who
 /// already has Chrome avoids a second copy.
 fn install_runner() -> Result<(), String> {
-    let mut pnpm = Command::new(pnpm());
-    pnpm.arg("install").current_dir(RUNNER);
-    step::run(&mut pnpm, "installing the wasm test runner's dependencies")?;
+    let mut install = Command::new(pnpm());
+    install.arg("install").current_dir(RUNNER);
+    step::run(
+        &mut install,
+        "installing the wasm test runner's dependencies",
+    )?;
 
     if std::env::var_os("CHROME_PATH").is_some() {
         println!("using the browser named by CHROME_PATH; not installing one");
