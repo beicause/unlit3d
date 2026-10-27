@@ -14,7 +14,7 @@
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 mod native;
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 mod wasm;
 
 mod shared;
@@ -27,8 +27,10 @@ async fn the_mcp_input_and_audio_match_the_snapshots() {
     native::run().await;
 }
 
-/// The body a browser drives: the same story, in-process.
-#[cfg(all(target_arch = "wasm32", not(target_os = "android")))]
+/// The body a browser drives: the same story, in-process. Compiled on the
+/// host as well — with nothing wasm-specific inside, the proxy needs it
+/// registered there to list the browser trial.
+#[cfg(not(target_os = "android"))]
 async fn the_interactive_scene_matches_the_snapshots() {
     wasm::run().await;
 }
@@ -37,9 +39,10 @@ async fn the_interactive_scene_matches_the_snapshots() {
 gpu_tests! {
     #[host_only]
     the_mcp_input_and_audio_match_the_snapshots,
+    the_interactive_scene_matches_the_snapshots,
 }
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "android")))]
+#[cfg(target_arch = "wasm32")]
 gpu_tests! {
     the_interactive_scene_matches_the_snapshots,
 }

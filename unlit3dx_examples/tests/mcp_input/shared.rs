@@ -8,12 +8,8 @@
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use std::path::PathBuf;
 
-#[cfg(target_arch = "wasm32")]
 use unlit_ecs::World;
-#[cfg(target_arch = "wasm32")]
 use unlit3dx_examples::interactive::Interactive;
-#[cfg(target_arch = "wasm32")]
-use unlit3dx_examples::scene::SceneHandles;
 
 /// How many frames the first recording runs: long enough to be sure an idle
 /// scene stays silent, short enough to keep the test quick.
@@ -29,44 +25,31 @@ pub const PLAY_FRAMES: u32 = 180;
 pub const RELEASE_FRAMES: u32 = 300;
 
 /// How many seconds of audio every recording in the sequence allows.
-#[cfg(target_arch = "wasm32")]
 pub const RECORDING_SECONDS: f32 = 60.0;
 
 /// The peak a recording of the playing sequence clears, in unit samples.
-#[cfg(target_arch = "wasm32")]
 pub const MIN_PEAK: f32 = 100.0 / i16::MAX as f32;
 
 /// The soundfont bytes the demo builds with, or an empty slice when the
 /// checkout carries none.
-#[cfg(target_arch = "wasm32")]
 pub fn soundfont_bytes() -> &'static [u8] {
     unlit3dx_asset_bytes::soundfont()
 }
 
-/// The centre of every button the panel laid out, keyed by its label.
-#[cfg(target_arch = "wasm32")]
-pub fn button_centres(
-    host: &World,
-    worlds: &SceneHandles,
-) -> hashbrown::HashMap<&'static str, [f32; 2]> {
-    unlit3dx_examples::interactive::Interactive::panel_buttons(host, worlds)
-        .into_iter()
-        .map(|(label, rect)| (label, [rect.center().x, rect.center().y]))
-        .collect()
-}
-
 /// Click a button's centre: the three input events the MCP `send_input`
 /// tool sends, then the frame that delivers them.
-#[cfg(target_arch = "wasm32")]
-pub fn click(host: &World, interactive: &mut Interactive, at: [f32; 2]) {
-    interactive.click(host, at);
+pub fn click(host: &World, interactive: &mut Interactive, label: &str) {
+    let at = Interactive::panel_buttons(host, interactive.worlds_handle())
+        .into_iter()
+        .find_map(|(name, rect)| (name == label).then_some(rect.center()))
+        .unwrap_or_else(|| panic!("the panel has a {label} button"));
+    interactive.click(host, [at.x, at.y]);
     interactive.step(host, 1);
 }
 
 /// Compare a mixed recording against the stored FLAC baseline, sample for
 /// sample. A browser has no filesystem, so the baseline rides in the binary
 /// beside the one the frames use.
-#[cfg(target_arch = "wasm32")]
 pub fn check_audio_baseline(name: &str, samples: &[f32]) {
     const BASELINE: &[u8] = include_bytes!("snapshots/unlit3dx/mcp_input_audio.flac");
     let mut reader = claxon::FlacReader::new(std::io::Cursor::new(BASELINE))
