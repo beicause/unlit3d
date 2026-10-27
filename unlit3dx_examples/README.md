@@ -97,9 +97,18 @@ client. The `mcp_input` test ([English](tests/mcp_input/main.rs),
 internals: it clicks the panel through `send_input`, captures three image
 snapshots, compares the mix it recorded while the sequence played against a
 fourth baseline, asserts that the mix recorded after the pause is silent
-without storing it, and asks the process to exit. Both snapshot tests are
-modules of one test target, [tests/gpu_suite.rs](tests/gpu_suite.rs), so the
-GPU stack links once.
+without storing it, and asks the process to exit.
+
+The same story runs twice from one description ([tests/mcp_input/shared.rs](tests/mcp_input/shared.rs)).
+The [native driver](tests/mcp_input/native.rs) speaks MCP to that child
+process; the [wasm driver](tests/mcp_input/wasm.rs) assembles the identical
+host in-process through `Interactive` and pushes the same input events and
+frame counts itself, so the browser suite exercises the interactive run
+without a JSON-RPC transport, a socket or a second thread. Both compare
+against the same four baselines.
+
+Both snapshot tests are modules of one test target,
+[tests/gpu_suite.rs](tests/gpu_suite.rs), so the GPU stack links once.
 
 ## How the worlds are wired
 

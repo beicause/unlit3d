@@ -74,8 +74,15 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 均关闭，因此每个可见与可听的变化都来自客户端。`mcp_input` 集成测试（[English](tests/mcp_input/main.rs)、
 [简体中文](tests/mcp_input/main.rs)）启动这个二进制，只通过 MCP 点击面板、捕获三张图片
 快照、把序列播放期间录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，
-并请求进程正常退出。两个快照测试都是单一测试目标（[tests/gpu_suite.rs](tests/gpu_suite.rs)）
-的模块。
+并请求进程正常退出。
+
+同一段剧情由一份描述（[tests/mcp_input/shared.rs](tests/mcp_input/shared.rs)）跑两遍：
+[原生驱动](tests/mcp_input/native.rs) 通过 MCP 与那个子进程对话，
+[wasm 驱动](tests/mcp_input/wasm.rs) 则用 `Interactive` 在原地组装出同一个宿主，自己推送
+同样的输入事件与帧数，于是浏览器套件无需 JSON-RPC 传输、套接字或第二个线程就能跑到
+交互式运行，两者比较的也是同样那四条基准。
+
+两个快照测试都是单一测试目标（[tests/gpu_suite.rs](tests/gpu_suite.rs)）的模块。
 
 ## 各 world 如何相连
 
