@@ -135,23 +135,26 @@ impl Interactive {
         &self.samples
     }
 
-    /// Click at `position`: move the pointer there, press and release,
-    /// one frame apiece, the sequence a windowed click produces.
+    /// Click at `position`: move the pointer there, then press and release
+    /// before the next frame, the sequence the MCP input tool sends.
     pub fn click(&mut self, host: &World, position: [f32; 2]) {
-        for pressed in [true, false] {
-            let event = InputEvent::Mouse(unlit3d::input::MouseEvent::Button {
+        let button = |pressed| {
+            InputEvent::Mouse(unlit3d::input::MouseEvent::Button {
                 position,
                 button: unlit3d::input::MouseButton::Primary,
                 pressed,
                 modifiers: Default::default(),
-            });
-            host.root_scope()
-                .query::<&InputWriter>()
-                .next()
-                .expect("the interactive run carries an input writer")
-                .push(event);
-            self.step(host, 1);
-        }
+            })
+        };
+        host.root_scope()
+            .query::<&InputWriter>()
+            .next()
+            .expect("the interactive run carries an input writer")
+            .push_all([
+                InputEvent::Mouse(unlit3d::input::MouseEvent::Moved { position }),
+                button(true),
+                button(false),
+            ]);
     }
 
     /// Start recording the mix the audio world fills.

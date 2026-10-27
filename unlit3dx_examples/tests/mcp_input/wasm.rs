@@ -38,9 +38,11 @@ pub async fn run() {
         soundfont,
     });
 
-    // The panel is laid out on the first frame the gameplay world ticks.
-    interactive.step(&host, 1);
-    let buttons = shared::button_centres(&host, interactive.worlds_handle());
+    // A recording before anything plays captures silence. Its frames also
+    // give the panel time to lay out and the synthesizer install to answer,
+    // exactly as the native driver's opening recording does.
+    interactive.start_recording(&host, shared::RECORDING_SECONDS);
+    interactive.step(&host, shared::WARMUP_FRAMES);
     let status = scene_status(&host, interactive.worlds_handle());
     assert_eq!(status.balls, 0, "a fresh scene holds no balls");
     assert_eq!(
@@ -48,10 +50,6 @@ pub async fn run() {
         Some(true),
         "the sequence starts paused"
     );
-
-    // A recording before anything plays captures silence.
-    interactive.start_recording(&host, shared::RECORDING_SECONDS);
-    interactive.step(&host, shared::WARMUP_FRAMES);
     let silent = interactive
         .stop_recording(&host)
         .expect("the idle recording stops");
@@ -61,7 +59,7 @@ pub async fn run() {
     );
 
     // One ball, one frame set.
-    shared::click(&host, &mut interactive, buttons["Drop the next ball"]);
+    shared::click(&host, &mut interactive, "Drop the next ball");
     interactive.step(&host, shared::SETTLE_FRAMES);
     let status = scene_status(&host, interactive.worlds_handle());
     assert_eq!(status.balls, 1, "one drop lands one ball");
@@ -81,9 +79,9 @@ pub async fn run() {
 
     // Two more balls and the one-shot sequence, recorded while playing.
     interactive.start_recording(&host, shared::RECORDING_SECONDS);
-    shared::click(&host, &mut interactive, buttons["Drop the next ball"]);
-    shared::click(&host, &mut interactive, buttons["Drop the next ball"]);
-    shared::click(&host, &mut interactive, buttons["Play"]);
+    shared::click(&host, &mut interactive, "Drop the next ball");
+    shared::click(&host, &mut interactive, "Drop the next ball");
+    shared::click(&host, &mut interactive, "Play");
     interactive.step(&host, shared::PLAY_FRAMES);
     let status = scene_status(&host, interactive.worlds_handle());
     assert_eq!(status.balls, 3, "three drops land three balls");
@@ -120,8 +118,8 @@ pub async fn run() {
     shared::check_audio_baseline("unlit3dx/mcp_input_audio.flac", &playing.samples);
 
     // Cleared and paused, the panel is back where it started.
-    shared::click(&host, &mut interactive, buttons["Clear the balls"]);
-    shared::click(&host, &mut interactive, buttons["Pause"]);
+    shared::click(&host, &mut interactive, "Clear the balls");
+    shared::click(&host, &mut interactive, "Pause");
     interactive.step(&host, shared::RELEASE_FRAMES);
     let status = scene_status(&host, interactive.worlds_handle());
     assert_eq!(status.balls, 0, "the clear takes every ball back");
