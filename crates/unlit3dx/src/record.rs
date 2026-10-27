@@ -264,9 +264,10 @@ impl RecordingHandle {
     /// The format the recording captured at, once it has seen a fill.
     ///
     /// Only the MCP tools ask for it, and their module is compiled on the host
-    /// under its feature alone, so every other build carries it unread.
+    /// under its feature alone, so a build without them carries it unread.
+    /// The unit tests below read it too, so a test build never does.
     #[cfg_attr(
-        not(all(feature = "mcp", not(target_arch = "wasm32"), not(test))),
+        all(not(test), any(not(feature = "mcp"), target_arch = "wasm32")),
         expect(dead_code, reason = "only the MCP tools ask for it")
     )]
     #[must_use]
