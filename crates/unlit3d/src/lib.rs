@@ -43,8 +43,8 @@ pub mod winit;
 /// The types most callers need for typical usage.
 pub mod prelude {
     pub use crate::lit::{
-        DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource, PointLight,
-        QuadLight, SpotLight,
+        DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource, LitPipeline,
+        LitPipelineKey, MeshSourceLitExt, PointLight, QuadLight, SpotLight,
     };
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};

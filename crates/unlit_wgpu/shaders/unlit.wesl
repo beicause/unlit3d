@@ -46,6 +46,9 @@
 //                        luminance from sRGB
 //   ALPHA_CUTOFF         discard a fragment whose alpha is below the
 //                        instance's cutoff
+//   LIT                  shade the fragment with the frame's lights: read the
+//                        cluster the vertex hands the fragment, walk its cells
+//                        and add each light's contribution to the ambient term
 //
 // The `VERTEX_*` names are the geometry's answer rather than a variant's: a
 // pipeline reads them off the vertex buffers its draws are recorded with, so
@@ -61,6 +64,10 @@
 //   group 0  binding 3  joint_matrices `array<mat4x4<f32>>`  [VERTEX_JOINTS]
 //   group 0  binding 4  morph_weights `array<f32>`           [MORPH_POSITIONS]
 //   group 0  binding 5  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
+//   group 0  binding 6  lights        `array<LightGpu>`      [LIT]
+//   group 0  binding 7  light_cells   `array<u32>`            [LIT]
+//   group 0  binding 8  light_vertices `array<vec4<f32>>`     [LIT]
+//   group 0  binding 9  cluster       `light::ClusterUniform` [LIT]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
 //
@@ -108,7 +115,7 @@
 // state, so they cannot live in the mesh's or the material's bind group, which
 // one draw can share with differently-posed and differently-cut instances.
 //
-// The four arrays under [TEXEL_ARRAY] keep their binding numbers but change
+// The seven arrays under [TEXEL_ARRAY] keep their binding numbers but change
 // resource type: a `texture_2d<f32>` replaces the `var<storage, read>`, holding
 // the same bytes a row at a time. Every read goes through one of the
 // `load_*` accessors below, so the rest of the shader is written once and does
@@ -116,12 +123,16 @@
 
 import package::array_access;
 import package::globals;
+import package::light;
 import package::mesh_compression;
 import package::mesh_metadata;
+import package::polygon;
 import package::view;
 
 @group(0) @binding(0) var<uniform> camera: view::View;
 @group(0) @binding(1) var<uniform> frame: globals::Globals;
+
+@if(LIT) @group(0) @binding(9) var<uniform> cluster: light::ClusterUniform;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
@@ -182,6 +193,16 @@ struct VertexOut {
     /// The instance's alpha cutoff, constant across the primitive; the
     /// fragment stage compares it against the color's alpha.
     @if(ALPHA_CUTOFF) @location(2) cutoff: f32,
+    /// World-space normal, or zero for a mesh with no normal channel; the
+    /// fragment stage then derives the geometric normal from screen-space
+    /// derivatives.
+    @if(LIT) @location(3) normal: vec3<f32>,
+    /// World-space position, which the lights' world-space records address.
+    @if(LIT) @location(4) world: vec3<f32>,
+    /// Normalized device coordinates. They are affine in screen space, so the
+    /// rasterizer's perspective-correct interpolation reproduces the fragment's
+    /// own value without dividing by the interpolated `w` again.
+    @if(LIT) @location(5) ndc: vec2<f32>,
 }
 
 /// Transform a local-space point by an affine matrix packed as three columns
@@ -189,6 +210,20 @@ struct VertexOut {
 public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f32>) -> vec3<f32> {
     let v = vec4<f32>(p, 1.0);
     return vec3<f32>(dot(m0, v), dot(m1, v), dot(m2, v));
+}
+
+/// Transform a local-space direction by the linear part of an affine matrix
+/// packed the same way.
+///
+/// The packing puts the translation in each column's `.w` lane, so the
+/// direction uses the three-component part alone: a normal is a difference of
+/// positions and must not pick up where the instance sits.
+///
+/// A non-uniform scale shears a normal, and the exact transform is the inverse
+/// transpose, which the stream does not carry; a uniformly scaled instance —
+/// and every unscaled one — is exact this way.
+public fn transform_vector(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(m0.xyz, v), dot(m1.xyz, v), dot(m2.xyz, v));
 }
 
 /// Deform a local-space vertex by the joints `indices`/`weights` name.
@@ -331,7 +366,223 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     @if(VERTEX_COLOR) {
         out.color = out.color * in.color;
     }
+    // A lit fragment addresses the frame's world-space lights and asks which
+    // cell it lands in, so the vertex stage hands over the world position, the
+    // normal it shades with, and the normalized device coordinates the cell is
+    // chosen by. The last is interpolated, not recomputed: it is affine in
+    // screen space, so the rasterizer's perspective-correct interpolation
+    // reproduces the fragment's own value.
+    @if(LIT) {
+        out.world = world;
+        out.ndc = out.clip.xy / out.clip.w;
+    }
+    @if(LIT && VERTEX_NORMAL) {
+        out.normal = transform_vector(
+            in.model_0,
+            in.model_1,
+            in.model_2,
+            mesh_compression::decode_normal(in.normal),
+        );
+    }
+    @if(LIT && !VERTEX_NORMAL) {
+        // A mesh with no normal channel is lit by its geometric normal, which
+        // the fragment stage derives from the world positions it interpolates.
+        out.normal = vec3<f32>(0.0);
+    }
     return out;
+}
+
+/// The world-space normal a lit fragment shades with.
+///
+/// A mesh that carries normals hands one over per vertex, already interpolated
+/// and transformed; a mesh without them is shaded by the geometric normal of
+/// the triangle it belongs to, taken from the world positions across the
+/// primitive's screen-space derivatives. The geometric normal has no side of
+/// its own -- a triangle and its reverse are the same triangle -- so it is
+/// turned toward the eye, which is the side a back-face culled draw presents.
+@if(LIT)
+fn fragment_normal(in: VertexOut) -> vec3<f32> {
+    @if(VERTEX_NORMAL) {
+        // A zero-length normal is a mesh that had no valid normal to give:
+        // fall through to the geometric one rather than dividing by nothing.
+        let length_squared = dot(in.normal, in.normal);
+        if length_squared > 1.0e-8 {
+            return in.normal * inverseSqrt(length_squared);
+        }
+    }
+    var geometric = cross(dpdx(in.world), dpdy(in.world));
+    let length_squared = dot(geometric, geometric);
+    if length_squared <= 1.0e-16 {
+        return vec3<f32>(0.0, 0.0, 1.0);
+    }
+    geometric = geometric * inverseSqrt(length_squared);
+    let to_eye = camera.camera_position.xyz - in.world;
+    return select(-geometric, geometric, dot(geometric, to_eye) >= 0.0);
+}
+
+/// The linear depth of a world-space point: its distance along the camera's
+/// view direction, which is what the depth slices are cut by.
+@if(LIT)
+fn view_depth(world: vec3<f32>) -> f32 {
+    let view = camera.view_from_world * vec4<f32>(world, 1.0);
+    return -view.z;
+}
+
+/// The cluster cell a fragment at `ndc` and `depth` falls in.
+///
+/// The x and y cells come from the target size the grid was built for, the
+/// depth slice from a logarithm of the view depth, and the flat index from the
+/// cell's place in the grid -- xy first, then the slice. It is the same
+/// arithmetic the CPU ran over each light's bounds, and being the same is the
+/// only thing that makes the assignment correct.
+@if(LIT)
+fn fragment_cluster_index(ndc: vec2<f32>, depth: f32) -> u32 {
+    let dims = cluster.dims.xyz;
+    let x = clamp(floor((ndc.x * 0.5 + 0.5) * f32(dims.x)), 0.0, f32(dims.x - 1u));
+    let y = clamp(floor((ndc.y * 0.5 + 0.5) * f32(dims.y)), 0.0, f32(dims.y - 1u));
+    // `x` = 1 / ln(far / near), `y` = ln(near), `z` = slice count, `w` = near.
+    let log_depth = log(max(depth, cluster.depth.w));
+    let slice = clamp(
+        floor((log_depth - cluster.depth.y) * cluster.depth.x * cluster.depth.z),
+        0.0,
+        cluster.depth.z - 1.0,
+    );
+    return (u32(slice) * dims.y + u32(y)) * dims.x + u32(x);
+}
+
+/// A light at infinity: one direction, no falloff.
+@if(LIT)
+fn directional_radiance(light: light::LightGpu, n: vec3<f32>) -> vec3<f32> {
+    // `direction_outer.xyz` is where the light travels, so the direction to it
+    // is the negation.
+    let cosine = max(dot(n, -light.direction_outer.xyz), 0.0);
+    return light.color_intensity.rgb * (light.color_intensity.w * cosine);
+}
+
+/// A point light's inverse-square falloff, windowed to reach nothing at its
+/// range.
+///
+/// The window is the smooth `(1 - (d / range)^4)^2` one rather than a hard
+/// cutoff, so a surface crossing the range does not step in brightness. A range
+/// of zero -- a light that reaches nowhere -- contributes nothing.
+@if(LIT)
+fn range_attenuation(distance_squared: f32, range: f32) -> f32 {
+    if range <= 0.0 {
+        return 0.0;
+    }
+    let ratio = distance_squared / (range * range);
+    let window = max(1.0 - ratio * ratio, 0.0);
+    return window * window / max(distance_squared, 1.0e-8);
+}
+
+/// A point light, or the point-light part of a spot light.
+@if(LIT)
+fn point_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let offset = light.position_radius.xyz - p;
+    let distance_squared = dot(offset, offset);
+    let attenuation = range_attenuation(distance_squared, light.position_radius.w);
+    if attenuation <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let cosine = max(dot(n, offset * inverseSqrt(max(distance_squared, 1.0e-8))), 0.0);
+    return light.color_intensity.rgb * (light.color_intensity.w * attenuation * cosine);
+}
+
+/// A point light narrowed to a cone: the point term, times a falloff from the
+/// inner angle to the outer one.
+///
+/// `cones.x` is the cosine of the inner half-angle, `direction_outer.w` the
+/// cosine of the outer one, and `cones.y` the reciprocal of their difference,
+/// which the CPU precomputes so the fragment does not divide by a cone that may
+/// be degenerate.
+@if(LIT)
+fn spot_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let offset = p - light.position_radius.xyz;
+    let distance_squared = dot(offset, offset);
+    let attenuation = range_attenuation(distance_squared, light.position_radius.w);
+    if attenuation <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let toward_fragment = offset * inverseSqrt(max(distance_squared, 1.0e-8));
+    let cosine = dot(toward_fragment, light.direction_outer.xyz);
+    let cone = clamp(
+        (cosine - light.direction_outer.w) * light.cones.y,
+        0.0,
+        1.0,
+    );
+    if cone <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let lambert = max(-dot(n, toward_fragment), 0.0);
+    return light.color_intensity.rgb * (light.color_intensity.w * attenuation * (cone * cone) * lambert);
+}
+
+/// A quad light: a convex planar polygon radiating from one side of its plane.
+///
+/// Its irradiance is the exact diffuse form factor of the polygon, which already
+/// carries the inverse-square falloff of every point of it, so the light has no
+/// attenuation term of its own. The polygon radiates from one side only: a
+/// fragment on the back of its plane gets nothing, which is what keeps a patch
+/// from lighting what it is attached to.
+@if(LIT)
+fn quad_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let count = light.kind.z;
+    if count < 3u {
+        return vec3<f32>(0.0);
+    }
+    var points: array<vec3<f32>, polygon::MAX_POLYGON_VERTICES>;
+    for (var i = 0u; i < count && i < polygon::MAX_POLYGON_VERTICES; i += 1u) {
+        points[i] = array_access::load_light_vertex(light.kind.y + i);
+    }
+    // The polygon's own normal comes from its winding, which the CPU normalized
+    // to face the side the light radiates from.
+    let light_normal = cross(points[1] - points[0], points[2] - points[0]);
+    if dot(light_normal, p - points[0]) <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let form_factor = polygon::polygon_form_factor(n, p, points, count);
+    return light.color_intensity.rgb * (light.color_intensity.w * form_factor);
+}
+
+/// One light's contribution to a fragment's irradiance, whatever kind it is.
+@if(LIT)
+fn light_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let kind = light.kind.x;
+    if kind == light::LIGHT_KIND_DIRECTIONAL {
+        return directional_radiance(light, n);
+    }
+    if kind == light::LIGHT_KIND_POINT {
+        return point_radiance(light, p, n);
+    }
+    if kind == light::LIGHT_KIND_SPOT {
+        return spot_radiance(light, p, n);
+    }
+    if kind == light::LIGHT_KIND_QUAD {
+        return quad_radiance(light, p, n);
+    }
+    return vec3<f32>(0.0);
+}
+
+/// The color a lit fragment shows: its base color modulated by the ambient term
+/// plus every light its cluster cell names.
+///
+/// The cell is the only light data a fragment reads, so the cost of a fragment
+/// does not grow with the number of lights in the frame -- just with the number
+/// assigned to its own cell, which the budget caps.
+@if(LIT)
+fn lit_color(in: VertexOut, base: vec4<f32>) -> vec4<f32> {
+    let n = fragment_normal(in);
+    if dot(n, n) <= 0.0 {
+        return base;
+    }
+    let cell = fragment_cluster_index(in.ndc, view_depth(in.world));
+    let count = min(array_access::load_cell_word(cell, 0u), cluster.dims.w);
+    var irradiance = cluster.ambient.rgb;
+    for (var i = 0u; i < count; i += 1u) {
+        let index = array_access::load_cell_word(cell, i + 1u);
+        irradiance += light_radiance(array_access::load_light(index), in.world, n);
+    }
+    return vec4<f32>(base.rgb * irradiance, base.a);
 }
 
 /// Convert a channel from sRGB (gamma) to linear light.
@@ -382,6 +633,25 @@ fn fragment_color(in: VertexOut) -> vec4<f32> {
 @fragment
 public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let color = fragment_color(in);
+    // Lighting multiplies the base color and leaves its alpha alone: alpha is
+    // coverage, and a surface does not become more transparent in the dark.
+    @if(LIT) {
+        var lit = lit_color(in, color);
+        @if(ALPHA_CUTOFF) {
+            if lit.a < in.cutoff {
+                discard;
+            }
+        }
+        @if(SRGB_TO_LINEAR_OUTPUT) {
+            return vec4<f32>(
+                srgb_to_linear(lit.r),
+                srgb_to_linear(lit.g),
+                srgb_to_linear(lit.b),
+                lit.a,
+            );
+        }
+        return lit;
+    }
     // A cut-off instance draws binary coverage: it writes depth and color like
     // an opaque one wherever the fragment is opaque enough, and writes nothing
     // at all elsewhere, so it needs no blending and no back-to-front sort. The

@@ -78,7 +78,7 @@ fn build(
         let (positions, uvs, colors, indices) = cube();
         source.allocate_unlit_mesh(
             world,
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),

@@ -568,6 +568,13 @@ pub struct UnlitVariant {
     pub morph: bool,
     /// The strip index format the mesh's index buffer requires, if any.
     pub strip_index_format: Option<wgpu::IndexFormat>,
+    /// Whether the variant shades its fragments with the frame's lights.
+    ///
+    /// A lit variant reads the light arrays and the cluster uniform from the
+    /// global group and multiplies its base color by what they sum to. An
+    /// unlit one declares none of those bindings, so the capability costs it
+    /// nothing.
+    pub lit: bool,
 }
 
 #[cfg(feature = "unlit")]
@@ -583,7 +590,7 @@ impl UnlitVariant {
     ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 15] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 16] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (
@@ -632,6 +639,7 @@ impl UnlitVariant {
                 self.options.base_color == BaseColorChannels::LuminanceAlpha,
             ),
             ("ALPHA_CUTOFF", self.options.alpha_cutoff),
+            ("LIT", self.lit),
         ]
     }
 
@@ -705,7 +713,7 @@ impl UnlitVariant {
     ///
     /// If the variant reads storage buffers on a device that has none.
     fn assert_device_supports_arrays(&self, device: &wgpu::Device, texel_arrays: bool) {
-        let reads_an_array = self.needs_metadata() || self.needs_joints();
+        let reads_an_array = self.needs_metadata() || self.needs_joints() || self.lit;
         assert!(
             !reads_an_array || texel_arrays || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
@@ -741,8 +749,9 @@ impl UnlitVariant {
             metadata: self.needs_metadata(),
             joints: self.needs_joints(),
             morphs: self.needs_morphs(),
-            // Unlit never lights: the built-in unlit variants read no lights.
-            lights: false,
+            // A lit variant reads the frame's lights, its cells and its
+            // polygon vertices; an unlit one declares no such binding.
+            lights: self.lit,
         };
         let global = global_bind_group_layout(device, bindings, texel_arrays);
 
@@ -1499,6 +1508,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels,
             base_color_texture,
             morph,
+            lit: false,
             strip_index_format: None,
         }
     }
@@ -2037,120 +2047,147 @@ fn fs_main() -> @location(0) vec4<f32> {
 
     #[test]
     fn composes_each_variant_to_valid_wgsl() {
-        for candidate in all_variants() {
-            // The array path is the device's, so both are exercised here.
-            for texel_arrays in [false, true] {
-                let wgsl = compose(&candidate, texel_arrays)
-                    .unwrap_or_else(|error| panic!("variant {candidate:?} failed: {error}"));
-                assert!(wgsl.contains("fn vs_main"), "variant {candidate:?}");
-                assert!(wgsl.contains("fn fs_main"), "variant {candidate:?}");
-                // Disabled features must leave no conditional attributes behind.
-                assert!(!wgsl.contains("@if"), "variant {candidate:?} kept @if");
+        for mut candidate in all_variants() {
+            // Lighting is the one dimension the variant's channels do not already
+            // cover: a lit draw reads the frame's lights and clusters with them,
+            // which is why both are compiled here.
+            for lit in [false, true] {
+                candidate.lit = lit;
+                // The array path is the device's, so both are exercised here.
+                for texel_arrays in [false, true] {
+                    let wgsl = compose(&candidate, texel_arrays)
+                        .unwrap_or_else(|error| panic!("variant {candidate:?} failed: {error}"));
+                    assert!(wgsl.contains("fn vs_main"), "variant {candidate:?}");
+                    assert!(wgsl.contains("fn fs_main"), "variant {candidate:?}");
+                    // Disabled features must leave no conditional attributes behind.
+                    assert!(!wgsl.contains("@if"), "variant {candidate:?} kept @if");
 
-                let vertex = candidate.channels;
-                // Each channel appears exactly when the geometry carries it.
-                assert_eq!(
-                    wgsl.contains("base_color_tex"),
-                    candidate.base_color_texture,
-                    "variant {candidate:?}"
-                );
-                let compressed_uv = vertex.secondary.contains(SecondaryFlags::UV)
-                    && !vertex.secondary.contains(SecondaryFlags::UNCOMPRESSED_UV);
-                assert_eq!(
-                    wgsl.contains("decode_uv"),
-                    compressed_uv,
-                    "variant {candidate:?}"
-                );
-                let compressed_position = matches!(
-                    vertex.position.position,
-                    Some(ChannelEncoding::CompressedPosition)
-                );
-                assert_eq!(
-                    wgsl.contains("decode_position"),
-                    compressed_position,
-                    "variant {candidate:?}"
-                );
-                // An unlit variant carries a normal through its vertex input
-                // without decoding it: shading is what reads a normal, and the
-                // lit module is what does that.
-                assert!(!wgsl.contains("decode_normal"), "variant {candidate:?}");
-                // Every array read goes through an accessor, whose name survives
-                // assembly unmangled as a suffix: the binding it reads is mangled
-                // with its module path, so the accessor is what a variant can be
-                // checked against.
-                assert_eq!(
-                    wgsl.contains("load_mesh_metadata"),
-                    candidate.needs_metadata(),
-                    "variant {candidate:?}"
-                );
-                // The pose arrays are the frame's, so they live in the global
-                // group alongside the camera and the metadata.
-                assert_eq!(
-                    wgsl.contains("load_joint_matrix"),
-                    candidate.needs_joints(),
-                    "variant {candidate:?}"
-                );
-                assert_eq!(
-                    wgsl.contains("load_morph_weight"),
-                    candidate.needs_morphs(),
-                    "variant {candidate:?}"
-                );
-                assert_eq!(
-                    wgsl.contains("load_morph_delta"),
-                    candidate.needs_morphs(),
-                    "variant {candidate:?}"
-                );
-                // The path decides the resource type: storage buffers when the
-                // device has them, textures when it does not. Neither path ever
-                // leaves the other's declarations behind.
-                let reads_an_array = candidate.needs_metadata() || candidate.needs_joints();
-                if texel_arrays {
+                    let vertex = candidate.channels;
+                    // Each channel appears exactly when the geometry carries it.
                     assert_eq!(
-                        wgsl.matches("var<storage, read>").count(),
-                        0,
-                        "variant {candidate:?} kept a storage array"
+                        wgsl.contains("base_color_tex"),
+                        candidate.base_color_texture,
+                        "variant {candidate:?}"
+                    );
+                    let compressed_uv = vertex.secondary.contains(SecondaryFlags::UV)
+                        && !vertex.secondary.contains(SecondaryFlags::UNCOMPRESSED_UV);
+                    assert_eq!(
+                        wgsl.contains("decode_uv"),
+                        compressed_uv,
+                        "variant {candidate:?}"
+                    );
+                    let compressed_position = matches!(
+                        vertex.position.position,
+                        Some(ChannelEncoding::CompressedPosition)
+                    );
+                    assert_eq!(
+                        wgsl.contains("decode_position"),
+                        compressed_position,
+                        "variant {candidate:?}"
+                    );
+                    // A normal is decoded only where it shades, and only a lit
+                    // fragment shades with one.
+                    assert_eq!(
+                        wgsl.contains("decode_normal"),
+                        lit && vertex.secondary.contains(SecondaryFlags::NORMAL),
+                        "variant {candidate:?}"
+                    );
+                    // The light arrays, the cluster lookup and the shading terms are
+                    // a lit draw's own.
+                    assert_eq!(
+                        wgsl.contains("fragment_cluster_index"),
+                        lit,
+                        "variant {candidate:?}"
+                    );
+                    assert_eq!(
+                        wgsl.contains("load_cell_word") && wgsl.contains("load_light"),
+                        lit,
+                        "variant {candidate:?}"
+                    );
+                    assert_eq!(
+                        wgsl.contains("polygon_form_factor"),
+                        lit,
+                        "variant {candidate:?}"
+                    );
+                    // Every array read goes through an accessor, whose name survives
+                    // assembly unmangled as a suffix: the binding it reads is mangled
+                    // with its module path, so the accessor is what a variant can be
+                    // checked against.
+                    assert_eq!(
+                        wgsl.contains("load_mesh_metadata"),
+                        candidate.needs_metadata(),
+                        "variant {candidate:?}"
+                    );
+                    // The pose arrays are the frame's, so they live in the global
+                    // group alongside the camera and the metadata.
+                    assert_eq!(
+                        wgsl.contains("load_joint_matrix"),
+                        candidate.needs_joints(),
+                        "variant {candidate:?}"
+                    );
+                    assert_eq!(
+                        wgsl.contains("load_morph_weight"),
+                        candidate.needs_morphs(),
+                        "variant {candidate:?}"
+                    );
+                    assert_eq!(
+                        wgsl.contains("load_morph_delta"),
+                        candidate.needs_morphs(),
+                        "variant {candidate:?}"
+                    );
+                    // The path decides the resource type: storage buffers when the
+                    // device has them, textures when it does not. Neither path ever
+                    // leaves the other's declarations behind.
+                    let reads_an_array =
+                        candidate.needs_metadata() || candidate.needs_joints() || candidate.lit;
+                    if texel_arrays {
+                        assert_eq!(
+                            wgsl.matches("var<storage, read>").count(),
+                            0,
+                            "variant {candidate:?} kept a storage array"
+                        );
+                    }
+                    assert_eq!(
+                        wgsl.contains("texel_of"),
+                        texel_arrays && reads_an_array,
+                        "variant {candidate:?}"
+                    );
+                    // Without a position stream the vertex input declares no position
+                    // attribute, so the shader cannot read one.
+                    let vertex_input = wgsl
+                        .split_once("struct VertexInput {")
+                        .expect("the variant declares vertex inputs")
+                        .1;
+                    let vertex_input = vertex_input
+                        .split_once('}')
+                        .expect("the vertex input struct ends")
+                        .0;
+                    assert_eq!(
+                        vertex_input.contains("position:"),
+                        vertex.position.position.is_some(),
+                        "variant {candidate:?}"
+                    );
+                    assert_eq!(
+                        vertex_input.contains("joints:") && vertex_input.contains("weights:"),
+                        candidate.needs_joints(),
+                        "variant {candidate:?}"
+                    );
+                    assert_eq!(
+                        vertex_input.contains("normal:"),
+                        vertex.secondary.contains(SecondaryFlags::NORMAL),
+                        "variant {candidate:?}"
+                    );
+                    // The instance record is unconditional, so its fields are
+                    // declared as plain attributes with no condition on them.
+                    assert!(
+                        vertex_input.contains("joints_base:"),
+                        "variant {candidate:?} declares no instance stream"
+                    );
+                    assert!(
+                        vertex_input.contains("morph_base:"),
+                        "variant {candidate:?} declares no instance stream"
                     );
                 }
-                assert_eq!(
-                    wgsl.contains("texel_of"),
-                    texel_arrays && reads_an_array,
-                    "variant {candidate:?}"
-                );
-                // Without a position stream the vertex input declares no position
-                // attribute, so the shader cannot read one.
-                let vertex_input = wgsl
-                    .split_once("struct VertexInput {")
-                    .expect("the variant declares vertex inputs")
-                    .1;
-                let vertex_input = vertex_input
-                    .split_once('}')
-                    .expect("the vertex input struct ends")
-                    .0;
-                assert_eq!(
-                    vertex_input.contains("position:"),
-                    vertex.position.position.is_some(),
-                    "variant {candidate:?}"
-                );
-                assert_eq!(
-                    vertex_input.contains("joints:") && vertex_input.contains("weights:"),
-                    candidate.needs_joints(),
-                    "variant {candidate:?}"
-                );
-                assert_eq!(
-                    vertex_input.contains("normal:"),
-                    vertex.secondary.contains(SecondaryFlags::NORMAL),
-                    "variant {candidate:?}"
-                );
-                // The instance record is unconditional, so its fields are
-                // declared as plain attributes with no condition on them.
-                assert!(
-                    vertex_input.contains("joints_base:"),
-                    "variant {candidate:?} declares no instance stream"
-                );
-                assert!(
-                    vertex_input.contains("morph_base:"),
-                    "variant {candidate:?} declares no instance stream"
-                );
             }
         }
     }

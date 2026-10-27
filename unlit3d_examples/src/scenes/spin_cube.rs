@@ -75,7 +75,7 @@ fn build(
             let (positions, uvs, colors, indices) = super::cube();
             let mesh = source.allocate_unlit_mesh(
                 &root,
-                &key,
+                &key.options,
                 UnlitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -99,7 +99,7 @@ fn build(
                     ..Default::default()
                 }),
             );
-            let material = source.allocate_unlit_material(&root, &key, view, sampler);
+            let material = source.allocate_unlit_material(&root, &key.options, view, sampler);
             (mesh, material)
         })
         .expect("the source entity exists");

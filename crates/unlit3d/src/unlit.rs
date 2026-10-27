@@ -197,25 +197,38 @@ impl RenderPipelineKey for UnlitPipelineKey {
     type Variant = UnlitVariant;
 
     fn variant(&self, draw: &DrawContext<'_>) -> UnlitVariant {
-        // Every fact the pipeline depends on beyond the caller own options
-        // is resolved here, from the draw itself: the frame target, the
-        // channels the mesh vertex layout carries, whether the draw binds a
-        // material, whether the mesh morphs, and the width of the index
-        // buffer a strip topology has to declare.
-        let index_format = draw
-            .mesh
-            .parts
-            .index_buffer
-            .as_ref()
-            .map(|(_, format)| *format);
-        UnlitVariant {
-            options: self.options.clone(),
-            surface: draw.surface,
-            channels: UnlitVertexChannels::for_vertex_layout(&draw.mesh.vertex_layout),
-            base_color_texture: draw.material.is_some(),
-            morph: draw.mesh.morph_targets > 0,
-            strip_index_format: strip_index_format(self.options.primitive.topology, index_format),
-        }
+        unlit_variant(&self.options, draw, false)
+    }
+}
+
+/// The variant a draw resolves to from the caller's options, lit or not.
+///
+/// Every fact the variant depends on beyond the caller's own options is
+/// resolved here, from the draw itself: the frame target, the channels the
+/// mesh vertex layout carries, whether the draw binds a material, whether the
+/// mesh morphs, and the width of the index buffer a strip topology has to
+/// declare. The built-in lit and unlit families differ only in the last
+/// argument, which is why they share this and the [UnlitFactory] that
+/// describes the result.
+pub(crate) fn unlit_variant(
+    options: &Hashed<UnlitOptions>,
+    draw: &DrawContext<'_>,
+    lit: bool,
+) -> UnlitVariant {
+    let index_format = draw
+        .mesh
+        .parts
+        .index_buffer
+        .as_ref()
+        .map(|(_, format)| *format);
+    UnlitVariant {
+        options: options.clone(),
+        surface: draw.surface,
+        channels: UnlitVertexChannels::for_vertex_layout(&draw.mesh.vertex_layout),
+        base_color_texture: draw.material.is_some(),
+        morph: draw.mesh.morph_targets > 0,
+        strip_index_format: strip_index_format(options.primitive.topology, index_format),
+        lit,
     }
 }
 
@@ -240,7 +253,7 @@ fn strip_index_format(
 /// machinery: it packages the shader layouts and a closure over the
 /// shader global bindings — the camera, globals and, for variants that read
 /// a compressed channel, the metadata buffer.
-struct UnlitFactory;
+pub(crate) struct UnlitFactory;
 
 impl RenderPipelineFactory<UnlitVariant> for UnlitFactory {
     fn descriptor(
@@ -262,7 +275,7 @@ impl RenderPipelineFactory<UnlitVariant> for UnlitFactory {
             metadata: variant.needs_metadata(),
             joints: variant.needs_joints(),
             morphs: variant.needs_morphs(),
-            lights: false,
+            lights: variant.lit,
         };
         let layout = context.resources.layout(context.device, bindings);
         let rebuild = context.resources.rebuild(context.device, layout, bindings);
@@ -452,9 +465,11 @@ pub trait MeshSourceUnlitExt {
     /// target and the mesh's vertex layout: two draws that agree on both share
     /// one compiled pipeline, and a draw whose mesh layout implies different
     /// channels compiles its own. The options are the entity's: a mesh or
-    /// material is built against the [UnlitPipelineKey] it will be drawn with,
+    /// material is built against the [UnlitOptions] it will be drawn with,
     /// through [`MeshSourceUnlitExt::allocate_unlit_mesh`] and
-    /// [`MeshSourceUnlitExt::allocate_unlit_material`].
+    /// [`MeshSourceUnlitExt::allocate_unlit_material`]. Those take the options
+    /// rather than the key, so any pipeline whose variant reads the same
+    /// channels can draw the mesh.
     ///
     /// This compiles nothing; like any family, its first concrete pipeline is
     /// built when an entity that uses it is first drawn.
@@ -503,7 +518,7 @@ pub trait MeshSourceUnlitExt {
     fn allocate_unlit_mesh(
         &mut self,
         world: &Scope<'_>,
-        key: &UnlitPipelineKey,
+        options: &Hashed<UnlitOptions>,
         desc: UnlitMeshDesc<'_>,
     ) -> GpuMesh;
     /// Allocate the unlit material bind group from an existing base-colour
@@ -523,7 +538,7 @@ pub trait MeshSourceUnlitExt {
     fn allocate_unlit_material(
         &mut self,
         world: &Scope<'_>,
-        key: &UnlitPipelineKey,
+        options: &Hashed<UnlitOptions>,
         view_id: ResHandle<TextureView>,
         sampler_id: ResHandle<wgpu::Sampler>,
     ) -> GpuMaterial;
@@ -537,7 +552,7 @@ impl MeshSourceUnlitExt for MeshSource {
     fn allocate_unlit_mesh(
         &mut self,
         world: &Scope<'_>,
-        key: &UnlitPipelineKey,
+        options: &Hashed<UnlitOptions>,
         desc: UnlitMeshDesc<'_>,
     ) -> GpuMesh {
         let device = self.device(world);
@@ -589,7 +604,7 @@ impl MeshSourceUnlitExt for MeshSource {
         // channels imply. Its surface, material and strip index format play no
         // part in any of those, so they are left at placeholders.
         let variant = UnlitVariant {
-            options: key.options.clone(),
+            options: options.clone(),
             surface: SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 depth_stencil_format: None,
@@ -598,6 +613,7 @@ impl MeshSourceUnlitExt for MeshSource {
             channels,
             base_color_texture: false,
             morph: morph_deltas.is_some(),
+            lit: false,
             strip_index_format: None,
         };
         let position_stream = variant.position_stream();
@@ -881,11 +897,11 @@ impl MeshSourceUnlitExt for MeshSource {
     fn allocate_unlit_material(
         &mut self,
         world: &Scope<'_>,
-        key: &UnlitPipelineKey,
+        options: &Hashed<UnlitOptions>,
         view_id: ResHandle<TextureView>,
         sampler_id: ResHandle<wgpu::Sampler>,
     ) -> GpuMaterial {
-        let layout = key.options.material_bind_group_layout(&self.device(world));
+        let layout = options.material_bind_group_layout(&self.device(world));
 
         let device = self.device(world).clone();
         // The recipe reads the view and the sampler back out of the graph each

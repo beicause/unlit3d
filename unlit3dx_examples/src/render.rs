@@ -115,7 +115,7 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedUnlitMeshDesc) -> Ren
             source
                 .as_mut::<MeshSource>()
                 .expect("the source carries a MeshSource")
-                .allocate_unlit_mesh(&root, &key, desc.borrowed())
+                .allocate_unlit_mesh(&root, &key.options, desc.borrowed())
         })
         .expect("the mesh source entity exists");
     // The asset hangs under the source that draws it, so the world holds
@@ -177,7 +177,7 @@ fn allocate_material(
             let texture = build_texture(source, &root);
             let view = source.register_texture_and_default_view(&root, texture).1;
             let sampler = source.register_sampler(&root, Some(descriptor));
-            source.allocate_unlit_material(&root, &key, view, sampler)
+            source.allocate_unlit_material(&root, &key.options, view, sampler)
         })
         .expect("the mesh source entity exists");
     RenderEntity(

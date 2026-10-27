@@ -183,7 +183,7 @@ fn build(
     let backdrop = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_unlit_mesh(
             world,
-            &opaque_key,
+            &opaque_key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
@@ -199,7 +199,7 @@ fn build(
     let pane_mesh = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_unlit_mesh(
             world,
-            &translucent_key,
+            &translucent_key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: None,

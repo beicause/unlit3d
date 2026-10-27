@@ -536,7 +536,7 @@ pub fn create_mesh(
     };
     let (key, mesh) = with_mesh_source(world, source, |source, scope| {
         let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(scope)));
-        let mesh = source.allocate_unlit_mesh(scope, &key, desc);
+        let mesh = source.allocate_unlit_mesh(scope, &key.options, desc);
         (key, mesh)
     })?;
     let transform = match args.transform {

@@ -193,6 +193,7 @@ pub fn ui_variant(
         channels: ui_channels(),
         base_color_texture: true,
         morph: false,
+        lit: false,
         strip_index_format: None,
     }
 }
@@ -1184,6 +1185,7 @@ mod tests {
             channels: ui_channels(),
             base_color_texture: true,
             morph: false,
+            lit: false,
             strip_index_format: None,
         }
     }

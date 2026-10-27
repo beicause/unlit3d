@@ -13,6 +13,14 @@
 //! quad light's polygon lies in its entity's `XY` plane. A light with no
 //! [`Transform`] sits at the origin facing `-Z`.
 //!
+//! # The lit pipeline
+//!
+//! [LitPipelineKey] is the family key, [MeshSourceLitExt] registers it, and
+//! [LitPipeline] is the component a mesh is drawn with. A lit pipeline is
+//! otherwise an unlit one -- same vertex channels, same material, same instance
+//! stream -- so it reuses [UnlitOptions] and the unlit factory, and a mesh
+//! allocated for either draw works with both.
+//!
 //! # Intensity is dimensionless
 //!
 //! A light's `intensity` carries no unit. The shader modulates a surface's base
@@ -23,8 +31,13 @@
 use glam::{Affine3A, UVec4, Vec2, Vec3, Vec4};
 use unlit_ecs::Scope;
 use unlit_wgpu::light::{BoundingSphere, LightGpu, LightKind as GpuLightKind, PackedLight};
+use unlit_wgpu::pipeline::{UnlitOptions, UnlitVariant};
+use unlit_wgpu::util::Hashed;
 
-use crate::components::Transform;
+use crate::components::{GpuRenderPipeline, Transform};
+use crate::mesh_source::MeshSource;
+use crate::pipeline::{DrawContext, RenderPipelineKey};
+use crate::unlit::{UnlitFactory, UnlitInstance, unlit_variant};
 
 /// A light's shape, as a description rather than the shader cares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -369,6 +382,61 @@ pub(crate) fn collect_lights(
             bounds,
             importance,
         });
+    }
+}
+
+/// A key identifying a lit pipeline family.
+///
+/// A lit pipeline is an unlit pipeline whose fragment also multiplies the
+/// surface by the frame's lights: same vertex channels, same material group,
+/// same instance stream, same meshes. Only the shader differs, so the key holds
+/// the same options and differs from [UnlitPipelineKey](crate::unlit::UnlitPipelineKey)
+/// by its type -- which is what lets a source carry both families, and a mesh
+/// allocated for one draw in the other.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LitPipelineKey {
+    /// The options the entity's variants are specialized from, with their hash
+    /// computed once.
+    pub options: Hashed<UnlitOptions>,
+}
+
+impl LitPipelineKey {
+    /// A key whose variants start from `options`.
+    pub fn new(options: UnlitOptions) -> Self {
+        Self {
+            options: Hashed::new(options),
+        }
+    }
+}
+
+impl RenderPipelineKey for LitPipelineKey {
+    type Variant = UnlitVariant;
+
+    fn variant(&self, draw: &DrawContext<'_>) -> UnlitVariant {
+        unlit_variant(&self.options, draw, true)
+    }
+}
+
+/// The built-in lit pipeline, keyed by [LitPipelineKey].
+pub type LitPipeline = GpuRenderPipeline<LitPipelineKey>;
+
+/// Where a source's lit family comes from.
+///
+/// The lit family shares the unlit one's factory and instance record, because a
+/// lit draw differs from an unlit one only in what its fragment reads. What it
+/// adds is the frame's lights: registering it marks the source lit, so every
+/// frame clusters that frame's [LightSource]s and uploads them.
+pub trait MeshSourceLitExt {
+    /// Register the built-in lit family.
+    ///
+    /// Call this once per source, alongside [register_unlit_family](crate::unlit::MeshSourceUnlitExt::register_unlit_family).
+    fn register_lit_family(&mut self, world: &Scope<'_>);
+}
+
+impl MeshSourceLitExt for MeshSource {
+    fn register_lit_family(&mut self, world: &Scope<'_>) {
+        self.register_family::<LitPipelineKey, _, _>(world, UnlitFactory, UnlitInstance);
+        self.lit = true;
     }
 }
 

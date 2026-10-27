@@ -624,6 +624,7 @@ fn variant(
         channels,
         base_color_texture,
         morph,
+        lit: false,
         strip_index_format: None,
     }
 }

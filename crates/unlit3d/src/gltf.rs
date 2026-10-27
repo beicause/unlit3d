@@ -515,7 +515,8 @@ impl UnlitGltf {
             view
         };
 
-        let bind_group = source.allocate_unlit_material(world, &key, view.clone(), sampler.clone());
+        let bind_group =
+            source.allocate_unlit_material(world, &key.options, view.clone(), sampler.clone());
         Some(GltfMaterial {
             material,
             bind_group,
@@ -639,7 +640,7 @@ impl UnlitGltf {
 
         let gpu_mesh = source.allocate_unlit_mesh(
             world,
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: uvs.as_deref(),

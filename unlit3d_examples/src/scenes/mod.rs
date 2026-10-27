@@ -580,7 +580,7 @@ pub fn allocate_offset_cube_mesh(
     with_mesh_source(world, source_entity, |source, world| {
         source.allocate_unlit_mesh(
             world,
-            key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),

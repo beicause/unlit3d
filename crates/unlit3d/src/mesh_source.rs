@@ -189,7 +189,7 @@ pub struct MeshSource {
     cluster_staging: StagingBuffer,
     /// Whether a lit family was registered with this source, so the frame's
     /// lights have a reader.
-    lit: bool,
+    pub(crate) lit: bool,
     /// Whether a mesh's displacements were written into the pool since the
     /// array was last uploaded.
     ///
@@ -1646,7 +1646,7 @@ mod tests {
         fn tri_mesh_at(&mut self, z: f32) -> GpuMesh {
             self.source.allocate_unlit_mesh(
                 &self.world.root_scope(),
-                &self.key,
+                &self.key.options,
                 UnlitMeshDesc {
                     positions: &[[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
                     uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -1828,7 +1828,7 @@ mod tests {
         let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         harness.source.allocate_unlit_mesh(
             &harness.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),
@@ -1998,7 +1998,7 @@ mod tests {
         // used to declare: the options are pure policy now.
         let textured = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -2009,7 +2009,7 @@ mod tests {
         );
         let bare = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),
@@ -2026,9 +2026,9 @@ mod tests {
         // A material can be built for either: whether a draw samples it is the
         // draw's own answer — it binds the group or it does not.
         let (view, sampler) = test_material_resources(&mut h);
-        let material = h
-            .source
-            .allocate_unlit_material(&h.world.root_scope(), &key, view, sampler);
+        let material =
+            h.source
+                .allocate_unlit_material(&h.world.root_scope(), &key.options, view, sampler);
         let ctx = h.source.context();
         assert!(
             ctx.graph(&h.world.root_scope())
@@ -2096,7 +2096,7 @@ mod tests {
 
         let material = h.source.allocate_unlit_material(
             &h.world.root_scope(),
-            &h.key,
+            &h.key.options,
             view.clone(),
             sampler.clone(),
         );
@@ -2220,7 +2220,7 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let material = h.source.allocate_unlit_material(
             &h.world.root_scope(),
-            &h.key,
+            &h.key.options,
             view.clone(),
             sampler.clone(),
         );
@@ -2345,7 +2345,7 @@ mod tests {
         ));
         let mesh = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -2649,7 +2649,7 @@ mod tests {
         let standard_mesh = h.tri_mesh();
         let alternative_mesh = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &alternative_key,
+            &alternative_key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -2708,14 +2708,14 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let shared = h.source.allocate_unlit_material(
             &h.world.root_scope(),
-            &h.key,
+            &h.key.options,
             view.clone(),
             sampler.clone(),
         );
         let (view, sampler) = test_material_resources(&mut h);
         let other = h.source.allocate_unlit_material(
             &h.world.root_scope(),
-            &h.key,
+            &h.key.options,
             view.clone(),
             sampler.clone(),
         );
@@ -3023,7 +3023,7 @@ mod tests {
             UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         let mesh = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -3097,7 +3097,7 @@ mod tests {
         // tells their draws apart is the slice each one names.
         let first = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -3108,7 +3108,7 @@ mod tests {
         );
         let second = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -3497,7 +3497,7 @@ mod tests {
             UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         let other = h.source.allocate_unlit_mesh(
             &h.world.root_scope(),
-            &other_key,
+            &other_key.options,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),

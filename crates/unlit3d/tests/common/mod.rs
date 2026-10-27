@@ -233,7 +233,7 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
                 world,
-                &self.key,
+                &self.key.options,
                 UnlitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -255,7 +255,7 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
                 world,
-                &self.key,
+                &self.key.options,
                 UnlitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -303,7 +303,7 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
                 world,
-                key,
+                &key.options,
                 UnlitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -334,7 +334,7 @@ impl TestGpu {
         let mesh = self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
                 world,
-                key,
+                &key.options,
                 UnlitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
