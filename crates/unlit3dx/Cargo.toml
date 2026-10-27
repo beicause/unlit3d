@@ -27,12 +27,12 @@ required-features = ["audio", "physics", "synth"]
 async-channel.workspace = true
 base64 = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
-futures-executor.workspace = true
-futures-util.workspace = true
 # The lossless encoder the audio tools write a captured mix with. Only the
 # encoder itself is used: the parallel, serde and log features are its own
 # plumbing, not something a one-shot file write needs.
 flacenc = { workspace = true, default-features = false }
+futures-executor.workspace = true
+futures-util.workspace = true
 glam.workspace = true
 log.workspace = true
 rapier3d = { workspace = true, optional = true }
