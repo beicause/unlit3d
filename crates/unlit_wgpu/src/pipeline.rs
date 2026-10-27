@@ -48,6 +48,27 @@ pub const MORPH_WEIGHTS_BINDING: u32 = 4;
 /// of its [`MeshMetadata`](crate::mesh::MeshMetadata) entry. Pooling them here
 /// rather than in a per-mesh buffer is what lets a draw bind no mesh group.
 pub const MORPH_DELTAS_BINDING: u32 = 5;
+/// Binding slot of the frame's lights in the global bind group.
+///
+/// One record per light, in view space, packed by the source every frame. The
+/// fragment stage reads it, so it is not visible to a vertex stage.
+pub const LIGHTS_BINDING: u32 = 6;
+/// Binding slot of the frame's cluster cells in the global bind group.
+///
+/// Each cell's record lists the lights assigned to it; see
+/// [`crate::light::CELL_WORDS`].
+pub const LIGHT_CELLS_BINDING: u32 = 7;
+/// Binding slot of the frame's polygon-light vertices in the global bind group.
+///
+/// A light whose shape has corners names its slice through its record's
+/// `kind.y` and `kind.z`.
+pub const LIGHT_VERTICES_BINDING: u32 = 8;
+/// Binding slot of the cluster uniform in the global bind group.
+///
+/// The cluster grid's shape and depth mapping, plus the frame's ambient term:
+/// what a fragment needs to find the cell it is in and to light itself when no
+/// light reaches it.
+pub const CLUSTER_BINDING: u32 = 9;
 /// Bind-group index of the global group.
 pub const GLOBAL_GROUP: u32 = 0;
 /// Bind-group index of the material group.
@@ -720,6 +741,8 @@ impl UnlitVariant {
             metadata: self.needs_metadata(),
             joints: self.needs_joints(),
             morphs: self.needs_morphs(),
+            // Unlit never lights: the built-in unlit variants read no lights.
+            lights: false,
         };
         let global = global_bind_group_layout(device, bindings, texel_arrays);
 
@@ -1082,6 +1105,13 @@ pub struct GlobalBindings {
     pub joints: bool,
     /// Whether the pipeline reads the frame's morph weights and displacements.
     pub morphs: bool,
+    /// Whether the pipeline reads the frame's lights, cluster cells and cluster
+    /// uniform.
+    ///
+    /// One flag for all four bindings: a pipeline that lights its fragments
+    /// reads the three arrays and the uniform together, so a finer split would
+    /// only describe combinations no pipeline can have.
+    pub lights: bool,
 }
 
 /// The layout entry binding an array of `element_size`-byte elements.
@@ -1093,14 +1123,15 @@ pub struct GlobalBindings {
 pub fn array_entry(
     binding: u32,
     element_size: u64,
+    visibility: wgpu::ShaderStages,
     texel_arrays: bool,
 ) -> wgpu::BindGroupLayoutEntry {
     if texel_arrays {
-        return crate::texel_array::TexelArrayLayout::binding(binding, wgpu::ShaderStages::VERTEX);
+        return crate::texel_array::TexelArrayLayout::binding(binding, visibility);
     }
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::VERTEX,
+        visibility,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
@@ -1128,7 +1159,7 @@ pub fn global_bind_group_layout(
     bindings: GlobalBindings,
     texel_arrays: bool,
 ) -> wgpu::BindGroupLayout {
-    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 6>::new();
+    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 10>::new();
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: CAMERA_BINDING,
         visibility: wgpu::ShaderStages::VERTEX,
@@ -1157,6 +1188,7 @@ pub fn global_bind_group_layout(
         entries.push(array_entry(
             MESH_METADATA_BINDING,
             <crate::mesh::MeshMetadata as const_shader_layout::ShaderLayout>::SIZE.get(),
+            wgpu::ShaderStages::VERTEX,
             texel_arrays,
         ));
     }
@@ -1164,6 +1196,7 @@ pub fn global_bind_group_layout(
         entries.push(array_entry(
             JOINTS_BINDING,
             <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
+            wgpu::ShaderStages::VERTEX,
             texel_arrays,
         ));
     }
@@ -1171,6 +1204,7 @@ pub fn global_bind_group_layout(
         entries.push(array_entry(
             MORPH_WEIGHTS_BINDING,
             wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
+            wgpu::ShaderStages::VERTEX,
             texel_arrays,
         ));
         // One position component of one target: like every other array entry
@@ -1179,8 +1213,50 @@ pub fn global_bind_group_layout(
         entries.push(array_entry(
             MORPH_DELTAS_BINDING,
             wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
+            wgpu::ShaderStages::VERTEX,
             texel_arrays,
         ));
+    }
+    if bindings.lights {
+        // Lighting happens in the fragment stage, where the view-space position
+        // and normal are; the vertex stage reads none of these, so declaring
+        // them there would only spend the vertex stage's array quota.
+        let visibility = wgpu::ShaderStages::FRAGMENT;
+        entries.push(array_entry(
+            LIGHTS_BINDING,
+            <crate::light::LightGpu as const_shader_layout::ShaderLayout>::SIZE.get(),
+            visibility,
+            texel_arrays,
+        ));
+        // One cell is a fixed number of words rather than one: the record lists
+        // the lights assigned to the cell, so the binding minimum is a whole
+        // record and a fragment reads the cell's own slice.
+        entries.push(array_entry(
+            LIGHT_CELLS_BINDING,
+            wgpu::BufferAddress::from(
+                (crate::light::CELL_WORDS * core::mem::size_of::<u32>()) as u64,
+            ),
+            visibility,
+            texel_arrays,
+        ));
+        entries.push(array_entry(
+            LIGHT_VERTICES_BINDING,
+            wgpu::BufferAddress::from(core::mem::size_of::<glam::Vec4>() as u64),
+            visibility,
+            texel_arrays,
+        ));
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: CLUSTER_BINDING,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: Some(
+                    <crate::light::ClusterUniform as const_shader_layout::ShaderLayout>::SIZE,
+                ),
+            },
+            count: None,
+        });
     }
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("unlit_wgpu::unlit::globals"),

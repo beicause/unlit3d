@@ -12,6 +12,8 @@ pub mod frame;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 pub mod input;
+/// The lit pipeline's lights, and how a frame clusters them.
+pub mod lit;
 /// The rendering tools a world answers through the Model Context Protocol
 /// server in [`unlit_ecs::mcp`].
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
@@ -40,6 +42,10 @@ pub mod winit;
 
 /// The types most callers need for typical usage.
 pub mod prelude {
+    pub use crate::lit::{
+        DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource, PointLight,
+        QuadLight, SpotLight,
+    };
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};
     pub use crate::unlit::{

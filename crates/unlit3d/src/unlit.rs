@@ -262,6 +262,7 @@ impl RenderPipelineFactory<UnlitVariant> for UnlitFactory {
             metadata: variant.needs_metadata(),
             joints: variant.needs_joints(),
             morphs: variant.needs_morphs(),
+            lights: false,
         };
         let layout = context.resources.layout(context.device, bindings);
         let rebuild = context.resources.rebuild(context.device, layout, bindings);

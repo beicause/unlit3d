@@ -47,7 +47,8 @@ use glam::Affine3A;
 use unlit_ecs::{Entity, Scope};
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
-    CAMERA_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING, MESH_METADATA_BINDING,
+    CAMERA_BINDING, CLUSTER_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING,
+    LIGHT_CELLS_BINDING, LIGHT_VERTICES_BINDING, LIGHTS_BINDING, MESH_METADATA_BINDING,
     MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
     supports_storage_buffers,
 };
@@ -71,11 +72,11 @@ pub use unlit_wgpu::resources::Rebuild;
 /// only find out at the next maintain, and a [Rebuild] that reads the id never
 /// holds a stale buffer handle.
 ///
-/// The three arrays are [`ArrayHandle`]s rather than buffers because which
-/// resource holds them follows from the device: a device with storage buffers
-/// holds each in one, a device without them -- WebGL2 -- holds the same bytes in
-/// a texture. A pipeline that binds them asks the handle for its binding
-/// resource and never has to know which it is.
+/// The arrays are [`ArrayHandle`]s rather than buffers because which resource
+/// holds them follows from the device: a device with storage buffers holds each
+/// in one, a device without them -- WebGL2 -- holds the same bytes in a texture.
+/// A pipeline that binds them asks the handle for its binding resource and never
+/// has to know which it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalResources {
     /// The camera uniform buffer.
@@ -94,6 +95,15 @@ pub struct GlobalResources {
     /// displacements, one array for the whole frame. A mesh names its slice
     /// through its metadata entry's `morph_deltas_offset`.
     pub morph_deltas: ResHandle<ArrayHandle>,
+    /// The frame's lights, one entry per [`LightSource`](crate::lit::LightSource).
+    pub lights: ResHandle<ArrayHandle>,
+    /// The frame's cluster cells: how many lights each cell holds and which.
+    pub light_cells: ResHandle<ArrayHandle>,
+    /// The frame's light vertices: the world-space corner every quadrilateral
+    /// light names by index from its own entry.
+    pub light_vertices: ResHandle<ArrayHandle>,
+    /// The uniform describing the cluster grid this frame was built for.
+    pub cluster: ResHandle<wgpu::Buffer>,
 }
 
 impl GlobalResources {
@@ -114,6 +124,10 @@ impl GlobalResources {
         graph.add_dependency(group, &self.joints);
         graph.add_dependency(group, &self.morph_weights);
         graph.add_dependency(group, &self.morph_deltas);
+        graph.add_dependency(group, &self.lights);
+        graph.add_dependency(group, &self.light_cells);
+        graph.add_dependency(group, &self.light_vertices);
+        graph.add_dependency(group, &self.cluster);
     }
 
     /// The layout of the global bind group a pipeline with `bindings` declares.
@@ -144,7 +158,7 @@ impl GlobalResources {
         // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
         // whenever a global buffer is replaced, and the optional entries depend
         // on the pipeline, so the group is assembled rather than truncated.
-        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 6>::new();
+        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 10>::new();
         entries.push(wgpu::BindGroupEntry {
             binding: CAMERA_BINDING,
             resource: camera.as_entire_binding(),
@@ -188,6 +202,36 @@ impl GlobalResources {
                     .get(&self.morph_deltas)
                     .expect("morph deltas array exists")
                     .binding_resource(),
+            });
+        }
+        if bindings.lights {
+            entries.push(wgpu::BindGroupEntry {
+                binding: LIGHTS_BINDING,
+                resource: graph
+                    .get(&self.lights)
+                    .expect("lights array exists")
+                    .binding_resource(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: LIGHT_CELLS_BINDING,
+                resource: graph
+                    .get(&self.light_cells)
+                    .expect("light cells array exists")
+                    .binding_resource(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: LIGHT_VERTICES_BINDING,
+                resource: graph
+                    .get(&self.light_vertices)
+                    .expect("light vertices array exists")
+                    .binding_resource(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: CLUSTER_BINDING,
+                resource: graph
+                    .get(&self.cluster)
+                    .expect("cluster buffer exists")
+                    .as_entire_binding(),
             });
         }
         device.create_bind_group(&wgpu::BindGroupDescriptor {

@@ -1,9 +1,10 @@
 // array_access -- the frame's shared arrays, and the one way to read them.
 //
-// Four arrays reach the built-in shader: the per-mesh decode parameters, the
-// frame's joint matrices, and the frame's morph weights and displacements.
-// Each is a `var<storage, read>` on a device that has storage buffers, and a
-// `texture_2d<f32>` on one that does not — WebGL2 has none at all, so a
+// Seven arrays reach the built-in shaders: the per-mesh decode parameters, the
+// frame's joint matrices, the frame's morph weights and displacements, and --
+// for the lit pipeline -- the frame's lights, its cluster cells and its polygon
+// vertices. Each is a `var<storage, read>` on a device that has storage buffers,
+// and a `texture_2d<f32>` on one that does not — WebGL2 has none at all, so a
 // bind-group layout naming a storage buffer is rejected there.
 //
 // The two paths are hidden behind the `load_*` accessors below, which every
@@ -25,9 +26,11 @@
 //
 // The `*_TEXELS` constants are the element sizes divided by the 16 bytes of an
 // `Rgba32Float` texel. They mirror the Rust types whose bytes the arrays hold
-// (`crate::mesh::MeshMetadata`, `crate::mesh::JointMatrix`); the Rust side
-// derives its own layout from the same sizes.
+// (`crate::mesh::MeshMetadata`, `crate::mesh::JointMatrix`, `crate::light`'s
+// light records, cells and vertices); the Rust side derives its own layout from
+// the same sizes.
 
+import package::light;
 import package::mesh_metadata;
 
 // The condition under which the metadata array is read: when a channel is
@@ -66,6 +69,31 @@ import package::mesh_metadata;
 @if(!TEXEL_ARRAY && MORPH_POSITIONS)
 @group(0) @binding(5) var<storage, read> morph_deltas: array<f32>;
 
+/// This frame's lights, indexed by the numbers the cluster cells hold.
+///
+/// One array holds every light of the frame, of every kind, because a cell's
+/// records only name indices: one shape per record is what lets a cell mix a
+/// point light with a spot and a quad.
+@if(!TEXEL_ARRAY && LIT)
+@group(0) @binding(6) var<storage, read> lights: array<light::LightGpu>;
+
+/// The frame's cluster cells, each a fixed-size record of its own.
+///
+/// A cell is `CELL_WORDS` `u32`s at `cell * CELL_WORDS`: its first word is how
+/// many lights it holds, the next that many words are their indices, and the
+/// rest are unused. Fixed-size records mean a fragment reads one span and knows
+/// the whole cell, with no second array to find its end.
+@if(!TEXEL_ARRAY && LIT)
+@group(0) @binding(7) var<storage, read> light_cells: array<u32>;
+
+/// The polygon vertices of the frame's quad lights, as one `vec4<f32>` each.
+///
+/// Vertices are pooled rather than stored in the light record because how many
+/// a light owns varies while every record is the same size; a record names its
+/// slice with `kind.y` and `kind.z`.
+@if(!TEXEL_ARRAY && LIT)
+@group(0) @binding(8) var<storage, read> light_vertices: array<vec4<f32>>;
+
 // The same arrays as textures. Each keeps its binding number and group, so the
 // two paths declare the same interface and a variant differs only in which
 // resource type it binds.
@@ -80,6 +108,15 @@ import package::mesh_metadata;
 
 @if(TEXEL_ARRAY && MORPH_POSITIONS)
 @group(0) @binding(5) var morph_deltas_tex: texture_2d<f32>;
+
+@if(TEXEL_ARRAY && LIT)
+@group(0) @binding(6) var lights_tex: texture_2d<f32>;
+
+@if(TEXEL_ARRAY && LIT)
+@group(0) @binding(7) var light_cells_tex: texture_2d<f32>;
+
+@if(TEXEL_ARRAY && LIT)
+@group(0) @binding(8) var light_vertices_tex: texture_2d<f32>;
 
 /// The texel holding element `index`'s first lane.
 ///
@@ -99,6 +136,26 @@ const MESH_METADATA_TEXELS: u32 = 4u;
 /// `Rgba32Float` texels one joint matrix spans: its 64 bytes over a texel's 16.
 @if(TEXEL_ARRAY)
 const JOINT_MATRIX_TEXELS: u32 = 4u;
+
+/// `Rgba32Float` texels one light record spans: its 80 bytes over a texel's 16.
+@if(TEXEL_ARRAY)
+const LIGHT_TEXELS: u32 = 5u;
+
+/// `Rgba32Float` texels one cluster cell spans: its 64 bytes over a texel's 16,
+/// which is also the `u32` count a cell record holds.
+@if(TEXEL_ARRAY)
+const LIGHT_CELL_TEXELS: u32 = 4u;
+
+/// `Rgba32Float` texels one polygon vertex spans: its 16 bytes over a texel's 16.
+@if(TEXEL_ARRAY)
+const LIGHT_VERTEX_TEXELS: u32 = 1u;
+
+/// The `u32`s one cluster cell' record occupies, which is also what its bytes
+/// over a `u32` come to. Mirrors `crate::light::CELL_WORDS`: the record size is
+/// part of the layout the two languages share, so it is a constant rather than
+/// something the frame passes in.
+@if(LIT)
+const CLUSTER_CELL_WORDS: u32 = 16u;
 
 /// Read the decode parameters and addressing of the mesh at `index`.
 @if(!TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
@@ -179,3 +236,70 @@ public fn load_morph_delta(index: u32) -> f32 {
 public fn load_morph_delta(index: u32) -> f32 {
     return textureLoad(morph_deltas_tex, texel_of(morph_deltas_tex, index), 0).x;
 }
+/// Read the light at `index`.
+@if(!TEXEL_ARRAY && LIT)
+public fn load_light(index: u32) -> light::LightGpu {
+    return lights[index];
+}
+
+/// Read the light at `index`.
+///
+/// The five texels are the record's bytes in order. The first four are already
+/// `vec4<f32>`s; the kind is four `u32`s the texel holds as `f32` lanes, so it
+/// is reinterpreted.
+@if(TEXEL_ARRAY && LIT)
+public fn load_light(index: u32) -> light::LightGpu {
+    let first = index * LIGHT_TEXELS;
+    let kind = textureLoad(lights_tex, texel_of(lights_tex, first + 4u), 0);
+    return light::LightGpu(
+        textureLoad(lights_tex, texel_of(lights_tex, first), 0),
+        textureLoad(lights_tex, texel_of(lights_tex, first + 1u), 0),
+        textureLoad(lights_tex, texel_of(lights_tex, first + 2u), 0),
+        textureLoad(lights_tex, texel_of(lights_tex, first + 3u), 0),
+        vec4<u32>(
+            bitcast<u32>(kind.x),
+            bitcast<u32>(kind.y),
+            bitcast<u32>(kind.z),
+            bitcast<u32>(kind.w),
+        ),
+    );
+}
+
+/// Read word `word` of cell `cell`.
+///
+/// Word zero is the cell's light count; the words after it are the indices of
+/// that many lights.
+@if(!TEXEL_ARRAY && LIT)
+public fn load_cell_word(cell: u32, word: u32) -> u32 {
+    return light_cells[cell * CLUSTER_CELL_WORDS + word];
+}
+
+/// Read word `word` of cell `cell`.
+///
+/// A cell record is exactly one row of four texels, so its words are the lanes
+/// of those texels, reinterpreted from `f32`.
+@if(TEXEL_ARRAY && LIT)
+public fn load_cell_word(cell: u32, word: u32) -> u32 {
+    let first = cell * LIGHT_CELL_TEXELS + word / 4u;
+    let texel = textureLoad(light_cells_tex, texel_of(light_cells_tex, first), 0);
+    return bitcast<u32>(texel[word % 4u]);
+}
+
+/// Read the polygon vertex at `index`.
+@if(!TEXEL_ARRAY && LIT)
+public fn load_light_vertex(index: u32) -> vec3<f32> {
+    return light_vertices[index].xyz;
+}
+
+/// Read the polygon vertex at `index`.
+///
+/// A vertex is one `vec4<f32>` and so one texel; its `w` lane is unused.
+@if(TEXEL_ARRAY && LIT)
+public fn load_light_vertex(index: u32) -> vec3<f32> {
+    return textureLoad(
+        light_vertices_tex,
+        texel_of(light_vertices_tex, index * LIGHT_VERTEX_TEXELS),
+        0,
+    ).xyz;
+}
+

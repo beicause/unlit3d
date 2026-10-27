@@ -21,6 +21,7 @@ pub mod capabilities;
 mod dag;
 pub mod globals;
 pub mod instance_stream;
+pub mod light;
 pub mod mesh;
 pub mod offset_allocator;
 pub mod pipeline;
