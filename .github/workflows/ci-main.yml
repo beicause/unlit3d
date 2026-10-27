@@ -81,6 +81,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # `cargo xtask test-wasm` shells out to `pnpm` for the runner's
+      # dependencies and for the browser Playwright drives, so both have to be
+      # on PATH before it starts; the runner image carries neither. Node comes
+      # with a version pin of its own: pnpm's releases state a floor for it, and
+      # a runner image that moves its default would move this job with it.
+      - name: Install Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12
+          cache: true
+          cache_dependency_path: tests/wasm/runner/pnpm-lock.yaml
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
