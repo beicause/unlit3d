@@ -159,6 +159,15 @@ impl OnAudioFill {
 
 thread_local! {
     /// The source list [`dispatch_audio_fill`] reuses across fills.
+    ///
+    /// The initializer is already a const block. Clippy's `thread_local`
+    /// analysis differs by target and reports a candidate anyway on Android,
+    /// so the lint is silenced here rather than expected: an expectation goes
+    /// unfulfilled on every target where it does not fire.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
     static SOURCES: RefCell<Vec<(AudioFillOrder, Entity)>> = const { RefCell::new(Vec::new()) };
 }
 
