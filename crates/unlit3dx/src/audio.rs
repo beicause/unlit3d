@@ -300,8 +300,9 @@ struct OpenOutput {
 /// the default output device on its first tick and keeps it open, spawning
 /// [`AudioFormat`] and [`AudioOutputOpen`] once it knows them; until then,
 /// and whenever no device exists, the world runs silently. A stepped world
-/// follows its [`AudioOutputMode`] config instead: [`Pulled`] opens nothing —
-/// the host pulls its fills with [`dispatch_audio_fill`] — and [`OnRequest`]
+/// follows its [`AudioOutputMode`] config instead: [`AudioOutputMode::Pulled`]
+/// opens nothing — the host pulls its fills with [`dispatch_audio_fill`] — and
+/// [`AudioOutputMode::OnRequest`]
 /// waits for a [`request_audio_output`] job, which a page sends from a
 /// user-gesture handler because that is where a browser allows a context to
 /// start. Until the device comes up the world gains neither component. Either
@@ -354,8 +355,8 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             if control.stop_requested() {
                 return false;
             }
-            // Whether this tick wants a device open: [`Pulled`] never,
-            // [`OnRequest`] once its page has asked. The config speaks for
+            // Whether this tick wants a device open: [`AudioOutputMode::Pulled`] never,
+            // [`AudioOutputMode::OnRequest`] once its page has asked. The config speaks for
             // every world, self-driven or stepped alike.
             if let AudioOutputMode::OnRequest = config.output
                 && world
@@ -403,7 +404,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             // thread — so a device may be open for seconds before the world
             // carries one. Log the transition, not the state, so the log
             // stays quiet.
-            // A [`Pulled`] world is open by definition: its host pulls the
+            // A [`AudioOutputMode::Pulled`] world is open by definition: its host pulls the
             // fills. One waiting for its page's first click — or for a
             // device — is not, whatever its sources are doing.
             let open = output.is_some() || config.output == AudioOutputMode::Pulled;
