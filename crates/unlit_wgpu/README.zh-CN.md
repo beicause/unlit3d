@@ -435,6 +435,13 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 `wesl::resolver::PackageResolver` 可以针对内置管线所用的同一批模块解析
 `import unlit_wgpu::mesh_compression;`，调用者自己的家族走的正是这条路。
 
+crate 自身创建着色器模块时走 `util::shader_module`，它是对 wgpu 模块创建的一层薄封装：
+debug 构建下就是普通的 `Device::create_shader_module`；release 构建下则通过
+`Device::create_shader_module_trusted` 选择 `ShaderRuntimeChecks::unchecked`，
+免去 wgpu 本会为每份组合出的着色器注入的运行时检查——着色器侧的边界检查、循环
+兜底等——因为它们都在构建期由本包或调用者的入口模块组合而成。无论哪种构建，
+wgpu 自身的验证与浏览器的 WebGPU 验证都照常运行。
+
 ## 设计
 
 ### 资源：一张依赖追踪图

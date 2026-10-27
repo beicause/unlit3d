@@ -650,10 +650,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     /// A render pipeline on the noop device, for builder tests that only need
     /// a handle to name.
     fn noop_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::shader"),
-            source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
-        });
+        let module = crate::util::shader_module(device, MINIMAL_WGSL, "test::shader");
         let targets = [Some(wgpu::ColorTargetState {
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             blend: None,

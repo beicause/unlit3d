@@ -664,10 +664,7 @@ fn main() {
     #[test]
     fn render_pipeline_desc_survives_its_source() {
         let (device, _queue) = crate::util::test::noop_device();
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::shader"),
-            source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
-        });
+        let module = crate::util::shader_module(&device, MINIMAL_WGSL, "test::shader");
 
         let owned = {
             let targets = [Some(wgpu::ColorTargetState {
@@ -726,10 +723,7 @@ fn main() {
 
         impl PipelineDescriptor<wgpu::ComputePipeline> for ComputeDesc {
             fn create(&self, device: &wgpu::Device) -> wgpu::ComputePipeline {
-                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("test::compute"),
-                    source: wgpu::ShaderSource::Wgsl(COMPUTE_WGSL.into()),
-                });
+                let module = crate::util::shader_module(device, COMPUTE_WGSL, "test::compute");
                 let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("test::compute::layout"),
                     bind_group_layouts: &[],

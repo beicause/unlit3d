@@ -345,10 +345,7 @@ fn pipeline(
 fn shader_module(device: &wgpu::Device, module: &str, label: &str) -> wgpu::ShaderModule {
     let wgsl = compose(module)
         .unwrap_or_else(|error| panic!("the built-in unlit_wgpu shader compiles: {error}"));
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-    })
+    unlit_wgpu::util::shader_module(device, &wgsl, label)
 }
 
 /// Compose `module` of the built-in unlit_wgpu package as a main module.

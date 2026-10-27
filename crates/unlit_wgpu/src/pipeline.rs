@@ -862,10 +862,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
             None => BUILT_IN_SHADER_LABEL,
         };
         let wgsl = compose(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"));
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(label),
-            source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-        });
+        let module = crate::util::shader_module(device, &wgsl, label);
 
         let layouts = self.bind_group_layouts(device);
         let layout_refs = [

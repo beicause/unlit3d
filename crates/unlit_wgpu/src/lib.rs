@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 // The WESL shader package is generated at build time from `shaders/*.wesl`;
 // the `unlit` feature decides whether the built-in entry shader is one of the

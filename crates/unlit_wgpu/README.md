@@ -466,6 +466,17 @@ the shader directly with [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL
 `import unlit_wgpu::mesh_compression;` against the same modules the built-in
 pipeline uses, which is what a caller's own family does.
 
+The module creation the crate itself performs goes through
+[`util::shader_module`], a thin wrapper over wgpu's module creation. In debug
+builds it is plain
+[`Device::create_shader_module`](wgpu::Device::create_shader_module); in release builds it
+selects [`ShaderRuntimeChecks::unchecked`](wgpu::ShaderRuntimeChecks::unchecked) through
+[`Device::create_shader_module_trusted`](wgpu::Device::create_shader_module_trusted), which skips the runtime checks wgpu
+would otherwise inject around every composed shader — shader-side bounds
+checks, loop bounding and the like — on shaders that are composed at build
+time from this package or a caller's entry module. wgpu's own validation and
+the browser's WebGPU validation still run either way.
+
 ## Design
 
 ### Resources: one dependency-tracked graph
