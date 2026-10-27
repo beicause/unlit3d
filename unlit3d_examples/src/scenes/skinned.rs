@@ -89,6 +89,7 @@ fn build(
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
+                normals: None,
                 indices: Some(&indices),
                 joints: Some(&skin.joints),
                 weights: Some(&skin.weights),

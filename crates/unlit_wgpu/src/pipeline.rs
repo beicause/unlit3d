@@ -9,8 +9,8 @@
 
 #[cfg(feature = "unlit")]
 use crate::mesh::{
-    ChannelEncoding, MeshVertexStreamWriter, PositionStreamChannels, PositionStreamWriter,
-    UvColorFlags,
+    ChannelEncoding, PositionStreamChannels, PositionStreamWriter, SecondaryFlags,
+    SecondaryStreamWriter,
 };
 #[cfg(feature = "unlit")]
 use crate::render_attachments::default_depth_stencil_format;
@@ -65,10 +65,12 @@ pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
 /// [`crate::scene::DrawEntry`] will bind it.
 pub const MESH_GROUP: u32 = 2;
 
-/// Vertex-buffer slot carrying compressed positions.
-pub const POSITION_SLOT: u32 = 0;
-/// Vertex-buffer slot carrying UVs and vertex colors.
-pub const UV_COLOR_SLOT: u32 = 1;
+/// Vertex-buffer slot carrying the primary stream: positions and, for a skinned
+/// mesh, the joint indices and weights that deform them.
+pub const PRIMARY_SLOT: u32 = 0;
+/// Vertex-buffer slot carrying the secondary stream: the UV, color and normal a
+/// mesh carries beside its position.
+pub const SECONDARY_SLOT: u32 = 1;
 /// Vertex-buffer slot carrying per-instance data.
 pub const INSTANCE_SLOT: u32 = 2;
 
@@ -117,6 +119,11 @@ pub mod location {
     /// [`JOINTS_BASE`] because skinning and morphing are independent — a
     /// variant that reads one has no business declaring the other.
     pub const MORPH_BASE: u32 = 12;
+    /// Vertex normal (`Snorm16x2`), read from the secondary stream.
+    ///
+    /// Octahedral-encoded, so the shader decodes it on its own; see
+    /// [`crate::mesh::compress_normals`].
+    pub const NORMAL: u32 = 13;
 }
 
 /// Entry point name of the built-in shader's vertex stage.
@@ -152,15 +159,15 @@ pub struct UnlitVertexChannels {
     /// instance origin, which is what point, particle and impostor draws want:
     /// the per-instance data alone places the vertex.
     pub position: PositionStreamChannels,
-    /// The UV-and-color stream's channels: a UV in either encoding, a vertex
-    /// color, or both.
-    pub uv_color: UvColorFlags,
+    /// The secondary stream's channels: a UV in either encoding, a vertex
+    /// color, a normal, or any combination.
+    pub secondary: SecondaryFlags,
 }
 
 #[cfg(feature = "unlit")]
 impl UnlitVertexChannels {
     /// The channels of a layout that carries none: no position, no joints, and
-    /// an empty UV-and-color stream.
+    /// an empty secondary stream.
     ///
     /// A variant built from this reads no per-vertex attribute at all — the
     /// geometry is a single point at the instance origin — which is what point,
@@ -172,7 +179,7 @@ impl UnlitVertexChannels {
                 position: None,
                 joints: false,
             },
-            uv_color: UvColorFlags::empty(),
+            secondary: SecondaryFlags::empty(),
         }
     }
 
@@ -180,12 +187,12 @@ impl UnlitVertexChannels {
     ///
     /// A channel is identified by its shader location, which is stable across
     /// variants. Only the built-in pipeline's own slots are read —
-    /// [`POSITION_SLOT`] and [`UV_COLOR_SLOT`] — so any other slot, the
+    /// [`PRIMARY_SLOT`] and [`SECONDARY_SLOT`] — so any other slot, the
     /// per-instance one included, contributes nothing.
     pub fn for_vertex_buffer(slot: u32, layout: &VertexBufferLayoutDesc) -> Self {
         let mut channels = Self::empty();
         match slot {
-            POSITION_SLOT => {
+            PRIMARY_SLOT => {
                 for attribute in &layout.attributes {
                     if attribute.shader_location == location::POSITION {
                         channels.position.position = Some(match attribute.format {
@@ -202,16 +209,17 @@ impl UnlitVertexChannels {
                     }
                 }
             }
-            UV_COLOR_SLOT => {
+            SECONDARY_SLOT => {
                 for attribute in &layout.attributes {
                     match attribute.shader_location {
                         location::UV => {
-                            channels.uv_color |= UvColorFlags::UV;
+                            channels.secondary |= SecondaryFlags::UV;
                             if attribute.format == wgpu::VertexFormat::Float32x2 {
-                                channels.uv_color |= UvColorFlags::UNCOMPRESSED_UV;
+                                channels.secondary |= SecondaryFlags::UNCOMPRESSED_UV;
                             }
                         }
-                        location::COLOR => channels.uv_color |= UvColorFlags::COLOR,
+                        location::COLOR => channels.secondary |= SecondaryFlags::COLOR,
+                        location::NORMAL => channels.secondary |= SecondaryFlags::NORMAL,
                         _ => {}
                     }
                 }
@@ -231,7 +239,7 @@ impl UnlitVertexChannels {
                 channels.position.position = slot_channels.position.position;
             }
             channels.position.joints |= slot_channels.position.joints;
-            channels.uv_color |= slot_channels.uv_color;
+            channels.secondary |= slot_channels.secondary;
         }
         channels
     }
@@ -554,7 +562,7 @@ impl UnlitVariant {
     ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 14] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 15] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (
@@ -573,17 +581,21 @@ impl UnlitVariant {
             ),
             (
                 "VERTEX_UV",
-                self.channels.uv_color.contains(UvColorFlags::UV),
+                self.channels.secondary.contains(SecondaryFlags::UV),
             ),
             (
                 "UNCOMPRESSED_UV",
                 self.channels
-                    .uv_color
-                    .contains(UvColorFlags::UNCOMPRESSED_UV),
+                    .secondary
+                    .contains(SecondaryFlags::UNCOMPRESSED_UV),
             ),
             (
                 "VERTEX_COLOR",
-                self.channels.uv_color.contains(UvColorFlags::COLOR),
+                self.channels.secondary.contains(SecondaryFlags::COLOR),
+            ),
+            (
+                "VERTEX_NORMAL",
+                self.channels.secondary.contains(SecondaryFlags::NORMAL),
             ),
             ("BASE_COLOR_TEXTURE", self.base_color_texture),
             ("SRGB_TO_LINEAR_OUTPUT", self.options.srgb_to_linear_output),
@@ -626,22 +638,22 @@ impl UnlitVariant {
             self.channels.position.position,
             Some(ChannelEncoding::CompressedPosition)
         );
-        let compressed_uv = self.channels.uv_color.contains(UvColorFlags::UV)
+        let compressed_uv = self.channels.secondary.contains(SecondaryFlags::UV)
             && !self
                 .channels
-                .uv_color
-                .contains(UvColorFlags::UNCOMPRESSED_UV);
+                .secondary
+                .contains(SecondaryFlags::UNCOMPRESSED_UV);
         compressed_position || compressed_uv || self.needs_morphs()
     }
 
-    /// The UV-and-color vertex stream this variant expects.
+    /// The secondary vertex stream this variant expects.
     ///
     /// The stream is described in [`crate::mesh`]'s own terms: this variant's
     /// channels are translated into the ones that make up a vertex stream, so
     /// packing meshes for this pipeline needs nothing specific to it.
-    pub fn uv_color_stream(&self) -> MeshVertexStreamWriter {
-        MeshVertexStreamWriter {
-            flags: self.channels.uv_color,
+    pub fn secondary_stream(&self) -> SecondaryStreamWriter {
+        SecondaryStreamWriter {
+            flags: self.channels.secondary,
         }
     }
 
@@ -739,10 +751,10 @@ impl UnlitVariant {
         // declares and the bytes a packed mesh writes come from one
         // description and cannot drift apart.
         let position = self.position_stream().channels.channels();
-        let uv_color = self.uv_color_stream().channels();
+        let secondary = self.secondary_stream().channels();
         [
             (!position.is_empty()).then(|| position.layout()),
-            (!uv_color.is_empty()).then(|| uv_color.layout()),
+            (!secondary.is_empty()).then(|| secondary.layout()),
             Some(self.instance_layout()),
         ]
     }
@@ -985,7 +997,7 @@ fn is_module_name(label: &str) -> bool {
 fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
     let main_path = &entry_shader_path(&variant.options.shader);
     assert!(
-        !variant.base_color_texture || variant.channels.uv_color.contains(UvColorFlags::UV),
+        !variant.base_color_texture || variant.channels.secondary.contains(SecondaryFlags::UV),
         "the base-color texture is sampled with the per-vertex UV, so sampling one requires a UV channel"
     );
     assert!(
@@ -1373,7 +1385,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels(
                 Some(ChannelEncoding::UncompressedPosition),
                 false,
-                UvColorFlags::empty(),
+                SecondaryFlags::empty(),
             ),
             false,
             false,
@@ -1419,11 +1431,11 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn channels(
         position: Option<ChannelEncoding>,
         joints: bool,
-        uv_color: UvColorFlags,
+        secondary: SecondaryFlags,
     ) -> UnlitVertexChannels {
         UnlitVertexChannels {
             position: PositionStreamChannels { position, joints },
-            uv_color,
+            secondary,
         }
     }
 
@@ -1449,20 +1461,24 @@ fn fs_main() -> @location(0) vec4<f32> {
             Some(ChannelEncoding::UncompressedPosition),
             Some(ChannelEncoding::PlanarPosition),
         ];
-        // The UV-and-color stream carries a UV in either encoding, a color, or
-        // both; an uncompressed UV is still a UV.
-        let uv_colors: &[UvColorFlags] = &[
-            UvColorFlags::empty(),
-            UvColorFlags::UV,
-            UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV,
-            UvColorFlags::COLOR,
-            UvColorFlags::UV | UvColorFlags::COLOR,
-            UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
+        // The secondary stream carries a UV in either encoding, a color, a
+        // normal, or any combination; an uncompressed UV is still a UV.
+        let secondaries: &[SecondaryFlags] = &[
+            SecondaryFlags::empty(),
+            SecondaryFlags::UV,
+            SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV,
+            SecondaryFlags::COLOR,
+            SecondaryFlags::UV | SecondaryFlags::COLOR,
+            SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR,
+            SecondaryFlags::NORMAL,
+            SecondaryFlags::UV | SecondaryFlags::NORMAL,
+            SecondaryFlags::COLOR | SecondaryFlags::NORMAL,
+            SecondaryFlags::UV | SecondaryFlags::COLOR | SecondaryFlags::NORMAL,
         ];
         let mut variants = Vec::new();
         for position in positions {
             for joints in [false, true] {
-                for uv_color in uv_colors {
+                for secondary in secondaries {
                     for base_color_texture in [false, true] {
                         for morph in [false, true] {
                             // The joint stream is part of the position stream,
@@ -1472,12 +1488,12 @@ fn fs_main() -> @location(0) vec4<f32> {
                             }
                             // The base-color texture is sampled with the
                             // per-vertex UV.
-                            if base_color_texture && !uv_color.contains(UvColorFlags::UV) {
+                            if base_color_texture && !secondary.contains(SecondaryFlags::UV) {
                                 continue;
                             }
                             let base = variant(
                                 UnlitOptions::standard_shape(),
-                                channels(*position, joints, *uv_color),
+                                channels(*position, joints, *secondary),
                                 base_color_texture,
                                 morph,
                             );
@@ -1559,7 +1575,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                     channels(
                         Some(ChannelEncoding::CompressedPosition),
                         false,
-                        UvColorFlags::UV,
+                        SecondaryFlags::UV,
                     ),
                     true,
                     false,
@@ -1609,7 +1625,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                     channels(
                         Some(ChannelEncoding::CompressedPosition),
                         false,
-                        UvColorFlags::empty(),
+                        SecondaryFlags::empty(),
                     ),
                     false,
                     false,
@@ -1639,7 +1655,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
-                UvColorFlags::empty(),
+                SecondaryFlags::empty(),
             ),
             false,
             false,
@@ -1684,7 +1700,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 channels(
                     Some(ChannelEncoding::CompressedPosition),
                     false,
-                    UvColorFlags::UV,
+                    SecondaryFlags::UV,
                 ),
                 false,
                 false,
@@ -1844,7 +1860,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             &[attribute(wgpu::VertexFormat::Snorm16x4, location::POSITION)],
         );
         assert_eq!(
-            position_of(POSITION_SLOT, &compressed),
+            position_of(PRIMARY_SLOT, &compressed),
             Some(ChannelEncoding::CompressedPosition)
         );
         let uncompressed = layout(
@@ -1852,7 +1868,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             &[attribute(wgpu::VertexFormat::Float32x3, location::POSITION)],
         );
         assert_eq!(
-            position_of(POSITION_SLOT, &uncompressed),
+            position_of(PRIMARY_SLOT, &uncompressed),
             Some(ChannelEncoding::UncompressedPosition)
         );
 
@@ -1865,7 +1881,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 attribute(wgpu::VertexFormat::Uint32, location::JOINTS),
             ],
         );
-        let skinned = channels(POSITION_SLOT, &skinned_layout);
+        let skinned = channels(PRIMARY_SLOT, &skinned_layout);
         assert_eq!(
             skinned.position.position,
             Some(ChannelEncoding::CompressedPosition)
@@ -1875,25 +1891,34 @@ fn fs_main() -> @location(0) vec4<f32> {
             "the joint indices are the evidence"
         );
 
-        // The UV-and-color slot: each channel is independent.
-        let uv_color = layout(
+        // The secondary slot: each channel is independent.
+        let secondary = layout(
             wgpu::VertexStepMode::Vertex,
             &[
                 attribute(wgpu::VertexFormat::Snorm16x2, location::UV),
                 attribute(wgpu::VertexFormat::Unorm8x4, location::COLOR),
+                attribute(wgpu::VertexFormat::Snorm16x2, location::NORMAL),
             ],
         );
         assert_eq!(
-            channels(UV_COLOR_SLOT, &uv_color).uv_color,
-            UvColorFlags::UV | UvColorFlags::COLOR
+            channels(SECONDARY_SLOT, &secondary).secondary,
+            SecondaryFlags::UV | SecondaryFlags::COLOR | SecondaryFlags::NORMAL
+        );
+        let normal_only = layout(
+            wgpu::VertexStepMode::Vertex,
+            &[attribute(wgpu::VertexFormat::Snorm16x2, location::NORMAL)],
+        );
+        assert_eq!(
+            channels(SECONDARY_SLOT, &normal_only).secondary,
+            SecondaryFlags::NORMAL
         );
         let uncompressed_uv = layout(
             wgpu::VertexStepMode::Vertex,
             &[attribute(wgpu::VertexFormat::Float32x2, location::UV)],
         );
         assert_eq!(
-            channels(UV_COLOR_SLOT, &uncompressed_uv).uv_color,
-            UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV
+            channels(SECONDARY_SLOT, &uncompressed_uv).secondary,
+            SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV
         );
 
         // The instance slot contributes nothing: the per-instance record is not
@@ -1918,8 +1943,8 @@ fn fs_main() -> @location(0) vec4<f32> {
             &[attribute(wgpu::VertexFormat::Float32x3, 9)],
         );
         let whole = UnlitVertexChannels::for_vertex_layout(&[
-            (POSITION_SLOT, skinned_layout),
-            (UV_COLOR_SLOT, uncompressed_uv),
+            (PRIMARY_SLOT, skinned_layout),
+            (SECONDARY_SLOT, uncompressed_uv),
             (INSTANCE_SLOT, instance),
             (7, foreign),
         ]);
@@ -1929,8 +1954,8 @@ fn fs_main() -> @location(0) vec4<f32> {
         );
         assert!(whole.position.joints);
         assert_eq!(
-            whole.uv_color,
-            UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV
+            whole.secondary,
+            SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV
         );
     }
 
@@ -1953,8 +1978,8 @@ fn fs_main() -> @location(0) vec4<f32> {
                     candidate.base_color_texture,
                     "variant {candidate:?}"
                 );
-                let compressed_uv = vertex.uv_color.contains(UvColorFlags::UV)
-                    && !vertex.uv_color.contains(UvColorFlags::UNCOMPRESSED_UV);
+                let compressed_uv = vertex.secondary.contains(SecondaryFlags::UV)
+                    && !vertex.secondary.contains(SecondaryFlags::UNCOMPRESSED_UV);
                 assert_eq!(
                     wgsl.contains("decode_uv"),
                     compressed_uv,
@@ -1969,6 +1994,10 @@ fn fs_main() -> @location(0) vec4<f32> {
                     compressed_position,
                     "variant {candidate:?}"
                 );
+                // An unlit variant carries a normal through its vertex input
+                // without decoding it: shading is what reads a normal, and the
+                // lit module is what does that.
+                assert!(!wgsl.contains("decode_normal"), "variant {candidate:?}");
                 // Every array read goes through an accessor, whose name survives
                 // assembly unmangled as a suffix: the binding it reads is mangled
                 // with its module path, so the accessor is what a variant can be
@@ -2031,6 +2060,11 @@ fn fs_main() -> @location(0) vec4<f32> {
                     candidate.needs_joints(),
                     "variant {candidate:?}"
                 );
+                assert_eq!(
+                    vertex_input.contains("normal:"),
+                    vertex.secondary.contains(SecondaryFlags::NORMAL),
+                    "variant {candidate:?}"
+                );
                 // The instance record is unconditional, so its fields are
                 // declared as plain attributes with no condition on them.
                 assert!(
@@ -2063,27 +2097,27 @@ fn fs_main() -> @location(0) vec4<f32> {
             // The base-color texture is sampled with the per-vertex UV.
             variant(
                 shape(),
-                channels(compressed, false, UvColorFlags::empty()),
+                channels(compressed, false, SecondaryFlags::empty()),
                 true,
                 false,
             ),
             // A deformation displaces the position.
             variant(
                 shape(),
-                channels(None, true, UvColorFlags::empty()),
+                channels(None, true, SecondaryFlags::empty()),
                 false,
                 false,
             ),
             variant(
                 shape(),
-                channels(None, false, UvColorFlags::empty()),
+                channels(None, false, SecondaryFlags::empty()),
                 false,
                 true,
             ),
             // A luminance layout describes a texel that is sampled.
             variant(
                 luminance_without_a_texture,
-                channels(compressed, false, UvColorFlags::UV),
+                channels(compressed, false, SecondaryFlags::UV),
                 false,
                 false,
             ),
@@ -2100,19 +2134,19 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
-                UvColorFlags::UV,
+                SecondaryFlags::UV,
             ),
             false,
             false,
         )
         .vertex_buffer_layouts();
-        let position = layouts[POSITION_SLOT as usize]
+        let position = layouts[PRIMARY_SLOT as usize]
             .as_ref()
             .expect("position slot");
         assert_eq!(position.array_stride, wgpu::VertexFormat::Snorm16x4.size());
 
-        let uv_color = layouts[UV_COLOR_SLOT as usize].as_ref().expect("uv slot");
-        assert_eq!(uv_color.array_stride, wgpu::VertexFormat::Snorm16x2.size());
+        let secondary = layouts[SECONDARY_SLOT as usize].as_ref().expect("uv slot");
+        assert_eq!(secondary.array_stride, wgpu::VertexFormat::Snorm16x2.size());
 
         let instance = layouts[INSTANCE_SLOT as usize]
             .as_ref()
@@ -2136,7 +2170,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels(
                 Some(ChannelEncoding::UncompressedPosition),
                 false,
-                UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
+                SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR,
             ),
             true,
             false,
@@ -2144,15 +2178,15 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert!(!candidate.needs_metadata());
 
         let layouts = candidate.vertex_buffer_layouts();
-        let position = layouts[POSITION_SLOT as usize]
+        let position = layouts[PRIMARY_SLOT as usize]
             .as_ref()
             .expect("position slot");
         assert_eq!(position.array_stride, wgpu::VertexFormat::Float32x3.size());
         assert_eq!(position.attributes[0].format, wgpu::VertexFormat::Float32x3);
 
-        let uv_color = layouts[UV_COLOR_SLOT as usize].as_ref().expect("uv slot");
+        let secondary = layouts[SECONDARY_SLOT as usize].as_ref().expect("uv slot");
         assert_eq!(
-            uv_color.array_stride,
+            secondary.array_stride,
             wgpu::VertexFormat::Float32x2.size() + wgpu::VertexFormat::Unorm8x4.size()
         );
 
@@ -2170,7 +2204,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels(
                 Some(ChannelEncoding::PlanarPosition),
                 false,
-                UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
+                SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR,
             ),
             true,
             false,
@@ -2178,7 +2212,7 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert!(!candidate.needs_metadata());
 
         let layouts = candidate.vertex_buffer_layouts();
-        let position = layouts[POSITION_SLOT as usize]
+        let position = layouts[PRIMARY_SLOT as usize]
             .as_ref()
             .expect("position slot");
         assert_eq!(position.array_stride, wgpu::VertexFormat::Float32x2.size());
@@ -2186,15 +2220,15 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn uv_color_slot_follows_its_channels() {
-        let stride = |uv_color: UvColorFlags| {
+    fn secondary_slot_follows_its_channels() {
+        let stride = |secondary: SecondaryFlags| {
             variant(
                 UnlitOptions::standard_shape(),
-                channels(None, false, uv_color),
+                channels(None, false, secondary),
                 false,
                 false,
             )
-            .vertex_buffer_layouts()[UV_COLOR_SLOT as usize]
+            .vertex_buffer_layouts()[SECONDARY_SLOT as usize]
                 .as_ref()
                 .map(|layout| layout.array_stride)
         };
@@ -2202,23 +2236,31 @@ fn fs_main() -> @location(0) vec4<f32> {
         let uv = wgpu::VertexFormat::Snorm16x2.size();
         let uv_uncompressed = wgpu::VertexFormat::Float32x2.size();
         let color = wgpu::VertexFormat::Unorm8x4.size();
+        let normal = wgpu::VertexFormat::Snorm16x2.size();
 
         // No channel: the slot disappears entirely, so a variant never binds a
         // buffer the shader does not declare.
-        assert_eq!(stride(UvColorFlags::empty()), None);
-        assert_eq!(stride(UvColorFlags::UV), Some(uv));
+        assert_eq!(stride(SecondaryFlags::empty()), None);
+        assert_eq!(stride(SecondaryFlags::UV), Some(uv));
         assert_eq!(
-            stride(UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV),
+            stride(SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV),
             Some(uv_uncompressed)
         );
-        assert_eq!(stride(UvColorFlags::COLOR), Some(color));
+        assert_eq!(stride(SecondaryFlags::COLOR), Some(color));
         assert_eq!(
-            stride(UvColorFlags::UV | UvColorFlags::COLOR),
+            stride(SecondaryFlags::UV | SecondaryFlags::COLOR),
             Some(uv + color)
         );
         assert_eq!(
-            stride(UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR),
+            stride(SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR),
             Some(uv_uncompressed + color)
+        );
+        // A normal is always the same two lanes, whatever else the stream
+        // carries, and it sits in attribute order last.
+        assert_eq!(stride(SecondaryFlags::NORMAL), Some(normal));
+        assert_eq!(
+            stride(SecondaryFlags::UV | SecondaryFlags::COLOR | SecondaryFlags::NORMAL),
+            Some(uv + color + normal)
         );
     }
 
@@ -2229,11 +2271,11 @@ fn fs_main() -> @location(0) vec4<f32> {
         let position = |position: Option<ChannelEncoding>, joints: bool| {
             variant(
                 UnlitOptions::standard_shape(),
-                channels(position, joints, UvColorFlags::empty()),
+                channels(position, joints, SecondaryFlags::empty()),
                 false,
                 false,
             )
-            .vertex_buffer_layouts()[POSITION_SLOT as usize]
+            .vertex_buffer_layouts()[PRIMARY_SLOT as usize]
                 .as_ref()
                 .map(|layout| (layout.array_stride, layout.step_mode))
         };
@@ -2274,7 +2316,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
-                UvColorFlags::empty(),
+                SecondaryFlags::empty(),
             ),
             false,
             false,
@@ -2368,7 +2410,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             options.alpha_cutoff = alpha_cutoff;
             variant(
                 options,
-                channels(None, false, UvColorFlags::COLOR),
+                channels(None, false, SecondaryFlags::COLOR),
                 false,
                 false,
             )

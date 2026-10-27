@@ -1412,7 +1412,7 @@ mod tests {
     use crate::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
     use unlit_ecs::bundle;
     use unlit_ecs::{Entity, World};
-    use unlit_wgpu::mesh::{MeshInstance, UvColorFlags};
+    use unlit_wgpu::mesh::{MeshInstance, SecondaryFlags};
     use unlit_wgpu::pipeline::{UnlitOptions, UnlitVertexChannels};
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
     use unlit_wgpu::scene::DrawRange;
@@ -1823,11 +1823,11 @@ mod tests {
             },
         );
         let textured_channels = UnlitVertexChannels::for_vertex_layout(&textured.vertex_layout);
-        assert!(textured_channels.uv_color.contains(UvColorFlags::UV));
-        assert!(textured_channels.uv_color.contains(UvColorFlags::COLOR));
+        assert!(textured_channels.secondary.contains(SecondaryFlags::UV));
+        assert!(textured_channels.secondary.contains(SecondaryFlags::COLOR));
         let bare_channels = UnlitVertexChannels::for_vertex_layout(&bare.vertex_layout);
-        assert!(!bare_channels.uv_color.contains(UvColorFlags::UV));
-        assert!(!bare_channels.uv_color.contains(UvColorFlags::COLOR));
+        assert!(!bare_channels.secondary.contains(SecondaryFlags::UV));
+        assert!(!bare_channels.secondary.contains(SecondaryFlags::COLOR));
 
         // A material can be built for either: whether a draw samples it is the
         // draw's own answer — it binds the group or it does not.

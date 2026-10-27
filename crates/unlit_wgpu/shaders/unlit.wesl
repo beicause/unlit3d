@@ -22,6 +22,9 @@
 //                        the mesh metadata
 //   VERTEX_COLOR         read a per-vertex color and multiply it into the
 //                        base color
+//   VERTEX_NORMAL        read a per-vertex normal, octahedral-encoded into
+//                        two `snorm16` lanes; a lit variant shades with it,
+//                        the unlit color does not
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
 //   SRGB_TO_LINEAR_OUTPUT  the fragment's color values are sRGB-encoded and
 //                        the target expects linear values, so convert the
@@ -66,7 +69,10 @@
 //                      `mesh_meta`, followed by the joint pair
 //                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
-//                      plus color Unorm8x4 [VERTEX_COLOR]
+//                      plus color Unorm8x4 [VERTEX_COLOR],
+//                      plus normal Snorm16x2 [VERTEX_NORMAL] decoded by
+//                      `mesh_compression::decode_normal`
+//                      -- the secondary stream, in attribute order
 //   slot 2  instance   Float32x4x3 model matrix
 //                      + Unorm8x4 base color
 //                      + Uint32 joint base
@@ -131,6 +137,10 @@ struct VertexInput {
     @if(VERTEX_UV) @location(1) uv: vec2<f32>,
     /// Per-vertex color, Unorm8x4.
     @if(VERTEX_COLOR) @location(2) color: vec4<f32>,
+    /// Per-vertex normal, Snorm16x2, octahedral-encoded and so needing no
+    /// decode parameters. A lit variant shades with it; the unlit color never
+    /// reads it.
+    @if(VERTEX_NORMAL) @location(13) normal: vec2<f32>,
 
     /// Per-instance affine model matrix: one column per location, with each
     /// column's `.w` holding the translation component.

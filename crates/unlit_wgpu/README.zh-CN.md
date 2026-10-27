@@ -32,8 +32,8 @@
 - `resources` —— 一帧所用 GPU 资源的依赖追踪图。替换某个资源会把所有由它传递
   构建出的资源标记为脏，每帧一次的 `maintain` 会回收已无任何句柄持有的资源并执行
   重建配方；虚拟节点不持有任何句柄，用作聚合根。
-- `mesh` —— 顶点压缩（位置 `Snorm16x4`、UV `Snorm16x2`、顶点色 `Unorm8x4`、骨骼
-  索引 `Uint16x4`、骨骼权重 `Unorm16x4`）、让这些紧凑格式可在着色器中使用
+- `mesh` —— 顶点压缩（位置 `Snorm16x4`、UV `Snorm16x2`、顶点色 `Unorm8x4`、
+  八面体法线 `Snorm16x2`、骨骼索引 `Uint16x4`、骨骼权重 `Unorm16x4`）、让这些紧凑格式可在着色器中使用
   `MeshMetadata` 解码参数，以及一个无需把各通道实体化即可打包的顶点流写入器。
 - `offset_allocator` —— 在一段连续区间上 O(1) 且不分配的次级分配器，采用
   Aaltonen 的 `OffsetAllocator` 中的两级分离适配算法。
@@ -83,13 +83,13 @@
 # {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_indices, compress_positions,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
-    UV_COLOR_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
+    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
+    SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -107,7 +107,7 @@ struct Example {
     globals: wgpu::BindGroup,
     material: wgpu::BindGroup,
     positions: wgpu::Buffer,
-    uv_color: wgpu::Buffer,
+    secondary: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
     instances: wgpu::Buffer,
@@ -136,7 +136,7 @@ impl Example {
                     position: Some(ChannelEncoding::CompressedPosition),
                     joints: false,
                 },
-                uv_color: UvColorFlags::UV | UvColorFlags::COLOR,
+                secondary: SecondaryFlags::UV | SecondaryFlags::COLOR,
             },
             base_color_texture: true,
             morph: false,
@@ -177,21 +177,21 @@ impl Example {
         let positions = upload(packed_positions.as_bytes(), vertex, "positions");
         let indices = upload(packed_indices.as_bytes(), wgpu::BufferUsages::INDEX, "indices");
 
-        // The UV-and-color slot uses the same path, except that the stream
+        // The secondary slot uses the same path, except that the stream
         // compresses the raw attributes and interleaves them in attribute
         // order as it writes, so they are never materialized in a `Vec<u8>`.
-        let stream = variant.uv_color_stream();
-        let uv_color = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uv_color"),
+        let stream = variant.secondary_stream();
+        let secondary = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("secondary"),
             size: stream.byte_len(packed_positions.len()) as u64,
             usage: vertex,
             mapped_at_creation: true,
         });
         {
-            let mut view = uv_color.slice(..).get_mapped_range_mut().unwrap();
-            stream.write(&uvs, &colors, &mut metadata, view.slice(..).into_slice(..));
+            let mut view = secondary.slice(..).get_mapped_range_mut().unwrap();
+            stream.write(&uvs, &colors, &[], &mut metadata, view.slice(..).into_slice(..));
         }
-        uv_color.unmap();
+        secondary.unmap();
 
         // 3. Per-instance data: an affine model matrix, a base color and the
         //    index of the metadata entry this mesh decodes through. The index
@@ -274,7 +274,7 @@ impl Example {
             globals: globals_group,
             material,
             positions,
-            uv_color,
+            secondary,
             indices,
             index_count: packed_indices.len() as u32,
             instances,
@@ -306,8 +306,8 @@ impl Example {
         )
         .with_bind_group(GLOBAL_GROUP, &self.globals)
         .with_bind_group(MATERIAL_GROUP, &self.material)
-        .with_vertex_buffer(POSITION_SLOT, &self.positions)
-        .with_vertex_buffer(UV_COLOR_SLOT, &self.uv_color)
+        .with_vertex_buffer(PRIMARY_SLOT, &self.positions)
+        .with_vertex_buffer(SECONDARY_SLOT, &self.secondary)
         .with_vertex_buffer(INSTANCE_SLOT, &self.instances)
         .with_index_buffer(&self.indices, wgpu::IndexFormat::Uint16);
 

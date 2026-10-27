@@ -18,3 +18,20 @@ public fn decode_uv(encode: vec2<f32>, min_and_extent: vec4<f32>) -> vec2<f32> {
     let t = encode * 0.5 + 0.5;
     return min_and_extent.xy + t * min_and_extent.zw;
 }
+
+/// Decode an octahedral `Snorm16x2` normal back to a unit vector.
+///
+/// The encoding needs no per-mesh parameters, so this takes nothing but the
+/// two lanes. The square is unfolded by mirroring the lower half back across
+/// the diagonal, exactly reversing the encoder in [`crate::mesh`].
+public fn decode_normal(encode: vec2<f32>) -> vec3<f32> {
+    var normal = vec3<f32>(encode.x, encode.y, 1.0 - abs(encode.x) - abs(encode.y));
+    if normal.z < 0.0 {
+        normal = vec3<f32>(
+            (1.0 - abs(normal.y)) * sign(normal.x),
+            (1.0 - abs(normal.x)) * sign(normal.y),
+            normal.z,
+        );
+    }
+    return normalize(normal);
+}

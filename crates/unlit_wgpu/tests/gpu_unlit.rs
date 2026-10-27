@@ -9,13 +9,13 @@
 use crate::common::*;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_indices, compress_positions, quantize_colors,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
-    SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitOptions, UnlitShader, UnlitVariant,
+    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
+    SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitShader, UnlitVariant,
     UnlitVertexChannels, supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::{
@@ -109,10 +109,11 @@ struct GpuMesh {
     /// Slot 0: `Snorm16x4` positions; `None` when the variant declares no
     /// position stream.
     positions: Option<wgpu::Buffer>,
-    /// Slot 1: `Snorm16x2` UVs and/or `Unorm8x4` colors, interleaved by the
-    /// variant's [`unlit_wgpu::mesh::MeshVertexStreamWriter`]; `None` when the
-    /// variant declares no channel.
-    uv_color: Option<wgpu::Buffer>,
+    /// Slot 1: the secondary stream, interleaved by the variant's
+    /// [`unlit_wgpu::mesh::SecondaryStreamWriter`]: `Snorm16x2` UVs,
+    /// `Unorm8x4` colors and `Snorm16x2` normals, in attribute order; `None`
+    /// when the variant declares no channel.
+    secondary: Option<wgpu::Buffer>,
     /// Index buffer and its index count, when the mesh is drawn indexed.
     indices: Option<(wgpu::Buffer, u32)>,
     /// Number of vertices.
@@ -133,9 +134,10 @@ impl GpuMesh {
         positions: &[[f32; 3]],
         uvs: &[[f32; 2]],
         colors: &[[u8; 4]],
+        normals: &[[f32; 3]],
         indices: &[u32],
     ) -> Self {
-        let stream = variant.uv_color_stream();
+        let stream = variant.secondary_stream();
         let mut metadata = MeshMetadata::default();
         let compressed_positions = matches!(
             variant.channels.position.position,
@@ -164,16 +166,22 @@ impl GpuMesh {
         });
         // The stream writer compresses and writes into the mapped buffer in
         // one step, so no intermediate byte buffer exists.
-        let uv_color_buffer = (!stream.is_empty()).then(|| {
+        let secondary_buffer = (!stream.is_empty()).then(|| {
             let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(&format!("{label}::uv_color")),
+                label: Some(&format!("{label}::secondary")),
                 size: stream.byte_len(positions.len()) as u64,
                 usage: vertex_usage | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: true,
             });
             {
                 let mut view = buffer.slice(..).get_mapped_range_mut().expect("mapped");
-                stream.write(uvs, colors, &mut metadata, view.slice(..).into_slice(..));
+                stream.write(
+                    uvs,
+                    colors,
+                    normals,
+                    &mut metadata,
+                    view.slice(..).into_slice(..),
+                );
             }
             buffer.unmap();
             buffer
@@ -195,7 +203,7 @@ impl GpuMesh {
 
         Self {
             positions: positions_buffer,
-            uv_color: uv_color_buffer,
+            secondary: secondary_buffer,
             indices,
             vertex_count: positions.len() as u32,
             metadata,
@@ -237,11 +245,17 @@ fn camera(aspect: f32) -> View {
     View::new(view, projection, eye)
 }
 
-/// A CPU-side mesh: positions, UVs, vertex colors and `u32` indices.
-type MeshData = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
+/// A CPU-side mesh: positions, UVs, vertex colors, normals and `u32` indices.
+type MeshData = (
+    Vec<[f32; 3]>,
+    Vec<[f32; 2]>,
+    Vec<[u8; 4]>,
+    Vec<[f32; 3]>,
+    Vec<u32>,
+);
 
-/// A unit cube centred on the origin, with UVs and vertex colors that exercise
-/// both decode paths (the unlit shader ignores normals).
+/// A unit cube centred on the origin, with UVs, vertex colors and normals that
+/// exercise every decode path.
 fn cube() -> MeshData {
     // Per face: outward normal and tangent axis. The bitangent is derived as
     // normal x tangent, which winds every face counter-clockwise as seen from
@@ -258,10 +272,12 @@ fn cube() -> MeshData {
     let mut positions = Vec::new();
     let mut uvs = Vec::new();
     let mut colors = Vec::new();
+    let mut normals = Vec::new();
     let mut indices = Vec::new();
 
     for (normal, tangent) in faces {
         let base = positions.len() as u32;
+        let face_normal = normal;
         let normal = glam::Vec3::from(normal);
         let tangent = glam::Vec3::from(tangent);
         let bitangent = normal.cross(tangent);
@@ -274,6 +290,7 @@ fn cube() -> MeshData {
             // meet seamlessly across faces.
             let color = (position + 1.0) * 0.5;
             colors.push([color.x, color.y, color.z, 1.0]);
+            normals.push(face_normal);
         }
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -281,7 +298,7 @@ fn cube() -> MeshData {
     // The vertex stream stores colors as `Unorm8x4`; quantize them once
     // here so the fixture hands the writer the width it uploads at.
     let colors = quantize_colors(&colors).collect();
-    (positions, uvs, colors, indices)
+    (positions, uvs, colors, normals, indices)
 }
 
 /// A procedurally generated base-color texture plus its sampler.
@@ -378,7 +395,7 @@ fn fixture(ctx: &Ctx, variant: &UnlitVariant, sample_count: u32) -> SceneFixture
     };
     let pipeline = SpecializedPipeline::create(&ctx.device, variant.clone());
 
-    let (positions, uvs, colors, indices) = cube();
+    let (positions, uvs, colors, normals, indices) = cube();
     let mesh = GpuMesh::upload(
         ctx,
         "test::cube",
@@ -386,6 +403,7 @@ fn fixture(ctx: &Ctx, variant: &UnlitVariant, sample_count: u32) -> SceneFixture
         &positions,
         &uvs,
         &colors,
+        &normals,
         &indices,
     );
 
@@ -541,10 +559,10 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     // and reads the instance stream, so the slot is always bound.
     draw = draw.with_vertex_buffer(INSTANCE_SLOT, &instance_data);
     if let Some(positions) = &fixture.mesh.positions {
-        draw = draw.with_vertex_buffer(POSITION_SLOT, positions);
+        draw = draw.with_vertex_buffer(PRIMARY_SLOT, positions);
     }
-    if let Some(uv_color) = &fixture.mesh.uv_color {
-        draw = draw.with_vertex_buffer(UV_COLOR_SLOT, uv_color);
+    if let Some(secondary) = &fixture.mesh.secondary {
+        draw = draw.with_vertex_buffer(SECONDARY_SLOT, secondary);
     }
     if let Some((buffer, _)) = &fixture.mesh.indices {
         draw = draw.with_index_buffer(buffer, wgpu::IndexFormat::Uint16);
@@ -622,7 +640,7 @@ fn vertex_color_variant(device: &wgpu::Device) -> UnlitVariant {
                 position: Some(ChannelEncoding::CompressedPosition),
                 joints: false,
             },
-            uv_color: UvColorFlags::COLOR,
+            secondary: SecondaryFlags::COLOR,
         },
         false,
         false,
@@ -826,7 +844,7 @@ async fn position_less_variant_draws_points_at_instance_origins() {
                 position: None,
                 joints: false,
             },
-            uv_color: UvColorFlags::empty(),
+            secondary: SecondaryFlags::empty(),
         },
         false,
         false,
@@ -923,7 +941,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 position: Some(ChannelEncoding::UncompressedPosition),
                 joints: false,
             },
-            uv_color: UvColorFlags::empty(),
+            secondary: SecondaryFlags::empty(),
         },
         false,
         false,
@@ -956,7 +974,7 @@ async fn textured_cube_matches_snapshot() {
                 position: Some(ChannelEncoding::CompressedPosition),
                 joints: false,
             },
-            uv_color: UvColorFlags::UV | UvColorFlags::COLOR,
+            secondary: SecondaryFlags::UV | SecondaryFlags::COLOR,
         },
         true,
         false,

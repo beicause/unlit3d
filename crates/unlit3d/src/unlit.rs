@@ -12,12 +12,12 @@ use std::rc::Rc;
 use arrayvec::ArrayVec;
 use unlit_ecs::Scope;
 use unlit_wgpu::mesh::{
-    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_weights, index_fits_u16,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GlobalBindings, INSTANCE_SLOT,
-    POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVariant, UnlitVertexChannels,
+    PRIMARY_SLOT, SECONDARY_SLOT, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
 use unlit_wgpu::resources::{ResHandle, TextureView};
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
@@ -292,6 +292,14 @@ pub struct UnlitMeshDesc<'a> {
     pub uvs: Option<&'a [[f32; 2]]>,
     /// Per-vertex linear RGBA colors, for a variant that reads them.
     pub colors: Option<&'a [[u8; 4]]>,
+    /// Per-vertex normals, in the mesh's local space, for a variant that
+    /// shades with them.
+    ///
+    /// A normal is octahedral-encoded into the secondary stream, so it needs
+    /// no per-mesh range. A mesh without normals is shaded by the geometric
+    /// normal a lit variant derives from screen-space derivatives, which is
+    /// why the slice is optional rather than required.
+    pub normals: Option<&'a [[f32; 3]]>,
     /// Triangle indices, for an indexed draw.
     pub indices: Option<&'a [u32]>,
     /// The joints each vertex is bound to, for a variant that reads joints.
@@ -538,6 +546,7 @@ impl MeshSourceUnlitExt for MeshSource {
             positions,
             uvs,
             colors,
+            normals,
             indices,
             joints,
             weights,
@@ -558,19 +567,22 @@ impl MeshSourceUnlitExt for MeshSource {
             weights.is_some(),
             "a mesh's joints and weights come as a pair, so one cannot be present without the other"
         );
-        let mut uv_color = UvColorFlags::empty();
+        let mut secondary = SecondaryFlags::empty();
         if uvs.is_some() {
-            uv_color |= UvColorFlags::UV;
+            secondary |= SecondaryFlags::UV;
         }
         if colors.is_some() {
-            uv_color |= UvColorFlags::COLOR;
+            secondary |= SecondaryFlags::COLOR;
+        }
+        if normals.is_some() {
+            secondary |= SecondaryFlags::NORMAL;
         }
         let channels = UnlitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::CompressedPosition),
                 joints: joints.is_some() && weights.is_some(),
             },
-            uv_color,
+            secondary,
         };
         // The variant is built only to read the streams and layouts the
         // channels imply. Its surface, material and strip index format play no
@@ -588,7 +600,7 @@ impl MeshSourceUnlitExt for MeshSource {
             strip_index_format: None,
         };
         let position_stream = variant.position_stream();
-        let uv_color_stream = variant.uv_color_stream();
+        let secondary_stream = variant.secondary_stream();
 
         // The joint pair belongs to the position stream, so a skinned mesh's
         // stream is wider by it and no separate buffer exists. A variant that
@@ -623,7 +635,7 @@ impl MeshSourceUnlitExt for MeshSource {
         let mut meta = MeshMetadata::default();
         let vertex_count = positions.len();
         let position_len = position_stream.byte_len(vertex_count);
-        let uv_color_len = uv_color_stream.byte_len(vertex_count);
+        let secondary_len = secondary_stream.byte_len(vertex_count);
 
         // The morph displacements, when the draw reads them. They are geometry
         // the mesh owns, written once here; the weights that blend them are
@@ -661,15 +673,15 @@ impl MeshSourceUnlitExt for MeshSource {
                     attributes: VertexAttributes::new(),
                 })
         };
-        let position_layout = layout_of(POSITION_SLOT);
-        let uv_color_layout = layout_of(UV_COLOR_SLOT);
+        let position_layout = layout_of(PRIMARY_SLOT);
+        let secondary_layout = layout_of(SECONDARY_SLOT);
 
         // The mesh's streams are the vertex pool's: one element allocation
         // covers every stream of the mesh at the same element index, which is
         // what lets a draw address them all with one `firstVertex` or
         // `baseVertex`. A stream the variant declares nothing for — an empty
-        // UV-and-colour stream, say — gets no buffer and no part in it.
-        let stream_layouts = [position_layout.clone(), uv_color_layout.clone()];
+        // secondary stream, say — gets no buffer and no part in it.
+        let stream_layouts = [position_layout.clone(), secondary_layout.clone()];
         let vertices = self
             .vertex_pool
             .allocate(&device, &queue, &stream_layouts, vertex_count as u32)
@@ -679,8 +691,8 @@ impl MeshSourceUnlitExt for MeshSource {
         // so no CPU-side buffer is built first. The write view is the only
         // mutable borrow, so the two streams are packed one after the other.
         for (slot, layout, len) in [
-            (POSITION_SLOT, &position_layout, position_len),
-            (UV_COLOR_SLOT, &uv_color_layout, uv_color_len),
+            (PRIMARY_SLOT, &position_layout, position_len),
+            (SECONDARY_SLOT, &secondary_layout, secondary_len),
         ] {
             if layout.array_stride == 0 {
                 continue;
@@ -701,7 +713,7 @@ impl MeshSourceUnlitExt for MeshSource {
                         .expect("a declared stream is never empty"),
                 )
                 .expect("the stream's range fits its buffer");
-            if slot == POSITION_SLOT {
+            if slot == PRIMARY_SLOT {
                 position_stream.write(
                     positions,
                     joints.iter().copied(),
@@ -710,9 +722,10 @@ impl MeshSourceUnlitExt for MeshSource {
                     view.slice(..),
                 );
             } else {
-                uv_color_stream.write(
+                secondary_stream.write(
                     uvs.unwrap_or(&[]),
                     colors.unwrap_or(&[]),
+                    normals.unwrap_or(&[]),
                     &mut meta,
                     view.slice(..),
                 );
@@ -838,8 +851,8 @@ impl MeshSourceUnlitExt for MeshSource {
         // are the pool's. A stream the variant declares nothing for is left
         // out, as it is for a mesh that owns its buffers.
         for (slot, layout) in [
-            (POSITION_SLOT, &position_layout),
-            (UV_COLOR_SLOT, &uv_color_layout),
+            (PRIMARY_SLOT, &position_layout),
+            (SECONDARY_SLOT, &secondary_layout),
         ] {
             if layout.array_stride > 0 {
                 layouts.push((slot, layout.clone()));

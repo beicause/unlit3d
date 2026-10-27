@@ -77,10 +77,10 @@
 //! ```
 
 use crate::globals::View;
-use crate::mesh::{ChannelEncoding, MeshInstance, PositionStreamChannels, UvColorFlags};
+use crate::mesh::{ChannelEncoding, MeshInstance, PositionStreamChannels, SecondaryFlags};
 use crate::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, INSTANCE_SLOT,
-    MATERIAL_GROUP, POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitOptions,
+    MATERIAL_GROUP, PRIMARY_SLOT, SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions,
     UnlitVariant, UnlitVertexChannels,
 };
 use crate::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureExt, TextureView};
@@ -106,8 +106,8 @@ const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// zero third supplied by the shader rather than stored.
 const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x2.size() as usize;
 
-/// Bytes one UV-and-color vertex occupies: `Float32x2` then `Unorm8x4`.
-const UV_COLOR_STRIDE: usize =
+/// Bytes one secondary vertex occupies: `Float32x2` then `Unorm8x4`.
+const SECONDARY_STRIDE: usize =
     wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
 
 /// The target a UI frame is drawn into and the density it is drawn at.
@@ -209,7 +209,7 @@ pub fn ui_channels() -> UnlitVertexChannels {
             position: Some(ChannelEncoding::PlanarPosition),
             joints: false,
         },
-        uv_color: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
+        secondary: SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR,
     }
 }
 
@@ -280,7 +280,7 @@ fn measure(primitives: &[(Source, &egui::ClippedPrimitive)]) -> GeometryCounts {
 ///
 /// Both byte buffers are cleared and resized rather than reallocated, so a
 /// caller that keeps them across frames reuses the allocation. The vertex
-/// buffer holds the position stream first and the interleaved UV-and-color
+/// buffer holds the primary stream first and the interleaved secondary
 /// stream second: wgpu binds one stride per slot and the two differ.
 ///
 /// `counts` must be what [`measure`] returned for `primitives`: it is both how
@@ -298,12 +298,12 @@ fn pack_geometry(
     // is what `scene` reads back. It is *not* the buffer's capacity: that is
     // usually larger, and splitting on it would write the UVs and colors
     // somewhere the draws do not look for them.
-    let uv_color_start = counts.vertices * POSITION_STRIDE;
+    let secondary_start = counts.vertices * POSITION_STRIDE;
     let vertex_count = counts.vertices;
     let index_count = counts.indices;
 
     vertices.clear();
-    vertices.resize(uv_color_start + vertex_count * UV_COLOR_STRIDE, 0);
+    vertices.resize(secondary_start + vertex_count * SECONDARY_STRIDE, 0);
     indices.clear();
     indices.resize(index_count * size_of::<u32>(), 0);
     draws.clear();
@@ -329,11 +329,11 @@ fn pack_geometry(
             // third.
             vertices[position..position + POSITION_STRIDE]
                 .copy_from_slice([vertex.pos.x, vertex.pos.y].as_bytes());
-            let uv_color = uv_color_start + vertex_cursor * UV_COLOR_STRIDE;
-            vertices[uv_color..uv_color + size_of::<egui::Vec2>()]
+            let secondary = secondary_start + vertex_cursor * SECONDARY_STRIDE;
+            vertices[secondary..secondary + size_of::<egui::Vec2>()]
                 .copy_from_slice([vertex.uv.x, vertex.uv.y].as_bytes());
             // egui's colors are premultiplied already, straight to Unorm8.
-            vertices[uv_color + size_of::<egui::Vec2>()..uv_color + UV_COLOR_STRIDE]
+            vertices[secondary + size_of::<egui::Vec2>()..secondary + SECONDARY_STRIDE]
                 .copy_from_slice(&vertex.color.to_array());
             vertex_cursor += 1;
         }
@@ -742,8 +742,8 @@ impl EguiIntegration {
     /// Pack `primitives` into the vertex and index buffers, staging the bytes
     /// through `encoder`, and fill [`Self::draws`] with where each one landed.
     ///
-    /// Positions and UV-and-colors go into two regions of the one buffer: wgpu
-    /// binds one stride per slot, and the two streams differ.
+    /// The primary and secondary streams go into two regions of the one buffer:
+    /// wgpu binds one stride per slot, and the two streams differ.
     fn upload_geometry(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -802,7 +802,7 @@ impl EguiIntegration {
         // room to spare, so splitting at `vertex_capacity` instead would bind
         // the second stream to bytes no vertex was written to.
         let positions_size = (self.frame_vertices * POSITION_STRIDE) as u64;
-        let uv_colors_size = (self.frame_vertices * UV_COLOR_STRIDE) as u64;
+        let secondary_size = (self.frame_vertices * SECONDARY_STRIDE) as u64;
         let pipeline = &self.pipeline.pipeline;
         let global = self.bind_group(graph, &self.global_group);
         for draw in &self.draws {
@@ -821,11 +821,11 @@ impl EguiIntegration {
                 .with_bind_group(GLOBAL_GROUP, global)
                 .with_bind_group(MATERIAL_GROUP, material)
                 .with_vertex_buffer(INSTANCE_SLOT, &self.instance)
-                .with_vertex_buffer_range(POSITION_SLOT, vertices, 0..positions_size)
+                .with_vertex_buffer_range(PRIMARY_SLOT, vertices, 0..positions_size)
                 .with_vertex_buffer_range(
-                    UV_COLOR_SLOT,
+                    SECONDARY_SLOT,
                     vertices,
-                    positions_size..positions_size + uv_colors_size,
+                    positions_size..positions_size + secondary_size,
                 )
                 .with_index_buffer(indices, wgpu::IndexFormat::Uint32)
                 .with_scissor(draw.scissor);
@@ -846,7 +846,7 @@ impl EguiIntegration {
                 .max(1);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ui::vertices"),
-                size: (self.vertex_capacity * (POSITION_STRIDE + UV_COLOR_STRIDE)) as u64,
+                size: (self.vertex_capacity * (POSITION_STRIDE + SECONDARY_STRIDE)) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -1199,8 +1199,8 @@ mod tests {
         );
         assert!(!channels.position.joints, "a UI mesh is never skinned");
         assert_eq!(
-            channels.uv_color,
-            UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR
+            channels.secondary,
+            SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR
         );
         assert!(variant.base_color_texture);
         // Nothing is compressed, so no draw decodes through a metadata index:
@@ -1416,11 +1416,11 @@ mod tests {
             "the indices address the pool without an offset"
         );
 
-        // The vertex buffer holds the position stream then the interleaved
-        // UV-and-color stream, each entry one stride wide.
-        let uv_color_start = 4 * POSITION_STRIDE;
-        assert_eq!(vertices.len(), uv_color_start + 4 * UV_COLOR_STRIDE);
-        let positions: Vec<f32> = vertices[..uv_color_start]
+        // The vertex buffer holds the primary stream then the interleaved
+        // secondary stream, each entry one stride wide.
+        let secondary_start = 4 * POSITION_STRIDE;
+        assert_eq!(vertices.len(), secondary_start + 4 * SECONDARY_STRIDE);
+        let positions: Vec<f32> = vertices[..secondary_start]
             .as_chunks::<{ size_of::<f32>() }>()
             .0
             .iter()
@@ -1433,7 +1433,7 @@ mod tests {
         );
 
         // The colors are egui's premultiplied bytes, unchanged.
-        let first_color = uv_color_start + size_of::<egui::Vec2>();
+        let first_color = secondary_start + size_of::<egui::Vec2>();
         assert_eq!(
             &vertices[first_color..first_color + size_of::<egui::Color32>()],
             &[1, 2, 3, 4]

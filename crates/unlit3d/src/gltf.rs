@@ -644,6 +644,7 @@ impl UnlitGltf {
                 positions: &positions,
                 uvs: uvs.as_deref(),
                 colors: colors.as_deref(),
+                normals: None,
                 indices: indices.as_deref(),
                 joints: joints.as_deref(),
                 weights: weights.as_deref(),

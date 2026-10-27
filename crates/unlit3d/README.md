@@ -442,7 +442,7 @@ through the same public builders. See
 <details>
 <summary>What the built-in variant supports, and where pose data lives</summary>
 
-- The variant follows the mesh: whether its position, UV and color channels are
+- The variant follows the mesh: whether its position, UV, color and normal channels are
   present, whether they arrive compressed, whether it is skinned or morphed, and
   whether a material is bound — plus the caller's policy and the frame's target.
   The five per-instance fields (transform, color, joint base, morph base,

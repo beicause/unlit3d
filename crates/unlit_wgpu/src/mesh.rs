@@ -7,7 +7,7 @@
 //! produce them together with the packed attribute streams.
 //!
 //! The Rust side and the WGSL side (`mesh_metadata.wesl`) are kept in sync by
-//! the crate. [`MeshVertexStreamWriter`] and [`PositionStreamWriter`] pack the
+//! the crate. [`SecondaryStreamWriter`] and [`PositionStreamWriter`] pack the
 //! per-vertex streams a draw declares, whichever pipeline then draws them.
 //!
 //! # One description per stream
@@ -39,6 +39,15 @@ pub enum ChannelEncoding {
     UncompressedUv,
     /// A vertex color, `Unorm8x4`, stored as it arrives.
     Color,
+    /// A unit normal, octahedral-encoded into two `snorm16` lanes.
+    ///
+    /// A normal needs no decode parameters — the encoding is absolute, unlike
+    /// the per-mesh ranges positions and UVs are quantized against — so a
+    /// normal never makes its variant read the metadata array. The encoding is
+    /// also the only one a stream offers: octahedral `Snorm16x2` resolves a
+    /// direction to well under a degree, which three full-precision lanes
+    /// would not improve on for shading.
+    CompressedNormal,
     /// A joint index, `Uint16x4`. Indices address data structurally rather
     /// than interpolating, so they are never normalized.
     Joints,
@@ -56,6 +65,7 @@ impl ChannelEncoding {
             Self::CompressedUv => wgpu::VertexFormat::Snorm16x2,
             Self::UncompressedUv => wgpu::VertexFormat::Float32x2,
             Self::Color => wgpu::VertexFormat::Unorm8x4,
+            Self::CompressedNormal => wgpu::VertexFormat::Snorm16x2,
             Self::Joints => wgpu::VertexFormat::Uint16x4,
             Self::Weights => wgpu::VertexFormat::Unorm16x4,
         }
@@ -147,7 +157,7 @@ impl StreamChannels {
     /// The attributes are declared in channel order with the offsets
     /// [`Self::attribute_offsets`] reports and the stride [`Self::stride`]
     /// reports, so the layout a pipeline declares and the bytes
-    /// [`PositionStreamWriter`]/[`MeshVertexStreamWriter`] pack always agree.
+    /// [`PositionStreamWriter`]/[`SecondaryStreamWriter`] pack always agree.
     pub fn layout(&self) -> crate::specialize::VertexBufferLayoutDesc {
         let array_stride = u64::from(self.stride());
         assert!(
@@ -392,6 +402,14 @@ pub type CompressedUv = [i16; 2];
 /// One vertex color: `Unorm8x4`, straight (non-premultiplied) linear RGBA.
 pub type CompressedColor = [u8; 4];
 
+/// One compressed vertex normal: `Snorm16x2`, octahedral-encoded.
+///
+/// The encoding is absolute rather than relative to a per-mesh range, so it
+/// needs no decode parameters: a normal survives the round trip through
+/// [`compress_normals`] and the `decode_normal` counterpart in the shader
+/// without reading any metadata.
+pub type CompressedNormal = [i16; 2];
+
 /// One vertex's joint indices: `Uint16x4`.
 pub type CompressedJoints = [u16; 4];
 
@@ -544,6 +562,40 @@ pub fn quantize_colors(colors: &[[f32; 4]]) -> impl Iterator<Item = CompressedCo
     colors.iter().map(|color| color.map(f32_to_unorm8))
 }
 
+/// Octahedral-encode a unit normal into two `[-1, 1]` lanes.
+///
+/// The octahedral map folds the sphere onto a square: a direction is
+/// projected along `z` onto the octahedron's upper half, and the lower half
+/// is folded over by mirroring about the diagonal. Every direction lands on a
+/// distinct point of the square with no pole singularity, which is why two
+/// lanes suffice for a normal where a plain `xy` projection would lose the
+/// hemisphere it folds.
+#[inline]
+fn octahedral_encode(normal: glam::Vec3) -> glam::Vec2 {
+    let normal = normal.normalize_or_zero();
+    let l1 = normal.x.abs() + normal.y.abs() + normal.z.abs();
+    // A zero normal has no direction to encode; it collapses to the center of
+    // the square, which decodes back to `+z`, rather than dividing by zero.
+    let projected = normal.truncate() / if l1 == 0.0 { 1.0 } else { l1 };
+    if normal.z < 0.0 {
+        (glam::Vec2::ONE - glam::Vec2::new(projected.y.abs(), projected.x.abs()))
+            * projected.signum()
+    } else {
+        projected
+    }
+}
+
+/// Octahedral-encode `normals` into `Snorm16x2` lanes.
+///
+/// The encoding is absolute, so it needs no per-mesh range and leaves
+/// [`MeshMetadata`] alone. The returned iterator is lazy: nothing is
+/// allocated, and a caller can stream the values straight into a GPU buffer.
+pub fn compress_normals(normals: &[[f32; 3]]) -> impl Iterator<Item = CompressedNormal> + '_ {
+    normals
+        .iter()
+        .map(|normal| f32_to_snorm16(octahedral_encode(glam::Vec3::from(*normal)).to_array()))
+}
+
 /// Quantize one normalized `f32` to `Unorm8`.
 #[inline]
 fn f32_to_unorm8(component: f32) -> u8 {
@@ -598,14 +650,15 @@ fn f32_to_snorm16<const N: usize>(value: [f32; N]) -> [i16; N] {
 }
 
 bitflags::bitflags! {
-    /// The optional per-vertex channels of a UV-and-color vertex stream.
+    /// The optional per-vertex channels of a secondary vertex stream: the UV,
+    /// color and normal a mesh carries beside its position.
     ///
     /// A stream is described by what it carries rather than by which pipeline
     /// consumes it, so packing a stream needs nothing the built-in pipeline
     /// defines: the built-in pipeline derives one of these from its own
     /// variant, and a custom pipeline declares one directly.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-    pub struct UvColorFlags: u8 {
+    pub struct SecondaryFlags: u16 {
         /// The stream carries a per-vertex UV.
         const UV = 1 << 0;
         /// The UV is written full precision -- `Float32x2` -- rather than
@@ -616,30 +669,39 @@ bitflags::bitflags! {
         const UNCOMPRESSED_UV = 1 << 1;
         /// The stream carries a per-vertex color.
         const COLOR = 1 << 2;
+        /// The stream carries a per-vertex normal, octahedral-encoded into
+        /// `Snorm16x2`.
+        const NORMAL = 1 << 3;
     }
 }
 
-/// The optional per-vertex channels of a UV-and-color vertex stream.
+/// The optional per-vertex channels of a secondary vertex stream: the UV,
+/// color and normal that a mesh carries beside its position.
 ///
-/// Each channel adds one attribute to [`crate::pipeline::UV_COLOR_SLOT`], in
-/// the order UV then color, so the packed stream matches the shader's declared
-/// locations for any combination. [`Self::write`] compresses the raw
+/// Each channel adds one attribute to [`crate::pipeline::SECONDARY_SLOT`], in
+/// the order UV, color then normal, so the packed stream matches the shader's
+/// declared locations for any combination. [`Self::write`] compresses the raw
 /// attributes and interleaves them straight into the target buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MeshVertexStreamWriter {
+pub struct SecondaryStreamWriter {
     /// The channels this stream writes.
-    pub flags: UvColorFlags,
+    pub flags: SecondaryFlags,
 }
 
-impl MeshVertexStreamWriter {
+impl SecondaryStreamWriter {
     /// Whether the UV attribute is written.
     pub fn uv(&self) -> bool {
-        self.flags.contains(UvColorFlags::UV)
+        self.flags.contains(SecondaryFlags::UV)
     }
 
     /// Whether the color attribute is written.
     pub fn color(&self) -> bool {
-        self.flags.contains(UvColorFlags::COLOR)
+        self.flags.contains(SecondaryFlags::COLOR)
+    }
+
+    /// Whether the normal attribute is written.
+    pub fn normal(&self) -> bool {
+        self.flags.contains(SecondaryFlags::NORMAL)
     }
 
     /// Whether the UV is written full precision rather than compressed to
@@ -648,13 +710,13 @@ impl MeshVertexStreamWriter {
     /// An uncompressed UV needs no decode parameters, so [`Self::write`]
     /// leaves the metadata alone.
     pub fn uncompressed_uv(&self) -> bool {
-        self.flags.contains(UvColorFlags::UNCOMPRESSED_UV)
+        self.flags.contains(SecondaryFlags::UNCOMPRESSED_UV)
     }
 
     /// Whether the variant declares no attributes at all, in which case the
     /// slot must be omitted from the vertex-buffer list.
     pub fn is_empty(&self) -> bool {
-        !self.uv() && !self.color()
+        !self.uv() && !self.color() && !self.normal()
     }
 
     /// The channels this stream carries, in attribute order.
@@ -676,6 +738,12 @@ impl MeshVertexStreamWriter {
         if self.color() {
             channels.push((crate::pipeline::location::COLOR, ChannelEncoding::Color));
         }
+        if self.normal() {
+            channels.push((
+                crate::pipeline::location::NORMAL,
+                ChannelEncoding::CompressedNormal,
+            ));
+        }
         channels
     }
 
@@ -689,15 +757,16 @@ impl MeshVertexStreamWriter {
         self.channels().byte_len(vertex_count)
     }
 
-    /// Compress the raw `uvs` and write the interleaved result, together
-    /// with the already compressed `colors`, into `out` — which must be
-    /// exactly [`Self::byte_len`]`(vertex_count)` bytes, normally a
-    /// mapped-at-creation vertex buffer, so the vertices land in GPU memory
-    /// without an intermediate byte buffer.
+    /// Compress the raw `uvs` and `normals` and write the interleaved
+    /// result, together with the already compressed `colors`, into `out` —
+    /// which must be exactly [`Self::byte_len`]`(vertex_count)` bytes,
+    /// normally a mapped-at-creation vertex buffer, so the vertices land in
+    /// GPU memory without an intermediate byte buffer.
     ///
     /// Colors are taken as [`CompressedColor`] because that is what the
     /// stream stores; float colors from a [glam::Vec4] can be quantized with
-    /// [`quantize_colors`] first.
+    /// [`quantize_colors`] first. Normals need no such preparation: the
+    /// octahedral encoding is absolute, so they are compressed here.
     ///
     /// `metadata` receives the UV decode parameters the compression derives,
     /// exactly as [`compress_uvs`] would.
@@ -714,12 +783,13 @@ impl MeshVertexStreamWriter {
         &self,
         uvs: &[[f32; 2]],
         colors: &[CompressedColor],
+        normals: &[[f32; 3]],
         metadata: &mut MeshMetadata,
         out: WriteOnly<'_, [u8]>,
     ) {
         use zerocopy::IntoBytes;
 
-        let vertex_count = self.raw_vertex_count(uvs, colors);
+        let vertex_count = self.raw_vertex_count(uvs, colors, normals);
         assert_eq!(
             out.len(),
             self.byte_len(vertex_count),
@@ -732,18 +802,19 @@ impl MeshVertexStreamWriter {
         // Deriving the UV range is the only pass over the input; the encoding
         // itself streams straight into `out`. An uncompressed channel is
         // copied as it is, so it never derives metadata.
-        let (write_uv, write_color) = (self.uv(), self.color());
+        let (write_uv, write_color, write_normal) = (self.uv(), self.color(), self.normal());
         let compress_uv = write_uv && !self.uncompressed_uv();
         let stride = self.stride() as usize;
         let mut packed_uvs = compress_uv
             .then(|| compress_uvs(uvs, metadata))
             .into_iter()
             .flatten();
+        let mut compressed_normals = write_normal.then(|| compress_normals(normals));
 
         // Each vertex is assembled as a fixed-size array on the stack and
         // streamed out.
         out.write_iter((0..vertex_count).flat_map(move |index| {
-            let mut vertex = [0u8; MAX_UV_COLOR_STRIDE];
+            let mut vertex = [0u8; MAX_SECONDARY_STRIDE];
             let mut len = 0;
             if write_uv {
                 // A compressed UV is produced lazily as a temporary, so it
@@ -765,18 +836,30 @@ impl MeshVertexStreamWriter {
                 vertex[len..len + bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
             }
+            if write_normal {
+                // The octahedral encoding needs no per-mesh range, so unlike
+                // the UVs it streams straight out with the same laziness.
+                let normal = compressed_normals
+                    .as_mut()
+                    .expect("compressed normals")
+                    .next()
+                    .expect("one normal per vertex");
+                let bytes = normal.as_bytes();
+                vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                len += bytes.len();
+            }
             debug_assert_eq!(len, stride);
             vertex.into_iter().take(len)
         }));
     }
 
-    /// Write the already compressed `uvs` and `colors` into `out` as the
-    /// interleaved vertex stream, which must be exactly
+    /// Write the already compressed `uvs`, `colors` and `normals` into
+    /// `out` as the interleaved vertex stream, which must be exactly
     /// [`Self::byte_len`]`(vertex_count)` bytes.
     ///
-    /// Takes the packed form produced by [`compress_uvs`] and
-    /// [`quantize_colors`], so one compressed stream can be
-    /// uploaded for several meshes without recompressing it.
+    /// Takes the packed form produced by [`compress_uvs`],
+    /// [`quantize_colors`] and [`compress_normals`], so one compressed
+    /// stream can be uploaded for several meshes without recompressing it.
     ///
     /// # Panics
     /// If an enabled channel has no matching slice, if the channel lengths
@@ -785,11 +868,12 @@ impl MeshVertexStreamWriter {
         &self,
         uvs: &[CompressedUv],
         colors: &[CompressedColor],
+        normals: &[CompressedNormal],
         out: WriteOnly<'_, [u8]>,
     ) {
         use zerocopy::IntoBytes;
 
-        let vertex_count = self.compressed_vertex_count(uvs, colors);
+        let vertex_count = self.compressed_vertex_count(uvs, colors, normals);
         assert_eq!(
             out.len(),
             self.byte_len(vertex_count),
@@ -799,7 +883,7 @@ impl MeshVertexStreamWriter {
         // Each vertex is assembled as a fixed-size array on the stack and
         // streamed out, so writing never allocates at all.
         out.write_iter((0..vertex_count).flat_map(move |index| {
-            let mut vertex = [0u8; MAX_UV_COLOR_STRIDE];
+            let mut vertex = [0u8; MAX_SECONDARY_STRIDE];
             let mut len = 0;
             if self.uv() {
                 let bytes = uvs[index].as_bytes();
@@ -811,43 +895,48 @@ impl MeshVertexStreamWriter {
                 vertex[len..len + bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
             }
+            if self.normal() {
+                let bytes = normals[index].as_bytes();
+                vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                len += bytes.len();
+            }
             debug_assert_eq!(len, self.stride() as usize);
             vertex.into_iter().take(len)
         }));
     }
 
     /// Number of vertices the raw channel slices describe.
-    fn raw_vertex_count(&self, uvs: &[[f32; 2]], colors: &[CompressedColor]) -> usize {
-        match (self.uv(), self.color()) {
-            (true, true) => {
-                assert_eq!(
-                    uvs.len(),
-                    colors.len(),
-                    "the UV and color streams must describe the same vertices"
-                );
-                uvs.len()
-            }
-            (true, false) => uvs.len(),
-            (false, true) => colors.len(),
-            (false, false) => 0,
-        }
+    ///
+    /// Every enabled channel describes the same vertices, so the first one
+    /// sets the count and the rest must agree; a stream whose channels
+    /// disagree has no length that would pack them together.
+    fn raw_vertex_count(
+        &self,
+        uvs: &[[f32; 2]],
+        colors: &[CompressedColor],
+        normals: &[[f32; 3]],
+    ) -> usize {
+        let lengths: [(&str, Option<usize>); 3] = [
+            ("UV", self.uv().then(|| uvs.len())),
+            ("color", self.color().then(|| colors.len())),
+            ("normal", self.normal().then(|| normals.len())),
+        ];
+        vertex_count_of(&lengths)
     }
 
     /// Number of vertices the compressed channel slices describe.
-    fn compressed_vertex_count(&self, uvs: &[CompressedUv], colors: &[CompressedColor]) -> usize {
-        match (self.uv(), self.color()) {
-            (true, true) => {
-                assert_eq!(
-                    uvs.len(),
-                    colors.len(),
-                    "the UV and color streams must describe the same vertices"
-                );
-                uvs.len()
-            }
-            (true, false) => uvs.len(),
-            (false, true) => colors.len(),
-            (false, false) => 0,
-        }
+    fn compressed_vertex_count(
+        &self,
+        uvs: &[CompressedUv],
+        colors: &[CompressedColor],
+        normals: &[CompressedNormal],
+    ) -> usize {
+        let lengths: [(&str, Option<usize>); 3] = [
+            ("UV", self.uv().then(|| uvs.len())),
+            ("color", self.color().then(|| colors.len())),
+            ("normal", self.normal().then(|| normals.len())),
+        ];
+        vertex_count_of(&lengths)
     }
 }
 
@@ -859,13 +948,35 @@ impl MeshVertexStreamWriter {
 /// uploads a `&[JointMatrix]` there and a vertex's joint index selects one.
 pub type JointMatrix = glam::Mat4;
 
-/// Bytes per vertex of the widest UV-and-color stream, used to size the
+/// Bytes per vertex of the widest secondary stream, used to size the
 /// per-vertex scratch the writer assembles on the stack.
 ///
 /// The widest encoding the stream can write is an uncompressed UV followed by
-/// the color, so the scratch covers those two attribute formats.
-const MAX_UV_COLOR_STRIDE: usize =
-    wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
+/// the color and the normal, so the scratch covers those three attribute
+/// formats.
+const MAX_SECONDARY_STRIDE: usize = wgpu::VertexFormat::Float32x2.size() as usize
+    + wgpu::VertexFormat::Unorm8x4.size() as usize
+    + wgpu::VertexFormat::Snorm16x2.size() as usize;
+
+/// The vertex count a stream's enabled channels agree on, or 0 for a stream
+/// with no channels.
+///
+/// # Panics
+/// If two enabled channels describe different numbers of vertices.
+fn vertex_count_of(lengths: &[(&str, Option<usize>)]) -> usize {
+    let mut count = None;
+    for (channel, length) in lengths.iter() {
+        let Some(length) = *length else { continue };
+        match count {
+            None => count = Some(length),
+            Some(expected) => assert_eq!(
+                length, expected,
+                "the {channel} stream must describe the same vertices as the first channel"
+            ),
+        }
+    }
+    count.unwrap_or(0)
+}
 
 /// The channels of the position vertex stream: a position and, for a skinned
 /// mesh, the joint indices and weights that deform it.
@@ -1104,12 +1215,13 @@ mod tests {
     use super::*;
     use zerocopy::IntoBytes;
 
-    /// Write raw UVs and compressed colors through the mapped-buffer path
-    /// and return the bytes.
+    /// Write raw UVs, compressed colors and raw normals through the
+    /// mapped-buffer path and return the bytes.
     fn write_stream(
-        stream: MeshVertexStreamWriter,
+        stream: SecondaryStreamWriter,
         uvs: &[[f32; 2]],
         colors: &[CompressedColor],
+        normals: &[[f32; 3]],
         vertex_count: usize,
         metadata: &mut MeshMetadata,
     ) -> Vec<u8> {
@@ -1117,6 +1229,7 @@ mod tests {
         stream.write(
             uvs,
             colors,
+            normals,
             metadata,
             WriteOnly::from_mut(out.as_mut_slice()),
         );
@@ -1136,19 +1249,24 @@ mod tests {
         ])
         .collect();
 
+        let normals = [[0.0f32, 0.0, 1.0], [0.6, 0.8, 0.0], [-0.6, 0.0, -0.8]];
+
         for stream in [
-            MeshVertexStreamWriter {
-                flags: UvColorFlags::UV | UvColorFlags::COLOR,
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::UV | SecondaryFlags::COLOR | SecondaryFlags::NORMAL,
             },
-            MeshVertexStreamWriter {
-                flags: UvColorFlags::UV,
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::UV,
             },
-            MeshVertexStreamWriter {
-                flags: UvColorFlags::COLOR,
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::COLOR,
+            },
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::NORMAL,
             },
         ] {
             let mut metadata = MeshMetadata::default();
-            let from_raw = write_stream(stream, &uvs, &colors, 3, &mut metadata);
+            let from_raw = write_stream(stream, &uvs, &colors, &normals, 3, &mut metadata);
 
             // Compress separately, exactly as a caller sharing one stream
             // across meshes would.
@@ -1162,10 +1280,16 @@ mod tests {
             } else {
                 Vec::new()
             };
+            let packed_normals: Vec<_> = if stream.normal() {
+                compress_normals(&normals).collect()
+            } else {
+                Vec::new()
+            };
             let mut from_compressed = vec![0u8; stream.byte_len(3)];
             stream.write_compressed(
                 &packed_uvs,
                 &packed_colors,
+                &packed_normals,
                 WriteOnly::from_mut(from_compressed.as_mut_slice()),
             );
 
@@ -1175,18 +1299,19 @@ mod tests {
     }
 
     #[test]
-    fn uv_color_stream_interleaves_in_attribute_order() {
+    fn secondary_stream_interleaves_in_attribute_order() {
         let uvs = [[0.0f32, 0.0], [1.0, 1.0]];
         // Colors are linear RGBA in [0, 1]; they quantize to Unorm8.
         let colors = [[0u8, 64, 128, 255], [255, 0, 0, 255]];
         let mut metadata = MeshMetadata::default();
 
         let out = write_stream(
-            MeshVertexStreamWriter {
-                flags: UvColorFlags::UV | UvColorFlags::COLOR,
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::UV | SecondaryFlags::COLOR,
             },
             &uvs,
             &colors,
+            &[],
             2,
             &mut metadata,
         );
@@ -1211,10 +1336,11 @@ mod tests {
 
         // UV only: four bytes per vertex.
         let out = write_stream(
-            MeshVertexStreamWriter {
-                flags: UvColorFlags::UV,
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::UV,
             },
             &uvs,
+            &[],
             &[],
             2,
             &mut MeshMetadata::default(),
@@ -1223,11 +1349,12 @@ mod tests {
 
         // Color only: four bytes per vertex, no UV bytes.
         let out = write_stream(
-            MeshVertexStreamWriter {
-                flags: UvColorFlags::COLOR,
+            SecondaryStreamWriter {
+                flags: SecondaryFlags::COLOR,
             },
             &[],
             &colors,
+            &[],
             2,
             &mut MeshMetadata::default(),
         );
@@ -1240,11 +1367,11 @@ mod tests {
     #[test]
     fn uncompressed_uv_is_written_at_full_precision() {
         let uvs = [[0.0f32, 0.0], [0.5, 0.75]];
-        let stream = MeshVertexStreamWriter {
-            flags: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV,
+        let stream = SecondaryStreamWriter {
+            flags: SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV,
         };
         let mut metadata = MeshMetadata::default();
-        let out = write_stream(stream, &uvs, &[], 2, &mut metadata);
+        let out = write_stream(stream, &uvs, &[], &[], 2, &mut metadata);
 
         let stride = wgpu::VertexFormat::Float32x2.size() as usize;
         assert_eq!(out.len(), 2 * stride);
@@ -1327,6 +1454,67 @@ mod tests {
                 "{decoded} vs {expected}"
             );
         }
+    }
+
+    /// Decode exactly like `mesh_compression.wesl::decode_normal`.
+    fn decode_normal(encoded: CompressedNormal) -> glam::Vec3 {
+        let encode = glam::Vec2::new(
+            encoded[0] as f32 / i16::MAX as f32,
+            encoded[1] as f32 / i16::MAX as f32,
+        );
+        let mut normal = glam::Vec3::new(encode.x, encode.y, 1.0 - encode.abs().element_sum());
+        if normal.z < 0.0 {
+            normal = glam::Vec3::new(
+                (1.0 - normal.y.abs()) * normal.x.signum(),
+                (1.0 - normal.x.abs()) * normal.y.signum(),
+                normal.z,
+            );
+        }
+        normal.normalize()
+    }
+
+    /// A normal survives the octahedral round trip to well under the angular
+    /// error shading would notice, including the folded lower hemisphere.
+    #[test]
+    fn normal_roundtrip_stays_within_quantization_error() {
+        let normals = [
+            [0.0f32, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.6, 0.8, 0.0],
+            [-0.6, 0.0, -0.8],
+            [0.36, -0.48, 0.8],
+        ];
+        let encoded: Vec<_> = compress_normals(&normals).collect();
+        assert_eq!(encoded.len(), normals.len());
+
+        // Snorm16 carries a direction to about `1 / i16::MAX` radians; allow
+        // that plus normalization slack.
+        let tolerance = 1e-3;
+        for (normal, packed) in normals.iter().zip(&encoded) {
+            let decoded = decode_normal(*packed);
+            let expected = glam::Vec3::from(*normal).normalize();
+            assert!(
+                (decoded - expected).abs().max_element() <= tolerance,
+                "{decoded} vs {expected}"
+            );
+        }
+    }
+
+    /// A normal has no per-mesh range, so compressing one is self-contained:
+    /// every direction survives without a metadata array to read back.
+    #[test]
+    fn normals_need_no_decode_parameters() {
+        let encoded: Vec<_> = compress_normals(&[[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]).collect();
+        assert_eq!(decode_normal(encoded[0]), glam::Vec3::Z);
+        assert_eq!(decode_normal(encoded[1]), glam::Vec3::Y);
+
+        // A zero normal has no direction to encode; it collapses to the center
+        // of the octahedron, which decodes to `+z`, rather than to a NaN.
+        let zero: Vec<_> = compress_normals(&[[0.0, 0.0, 0.0]]).collect();
+        assert_eq!(zero[0], [0, 0]);
+        assert_eq!(decode_normal(zero[0]), glam::Vec3::Z);
     }
 
     #[test]
