@@ -137,20 +137,20 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
 /// Reuses a browser when `CHROME_PATH` names one, which is how a developer who
 /// already has Chrome avoids a second copy.
 fn install_runner() -> Result<(), String> {
-    let mut npm = Command::new(npm());
-    npm.args(["install", "--no-fund", "--no-audit"])
-        .current_dir(RUNNER);
-    step::run(&mut npm, "installing the wasm test runner's dependencies")?;
+    let mut pnpm = Command::new(pnpm());
+    pnpm.arg("install").current_dir(RUNNER);
+    step::run(&mut pnpm, "installing the wasm test runner's dependencies")?;
 
     if std::env::var_os("CHROME_PATH").is_some() {
         println!("using the browser named by CHROME_PATH; not installing one");
         return Ok(());
     }
 
-    let mut npx = Command::new(npx());
-    npx.args(["playwright", "install", "chromium"])
+    let mut playwright = Command::new(pnpm());
+    playwright
+        .args(["exec", "playwright", "install", "chromium"])
         .current_dir(RUNNER);
-    step::run(&mut npx, "installing Chromium for Playwright")
+    step::run(&mut playwright, "installing Chromium for Playwright")
 }
 
 /// Reject a `wasm-bindgen` whose version differs from the library's.
@@ -545,12 +545,7 @@ impl Drop for Runner {
     }
 }
 
-/// The `npm` to run, which is `npm.cmd` on Windows.
-fn npm() -> &'static str {
-    if cfg!(windows) { "npm.cmd" } else { "npm" }
-}
-
-/// The `npx` to run, which is `npx.cmd` on Windows.
-fn npx() -> &'static str {
-    if cfg!(windows) { "npx.cmd" } else { "npx" }
+/// The `pnpm` to run, which is `pnpm.cmd` on Windows.
+fn pnpm() -> &'static str {
+    if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }
 }

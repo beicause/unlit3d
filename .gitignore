@@ -10,7 +10,6 @@ assets/
 /tests/wasm/dist/
 /tests/wasm/examples/
 /tests/wasm/runner/node_modules/
-/tests/wasm/runner/package-lock.json
 
 # Python bytecode caches, left by the scripts under .agents/skills.
 __pycache__/
