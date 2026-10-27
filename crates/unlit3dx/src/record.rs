@@ -29,7 +29,7 @@ use crate::sync::lock;
 /// around — as a component of the world, for instance — and hand it back to
 /// [`RecordingHandle::stop`] or [`RecordingHandle::cancel`] to finish.
 #[derive(Clone, Debug)]
-pub(crate) struct RecordingHandle {
+pub struct RecordingHandle {
     entity: Entity,
     state: Arc<Mutex<RecordingState>>,
 }
@@ -49,23 +49,23 @@ struct RecordingState {
 
 /// The samples a finished recording captured.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RecordedAudio {
+pub struct RecordedAudio {
     /// The format the recording captured at.
-    pub(crate) format: AudioFormat,
+    pub format: AudioFormat,
     /// The interleaved samples, in the format's channel order.
-    pub(crate) samples: Vec<f32>,
+    pub samples: Vec<f32>,
 }
 
 impl RecordedAudio {
     /// How many frames were captured.
     #[must_use]
-    pub(crate) fn frame_count(&self) -> usize {
+    pub fn frame_count(&self) -> usize {
         self.samples.len() / usize::from(self.format.channels).max(1)
     }
 
     /// How many seconds of audio were captured.
     #[must_use]
-    pub(crate) fn seconds(&self) -> f64 {
+    pub fn seconds(&self) -> f64 {
         self.frame_count() as f64 / f64::from(self.format.sample_rate.max(1))
     }
 }
@@ -79,7 +79,7 @@ impl RecordedAudio {
 /// keeps doing it, and the recording grows as it goes.
 ///
 /// [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
-pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
+pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let state = Arc::new(Mutex::new(RecordingState {
         format: None,
         samples: Vec::new(),
@@ -235,7 +235,7 @@ impl RecordingFormat {
 
     /// The format the extension of `file_name` names.
     pub fn of(file_name: &str) -> Result<Self, String> {
-        unlit_ecs::mcp::extension_of(file_name).map_or_else(
+        unlit_ecs::naming::extension_of(file_name).map_or_else(
             || Err(format!("the file name {file_name:?} has no extension")),
             Self::from_name,
         )
@@ -262,6 +262,12 @@ impl RecordingFormat {
 
 impl RecordingHandle {
     /// The format the recording captured at, once it has seen a fill.
+    ///
+    /// Only the MCP tools ask for it, so a wasm build carries it unread.
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(test)),
+        expect(dead_code, reason = "only the MCP tools ask for it")
+    )]
     #[must_use]
     pub(crate) fn format(&self) -> Option<AudioFormat> {
         lock(&self.state).format
@@ -269,7 +275,7 @@ impl RecordingHandle {
 
     /// How many frames the recording has captured.
     #[must_use]
-    pub(crate) fn frame_count(&self) -> usize {
+    pub fn frame_count(&self) -> usize {
         let state = lock(&self.state);
         let channels = state
             .format
@@ -279,7 +285,7 @@ impl RecordingHandle {
 
     /// How many seconds of audio the recording has captured.
     #[must_use]
-    pub(crate) fn seconds(&self) -> f64 {
+    pub fn seconds(&self) -> f64 {
         let state = lock(&self.state);
         match state.format {
             Some(format) => {
@@ -295,7 +301,7 @@ impl RecordingHandle {
     /// A recording that has seen no fill yet is never full: its limit is not
     /// known until the format is.
     #[must_use]
-    pub(crate) fn is_full(&self) -> bool {
+    pub fn is_full(&self) -> bool {
         let state = lock(&self.state);
         state.format.is_some() && state.samples.len() >= state.max_samples
     }
@@ -305,7 +311,7 @@ impl RecordingHandle {
     /// A recording that saw no fill has no format to write, so there is
     /// nothing to hand back.
     #[must_use]
-    pub(crate) fn stop(self, world: &mut World) -> Option<RecordedAudio> {
+    pub fn stop(self, world: &mut World) -> Option<RecordedAudio> {
         world.root_scope_mut().despawn(self.entity).unwrap();
         let mut state = lock(&self.state);
         let format = state.format?;
@@ -316,7 +322,7 @@ impl RecordingHandle {
     }
 
     /// Stop recording, despawn the source and discard the captured samples.
-    pub(crate) fn cancel(self, world: &mut World) {
+    pub fn cancel(self, world: &mut World) {
         world.root_scope_mut().despawn(self.entity).unwrap();
     }
 }

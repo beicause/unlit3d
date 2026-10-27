@@ -60,6 +60,20 @@ jobs:
       - name: Check out the asset submodule
         run: git submodule update --init --checkout
 
+      # The soundfont lives outside version control, and `asset_bytes` embeds
+      # it with `include_bytes!`. The frame baselines do not depend on it, but
+      # the audio baseline does: without the font the demo's mix is a silent
+      # stub, and the wasm audio check would compare silence against a baseline
+      # of sound. The fetch is what makes the browser run hear what the native
+      # run hears, and `UNLIT3D_REQUIRE_SOUNDFONT` on the steps below is what
+      # keeps a checkout that lost the asset from shipping one that cannot.
+      - name: Fetch the demo soundfont
+        run: |
+          mkdir -p assets
+          gh api -H "Accept: application/vnd.github.raw" repos/beicause/soundfont/contents/FluidR3Mono_GM.sf3 > assets/FluidR3Mono_GM.sf3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
@@ -96,6 +110,10 @@ jobs:
           cargo clippy \
             -p unlit_wgpu -p unlit3d -p unlit3d_examples -p unlit3dx_examples \
             --tests --all-features --target wasm32-unknown-unknown -- -D warnings
+        env:
+          # The soundfont was fetched above; requiring it here is what turns a
+          # checkout that lost the asset from a silent stub into a failure.
+          UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       # `cargo xtask test-wasm` checks this CLI against the `wasm-bindgen` the
       # workspace resolves, so the version is taken from the workspace rather
@@ -117,6 +135,8 @@ jobs:
       - name: Test wasm
         id: test-wasm
         run: cargo xtask test-wasm
+        env:
+          UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       # The page has no filesystem, so a frame that fails a comparison is
       # encoded in the browser and handed to the Node runner, which writes it

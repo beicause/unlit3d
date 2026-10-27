@@ -58,6 +58,10 @@ serde_json.workspace = true
 # The headless run's snapshot tests compare captured frames and audio
 # against baselines kept in the asset submodule.
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.3", features = ["snapshot"] }
+# The wasm driver of the input sequence checks the sound it records is not
+# silence without carrying a decoder: the host-only drivers decode the
+# stored FLAC baseline itself.
+claxon.workspace = true
 
 # The logger backend, which differs by platform even though there is only one
 # per target: `env_logger` writes to the terminal a command line runs in.
@@ -81,11 +85,6 @@ serde.workspace = true
 # thread on native, and the browser's task queue drives it on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# The recording a test reads back is a FLAC stream, so it decodes one to
-# assert on the samples.
-claxon.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The browser has no terminal: the web build logs to the console and

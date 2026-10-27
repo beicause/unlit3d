@@ -14,6 +14,8 @@ mod info;
 mod lifecycle;
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 pub mod mcp;
+/// File-naming helpers that need neither a filesystem nor a random id.
+pub mod naming;
 pub mod query;
 #[cfg(feature = "reflect")]
 pub mod reflect;

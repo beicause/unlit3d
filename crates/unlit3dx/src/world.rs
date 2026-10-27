@@ -469,6 +469,25 @@ pub fn with_stepped_world<R>(
     Some(f(&stepped.world))
 }
 
+/// Run `f` against a stepped world's world mutably, if `entity` names one.
+///
+/// The mutable twin of [`with_stepped_world`]: a caller that starts or stops a
+/// recording on the world needs the world itself, not only its components.
+pub fn with_stepped_world_mut<R>(
+    host: &World,
+    entity: Entity,
+    f: impl FnOnce(&mut World) -> R,
+) -> Option<R> {
+    let mut proxy = host
+        .root_scope()
+        .query_one::<&mut WorldProxy>(entity)
+        .ok()?;
+    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+        return None;
+    };
+    Some(f(&mut stepped.world))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

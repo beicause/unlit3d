@@ -9,10 +9,8 @@ use unlit_wgpu_test_util::{Tolerance, assert_image_snapshot_with_tolerance, snap
 use unlit3dx_examples::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use unlit3dx_examples::scene::WINDOW_SIZE;
 
+use crate::mcp_input::shared;
 use crate::support;
-
-/// Frames to run after pausing, so the released voices have decayed.
-const RELEASE_FRAMES: u32 = 300;
 
 /// The baselines this run compares: the three captures and the mix recorded
 /// between the first two.
@@ -34,7 +32,7 @@ const FRAME_TOLERANCE: Tolerance = Tolerance {
 
 pub async fn run() {
     support::assert_baselines_exist(&BASELINES);
-    let soundfont = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/FluidR3Mono_GM.sf3");
+    let soundfont = Path::new(&shared::manifest_dir()).join("../assets/FluidR3Mono_GM.sf3");
     assert!(
         soundfont.is_file(),
         "the MCP interaction test needs the real soundfont at {}",
@@ -52,7 +50,7 @@ pub async fn run() {
         "start_audio_recording",
         json!({ "world": status["audio_world"] }),
     );
-    mcp.step(60);
+    mcp.step(shared::WARMUP_FRAMES);
     status = mcp.status();
     assert_eq!(status["balls"], 0, "automatic drops are disabled");
     assert_eq!(status["sequence_paused"], true);
@@ -64,7 +62,7 @@ pub async fn run() {
     );
 
     mcp.click(&status, "Drop the next ball");
-    mcp.step(60);
+    mcp.step(shared::SETTLE_FRAMES);
     status = mcp.status();
     assert_eq!(status["balls"], 1, "the first panel click dropped one ball");
     assert_eq!(
@@ -92,7 +90,7 @@ pub async fn run() {
     mcp.click(&status, "Drop the next ball");
     mcp.click(&status, "Drop the next ball");
     mcp.click(&status, "Play");
-    mcp.step(180);
+    mcp.step(shared::PLAY_FRAMES);
     status = mcp.status();
     assert_eq!(
         status["balls"], 3,
@@ -129,7 +127,7 @@ pub async fn run() {
     // still rings out for as long as its patch's release takes. That tail is
     // the last sound the scene makes, so the silent recording below starts
     // once it has decayed.
-    mcp.step(RELEASE_FRAMES);
+    mcp.step(shared::RELEASE_FRAMES);
     status = mcp.status();
     assert_eq!(status["balls"], 0, "the clear button removed every ball");
     assert_eq!(
@@ -140,7 +138,7 @@ pub async fn run() {
         "start_audio_recording",
         json!({ "world": status["audio_world"] }),
     );
-    mcp.step(60);
+    mcp.step(shared::WARMUP_FRAMES);
     let third_image = mcp.image(&status);
     assert_image_snapshot_with_tolerance(
         third,
