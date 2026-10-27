@@ -119,7 +119,7 @@ pub fn shader_module(device: &wgpu::Device, wgsl: &str, label: &str) -> wgpu::Sh
     } else {
         #[expect(
             unsafe_code,
-            reason = "the composed WGSL is build-time and trusted; see the function docs",
+            reason = "the composed WGSL is build-time and trusted; see the function docs"
         )]
         unsafe {
             device.create_shader_module_trusted(desc, wgpu::ShaderRuntimeChecks::unchecked())
