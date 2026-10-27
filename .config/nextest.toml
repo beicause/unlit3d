@@ -20,9 +20,12 @@ fail-fast = false
 #
 # Each trial opens a page and builds a device, so a browser run is slower than
 # a native one; the timeout is what keeps a wedged page from hanging the suite.
+# A trial that steps a whole scene runs past the minute mark on a loaded
+# machine, so the budget leaves room above the runner's own page timeout: the
+# browser reports the failure with its log instead of being killed here.
 [profile.wasm]
 default-filter = "test([wasm])"
-slow-timeout = { period = "60s", terminate-after = 2 }
+slow-timeout = { period = "180s", terminate-after = 2 }
 fail-fast = false
 # A browser that failed once is not worth retrying: a snapshot mismatch or a
 # missing adapter will reproduce, and a retry only doubles the wait.
