@@ -129,6 +129,6 @@ missing_docs = "deny"
 [profile.dev]
 opt-level = "s"
 
-[profile.wasm-dev]
+[profile.wasm-release]
 inherits = "release"
 opt-level = "s"

@@ -26,6 +26,8 @@ concurrency:
 # left one out would look for a cache the light tier never wrote. A called
 # workflow does not inherit the caller's `env`, so the shared jobs are covered by
 # `ci.yml`'s own copy either way — this one is for the two jobs below it.
+# `build-wasm` below overrides `RUSTFLAGS` for the wasm target, and `check-wasm`
+# in `ci.yml` repeats the same value for their shared cache to keep matching.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -49,6 +51,11 @@ jobs:
     # makes the last part slow rather than the build.
     timeout-minutes: 25
     runs-on: ubuntu-latest
+    # The same override `check-wasm` in `ci.yml` makes: the workflow-level
+    # `RUSTFLAGS` beat the target rustflags in `.cargo/config.toml`, and the
+    # value has to match that job byte for byte for their shared cache to hit.
+    env:
+      RUSTFLAGS: "-C debuginfo=0 -D warnings -C target-feature=+simd128"
     steps:
       - uses: actions/checkout@v7.0.1
 

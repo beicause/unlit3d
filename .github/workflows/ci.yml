@@ -238,6 +238,13 @@ jobs:
     if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    # The target rustflags in `.cargo/config.toml` are what a local build gets,
+    # but the workflow-level `RUSTFLAGS` above overrides them wholesale, so this
+    # job adds the simd flag here to lint the code the browser actually runs.
+    # It has to match `build-wasm` in `ci-main.yml` byte for byte: rust-cache
+    # hashes `RUSTFLAGS` into the cache key the two jobs share.
+    env:
+      RUSTFLAGS: "-C debuginfo=0 -D warnings -C target-feature=+simd128"
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -276,7 +283,7 @@ jobs:
       # - The test binaries of the packages that can run in a browser, under
       #   `--all-features`, which is how the browser run builds them.
       #
-      # Both run under the default profile rather than `wasm-dev`: nothing here
+      # Both run under the default profile rather than `wasm-release`: nothing here
       # is linked or run, so the optimization level only costs time, and the
       # browser job still compiles the same sources with the profile it runs in.
       - name: Lint the wasm workspace

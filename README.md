@@ -170,8 +170,10 @@ Commands follow the `cargo xtask` convention:
   do). `--app` picks which are built — `unlit3d`, `unlit3dx` or `all`, the
   default — and the landing page at the root links whichever are there;
   `--no-serve` only builds. Every wasm build, here and in `test-wasm`, uses
-  the workspace's `wasm-dev` cargo profile: release's settings at an
-  `opt-level` aimed at size, since a browser downloads the binary.
+  the workspace's `wasm-release` cargo profile: release's settings at an
+  `opt-level` aimed at size, since a browser downloads the binary. Every wasm
+  build also enables the `simd128` target feature, which the physics and the
+  audio synthesis vectorize under.
 - **`cargo xtask build-android`** — cross-compile both examples' shared
   libraries (`unlit3d_examples_android` and `unlit3dx_examples_android`, which
   hold the Android entry points and nothing else) with `cargo ndk` into

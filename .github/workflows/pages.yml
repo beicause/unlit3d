@@ -38,6 +38,13 @@ jobs:
     # runtime is normally 2 minutes
     timeout-minutes: 15
     runs-on: ubuntu-latest
+    # The target rustflags in `.cargo/config.toml` are what a local build gets,
+    # but the workflow-level `RUSTFLAGS` above overrides them wholesale, so this
+    # job adds the simd flag for the examples it builds. The docs step below
+    # compiles for the host, where rustc ignores the flag with a warning per
+    # crate — noisy, but harmless: the docs build does not deny warnings.
+    env:
+      RUSTFLAGS: "-C debuginfo=0 -D warnings -C target-feature=+simd128"
     permissions:
       contents: read
       # Only reads the site it is about to publish to, but GitHub has no
@@ -98,7 +105,7 @@ jobs:
 
       # The same pipeline a contributor runs locally: build each example for
       # the target, then let wasm-bindgen write the JS loader and the page
-      # beside it. The task builds every wasm under the workspace's `wasm-dev`
+      # beside it. The task builds every wasm under the workspace's `wasm-release`
       # profile, so this is what a visitor downloads: a smaller binary than
       # `--release` gives, and none of the debug size or compile time. It also
       # writes the landing page that links the examples and the docs.
@@ -130,15 +137,15 @@ jobs:
       - name: Build the API docs
         run: |
           cargo +nightly doc --workspace --no-deps --document-private-items --all-features --keep-going
-          mkdir -p target/generated/wasm-dev/docs
-          cp -r target/doc/. target/generated/wasm-dev/docs/
+          mkdir -p target/generated/wasm-release/docs
+          cp -r target/doc/. target/generated/wasm-release/docs/
         env:
           RUSTDOCFLAGS: "--cfg docsrs -Z unstable-options --enable-index-page"
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v5.0.0
         with:
-          path: target/generated/wasm-dev
+          path: target/generated/wasm-release
 
   deploy:
     name: Deploy the site

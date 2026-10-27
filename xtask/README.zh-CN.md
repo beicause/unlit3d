@@ -64,7 +64,7 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 也没有退出码可以交回，所以这一趟是*搭*出来的而不是直接跑的：
 
 1. 先把整个工作区构建到 wasm——用默认 feature，也就是浏览器与 APK 实际发布的那个，
-   并用 `wasm-dev` 这个 cargo profile——这样某个改动若弄坏了该 target 上的示例或库，
+   并用 `wasm-release` 这个 cargo profile——这样某个改动若弄坏了该 target 上的示例或库，
    会在这里就失败，而不是只在自己的 job 里失败。
 2. `cargo nextest list --list-type binaries-only` 构建 wasm 测试二进制并报告它们落在
    哪里——之所以问 nextest，是为了让 target 列表、feature 与名字和宿主机那一趟保持
@@ -90,11 +90,13 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 指定现成的浏览器可
 免于下载，`--show` 打开可见窗口以观察失败。nextest 那一趟使用的 profile 是 `wasm`，
 定义在 `.config/nextest.toml` 中；那是 nextest 的 profile，与构建自身所用的
-`wasm-dev` 这个 cargo profile 是两回事。
+`wasm-release` 这个 cargo profile 是两回事。
 
-该任务为 `wasm32-unknown-unknown` 编译的一切都走 `wasm-dev`，与 `run-wasm` 相同。
-debug 的 wasm 才是这里慢的东西：链接要几分钟，下载体积是好几倍，而且跑的还是一
-条浏览器永远不会发布的代码路径。
+该任务为 `wasm32-unknown-unknown` 编译的一切都走 `wasm-release`，与 `run-wasm` 相同。
+为该 target 做的每个构建都会启用 `simd128` target feature——它由 `.cargo/config.toml`
+设置，而 workflow 的 `RUSTFLAGS` 会整体覆盖该文件，因此那些地方也重复了同一条——
+rapier 的物理与 rustysynth 的混音都能借它向量化。debug 的 wasm 才是这里慢的东西：
+链接要几分钟，下载体积是好几倍，而且跑的还是一条浏览器永远不会发布的代码路径。
 
 ### `cargo xtask run-wasm`
 
@@ -110,9 +112,10 @@ WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `fil
 它绑定到回环地址的 8000 端口；若该端口被占用，则尝试其后的端口，并打印要打开的 URL。
 `--no-serve` 只构建并跑 bindgen、不提供服务；尾部的位置参数会透传给 `cargo build`。
 
-构建一律走工作区的 `wasm-dev` cargo profile——沿用 release 的设定，但 `opt-level`
-以体积为目标——所以没有 profile 开关可传：产物总是落在
-`target/generated/wasm-dev`，浏览器也永远不会拿到 debug 二进制。
+构建一律走工作区的 `wasm-release` cargo profile——沿用 release 的设定，但 `opt-level`
+以体积为目标——并像每个 wasm 构建一样启用 `simd128` target feature，所以没有
+profile 开关可传：产物总是落在 `target/generated/wasm-release`，浏览器也永远不会
+拿到 debug 二进制。
 
 这里显式指定了每个二进制 target，而不是交给默认的 target 选择——否则两个 `*_android`
 crate 的 `cdylib` 也会一并构建，而那是只有 Android 才加载的库。浏览器运行的是二进制，
