@@ -20,12 +20,29 @@ use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World, bundle};
 
 use crate::handle::WorldHandle;
-use crate::thread::{FixedClock, ThreadControl};
+use crate::job::{JobSender, SendError};
+use crate::thread::FixedClock;
 use crate::world::WorldRunner;
 
 /// How many frames the filler generates per pass, the unit the pacing and
 /// the ring's headroom are measured in.
 const AUDIO_FILL_FRAMES: usize = 256;
+
+/// How an audio world gets its output, whichever way it is driven.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioOutputMode {
+    /// No device: the host pulls the fills with [`dispatch_audio_fill`].
+    Pulled,
+    /// Open nothing until an [`AudioOutputRequest`] lands, then retry
+    /// every tick until a device appears. A page asks from the handler of
+    /// the user's click: the tick that honours the request runs inside the
+    /// browser's sticky activation, so the context it opens is allowed to
+    /// start. A browser cannot report an opening failure, so the world
+    /// keeps trying rather than giving up after one attempt. A desktop
+    /// world asks the same way when its caller decides when sound may
+    /// start, so one mode covers both drivers.
+    OnRequest,
+}
 
 /// How the audio world is set up before its first fill.
 #[derive(Clone, Debug)]
@@ -38,13 +55,13 @@ pub struct AudioConfig {
     pub preferred_sample_rate: u32,
     /// The command channel's capacity, in queued jobs.
     pub command_capacity: usize,
-    /// Whether a world the host steps still opens an output device.
+    /// How the world gets its output, whichever way it is driven.
     ///
-    /// A stepped world opens none by default: a headless run pulls its
-    /// fills by hand and has nothing to play to. A browser is the
-    /// exception - its output is a Web Audio context, which the page
-    /// drives, so it needs no thread of its own to live on.
-    pub stepped_device: bool,
+    /// The default pulls none: a world nobody asked to sound stays silent,
+    /// whatever runs it. A page asks for the browser's output from a
+    /// user-gesture handler with [`request_audio_output`], because that is
+    /// where the browser allows a context to start.
+    pub output: AudioOutputMode,
 }
 
 impl Default for AudioConfig {
@@ -53,7 +70,7 @@ impl Default for AudioConfig {
             buffer_frames: 4096,
             preferred_sample_rate: 48000,
             command_capacity: 256,
-            stepped_device: false,
+            output: AudioOutputMode::Pulled,
         }
     }
 }
@@ -232,6 +249,37 @@ pub struct AudioFormat {
 #[derive(Clone, Copy, Debug)]
 pub struct AudioOutputOpen;
 
+/// The marker an [`AudioOutputMode::OnRequest`] audio world carries once a
+/// [`request_audio_output`] job has reached it. It stays for the world's
+/// life, so a subscriber can tell a world still waiting for its page's
+/// first click from one that has been asked and is only missing a device.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioOutputRequest;
+
+/// Ask `sender`'s audio world to open its output device.
+///
+/// The request travels as a job: it lands in the world's queue and is
+/// honoured on the tick that drains it, which on the web is the same frame
+/// the user's click ran in — inside the browser's sticky activation, so
+/// the context that tick opens is allowed to start. Asking a world that
+/// does not open on request costs nothing; asking twice is harmless.
+///
+/// # Errors
+///
+/// Errors when the queue is full or the world has stopped, like any job.
+pub fn request_audio_output(sender: &JobSender) -> Result<(), SendError> {
+    sender.send(Box::new(|world: &mut World| {
+        if world
+            .root_scope()
+            .query::<&AudioOutputRequest>()
+            .next()
+            .is_none()
+        {
+            world.root_scope_mut().spawn(bundle![AudioOutputRequest]);
+        }
+    }))
+}
+
 /// Everything the open output stream needs to keep running.
 struct OpenOutput {
     /// The stream, kept alive by being held.
@@ -252,12 +300,13 @@ struct OpenOutput {
 /// the default output device on its first tick and keeps it open, spawning
 /// [`AudioFormat`] and [`AudioOutputOpen`] once it knows them; until then,
 /// and whenever no device exists, the world runs silently. A stepped world
-/// opens no device either — the host pulls its fills with
-/// [`dispatch_audio_fill`] — unless its config asks for the browser's, which
-/// a page drives with no thread at all; without one the world gains neither
-/// component. Either way the world mixes whatever [`OnAudioFill`] sources a
-/// caller has since queued into it, and a world nobody has installed stays
-/// silent.
+/// follows its [`AudioOutputMode`] config instead: [`Pulled`] opens nothing —
+/// the host pulls its fills with [`dispatch_audio_fill`] — and [`OnRequest`]
+/// waits for a [`request_audio_output`] job, which a page sends from a
+/// user-gesture handler because that is where a browser allows a context to
+/// start. Until the device comes up the world gains neither component. Either
+/// way the world mixes whatever [`OnAudioFill`] sources a caller has since
+/// queued into it, and a world nobody has installed stays silent.
 ///
 /// Nothing is published until someone subscribes: a subscriber's collector
 /// runs once per tick, after the output's state has been updated.
@@ -283,10 +332,11 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
         "buffer_frames must hold at least two fill chunks of {AUDIO_FILL_FRAMES} frames"
     );
     let mut output: Option<OpenOutput> = None;
-    // Whether opening an output has been attempted: a self-driven world
-    // keeps retrying until a device appears, while a browser's context
-    // either opens or never will.
-    let mut attempted = false;
+    // Whether an [`AudioOutputRequest`] has landed: once true, a world in
+    // [`AudioOutputMode::OnRequest`] keeps trying to open a device every
+    // tick, because a browser cannot report an opening failure to retry
+    // against.
+    let mut requested = false;
     let mut scratch: Vec<f32> = Vec::new();
     // The sounding state flips only when the output and the sources appear
     // or vanish, so the log carries one line per transition.
@@ -304,15 +354,23 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             if control.stop_requested() {
                 return false;
             }
-            // A world that owns an output device opens it on its first
-            // tick. A stepped world owns one only when its config asks for
-            // the browser's: the host pulls the fills of every other
-            // stepped world by hand.
-            if opens_output(&config, control)
-                && output.is_none()
-                && (!attempted || control.self_driven())
+            // Whether this tick wants a device open: [`Pulled`] never,
+            // [`OnRequest`] once its page has asked. The config speaks for
+            // every world, self-driven or stepped alike.
+            if let AudioOutputMode::OnRequest = config.output
+                && world
+                    .root_scope()
+                    .query::<&AudioOutputRequest>()
+                    .next()
+                    .is_some()
             {
-                attempted = true;
+                requested = true;
+            }
+            let wants_output = match config.output {
+                AudioOutputMode::Pulled => false,
+                AudioOutputMode::OnRequest => requested,
+            };
+            if wants_output && output.is_none() {
                 match open_output(&config) {
                     Some(opened) => {
                         log::info!(
@@ -334,7 +392,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                         output = Some(opened);
                     }
                     None => {
-                        log::warn!("no audio output device is available yet");
+                        // A page's request can arrive before a device the
+                        // system is ready to grant exists; retrying is the
+                        // world's whole strategy, so this stays quiet.
+                        log::debug!("no audio output device is available yet");
                     }
                 }
             }
@@ -342,10 +403,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             // thread — so a device may be open for seconds before the world
             // carries one. Log the transition, not the state, so the log
             // stays quiet.
-            // A stepped world that asked for no device is open by
-            // definition: its host pulls the fills. One that asked for a
-            // browser's context sounds only once that context exists.
-            let open = output.is_some() || (!control.self_driven() && !config.stepped_device);
+            // A [`Pulled`] world is open by definition: its host pulls the
+            // fills. One waiting for its page's first click — or for a
+            // device — is not, whatever its sources are doing.
+            let open = output.is_some() || config.output == AudioOutputMode::Pulled;
             // The marker goes on the first tick the output is open, and the
             // world keeps it: an entity's components are fixed once spawned.
             if open
@@ -387,15 +448,6 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             true
         },
     )
-}
-
-/// Whether a world driven this way owns an output device.
-///
-/// A self-driven world always does. A world the host steps does only when
-/// its config asks for the browser's output: a Web Audio context is driven
-/// by the page, so it needs no thread of its own to live on.
-fn opens_output(config: &AudioConfig, control: &ThreadControl) -> bool {
-    control.self_driven() || config.stepped_device
 }
 
 /// Open the default output stream and the ring feeding it, preferring a

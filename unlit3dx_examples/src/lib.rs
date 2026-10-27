@@ -35,6 +35,8 @@
 //! put them on, and --stepped asks a windowed run to take that same path.
 
 pub mod headless;
+/// The interactive run, stepped inline: the wasm page drives this module.
+pub mod interactive;
 pub mod render;
 pub mod scene;
 
@@ -269,10 +271,11 @@ fn stepped_frame(worlds: SceneHandles, mut stepper: SceneStepper) -> OnFrame {
 
 /// The audio setup a windowed run takes when the host steps the worlds.
 ///
-/// A browser's stepped world opens the page's Web Audio context: the page
-/// drives it, so it needs no thread of its own, and the scene's tracks
-/// sound once the context is running. A desktop run that asked for the
-/// stepped path has nothing to play to and stays silent.
+/// A browser's stepped world opens the page's Web Audio context once the
+/// user's first click on Play asks for it: a context may only start inside
+/// a gesture, so the scene stays silent until then even though the page
+/// has been up the whole time. A desktop run that asked for the stepped
+/// path has nothing to play to and stays silent.
 fn stepped_audio() -> AudioSetup {
     if cfg!(target_arch = "wasm32") {
         AudioSetup::Device

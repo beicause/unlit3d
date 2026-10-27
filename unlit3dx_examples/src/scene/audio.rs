@@ -21,8 +21,12 @@ pub enum AudioSetup {
     /// No synthesizer: the world stays silent, and its control panel
     /// shows no tracks.
     Silent,
-    /// Open an output device, and build the synthesizer from the embedded
-    /// soundfont.
+    /// Open an output device once the scene asks for it, and build the
+    /// synthesizer from the embedded soundfont. The request comes from the
+    /// control panel's Play button, which every setup — window or browser —
+    /// owes its first click: that click unlocks the output and starts the
+    /// tracks together, so the sequencer's clock and the context's run in
+    /// step from the start.
     Device,
     /// Open no device: the host pulls the fills with [`dispatch_audio_fill`],
     /// so the synthesizer renders at whatever rate those fills name.

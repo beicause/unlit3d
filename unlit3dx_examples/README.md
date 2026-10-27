@@ -18,8 +18,10 @@ and each other. Balls also drop on their own, about one every 0.7 seconds.
 The camera orbits the scene slowly.
 
 A background loop plays on its own track of the audio world from the
-moment the world can sound. A second track holds a one-shot MIDI sequence —
-the pentatonic scale walked up and back down on a music box — which stays
+moment the world can sound — that is the panel's first click on Play,
+which unlocks the audio output everywhere and, in a browser, the page's
+audio with it. A second track holds a one-shot MIDI sequence — the
+pentatonic scale walked up and back down on a music box — which stays
 idle until its row's Play button starts it. That control panel — a small
 egui window — offers each track the buttons its state calls for, drops the
 next ball, and puts every live ball away: an idle sequence

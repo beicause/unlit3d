@@ -462,7 +462,10 @@ pub fn spawn_scene<R: WorldRunner>(
     // Only the setup that opens a device asks a stepped world for one; a
     // world the host pulls the fills of opens nothing.
     let config = AudioConfig {
-        stepped_device: matches!(audio_setup, AudioSetup::Device),
+        output: match audio_setup {
+            AudioSetup::Device => AudioOutputMode::OnRequest,
+            _ => AudioOutputMode::Pulled,
+        },
         ..AudioConfig::default()
     };
     let audio = spawn_audio_world_with::<R>(host, config);
@@ -476,7 +479,7 @@ pub fn spawn_scene<R: WorldRunner>(
             soundfont,
             autoplay_background,
         } => (Some(soundfont), autoplay_background),
-        AudioSetup::Device => (Some(unlit3dx_asset_bytes::soundfont().into()), true),
+        AudioSetup::Device => (Some(unlit3dx_asset_bytes::soundfont().into()), false),
     };
 
     let scene = Scene {
@@ -514,6 +517,7 @@ pub fn spawn_scene<R: WorldRunner>(
                         dispatch_input(world);
                     }),]);
                 spawn_floor(&scene);
+                world.root_scope_mut().spawn(bundle![scene.clone()]);
                 world.root_scope_mut().spawn(SceneBuild::new(&scene));
                 world
                     .root_scope_mut()

@@ -138,7 +138,16 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     let mut host = World::new();
     let fills = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&fills);
-    let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
+    let world = spawn_audio_world_with::<Threaded>(
+        &mut host,
+        AudioConfig {
+            output: AudioOutputMode::OnRequest,
+            ..AudioConfig::default()
+        },
+    );
+    // The world sounds only once asked, whatever drives it: a threaded run
+    // that wants a device sends the same request a page's click does.
+    request_audio_output(&world.sender).expect("the audio world takes the output request");
     // The source arrives the way a caller's would: an ordinary job. Jobs
     // are answered whether or not a device exists, so a device-less world
     // runs silently but stays alive.
@@ -187,8 +196,16 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
 #[test]
 fn the_audio_world_reports_its_output_opening() {
     let mut host = World::new();
-    let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
+    let world = spawn_audio_world_with::<Threaded>(
+        &mut host,
+        AudioConfig {
+            output: AudioOutputMode::OnRequest,
+            ..AudioConfig::default()
+        },
+    );
     let sender = world.sender.clone();
+    // Asked up front: a threaded world opens nothing on its own either.
+    request_audio_output(&sender).expect("the audio world takes the output request");
     // Both subscriptions are made the way a caller installs sources: the
     // format says which rate to build them at, the marker says the output
     // exists at all.
@@ -226,6 +243,94 @@ fn the_audio_world_reports_its_output_opening() {
     );
 }
 
+/// A stepped world whose output waits for a request opens nothing on its
+/// own, asked or not before the request lands: the marker a subscriber
+/// watches only appears once the job asking for the output has run.
+#[test]
+fn a_stepped_world_opens_nothing_until_asked() {
+    let mut host = World::new();
+    let world = spawn_audio_world_with::<Stepped>(
+        &mut host,
+        AudioConfig {
+            output: AudioOutputMode::OnRequest,
+            ..AudioConfig::default()
+        },
+    );
+    let sender = world.sender.clone();
+    let opened = sender
+        .watch(|world: &World| {
+            world
+                .root_scope()
+                .query::<&AudioOutputOpen>()
+                .next()
+                .map(|_audio_output_open| ())
+        })
+        .expect("the audio world accepts a subscription");
+    for _ in 0..10 {
+        step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    }
+    assert!(
+        opened.latest().is_none(),
+        "a stepped OnRequest world opened its output without a request"
+    );
+
+    request_audio_output(&sender).expect("the audio world accepts a job");
+    if !has_output_device() {
+        // No device to grant: the request keeps being retried and the
+        // world stays open-less, which is the answer to look for here.
+        for _ in 0..10 {
+            step_stepped_world(&host, world.entity, FRAME_SECONDS);
+        }
+        assert!(
+            opened.latest().is_none(),
+            "a world with no device announced an opening"
+        );
+        return;
+    }
+    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    assert!(
+        wait_for(|| opened.latest().is_some()),
+        "the request landed but the output never opened"
+    );
+}
+
+/// The request is honoured the tick the job reaches the world: the open
+/// marker appears on the step that drains it, not one step later.
+#[test]
+fn a_requested_output_opens_the_tick_the_job_lands() {
+    let mut host = World::new();
+    let world = spawn_audio_world_with::<Stepped>(
+        &mut host,
+        AudioConfig {
+            output: AudioOutputMode::OnRequest,
+            ..AudioConfig::default()
+        },
+    );
+    let sender = world.sender.clone();
+    let opened = sender
+        .watch(|world: &World| {
+            world
+                .root_scope()
+                .query::<&AudioOutputOpen>()
+                .next()
+                .map(|_audio_output_open| ())
+        })
+        .expect("the audio world accepts a subscription");
+    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    assert!(
+        opened.latest().is_none(),
+        "the world opened before being asked"
+    );
+    request_audio_output(&sender).expect("the audio world accepts a job");
+    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    if !has_output_device() {
+        return;
+    }
+    assert!(
+        opened.latest().is_some(),
+        "the tick that drained the request did not open the output"
+    );
+}
 /// Whether the default host has an output device to open.
 fn has_output_device() -> bool {
     use cpal::traits::{DeviceTrait, HostTrait};

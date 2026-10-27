@@ -19,7 +19,7 @@ use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
 
-use super::{PanelLayout, PanelSlots, SceneTracks, Track, clear_balls_in, drop_ball_in};
+use super::{PanelLayout, PanelSlots, Scene, SceneTracks, Track, clear_balls_in, drop_ball_in};
 use crate::render::RenderEntity;
 
 /// What one of the panel's two track rows shows.
@@ -101,6 +101,7 @@ fn track_controls(
     label: &str,
     sequencer: &mut MidiSequencer,
     layout: &mut PanelLayout,
+    audio: &JobSender,
 ) {
     ui.horizontal(|ui| {
         ui.label(label);
@@ -115,7 +116,13 @@ fn track_controls(
             match button {
                 // A sequence that finished is started by rewinding it first:
                 // a finished sequencer stays put however far its clock moves.
+                // Starting a track also unlocks the audio output: a browser
+                // grants a Web Audio context only inside the handling of a
+                // user gesture, and this click is that gesture, so the world
+                // that owns the output learns of the request on this frame's
+                // turn and opens the device here.
                 TrackButton::Play => {
+                    let _ = request_audio_output(audio);
                     sequencer.rewind();
                     sequencer.paused = false;
                 }
@@ -134,9 +141,10 @@ fn track_controls(
 /// nothing input-related is spawned here: the events the panel reacts to
 /// are the ones the rest of this world saw on the same tick.
 ///
-/// The background loop starts itself once the audio world can sound; the
+/// The background loop starts once the audio world's output is up — with the
+/// scene, or on the user's first click where the output waits for one; the
 /// one-shot sequence waits for its row's Play button and plays once per
-/// press. Each track then pauses, resumes and rewinds on its own, and the
+/// press, and pressing it is also what unlocks a locked output. Each track then pauses, resumes and rewinds on its own, and the
 /// balls drop or clear without touching the music. A scene with no
 /// synthesizer has no [`SceneTracks`] and nothing to transport, so its panel
 /// shows the balls alone.
@@ -145,12 +153,30 @@ fn track_controls(
 /// button writes it. egui may run a panel more than once in a frame, and every
 /// write here is one a second run repeats harmlessly.
 pub fn mount_controls(world: &mut World) {
+    // Whether the audio world has opened an output, watched from here so the
+    // panel can say when the tracks are still locked. A world the host pulls
+    // the fills of is open by definition, and a self-driven one opens on its
+    // first tick, so only a page whose output waits for the user's first
+    // click ever shows the hint below.
+    let unlocked = (|| {
+        let scene = world.root_scope().query::<&Scene>().next()?.clone();
+        scene
+            .audio
+            .watch(|audio| {
+                audio
+                    .root_scope()
+                    .query::<&AudioOutputOpen>()
+                    .next()
+                    .map(|_| ())
+            })
+            .ok()
+    })();
     world
         .root_scope_mut()
         .spawn(bundle![PanelLayout::default()]);
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
             let Some(mut layout) = world.query::<&mut PanelLayout>().next() else {
                 return;
             };
@@ -160,13 +186,38 @@ pub fn mount_controls(world: &mut World) {
                 // with its voice, so a scene whose soundfont failed to load
                 // shows the ball buttons alone.
                 if let Some(tracks) = world.query::<&SceneTracks>().next().map(|tracks| *tracks) {
-                    // One row at a time: the borrow each one takes is given
-                    // back before the next asks for its own.
-                    if let Ok(mut track) = world.query_one::<&mut Track>(tracks.background) {
-                        track_controls(ui, "Background music", &mut track.midi, &mut layout);
+                    // The output waits for the user's first click: say so, so
+                    // a silent panel reads as a nudge to press Play rather
+                    // than as something broken.
+                    if unlocked.as_ref().and_then(|open| open.latest()).is_none() {
+                        ui.label("audio is locked until you press Play");
                     }
-                    if let Ok(mut track) = world.query_one::<&mut Track>(tracks.sequence) {
-                        track_controls(ui, "MIDI sequence", &mut track.midi, &mut layout);
+                    // One row at a time: the borrow each one takes is given
+                    // back before the next asks for its own. The sender goes
+                    // along so Play can unlock the output the same click.
+                    if let (Some(scene), Ok(mut track)) = (
+                        world.query::<&Scene>().next(),
+                        world.query_one::<&mut Track>(tracks.background),
+                    ) {
+                        track_controls(
+                            ui,
+                            "Background music",
+                            &mut track.midi,
+                            &mut layout,
+                            &scene.audio,
+                        );
+                    }
+                    if let (Some(scene), Ok(mut track)) = (
+                        world.query::<&Scene>().next(),
+                        world.query_one::<&mut Track>(tracks.sequence),
+                    ) {
+                        track_controls(
+                            ui,
+                            "MIDI sequence",
+                            &mut track.midi,
+                            &mut layout,
+                            &scene.audio,
+                        );
                     }
                     ui.separator();
                 }

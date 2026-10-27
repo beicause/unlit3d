@@ -57,11 +57,11 @@ pub mod physics;
 pub mod present;
 /// Requests a world answers, and the waiting for their answers.
 pub mod request;
-// The recorder exists for the MCP audio tools, which are the only thing that
-// constructs one, so it is compiled exactly where they are. The format it
-// writes the samples in is public there: the demo's headless run encodes its
-// mix through it rather than carrying an encoder of its own.
-#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+// The recorder exists for the MCP audio tools and for the demo's interactive
+// run, which captures a mix on the web too, where the tools are not built. Its
+// format is public wherever it is compiled: the headless run encodes its mix
+// through it rather than carrying an encoder of its own.
+#[cfg(feature = "audio")]
 pub mod record;
 mod sync;
 #[cfg(feature = "synth")]
@@ -85,8 +85,9 @@ pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
 pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
-        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioOutputOpen, GlobalAudioGain,
-        OnAudioFill, dispatch_audio_fill, spawn_audio_world_with,
+        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioOutputMode, AudioOutputOpen,
+        AudioOutputRequest, GlobalAudioGain, OnAudioFill, dispatch_audio_fill,
+        request_audio_output, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
@@ -103,7 +104,7 @@ pub mod prelude {
         BLIT_PASS_ORDER, OffscreenTarget, Presenter, SCENE_PASS_ORDER, bind_offscreen,
         draw_presented, pump_presented, resize_presented, setup_presenter,
     };
-    #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+    #[cfg(feature = "audio")]
     pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]
     pub use crate::synth::{
@@ -125,7 +126,7 @@ pub mod prelude {
         world::{
             Stepped, Threaded, WorldName, WorldRunner, spawn_stepped_world_with_init,
             spawn_threaded_world, spawn_threaded_world_with_init, step_stepped_world,
-            with_stepped_world,
+            with_stepped_world, with_stepped_world_mut,
         },
     };
 }

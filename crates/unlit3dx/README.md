@@ -266,13 +266,18 @@ The bridges:
   world: subscribe to the format, then
   queue the job that spawns them.
 
-  A stepped audio world opens no device at all: there is nothing to play to
-  and no callback to pull the ring. It publishes no format either, so a
-  caller that wants sound installs its sources up front and calls
-  `dispatch_audio_fill` itself when it wants a chunk — which is what the demo's
-  headless run does, rendering the mix to a file. `dispatch_audio_fill` is the
-  whole of the audio thread's per-chunk work, so stepping it directly is the
-  same mixing, minus the ring.
+  Every world follows its `AudioConfig.output`, threaded or stepped alike:
+  `Pulled` opens no device at all — there is nothing to play to and no
+  callback to pull the ring — and publishes no format either, so a caller
+  that wants sound installs its sources up front and calls
+  `dispatch_audio_fill` itself when it wants a chunk, which is what the
+  demo's headless run does, rendering the mix to a file. `OnRequest` waits
+  for a `request_audio_output` job and then keeps trying every tick until a
+  device appears. The demo sends the request from the handler of the
+  panel's Play button on every platform: a browser allows a Web Audio
+  context to start only inside a user gesture, and starting the tracks on
+  the same click keeps the sequencer's clock and the context in step
+  everywhere else.
 
 - **synth** (on by default, implies audio): the pieces to install, built on
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
