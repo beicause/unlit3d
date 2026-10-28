@@ -143,6 +143,7 @@ impl Example {
             base_color_texture: true,
             morph: false,
             strip_index_format: None,
+            lit: false,
         };
         let pipeline = SpecializedPipeline::create(device, variant.clone());
 
@@ -590,12 +591,32 @@ for draw in scene.draws {
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
 的事。
 
+### 光照：前向聚簇的 Lambert
+
+lit 管线就是多一个着色器 flag 的 unlit 管线：[`UnlitVariant::lit`](pipeline::UnlitVariant::lit) 打开一个 WESL flag，组合出的片元阶段把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——因此给一个家族分配的网格可以在另一个家族里绘制，一个 source 也能同时携带两者。
+
+着色只有 Lambert：一盏灯贡献它的颜色乘一个亮度系数，求和后调制基础色。没有镜面项、没有金属反射、没有菲涅耳、也没有能量守恒，所以被照亮的表面是自身反照率的一种调制，而不是材质的物理模型。
+
+<details>
+<summary>一盏灯是什么，片元又如何找到照到自己的那些</summary>
+
+四种灯共用一个记录：**方向光**、带范围（range）的**点光**、带锥角的**聚光**，以及**面光**——从自己平面的一侧辐射的凸平面多边形。不论哪种，记录都是同一个 [`LightGpu`](light::LightGpu)，由 `kind.x` 说明其余通道中哪些有意义，于是一个格（cell）里的灯就是一串指向同一个数组的下标。
+
+聚簇是 CPU 上的工作。视野按约 [`cell_pixels`](light::ClusterConfig::cell_pixels) 的屏幕格子切开，并按 [`z_slices`](light::ClusterConfig::z_slices) 切成深度切片。第 0 片吸收近端，其余在透视投影下按对数切、在正交投影下按线性切，覆盖配置声明的固定场景范围。每盏灯的包围球被分配到它触及的格子，溢出的格子保留最强的那些灯——排序依据是这盏灯在相机所见的画面里贡献的照度，所以被丢掉的是最不可见的。片元随后把自己的屏幕位置与视深度映射到一个格子，读那个格子的灯表。片元的成本是它自己格子里的灯数，而不是本帧的灯数。
+
+放在 CPU 上做，正是同一套路径能同时服务两种设备的原因。GPU 聚簇要用计算着色器，而 WebGL2 完全没有；而且格数组和姿势数组一样是帧级数组，设备支持时按 storage buffer 上传，不支持时按 texel 上传。
+
+面光用它多边形的精确漫反射形状因子着色——闭式的围道积分，不是蒙特卡洛估计，也不是拟合的查找表——这也正是它不需要任何镜面机制的原因：多边形光源的漫反射项只取决于多边形与片元，与视方向无关。
+
+</details>
+
+它的选项就是 unlit 家族自己的选项，上层的 `LitPipelineKey` 只是把这些选项放在一个自己的类型下——正是一个 source 能同时携带两个家族的原因。
 ### 读取本帧的数组：storage buffer 还是 texel
 
-内置着色器要读四个帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重，
-以及本帧的形变位移。最后一项概念上是网格自己的几何，但整帧共用一个数组，网格通过
-自己的 metadata 条目命名它占的那段——这正是网格组已无物可绑的原因。最直接的绑定方式
-是只读 storage buffer，凡满足 WebGPU 基线的设备都走这条。
+内置着色器要读帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重与形变位移，
+以及变体点亮光照时的灯记录、格数组、多边形顶点和聚簇参数。形变位移概念上是网格自己的
+几何，但整帧共用一个数组，网格通过自己的 metadata 条目命名它占的那段——这正是网格组已无
+物可绑的原因。最直接的绑定方式是只读 storage buffer，凡满足 WebGPU 基线的设备都走这条。
 
 WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 `max_storage_buffers_per_shader_stage` 为 0，声明 storage buffer 的绑定组布局会被

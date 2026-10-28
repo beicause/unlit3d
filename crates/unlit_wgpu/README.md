@@ -171,6 +171,7 @@ impl Example {
             base_color_texture: true,
             morph: false,
             strip_index_format: None,
+            lit: false,
         };
         let pipeline = SpecializedPipeline::create(device, variant.clone());
 
