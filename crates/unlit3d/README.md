@@ -512,13 +512,13 @@ caller extends the set through the same trait the built-in ones use:
   builds the common rectangle.
 
 Shading is Lambert: a light modulates the base color and adds brightness, so
-there is no specular term, no metalness, no Fresnel and no energy conservation
-anywhere. The clustered forward path is what keeps that affordable once the
-light count grows: the frame is split into screen tiles times logarithmically
-spaced depth slices on the CPU, each light is written into the cells it can
-reach, and a fragment reads only its own cell — so the cost is one cell lookup
-plus the lights in it, not one loop over every light in the scene. The same
-path runs on WebGL2, which has no compute shaders at all.
+there is no specular term, no metallic reflection, no Fresnel and no energy
+conservation anywhere. The clustered forward path is what keeps that affordable
+once the light count grows: the frame is split into screen tiles times
+logarithmically spaced depth slices on the CPU, each light is written into the
+cells it can reach, and a fragment reads only its own cell — so the cost is
+one cell lookup plus the lights in it, not one loop over every light in the
+scene. The same path runs on WebGL2, which has no compute shaders at all.
 
 Polygon lights carry the classic Lambert form factor of the polygon seen from
 the shaded point rather than a fitted lookup table: it is a closed form over

@@ -685,8 +685,9 @@ other, and a source can carry both.
 
 The shading is Lambert and nothing more: a light contributes its color times a
 brightness factor, and the sum modulates the base color. There is no specular
-term, no metalness, no Fresnel and no energy conservation, so a lit surface is
-a modulation of its own albedo rather than a physical model of a material.
+term, no metallic reflection, no Fresnel and no energy conservation, so a lit
+surface is a modulation of its own albedo rather than a physical model of a
+material.
 
 <details>
 <summary>What a light is, and how a fragment finds the ones that reach it</summary>
