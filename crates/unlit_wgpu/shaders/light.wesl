@@ -57,14 +57,13 @@ public struct LightGpu {
 public struct ClusterUniform {
     /// `xyz` = the grid's dimensions; `w` = the most lights one cell holds.
     dims: vec4<u32>,
-    /// `x` = `1 / (ln(far) - ln(near))`; `y` = `ln(near)`; `z` = the slice count;
-    /// `w` = `near`.
-    ///
-    /// A fragment's depth slice is `((ln(max(d, w)) - y) * x * z)`, floored and
-    /// clamped to the last slice -- the same arithmetic the CPU assignment runs
-    /// over each light's depth range.
+    /// Perspective: `x` = `1 / ln(far / first)`, `y` = `ln(first)`, `z` = one
+    /// less than the slice count, `w` = `first`. Orthographic: `x` = the
+    /// reciprocal linear range, `y` = `first`, `z` = the slice count.
     depth: vec4<f32>,
     /// `rgb` = the linear colour every surface receives with no light on it;
     /// `w` is zero.
     ambient: vec4<f32>,
+    /// Nonzero for a perspective projection, zero for an orthographic one.
+    perspective: vec4<u32>,
 }

@@ -7,8 +7,9 @@
 [![Cargo](https://img.shields.io/crates/v/unlit3d.svg)](https://crates.io/crates/unlit3d)
 [![Documentation](https://docs.rs/unlit3d/badge.svg)](https://docs.rs/unlit3d)
 
-面向 WebGPU 的紧凑、可拓展的、有主见的 3D 渲染器，以及构建在其上的
-ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支持 WebGL 与 GLES。
+构建在 `wgpu` 上的紧凑、可拓展的、有主见的 3D 渲染器，以及构建在其上的
+ECS 层。内置 **unlit** 管线与并排的 **Lambert** 管线（简单的漫反射光照），移动端优先；
+跑在 WebGPU 与 WebGL2 基线上。
 它直接使用并暴露 `wgpu` 资源，允许底层控制和拓展，带有很少的CPU端的高级封装。
 
 它主要面向拥有图形渲染知识的开发者和编程智能体。与主流的面向大众用户的游戏引擎不同，
@@ -21,21 +22,22 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 
 - **轻量、可自定义。** 没有繁重的依赖，较快的编译时间，对 AI Agent 友好。精简 ECS
   范式并借鉴 OOP，更多地使用行为组件替代系统，将关注点放在对象上。
-- **移动和 Web 优化。** 默认瞬态 MSAA 纹理、瞬态深度纹理，顶点属性压缩，默认无光照
-  材质，以及少量显式的渲染 pass。没有对移动端较为昂贵的 prepass、PBR 光照、阴影，
-  没有使用计算着色器。
+- **移动和 Web 优化。** 默认瞬态 MSAA 纹理、瞬态深度纹理，顶点属性压缩，简单的
+  漫反射光照，以及少量显式的渲染 pass。没有对移动端较为昂贵的 prepass、PBR 光照、
+  阴影与后处理，没有使用计算着色器。
 - **底层。** 直接使用 wgpu 资源，允许直接操作缓冲。渲染资源跨帧保留，资源图管理使得
   资源只在必要时重建。
 - **确定性的渲染。** 一流的无头渲染、CI 自动化快照测试。
 
-不支持：光照与阴影，以及后处理。
+不支持：阴影、基于物理的材质与后处理。光照是方向光、点光、聚光与多边形面光下的
+Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备也走同一条路径。
 
 </details>
 
 ## 功能一览
 
 - **移动端优先，且跨平台。** 渲染 pass 是显式的——通常一个，需要合成时更多——配以
-  瞬态深度与多重采样纹理、压缩顶点，没有 prepass、计算着色器、光照与阴影。同一个
+  瞬态深度与多重采样纹理、压缩顶点，没有 prepass、计算着色器与阴影。同一个
   帧循环既驱动窗口，也驱动无头离屏目标、Web 示例与 Android APK。
 - **跑在 WebGL2 与 WebGPU 基线设备上。** 适配器在运行时挑选：优先 WebGPU，平台只有
   WebGL2 时回退过去。WebGL2 缺少 WebGPU 基线的若干部分——没有 storage buffer、没有
@@ -50,6 +52,10 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   可渲染实体把网格、材质与管线作为组件携带，游戏逻辑与绘制共用同一套模型。
 - **按变体组合的 unlit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
   逐实例变换与颜色、基础色纹理、蒙皮、形变目标——并针对本帧的渲染目标特化。
+- **Lambert 光照，前向聚类。** 方向光、点光、聚光与凸多边形面光在与 unlit 管线相同的
+  前向 pass 里着色，它是 unlit 管线的扩展：多一个变体开关、同一套顶点流与同一个 mesh
+  组。本帧的光源在 CPU 上聚类成屏幕瓦片与对数深度切片的网格，于是片元只读一个格子，
+  着色器不需要计算着色器。没有阴影。
 - **自定义着色器与逐实例数据。** 调用者自己的家族通过与内置家族同一个调用注册，用自己的
   管线绘制——手写的 `wgpu` 管线，或用本库公开着色器包组合出的 WESL 模块——并拥有
   自己的逐实例顶点流，由内置 unlit 家族所实现的同一个 `InstanceData` trait 描述。
@@ -74,7 +80,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 
 | Crate | 职责 |
 |-------|------|
-| [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线与 egui 后端。不认识 ECS。 |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 与 lit 管线、egui 后端。不认识 ECS。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |

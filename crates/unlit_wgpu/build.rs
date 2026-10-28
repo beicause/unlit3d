@@ -6,7 +6,7 @@
 //! `wesl::wesl_pkg!`, so runtime shader composition can import the built-in
 //! modules (`import unlit_wgpu::mesh_compression;`).
 //!
-//! The `unlit` module belongs to the built-in pipeline, so it is bundled only
+//! The `lit` module belongs to the built-in pipeline, so it is bundled only
 //! when that feature is on; everything else the package carries mirrors the
 //! Rust types a caller binds (the camera and frame globals, the mesh decode
 //! parameters) and is part of the core.
@@ -27,7 +27,7 @@ fn main() {
         package
             .root
             .submodules
-            .retain(|module| module.name != UNLIT_MODULE);
+            .retain(|module| module.name != BUILT_IN_MODULE);
     }
 
     package
@@ -35,5 +35,5 @@ fn main() {
         .expect("failed to build the WESL package artifact");
 }
 
-/// Name of the WESL module holding the built-in unlit shader.
-const UNLIT_MODULE: &str = "unlit";
+/// Name of the WESL module holding the built-in shader.
+const BUILT_IN_MODULE: &str = "lit";

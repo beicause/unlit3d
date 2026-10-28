@@ -1,4 +1,4 @@
-// unlit -- the built-in unlit vertex/fragment pair.
+// lit -- the built-in unlit and lit vertex/fragment pair.
 //
 // One entry shader covers every built-in variant: the differences are
 // orthogonal WESL conditional-compilation flags, so each composed variant
@@ -47,8 +47,8 @@
 //   ALPHA_CUTOFF         discard a fragment whose alpha is below the
 //                        instance's cutoff
 //   LIT                  shade the fragment with the frame's lights: read the
-//                        cluster the vertex hands the fragment, walk its cells
-//                        and add each light's contribution to the ambient term
+//                        cell the fragment's NDC and view depth identify,
+//                        walk its cell and add each light to the ambient term
 //
 // The `VERTEX_*` names are the geometry's answer rather than a variant's: a
 // pipeline reads them off the vertex buffers its draws are recorded with, so
@@ -199,10 +199,12 @@ struct VertexOut {
     @if(LIT) @location(3) normal: vec3<f32>,
     /// World-space position, which the lights' world-space records address.
     @if(LIT) @location(4) world: vec3<f32>,
-    /// Normalized device coordinates. They are affine in screen space, so the
-    /// rasterizer's perspective-correct interpolation reproduces the fragment's
-    /// own value without dividing by the interpolated `w` again.
-    @if(LIT) @location(5) ndc: vec2<f32>,
+    /// Normalized device coordinates, which the cluster lookup turns into a
+    /// cell. They are affine in screen space, so they interpolate linearly: the
+    /// rasterizer's perspective-correct interpolation would divide by each
+    /// vertex's `w` again and land a fragment in the wrong cell wherever the
+    /// depth of a triangle varies across its surface.
+    @if(LIT) @interpolate(linear) @location(5) ndc: vec2<f32>,
 }
 
 /// Transform a local-space point by an affine matrix packed as three columns
@@ -349,7 +351,13 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
 
     // The instance transform always places the vertex, so a screen-space draw
     // such as a UI pass binds the identity record and the transform is a no-op.
-    let world = transform_point(in.model_0, in.model_1, in.model_2, local);
+    //
+    // Mutable rather than a `let` because of the hook below: a caller's snippet
+    // displaces the vertex here, and everything after this point -- the clip
+    // position, the world position the lights are addressed from, the normal and
+    // the cluster cell -- follows the displaced vertex.
+    var world = transform_point(in.model_0, in.model_1, in.model_2, local);
+    // unlit_wgpu::hook vertex
 
     var out: VertexOut;
     out.clip = camera.clip_from_world * vec4<f32>(world, 1.0);
@@ -411,11 +419,14 @@ fn fragment_normal(in: VertexOut) -> vec3<f32> {
         }
     }
     var geometric = cross(dpdx(in.world), dpdy(in.world));
-    let length_squared = dot(geometric, geometric);
-    if length_squared <= 1.0e-16 {
+    // Named apart from the vertex normal's length above: an inline WESL
+    // conditional lays its declarations into the surrounding scope rather
+    // than opening one of its own.
+    let geometric_length_squared = dot(geometric, geometric);
+    if geometric_length_squared <= 1.0e-16 {
         return vec3<f32>(0.0, 0.0, 1.0);
     }
-    geometric = geometric * inverseSqrt(length_squared);
+    geometric = geometric * inverseSqrt(geometric_length_squared);
     let to_eye = camera.camera_position.xyz - in.world;
     return select(-geometric, geometric, dot(geometric, to_eye) >= 0.0);
 }
@@ -428,26 +439,35 @@ fn view_depth(world: vec3<f32>) -> f32 {
     return -view.z;
 }
 
-/// The cluster cell a fragment at `ndc` and `depth` falls in.
+/// The depth slice containing `depth`, before clamping to the grid.
 ///
-/// The x and y cells come from the target size the grid was built for, the
-/// depth slice from a logarithm of the view depth, and the flat index from the
-/// cell's place in the grid -- xy first, then the slice. It is the same
-/// arithmetic the CPU ran over each light's bounds, and being the same is the
-/// only thing that makes the assignment correct.
+/// Slice zero absorbs the near end. Perspective slices are logarithmic after
+/// that boundary; orthographic slices are linear. The continuous coordinate is
+/// returned as well so a debug view can draw the exact boundary the lookup
+/// floors, without maintaining a second mapping.
+@if(LIT)
+fn cluster_slice_coordinate(depth: f32) -> f32 {
+    if depth < cluster.depth.w {
+        return 0.0;
+    }
+    if cluster.perspective.x != 0u {
+        return (log(depth) - cluster.depth.y) * cluster.depth.x * cluster.depth.z + 1.0;
+    }
+    return (depth - cluster.depth.y) * cluster.depth.x * cluster.depth.z;
+}
+
+@if(LIT)
+fn cluster_depth_slice(depth: f32) -> u32 {
+    return u32(clamp(floor(cluster_slice_coordinate(depth)), 0.0, f32(cluster.dims.z - 1u)));
+}
+
+/// The cluster cell a fragment at `ndc` and `depth` falls in.
 @if(LIT)
 fn fragment_cluster_index(ndc: vec2<f32>, depth: f32) -> u32 {
     let dims = cluster.dims.xyz;
     let x = clamp(floor((ndc.x * 0.5 + 0.5) * f32(dims.x)), 0.0, f32(dims.x - 1u));
     let y = clamp(floor((ndc.y * 0.5 + 0.5) * f32(dims.y)), 0.0, f32(dims.y - 1u));
-    // `x` = 1 / ln(far / near), `y` = ln(near), `z` = slice count, `w` = near.
-    let log_depth = log(max(depth, cluster.depth.w));
-    let slice = clamp(
-        floor((log_depth - cluster.depth.y) * cluster.depth.x * cluster.depth.z),
-        0.0,
-        cluster.depth.z - 1.0,
-    );
-    return (u32(slice) * dims.y + u32(y)) * dims.x + u32(x);
+    return (cluster_depth_slice(depth) * dims.y + u32(y)) * dims.x + u32(x);
 }
 
 /// A light at infinity: one direction, no falloff.
@@ -630,27 +650,19 @@ fn fragment_color(in: VertexOut) -> vec4<f32> {
     return color;
 }
 
+/// The fragment stage: the base color, lit when the variant lights, then the
+/// caller's hook, then the target's encoding.
+///
+/// There is one exit rather than one per branch: the hook runs at the end of the
+/// stage and rewrites the color that leaves it, so there has to be a single
+/// color for it to rewrite.
 @fragment
 public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let color = fragment_color(in);
+    var color = fragment_color(in);
     // Lighting multiplies the base color and leaves its alpha alone: alpha is
     // coverage, and a surface does not become more transparent in the dark.
     @if(LIT) {
-        var lit = lit_color(in, color);
-        @if(ALPHA_CUTOFF) {
-            if lit.a < in.cutoff {
-                discard;
-            }
-        }
-        @if(SRGB_TO_LINEAR_OUTPUT) {
-            return vec4<f32>(
-                srgb_to_linear(lit.r),
-                srgb_to_linear(lit.g),
-                srgb_to_linear(lit.b),
-                lit.a,
-            );
-        }
-        return lit;
+        color = lit_color(in, color);
     }
     // A cut-off instance draws binary coverage: it writes depth and color like
     // an opaque one wherever the fragment is opaque enough, and writes nothing
@@ -662,6 +674,7 @@ public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             discard;
         }
     }
+    // unlit_wgpu::hook fragment
     // An sRGB-aware target encodes whatever it is given, so hand it linear
     // light and let its own encode produce the color the caller asked for.
     // Only RGB converts: alpha is coverage, not color.

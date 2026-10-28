@@ -1,4 +1,4 @@
-//! The frame's lights, as a scene spawns them.
+//! The lit pipeline's lights, and how a frame clusters them.
 //!
 //! A light is one component -- [`LightSource`], holding a boxed [`Light`] -- so a
 //! scene keeps every kind it has in one column and the frame collects them all
@@ -15,10 +15,10 @@
 //!
 //! # The lit pipeline
 //!
-//! [LitPipelineKey] is the family key, [MeshSourceLitExt] registers it, and
-//! [LitPipeline] is the component a mesh is drawn with. A lit pipeline is
+//! [`LitPipelineKey`] is the family key, [`MeshSourceLitExt`] registers it, and
+//! [`LitPipeline`] is the component a mesh is drawn with. A lit pipeline is
 //! otherwise an unlit one -- same vertex channels, same material, same instance
-//! stream -- so it reuses [UnlitOptions] and the unlit factory, and a mesh
+//! stream -- so it reuses [`UnlitOptions`] and the unlit factory, and a mesh
 //! allocated for either draw works with both.
 //!
 //! # Intensity is dimensionless
@@ -229,14 +229,19 @@ impl Light for SpotLight {
 
 /// A convex planar polygon radiating from one side of its plane.
 ///
-/// The light fades with distance from `range` like a point light and adds the
-/// polygon's own form factor, so a patch wider than its range still lights the
-/// corners it covers. The vertices are in the light's own space and lie in one plane; the frame
-/// transforms them by the light's transform and shades with the polygon's form
-/// factor, so the light is its shape rather than a bounding rectangle. A quad
-/// light shines out of the side its vertices wind towards: the frame reverses
-/// the winding when it faces away from the transform's `-Z`, so a caller states
-/// a polygon and not a handedness.
+/// The shading is the polygon's own form factor, which already carries the
+/// inverse-square falloff of every point of it, so a patch wider than its range
+/// still lights the corners it covers and the light has no attenuation term of
+/// its own. The vertices are in the light's own space and lie in one plane; the
+/// frame transforms them by the light's transform and shades with the polygon's
+/// form factor, so the light is its shape rather than a bounding rectangle. A
+/// quad light shines out of the side its vertices wind towards: the frame
+/// reverses the winding when it faces away from the transform's `-Z`, so a
+/// caller states a polygon and not a handedness.
+///
+/// A triangle states itself by repeating a corner. The frame drops corners that
+/// coincide, so the polygon is shaded with as many corners as it has distinct
+/// ones, and three of them are a triangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct QuadLight {
     /// The light's linear colour; alpha is unused.
@@ -245,7 +250,11 @@ pub struct QuadLight {
     pub intensity: f32,
     /// How far the light reaches, in world units.
     pub range: f32,
-    /// The polygon's corners, in the light's own space.
+    /// The polygon's corners in order, in the light's own space.
+    ///
+    /// A quad uses all four; a triangle repeats one of them, because a convex
+    /// polygon needs three corners and the array has room for a fourth that a
+    /// horizon clip would produce.
     pub vertices: [Vec3; 4],
 }
 
@@ -269,29 +278,58 @@ impl QuadLight {
     }
 }
 
+/// Corners closer together than this are one corner, which is how a triangle
+/// stated as a quad collapses to three.
+const MERGED_CORNER_SQUARED: f32 = 1.0e-8;
+
 impl Light for QuadLight {
     fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        let mut vertices = self.vertices;
-        let normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
+        let mut corners = self.vertices;
+        let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
         if normal.dot(Vec3::NEG_Z) < 0.0 {
-            vertices.reverse();
+            corners.reverse();
         }
-        let world = vertices.map(|vertex| world_from_local.transform_point3(vertex));
-        let center = (world[0] + world[1] + world[2] + world[3]) * 0.25;
+        // Drop a corner that sits on its predecessor, which leaves as many
+        // corners as the polygon has distinct ones: three for a triangle stated
+        // as a quad, four for a quad. A polygon left with fewer than three has
+        // no area, and the shader draws nothing for it.
+        let mut live = [Vec3::ZERO; 4];
+        let mut count = 0;
+        for corner in corners {
+            if count > 0 && (live[count - 1] - corner).length_squared() <= MERGED_CORNER_SQUARED {
+                continue;
+            }
+            live[count] = corner;
+            count += 1;
+        }
+        if count > 1 && (live[0] - live[count - 1]).length_squared() <= MERGED_CORNER_SQUARED {
+            count -= 1;
+        }
+        let offset = sink.vertices.len() as u32;
+        sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
+        if count < 3 {
+            // A corner or a line: no area to integrate over, so the light names
+            // no corners and the shader draws nothing for it. The record still
+            // carries a position, so culling has somewhere to put it.
+            let anchor = world_from_local.transform_point3(self.vertices[0]);
+            sink.gpu.position_radius = anchor.extend(self.range.max(0.0));
+            sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, 0, 0);
+            return;
+        }
+        let world = live.map(|corner| world_from_local.transform_point3(corner));
+        let center = world[..count].iter().copied().sum::<Vec3>() / count as f32;
         // The light reaches its polygon wherever the polygon lies, so the radius
         // that culls it has to hold the corners and not just the range: a patch
         // wider than the range still lights its far edge.
-        let extent = world
+        let extent = world[..count]
             .iter()
-            .map(|vertex| vertex.distance(center))
+            .map(|corner| corner.distance(center))
             .fold(0.0_f32, f32::max);
-        let offset = sink.vertices.len() as u32;
-        for vertex in world {
-            sink.vertices.push(vertex.extend(1.0));
+        for corner in &world[..count] {
+            sink.vertices.push(corner.extend(1.0));
         }
         sink.gpu.position_radius = center.extend(self.range.max(0.0) + extent);
-        sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
-        sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, 4, 0);
+        sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, count as u32, 0);
     }
 
     fn describe(&self) -> LightDescribe {
@@ -549,6 +587,39 @@ mod tests {
         let (gpu, vertices) = pack(&quad, transform);
         assert_eq!(gpu.position_radius.truncate(), Vec3::new(3.0, 0.0, 0.0));
         assert!(vertices.iter().all(|vertex| vertex.x >= 2.0 - 1e-6));
+    }
+
+    #[test]
+    fn a_triangle_states_itself_by_repeating_a_corner() {
+        let triangle = QuadLight {
+            color: Vec4::ONE,
+            intensity: 1.0,
+            range: 8.0,
+            vertices: [
+                Vec3::new(-1.0, -1.0, 0.0),
+                Vec3::new(1.0, -1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+        };
+        let (gpu, vertices) = pack(&triangle, Affine3A::IDENTITY);
+        assert_eq!(gpu.kind.z, 3, "the repeated corner is one corner");
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(gpu.kind.y, 0);
+    }
+
+    #[test]
+    fn a_quad_light_with_every_corner_on_one_spot_has_no_area() {
+        let degenerate = QuadLight {
+            color: Vec4::ONE,
+            intensity: 1.0,
+            range: 8.0,
+            vertices: [Vec3::ZERO; 4],
+        };
+        let (gpu, vertices) = pack(&degenerate, Affine3A::IDENTITY);
+        assert_eq!(gpu.kind.z, 0);
+        assert!(vertices.is_empty());
+        assert!(gpu.position_radius.truncate().is_finite());
     }
 
     #[test]

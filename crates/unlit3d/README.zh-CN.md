@@ -326,6 +326,31 @@ z-sorted 绘制排序与透视相机完全一致。
 
 </details>
 
+## lit 管线
+
+`LitPipelineKey` 是同一个家族，只是打开了光照路径。它复用 unlit 管线的一切——
+网格通道、实例流、绑定组布局、着色器包——只在一点上不同：片段阶段把本帧的光源累加
+进去，而不是只返回基础色。依然没有 prepass、没有阴影贴图、没有计算通道。
+
+光源就是普通实体上的普通组件，因此摆放和移动它们与其他东西完全一样，一帧里通过
+同样的场景遍历收集进来。内置提供四种，调用者用它所用的同一套 trait 扩展这个集合：
+
+- `DirectionalLight`——太阳；平移无关紧要，只有旋转起作用。
+- `PointLight`——一个带范围的位置。
+- `SpotLight`——带内外锥角的点光，沿实体本地 −Z 发光。
+- `QuadLight`——局部空间四个顶点构成的任意凸多边形，用于面光与柔和的窗光；它的
+  `rect` 构造函数构造常见的矩形。
+
+着色是 Lambert：光源调制基础色并叠加亮度，因此没有镜面项、没有金属度、没有菲涅耳、
+也没有能量守恒。光源一多，前向聚类就是让这件事仍然负担得起的手段：每帧在 CPU 上把
+画面切成屏幕瓦片乘对数间隔的深度切片，每盏灯写进它能照到的格子，片元只读自己那一格
+——于是成本是一次格子查询加上格内的灯，而不是遍历全场每一盏灯。这条路径同样跑在
+完全没有计算着色器的 WebGL2 上。
+
+多边形面光携带的是从被照点看过去的多边形在经典 Lambert 下的形状因子，而不是拟合出来的
+查找表：它是沿多边形各边求和的闭式解，对漫反射受光面是精确的，且不需要预计算纹理。
+阴影不在范围内，所以这条管线只是个光照累加器。
+
 ## 自定义着色器与逐实例数据
 
 帧路径中没有任何东西是留给内置 unlit 着色器的：它作为一个普通家族住在 `unlit` 模块里。
@@ -334,11 +359,12 @@ z-sorted 绘制排序与透视相机完全一致。
 `wgpu::RenderPipeline`，或用本 crate 公开的着色器包组合出的 WESL 模块——需要时还提供
 自己的逐实例顶点数据。
 
-若想保留内置家族——它的布局、顶点流、逐实例记录——只换掉入口着色器，则不必注册任何东西：
-把源码放进 `unlit_wgpu::pipeline::UnlitOptions::shader`，再构造
-`unlit::UnlitPipelineKey` 即可。变体所用的 feature flag 与内置包都在作用域内，因此源码
-声明内置着色器本会声明的绑定，而布局仍由变体决定——这正是「只改一个字段」的原因。
-自己实现一个家族是另一条路，适用于着色器之外还有别的东西要变的情况。
+若想保留内置家族——它的布局、顶点流、逐实例记录——只换掉如何着色，则不必注册任何东西：
+把 `UnlitShader` 放进 `unlit_wgpu::pipeline::UnlitOptions::shader`，再构造
+`unlit::UnlitPipelineKey` 即可。它装着两段 WESL：一段拼在顶点阶段末尾，一段拼在片段
+阶段末尾。内置阶段照旧做它的事——解码顶点、变换、着色、裁剪——而片段改变结果：顶点片段
+在被照亮之前重塑表面，片段片段在之后重新给像素上色。布局仍由变体决定——这正是「只改
+一个字段」的原因。自己实现一个家族是另一条路，适用于着色之外还有别的东西要变的情况。
 
 ### 逐实例顶点数据
 
@@ -574,7 +600,7 @@ let (mesh, material) = scope
         let indices = [0u32, 1, 2];
         let mesh = source.allocate_unlit_mesh(
             &scope,
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
@@ -598,7 +624,7 @@ let (mesh, material) = scope
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-        let material = source.allocate_unlit_material(&scope, &key, texture_view, sampler);
+        let material = source.allocate_unlit_material(&scope, &key.options, texture_view, sampler);
         (mesh, material)
     })
     .unwrap();

@@ -387,6 +387,24 @@ async fn transparent_matches_its_snapshot() {
     .await;
 }
 
+async fn lit_matches_its_snapshot() {
+    compare_scene(
+        &scenes::lit::SCENE,
+        SCENE_TOLERANCE,
+        &snapshots!["lit.webp"],
+    )
+    .await;
+}
+
+async fn lit_clusters_matches_its_snapshot() {
+    compare_scene(
+        &scenes::lit_clusters::CLUSTER_SCENE,
+        SCENE_TOLERANCE,
+        &snapshots!["lit_clusters.webp"],
+    )
+    .await;
+}
+
 async fn mesh_topologies_matches_its_snapshot() {
     compare_scene(
         &scenes::mesh_topologies::SCENE,
@@ -496,6 +514,8 @@ gpu_tests! {
     mesh_and_ui_matches_its_snapshot,
     ui_only_matches_its_snapshot,
     transparent_matches_its_snapshot,
+    lit_matches_its_snapshot,
+    lit_clusters_matches_its_snapshot,
     mesh_topologies_matches_its_snapshot,
     custom_pipeline_matches_its_snapshots,
     custom_pipeline_animates_between_frames,

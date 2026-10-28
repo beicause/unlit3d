@@ -89,11 +89,20 @@ public fn polygon_form_factor(
 
     var sum = 0.0;
     for (var i = 0u; i < clipped_count; i += 1u) {
-        let v1 = normalize(clipped[i]);
-        let v2 = normalize(clipped[(i + 1u) % clipped_count]);
+        let v1 = clipped[i] * inverseSqrt(max(dot(clipped[i], clipped[i]), 1.0e-20));
+        let next = clipped[(i + 1u) % clipped_count];
+        let v2 = next * inverseSqrt(max(dot(next, next), 1.0e-20));
         sum += polygon_edge_contribution(n, v1, v2);
     }
     // Each edge contributes one angle of the spherical polygon; the half
     // converts the angle sum into the solid angle the polygon covers.
-    return 0.5 * sum;
+    //
+    // The sum comes out negative here because a quad light winds its corners
+    // so that their cross product points along the direction it radiates --
+    // toward the receiver, the opposite of the receiver's normal. The winding
+    // has to face the receiver that way: the back-face test rejects a fragment
+    // behind the patch by comparing against the same cross product. A polygon
+    // closing the other way would need no negation, and the form factor itself
+    // is unsigned.
+    return -0.5 * sum;
 }

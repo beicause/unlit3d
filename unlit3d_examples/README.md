@@ -29,6 +29,8 @@ Scenes:
   skinned                a cube bent by a two-joint skin over six frames
   morphed                a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  lit                    one relief surface under directional, point, spot and quad lights
+  lit_clusters           every light kind in a per-cell local-light-count heatmap
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent            translucent panes composited back to front over opaque cubes

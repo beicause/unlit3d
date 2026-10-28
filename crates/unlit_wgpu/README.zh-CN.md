@@ -2,10 +2,9 @@
 
 # unlit_wgpu
 
-面向 WebGPU 的、紧凑且有主见的**无光照（unlit）**绘制渲染器。它在一个 render pass
-内把整个场景——不透明与透明实例一视同仁——绘制到调用者指定的一个
-`wgpu::TextureView`；目标平台是 WebGPU（及其背后的原生后端），并且移动端优先。
-不支持 WebGL 与 GLES。
+构建在 wgpu 上的、紧凑且有主见的 3D 渲染器。它在一个 render pass 内把整个场景——
+不透明与透明实例一视同仁——绘制到调用者指定的一个 `wgpu::TextureView`；移动端优先，
+并且跑在 WebGPU 与 WebGL2 基线上。
 
 本 crate 是分层的：下面这些模块是调用者搭建任意管线所用的通用设施，而内置 unlit
 管线——以及用它的 egui 后端——由 feature 添加。通用模块完全不知道内置管线的存在：
@@ -63,6 +62,9 @@
 - `specialize` —— 变体缓存：`PipelineVariant` 构造出
   `PipelineDescriptor`，`Variants` 则为每个变体编译并复用一个
   `SpecializedPipeline`。
+- `light` —— 本帧的光源以着色器读取的形式描述：无论何种光源都是同一条记录、
+  聚类网格的参数，以及把一帧的光源算成绘制所绑定的格子数组的 CPU 聚类。深度首层
+  吸收近端，其余在固定场景范围内按透视对数或正交线性间隔划分。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、
   `GlobalBindings` 描述以及每条管线绑定本帧共享输入所用的全局绑定组布局构造函数；
   在 `unlit` feature 下还包含内置 unlit 管线。
@@ -422,15 +424,21 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 ## 着色器
 
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
-调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata` 与
-`mesh_compression` 解码函数）；`unlit` feature 额外加入内置入口着色器，由
-`pipeline::SpecializedUnlitPipeline` 把它与一次绘制解析出的 `pipeline::UnlitVariant`
-组合起来。
+调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata`、`mesh_compression`
+解码函数，以及 `lit` 下的光源记录、聚类 uniform 与多边形形状因子）；`unlit` feature
+额外加入内置入口着色器，由 `pipeline::SpecializedUnlitPipeline` 把它与一次绘制解析出的
+`pipeline::UnlitVariant` 组合起来。一份入口着色器覆盖所有内置变体，lit 的也在内：
+差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
+绑定与顶点属性。
 
-若要编写自己的入口着色器，有两条路。最近的一条是
-`pipeline::UnlitOptions::shader`：源码会替换该 options 触及的每个变体所用的内置
-`unlit.wesl`，并在同样的 feature flag 下、针对同一个包组合，因此它声明的绑定、顶点属性
-与入口点必须与它所替换的变体完全一致——布局仍由变体决定，变的只有源码。另一条是用
+若要编写自己的着色器，有两条路。最近的一条是
+`pipeline::UnlitOptions::shader`：`pipeline::UnlitShader` 各给出一段顶点与片段片段，
+分别拼进内置 `lit.wesl` 的两个标记位置——顶点那段在实例变换之后、构造裁剪坐标之前，
+那里的顶点是 `var world`；片段那段在基础色完成光照与裁剪之后、目标编码之前，那里的颜色
+是 `var color`。片段仍是 WESL，在模块还是 WESL、尚未编译时就拼进去，因此它看得见内置
+阶段所看见的全部绑定、开关与辅助函数，参与条件编译，并且决定后续阶段所要变换、光照与
+聚类的几何形状。布局与顶点流仍由变体决定：片段改变的是阶段算什么，不是它读什么。
+另一条是用
 [`wesl`](https://docs.rs/wesl) 直接组合：`shader` 是一个 WESL `StaticPackage`，因此
 `wesl::resolver::PackageResolver` 可以针对内置管线所用的同一批模块解析
 `import unlit_wgpu::mesh_compression;`，调用者自己的家族走的正是这条路。

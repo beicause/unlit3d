@@ -7,9 +7,10 @@ English | [简体中文](README.zh-CN.md)
 [![Cargo](https://img.shields.io/crates/v/unlit3d.svg)](https://crates.io/crates/unlit3d)
 [![Documentation](https://docs.rs/unlit3d/badge.svg)](https://docs.rs/unlit3d)
 
-A compact, extensible, opinionated 3D renderer for WebGPU, plus the ECS layer
-built on top of it. It ships a built-in **unlit** pipeline, is mobile-first, and
-does not support WebGL or GLES. It uses and exposes `wgpu` resources directly,
+A compact, extensible, opinionated 3D renderer on `wgpu`, plus the ECS layer
+built on top of it. It ships a built-in **unlit** pipeline and a **Lambert**
+one beside it, is mobile-first, and runs on WebGPU as well as on the WebGL2
+baseline. It uses and exposes `wgpu` resources directly,
 allowing low-level control and extension, with very little high-level
 CPU-side abstraction.
 
@@ -27,16 +28,18 @@ treat every crate as work in progress.
   friendly to AI agents. A streamlined ECS paradigm borrowing from OOP, using
   behavior components more than systems and putting the focus on objects.
 - **Mobile and web optimized.** Transient MSAA and depth textures by default,
-  compressed vertex attributes, unlit materials by default, and a short,
-  explicit list of render passes. None of the prepass, PBR lighting or shadows
-  that are expensive on mobile, and no compute shaders.
+  compressed vertex attributes, simple diffuse lighting, and a short,
+  explicit list of render passes. None of the prepass, PBR lighting, shadows or
+  post-processing that are expensive on mobile, and no compute shaders.
 - **Low-level.** `wgpu` resources used directly, buffers manipulated directly.
   Render resources persist across frames, and a resource graph rebuilds them only
   when necessary.
 - **Deterministic rendering.** First-class headless rendering and automated CI
   snapshot tests.
 
-Not supported: lighting and shadows, and post-processing.
+Not supported: shadows, physically based materials and post-processing. Lighting
+is Lambert shading under directional, point, spot and polygon lights, clustered
+on the CPU so that the same path runs on a device with no compute shaders.
 
 </details>
 
@@ -44,8 +47,8 @@ Not supported: lighting and shadows, and post-processing.
 
 - **Mobile-first, and cross-platform.** Render passes are explicit — usually
   one, more when a frame composites — with transient depth and multisample
-  textures, compressed vertices, and no pre-pass, compute shader, lighting or
-  shadow path. The same frame loop drives a window, a headless
+  textures, compressed vertices, and no pre-pass, compute shader or shadow path.
+  The same frame loop drives a window, a headless
   offscreen target, the web examples and the Android APK.
 - **Runs on WebGL2 and on WebGPU-baseline devices.** The adapter is picked at
   runtime, WebGPU first and WebGL2 when that is all the platform has. WebGL2
@@ -70,6 +73,12 @@ Not supported: lighting and shadows, and post-processing.
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
+- **Lambert lighting, forward clustered.** A directional, point, spot or convex
+  polygon light shades the same forward pass as the unlit pipeline, which it
+  extends: one extra variant flag, the same vertex streams and the same mesh
+  group. The frame's lights are clustered on the CPU into a grid of screen
+  tiles and logarithmic depth slices, so a fragment reads one cell and the
+  shader needs no compute. No shadows.
 - **Custom shaders and per-instance data.** A caller's own family registers
   through the same call as the built-in one, draws with its own pipeline — a
   hand-written `wgpu` one or a WESL module composed against the crate's public
@@ -104,7 +113,7 @@ Not supported: lighting and shadows, and post-processing.
 
 | Crate | Role |
 |-------|------|
-| [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit and lit pipelines, and an egui backend. Knows nothing about ECS. |
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. It also carries the MCP server that exposes a running world over stdio, which each crate extends with its own tools. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |

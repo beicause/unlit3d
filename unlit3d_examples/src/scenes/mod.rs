@@ -21,6 +21,8 @@ pub mod animated;
 pub mod custom_pipeline;
 pub mod gltf;
 pub mod instanced_skinned_morph;
+pub mod lit;
+pub mod lit_clusters;
 pub mod mesh_and_ui;
 pub mod mesh_topologies;
 pub mod morphed;
@@ -29,6 +31,7 @@ pub mod spin_cube;
 pub mod transparent;
 pub mod ui_only;
 
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::scene::ViewportRect;
 use unlit3d::prelude::*;
@@ -153,6 +156,8 @@ pub static SCENES: &[&SceneDef] = &[
     &skinned::SCENE,
     &morphed::SCENE,
     &instanced_skinned_morph::SCENE,
+    &lit::SCENE,
+    &lit_clusters::CLUSTER_SCENE,
     &gltf::SCENE,
     &mesh_topologies::SCENE,
     &transparent::SCENE,
@@ -247,6 +252,15 @@ pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
 /// The colors are quantized to the `Unorm8x4` width the vertex stream stores,
 /// exactly as the tests uploaded them.
 pub fn cube() -> RawMesh {
+    cube_with_normals().0
+}
+
+/// The same cube, beside one outward normal per vertex.
+///
+/// A lit pipeline shades with the normal, and the unlit one derives the
+/// normal it draws with from the fragment's derivatives, so only the scenes
+/// that shade need to carry one.
+pub fn cube_with_normals() -> (RawMesh, Vec<[f32; 3]>) {
     let faces = [
         ([-1.0f32, 0.0, 0.0], [0.0f32, 0.0, 1.0]),
         ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
@@ -259,16 +273,18 @@ pub fn cube() -> RawMesh {
     let mut positions = Vec::new();
     let mut uvs = Vec::new();
     let mut colors = Vec::new();
+    let mut normals = Vec::new();
     let mut indices = Vec::new();
 
-    for (normal, tangent) in faces {
+    for (face_normal, tangent) in faces {
         let base = positions.len() as u32;
-        let normal = glam::Vec3::from(normal);
+        let face_normal = glam::Vec3::from(face_normal);
         let tangent = glam::Vec3::from(tangent);
-        let bitangent = normal.cross(tangent);
+        let bitangent = face_normal.cross(tangent);
         for (u, v) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            let position = normal + tangent * u + bitangent * v;
+            let position = face_normal + tangent * u + bitangent * v;
             positions.push(position.to_array());
+            normals.push(face_normal.to_array());
             uvs.push([(u + 1.0) * 0.5, (v + 1.0) * 0.5]);
             let color = (position + 1.0) * 0.5;
             colors.push([color.x, color.y, color.z, 1.0]);
@@ -279,9 +295,158 @@ pub fn cube() -> RawMesh {
     // The stream stores colors as `Unorm8x4`, so quantize once here rather
     // than carrying a float copy through the scene.
     let colors = unlit_wgpu::mesh::quantize_colors(&colors).collect();
-    (positions, uvs, colors, indices)
+    ((positions, uvs, colors, indices), normals)
 }
 
+/// A rectangle as the mesh allocator takes it.
+pub struct Grid {
+    /// One position per vertex.
+    pub positions: Vec<[f32; 3]>,
+    /// Per-vertex normals, or `None` for a surface the fragment shades from the
+    /// normals its own positions give it.
+    pub normals: Option<Vec<[f32; 3]>>,
+    /// One texture coordinate per vertex.
+    pub uvs: Vec<[f32; 2]>,
+    /// The one color every vertex of the surface carries.
+    pub albedo: unlit_wgpu::mesh::CompressedColor,
+    /// Triangles over the vertices, three indices each.
+    pub indices: Vec<u32>,
+}
+
+/// A rectangle centred on `origin`, `right` wide and `up` tall, split into
+/// `segments` quads along each of them, wound so its front face is the side
+/// the cross product of `right` and `up` points at.
+pub fn grid(
+    origin: glam::Vec3,
+    right: glam::Vec3,
+    up: glam::Vec3,
+    size: (f32, f32),
+    segments: (u32, u32),
+) -> Grid {
+    let (columns, rows) = (segments.0.max(1), segments.1.max(1));
+    let mut positions = Vec::with_capacity(((columns + 1) * (rows + 1)) as usize);
+    let mut uvs = Vec::with_capacity(positions.capacity());
+    for row in 0..=rows {
+        let v = row as f32 / rows as f32;
+        for column in 0..=columns {
+            let u = column as f32 / columns as f32;
+            positions.push(
+                (origin + right * (size.0 * (u - 0.5)) + up * (size.1 * (v - 0.5))).to_array(),
+            );
+            uvs.push([u, 1.0 - v]);
+        }
+    }
+    let mut indices = Vec::with_capacity((columns * rows * 6) as usize);
+    let stride = columns + 1;
+    for row in 0..rows {
+        for column in 0..columns {
+            let corner = row * stride + column;
+            // Wound right then up, which is the order the cross product of
+            // `right` and `up` puts on the front face.
+            indices.extend([
+                corner,
+                corner + 1,
+                corner + stride + 1,
+                corner,
+                corner + stride + 1,
+                corner + stride,
+            ]);
+        }
+    }
+    // White rather than a tint: these surfaces are coloured by the light that
+    // reaches them, and a tinted albedo would be read as the lighting itself.
+    Grid {
+        positions,
+        normals: None,
+        uvs,
+        albedo: unlit_wgpu::mesh::quantize_colors(&[[1.0f32, 1.0, 1.0, 1.0]])
+            .next()
+            .expect("one color is quantized"),
+        indices,
+    }
+}
+
+/// Upload a rectangle and return its mesh.
+pub fn allocate_surface(
+    world: &mut World,
+    source_entity: Entity,
+    key: &unlit3d::lit::LitPipelineKey,
+    grid: &Grid,
+) -> GpuMesh {
+    let colors = vec![grid.albedo; grid.positions.len()];
+    with_mesh_source(world, source_entity, |source, world| {
+        source.allocate_unlit_mesh(
+            world,
+            &key.options,
+            UnlitMeshDesc {
+                positions: &grid.positions,
+                uvs: Some(&grid.uvs),
+                colors: Some(&colors),
+                normals: grid.normals.as_deref(),
+                indices: Some(&grid.indices),
+                ..Default::default()
+            },
+        )
+    })
+}
+
+/// One surface of the scene: the mesh and the pipeline it is drawn with.
+pub struct LitSurface {
+    /// The mesh this surface draws.
+    pub mesh: GpuMesh,
+    /// The pipeline its instances are drawn with.
+    pub pipeline: LitPipeline,
+}
+
+impl Bundle for LitSurface {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![Transform::default(), self.mesh, self.pipeline]
+    }
+}
+
+/// A light and the transform it shines from.
+///
+/// The light reads nothing of the transform but its own packing, so the two are
+/// spawned together: a light without one shines from the origin along the
+/// world's negative z.
+pub struct PlacedLight {
+    /// The light itself, of whichever kind it is.
+    pub light: LightSource,
+    /// Where the light sits, which a directional light ignores.
+    pub translation: glam::Vec3,
+    /// The orientation the light shines along.
+    pub rotation: glam::Quat,
+}
+
+impl PlacedLight {
+    /// A light at `translation` aimed at `target`.
+    ///
+    /// Every built-in light shines along its transform's negative z, so aiming
+    /// one is turning that axis onto the direction it has to shine in.
+    pub fn aiming(light: LightSource, translation: glam::Vec3, target: glam::Vec3) -> Self {
+        Self {
+            light,
+            translation,
+            rotation: glam::Quat::from_rotation_arc(
+                glam::Vec3::NEG_Z,
+                (target - translation).normalize(),
+            ),
+        }
+    }
+}
+
+impl Bundle for PlacedLight {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Transform {
+                translation: self.translation,
+                rotation: self.rotation,
+                scale: glam::Vec3::ONE,
+            },
+            self.light,
+        ]
+    }
+}
 /// The aspect ratio of a `size`-pixel render target.
 ///
 /// Every camera in the example takes its aspect from here rather than from the

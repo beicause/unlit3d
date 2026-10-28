@@ -12,7 +12,6 @@ pub mod frame;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 pub mod input;
-/// The lit pipeline's lights, and how a frame clusters them.
 pub mod lit;
 /// The rendering tools a world answers through the Model Context Protocol
 /// server in [`unlit_ecs::mcp`].
@@ -89,6 +88,9 @@ pub mod prelude {
     pub use unlit_ecs::prelude::*;
     pub use unlit_ecs::{Command, Commands};
     pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
+    // The grid a lit source clusters its lights into, which is a field of
+    // `MeshSource` a caller sets.
+    pub use unlit_wgpu::light::ClusterConfig;
     pub use unlit_wgpu::render_attachments::{
         color_clear, create_color_target, create_depth_target, create_msaa_target,
         create_render_target, depth_clear, stencil_clear,

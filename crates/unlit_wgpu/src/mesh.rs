@@ -263,7 +263,7 @@ pub struct MeshMetadata {
 /// metadata index and alpha cutoff the built-in pipeline reads from its
 /// per-instance vertex buffer.
 ///
-/// This is the vertex stream of `unlit.wesl`'s instance slot, so upload a
+/// This is the vertex stream of `lit.wesl`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
 /// columns with each column's `.w` holding the matching translation
 /// component, which is why it is stored as columns rather than a
@@ -917,9 +917,9 @@ impl SecondaryStreamWriter {
         normals: &[[f32; 3]],
     ) -> usize {
         let lengths: [(&str, Option<usize>); 3] = [
-            ("UV", self.uv().then(|| uvs.len())),
-            ("color", self.color().then(|| colors.len())),
-            ("normal", self.normal().then(|| normals.len())),
+            ("UV", self.uv().then_some(uvs.len())),
+            ("color", self.color().then_some(colors.len())),
+            ("normal", self.normal().then_some(normals.len())),
         ];
         vertex_count_of(&lengths)
     }
@@ -932,9 +932,9 @@ impl SecondaryStreamWriter {
         normals: &[CompressedNormal],
     ) -> usize {
         let lengths: [(&str, Option<usize>); 3] = [
-            ("UV", self.uv().then(|| uvs.len())),
-            ("color", self.color().then(|| colors.len())),
-            ("normal", self.normal().then(|| normals.len())),
+            ("UV", self.uv().then_some(uvs.len())),
+            ("color", self.color().then_some(colors.len())),
+            ("normal", self.normal().then_some(normals.len())),
         ];
         vertex_count_of(&lengths)
     }

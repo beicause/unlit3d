@@ -1,7 +1,7 @@
 //! The built-in unlit pipeline and the WESL composition behind it.
 //!
 //! [`SpecializedUnlitPipeline`] composes an [`UnlitVariant`]'s entry shader —
-//! the built-in `unlit.wesl`, or the caller's own when
+//! the built-in `lit.wesl`, or the caller's own when
 //! [`UnlitOptions::shader`] carries one — builds the layouts the shader
 //! expects, and exposes the vertex-buffer layouts the caller declares when
 //! creating meshes. Each variant contains exactly the bindings and attributes
@@ -156,7 +156,12 @@ pub const FS_MAIN: &str = "fs_main";
 /// Label of the built-in entry shader: its shader module's label, and the name
 /// a composition error is reported under.
 #[cfg(feature = "unlit")]
-const BUILT_IN_SHADER_LABEL: &str = "unlit_wgpu::unlit";
+const BUILT_IN_SHADER_LABEL: &str = "unlit_wgpu::lit";
+
+/// Name of the WESL module the built-in entry shader is composed from: the file
+/// `shaders/lit.wesl` of this crate's package.
+#[cfg(feature = "unlit")]
+const BUILT_IN_MODULE: &str = "lit";
 
 /// The per-vertex channels the built-in shader variant reads.
 ///
@@ -289,41 +294,58 @@ pub enum BaseColorChannels {
     LuminanceAlpha,
 }
 
-/// A caller's replacement for the built-in `unlit.wesl`.
+/// A caller's own shader code, spliced into the built-in `lit.wesl`.
 ///
-/// The source is composed in place of the built-in entry shader, so it has to
-/// declare exactly what the variant it is drawn with declares: the same entry
-/// points ([`VS_MAIN`] and [`FS_MAIN`]), the same bindings, and the
-/// same per-vertex attributes. The layouts come from the variant rather than
-/// from the shader, so a source that declares anything else fails pipeline
-/// creation instead of drawing something else.
+/// The built-in entry shader keeps one empty statement at the end of its vertex
+/// stage and one at the end of its fragment stage, each marked with a comment
+/// naming it. A shader is spliced in at those marks while the module is still
+/// WESL, before anything is compiled, so the snippet is ordinary WESL: it sees
+/// every binding, flag and helper the built-in stage sees, it takes part in the
+/// conditional compilation, and its diagnostics point at the line it was written
+/// on rather than at a fragment of generated WGSL.
 ///
-/// The variant's flags are in scope exactly as they are for the built-in
-/// shader, so one source can serve every variant and select its code paths with
-/// the same `@if(FLAG)` names the built-in shader documents. The built-in
-/// package resolves too: `import unlit_wgpu::view::View;` and the
-/// `mesh_compression` decode functions are the modules the built-in shader
-/// itself imports.
+/// The marks sit where the stage still has something left to do, which is what
+/// keeps a snippet short:
 ///
-/// The label names the shader: it is the shader module's label, a composition
-/// error is reported under it, and — where it is a single WESL identifier — it
-/// is the module name the source is composed as, so a diagnostic can tell it
-/// apart. Any other label is composed as `main`.
+/// * The vertex mark is after the instance transform, before the clip position
+///   is built. The vertex is a `var world` there, and everything downstream —
+///   the clip position, the world position the lights are addressed from, the
+///   normal and the cluster cell — follows the vertex the snippet leaves.
+/// * The fragment mark is after the base color is lit and cut off, before the
+///   target's encoding. The color is a `var color` there, so a snippet can
+///   rewrite it in place, and what it leaves is what the target receives.
+///
+/// The layouts and the vertex streams stay the variant's, exactly as they are
+/// for the built-in shader: a snippet changes what a stage computes, not what it
+/// reads. Declaring a binding or an attribute of its own therefore fails
+/// pipeline creation rather than drawing something else.
+///
+/// The label names the shader: it is the shader module's label, and a
+/// composition error is reported under it.
 #[cfg(feature = "unlit")]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct UnlitShader {
     label: Arc<str>,
-    source: Arc<str>,
+    vertex: Arc<str>,
+    fragment: Arc<str>,
 }
 
 #[cfg(feature = "unlit")]
 impl UnlitShader {
-    /// A shader named `label` whose WESL `source` replaces the built-in entry
-    /// shader.
-    pub fn new(label: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
+    /// A shader named `label` whose `vertex` and `fragment` snippets are
+    /// spliced into the built-in entry shader.
+    ///
+    /// Either snippet may be empty, which leaves that stage exactly as the
+    /// built-in shader has it.
+    pub fn new(
+        label: impl Into<Arc<str>>,
+        vertex: impl Into<Arc<str>>,
+        fragment: impl Into<Arc<str>>,
+    ) -> Self {
         Self {
             label: label.into(),
-            source: source.into(),
+            vertex: vertex.into(),
+            fragment: fragment.into(),
         }
     }
 
@@ -332,20 +354,26 @@ impl UnlitShader {
         &self.label
     }
 
-    /// The WESL source composed in place of the built-in entry shader.
-    pub fn source(&self) -> &str {
-        &self.source
+    /// The WESL statements spliced into the vertex stage.
+    pub fn vertex(&self) -> &str {
+        &self.vertex
+    }
+
+    /// The WESL statements spliced into the fragment stage.
+    pub fn fragment(&self) -> &str {
+        &self.fragment
     }
 }
 
 #[cfg(feature = "unlit")]
 impl core::fmt::Debug for UnlitShader {
-    /// Prints the label and the source's length rather than the whole source,
-    /// so an [`UnlitOptions`] dump stays readable.
+    /// Prints the label and each snippet's length rather than the snippets
+    /// themselves, so an [`UnlitOptions`] dump stays readable.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("UnlitShader")
             .field("label", &self.label)
-            .field("source", &format_args!("{} bytes", self.source.len()))
+            .field("vertex", &format_args!("{} bytes", self.vertex.len()))
+            .field("fragment", &format_args!("{} bytes", self.fragment.len()))
             .finish()
     }
 }
@@ -365,12 +393,11 @@ impl core::fmt::Debug for UnlitShader {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UnlitOptions {
     /// The entry shader this policy draws with, or `None` for the built-in
-    /// `unlit.wesl`.
+    /// `lit.wesl`.
     ///
-    /// A caller's shader replaces the built-in source and nothing else: the
-    /// layouts, the vertex streams and the entry-point names stay the
-    /// variant's, so the source has to declare exactly what the variant
-    /// declares. See [`UnlitShader`].
+    /// A caller's snippets extend the built-in source and nothing else: the
+    /// layouts, vertex streams and entry-point names stay the variant's. See
+    /// [`UnlitShader`].
     pub shader: Option<UnlitShader>,
     /// The color target is sRGB-aware: it encodes the values written to it, so
     /// the fragment converts them from sRGB to linear first.
@@ -535,7 +562,7 @@ impl UnlitOptions {
             count: None,
         });
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("unlit_wgpu::unlit::material"),
+            label: Some("unlit_wgpu::lit::material"),
             entries: &entries,
         })
     }
@@ -896,9 +923,8 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
     /// compiles through the same [PipelineDescriptor] mechanism a caller's own
     /// descriptor does.
     ///
-    /// The entry shader is the built-in `unlit.wesl` unless the options carry a
-    /// caller's own ([`UnlitOptions::shader`]), which is composed in its place
-    /// against the same package and under the same flags.
+    /// The entry shader is the built-in `lit.wesl`, with the options' own
+    /// snippets ([`UnlitOptions::shader`]) spliced into it at its marks.
     fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
         let texel_arrays = !supports_storage_buffers(device);
         let label = match &self.options.shader {
@@ -915,7 +941,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
             layouts.mesh.as_ref(),
         ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("unlit_wgpu::unlit::layout"),
+            label: Some("unlit_wgpu::lit::layout"),
             bind_group_layouts: &layout_refs,
             immediate_size: 0,
         });
@@ -935,7 +961,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
             .map(|layout| layout.as_ref().map(VertexBufferLayoutDesc::as_wgpu))
             .collect();
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("unlit_wgpu::unlit"),
+            label: Some("unlit_wgpu::lit"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &module,
@@ -960,54 +986,85 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
 
 /// The module path a variant's entry shader is composed at.
 ///
-/// The built-in entry shader is the `unlit` module of the crate's package. A
-/// caller's shader has no file to name it, so it takes its label as its module
-/// name; a label that cannot be a WESL identifier falls back to
-/// [`DEFAULT_SHADER_NAME`], and the label still names the shader everywhere it
-/// is reported.
+/// The entry shader is always the built-in `lit` module of the crate's package:
+/// a caller's snippets are spliced into that module rather than replacing it,
+/// so the path does not depend on the options.
 #[cfg(feature = "unlit")]
-fn entry_shader_path(shader: &Option<UnlitShader>) -> wesl::syntax::ModulePath {
-    match shader {
-        None => wesl::syntax::ModulePath::new(
-            wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
-            vec!["unlit".to_owned()],
-        ),
-        Some(shader) => {
-            let name = if is_module_name(shader.label()) {
-                shader.label()
-            } else {
-                DEFAULT_SHADER_NAME
-            };
-            wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, vec![name.to_owned()])
-        }
-    }
+fn entry_shader_path() -> wesl::syntax::ModulePath {
+    wesl::syntax::ModulePath::new(
+        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
+        vec![BUILT_IN_MODULE.to_owned()],
+    )
 }
 
-/// The module name a caller's shader takes when its label cannot be one.
+/// The comment the built-in entry shader marks its vertex-stage splice with.
 #[cfg(feature = "unlit")]
-const DEFAULT_SHADER_NAME: &str = "main";
+const VERTEX_HOOK: &str = "// unlit_wgpu::hook vertex";
 
-/// Whether `label` is one WESL identifier, and so a module path component.
+/// The comment the built-in entry shader marks its fragment-stage splice with.
 #[cfg(feature = "unlit")]
-fn is_module_name(label: &str) -> bool {
-    let mut characters = label.chars();
-    match characters.next() {
-        Some(first) => {
-            (first.is_ascii_alphabetic() || first == '_')
-                && characters.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
-        None => false,
-    }
+const FRAGMENT_HOOK: &str = "// unlit_wgpu::hook fragment";
+
+/// The source of the built-in entry shader, exactly as the package bundles it.
+///
+/// It is the file `shaders/lit.wesl` itself, so it carries the hook marks a
+/// snippet is spliced at.
+#[cfg(feature = "unlit")]
+fn built_in_entry_source() -> &'static str {
+    crate::shader::lit::MODULE.source
+}
+
+/// `source` with each hook mark replaced by the snippet belonging to it.
+///
+/// The splice happens on WESL, before anything is parsed or compiled, so a
+/// snippet takes part in the same conditional compilation as the code around it
+/// and a diagnostic inside one points at the line it was written on.
+///
+/// # Panics
+///
+/// If the built-in source does not carry both marks. They are checked rather
+/// than trusted because a mark is a bare comment: losing one while editing the
+/// shader would otherwise silently drop every snippet.
+#[cfg(feature = "unlit")]
+fn splice(source: &str, vertex: &str, fragment: &str) -> String {
+    let spliced = splice_at(source, VERTEX_HOOK, vertex);
+    let spliced = splice_at(&spliced, FRAGMENT_HOOK, fragment);
+    assert!(
+        !spliced.contains(VERTEX_HOOK) && !spliced.contains(FRAGMENT_HOOK),
+        "the built-in entry shader carries both hook marks"
+    );
+    spliced
+}
+
+/// `source` with the line carrying the first `mark` replaced by `snippet`.
+///
+/// The whole line goes, indentation included, so the snippet stands where the
+/// mark stood and an empty snippet leaves a blank line rather than an indented
+/// tail. A missing mark leaves the source untouched; [`splice`] is what
+/// rejects one.
+#[cfg(feature = "unlit")]
+fn splice_at(source: &str, mark: &str, snippet: &str) -> String {
+    let Some(at) = source.find(mark) else {
+        return source.to_owned();
+    };
+    let line_start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    let line_end = source[at..]
+        .find('\n')
+        .map_or(source.len(), |newline| at + newline);
+    let mut spliced = String::with_capacity(source.len() + snippet.len());
+    spliced.push_str(&source[..line_start]);
+    spliced.push_str(snippet);
+    spliced.push_str(&source[line_end..]);
+    spliced
 }
 
 /// Compose `variant`'s entry shader into one WGSL module.
 ///
-/// The main module is the built-in `unlit.wesl` unless the variant's options
-/// carry a caller's own shader, which is composed in its place; either way
-/// everything the source imports resolves against the built-in package, so a
-/// replacement reaches the same `globals`, `view`, `mesh_metadata` and
-/// `mesh_compression` modules the built-in shader does, and sees the same
-/// flags.
+/// The main module is the built-in `lit.wesl`, with the options' snippets
+/// spliced into it at its hook marks. It is composed as the package's own
+/// `lit` module, so a snippet that names `package::light` or
+/// `unlit_wgpu::light` reaches the modules the shader around it imports, and
+/// sees the variant's flags.
 ///
 /// `texel_arrays` is the device answer rather than the variant one, so it is
 /// passed in from whoever read the device; it selects the shader array path
@@ -1027,7 +1084,7 @@ fn is_module_name(label: &str) -> bool {
 /// read without the stream that carries it.
 #[cfg(feature = "unlit")]
 fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
-    let main_path = &entry_shader_path(&variant.options.shader);
+    let main_path = entry_shader_path();
     assert!(
         !variant.base_color_texture || variant.channels.secondary.contains(SecondaryFlags::UV),
         "the base-color texture is sampled with the per-vertex UV, so sampling one requires a UV channel"
@@ -1056,23 +1113,28 @@ fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, Compose
 
     let composed = match &variant.options.shader {
         None => {
-            wesl::Compiler::new_with_resolver(compile_options, packages).compile_module(main_path)
+            wesl::Compiler::new_with_resolver(compile_options, packages).compile_module(&main_path)
         }
         Some(shader) => {
-            // The caller's source is the main module, mounted at the root so
-            // that its own path resolves to it: the label names the module,
-            // while anything else it imports — `unlit_wgpu::` and
-            // `package::` alike — falls through to the built-in package.
+            // The spliced source replaces the package's own `lit` module, and
+            // nothing else: mounted at that one path, it keeps the imports the
+            // package resolves -- `unlit_wgpu::` and the shader's own
+            // `package::` alike -- and the module name it is reported under.
+            //
+            // The router hands a mounted resolver the path below the mount
+            // point, so mounting at the entry path leaves the virtual module
+            // the empty path -- and leaves every sibling (`unlit_wgpu::light`
+            // and the rest) to the package that owns it.
             let mut modules: wesl::resolver::VirtualResolver<'static> =
                 wesl::resolver::VirtualResolver::new();
-            modules.add_module(main_path.clone(), shader.source().to_owned().into());
-            let mut resolver = wesl::resolver::Router::new();
-            resolver.mount_resolver(
+            modules.add_module(
                 wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, Vec::new()),
-                modules,
+                splice(built_in_entry_source(), shader.vertex(), shader.fragment()).into(),
             );
+            let mut resolver = wesl::resolver::Router::new();
+            resolver.mount_resolver(main_path.clone(), modules);
             resolver.mount_fallback_resolver(packages);
-            wesl::Compiler::new_with_resolver(compile_options, resolver).compile_module(main_path)
+            wesl::Compiler::new_with_resolver(compile_options, resolver).compile_module(&main_path)
         }
     };
     composed
@@ -1171,7 +1233,10 @@ pub fn global_bind_group_layout(
     let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 10>::new();
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: CAMERA_BINDING,
-        visibility: wgpu::ShaderStages::VERTEX,
+        // The near plane and the eye position are view values a fragment stage
+        // may want to reason with: the lit pipeline derives its depth slices
+        // and its fallback geometric normal from them.
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -1268,7 +1333,7 @@ pub fn global_bind_group_layout(
         });
     }
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("unlit_wgpu::unlit::globals"),
+        label: Some("unlit_wgpu::lit::globals"),
         entries: &entries,
     })
 }
@@ -1439,29 +1504,15 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert!(wgsl.contains("decode_position"));
     }
 
-    /// A caller's source replaces the built-in entry shader, under the same
-    /// flags and against the same package: the variant's own entry points come
-    /// from the caller, and the built-in `unlit` module is not composed at all.
+    /// A snippet is spliced into the built-in entry shader rather than
+    /// replacing it: the built-in stages still run, and the snippet's own
+    /// statements are what the marks were replaced with.
     #[test]
-    fn a_caller_shader_replaces_the_built_in_source() {
+    fn a_caller_shader_is_spliced_into_the_built_in_source() {
         let shader = UnlitShader::new(
             "caller",
-            "\
-import unlit_wgpu::view::View;
-
-@group(0) @binding(0) var<uniform> camera: View;
-
-@vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let corner = f32(index % 2u) * 4.0 - 1.0;
-    return camera.clip_from_world * vec4<f32>(corner, corner, 0.0, 1.0);
-}
-
-@fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
-}
-",
+            "let marker_vertex = 0.125; world = world + vec3<f32>(0.0, marker_vertex, 0.0);",
+            "let marker_fragment = 0.25; color = vec4<f32>(marker_fragment, color.g, color.b, color.a);",
         );
         let mut options = UnlitOptions::standard_shape();
         options.shader = Some(shader);
@@ -1476,14 +1527,71 @@ fn fs_main() -> @location(0) vec4<f32> {
             false,
         );
 
-        let wgsl = compose(&candidate, false).expect("the caller's shader composes");
+        let wgsl = compose(&candidate, false).expect("the caller's snippets compose");
+        // The built-in stages are still there: a snippet takes part in them
+        // rather than standing in for them.
         assert!(wgsl.contains("fn vs_main"));
-        assert!(
-            wgsl.contains("camera.clip_from_world"),
-            "the caller's body is what the module carries"
+        assert!(wgsl.contains("fn fs_main"));
+        // Each snippet landed in the stage it belongs to, and the marks are
+        // gone rather than left in the composed module.
+        let vertex_at = wgsl
+            .find("marker_vertex")
+            .expect("the vertex snippet spliced");
+        let fragment_at = wgsl
+            .find("marker_fragment")
+            .expect("the fragment snippet spliced");
+        assert!(vertex_at < fragment_at);
+        assert!(!wgsl.contains(VERTEX_HOOK));
+        assert!(!wgsl.contains(FRAGMENT_HOOK));
+    }
+
+    /// An empty snippet leaves its stage exactly as the built-in shader has it.
+    #[test]
+    fn an_empty_snippet_leaves_the_built_in_stage_alone() {
+        let built_in = variant(
+            UnlitOptions::standard_shape(),
+            channels(
+                Some(ChannelEncoding::UncompressedPosition),
+                false,
+                SecondaryFlags::empty(),
+            ),
+            false,
+            false,
         );
-        // The built-in fragment never ran, so its texel expansion is absent.
-        assert!(!wgsl.contains("textureSample"));
+        let mut options = UnlitOptions::standard_shape();
+        options.shader = Some(UnlitShader::new("empty", "", ""));
+        let with_snippets = variant(
+            options,
+            channels(
+                Some(ChannelEncoding::UncompressedPosition),
+                false,
+                SecondaryFlags::empty(),
+            ),
+            false,
+            false,
+        );
+
+        assert_eq!(
+            code_lines(&compose(&built_in, false).expect("the built-in shader composes")),
+            code_lines(&compose(&with_snippets, false).expect("empty snippets compose")),
+            "an empty snippet adds nothing to either stage"
+        );
+    }
+
+    /// The non-blank lines of a composed module, in a fixed order.
+    ///
+    /// The order is not the module's: the composed declarations come out of a
+    /// hash map, so two compilations of the same source can list them
+    /// differently. Line sets compare what a snippet adds or takes away, which
+    /// is the question here.
+    fn code_lines(wgsl: &str) -> Vec<&str> {
+        let mut lines: Vec<&str> = wgsl
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        lines.sort_unstable();
+        lines
     }
 
     /// The render target the test variants are built for.

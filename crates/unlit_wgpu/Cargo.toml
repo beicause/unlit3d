@@ -2,7 +2,7 @@
 name = "unlit_wgpu"
 version = "0.1.0-dev.3"
 edition.workspace = true
-description = "A compact, opinionated WebGPU renderer for unlit draws: resource graph, vertex compression, pooled buffers and a declarative scene, with a built-in unlit pipeline and an egui backend."
+description = "A compact, opinionated 3D renderer on wgpu for WebGPU and WebGL2: resource graph, vertex compression, pooled buffers and a declarative scene, with built-in unlit and simple diffuse lighting pipelines and an egui backend."
 repository.workspace = true
 license.workspace = true
 keywords = ["gamedev", "graphics", "rendering", "webgpu", "wgpu"]

@@ -127,6 +127,7 @@ impl GpuMesh {
     /// `indices` to `u16`. Channels the variant does not declare are neither
     /// compressed nor uploaded, so a position-less variant has no position
     /// buffer at all. An empty `indices` slice uploads no index buffer.
+    #[expect(clippy::too_many_arguments, reason = "one parameter per mesh channel")]
     fn upload(
         ctx: &Ctx,
         label: &str,
@@ -894,45 +895,15 @@ async fn position_less_variant_draws_points_at_instance_origins() {
     );
 }
 
-/// A caller's own entry shader draws in place of the built-in one, while the
+/// A caller's snippets are spliced into the built-in stages, while the
 /// variant's layouts and streams stay exactly what the built-in shader would
 /// have used: the same bind group, the same vertex buffers, one draw.
-async fn a_caller_shader_draws_in_place_of_the_built_in_one() {
+async fn a_caller_shader_splices_into_the_built_in_stages() {
     let ctx = Ctx::headless().await;
-    // The built-in vertex stage, with a fragment that paints one color.
-    // Reading the same bindings the built-in variant declares is the whole
-    // contract: the layouts come from the variant, not from the shader.
-    let shader = UnlitShader::new(
-        "test::flat",
-        "\
-import unlit_wgpu::view::View;
-
-@group(0) @binding(0) var<uniform> camera: View;
-
-struct VertexInput {
-    @location(0) position: vec4<f32>,
-    @location(3) model_0: vec4<f32>,
-    @location(4) model_1: vec4<f32>,
-    @location(5) model_2: vec4<f32>,
-}
-
-@vertex
-fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
-    let local = in.position.xyz;
-    let world = vec3<f32>(
-        in.model_0.x * local.x + in.model_1.x * local.y + in.model_2.x * local.z + in.model_0.w,
-        in.model_0.y * local.x + in.model_1.y * local.y + in.model_2.y * local.z + in.model_1.w,
-        in.model_0.z * local.x + in.model_1.z * local.y + in.model_2.z * local.z + in.model_2.w,
-    );
-    return camera.clip_from_world * vec4<f32>(world, 1.0);
-}
-
-@fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
-}
-",
-    );
+    // The vertex snippet is empty, so the geometry arrives at the built-in
+    // vertex stage's own attributes and leaves it exactly where the built-in
+    // shader puts it; the fragment snippet repaints the result.
+    let shader = UnlitShader::new("test::flat", "", "color = vec4<f32>(1.0, 0.0, 1.0, 1.0);");
     let mut options = UnlitOptions::standard(&ctx.device);
     options.shader = Some(shader);
     let variant = variant(
@@ -950,9 +921,9 @@ fn fs_main() -> @location(0) vec4<f32> {
     let fixture = fixture(&ctx, &variant, 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 1.0, 1.0, 1.0])]);
 
-    // The replacement paints its own color, and it covers the same pixels
-    // the built-in shader would have: the geometry reaches it through the
-    // very attributes the built-in variant declares.
+    // The snippet paints its own color, and it covers the same pixels the
+    // built-in shader would have: the geometry reaches it through the very
+    // attributes the built-in variant declares.
     let painted = frame
         .as_chunks::<4>()
         .0
@@ -1339,7 +1310,7 @@ gpu_tests! {
     unlit_cube_matches_snapshot,
     instanced_cubes_match_snapshot,
     position_less_variant_draws_points_at_instance_origins,
-    a_caller_shader_draws_in_place_of_the_built_in_one,
+    a_caller_shader_splices_into_the_built_in_stages,
     textured_cube_matches_snapshot,
     a_loaded_color_attachment_keeps_its_contents,
     resource_graph_rebuilds_a_dependent_after_a_resource_change,

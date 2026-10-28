@@ -2,7 +2,7 @@
 name = "unlit3d"
 version = "0.1.0-dev.3"
 edition.workspace = true
-description = "The high-level WebGPU rendering API over unlit_wgpu and unlit_ecs: ECS components, frame sources, input, UI and winit presentation."
+description = "The high-level rendering API over unlit_wgpu and unlit_ecs, on WebGPU and WebGL2: ECS components, frame sources, input, UI and winit presentation."
 repository.workspace = true
 license.workspace = true
 keywords = ["ecs", "gamedev", "rendering", "webgpu", "wgpu"]

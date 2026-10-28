@@ -164,11 +164,13 @@ pub struct MeshSource {
     light_vertices_buf: ResHandle<ArrayHandle>,
     /// Resource id of the cluster uniform buffer.
     cluster_buf: ResHandle<wgpu::Buffer>,
-    /// The cluster grid this frame's lights were assigned for.
+    /// The cluster grid this frame's lights are assigned to.
     ///
     /// The source clusters every frame a lit pipeline is registered for, since
-    /// a frame's camera moves and its lights move with it.
-    clustering: ClusterConfig,
+    /// a frame's camera moves and its lights move with it. Its near and far
+    /// planes are the clustering's own: a [Camera]
+    /// carries a projection, not the extents that projection was built from.
+    pub clustering: ClusterConfig,
     /// Reused per-frame light records, ranked by importance by the clusterer.
     packed_lights: Vec<PackedLight>,
     /// Reused per-frame cluster assignment.
@@ -1043,7 +1045,11 @@ impl MeshSource {
         self.light_vertices_array
             .upload(&device, encoder, self.light_vertices.as_bytes());
 
-        let uniform = self.clustering.uniform(size, self.ambient);
+        let uniform = self.clustering.uniform(
+            size,
+            self.ambient,
+            camera.clip_from_view.row(3).truncate() != glam::Vec3::ZERO,
+        );
         let buffer = self
             .context
             .graph(world)

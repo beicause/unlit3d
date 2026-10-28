@@ -16,9 +16,9 @@
 //! # The grid
 //!
 //! Screen space is cut into cells of about [`ClusterConfig::cell_pixels`] pixels,
-//! and depth into [`ClusterConfig::z_slices`] slices that are equal in
-//! `ln(depth)` rather than in depth, so a cell stays a useful size as the view
-//! recedes. Both mappings are monotonic and shared by the CPU assignment and the
+//! and depth into [`ClusterConfig::z_slices`] slices. Perspective slices are
+//! equal in `ln(depth)` after the first slice's fixed boundary; orthographic
+//! ones are linear. Both mappings are monotonic and shared by the CPU assignment and the
 //! fragment lookup; that shared mapping is the one correctness requirement,
 //! because it is what keeps a light and the fragments it lights in one cell.
 //!
@@ -153,20 +153,29 @@ pub struct ClusterConfig {
     /// however fine the grid is — but the whole grid is uploaded every frame, so
     /// it is bounded.
     pub max_clusters: u32,
-    /// The nearest depth the slices span.
-    pub near: f32,
+    /// The end of the first depth slice.
+    ///
+    /// This is a scene-scale choice, not the camera's near plane. The first
+    /// slice absorbs everything nearer; the remaining slices divide the rest
+    /// of the range logarithmically under a perspective projection.
+    pub first_slice_depth: f32,
     /// The farthest depth the slices span.
     pub far: f32,
 }
 
 impl ClusterConfig {
-    /// Cells of about 128 pixels, 16 depth slices, at most 4096 cells, spanning
-    /// 0.1 to 1000 world units of depth.
+    /// Cells of about 128 pixels, 8 depth slices, at most 4096 cells. The first
+    /// slice ends at 5 world units and the range ends at 1000.
+    ///
+    /// Both ends are fixed so the grid does not depend on which lights happen
+    /// to be present: a light-only range cannot match the visible surfaces it
+    /// did not measure. A light nearer than the first slice's end lands in that
+    /// slice, which is where a fragment that near looks it up too.
     pub const DEFAULT: Self = Self {
         cell_pixels: 128,
-        z_slices: 16,
+        z_slices: 8,
         max_clusters: 4096,
-        near: 0.1,
+        first_slice_depth: 5.0,
         far: 1000.0,
     };
 
@@ -196,20 +205,31 @@ impl ClusterConfig {
     }
 
     /// The uniform the frame's shaders read for a `size`-pixel target.
-    pub fn uniform(&self, size: (u32, u32), ambient: Vec4) -> ClusterUniform {
+    pub fn uniform(&self, size: (u32, u32), ambient: Vec4, perspective: bool) -> ClusterUniform {
         let dims = self.dims(size);
-        let near = self.near.max(f32::MIN_POSITIVE);
-        let ln_near = near.ln();
-        let ln_far = self.far.max(near).ln();
+        let first = self.first_slice_depth.max(f32::MIN_POSITIVE);
+        let far = self.far.max(first);
+        let depth = if perspective {
+            let ln_first = first.ln();
+            Vec4::new(
+                1.0 / (far.ln() - ln_first).max(f32::MIN_POSITIVE),
+                ln_first,
+                (dims[2] - 1) as f32,
+                first,
+            )
+        } else {
+            Vec4::new(
+                1.0 / (far - first).max(f32::MIN_POSITIVE),
+                first,
+                dims[2] as f32,
+                first,
+            )
+        };
         ClusterUniform {
             dims: UVec4::new(dims[0], dims[1], dims[2], LIGHTS_PER_CELL as u32),
-            depth: Vec4::new(
-                1.0 / (ln_far - ln_near).max(f32::MIN_POSITIVE),
-                ln_near,
-                dims[2] as f32,
-                near,
-            ),
+            depth,
             ambient,
+            perspective: UVec4::new(u32::from(perspective), 0, 0, 0),
         }
     }
 }
@@ -237,16 +257,16 @@ pub struct ClusterUniform {
     /// `xyz` = the grid's dimensions; `w` = [`LIGHTS_PER_CELL`], the most lights
     /// one cell holds.
     pub dims: UVec4,
-    /// `x` = `1 / (ln(far) - ln(near))`; `y` = `ln(near)`; `z` = the slice count;
-    /// `w` = `near`.
-    ///
-    /// A fragment's depth slice is `((ln(max(d, w)) - y) * x * z)`, floored and
-    /// clamped to the last slice — the same arithmetic the CPU assignment runs
-    /// over each light's depth range.
+    /// Perspective: `x` = `1 / ln(far / first)`, `y` = `ln(first)`, `z` = one
+    /// less than the slice count, `w` = `first`. Orthographic: `x` = the
+    /// reciprocal linear range, `y` = `first`, `z` = the slice count.
     pub depth: Vec4,
     /// `rgb` = the linear colour every surface receives with no light on it;
     /// `w` is zero.
     pub ambient: Vec4,
+    /// `x` is nonzero for a perspective projection, zero for an orthographic
+    /// one. The remaining lanes reserve the uniform's 16-byte tail padding.
+    pub perspective: UVec4,
 }
 
 /// One frame's clustered light assignment, in storage the caller reuses.
@@ -286,16 +306,10 @@ impl LightClusters {
         // deterministic when two lights rank the same.
         lights.sort_by(|a, b| b.importance.total_cmp(&a.importance));
 
-        let near = cfg.near.max(f32::MIN_POSITIVE);
-        let ln_near = near.ln();
-        let inv_ln_range = 1.0 / (cfg.far.max(near).ln() - ln_near).max(f32::MIN_POSITIVE);
-        let last_slice = (dims[2] - 1) as f32;
-        let slice_of = |depth: f32| -> u32 {
-            ((depth.max(near).ln() - ln_near) * inv_ln_range * dims[2] as f32)
-                .floor()
-                .clamp(0.0, last_slice) as u32
-        };
         let perspective = clip_from_view.row(3).truncate() != Vec3::ZERO;
+        let uniform = cfg.uniform(size, Vec4::ZERO, perspective);
+        let last_slice = (dims[2] - 1) as f32;
+        let slice_of = |depth: f32| -> u32 { depth_slice(depth, &uniform).min(last_slice as u32) };
         let full = ((0, 0), (dims[0] - 1, dims[1] - 1));
 
         for (index, light) in lights.iter().enumerate() {
@@ -309,12 +323,15 @@ impl LightClusters {
             let center = view_from_world.transform_point3(bounds.center);
             let depth = -center.z;
             let radius = bounds.radius.max(0.0);
-            if depth + radius < near || depth - radius > cfg.far {
+            // A fragment beyond either end of the configured range still reads
+            // the nearest slice. Culling a light at that same end would leave
+            // the fragment looking in a cell the light was never assigned to.
+            if depth + radius <= 0.0 {
                 continue;
             }
             let z0 = slice_of(depth - radius);
             let z1 = slice_of(depth + radius);
-            let (lo, hi) = screen_cells(
+            let Some((lo, hi)) = screen_cells(
                 clip_from_view,
                 perspective,
                 center,
@@ -322,7 +339,9 @@ impl LightClusters {
                 radius,
                 dims,
                 full,
-            );
+            ) else {
+                continue;
+            };
             for z in z0..=z1 {
                 for y in lo.1..=hi.1 {
                     let row = (z * dims[1] + y) * dims[0];
@@ -333,6 +352,25 @@ impl LightClusters {
             }
         }
     }
+}
+
+/// The depth slice containing `depth`, mirrored by `cluster_depth_slice` in
+/// the built-in shader.
+///
+/// Slice zero absorbs everything before the first boundary. Under a perspective
+/// projection the remaining slices are equal in logarithmic depth; under an
+/// orthographic one they are equal in linear depth.
+pub fn depth_slice(depth: f32, cluster: &ClusterUniform) -> u32 {
+    let last = cluster.dims.z - 1;
+    if depth < cluster.depth.w {
+        return 0;
+    }
+    let coordinate = if cluster.perspective.x != 0 {
+        (depth.ln() - cluster.depth.y) * cluster.depth.x * cluster.depth.z + 1.0
+    } else {
+        (depth - cluster.depth.y) * cluster.depth.x * cluster.depth.z
+    };
+    coordinate.floor().clamp(0.0, last as f32) as u32
 }
 
 /// Append `index` to the cell at `cell`, dropping it when the cell is full.
@@ -347,11 +385,10 @@ fn insert(cells: &mut [u32], cell: usize, index: u32) {
 
 /// The x and y cells a light's sphere covers, as inclusive ranges.
 ///
-/// A sphere projects to a disc. From the eye, a sphere at depth `d` subtends the
-/// half-angle whose tangent is `radius / sqrt(d² - radius²)`; a perspective
-/// projection maps every such cone to a disc of the same size at every depth, so
-/// the screen radius is the projection's scale times that tangent. An
-/// orthographic projection has no cone, and the sphere is simply scaled.
+/// A perspective sphere is bounded by its two tangent lines on each screen
+/// axis. Those tangents are asymmetric around the projected center for an
+/// off-axis sphere, so a radius around that center can miss its outer edge.
+/// An orthographic projection has no such asymmetry, and is simply scaled.
 fn screen_cells(
     clip_from_view: &Mat4,
     perspective: bool,
@@ -360,37 +397,54 @@ fn screen_cells(
     radius: f32,
     dims: [u32; 3],
     full: ((u32, u32), (u32, u32)),
-) -> ((u32, u32), (u32, u32)) {
+) -> Option<((u32, u32), (u32, u32))> {
     let clip_center = *clip_from_view * center.extend(1.0);
     let w = clip_center.w;
     if !w.is_finite() || w <= 0.0 {
-        return full;
+        return Some(full);
     }
     let ndc_center = Vec2::new(clip_center.x / w, clip_center.y / w);
     let scale = Vec2::new(clip_from_view.x_axis.x.abs(), clip_from_view.y_axis.y.abs());
-    let ndc_radius = if perspective {
-        // The eye is inside the sphere, so no cone bounds what it covers: take
-        // the whole screen rather than a number that is not one.
+    let (low, high) = if perspective {
+        // The eye is inside the sphere, so no tangents bound what it covers.
         if depth <= radius {
-            return full;
+            return Some(full);
         }
-        scale * (radius / (depth * depth - radius * radius).sqrt())
+        // The two tangents from the eye to the sphere are the extreme
+        // directions on each screen axis: `(axis * depth -+ radius * s) /
+        // (depth^2 - radius^2)`, where `s` is the tangent length. The pair is
+        // already ordered, because the radius term is non-negative, so it does
+        // not depend on which side of the axis the center is on -- a sign taken
+        // from the axis would swap the ends for every light left of or below
+        // the camera and leave its cells empty.
+        let depth_squared = depth * depth - radius * radius;
+        let tangent = |axis: f32, projection_scale: f32| {
+            let radial_part = (axis * axis + depth_squared).sqrt() * radius;
+            let center_part = axis * depth;
+            Vec2::new(center_part - radial_part, center_part + radial_part)
+                * (projection_scale / depth_squared)
+        };
+        let x = tangent(center.x, scale.x);
+        let y = tangent(center.y, scale.y);
+        (Vec2::new(x.x, y.x), Vec2::new(x.y, y.y))
     } else {
-        scale * radius
+        let ndc_radius = scale * radius;
+        (ndc_center - ndc_radius, ndc_center + ndc_radius)
     };
-    let low = ndc_center - ndc_radius;
-    let high = ndc_center + ndc_radius;
     if !low.is_finite() || !high.is_finite() {
-        return full;
+        return Some(full);
+    }
+    if high.x < -1.0 || low.x > 1.0 || high.y < -1.0 || low.y > 1.0 {
+        return None;
     }
     let cell = |ndc: f32, count: u32| -> u32 {
         let scaled = (ndc * 0.5 + 0.5) * count as f32;
         scaled.floor().clamp(0.0, (count - 1) as f32) as u32
     };
-    (
+    Some((
         (cell(low.x, dims[0]), cell(low.y, dims[1])),
         (cell(high.x, dims[0]), cell(high.y, dims[1])),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -422,9 +476,9 @@ mod tests {
     #[test]
     fn dims_follow_the_target_size() {
         let cfg = ClusterConfig::DEFAULT;
-        assert_eq!(cfg.dims((1280, 720)), [10, 6, 16]);
-        assert_eq!(cfg.dims((1, 1)), [1, 1, 16]);
-        assert_eq!(cfg.dims((0, 0)), [1, 1, 16]);
+        assert_eq!(cfg.dims((1280, 720)), [10, 6, 8]);
+        assert_eq!(cfg.dims((1, 1)), [1, 1, 8]);
+        assert_eq!(cfg.dims((0, 0)), [1, 1, 8]);
     }
 
     #[test]
@@ -434,37 +488,33 @@ mod tests {
             ..ClusterConfig::DEFAULT
         };
         let dims = cfg.dims((7680, 4320));
-        assert_eq!(dims[2], 16);
+        assert_eq!(dims[2], 8);
         assert!(dims[0] * dims[1] * dims[2] <= 64, "{dims:?}");
     }
 
     #[test]
     fn the_uniform_and_the_assignment_agree_on_the_depth_slice() {
         let cfg = ClusterConfig::DEFAULT;
-        let uniform = cfg.uniform((1280, 720), Vec4::ZERO);
         let dims = cfg.dims((1280, 720));
-        let near = cfg.near;
-        let ln_range = (cfg.far / near).ln();
-        // The shader mirror: floor((ln(max(d, w)) - y) * x * z), clamped.
-        let shader_slice = |d: f32| -> u32 {
-            let depth = d.clamp(near, cfg.far);
-            let slice = ((depth.max(uniform.depth.w).ln() - uniform.depth.y)
-                * uniform.depth.x
-                * uniform.depth.z)
-                .floor()
-                .clamp(0.0, (dims[2] - 1) as f32);
-            slice as u32
-        };
-        assert_eq!(shader_slice(near), 0);
-        assert_eq!(shader_slice(cfg.far), dims[2] - 1);
-        // Equal in log space: each slice spans the same ratio. The slice
-        // boundaries are exact ratios, so a depth just past one lands in the
-        // next slice; the rounding of the multiply itself may put the boundary
-        // one ulp either way, which is why the probe is inside the slice.
+        let uniform = cfg.uniform((1280, 720), Vec4::ZERO, true);
+        let first = cfg.first_slice_depth;
+        assert_eq!(depth_slice(0.0, &uniform), 0);
+        assert_eq!(depth_slice(first * 0.5, &uniform), 0);
+        assert_eq!(depth_slice(first, &uniform), 1);
+        assert_eq!(depth_slice(cfg.far, &uniform), dims[2] - 1);
+        // After the absorbing first slice, the remaining seven are equal in
+        // log space. Probe just inside each boundary so one ulp in the multiply
+        // cannot decide which side of an exact edge the assertion samples.
+        for slice in 2..dims[2] {
+            let fraction = (slice - 1) as f32 / (dims[2] - 1) as f32;
+            let edge = first * (cfg.far / first).ln().mul_add(fraction, 0.0).exp();
+            assert_eq!(depth_slice(edge * (1.0 + 1e-4), &uniform), slice);
+        }
+
+        let orthographic = cfg.uniform((1280, 720), Vec4::ZERO, false);
         for slice in 1..dims[2] {
-            let edge = near * (ln_range * slice as f32 / dims[2] as f32).exp();
-            let inside = edge * (1.0 + 1e-4);
-            assert_eq!(shader_slice(inside), slice, "slice {slice} at {inside}");
+            let edge = first + (cfg.far - first) * slice as f32 / dims[2] as f32;
+            assert_eq!(depth_slice(edge + 1e-3, &orthographic), slice);
         }
     }
 
@@ -500,6 +550,94 @@ mod tests {
         assert!(filled > 0, "the light was culled from every cell");
         assert!(filled < total / 4, "{filled} of {total} cells");
         assert_eq!(clusters.dims, dims);
+    }
+
+    #[test]
+    fn a_near_light_reaches_the_first_slice_and_an_offscreen_light_reaches_none() {
+        let cfg = ClusterConfig::DEFAULT;
+        let projection = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 1000.0);
+        let mut near = [point(Vec3::new(0.0, 0.0, -0.25), 0.1, 1.0)];
+        let mut clusters = LightClusters::default();
+        clusters.update(&cfg, &projection, &Mat4::IDENTITY, (128, 128), &mut near);
+        assert!(
+            clusters
+                .cells
+                .as_chunks::<CELL_WORDS>()
+                .0
+                .iter()
+                .any(|cell| cell[0] == 1)
+        );
+
+        let mut offscreen = [point(Vec3::new(100.0, 0.0, -20.0), 1.0, 1.0)];
+        clusters.update(
+            &cfg,
+            &projection,
+            &Mat4::IDENTITY,
+            (128, 128),
+            &mut offscreen,
+        );
+        assert!(
+            clusters
+                .cells
+                .as_chunks::<CELL_WORDS>()
+                .0
+                .iter()
+                .all(|cell| cell[0] == 0)
+        );
+    }
+
+    #[test]
+    fn a_centered_sphere_keeps_its_circular_projection() {
+        let projection = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 1000.0);
+        let (lo, hi) = screen_cells(
+            &projection,
+            true,
+            Vec3::new(0.0, 0.0, -10.0),
+            10.0,
+            1.0,
+            [8, 8, 8],
+            ((0, 0), (7, 7)),
+        )
+        .expect("the sphere overlaps the screen");
+        // The exact tangents are NDC +/-1/sqrt(100-1), just inside cells 3/4.
+        assert_eq!((lo.0, hi.0), (3, 4));
+        assert_eq!((lo.1, hi.1), (3, 4));
+    }
+
+    #[test]
+    fn a_sphere_left_of_the_axis_keeps_its_cells() {
+        let projection = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 1000.0);
+        let dims = [8, 8, 8];
+        let full = ((0, 0), (7, 7));
+        // The mirror of the off-axis case: the tangents stay ordered, so the
+        // cells are the mirrored pair rather than an empty range.
+        let (lo, hi) = screen_cells(
+            &projection,
+            true,
+            Vec3::new(-5.0, 0.0, -10.0),
+            10.0,
+            1.0,
+            dims,
+            full,
+        )
+        .expect("the tangent bounds overlap the screen");
+        assert_eq!((lo.0, hi.0), (0, 1));
+        assert!(lo.1 <= hi.1);
+    }
+
+    #[test]
+    fn an_off_axis_sphere_keeps_its_outer_tangent_cell() {
+        let projection = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 1000.0);
+        let dims = [8, 8, 8];
+        let full = ((0, 0), (7, 7));
+        let center = Vec3::new(5.0, 0.0, -10.0);
+        let (lo, hi) = screen_cells(&projection, true, center, 10.0, 1.0, dims, full)
+            .expect("the tangent bounds overlap the screen");
+        // The exact tangents reach NDC x = 0.3900 and 0.6150; the old disc
+        // around the center's NDC x = 0.5 ended at 0.6005 and missed cell 7.
+        assert_eq!(lo.0, 6);
+        assert_eq!(hi.0, 7);
+        assert!(hi.1 >= lo.1);
     }
 
     #[test]

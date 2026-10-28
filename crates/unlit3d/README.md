@@ -489,6 +489,43 @@ through the same public builders. See
 
 </details>
 
+## The lit pipeline
+
+[`LitPipelineKey`](lit::LitPipelineKey) is the same family with the light path
+switched on. It reuses everything the unlit one does — the mesh channels, the
+instance stream, the bind group layouts, the shader package — and differs in one
+thing: the fragment stage adds up the frame's lights instead of just its
+albedo. There is still no prepass, no shadow map, and no compute pass.
+
+The lights are ordinary components on ordinary entities, so they are placed and
+moved the way anything else in the world is, and a frame pulls them in through
+the same scene walk that pulls in the meshes. Four kinds are provided, and a
+caller extends the set through the same trait the built-in ones use:
+
+- [`DirectionalLight`](lit::DirectionalLight) — the sun; its translation does not
+  matter, only its rotation.
+- [`PointLight`](lit::PointLight) — a position with a range.
+- [`SpotLight`](lit::SpotLight) — a point light with inner and outer cone
+  angles; it emits along the entity's local −Z.
+- [`QuadLight`](lit::QuadLight) — an arbitrary convex polygon of four vertices
+  in local space, for area light and soft window light. Its `rect` constructor
+  builds the common rectangle.
+
+Shading is Lambert: a light modulates the base color and adds brightness, so
+there is no specular term, no metalness, no Fresnel and no energy conservation
+anywhere. The clustered forward path is what keeps that affordable once the
+light count grows: the frame is split into screen tiles times logarithmically
+spaced depth slices on the CPU, each light is written into the cells it can
+reach, and a fragment reads only its own cell — so the cost is one cell lookup
+plus the lights in it, not one loop over every light in the scene. The same
+path runs on WebGL2, which has no compute shaders at all.
+
+Polygon lights carry the classic Lambert form factor of the polygon seen from
+the shaded point rather than a fitted lookup table: it is a closed form over
+the polygon's edges, exact for a diffuse receiver, and it needs no
+precomputed texture. Shadows are out of scope, so the pipeline is a light
+accumulator and nothing more.
+
 ## Custom shaders and per-instance data
 
 Nothing in the frame path is reserved for the built-in unlit shader: it lives
@@ -500,14 +537,17 @@ the built-in one and supplies its own pipeline — a hand-written
 shader package — plus, if it needs any, its own per-instance vertex data.
 
 A caller who wants the built-in family — its layouts, its vertex streams, its
-per-instance record — and only a different entry shader does not register
-anything: they put the source in
+per-instance record — and only a different piece of shade does not register
+anything: they put an [`UnlitShader`](unlit_wgpu::pipeline::UnlitShader) in
 [`UnlitOptions::shader`](unlit_wgpu::pipeline::UnlitOptions::shader) before
-building the [`UnlitPipelineKey`](unlit::UnlitPipelineKey). The variant's flags
-and the built-in package are in scope, so the source declares the bindings the
-built-in shader would have declared, and the layouts stay the variant's, which is
-what makes the swap one field. A family of one's own is the other way, and the
-one to take when more than the shader differs.
+building the [`UnlitPipelineKey`](unlit::UnlitPipelineKey). It holds two WESL
+snippets, one spliced at the end of the vertex stage and one at the end of the
+fragment stage, so the built-in stages keep doing what they do — decoding the
+vertex, transforming it, lighting it, clipping it — and the snippet changes the
+result: a vertex snippet reshapes the surface before it is lit, a fragment
+snippet recolors a pixel after. The layouts stay the variant's, which is what
+makes it one field. A family of one's own is the other way, and the one to take
+when more than the shade differs.
 
 ### Per-instance vertex data
 
@@ -833,7 +873,7 @@ let (mesh, material) = scope
         let indices = [0u32, 1, 2];
         let mesh = source.allocate_unlit_mesh(
             &scope,
-            &key,
+            &key.options,
             UnlitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
@@ -857,7 +897,7 @@ let (mesh, material) = scope
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-        let material = source.allocate_unlit_material(&scope, &key, texture_view, sampler);
+        let material = source.allocate_unlit_material(&scope, &key.options, texture_view, sampler);
         (mesh, material)
     })
     .unwrap();

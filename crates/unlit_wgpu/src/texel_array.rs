@@ -617,14 +617,17 @@ impl TexelArray {
             ),
             rows_per_image: Some(self.layout.height),
         };
-        self.staging.write_texture(
-            device,
-            encoder,
-            &self.texture,
-            layout,
-            self.layout.texture_size(),
-            &self.scratch,
-        );
+        // Upload only the populated rows. The capacity-sized texture would
+        // read past the deliberately shorter packed image on every partial
+        // upload, especially after a many-row array grows.
+        let size = wgpu::Extent3d {
+            height: self
+                .layout
+                .rows_for(elements.len() as u64 / self.layout.element_size),
+            ..self.layout.texture_size()
+        };
+        self.staging
+            .write_texture(device, encoder, &self.texture, layout, size, &self.scratch);
     }
 
     /// Upload `elements` through the queue, for data written once.
@@ -825,6 +828,19 @@ mod tests {
             out[elements.len()..].iter().all(|byte| *byte == 0),
             "the unused tail of the last row is zeroed"
         );
+    }
+
+    #[test]
+    fn a_partial_upload_copies_only_its_populated_rows() {
+        let layout = TexelArrayLayout::new(SCALAR_ELEMENT, 256, ROOMY);
+        let elements = [7u8; 65 * SCALAR_ELEMENT as usize];
+        let mut scratch = Vec::new();
+        layout.pack(&elements, &mut scratch);
+        let rows = layout.rows_for(elements.len() as u64 / SCALAR_ELEMENT);
+
+        assert_eq!(rows, 2);
+        assert_eq!(scratch.len() as u64, u64::from(rows) * layout.row_bytes());
+        assert!(u64::from(rows) < u64::from(layout.height));
     }
 
     #[test]

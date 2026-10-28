@@ -2,11 +2,10 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/crates/un
 
 # unlit_wgpu
 
-A compact, opinionated renderer for unlit draws on WebGPU. It draws a whole
-scene — opaque and transparent instances alike — in a single render pass into
-one [`wgpu::TextureView`] chosen by the caller, and targets WebGPU (and the
-native backends behind it) with a mobile-first bias. WebGL and GLES are not
-supported.
+A compact, opinionated 3D renderer on wgpu. It draws a whole scene — opaque
+and transparent instances alike — in a single render pass into one
+[`wgpu::TextureView`] chosen by the caller, with a mobile-first bias, and runs
+on WebGPU as well as on the WebGL2 baseline.
 
 The crate is layered: the modules below are general facilities a caller builds
 any pipeline on top of, and the built-in unlit pipeline — and the egui backend
@@ -87,6 +86,9 @@ checks that combination separately.
   builds a [`PipelineDescriptor`](specialize::PipelineDescriptor), and
   [`Variants`](specialize::Variants) compiles and reuses one
   [`SpecializedPipeline`](specialize::SpecializedPipeline) per variant.
+- [`light`] — the frame's lights as the shaders read them: one record per light
+  whatever its kind, the cluster grid's parameters, and the CPU clustering that
+  turns a frame's lights into the cell array a draw binds.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, the `GlobalBindings` description and the global
   bind-group layout builder every pipeline binds the frame's shared inputs
@@ -451,21 +453,31 @@ The doc comments of `mesh`, `array_pool`, `buffer_pool`, `offset_allocator`,
 
 The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
-caller binds (`globals`, `view`, `mesh_metadata` and the `mesh_compression`
-decode functions); the `unlit` feature adds the built-in entry shader, which
-`SpecializedUnlitPipeline` composes with the
-[`UnlitVariant`](pipeline::UnlitVariant) a draw resolves.
+caller binds (`globals`, `view`, `mesh_metadata`, the `mesh_compression`
+decode functions and — under `lit` — the light records, the cluster uniform and
+the polygon form factor); the `unlit` feature adds the built-in entry shader,
+which `SpecializedUnlitPipeline` composes with the
+[`UnlitVariant`](pipeline::UnlitVariant) a draw resolves. One entry shader
+covers every built-in variant, lit ones included: the differences are WESL
+conditional-compilation flags, so each composed variant holds one code path and
+declares only the bindings and attributes it uses.
 
-A caller who wants their own entry shader has two ways to it. The closest is
-[`UnlitOptions::shader`](pipeline::UnlitOptions::shader): the source replaces the
-built-in `unlit.wesl` for every variant the options reach, and is composed under
-the same flags and against the same package, so it declares exactly the
-bindings, attributes and entry points the variant it replaces declares — the
-layouts stay the variant's, and only the source changes. The other is to compose
-the shader directly with [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL
-`StaticPackage`, so `wesl::resolver::PackageResolver` can resolve
-`import unlit_wgpu::mesh_compression;` against the same modules the built-in
-pipeline uses, which is what a caller's own family does.
+A caller who wants their own shader has two ways to it. The closest is
+[`UnlitOptions::shader`](pipeline::UnlitOptions::shader): an
+[`UnlitShader`](pipeline::UnlitShader) names a vertex and a fragment snippet,
+and each is spliced into the built-in `lit.wesl` at a marked point — the vertex
+one after the instance transform, before the clip position is built, where the
+vertex is a `var world`; the fragment one after the base color is lit and cut
+off, before the target's encoding, where the color is a `var color`. A snippet
+is WESL, spliced while the module is still WESL and before anything compiles, so
+it sees every binding, flag and helper the built-in stage sees, takes part in the
+conditional compilation, and is what shapes the geometry the rest of the stage
+then transforms, lights and clusters. The layouts and the vertex streams stay the
+variant's: a snippet changes what a stage computes, not what it reads. The other
+way is to compose the shader directly with [`wesl`](https://docs.rs/wesl):
+[`shader`] is a WESL `StaticPackage`, so `wesl::resolver::PackageResolver` can
+resolve `import unlit_wgpu::mesh_compression;` against the same modules the
+built-in pipeline uses, which is what a caller's own family does.
 
 The module creation the crate itself performs goes through
 [`util::shader_module`], a thin wrapper over wgpu's module creation. In debug
@@ -661,15 +673,69 @@ higher layer's family mechanism is
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
 business.
 
+### Lighting: forward clustered Lambert
+
+The lit pipeline is the unlit one with a shader flag:
+[`UnlitVariant::lit`](pipeline::UnlitVariant::lit) turns on one WESL flag, and
+the composed fragment
+multiplies the base color by the frame's lights instead of passing it through.
+Everything else is shared — the layouts, the vertex streams, the instance
+record, the mesh allocator — so a mesh allocated for one family draws in the
+other, and a source can carry both.
+
+The shading is Lambert and nothing more: a light contributes its color times a
+brightness factor, and the sum modulates the base color. There is no specular
+term, no metalness, no Fresnel and no energy conservation, so a lit surface is
+a modulation of its own albedo rather than a physical model of a material.
+
+<details>
+<summary>What a light is, and how a fragment finds the ones that reach it</summary>
+
+Four kinds share one record: a **directional** light, a **point** light with a
+range, a **spot** light with a cone, and a **quad** light — a convex planar
+polygon radiating from one side of its plane. The record is the same
+[`LightGpu`](light::LightGpu) whatever the kind, and `kind.x` says which of the
+lanes matter, so a cell of lights is a list of indices into one array.
+
+Clustering is CPU work. The view is cut into screen tiles of about
+[`cell_pixels`](light::ClusterConfig::cell_pixels) and into
+[`z_slices`](light::ClusterConfig::z_slices) depth slices. The first slice
+absorbs the near end; the rest are logarithmic for perspective and linear for
+orthographic projections, over the fixed scene range the config declares. Each
+light's bounding sphere is assigned to the cells it touches, and a cell that
+overflows keeps its strongest lights — the ranking is the illumination a light
+delivers where the frame is seen from, so the drop is the least visible one. A
+fragment then maps its own screen position and view depth to one cell and reads
+that cell's list. The cost of a fragment is the lights in its own cell, not the
+lights in the frame.
+
+Doing it on the CPU is what makes one path serve both devices. A GPU cluster
+builder is a compute shader, which WebGL2 does not have at all; and the cell
+arrays are frame-wide arrays like the pose ones, uploaded as storage buffers
+where the device has them and as texels where it does not.
+
+A quad light is shaded by the exact diffuse form factor of its polygon — the
+closed-form contour integral, not a Monte-Carlo estimate and not a fitted
+lookup table — which is why it needs no specular machinery: the diffuse term of
+a polygonal light depends only on the polygon and the fragment, never on the
+view direction.
+
+</details>
+
+Its options are the unlit family's own, and the higher layer's `LitPipelineKey`
+is those options under a type of its own — which is what lets one source carry
+both families.
+
 ### Reading the frame's arrays: storage buffers or texels
 
-The built-in shader reads four frame-wide arrays: the per-mesh decode
-parameters, the frame's joint matrices, its morph weights and its morph
-displacements. The last is a mesh's own geometry, but one array holds it for the
-whole frame and a mesh names its slice through its metadata entry, which is what
-leaves the mesh group with nothing to bind. The straightforward binding for each
-is a read-only storage buffer, and every device that meets the WebGPU baseline
-takes it.
+The built-in shader reads the frame's arrays: the per-mesh decode parameters,
+the frame's joint matrices, its morph weights and its morph displacements, and —
+when the variant lights — the light records, the cell array, the polygon corners
+and the cluster parameters. The morph displacements are a mesh's own geometry,
+but one array holds them for the whole frame and a mesh names its slice through
+its metadata entry, which is what leaves the mesh group with nothing to bind.
+The straightforward binding for each is a read-only storage buffer, and every
+device that meets the WebGPU baseline takes it.
 
 WebGL2 does not meet that baseline here: GLES 3.0 has no SSBO at all, `wgpu`
 reports `max_storage_buffers_per_shader_stage` as zero, and a bind-group layout
