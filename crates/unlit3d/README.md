@@ -3,10 +3,10 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/crates/un
 # unlit3d
 
 The high-level rendering API: the ECS-integrated layer that turns a world of
-component-carrying entities into GPU draw commands every frame. It bridges
-[`unlit_ecs`] and [`unlit_wgpu`], and keeps both as direct dependencies — their
-items are reached through their own paths, and the ones most callers need are
-re-exported by [`prelude`].
+component-carrying entities into GPU draw commands every frame, shaded by the
+frame's lights. It bridges [`unlit_ecs`] and [`unlit_wgpu`], and keeps both
+as direct dependencies — their items are reached through their own paths, and
+the ones most callers need are re-exported by [`prelude`].
 
 Like the rest of the workspace it is at an **early stage of development**; APIs
 change freely. It stays close to raw wgpu: the renderer uses [`wgpu`] resources

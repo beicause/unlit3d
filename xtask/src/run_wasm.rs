@@ -343,7 +343,7 @@ const LANDING_HTML: &str = r#"<!DOCTYPE html>
   <body>
     <main>
       <h1>unlit3d</h1>
-      <p class="lede">An unlit rendering library for WebGPU, with a multi-world runtime beside it.</p>
+      <p class="lede">A compact, opinionated 3D rendering library for WebGPU and WebGL2, with simple diffuse lighting and a multi-world runtime beside it.</p>
       <ul>
 {{cards}}        <li>
           <a href="./{{docs}}/index.html"><strong>API docs</strong></a>

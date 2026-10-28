@@ -5,7 +5,8 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/crates/un
 A compact, opinionated 3D renderer on wgpu. It draws a whole scene — opaque
 and transparent instances alike — in a single render pass into one
 [`wgpu::TextureView`] chosen by the caller, with a mobile-first bias, and runs
-on WebGPU as well as on the WebGL2 baseline.
+on WebGPU as well as on the WebGL2 baseline. A built-in pipeline shades the
+scene with Lambert diffuse lighting.
 
 The crate is layered: the modules below are general facilities a caller builds
 any pipeline on top of, and the built-in unlit pipeline — and the egui backend

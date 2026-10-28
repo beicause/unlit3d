@@ -8,8 +8,8 @@
 [![Documentation](https://docs.rs/unlit3d/badge.svg)](https://docs.rs/unlit3d)
 
 构建在 `wgpu` 上的紧凑、可拓展的、有主见的 3D 渲染器，以及构建在其上的
-ECS 层。内置 **unlit** 管线与并排的 **Lambert** 管线（简单的漫反射光照），移动端优先；
-跑在 WebGPU 与 WebGL2 基线上。
+ECS 层。内置 **Lambert** 管线——由平行光、点光、聚光与多边形光给出的简单漫反射光照——
+移动端优先；跑在 WebGPU 与 WebGL2 基线上。
 它直接使用并暴露 `wgpu` 资源，允许底层控制和拓展，带有很少的CPU端的高级封装。
 
 它主要面向拥有图形渲染知识的开发者和编程智能体。与主流的面向大众用户的游戏引擎不同，

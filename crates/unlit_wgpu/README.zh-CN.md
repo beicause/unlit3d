@@ -4,7 +4,7 @@
 
 构建在 wgpu 上的、紧凑且有主见的 3D 渲染器。它在一个 render pass 内把整个场景——
 不透明与透明实例一视同仁——绘制到调用者指定的一个 `wgpu::TextureView`；移动端优先，
-并且跑在 WebGPU 与 WebGL2 基线上。
+并且跑在 WebGPU 与 WebGL2 基线上。内置管线用 Lambert 漫反射光照为场景着色。
 
 本 crate 是分层的：下面这些模块是调用者搭建任意管线所用的通用设施，而内置 unlit
 管线——以及用它的 egui 后端——由 feature 添加。通用模块完全不知道内置管线的存在：
