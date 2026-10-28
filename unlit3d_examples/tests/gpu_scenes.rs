@@ -180,13 +180,22 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         def.depth,
     );
 
+    // Only the frames a scene freezes are read back, so the frames between two
+    // captures are stepped without being drawn. One frame is drawn before the
+    // loop: egui lays a window out over two passes — the first records only the
+    // space it will take — so a capture that were the first drawn frame would
+    // compare against an empty panel.
+    scene.render(&world);
     let mut compared = 0;
     for frame in 0..def.frames {
+        let frozen = (scene.snapshot)(frame);
         scene.advance(&mut world, FIXED_STEP);
-        scene.render(&world);
+        if frozen.is_some() {
+            scene.render(&world);
+        }
         scene.end_frame(&mut world).unwrap();
 
-        let Some(name) = (scene.snapshot)(frame) else {
+        let Some(name) = frozen else {
             continue;
         };
         let snapshot = frames.get(compared).unwrap_or_else(|| {
@@ -259,9 +268,15 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         def.depth,
     );
 
-    for _ in 0..def.frames {
+    // Only the last frame is compared, so only it is drawn: the frames before
+    // it are stepped for the state they leave behind, and the frame before the
+    // loop is drawn for the reason given in [`compare_scene`].
+    scene.render(&world);
+    for frame in 0..def.frames {
         scene.advance(&mut world, FIXED_STEP);
-        scene.render(&world);
+        if frame + 1 == def.frames {
+            scene.render(&world);
+        }
         scene.end_frame(&mut world).unwrap();
     }
 
