@@ -387,13 +387,18 @@ let lattice = vec2<f32>(world.x / {cell_x:.4}, world.y / {cell_y:.4});
 let cell = floor(lattice);
 let offset = fract(lattice);
 let weighted = (3.0 - 2.0 * offset) * offset * offset;
-let scramble = vec2<f32>(127.1, 311.7);
-let corners = vec4<f32>(
-    fract(sin(dot(cell + vec2<f32>(0.0, 0.0), scramble)) * 43758.5453),
-    fract(sin(dot(cell + vec2<f32>(1.0, 0.0), scramble)) * 43758.5453),
-    fract(sin(dot(cell + vec2<f32>(0.0, 1.0), scramble)) * 43758.5453),
-    fract(sin(dot(cell + vec2<f32>(1.0, 1.0), scramble)) * 43758.5453),
-);
+// An integer hash, not `fract(sin(...))`: `sin` is only specified to a few
+// units in the last place, and the usual trick of multiplying it by a large
+// constant turns that into an unrelated lattice on another driver. Integer
+// arithmetic is exact, so every backend displaces the wall the same way.
+var corners = vec4<f32>(0.0);
+for (var corner = 0u; corner < 4u; corner += 1u) {{
+    let at = vec2<u32>(vec2<i32>(cell + vec2<f32>(f32(corner % 2u), f32(corner / 2u))));
+    var hash = at.x * 0x27d4eb2du + at.y * 0x165667b1u;
+    hash = (hash ^ (hash >> 15u)) * 0x2545f491u;
+    hash = hash ^ (hash >> 13u);
+    corners[corner] = f32(hash) * 2.3283064e-10;
+}}
 let top = mix(corners.x, corners.y, weighted.x);
 let bottom = mix(corners.z, corners.w, weighted.x);
 let rise = mix(top, bottom, weighted.y) * 2.0 - 1.0;
