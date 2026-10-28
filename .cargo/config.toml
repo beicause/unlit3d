@@ -6,9 +6,11 @@ debug = 1
 
 # Every wasm build of this repository enables `simd128`: every browser that
 # runs WebAssembly also runs fixed-width SIMD, and rapier's physics and
-# rustysynth's mixing both vectorize under it. The `RUSTFLAGS` environment
-# variable, which the CI workflows set, overrides this whole section — the
-# workflows that build for this target therefore add the same flag to their
-# `RUSTFLAGS` themselves, and the two paths must stay identical.
+# rustysynth's mixing both vectorize under it. This section is what a local
+# build gets. The CI workflows set the per-target `CARGO_TARGET_*` variables
+# rather than `RUSTFLAGS`: cargo would let that one override this whole section,
+# and a flag meant for the browser is a warning per crate when a host build
+# reads it. The variables merge with it instead, so a job that builds for this
+# target keeps the flag below whichever way it was started.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128"]

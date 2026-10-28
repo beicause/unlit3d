@@ -94,9 +94,10 @@ runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 
 
 该任务为 `wasm32-unknown-unknown` 编译的一切都走 `wasm-release`，与 `run-wasm` 相同。
 为该 target 做的每个构建都会启用 `simd128` target feature——它由 `.cargo/config.toml`
-设置，而 workflow 的 `RUSTFLAGS` 会整体覆盖该文件，因此那些地方也重复了同一条——
-rapier 的物理与 rustysynth 的混音都能借它向量化。debug 的 wasm 才是这里慢的东西：
-链接要几分钟，下载体积是好几倍，而且跑的还是一条浏览器永远不会发布的代码路径。
+设置，workflow 用按 target 的 `CARGO_TARGET_*_RUSTFLAGS` 变量在它之上追加，而不是用
+会整体覆盖该文件的 `RUSTFLAGS`——rapier 的物理与 rustysynth 的混音都能借它向量化。
+debug 的 wasm 才是这里慢的东西：链接要几分钟，下载体积是好几倍，而且跑的还是一条浏览器
+永远不会发布的代码路径。
 
 ### `cargo xtask run-wasm`
 

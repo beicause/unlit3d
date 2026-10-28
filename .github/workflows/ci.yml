@@ -37,14 +37,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
+# `RUSTFLAGS` is deliberately not in the shared block: cargo lets that one
+# override `.cargo/config.toml` wholesale, so a job that builds for the browser
+# would have to repeat the target's `simd128` flag there too, and the host builds
+# beside it would then read a feature their target does not have — a warning per
+# crate. Each job sets the `CARGO_TARGET_*_RUSTFLAGS` of the targets it builds
+# for instead, which merge with that file rather than replace it. Those variables
+# are what rust-cache hashes into a key, so two jobs sharing one cache have to set
+# the same names to the same values.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_PROFILE_DEV_DEBUG: 0
-  RUSTFLAGS: "-C debuginfo=0 -D warnings"
   ANDROID_NDK_VERSION: 29.0.14206865
-  CACHE_SUFFIX: e # cache busting
+  CACHE_SUFFIX: f # cache busting
 
 jobs:
   lint:
@@ -82,6 +89,11 @@ jobs:
     # run rather than assuming the prebuilt binary is always there.
     timeout-minutes: 35
     runs-on: ${{matrix.os}}
+    # Every target this job builds is the runner's own host target, so one
+    # variable covers all three: no leg of the matrix asks for a feature the
+    # others' compiler does not have.
+    env:
+      RUSTFLAGS: "-C debuginfo=0 -D warnings"
     strategy:
       fail-fast: false
       matrix:
@@ -238,13 +250,14 @@ jobs:
     if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
-    # The target rustflags in `.cargo/config.toml` are what a local build gets,
-    # but the workflow-level `RUSTFLAGS` above overrides them wholesale, so this
-    # job adds the simd flag here to lint the code the browser actually runs.
-    # It has to match `build-wasm` in `ci-main.yml` byte for byte: rust-cache
-    # hashes `RUSTFLAGS` into the cache key the two jobs share.
+    # The target rustflags in `.cargo/config.toml` carry the simd flag, and a
+    # `CARGO_TARGET_*` variable merges with that file instead of replacing it,
+    # which is what lets this job lint the code the browser actually runs without
+    # setting a feature the host compiler would not recognize. It has to match
+    # `build-wasm` in `ci-main.yml` byte for byte: rust-cache hashes these
+    # variables into the cache key the two jobs share.
     env:
-      RUSTFLAGS: "-C debuginfo=0 -D warnings -C target-feature=+simd128"
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: "-C debuginfo=0 -D warnings"
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -304,6 +317,10 @@ jobs:
     if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
+    # `cargo ndk` builds for the phone target alone, so that target's variable
+    # is the one that reaches the code it lints.
+    env:
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: "-C debuginfo=0 -D warnings"
     steps:
       - uses: actions/checkout@v7.0.1
 

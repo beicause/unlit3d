@@ -114,11 +114,12 @@ use.
 
 Everything this task compiles for `wasm32-unknown-unknown` goes through
 `wasm-release`, as `run-wasm` does. Every build for the target also enables the
-`simd128` target feature — set in `.cargo/config.toml`, and repeated in the
-workflows' `RUSTFLAGS`, which override that file wholesale — under which rapier's
-physics and rustysynth's mixing both vectorize. A debug wasm is the slow thing
-here: it takes minutes to link, several times the size to fetch, and then runs
-the tests on a code path no browser ever ships.
+`simd128` target feature — set in `.cargo/config.toml`, which the workflows
+extend through the per-target `CARGO_TARGET_*_RUSTFLAGS` variables rather than a
+`RUSTFLAGS` that would override it wholesale — under which rapier's physics and
+rustysynth's mixing both vectorize. A debug wasm is the slow thing here: it takes
+minutes to link, several times the size to fetch, and then runs the tests on a
+code path no browser ever ships.
 
 ### `cargo xtask run-wasm`
 

@@ -26,8 +26,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
-  RUSTFLAGS: "-C debuginfo=0 -D warnings"
-  CACHE_SUFFIX: e # cache busting
+  CACHE_SUFFIX: f # cache busting
 
 permissions:
   contents: read
@@ -38,13 +37,14 @@ jobs:
     # runtime is normally 2 minutes
     timeout-minutes: 15
     runs-on: ubuntu-latest
-    # The target rustflags in `.cargo/config.toml` are what a local build gets,
-    # but the workflow-level `RUSTFLAGS` above overrides them wholesale, so this
-    # job adds the simd flag for the examples it builds. The docs step below
-    # compiles for the host, where rustc ignores the flag with a warning per
-    # crate — noisy, but harmless: the docs build does not deny warnings.
+    # The job builds for two targets: the browser, where the simd flag comes from
+    # `.cargo/config.toml` and a `CARGO_TARGET_*` variable merges with that file,
+    # and the host for the docs. Setting them per target is what keeps the host
+    # compiler from reading a feature it does not have. The docs build does not
+    # deny warnings, so its variable leaves that out.
     env:
-      RUSTFLAGS: "-C debuginfo=0 -D warnings -C target-feature=+simd128"
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: "-C debuginfo=0 -D warnings"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C debuginfo=0"
     permissions:
       contents: read
       # Only reads the site it is about to publish to, but GitHub has no

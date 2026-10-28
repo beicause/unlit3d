@@ -26,16 +26,16 @@ concurrency:
 # left one out would look for a cache the light tier never wrote. A called
 # workflow does not inherit the caller's `env`, so the shared jobs are covered by
 # `ci.yml`'s own copy either way — this one is for the two jobs below it.
-# `build-wasm` below overrides `RUSTFLAGS` for the wasm target, and `check-wasm`
-# in `ci.yml` repeats the same value for their shared cache to keep matching.
+# `RUSTFLAGS` is absent for the reason given there: each job below sets the
+# `CARGO_TARGET_*_RUSTFLAGS` of the targets it builds for, and `build-wasm`
+# matches `check-wasm` in `ci.yml` byte for byte for their shared cache.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_PROFILE_DEV_DEBUG: 0
-  RUSTFLAGS: "-C debuginfo=0 -D warnings"
   ANDROID_NDK_VERSION: 29.0.14206865
-  CACHE_SUFFIX: e # cache busting
+  CACHE_SUFFIX: f # cache busting
 
 jobs:
   shared:
@@ -51,11 +51,13 @@ jobs:
     # makes the last part slow rather than the build.
     timeout-minutes: 25
     runs-on: ubuntu-latest
-    # The same override `check-wasm` in `ci.yml` makes: the workflow-level
-    # `RUSTFLAGS` beat the target rustflags in `.cargo/config.toml`, and the
-    # value has to match that job byte for byte for their shared cache to hit.
+    # The same variables `check-wasm` in `ci.yml` sets, byte for byte, for their
+    # shared cache to hit. The browser build gets the wasm target's flags, whose
+    # simd flag comes from `.cargo/config.toml` and merges with these; the host
+    # artifacts the run builds at the same time get the host target's.
     env:
-      RUSTFLAGS: "-C debuginfo=0 -D warnings -C target-feature=+simd128"
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: "-C debuginfo=0 -D warnings"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C debuginfo=0 -D warnings"
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -183,6 +185,10 @@ jobs:
     # runs after the first much shorter.
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    # The cross-lint and the APK build both target the phone, so that target's
+    # variable carries the flags; `check-android` in `ci.yml` sets the same one.
+    env:
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: "-C debuginfo=0 -D warnings"
     steps:
       - uses: actions/checkout@v7.0.1
 
