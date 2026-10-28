@@ -263,7 +263,8 @@ fn build_clusters(
 fn cluster_grid() -> String {
     r#"
 let grid_depth = view_depth(in.world);
-let grid_cell = fragment_cluster_index(in.ndc, grid_depth);
+let grid_ndc = fragment_ndc(in.world);
+let grid_cell = fragment_cluster_index(grid_ndc, grid_depth);
 let grid_count = array_access::load_cell_word(grid_cell, 0u);
 var grid_local_count = 0u;
 var grid_has_directional = false;
@@ -289,7 +290,7 @@ if grid_local_count >= cluster.dims.w { grid = vec3<f32>(0.92, 0.025, 0.025); }
 // distance to the nearest border divided by how much the lattice moves per
 // pixel -- so it stays the same width wherever the floor's depth changes fastest
 // and never thickens into a band.
-let grid_lattice = (in.ndc * 0.5 + 0.5) * vec2<f32>(cluster.dims.xy);
+let grid_lattice = (grid_ndc * 0.5 + 0.5) * vec2<f32>(cluster.dims.xy);
 let grid_fract = fract(grid_lattice);
 let grid_edge = min(grid_fract, 1.0 - grid_fract);
 let grid_pixels = grid_edge / max(fwidth(grid_lattice), vec2<f32>(1e-6));
@@ -307,7 +308,7 @@ grid_opacity = max(grid_opacity, grid_border * 0.85);
 grid_opacity = max(grid_opacity, grid_slice_border * 0.7);
 // The directional light is not part of the heat count. This edge mark still
 // checks that the unbounded light was assigned to every screen column.
-if grid_has_directional && in.ndc.x < -0.985 {
+if grid_has_directional && grid_ndc.x < -0.985 {
     grid = vec3<f32>(0.8, 0.08, 0.65);
     grid_opacity = 0.85;
 }

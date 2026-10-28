@@ -197,14 +197,9 @@ struct VertexOut {
     /// fragment stage then derives the geometric normal from screen-space
     /// derivatives.
     @if(LIT) @location(3) normal: vec3<f32>,
-    /// World-space position, which the lights' world-space records address.
+    /// World-space position, which the lights' world-space records address and
+    /// which the cluster cell is derived from.
     @if(LIT) @location(4) world: vec3<f32>,
-    /// Normalized device coordinates, which the cluster lookup turns into a
-    /// cell. They are affine in screen space, so they interpolate linearly: the
-    /// rasterizer's perspective-correct interpolation would divide by each
-    /// vertex's `w` again and land a fragment in the wrong cell wherever the
-    /// depth of a triangle varies across its surface.
-    @if(LIT) @interpolate(linear) @location(5) ndc: vec2<f32>,
 }
 
 /// Transform a local-space point by an affine matrix packed as three columns
@@ -375,14 +370,10 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
         out.color = out.color * in.color;
     }
     // A lit fragment addresses the frame's world-space lights and asks which
-    // cell it lands in, so the vertex stage hands over the world position, the
-    // normal it shades with, and the normalized device coordinates the cell is
-    // chosen by. The last is interpolated, not recomputed: it is affine in
-    // screen space, so the rasterizer's perspective-correct interpolation
-    // reproduces the fragment's own value.
+    // cell it lands in, so the vertex stage hands over the world position and
+    // the normal it shades with.
     @if(LIT) {
         out.world = world;
-        out.ndc = out.clip.xy / out.clip.w;
     }
     @if(LIT && VERTEX_NORMAL) {
         out.normal = transform_vector(
@@ -431,6 +422,19 @@ fn fragment_normal(in: VertexOut) -> vec3<f32> {
     return select(-geometric, geometric, dot(geometric, to_eye) >= 0.0);
 }
 
+/// The normalized device coordinates of a world-space point.
+///
+/// A fragment derives the coordinates of its own cell from the world position
+/// rather than from a varying. Perspective-correct interpolation reproduces the
+/// surface point exactly, so projecting it lands on the fragment's own place on
+/// screen. Handing the coordinates over as a varying would instead need linear
+/// interpolation, which the WebGL2 baseline cannot express.
+@if(LIT)
+fn fragment_ndc(world: vec3<f32>) -> vec2<f32> {
+    let clip = camera.clip_from_world * vec4<f32>(world, 1.0);
+    return clip.xy / clip.w;
+}
+
 /// The linear depth of a world-space point: its distance along the camera's
 /// view direction, which is what the depth slices are cut by.
 @if(LIT)
@@ -462,6 +466,9 @@ fn cluster_depth_slice(depth: f32) -> u32 {
 }
 
 /// The cluster cell a fragment at `ndc` and `depth` falls in.
+///
+/// `ndc` is the fragment's own place on screen, which [`fragment_ndc`] derives
+/// from the world position it interpolates.
 @if(LIT)
 fn fragment_cluster_index(ndc: vec2<f32>, depth: f32) -> u32 {
     let dims = cluster.dims.xyz;
@@ -595,7 +602,7 @@ fn lit_color(in: VertexOut, base: vec4<f32>) -> vec4<f32> {
     if dot(n, n) <= 0.0 {
         return base;
     }
-    let cell = fragment_cluster_index(in.ndc, view_depth(in.world));
+    let cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.world));
     let count = min(array_access::load_cell_word(cell, 0u), cluster.dims.w);
     var irradiance = cluster.ambient.rgb;
     for (var i = 0u; i < count; i += 1u) {
