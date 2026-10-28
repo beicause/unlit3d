@@ -44,8 +44,12 @@ pub struct Interactive {
 }
 
 impl Interactive {
-    /// Step `frames` frames: dispatch the queued input, advance every world,
-    /// pull the mix the frame would have played and draw the frame offscreen.
+    /// Step `frames` frames: dispatch the queued input, advance every world and
+    /// pull the mix the frames would have played.
+    ///
+    /// Nothing is drawn here, so a run that only reads the state back rather
+    /// than the picture costs no draw calls. [`Interactive::draw`] draws the
+    /// frame where the scene then stands.
     pub fn step(&mut self, host: &World, frames: u32) {
         for _ in 0..frames {
             dispatch_input(host);
@@ -70,10 +74,6 @@ impl Interactive {
                 .expect("the render sub-world exists");
             drain_sub_world(&mut nested);
             dispatch_frame(&mut nested, &mut self.frame);
-            let _ = nested
-                .root_scope()
-                .query_one::<&mut Renderer>(self.renderer)
-                .map(|mut renderer| renderer.render(&nested));
             self.frame.index = self.frame.index.wrapping_add(1);
         }
     }
@@ -112,22 +112,31 @@ impl Interactive {
         .expect("the gameplay world is a stepped world")
     }
 
-    /// Draw the current frame again and read its pixels back.
+    /// Draw the frame where the scene stands and read its pixels back.
     ///
-    /// A caller that compares the frame against a baseline draws one more
-    /// frame than it stepped: the pass draws wherever the scene stood when it
-    /// ran, and the readback blocks until the copy lands.
+    /// The readback blocks until the copy lands. Drawing is what publishes the
+    /// target the panels lay out against, so nothing is laid out until one
+    /// frame has been drawn.
     pub fn render_frame(&self, host: &World) -> Vec<u8> {
-        let nested = host
+        self.draw(host);
+        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &self.frame_texture)
+    }
+
+    /// Draw the frame where the scene stands, into the offscreen texture.
+    ///
+    /// The render sub-world catches up on the jobs queued for it first, so the
+    /// frame draws the scene as the steps left it rather than as the jobs
+    /// found it.
+    pub fn draw(&self, host: &World) {
+        let mut nested = host
             .root_scope()
             .query_one::<&mut World>(self.render)
             .expect("the render sub-world exists");
-        let rendered = nested
+        drain_sub_world(&mut nested);
+        let _ = nested
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
             .map(|mut renderer| renderer.render(&nested));
-        let _ = rendered;
-        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &self.frame_texture)
     }
 
     /// The samples the last step pulled from the audio world.
@@ -308,5 +317,9 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
         device: config.device,
         queue: config.queue,
     };
+    // One frame is drawn before the caller takes over: a drawn frame is what
+    // publishes the target the panels lay out against, so a run that never
+    // draws lays out no panels and has no buttons to click.
+    interactive.draw(&host);
     (host, input, interactive)
 }

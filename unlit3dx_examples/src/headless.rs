@@ -166,7 +166,7 @@ pub fn run(
 
         // Render: drain the sub-world's commands — the scene build rides
         // on that drain — then dispatch and draw. An audio-only run
-        // captures no frames and skips the draw entirely: nothing reads
+        // captures no frames and skips the whole block: nothing reads
         // the picture, and the camera behaviour it would drive belongs
         // to the picture alone.
         let mut nested = host
@@ -175,14 +175,17 @@ pub fn run(
             .expect("the render sub-world exists");
         drain_sub_world(&mut nested);
         if !config.capture.is_empty() {
+            // The camera behaviour runs every frame, so the path a capture
+            // freezes is the path the run walked; the draw itself is what only
+            // the captured frames need.
             dispatch_frame(&mut nested, &mut frame);
-            let _ = nested
-                .root_scope()
-                .query_one::<&mut Renderer>(renderer.0)
-                .map(|mut r| {
-                    r.render(&nested);
-                });
             if config.capture.contains(&index) {
+                let _ = nested
+                    .root_scope()
+                    .query_one::<&mut Renderer>(renderer.0)
+                    .map(|mut r| {
+                        r.render(&nested);
+                    });
                 let target = offscreen.as_ref().expect("the offscreen target exists");
                 output
                     .frames
