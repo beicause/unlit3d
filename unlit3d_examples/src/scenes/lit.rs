@@ -190,7 +190,7 @@ fn build(
     // is part of the options a variant is compiled from, so the wall draws
     // through a second pipeline of the same family.
     let mut relief = super::unlit_options(&device);
-    relief.shader = Some(UnlitShader::new("lit::wall_relief", wall_relief(), ""));
+    relief.shader = Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), ""));
     let relief_key = LitPipelineKey::new(relief);
 
     let source_entity = world

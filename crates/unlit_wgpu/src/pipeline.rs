@@ -65,10 +65,14 @@ pub const LIGHT_CELLS_BINDING: u32 = 7;
 pub const LIGHT_VERTICES_BINDING: u32 = 8;
 /// Binding slot of the cluster uniform in the global bind group.
 ///
-/// The cluster grid's shape and depth mapping, plus the frame's ambient term:
-/// what a fragment needs to find the cell it is in and to light itself when no
-/// light reaches it.
+/// The cluster grid's shape and depth mapping: what a fragment needs to find the
+/// cell it is in.
 pub const CLUSTER_BINDING: u32 = 9;
+/// Binding slot of the frame-wide lighting uniform in the global bind group.
+///
+/// The ambient term and the frame's directional lights, which reach every
+/// fragment: what a fragment needs to light itself before it asks the grid.
+pub const LIGHTING_BINDING: u32 = 10;
 /// Bind-group index of the global group.
 pub const GLOBAL_GROUP: u32 = 0;
 /// Bind-group index of the material group.
@@ -296,17 +300,20 @@ pub enum BaseColorChannels {
 
 /// A caller's own shader code, spliced into the built-in `lit.wesl`.
 ///
-/// The built-in entry shader keeps one empty statement at the end of its vertex
-/// stage and one at the end of its fragment stage, each marked with a comment
-/// naming it. A shader is spliced in at those marks while the module is still
-/// WESL, before anything is compiled, so the snippet is ordinary WESL: it sees
-/// every binding, flag and helper the built-in stage sees, it takes part in the
-/// conditional compilation, and its diagnostics point at the line it was written
-/// on rather than at a fragment of generated WGSL.
+/// The built-in entry shader keeps three marks, each a comment naming the place
+/// it sits: one at module scope, one at the end of the vertex stage and one at
+/// the end of the fragment stage. A shader is spliced in at those marks while the
+/// module is still WESL, before anything is compiled, so each snippet is ordinary
+/// WESL: it sees every binding, flag and helper the place it lands in sees, it
+/// takes part in the conditional compilation, and its diagnostics point at the
+/// line it was written on rather than at a fragment of generated WGSL.
 ///
-/// The marks sit where the stage still has something left to do, which is what
+/// The marks sit where the shader still has something left to do, which is what
 /// keeps a snippet short:
 ///
+/// * The module mark is after every built-in binding, so a snippet can declare
+///   the functions, types and constants the stages call, and read the built-in
+///   bindings from them.
 /// * The vertex mark is after the instance transform, before the clip position
 ///   is built. The vertex is a `var world` there, and everything downstream —
 ///   the clip position, the world position the lights are addressed from, the
@@ -316,9 +323,11 @@ pub enum BaseColorChannels {
 ///   rewrite it in place, and what it leaves is what the target receives.
 ///
 /// The layouts and the vertex streams stay the variant's, exactly as they are
-/// for the built-in shader: a snippet changes what a stage computes, not what it
-/// reads. Declaring a binding or an attribute of its own therefore fails
-/// pipeline creation rather than drawing something else.
+/// for the built-in shader: a snippet changes what a stage computes, not what the
+/// variant reads. A snippet that declares a binding of its own therefore fails
+/// pipeline creation rather than drawing something else; one that declares
+/// functions, types or constants over the bindings every variant of that shape
+/// already declares works.
 ///
 /// The label names the shader: it is the shader module's label, and a
 /// composition error is reported under it.
@@ -326,24 +335,27 @@ pub enum BaseColorChannels {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct UnlitShader {
     label: Arc<str>,
+    module: Arc<str>,
     vertex: Arc<str>,
     fragment: Arc<str>,
 }
 
 #[cfg(feature = "unlit")]
 impl UnlitShader {
-    /// A shader named `label` whose `vertex` and `fragment` snippets are
-    /// spliced into the built-in entry shader.
+    /// A shader named `label` whose `module`, `vertex` and `fragment` snippets
+    /// are spliced into the built-in entry shader.
     ///
-    /// Either snippet may be empty, which leaves that stage exactly as the
-    /// built-in shader has it.
+    /// Any snippet may be empty, which leaves its place exactly as the built-in
+    /// shader has it.
     pub fn new(
         label: impl Into<Arc<str>>,
+        module: impl Into<Arc<str>>,
         vertex: impl Into<Arc<str>>,
         fragment: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             label: label.into(),
+            module: module.into(),
             vertex: vertex.into(),
             fragment: fragment.into(),
         }
@@ -352,6 +364,11 @@ impl UnlitShader {
     /// The name this shader is reported under.
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// The WESL declarations spliced in at module scope.
+    pub fn module(&self) -> &str {
+        &self.module
     }
 
     /// The WESL statements spliced into the vertex stage.
@@ -372,6 +389,7 @@ impl core::fmt::Debug for UnlitShader {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("UnlitShader")
             .field("label", &self.label)
+            .field("module", &format_args!("{} bytes", self.module.len()))
             .field("vertex", &format_args!("{} bytes", self.vertex.len()))
             .field("fragment", &format_args!("{} bytes", self.fragment.len()))
             .finish()
@@ -997,6 +1015,10 @@ fn entry_shader_path() -> wesl::syntax::ModulePath {
     )
 }
 
+/// The comment the built-in entry shader marks its module-scope splice with.
+#[cfg(feature = "unlit")]
+const MODULE_HOOK: &str = "// unlit_wgpu::hook module";
+
 /// The comment the built-in entry shader marks its vertex-stage splice with.
 #[cfg(feature = "unlit")]
 const VERTEX_HOOK: &str = "// unlit_wgpu::hook vertex";
@@ -1022,16 +1044,19 @@ fn built_in_entry_source() -> &'static str {
 ///
 /// # Panics
 ///
-/// If the built-in source does not carry both marks. They are checked rather
-/// than trusted because a mark is a bare comment: losing one while editing the
-/// shader would otherwise silently drop every snippet.
+/// If the built-in source does not carry all three marks. They are checked
+/// rather than trusted because a mark is a bare comment: losing one while
+/// editing the shader would otherwise silently drop every snippet aimed at it.
 #[cfg(feature = "unlit")]
-fn splice(source: &str, vertex: &str, fragment: &str) -> String {
-    let spliced = splice_at(source, VERTEX_HOOK, vertex);
-    let spliced = splice_at(&spliced, FRAGMENT_HOOK, fragment);
+fn splice(source: &str, shader: &UnlitShader) -> String {
+    let spliced = splice_at(source, MODULE_HOOK, shader.module());
+    let spliced = splice_at(&spliced, VERTEX_HOOK, shader.vertex());
+    let spliced = splice_at(&spliced, FRAGMENT_HOOK, shader.fragment());
     assert!(
-        !spliced.contains(VERTEX_HOOK) && !spliced.contains(FRAGMENT_HOOK),
-        "the built-in entry shader carries both hook marks"
+        !spliced.contains(MODULE_HOOK)
+            && !spliced.contains(VERTEX_HOOK)
+            && !spliced.contains(FRAGMENT_HOOK),
+        "the built-in entry shader carries all three hook marks"
     );
     spliced
 }
@@ -1129,7 +1154,7 @@ fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, Compose
                 wesl::resolver::VirtualResolver::new();
             modules.add_module(
                 wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, Vec::new()),
-                splice(built_in_entry_source(), shader.vertex(), shader.fragment()).into(),
+                splice(built_in_entry_source(), shader).into(),
             );
             let mut resolver = wesl::resolver::Router::new();
             resolver.mount_resolver(main_path.clone(), modules);
@@ -1176,12 +1201,12 @@ pub struct GlobalBindings {
     pub joints: bool,
     /// Whether the pipeline reads the frame's morph weights and displacements.
     pub morphs: bool,
-    /// Whether the pipeline reads the frame's lights, cluster cells and cluster
-    /// uniform.
+    /// Whether the pipeline reads the frame's lights: the bounded-light arrays,
+    /// the cluster uniform and the frame-wide lighting uniform.
     ///
-    /// One flag for all four bindings: a pipeline that lights its fragments
-    /// reads the three arrays and the uniform together, so a finer split would
-    /// only describe combinations no pipeline can have.
+    /// One flag for all five bindings: a pipeline that lights its fragments
+    /// reads the three arrays and the two uniforms together, so a finer split
+    /// would only describe combinations no pipeline can have.
     pub lights: bool,
 }
 
@@ -1230,7 +1255,7 @@ pub fn global_bind_group_layout(
     bindings: GlobalBindings,
     texel_arrays: bool,
 ) -> wgpu::BindGroupLayout {
-    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 10>::new();
+    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 11>::new();
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: CAMERA_BINDING,
         // The near plane and the eye position are view values a fragment stage
@@ -1327,6 +1352,18 @@ pub fn global_bind_group_layout(
                 has_dynamic_offset: false,
                 min_binding_size: Some(
                     <crate::light::ClusterUniform as const_shader_layout::ShaderLayout>::SIZE,
+                ),
+            },
+            count: None,
+        });
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: LIGHTING_BINDING,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: Some(
+                    <crate::light::LightingUniform as const_shader_layout::ShaderLayout>::SIZE,
                 ),
             },
             count: None,
@@ -1511,7 +1548,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn a_caller_shader_is_spliced_into_the_built_in_source() {
         let shader = UnlitShader::new(
             "caller",
-            "let marker_vertex = 0.125; world = world + vec3<f32>(0.0, marker_vertex, 0.0);",
+            "fn marker_module() -> f32 { return 0.5; }",
+            "let marker_vertex = marker_module() * 0.25; world = world + vec3<f32>(0.0, marker_vertex, 0.0);",
             "let marker_fragment = 0.25; color = vec4<f32>(marker_fragment, color.g, color.b, color.a);",
         );
         let mut options = UnlitOptions::standard_shape();
@@ -1532,15 +1570,23 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         // rather than standing in for them.
         assert!(wgsl.contains("fn vs_main"));
         assert!(wgsl.contains("fn fs_main"));
-        // Each snippet landed in the stage it belongs to, and the marks are
-        // gone rather than left in the composed module.
+        // Each snippet landed in the place it belongs to -- module scope before
+        // either stage, the vertex stage before the fragment one -- and the
+        // marks are gone rather than left in the composed module. A module
+        // snippet declares what the stages call, which is the whole reason it
+        // exists: here the vertex snippet uses a function it declared.
+        let module_at = wgsl
+            .find("fn marker_module")
+            .expect("the module snippet spliced");
         let vertex_at = wgsl
             .find("marker_vertex")
             .expect("the vertex snippet spliced");
         let fragment_at = wgsl
             .find("marker_fragment")
             .expect("the fragment snippet spliced");
+        assert!(module_at < vertex_at);
         assert!(vertex_at < fragment_at);
+        assert!(!wgsl.contains(MODULE_HOOK));
         assert!(!wgsl.contains(VERTEX_HOOK));
         assert!(!wgsl.contains(FRAGMENT_HOOK));
     }
@@ -1559,7 +1605,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             false,
         );
         let mut options = UnlitOptions::standard_shape();
-        options.shader = Some(UnlitShader::new("empty", "", ""));
+        options.shader = Some(UnlitShader::new("empty", "", "", ""));
         let with_snippets = variant(
             options,
             channels(

@@ -87,8 +87,9 @@ checks that combination separately.
   builds a [`PipelineDescriptor`](specialize::PipelineDescriptor), and
   [`Variants`](specialize::Variants) compiles and reuses one
   [`SpecializedPipeline`](specialize::SpecializedPipeline) per variant.
-- [`light`] — the frame's lights as the shaders read them: one record per light
-  whatever its kind, the cluster grid's parameters, and the CPU clustering that
+- [`light`] — the frame's lights as the shaders read them: one record per bounded
+  light whatever its kind, the uniform that carries the ambient term and the
+  directional lights, the cluster grid's parameters, and the CPU clustering that
   turns a frame's lights into the cell array a draw binds.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, the `GlobalBindings` description and the global
@@ -466,17 +467,22 @@ declares only the bindings and attributes it uses.
 
 A caller who wants their own shader has two ways to it. The closest is
 [`UnlitOptions::shader`](pipeline::UnlitOptions::shader): an
-[`UnlitShader`](pipeline::UnlitShader) names a vertex and a fragment snippet,
-and each is spliced into the built-in `lit.wesl` at a marked point — the vertex
-one after the instance transform, before the clip position is built, where the
-vertex is a `var world`; the fragment one after the base color is lit and cut
-off, before the target's encoding, where the color is a `var color`. A snippet
-is WESL, spliced while the module is still WESL and before anything compiles, so
-it sees every binding, flag and helper the built-in stage sees, takes part in the
-conditional compilation, and is what shapes the geometry the rest of the stage
-then transforms, lights and clusters. The layouts and the vertex streams stay the
-variant's: a snippet changes what a stage computes, not what it reads. The other
-way is to compose the shader directly with [`wesl`](https://docs.rs/wesl):
+[`UnlitShader`](pipeline::UnlitShader) names a module, a vertex and a fragment
+snippet, and each is spliced into the built-in `lit.wesl` at a marked point. The
+module one sits among the top-level declarations, after the imports and the
+bindings and before the first struct, so it can add functions, types and
+constants over the bindings every variant of that shape already declares. The
+vertex one sits after the instance transform, before the clip position is built,
+where the vertex is a `var world`. The fragment one sits after the base color is
+cut off and lit, before the target's encoding, where the color is a `var color`.
+A snippet is WESL, spliced while the module is still WESL and before anything
+compiles, so it sees every binding, flag and helper the built-in stage sees,
+takes part in the conditional compilation, and is what shapes the geometry the
+rest of the stage then transforms, lights and clusters. The layouts and the
+vertex streams stay the variant's: a snippet changes what a stage computes, not
+what it reads, and one that declares a binding of its own fails pipeline
+creation rather than drawing something else. The other way is to compose the
+shader directly with [`wesl`](https://docs.rs/wesl):
 [`shader`] is a WESL `StaticPackage`, so `wesl::resolver::PackageResolver` can
 resolve `import unlit_wgpu::mesh_compression;` against the same modules the
 built-in pipeline uses, which is what a caller's own family does.
@@ -694,11 +700,18 @@ material.
 <details>
 <summary>What a light is, and how a fragment finds the ones that reach it</summary>
 
-Four kinds share one record: a **directional** light, a **point** light with a
-range, a **spot** light with a cone, and a **quad** light — a convex planar
-polygon radiating from one side of its plane. The record is the same
-[`LightGpu`](light::LightGpu) whatever the kind, and `kind.x` says which of the
-lanes matter, so a cell of lights is a list of indices into one array.
+Bounded kinds share one record: a **point** light with a range, a **spot** light
+with a cone, and a **quad** light — a convex planar polygon radiating from one
+side of its plane. The record is the same [`LightGpu`](light::LightGpu) whatever
+the kind, and `kind.x` says which of the lanes matter, so a cell of lights is a
+list of indices into one array.
+
+A **directional** light is not in the grid. It reaches every fragment, so writing
+it into every cell would spend one of a cell's slots to say nothing; it goes into
+[`LightingUniform`](light::LightingUniform) instead, which carries up to
+[`MAX_DIRECTIONAL_LIGHTS`](light::MAX_DIRECTIONAL_LIGHTS) of them together with
+the frame's ambient term. Every lit fragment reads that uniform first and then
+the lights of its own cell.
 
 Clustering is CPU work. The view is cut into screen tiles of about
 [`cell_pixels`](light::ClusterConfig::cell_pixels) and into
@@ -733,8 +746,9 @@ both families.
 
 The built-in shader reads the frame's arrays: the per-mesh decode parameters,
 the frame's joint matrices, its morph weights and its morph displacements, and —
-when the variant lights — the light records, the cell array, the polygon corners
-and the cluster parameters. The morph displacements are a mesh's own geometry,
+when the variant lights — the lighting uniform, the light records, the cell array,
+the polygon corners and the cluster parameters. The morph displacements are a
+mesh's own geometry,
 but one array holds them for the whole frame and a mesh names its slice through
 its metadata entry, which is what leaves the mesh group with nothing to bind.
 The straightforward binding for each is a read-only storage buffer, and every

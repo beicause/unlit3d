@@ -641,6 +641,14 @@ impl TexelArray {
     /// Under the conditions [`TexelArrayLayout::pack`] panics.
     pub fn write(&mut self, queue: &wgpu::Queue, elements: &[u8]) {
         self.layout.pack(elements, &mut self.scratch);
+        // Only the rows `elements` fill: the packed image is shorter than the
+        // capacity-sized texture, so writing the whole texture reads past it.
+        let size = wgpu::Extent3d {
+            height: self
+                .layout
+                .rows_for(elements.len() as u64 / self.layout.element_size),
+            ..self.layout.texture_size()
+        };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -657,7 +665,7 @@ impl TexelArray {
                 ),
                 rows_per_image: Some(self.layout.height),
             },
-            self.layout.texture_size(),
+            size,
         );
     }
 }

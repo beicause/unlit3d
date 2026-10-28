@@ -528,7 +528,7 @@ pub fn create_mesh(
         positions: &args.positions,
         uvs: args.uvs.as_deref(),
         colors: args.colors.as_deref(),
-        normals: None,
+        normals: args.normals.as_deref(),
         indices: args.indices.as_deref(),
         joints: None,
         weights: None,

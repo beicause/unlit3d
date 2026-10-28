@@ -900,10 +900,16 @@ async fn position_less_variant_draws_points_at_instance_origins() {
 /// have used: the same bind group, the same vertex buffers, one draw.
 async fn a_caller_shader_splices_into_the_built_in_stages() {
     let ctx = Ctx::headless().await;
-    // The vertex snippet is empty, so the geometry arrives at the built-in
-    // vertex stage's own attributes and leaves it exactly where the built-in
-    // shader puts it; the fragment snippet repaints the result.
-    let shader = UnlitShader::new("test::flat", "", "color = vec4<f32>(1.0, 0.0, 1.0, 1.0);");
+    // The top-level snippet declares the colour, the vertex snippet is empty, so
+    // the geometry arrives at the built-in vertex stage's own attributes and
+    // leaves it exactly where the built-in shader puts it, and the fragment
+    // snippet repaints the result through the function the top level added.
+    let shader = UnlitShader::new(
+        "test::flat",
+        "fn test_flat_color() -> vec4<f32> { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }",
+        "",
+        "color = test_flat_color();",
+    );
     let mut options = UnlitOptions::standard(&ctx.device);
     options.shader = Some(shader);
     let variant = variant(

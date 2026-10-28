@@ -31,6 +31,16 @@
 //! Lights are ranked by [`PackedLight::importance`] before assignment, so a cell
 //! that overflows drops its weakest light and the first entries of every cell
 //! are its strongest.
+//!
+//! # A light at infinity is not in the grid
+//!
+//! A directional light reaches every fragment, so assigning it to every cell
+//! would spend a slot of each on the same record. Directional lights and the
+//! frame's ambient term live in [`LightingUniform`] instead — one frame-wide
+//! uniform every lit fragment reads before the cell's own lights — and the grid
+//! holds only bounded ones. The uniform carries at most
+//! [`MAX_DIRECTIONAL_LIGHTS`] of them; the rest of a frame's directional lights
+//! are dropped, weakest first, the way a full cell drops its weakest light.
 
 use glam::{Mat4, UVec4, Vec2, Vec3, Vec4};
 
@@ -45,15 +55,25 @@ pub const LIGHTS_PER_CELL: usize = CELL_WORDS - 1;
 /// most one per clipped edge.
 pub const MAX_POLYGON_VERTICES: usize = 5;
 
+/// How many directional lights one frame's [`LightingUniform`] carries.
+///
+/// A directional light reaches every fragment, so the frame-wide uniform holds
+/// them beside the ambient term rather than the grid spending a slot in every
+/// cell on each. A frame with more than this many keeps the strongest ones and
+/// drops the rest; the shader reads every slot and an unused one holds no
+/// colour, so it adds nothing.
+pub const MAX_DIRECTIONAL_LIGHTS: usize = 4;
+
 /// One light as the shaders read it.
 ///
 /// Mirrors `light.wesl::LightGpu`; the layout is checked at compile time against
 /// the WGSL storage-buffer alignment rules.
 ///
-/// Every kind of light shares the record, so one array holds the frame's
-/// directional, point, spot and quad lights and a cell needs no more than an
-/// index. Which lanes matter is decided by [`Self::kind`], and the lanes a kind
-/// does not use are zero.
+/// Every bounded kind shares the record, so one array holds the frame's point,
+/// spot and quad lights and a cell needs no more than an index. Which lanes
+/// matter is decided by [`Self::kind`], and the lanes a kind does not use are
+/// zero. A directional light reaches every fragment, so it is not in the grid at
+/// all: it goes in [`LightingUniform`] instead.
 #[repr(C)]
 #[derive(
     Clone,
@@ -67,13 +87,11 @@ pub const MAX_POLYGON_VERTICES: usize = 5;
     const_shader_layout::ShaderLayout,
 )]
 pub struct LightGpu {
-    /// `xyz` = world-space position, which a directional light leaves at the
-    /// origin; `w` = the radius clustering culls by, which is also the light's
-    /// range.
+    /// `xyz` = world-space position; `w` = the radius clustering culls by, which
+    /// is also the light's range.
     ///
-    /// For a point, spot or quad light the radius bounds every fragment the light
-    /// can reach, so a cell whose sphere it touches is given the light. A
-    /// directional light reaches every cell and leaves the radius at zero.
+    /// The radius bounds every fragment the light can reach, so a cell whose
+    /// sphere it touches is given the light.
     pub position_radius: Vec4,
     /// `xyz` = the direction the light shines in, world space; `w` = the cosine
     /// of a spot light's outer half-angle.
@@ -129,13 +147,15 @@ pub struct BoundingSphere {
 }
 
 /// A light packed for the shader, with the facts clustering needs.
+///
+/// Only bounded lights are packed: a light at infinity goes in
+/// [`LightingUniform`] instead, so every record here has a sphere.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PackedLight {
     /// The record the shader reads.
     pub gpu: LightGpu,
-    /// The world-space sphere every fragment the light reaches lies in;
-    /// `None` for a light with no bounds, which reaches every cell.
-    pub bounds: Option<BoundingSphere>,
+    /// The world-space sphere every fragment the light reaches lies in.
+    pub bounds: BoundingSphere,
     /// What a full cell ranks by: higher survives.
     pub importance: f32,
 }
@@ -190,22 +210,24 @@ impl ClusterConfig {
         let max_clusters = self.max_clusters.max(1);
         let z = self.z_slices.max(1).min(max_clusters);
         let budget = (max_clusters / z).max(1);
-        let mut x = size.0.div_ceil(cell_pixels).max(1);
-        let mut y = size.1.div_ceil(cell_pixels).max(1);
-        while u64::from(x) * u64::from(y) > u64::from(budget) {
-            if x >= y && x > 1 {
-                x -= 1;
-            } else if y > 1 {
-                y -= 1;
-            } else {
-                break;
-            }
+        let x = size.0.div_ceil(cell_pixels).max(1);
+        let y = size.1.div_ceil(cell_pixels).max(1);
+        if u64::from(x) * u64::from(y) <= u64::from(budget) {
+            return [x, y, z];
         }
+        // Shrink to the budget in one step rather than a cell at a time, which
+        // would take as many passes as the grid is wide. The counts keep the
+        // target's aspect, so the cells stay roughly square.
+        let aspect = x as f32 / y as f32;
+        let y = ((budget as f32 / aspect).sqrt().floor() as u32)
+            .max(1)
+            .min(y);
+        let x = (budget / y).min(x).max(1);
         [x, y, z]
     }
 
     /// The uniform the frame's shaders read for a `size`-pixel target.
-    pub fn uniform(&self, size: (u32, u32), ambient: Vec4, perspective: bool) -> ClusterUniform {
+    pub fn uniform(&self, size: (u32, u32), perspective: bool) -> ClusterUniform {
         let dims = self.dims(size);
         let first = self.first_slice_depth.max(f32::MIN_POSITIVE);
         let far = self.far.max(first);
@@ -228,7 +250,6 @@ impl ClusterConfig {
         ClusterUniform {
             dims: UVec4::new(dims[0], dims[1], dims[2], LIGHTS_PER_CELL as u32),
             depth,
-            ambient,
             perspective: UVec4::new(u32::from(perspective), 0, 0, 0),
         }
     }
@@ -261,12 +282,67 @@ pub struct ClusterUniform {
     /// less than the slice count, `w` = `first`. Orthographic: `x` = the
     /// reciprocal linear range, `y` = `first`, `z` = the slice count.
     pub depth: Vec4,
-    /// `rgb` = the linear colour every surface receives with no light on it;
-    /// `w` is zero.
-    pub ambient: Vec4,
     /// `x` is nonzero for a perspective projection, zero for an orthographic
     /// one. The remaining lanes reserve the uniform's 16-byte tail padding.
     pub perspective: UVec4,
+}
+
+/// One directional light, as the frame-wide uniform carries it.
+///
+/// Mirrors `light.wesl::DirectionalGpu`. A directional light has no position and
+/// no falloff, so its record is only the two facts it needs; it is not a
+/// [`LightGpu`], which every bounded kind shares.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+    const_shader_layout::ShaderLayoutCompat,
+    const_shader_layout::ShaderLayoutCompatArrayElement,
+)]
+pub struct DirectionalGpu {
+    /// `xyz` = the direction the light shines in, world space; `w` is zero.
+    pub direction: Vec4,
+    /// `rgb` = the light's linear colour; `w` = its dimensionless intensity.
+    ///
+    /// An unused slot of [`LightingUniform::directionals`] leaves this at zero,
+    /// which makes the slot contribute nothing however the shader reads it.
+    pub color_intensity: Vec4,
+}
+
+/// The frame-wide lighting every lit fragment reads before its cell's lights.
+///
+/// Mirrors `light.wesl::LightingUniform`; the layout is checked at compile time
+/// against the WGSL uniform address-space rules.
+///
+/// It carries what belongs to the whole frame rather than to a place in it: the
+/// ambient term, and the directional lights, which reach every fragment. The
+/// grid holds only bounded lights, so a cell's slots all name something that
+/// could have been absent from that cell.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+    const_shader_layout::ShaderLayoutCompat,
+)]
+pub struct LightingUniform {
+    /// The frame's directional lights, strongest first; unused slots are zero.
+    pub directionals: [DirectionalGpu; MAX_DIRECTIONAL_LIGHTS],
+    /// `rgb` = the linear colour every surface receives with no light on it;
+    /// `w` is zero.
+    pub ambient: Vec4,
 }
 
 /// One frame's clustered light assignment, in storage the caller reuses.
@@ -307,22 +383,16 @@ impl LightClusters {
         lights.sort_by(|a, b| b.importance.total_cmp(&a.importance));
 
         let perspective = clip_from_view.row(3).truncate() != Vec3::ZERO;
-        let uniform = cfg.uniform(size, Vec4::ZERO, perspective);
+        let uniform = cfg.uniform(size, perspective);
         let last_slice = (dims[2] - 1) as f32;
         let slice_of = |depth: f32| -> u32 { depth_slice(depth, &uniform).min(last_slice as u32) };
         let full = ((0, 0), (dims[0] - 1, dims[1] - 1));
 
         for (index, light) in lights.iter().enumerate() {
             let index = index as u32;
-            let Some(bounds) = light.bounds else {
-                for cell in 0..cells {
-                    insert(&mut self.cells, cell, index);
-                }
-                continue;
-            };
-            let center = view_from_world.transform_point3(bounds.center);
+            let center = view_from_world.transform_point3(light.bounds.center);
             let depth = -center.z;
-            let radius = bounds.radius.max(0.0);
+            let radius = light.bounds.radius.max(0.0);
             // A fragment beyond either end of the configured range still reads
             // the nearest slice. Culling a light at that same end would leave
             // the fragment looking in a cell the light was never assigned to.
@@ -404,7 +474,13 @@ fn screen_cells(
         return Some(full);
     }
     let ndc_center = Vec2::new(clip_center.x / w, clip_center.y / w);
-    let scale = Vec2::new(clip_from_view.x_axis.x.abs(), clip_from_view.y_axis.y.abs());
+    // The rows say how far one world unit moves the projection on each axis,
+    // which is what bounds a sphere when the projection shears: the diagonal
+    // alone would ignore the shear and cut the sphere's edge off.
+    let scale = Vec2::new(
+        clip_from_view.row(0).truncate().length(),
+        clip_from_view.row(1).truncate().length(),
+    );
     let (low, high) = if perspective {
         // The eye is inside the sphere, so no tangents bound what it covers.
         if depth <= radius {
@@ -461,10 +537,10 @@ mod tests {
         };
         PackedLight {
             gpu,
-            bounds: Some(BoundingSphere {
+            bounds: BoundingSphere {
                 center: position,
                 radius,
-            }),
+            },
             importance,
         }
     }
@@ -496,7 +572,7 @@ mod tests {
     fn the_uniform_and_the_assignment_agree_on_the_depth_slice() {
         let cfg = ClusterConfig::DEFAULT;
         let dims = cfg.dims((1280, 720));
-        let uniform = cfg.uniform((1280, 720), Vec4::ZERO, true);
+        let uniform = cfg.uniform((1280, 720), true);
         let first = cfg.first_slice_depth;
         assert_eq!(depth_slice(0.0, &uniform), 0);
         assert_eq!(depth_slice(first * 0.5, &uniform), 0);
@@ -511,7 +587,7 @@ mod tests {
             assert_eq!(depth_slice(edge * (1.0 + 1e-4), &uniform), slice);
         }
 
-        let orthographic = cfg.uniform((1280, 720), Vec4::ZERO, false);
+        let orthographic = cfg.uniform((1280, 720), false);
         for slice in 1..dims[2] {
             let edge = first + (cfg.far - first) * slice as f32 / dims[2] as f32;
             assert_eq!(depth_slice(edge + 1e-3, &orthographic), slice);
@@ -641,37 +717,18 @@ mod tests {
     }
 
     #[test]
-    fn a_directional_light_lands_in_every_cell() {
-        let cfg = ClusterConfig {
-            max_clusters: 32,
-            ..ClusterConfig::DEFAULT
+    fn a_directional_light_never_enters_a_cell() {
+        // Only bounded lights are packed, so the grid's records are all of
+        // something that could have been absent from a cell. The uniform is
+        // built from the frame's directional lights separately.
+        assert_eq!(MAX_DIRECTIONAL_LIGHTS, 4);
+        let lighting = LightingUniform {
+            directionals: [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS],
+            ambient: Vec4::new(0.1, 0.2, 0.3, 0.0),
         };
-        let size = (128, 128);
-        let dims = cfg.dims(size);
-        let mut clusters = LightClusters::default();
-        let mut lights = [PackedLight {
-            gpu: LightGpu {
-                position_radius: Vec4::ZERO,
-                direction_outer: Vec3::NEG_Z.extend(0.0),
-                color_intensity: Vec4::ONE,
-                cones: Vec4::ZERO,
-                kind: UVec4::new(LightKind::Directional as u32, 0, 0, 0),
-            },
-            bounds: None,
-            importance: 1.0,
-        }];
-        clusters.update(
-            &cfg,
-            &glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 1000.0),
-            &view(10.0),
-            size,
-            &mut lights,
-        );
-        let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
-        assert_eq!(clusters.cells.len(), total * CELL_WORDS);
-        for cell in 0..total {
-            assert_eq!(clusters.cells[cell * CELL_WORDS], 1, "cell {cell}");
-        }
+        // An empty slot contributes nothing: its colour is zero, so the term it
+        // adds to every fragment is too.
+        assert_eq!(lighting.directionals[0].color_intensity, Vec4::ZERO);
     }
 
     #[test]

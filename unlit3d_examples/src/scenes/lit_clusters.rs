@@ -111,7 +111,12 @@ fn build_clusters(
     };
     let device = source.device(&world.root_scope());
     let mut options = super::unlit_options(&device);
-    options.shader = Some(UnlitShader::new("lit::cluster_grid", "", cluster_grid()));
+    options.shader = Some(UnlitShader::new(
+        "lit::cluster_grid",
+        "",
+        "",
+        cluster_grid(),
+    ));
     let key = LitPipelineKey::new(options);
 
     let source_entity = world
@@ -251,12 +256,14 @@ fn build_clusters(
 /// lookup switches:
 ///
 /// * the **cell fill**: a fixed heat ramp from an empty cell's dark blue to a
-///   full cell's red. Unbounded directional lights are excluded: they occupy
-///   every cell and would hide the local-light distribution the view diagnoses.
+///   full cell's red. Every record in a cell is a bounded light now -- the
+///   frame's directional lights live in the lighting uniform, not the grid -- so
+///   the whole count is what the ramp shows.
 /// * the **borders**, black for the cell's xy bounds and subdued white for its
 ///   depth slice. Both are measured in pixels, so they neither thicken into
-///   bands nearby nor disappear in the distance. A directional light adds a
-///   narrow magenta line along the left edge, proving it reaches every cell.
+///   bands nearby nor disappear in the distance. A magenta line along the left
+///   edge marks a frame that carries a directional light, which every fragment
+///   sees whatever its cell.
 ///
 /// The cell borders cross the slice borders rather than one hiding the other, so
 /// where a cell ends and where a slice ends stay separate readings.
@@ -265,17 +272,7 @@ fn cluster_grid() -> String {
 let grid_depth = view_depth(in.world);
 let grid_ndc = fragment_ndc(in.world);
 let grid_cell = fragment_cluster_index(grid_ndc, grid_depth);
-let grid_count = array_access::load_cell_word(grid_cell, 0u);
-var grid_local_count = 0u;
-var grid_has_directional = false;
-for (var grid_light = 0u; grid_light < grid_count; grid_light += 1u) {
-    let grid_record = array_access::load_light(array_access::load_cell_word(grid_cell, grid_light + 1u));
-    if grid_record.kind.x == light::LIGHT_KIND_DIRECTIONAL {
-        grid_has_directional = true;
-    } else {
-        grid_local_count += 1u;
-    }
-}
+let grid_local_count = array_access::load_cell_word(grid_cell, 0u);
 // Fixed bands make equal colors mean equal counts. Red means the record is
 // full and further lights are being dropped.
 var grid = vec3<f32>(0.025, 0.035, 0.10);
@@ -306,9 +303,10 @@ grid = mix(grid, vec3<f32>(0.55), grid_slice_border * 0.7);
 var grid_opacity = 0.48;
 grid_opacity = max(grid_opacity, grid_border * 0.85);
 grid_opacity = max(grid_opacity, grid_slice_border * 0.7);
-// The directional light is not part of the heat count. This edge mark still
-// checks that the unbounded light was assigned to every screen column.
-if grid_has_directional && grid_ndc.x < -0.985 {
+// The frame's directional lights are outside the grid, so this edge mark counts
+// them from the uniform instead: one magenta line says the frame carries at
+// least one, and no line says it carries none.
+if lighting.directionals[0].color_intensity.w > 0.0 && grid_ndc.x < -0.985 {
     grid = vec3<f32>(0.8, 0.08, 0.65);
     grid_opacity = 0.85;
 }

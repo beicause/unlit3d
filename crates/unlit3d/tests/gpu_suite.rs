@@ -34,6 +34,8 @@ mod gpu_ecs;
 mod gpu_ui_source;
 #[path = "letterbox.rs"]
 mod letterbox;
+#[path = "lit_scene.rs"]
+mod lit_scene;
 #[path = "mcp_server/main.rs"]
 mod mcp_server;
 #[path = "morphed_scene.rs"]
@@ -52,6 +54,7 @@ unlit_wgpu_test_util::gpu_test_main!(
         gpu_ecs::all_tests(),
         gpu_ui_source::all_tests(),
         letterbox::all_tests(),
+        lit_scene::all_tests(),
         mcp_server::all_tests(),
         morphed_scene::all_tests(),
         passes::all_tests(),

@@ -22,7 +22,8 @@ use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::light::{
-    CELL_WORDS, ClusterConfig, ClusterUniform, LightClusters, LightGpu, PackedLight,
+    CELL_WORDS, ClusterConfig, ClusterUniform, DirectionalGpu, LightClusters, LightGpu,
+    LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight,
 };
 use unlit_wgpu::mesh::{JointMatrix, MeshMetadata};
 use unlit_wgpu::pipeline::supports_storage_buffers;
@@ -164,6 +165,8 @@ pub struct MeshSource {
     light_vertices_buf: ResHandle<ArrayHandle>,
     /// Resource id of the cluster uniform buffer.
     cluster_buf: ResHandle<wgpu::Buffer>,
+    /// Resource id of the frame-wide lighting uniform buffer.
+    lighting_buf: ResHandle<wgpu::Buffer>,
     /// The cluster grid this frame's lights are assigned to.
     ///
     /// The source clusters every frame a lit pipeline is registered for, since
@@ -181,14 +184,18 @@ pub struct MeshSource {
     /// Reused per-frame light records, in the order the clusterer ranked them.
     light_records: Vec<LightGpu>,
     /// The colour a lit surface receives with no light on it, which the
-    /// cluster uniform carries to every lit draw.
+    /// lighting uniform carries to every lit draw.
     ///
     /// It belongs to the source rather than to a pipeline because the uniform
-    /// is frame-wide: a frame clusters its lights once, and every lit draw
-    /// reads the same ambient with them.
+    /// is frame-wide: a frame collects its lights once, and every lit draw reads
+    /// the same ambient with them.
     pub ambient: glam::Vec4,
+    /// The frame-wide lighting uniform, rebuilt and uploaded every lit frame.
+    lighting: LightingUniform,
     /// Staging buffer for the cluster uniform, reused across frames.
     cluster_staging: StagingBuffer,
+    /// Staging buffer for the lighting uniform, reused across frames.
+    lighting_staging: StagingBuffer,
     /// Whether a lit family was registered with this source, so the frame's
     /// lights have a reader.
     pub(crate) lit: bool,
@@ -407,14 +414,24 @@ impl MeshSource {
         );
         let light_vertices_buf = graph.insert(light_vertices_array.handle(), None);
 
-        // The cluster uniform. It starts describing the smallest grid, so a
-        // shader that reads it before the first clustered frame finds an
-        // assignment with no lights rather than whatever the bytes held.
+        // The cluster and lighting uniforms. A shader that reads one before the
+        // first lit frame finds unlit bytes rather than whatever the allocation
+        // held; a lit pipeline only exists once a frame has uploaded them, so
+        // nothing reads an unbuilt one.
         let clustering = ClusterConfig::DEFAULT;
         let cluster_buf = graph.insert(
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::cluster"),
                 size: size_of::<ClusterUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            None,
+        );
+        let lighting_buf = graph.insert(
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::lighting"),
+                size: size_of::<LightingUniform>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -470,13 +487,19 @@ impl MeshSource {
             light_vertices_array,
             light_vertices_buf,
             cluster_buf,
+            lighting_buf,
             clustering,
             packed_lights: Vec::new(),
             light_clusters: LightClusters::default(),
             light_vertices: Vec::new(),
             light_records: Vec::new(),
             ambient: glam::Vec4::ZERO,
+            lighting: LightingUniform {
+                directionals: [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS],
+                ambient: glam::Vec4::ZERO,
+            },
             cluster_staging: StagingBuffer::new(),
+            lighting_staging: StagingBuffer::new(),
             lit: false,
             morph_deltas_dirty: false,
             globals,
@@ -997,7 +1020,9 @@ impl MeshSource {
             camera.position(),
             &mut self.packed_lights,
             &mut self.light_vertices,
+            &mut self.lighting,
         );
+        self.lighting.ambient = self.ambient;
         self.light_clusters.update(
             &self.clustering,
             &camera.clip_from_view,
@@ -1020,6 +1045,8 @@ impl MeshSource {
             &device,
             self.light_records.len().max(1) as u64,
         );
+        // A cell is one element, and the clusterer stores each as a word per
+        // slot: sizing by the words would ask for sixteen times the room.
         Self::grow_array_to_fit(
             world,
             self.context,
@@ -1027,7 +1054,7 @@ impl MeshSource {
             &mut self.light_cells_array,
             &self.light_cells_buf,
             &device,
-            self.light_clusters.cells.len().max(1) as u64,
+            (self.light_clusters.cells.len() / CELL_WORDS).max(1) as u64,
         );
         Self::grow_array_to_fit(
             world,
@@ -1047,7 +1074,6 @@ impl MeshSource {
 
         let uniform = self.clustering.uniform(
             size,
-            self.ambient,
             camera.clip_from_view.row(3).truncate() != glam::Vec3::ZERO,
         );
         let buffer = self
@@ -1058,6 +1084,15 @@ impl MeshSource {
             .clone();
         self.cluster_staging
             .write(&device, encoder, &buffer, 0, uniform.as_bytes());
+
+        let buffer = self
+            .context
+            .graph(world)
+            .get(&self.lighting_buf)
+            .expect("lighting buffer exists")
+            .clone();
+        self.lighting_staging
+            .write(&device, encoder, &buffer, 0, self.lighting.as_bytes());
     }
     // -- internal helpers ------------------------------------------------------
 
@@ -1075,6 +1110,7 @@ impl MeshSource {
             light_cells: self.light_cells_buf.clone(),
             light_vertices: self.light_vertices_buf.clone(),
             cluster: self.cluster_buf.clone(),
+            lighting: self.lighting_buf.clone(),
         }
     }
 

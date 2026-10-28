@@ -68,6 +68,7 @@
 //   group 0  binding 7  light_cells   `array<u32>`            [LIT]
 //   group 0  binding 8  light_vertices `array<vec4<f32>>`     [LIT]
 //   group 0  binding 9  cluster       `light::ClusterUniform` [LIT]
+//   group 0  binding 10 lighting      `light::LightingUniform` [LIT]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
 //
@@ -133,9 +134,12 @@ import package::view;
 @group(0) @binding(1) var<uniform> frame: globals::Globals;
 
 @if(LIT) @group(0) @binding(9) var<uniform> cluster: light::ClusterUniform;
+@if(LIT) @group(0) @binding(10) var<uniform> lighting: light::LightingUniform;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
+
+// unlit_wgpu::hook module
 
 struct VertexInput {
     /// Per-vertex position: full precision in two or three components, or
@@ -479,11 +483,24 @@ fn fragment_cluster_index(ndc: vec2<f32>, depth: f32) -> u32 {
 
 /// A light at infinity: one direction, no falloff.
 @if(LIT)
-fn directional_radiance(light: light::LightGpu, n: vec3<f32>) -> vec3<f32> {
-    // `direction_outer.xyz` is where the light travels, so the direction to it
-    // is the negation.
-    let cosine = max(dot(n, -light.direction_outer.xyz), 0.0);
+fn directional_radiance(light: light::DirectionalGpu, n: vec3<f32>) -> vec3<f32> {
+    // `direction.xyz` is where the light travels, so the direction to it is the
+    // negation.
+    let cosine = max(dot(n, -light.direction.xyz), 0.0);
     return light.color_intensity.rgb * (light.color_intensity.w * cosine);
+}
+
+/// Every directional light's contribution, which reaches every fragment.
+///
+/// The slots an unused light left at zero contribute nothing, so the fragment
+/// reads all of them and the frame's count never arrives.
+@if(LIT)
+fn directional_irradiance(n: vec3<f32>) -> vec3<f32> {
+    var irradiance = vec3<f32>(0.0);
+    for (var i = 0u; i < light::MAX_DIRECTIONAL_LIGHTS; i += 1u) {
+        irradiance += directional_radiance(lighting.directionals[i], n);
+    }
+    return irradiance;
 }
 
 /// A point light's inverse-square falloff, windowed to reach nothing at its
@@ -518,10 +535,12 @@ fn point_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f3
 /// A point light narrowed to a cone: the point term, times a falloff from the
 /// inner angle to the outer one.
 ///
-/// `cones.x` is the cosine of the inner half-angle, `direction_outer.w` the
-/// cosine of the outer one, and `cones.y` the reciprocal of their difference,
-/// which the CPU precomputes so the fragment does not divide by a cone that may
-/// be degenerate.
+/// `direction_outer.w` is the cosine of the outer half-angle and `cones.x` the
+/// reciprocal of the gap between the inner and outer cosines, which the CPU
+/// precomputes so the fragment does not divide by a cone that may be
+/// degenerate. A cone with no gap -- a hard edge -- carries a zero there
+/// instead, which the step below handles: the light still shines, it just does
+/// not fade.
 @if(LIT)
 fn spot_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let offset = p - light.position_radius.xyz;
@@ -532,11 +551,16 @@ fn spot_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32
     }
     let toward_fragment = offset * inverseSqrt(max(distance_squared, 1.0e-8));
     let cosine = dot(toward_fragment, light.direction_outer.xyz);
-    let cone = clamp(
-        (cosine - light.direction_outer.w) * light.cones.y,
+    // The cone term is the smooth ramp between the two cosines, or -- when the
+    // gap is too narrow to divide by -- the step at the outer one.
+    var cone = clamp(
+        (cosine - light.direction_outer.w) * light.cones.x,
         0.0,
         1.0,
     );
+    if light.cones.x <= 0.0 {
+        cone = select(0.0, 1.0, cosine >= light.direction_outer.w);
+    }
     if cone <= 0.0 {
         return vec3<f32>(0.0);
     }
@@ -571,13 +595,11 @@ fn quad_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32
     return light.color_intensity.rgb * (light.color_intensity.w * form_factor);
 }
 
-/// One light's contribution to a fragment's irradiance, whatever kind it is.
+/// One bounded light's contribution to a fragment's irradiance, whatever kind it
+/// is.
 @if(LIT)
 fn light_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let kind = light.kind.x;
-    if kind == light::LIGHT_KIND_DIRECTIONAL {
-        return directional_radiance(light, n);
-    }
     if kind == light::LIGHT_KIND_POINT {
         return point_radiance(light, p, n);
     }
@@ -590,21 +612,20 @@ fn light_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f3
     return vec3<f32>(0.0);
 }
 
-/// The color a lit fragment shows: its base color modulated by the ambient term
-/// plus every light its cluster cell names.
+/// The color a lit fragment shows: its base color modulated by the ambient term,
+/// every directional light, and every light its cluster cell names.
 ///
-/// The cell is the only light data a fragment reads, so the cost of a fragment
-/// does not grow with the number of lights in the frame -- just with the number
-/// assigned to its own cell, which the budget caps.
+/// The frame-wide work does not depend on the cell: the ambient term and the
+/// directional lights reach every fragment alike. The cell is then the only
+/// bounded light data a fragment reads, so its cost does not grow with the number
+/// of lights in the frame -- just with the number assigned to its own cell, which
+/// the budget caps.
 @if(LIT)
 fn lit_color(in: VertexOut, base: vec4<f32>) -> vec4<f32> {
     let n = fragment_normal(in);
-    if dot(n, n) <= 0.0 {
-        return base;
-    }
+    var irradiance = lighting.ambient.rgb + directional_irradiance(n);
     let cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.world));
     let count = min(array_access::load_cell_word(cell, 0u), cluster.dims.w);
-    var irradiance = cluster.ambient.rgb;
     for (var i = 0u; i < count; i += 1u) {
         let index = array_access::load_cell_word(cell, i + 1u);
         irradiance += light_radiance(array_access::load_light(index), in.world, n);
@@ -666,20 +687,21 @@ fn fragment_color(in: VertexOut) -> vec4<f32> {
 @fragment
 public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var color = fragment_color(in);
-    // Lighting multiplies the base color and leaves its alpha alone: alpha is
-    // coverage, and a surface does not become more transparent in the dark.
-    @if(LIT) {
-        color = lit_color(in, color);
-    }
     // A cut-off instance draws binary coverage: it writes depth and color like
     // an opaque one wherever the fragment is opaque enough, and writes nothing
     // at all elsewhere, so it needs no blending and no back-to-front sort. The
     // cutoff is the instance's own, so two instances of one mesh can cut at
-    // different alphas.
+    // different alphas. Coverage is decided before the lights run, so a cut
+    // fragment costs no shading at all.
     @if(ALPHA_CUTOFF) {
         if color.a < in.cutoff {
             discard;
         }
+    }
+    // Lighting multiplies the base color and leaves its alpha alone: alpha is
+    // coverage, and a surface does not become more transparent in the dark.
+    @if(LIT) {
+        color = lit_color(in, color);
     }
     // unlit_wgpu::hook fragment
     // An sRGB-aware target encodes whatever it is given, so hand it linear

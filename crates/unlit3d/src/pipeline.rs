@@ -48,8 +48,8 @@ use unlit_ecs::{Entity, Scope};
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, CLUSTER_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING,
-    LIGHT_CELLS_BINDING, LIGHT_VERTICES_BINDING, LIGHTS_BINDING, MESH_METADATA_BINDING,
-    MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
+    LIGHT_CELLS_BINDING, LIGHT_VERTICES_BINDING, LIGHTING_BINDING, LIGHTS_BINDING,
+    MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
     supports_storage_buffers,
 };
 use unlit_wgpu::resources::{ResHandle, Resource, ResourceGraph};
@@ -104,6 +104,9 @@ pub struct GlobalResources {
     pub light_vertices: ResHandle<ArrayHandle>,
     /// The uniform describing the cluster grid this frame was built for.
     pub cluster: ResHandle<wgpu::Buffer>,
+    /// The uniform carrying the ambient term and the frame's directional
+    /// lights: what every lit fragment reads before it asks the grid.
+    pub lighting: ResHandle<wgpu::Buffer>,
 }
 
 impl GlobalResources {
@@ -128,6 +131,7 @@ impl GlobalResources {
         graph.add_dependency(group, &self.light_cells);
         graph.add_dependency(group, &self.light_vertices);
         graph.add_dependency(group, &self.cluster);
+        graph.add_dependency(group, &self.lighting);
     }
 
     /// The layout of the global bind group a pipeline with `bindings` declares.
@@ -158,7 +162,7 @@ impl GlobalResources {
         // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
         // whenever a global buffer is replaced, and the optional entries depend
         // on the pipeline, so the group is assembled rather than truncated.
-        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 10>::new();
+        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 11>::new();
         entries.push(wgpu::BindGroupEntry {
             binding: CAMERA_BINDING,
             resource: camera.as_entire_binding(),
@@ -231,6 +235,13 @@ impl GlobalResources {
                 resource: graph
                     .get(&self.cluster)
                     .expect("cluster buffer exists")
+                    .as_entire_binding(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: LIGHTING_BINDING,
+                resource: graph
+                    .get(&self.lighting)
+                    .expect("lighting buffer exists")
                     .as_entire_binding(),
             });
         }

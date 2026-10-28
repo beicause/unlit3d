@@ -30,7 +30,10 @@
 
 use glam::{Affine3A, UVec4, Vec2, Vec3, Vec4};
 use unlit_ecs::Scope;
-use unlit_wgpu::light::{BoundingSphere, LightGpu, LightKind as GpuLightKind, PackedLight};
+use unlit_wgpu::light::{
+    BoundingSphere, DirectionalGpu, LightGpu, LightKind as GpuLightKind, LightingUniform,
+    MAX_DIRECTIONAL_LIGHTS, PackedLight,
+};
 use unlit_wgpu::pipeline::{UnlitOptions, UnlitVariant};
 use unlit_wgpu::util::Hashed;
 
@@ -88,7 +91,11 @@ pub trait Light: 'static {
     /// them to the sink's pool and names the slice it took.
     fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>);
     /// Describe this light in the terms it was spawned in.
-    fn describe(&self) -> LightDescribe;
+    ///
+    /// `world_from_local` is the transform [`Self::pack`] was given: a shape
+    /// whose size is part of its importance has to be measured where it is
+    /// placed, since a transform can scale it.
+    fn describe(&self, world_from_local: &Affine3A) -> LightDescribe;
 }
 
 /// Where a [`Light::pack`] writes: its record, and the frame's shared polygon
@@ -134,7 +141,7 @@ impl Light for DirectionalLight {
         sink.gpu.kind.x = GpuLightKind::Directional as u32;
     }
 
-    fn describe(&self) -> LightDescribe {
+    fn describe(&self, _world_from_local: &Affine3A) -> LightDescribe {
         LightDescribe {
             kind: LightKind::Directional,
             color: self.color,
@@ -163,7 +170,7 @@ impl Light for PointLight {
         sink.gpu.kind.x = GpuLightKind::Point as u32;
     }
 
-    fn describe(&self) -> LightDescribe {
+    fn describe(&self, _world_from_local: &Affine3A) -> LightDescribe {
         LightDescribe {
             kind: LightKind::Point,
             color: self.color,
@@ -188,7 +195,8 @@ pub struct SpotLight {
     /// The cone's full angle where the light reaches nothing, in radians.
     ///
     /// Brightness falls off from the inner to the outer angle; a caller that
-    /// wants a hard edge sets both to the same angle.
+    /// wants a hard edge sets both to the same angle, and the light then shines
+    /// at full intensity inside the cone and not at all outside it.
     pub outer_angle: f32,
 }
 
@@ -203,8 +211,10 @@ impl Light for SpotLight {
             .normalize_or_zero()
             .extend(outer);
         sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
+        // A gap too narrow to divide by is stored as zero rather than as an
+        // enormous reciprocal: the shader reads that as `the cone is hard` and
+        // steps at the outer cosine instead of ramping between the two.
         sink.gpu.cones = Vec4::new(
-            inner,
             if gap.abs() < MIN_CONE_GAP {
                 0.0
             } else {
@@ -212,11 +222,12 @@ impl Light for SpotLight {
             },
             0.0,
             0.0,
+            0.0,
         );
         sink.gpu.kind.x = GpuLightKind::Spot as u32;
     }
 
-    fn describe(&self) -> LightDescribe {
+    fn describe(&self, _world_from_local: &Affine3A) -> LightDescribe {
         LightDescribe {
             kind: LightKind::Spot,
             color: self.color,
@@ -284,18 +295,15 @@ const MERGED_CORNER_SQUARED: f32 = 1.0e-8;
 
 impl Light for QuadLight {
     fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        let mut corners = self.vertices;
-        let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
-        if normal.dot(Vec3::NEG_Z) < 0.0 {
-            corners.reverse();
-        }
         // Drop a corner that sits on its predecessor, which leaves as many
         // corners as the polygon has distinct ones: three for a triangle stated
         // as a quad, four for a quad. A polygon left with fewer than three has
-        // no area, and the shader draws nothing for it.
+        // no area, and the shader draws nothing for it. The corners are matched
+        // in the light's own space, where the caller stated them, so a scaled
+        // light keeps the corners it was given.
         let mut live = [Vec3::ZERO; 4];
         let mut count = 0;
-        for corner in corners {
+        for corner in self.vertices {
             if count > 0 && (live[count - 1] - corner).length_squared() <= MERGED_CORNER_SQUARED {
                 continue;
             }
@@ -316,7 +324,17 @@ impl Light for QuadLight {
             sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, 0, 0);
             return;
         }
-        let world = live.map(|corner| world_from_local.transform_point3(corner));
+        let mut world = live.map(|corner| world_from_local.transform_point3(corner));
+        // The winding decides which side of the polygon shines, so it has to be
+        // read where the polygon lands: an affine transform with a negative
+        // determinant mirrors it, which turns the same order of corners into the
+        // other side. Reading it in the light's own space would leave such a
+        // light shining into the surface it was aimed at.
+        let aim = world_from_local.transform_vector3(Vec3::NEG_Z);
+        let normal = (world[1] - world[0]).cross(world[2] - world[0]);
+        if normal.dot(aim) < 0.0 {
+            world[..count].reverse();
+        }
         let center = world[..count].iter().copied().sum::<Vec3>() / count as f32;
         // The light reaches its polygon wherever the polygon lies, so the radius
         // that culls it has to hold the corners and not just the range: a patch
@@ -332,13 +350,19 @@ impl Light for QuadLight {
         sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, count as u32, 0);
     }
 
-    fn describe(&self) -> LightDescribe {
+    fn describe(&self, world_from_local: &Affine3A) -> LightDescribe {
+        // The area that decides the light's importance is the area it covers in
+        // the world: a transform can scale the polygon, and a light scaled up
+        // lights more surface and so ranks above one scaled down.
+        let world = self
+            .vertices
+            .map(|corner| world_from_local.transform_point3(corner));
         LightDescribe {
             kind: LightKind::Quad,
             color: self.color,
             intensity: self.intensity,
             range: Some(self.range),
-            shape: Some(Vec2::splat(polygon_area(&self.vertices))),
+            shape: Some(Vec2::splat(polygon_area(&world))),
         }
     }
 }
@@ -361,21 +385,30 @@ fn polygon_area(vertices: &[Vec3]) -> f32 {
     sum.length() * 0.5
 }
 
-/// Pack every light the frame can see into `packed`, and every polygon corner
-/// into `vertices`.
+/// Pack every light the frame can see: the bounded ones into `packed`, every
+/// polygon corner into `vertices`, and the lights at infinity into
+/// `lighting`.
 ///
 /// `eye` is where the frame is seen from, which only ranks the lights: a cell
 /// that runs out of room keeps the lights reaching it strongest, and a light is
 /// strongest near the camera. The ranking also settles the order the lights are
 /// drawn in, so it decides the cluster's indices too.
+///
+/// A directional light is not clustered: it reaches every fragment, so writing
+/// it into every cell would spend one of each cell's slots to say nothing. It
+/// goes into the frame-wide uniform instead, where at most
+/// [`MAX_DIRECTIONAL_LIGHTS`] fit; the strongest are the ones kept. An unused
+/// slot is left at zero, which is what makes it contribute nothing.
 pub(crate) fn collect_lights(
     scope: &Scope<'_>,
     eye: Vec3,
     packed: &mut Vec<PackedLight>,
     vertices: &mut Vec<Vec4>,
+    lighting: &mut LightingUniform,
 ) {
     packed.clear();
     vertices.clear();
+    lighting.directionals = [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS];
     for (source, transform) in scope.query::<(&LightSource, Option<&Transform>)>() {
         let world_from_local = transform
             .map(|transform| transform.compute_matrix())
@@ -394,12 +427,17 @@ pub(crate) fn collect_lights(
                 vertices,
             },
         );
-        let describe = source.0.describe();
-        let directional = gpu.kind.x == GpuLightKind::Directional as u32;
-        let bounds = (!directional).then(|| BoundingSphere {
+        let describe = source.0.describe(&world_from_local);
+        if gpu.kind.x == GpuLightKind::Directional as u32 {
+            // A light at infinity has no bounds to cluster by: every fragment
+            // sees it, so it belongs to the frame rather than to a cell.
+            keep_directional(&mut lighting.directionals, gpu);
+            continue;
+        }
+        let bounds = BoundingSphere {
             center: gpu.position_radius.truncate(),
             radius: gpu.position_radius.w,
-        });
+        };
         // A light near the camera lights more of the picture than one far away,
         // and a larger patch more than a smaller one, so the ranking is roughly
         // the illumination the light delivers where the frame is seen from.
@@ -407,20 +445,37 @@ pub(crate) fn collect_lights(
             LightKind::Quad => describe.shape.map_or(1.0, |shape| shape.x.max(0.0)),
             _ => 1.0,
         };
-        let distance = bounds
-            .map_or(1.0, |bounds| (bounds.center - eye).length())
-            .max(1.0);
-        let importance = if directional {
-            describe.intensity
-        } else {
-            describe.intensity * area / (distance * distance)
-        };
+        let distance = (bounds.center - eye).length().max(1.0);
+        let importance = describe.intensity * area / (distance * distance);
         packed.push(PackedLight {
             gpu,
             bounds,
             importance,
         });
     }
+}
+
+/// Put a directional light into the frame's slots, strongest first.
+///
+/// The slots are ordered by intensity because the shader reads all of them and
+/// cannot tell which are unused: an empty slot is one left at zero, so the
+/// ordering is only what makes a frame that keeps more lights than it has room
+/// for keep the strongest ones.
+fn keep_directional(slots: &mut [DirectionalGpu; MAX_DIRECTIONAL_LIGHTS], gpu: LightGpu) {
+    let light = DirectionalGpu {
+        direction: gpu.direction_outer,
+        color_intensity: gpu.color_intensity,
+    };
+    // Every slot already filled ranks higher than the light, and every empty
+    // one ranks below it, because an empty slot's intensity is zero.
+    let at = slots.partition_point(|slot| slot.color_intensity.w > light.color_intensity.w);
+    if at == MAX_DIRECTIONAL_LIGHTS {
+        return;
+    }
+    for slot in (at..MAX_DIRECTIONAL_LIGHTS - 1).rev() {
+        slots[slot + 1] = slots[slot];
+    }
+    slots[at] = light;
 }
 
 /// A key identifying a lit pipeline family.
@@ -534,9 +589,8 @@ mod tests {
         let (gpu, _) = pack(&light, Affine3A::IDENTITY);
         let inner = (0.1_f32).cos();
         let outer = (0.3_f32).cos();
-        assert_eq!(gpu.cones.x, inner);
         assert_eq!(gpu.direction_outer.w, outer);
-        assert!((gpu.cones.y - 1.0 / (inner - outer)).abs() < 1e-6);
+        assert!((gpu.cones.x - 1.0 / (inner - outer)).abs() < 1e-6);
         assert_eq!(gpu.position_radius.w, 4.0);
     }
 
@@ -550,7 +604,12 @@ mod tests {
             outer_angle: 0.5,
         };
         let (gpu, _) = pack(&light, Affine3A::IDENTITY);
-        assert_eq!(gpu.cones.y, 0.0);
+        // Zero is the shader's `the cone is hard` mark. The record keeps its
+        // colour, intensity and outer cosine, so the light still shines: only
+        // the ramp between the two cones is gone.
+        assert_eq!(gpu.cones.x, 0.0);
+        assert_eq!(gpu.color_intensity.w, 1.0);
+        assert_eq!(gpu.direction_outer.w, (0.25_f32).cos());
     }
 
     #[test]
@@ -578,6 +637,33 @@ mod tests {
             normal.normalize().dot(Vec3::NEG_Z) > 0.0,
             "the frame reverses a winding that faces away from the aim"
         );
+    }
+
+    #[test]
+    fn a_quad_light_is_wound_in_the_world_it_lands_in() {
+        let quad = QuadLight::rect(Vec4::ONE, 1.0, 8.0, 2.0, 2.0);
+        // A mirror turns the same order of corners into the other side, so a
+        // frame that read the winding in the light's own space would keep a
+        // polygon facing away from its aim and light nothing at all.
+        let mirror = Affine3A::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+        let (gpu, vertices) = pack(&quad, mirror);
+        assert_eq!(gpu.kind.z, 4);
+        let normal = (vertices[1] - vertices[0])
+            .truncate()
+            .cross((vertices[2] - vertices[0]).truncate());
+        assert!(
+            normal.normalize().dot(Vec3::NEG_Z) > 0.0,
+            "the winding still faces the mirrored aim"
+        );
+    }
+
+    #[test]
+    fn a_scaled_quad_light_weighs_the_area_it_covers() {
+        let quad = QuadLight::rect(Vec4::ONE, 1.0, 8.0, 2.0, 2.0);
+        let unscaled = quad.describe(&Affine3A::IDENTITY);
+        let scaled = quad.describe(&Affine3A::from_scale(Vec3::splat(2.0)));
+        assert_eq!(unscaled.shape, Some(Vec2::splat(4.0)));
+        assert_eq!(scaled.shape, Some(Vec2::splat(16.0)));
     }
 
     #[test]

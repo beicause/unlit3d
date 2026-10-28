@@ -102,9 +102,11 @@
 //! spawn produced — moving each animated node's children with it, rebuilding
 //! the skin poses and writing the morph weights the clip targets. Nothing
 //! plays by itself; the caller picks the time.
-//! Everything else a glTF document can carry is ignored: no normals or
-//! tangents. A mesh whose primitive uses techniques outside this subset
-//! still uploads and spawns — it just renders without them.
+//! A primitive that carries normals uploads them, so a lit surface is shaded by
+//! the normals the document gives it rather than by the ones screen-space
+//! derivatives infer from its positions. Everything else a glTF document can
+//! carry is ignored: no tangents. A mesh whose primitive uses techniques
+//! outside this subset still uploads and spawns — it just renders without them.
 //!
 //! Every handle returned here keeps what it names alive: the next
 //! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
@@ -596,6 +598,10 @@ impl UnlitGltf {
                     .into_rgba_u8()
                     .collect()
             });
+        // A primitive that carries normals describes its own surface, which is
+        // smoother than the one screen-space derivatives infer from the
+        // positions; one without them falls back to those derivatives.
+        let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|normals| normals.collect());
         let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
         let skinned = primitive.get(&gltf::Semantic::Joints(0)).is_some()
             && primitive.get(&gltf::Semantic::Weights(0)).is_some();
@@ -645,7 +651,7 @@ impl UnlitGltf {
                 positions: &positions,
                 uvs: uvs.as_deref(),
                 colors: colors.as_deref(),
-                normals: None,
+                normals: normals.as_deref(),
                 indices: indices.as_deref(),
                 joints: joints.as_deref(),
                 weights: weights.as_deref(),

@@ -570,6 +570,10 @@ pub struct CreateMesh {
     /// Vertex colours, RGBA bytes each.
     #[serde(default)]
     pub colors: Option<Vec<[u8; 4]>>,
+    /// Vertex normals, three floats each. Omit to shade the surface by the
+    /// normals its positions give it.
+    #[serde(default)]
+    pub normals: Option<Vec<[f32; 3]>>,
     /// Triangle indices.
     #[serde(default)]
     pub indices: Option<Vec<u32>>,

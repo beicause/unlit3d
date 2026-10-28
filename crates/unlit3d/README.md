@@ -515,10 +515,17 @@ Shading is Lambert: a light modulates the base color and adds brightness, so
 there is no specular term, no metallic reflection, no Fresnel and no energy
 conservation anywhere. The clustered forward path is what keeps that affordable
 once the light count grows: the frame is split into screen tiles times
-logarithmically spaced depth slices on the CPU, each light is written into the
-cells it can reach, and a fragment reads only its own cell — so the cost is
-one cell lookup plus the lights in it, not one loop over every light in the
+logarithmically spaced depth slices on the CPU, each bounded light is written
+into the cells it can reach, and a fragment reads only its own cell — so the cost
+is one cell lookup plus the lights in it, not one loop over every light in the
 scene. The same path runs on WebGL2, which has no compute shaders at all.
+
+A directional light is not clustered. It reaches every fragment, so it goes into
+a uniform together with the source's ambient term instead of into every cell:
+[`MeshSource::ambient`](mesh_source::MeshSource::ambient) is the term every lit
+pixel receives, and the frame's directional lights sit beside it, up to
+[`MAX_DIRECTIONAL_LIGHTS`](unlit_wgpu::light::MAX_DIRECTIONAL_LIGHTS) of them, with
+the weakest dropped past that.
 
 Polygon lights carry the classic Lambert form factor of the polygon seen from
 the shaded point rather than a fitted lookup table: it is a closed form over
@@ -540,13 +547,14 @@ A caller who wants the built-in family — its layouts, its vertex streams, its
 per-instance record — and only a different piece of shade does not register
 anything: they put an [`UnlitShader`](unlit_wgpu::pipeline::UnlitShader) in
 [`UnlitOptions::shader`](unlit_wgpu::pipeline::UnlitOptions::shader) before
-building the [`UnlitPipelineKey`](unlit::UnlitPipelineKey). It holds two WESL
-snippets, one spliced at the end of the vertex stage and one at the end of the
-fragment stage, so the built-in stages keep doing what they do — decoding the
-vertex, transforming it, lighting it, clipping it — and the snippet changes the
-result: a vertex snippet reshapes the surface before it is lit, a fragment
-snippet recolors a pixel after. The layouts stay the variant's, which is what
-makes it one field. A family of one's own is the other way, and the one to take
+building the [`UnlitPipelineKey`](unlit::UnlitPipelineKey). It holds three WESL
+snippets, spliced into the top level, the end of the vertex stage and the end of
+the fragment stage, so the built-in stages keep doing what they do — decoding
+the vertex, transforming it, lighting it, clipping it — and the snippet changes
+the result: a top-level snippet adds a function or a constant the other two call,
+a vertex snippet reshapes the surface before it is lit, a fragment snippet
+recolors a pixel after. The layouts stay the variant's, which is what makes it
+one field. A family of one's own is the other way, and the one to take
 when more than the shade differs.
 
 ### Per-instance vertex data
