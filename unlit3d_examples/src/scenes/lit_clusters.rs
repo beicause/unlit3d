@@ -119,9 +119,7 @@ let debug_cell = fragment_cluster_index(fragment_ndc(in.world), debug_depth);
 let debug_count = array_access::load_cell_word(debug_cell, 0u);
 let debug_index = array_access::load_cell_word(debug_cell, 1u);
 let debug_light = array_access::load_light(debug_index);
-let debug_offset = debug_light.position_radius.xyz - in.world;
-let debug_cosine = max(dot(fragment_normal(in), normalize(debug_offset)), 0.0);
-color = vec4<f32>(f32(debug_cell) / 4096.0, debug_depth / 128.0, debug_cosine, 1.0);
+color = vec4<f32>(point_radiance(debug_light, in.world, fragment_normal(in)), 1.0);
 "#
     } else {
         &overlay
