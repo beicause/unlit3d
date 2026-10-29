@@ -3,7 +3,7 @@
 //! resource graph, unload them again, and spawn entities that draw the
 //! document's default scene.
 //!
-//! [`UnlitGltf`] owns only the slim, replayable state of a loaded document —
+//! [`LitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each
 //! node's world-space transform — plus nothing else. It holds no
 //! [`World`](unlit_ecs::World), no [`MeshSource`] and no GPU resources of its
@@ -15,9 +15,9 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use unlit3d::gltf::UnlitGltf;
+//! use unlit3d::gltf::LitGltf;
 //! # fn run() -> Result<(), gltf::Error> {
-//! let gltf = UnlitGltf::load("model.glb")?;
+//! let gltf = LitGltf::load("model.glb")?;
 //! # Ok(()) }
 //! ```
 //!
@@ -25,11 +25,11 @@
 //! what it uploaded alive:
 //!
 //! ```rust,no_run
-//! # use unlit3d::gltf::UnlitGltf;
+//! # use unlit3d::gltf::LitGltf;
 //! # use unlit3d::prelude::MeshSource;
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), gltf::Error> {
-//! let gltf = UnlitGltf::load("model.glb")?;
+//! let gltf = LitGltf::load("model.glb")?;
 //! let resources = gltf.insert_resources(source, &world.as_scope());
 //! let entities = gltf.spawn_default_scene(world, &resources);
 //! // ... render ...
@@ -40,8 +40,8 @@
 //!
 //! A caller that wants to insert one kind of resource at a time — to reuse a
 //! texture between documents, say — can still call
-//! [`UnlitGltf::insert_images`], [`UnlitGltf::insert_materials`] and
-//! [`UnlitGltf::insert_meshes`] directly and build a [`GltfResources`] of its
+//! [`LitGltf::insert_images`], [`LitGltf::insert_materials`] and
+//! [`LitGltf::insert_meshes`] directly and build a [`GltfResources`] of its
 //! own.
 //!
 //! Spawning entities never spawns a camera: the renderer draws with the first
@@ -64,7 +64,7 @@
 //! as `(l, 0, 0, 1)` — the red channel carrying the luma — unless the shader
 //! expands it. The built-in unlit shader does, under
 //! `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA`, which
-//! [`UnlitGltf::pipeline_key`] sets for exactly those uploads: the texel
+//! [`LitGltf::pipeline_key`] sets for exactly those uploads: the texel
 //! fans out to RGB (and its second channel to alpha) and the luminance is
 //! decoded from sRGB, which is the encoding the glTF spec asks of a base-color
 //! texture and the one an RGB upload would have been decoded by the sampler.
@@ -87,18 +87,18 @@
 //! so it draws binary coverage: opaque where the texel is opaque enough and
 //! absent everywhere else, blending with nothing. A primitive carrying both
 //! `JOINTS_0` and `WEIGHTS_0` uploads its actual joint stream and draws
-//! skinned; [`UnlitGltf::skin_pose`] turns the node's skin into the
+//! skinned; [`LitGltf::skin_pose`] turns the node's skin into the
 //! [`SkinPose`] its joints deform by, and spawning such a node creates the
 //! pose entity its mesh binds to. A primitive whose mesh declares a morph
 //! target that displaces positions uploads those displacements and spawns with
 //! a [`MorphBinding`] to a [`MorphWeights`] entity holding the node's starting
-//! weights — see [`UnlitGltf::morph_weights`] — so writing that entity is how
+//! weights — see [`LitGltf::morph_weights`] — so writing that entity is how
 //! a caller morphs the mesh. A `doubleSided` material rasterizes its back
 //! faces instead of culling them, so its geometry draws from either side.
 //! A document's animations are sampled on demand:
-//! [`UnlitGltf::animation_count`], [`UnlitGltf::animation_name`] and
-//! [`UnlitGltf::animation_duration`] describe what the document carries, and
-//! [`UnlitGltf::apply_animation`] samples one at a time into the entities a
+//! [`LitGltf::animation_count`], [`LitGltf::animation_name`] and
+//! [`LitGltf::animation_duration`] describe what the document carries, and
+//! [`LitGltf::apply_animation`] samples one at a time into the entities a
 //! spawn produced — moving each animated node's children with it, rebuilding
 //! the skin poses and writing the morph weights the clip targets. Nothing
 //! plays by itself; the caller picks the time.
@@ -113,27 +113,24 @@
 //! a resource once the last handle to it — and the last resource depending on
 //! it — is gone, so giving up a handle is the unload.
 //!
-//! `UnlitGltf::load("model.glb")` in the examples above opens a local file —
-//! see [`UnlitGltf::load`] and [`UnlitGltf::from_bytes`] for how a document
+//! `LitGltf::load("model.glb")` in the examples above opens a local file —
+//! see [`LitGltf::load`] and [`LitGltf::from_bytes`] for how a document
 //! reaches the module in the first place.
 
 use std::path::Path;
 
 use crate::components::{
-    GpuMaterial, GpuMesh, MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform,
-    ZSortedDrawing,
+    GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, SkinPose,
+    Transform, ZSortedDrawing,
 };
+use crate::lit::{InstanceColor, InstanceCutoff, LitMeshDesc, LitPipelineKey, MeshSourceLitExt};
 use crate::mesh::MorphDeltas;
 use crate::mesh_source::MeshSource;
-use crate::unlit::{
-    InstanceColor, InstanceCutoff, MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline,
-    UnlitPipelineKey,
-};
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
 use unlit_ecs::bundle;
 use unlit_ecs::{DynamicBundle, Scope, ScopeMut, prelude::Entity};
-use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
+use unlit_wgpu::pipeline::{BaseColorChannels, LitOptions};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
@@ -146,7 +143,7 @@ const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 /// parsed and its buffers and images decoded eagerly; no GPU resource exists
 /// until an `insert_*` call uploads one into some world's
 /// [`MeshSource`].
-pub struct UnlitGltf {
+pub struct LitGltf {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     images: Vec<gltf::image::Data>,
@@ -174,8 +171,8 @@ pub struct UnlitGltf {
 
 /// A texture uploaded from a glTF image.
 ///
-/// Produced by [`UnlitGltf::insert_resources`] or
-/// [`UnlitGltf::insert_image`] / [`UnlitGltf::insert_images`]. Dropping the
+/// Produced by [`LitGltf::insert_resources`] or
+/// [`LitGltf::insert_image`] / [`LitGltf::insert_images`]. Dropping the
 /// handle makes the texture collectable by the next maintain.
 #[derive(Clone, Debug)]
 pub struct GltfImage {
@@ -197,8 +194,8 @@ pub struct GltfImage {
 
 /// A material bind group built from a glTF material's base-color texture.
 ///
-/// Produced by [`UnlitGltf::insert_resources`] or
-/// [`UnlitGltf::insert_material`] / [`UnlitGltf::insert_materials`]. Dropping
+/// Produced by [`LitGltf::insert_resources`] or
+/// [`LitGltf::insert_material`] / [`LitGltf::insert_materials`]. Dropping
 /// the handle makes the bind group collectable; the view and sampler it names
 /// are the caller's own handles.
 #[derive(Clone, Debug)]
@@ -215,8 +212,8 @@ pub struct GltfMaterial {
 
 /// A mesh uploaded from one glTF primitive.
 ///
-/// Produced by [`UnlitGltf::insert_resources`] or [`UnlitGltf::insert_mesh`] /
-/// [`UnlitGltf::insert_meshes`]. Dropping the handle makes the mesh
+/// Produced by [`LitGltf::insert_resources`] or [`LitGltf::insert_mesh`] /
+/// [`LitGltf::insert_meshes`]. Dropping the handle makes the mesh
 /// collectable by the next maintain.
 ///
 /// The key is derived from the primitive's own attributes and is the key the
@@ -229,15 +226,15 @@ pub struct GltfMesh {
     /// The index of the primitive inside that mesh.
     pub primitive_index: usize,
     /// The key the mesh was uploaded with.
-    pub key: UnlitPipelineKey,
+    pub key: LitPipelineKey,
     /// The uploaded GPU mesh.
     pub mesh: GpuMesh,
 }
 
 /// The entities a spawned glTF node consists of.
 ///
-/// Produced by [`UnlitGltf::spawn_node`] / [`UnlitGltf::spawn_default_scene`]
-/// and given back to [`UnlitGltf::apply_animation`], which drives the node's
+/// Produced by [`LitGltf::spawn_node`] / [`LitGltf::spawn_default_scene`]
+/// and given back to [`LitGltf::apply_animation`], which drives the node's
 /// transform, its [`SkinPose`] and its [`MorphWeights`] through the entities
 /// this names.
 #[derive(Clone, Debug)]
@@ -256,9 +253,9 @@ pub struct GltfNode {
 
 /// Every resource one document uploaded, in document order.
 ///
-/// Produced by [`UnlitGltf::insert_resources`], which uploads the whole
-/// document in one call, and taken by [`UnlitGltf::spawn_node`] and
-/// [`UnlitGltf::spawn_default_scene`] to draw it. Each vector is indexed by
+/// Produced by [`LitGltf::insert_resources`], which uploads the whole
+/// document in one call, and taken by [`LitGltf::spawn_node`] and
+/// [`LitGltf::spawn_default_scene`] to draw it. Each vector is indexed by
 /// the document index it came from: `images[i]` is image `i`, `materials[m]`
 /// is material `m` — `None` when it names no base-color texture — and
 /// `meshes` holds every primitive of every mesh, document-mesh-major and then
@@ -279,7 +276,7 @@ pub struct GltfResources {
     pub meshes: Vec<GltfMesh>,
 }
 
-impl UnlitGltf {
+impl LitGltf {
     /// Load a glTF document from `path`, decoding its buffers and images.
     ///
     /// External URIs resolve against the file's directory. Fails with
@@ -321,7 +318,7 @@ impl UnlitGltf {
         }
     }
 
-    /// The [`UnlitPipelineKey`] the primitive renders with.
+    /// The [`LitPipelineKey`] the primitive renders with.
     ///
     /// The key carries only what a caller picks: the texture filtering the
     /// material's base-color texture needs, the luminance expansion that
@@ -333,16 +330,16 @@ impl UnlitGltf {
     /// attributes declare and the variant a draw resolves derives the rest
     /// from the mesh it draws. A `doubleSided` material turns back-face
     /// culling off, so its geometry is drawn from either side; everything
-    /// else follows [`UnlitOptions::standard`].
+    /// else follows [`LitOptions::standard`].
     pub fn pipeline_key(
         &self,
         device: &wgpu::Device,
         mesh: usize,
         primitive: usize,
-    ) -> UnlitPipelineKey {
+    ) -> LitPipelineKey {
         let primitive = self.primitive(mesh, primitive);
         let material = primitive.material();
-        let mut options = UnlitOptions::standard(device);
+        let mut options = LitOptions::standard(device);
         // The texture the material samples decides whether the base-color
         // binding is a filtering one: the pipeline and the material bind group
         // have to agree, or the group does not fit the pipeline.
@@ -378,7 +375,7 @@ impl UnlitGltf {
         if material.double_sided() {
             options.primitive.cull_mode = None;
         }
-        UnlitPipelineKey::new(options)
+        LitPipelineKey::unlit(options)
     }
 
     // -- images ---------------------------------------------------------------
@@ -518,7 +515,7 @@ impl UnlitGltf {
         };
 
         let bind_group =
-            source.allocate_unlit_material(world, &key.options, view.clone(), sampler.clone());
+            source.allocate_lit_material(world, &key.options, view.clone(), sampler.clone());
         Some(GltfMaterial {
             material,
             bind_group,
@@ -644,10 +641,10 @@ impl UnlitGltf {
             }
         });
 
-        let gpu_mesh = source.allocate_unlit_mesh(
+        let gpu_mesh = source.allocate_lit_mesh(
             world,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: uvs.as_deref(),
                 colors: colors.as_deref(),
@@ -1108,7 +1105,7 @@ impl UnlitGltf {
                 let mut bundle = DynamicBundle::new().named("gltf primitive");
                 bundle.push_component(transform.clone());
                 bundle.push_component(mesh_handle.mesh.clone());
-                bundle.push_component(UnlitPipeline::new(mesh_handle.key.clone()));
+                bundle.push_component(GpuRenderPipeline::new(mesh_handle.key.clone()));
                 bundle.push_component(InstanceColor::new(tint));
                 // The cutoff is per-instance state, so the entity carries it
                 // and the shader reads it out of the instance stream.
@@ -1458,13 +1455,13 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 ///
 /// Only `texture_filtering` shapes the material group's layout, so any key
 /// carrying it works; this is the one a base-color-textured primitive's
-/// [`UnlitGltf::pipeline_key`] derives to. The per-vertex channels a draw adds
+/// [`LitGltf::pipeline_key`] derives to. The per-vertex channels a draw adds
 /// do not enter the material group, and wgpu deduplicates identical layout
 /// descriptors, so the group fits the pipeline whatever else its key reads.
-fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
-    UnlitPipelineKey::new(UnlitOptions {
+fn textured_key(device: &wgpu::Device, filtering: bool) -> LitPipelineKey {
+    LitPipelineKey::unlit(LitOptions {
         texture_filtering: filtering,
-        ..UnlitOptions::standard(device)
+        ..LitOptions::standard(device)
     })
 }
 
@@ -2237,8 +2234,8 @@ mod tests {
     fn a_double_sided_material_culls_nothing() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 
-        let single = UnlitGltf::from_bytes(&sided_document(false))
-            .expect("the single-sided document parses");
+        let single =
+            LitGltf::from_bytes(&sided_document(false)).expect("the single-sided document parses");
         assert_eq!(
             single
                 .pipeline_key(&device, 0, 0)
@@ -2249,8 +2246,7 @@ mod tests {
             "a material that is not double-sided culls back faces"
         );
 
-        let double =
-            UnlitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
+        let double = LitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
         assert_eq!(
             double
                 .pipeline_key(&device, 0, 0)
@@ -2265,10 +2261,10 @@ mod tests {
     #[test]
     fn culling_alone_distinguishes_the_two_sided_variants() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let single = UnlitGltf::from_bytes(&sided_document(false))
+        let single = LitGltf::from_bytes(&sided_document(false))
             .expect("the single-sided document parses")
             .pipeline_key(&device, 0, 0);
-        let double = UnlitGltf::from_bytes(&sided_document(true))
+        let double = LitGltf::from_bytes(&sided_document(true))
             .expect("the double-sided document parses")
             .pipeline_key(&device, 0, 0);
         assert_ne!(
@@ -2295,7 +2291,7 @@ mod tests {
 
     #[test]
     fn a_morph_target_makes_the_mesh_morph() {
-        let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
+        let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
             .expect("the morphed document parses");
         let primitive = gltf.primitive(0, 0);
         assert_eq!(morph_target_count(&primitive), 1);
@@ -2305,7 +2301,7 @@ mod tests {
     fn a_target_without_positions_does_not_make_the_mesh_morph() {
         // A normals-only target displaces nothing this loader reads, so the
         // mesh stays in the rigid path rather than drawing an empty morph.
-        let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[None]))
+        let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[None]))
             .expect("the morphed document parses");
         let primitive = gltf.primitive(0, 0);
         assert_eq!(morph_target_count(&primitive), 0);
@@ -2314,7 +2310,7 @@ mod tests {
 
     #[test]
     fn a_node_overrides_the_mesh_weights() {
-        let gltf = UnlitGltf::from_bytes(&morphed_document(
+        let gltf = LitGltf::from_bytes(&morphed_document(
             Some(&[0.25]),
             Some(&[0.75]),
             &[Some([0.0, 1.0, 0.0])],
@@ -2322,7 +2318,7 @@ mod tests {
         .expect("the morphed document parses");
         assert_eq!(gltf.morph_weights(0), vec![0.75]);
 
-        let gltf = UnlitGltf::from_bytes(&morphed_document(
+        let gltf = LitGltf::from_bytes(&morphed_document(
             Some(&[0.25]),
             None,
             &[Some([1.0, 0.0, 0.0])],
@@ -2336,7 +2332,7 @@ mod tests {
         // A document that states fewer weights than it has targets would make
         // the renderer reject the mesh, so the shortfall is padded with the
         // undeformed weight rather than passed on.
-        let gltf = UnlitGltf::from_bytes(&morphed_document(
+        let gltf = LitGltf::from_bytes(&morphed_document(
             Some(&[0.5]),
             None,
             &[Some([0.0, 1.0, 0.0]), Some([1.0, 0.0, 0.0])],
@@ -2345,7 +2341,7 @@ mod tests {
         assert_eq!(gltf.morph_weights(0), vec![0.5, 0.0]);
 
         // And one that states more is truncated, for the same reason.
-        let gltf = UnlitGltf::from_bytes(&morphed_document(
+        let gltf = LitGltf::from_bytes(&morphed_document(
             Some(&[0.5, 1.0]),
             None,
             &[Some([0.0, 1.0, 0.0])],
@@ -2356,7 +2352,7 @@ mod tests {
 
     #[test]
     fn a_mesh_without_targets_starts_undeformed() {
-        let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[]))
+        let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[]))
             .expect("the morphed document parses");
         assert!(gltf.morph_weights(0).is_empty());
         assert_eq!(morph_target_count(&gltf.primitive(0, 0)), 0);
@@ -2368,7 +2364,7 @@ mod tests {
         // matrix's inverse and every joint matrix comes out the identity: the
         // pose a document uploads at rest has to leave the mesh exactly where
         // it is.
-        let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
+        let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
         let pose = gltf.skin_pose(0);
         assert_eq!(pose.matrices.len(), 1, "the skin has one joint");
@@ -2385,7 +2381,7 @@ mod tests {
         // node that sits somewhere else pulls the vertices it weights to
         // itself: the pose is the joint's world matrix against its bind
         // matrix, not the identity.
-        let gltf = UnlitGltf::from_bytes(&skinned_document([3.0, -2.0, 1.0]))
+        let gltf = LitGltf::from_bytes(&skinned_document([3.0, -2.0, 1.0]))
             .expect("the skinned document parses");
         let pose = gltf.skin_pose(0);
         assert!(
@@ -2402,7 +2398,7 @@ mod tests {
     fn a_skinned_primitive_declares_its_joint_stream() {
         // The primitive carries JOINTS_0 and WEIGHTS_0, so the mesh is
         // uploaded with them and the variant a draw resolves reads them.
-        let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
+        let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
         let primitive = gltf.primitive(0, 0);
         assert!(primitive.get(&gltf::Semantic::Joints(0)).is_some());
@@ -2412,7 +2408,7 @@ mod tests {
 
     #[test]
     fn a_node_without_a_skin_has_no_pose() {
-        let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
+        let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
         assert_eq!(gltf.skin_joint_count(0), Some(1));
         assert_eq!(gltf.skin_joint_count(1), None);
@@ -2869,7 +2865,7 @@ mod tests {
 
     #[test]
     fn an_animation_reports_its_name_and_duration() {
-        let gltf = UnlitGltf::from_bytes(&parented_animated_document(
+        let gltf = LitGltf::from_bytes(&parented_animated_document(
             "LINEAR",
             &[0.0, 1.5, 4.0],
             &[[0.0; 3]; 3],
@@ -2883,7 +2879,7 @@ mod tests {
 
     #[test]
     fn apply_animation_moves_a_node_and_carries_its_child() {
-        let gltf = UnlitGltf::from_bytes(&parented_animated_document(
+        let gltf = LitGltf::from_bytes(&parented_animated_document(
             "LINEAR",
             &[0.0, 2.0],
             &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
@@ -2938,7 +2934,7 @@ mod tests {
 
     #[test]
     fn apply_animation_holds_a_step_keyframe() {
-        let gltf = UnlitGltf::from_bytes(&parented_animated_document(
+        let gltf = LitGltf::from_bytes(&parented_animated_document(
             "STEP",
             &[0.0, 2.0],
             &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
@@ -2966,7 +2962,7 @@ mod tests {
 
     #[test]
     fn apply_animation_rebuilds_a_skin_pose() {
-        let gltf = UnlitGltf::from_bytes(&animated_skinned_document(
+        let gltf = LitGltf::from_bytes(&animated_skinned_document(
             &[0.0, 2.0],
             &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
         ))
@@ -2997,7 +2993,7 @@ mod tests {
 
     #[test]
     fn apply_animation_writes_morph_weights() {
-        let gltf = UnlitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
+        let gltf = LitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
             .expect("the animated morphed document parses");
         let mut world = World::new();
         let mesh = world.root_scope_mut().spawn(bundle![Transform::default()]);

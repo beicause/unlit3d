@@ -1,554 +1,980 @@
-//! The lit pipeline's lights, and how a frame clusters them.
+//! The built-in lit pipeline, gathered in one module.
 //!
-//! A light is one component -- [`LightSource`], holding a boxed [`Light`] -- so a
-//! scene keeps every kind it has in one column and the frame collects them all
-//! with one query. Which kind a light is decides which lanes of
-//! [`unlit_wgpu::light::LightGpu`] it fills and which term the fragment adds; the
-//! clustering, the cell records and the upload are shared by every kind.
+//! Nothing here has a private path into the renderer: the family is registered
+//! through the same [`MeshSource::register_family`](crate::mesh_source::MeshSource::register_family)
+//! a caller's own family uses,
+//! its instance record is an ordinary [`InstanceData`](crate::pipeline::InstanceData),
+//! and its meshes and
+//! materials go through the same pools and graph. The module exists to keep the
+//! built-in implementation together, not to give it privilege.
 //!
-//! # The transform decides where a light points
+//! # Lit or unlit
 //!
-//! Every light shines along its own transform's `-Z`, so a directional or spot
-//! light is aimed by rotating its entity rather than by a direction field, and a
-//! quad light's polygon lies in its entity's `XY` plane. A light with no
-//! [`Transform`] sits at the origin facing `-Z`.
+//! One family draws both: a key states [`LitPipelineKey::unlit`](crate::lit::LitPipelineKey::unlit),
+//! and a variant
+//! that is not unlit multiplies its base colour by the frame's lights while an
+//! unlit one draws the colour unchanged and declares none of the lighting
+//! bindings. The two are one family rather than two because everything else is
+//! shared -- the vertex channels, the material group, the instance stream -- so
+//! a mesh allocated for either draws with both, and a scene that adds a light
+//! re-keys nothing.
 //!
-//! # The lit pipeline
-//!
-//! [`LitPipelineKey`] is the family key, [`MeshSourceLitExt`] registers it, and
-//! [`LitPipeline`] is the component a mesh is drawn with. A lit pipeline is
-//! otherwise an unlit one -- same vertex channels, same material, same instance
-//! stream -- so it reuses [`UnlitOptions`] and the unlit factory, and a mesh
-//! allocated for either draw works with both.
-//!
-//! # Intensity is dimensionless
-//!
-//! A light's `intensity` carries no unit. The shader modulates a surface's base
-//! colour by the sum of the lights' colours times their intensities and
-//! normalises nothing -- there is no exposure and no energy conservation -- so a
-//! caller picks numbers that look right rather than physical values.
+//! The lights themselves, and the clustering a frame does of them, live in
+//! [crate::light].
 
-use glam::{Affine3A, UVec4, Vec2, Vec3, Vec4};
+use core::mem::size_of;
+use std::rc::Rc;
+
+use arrayvec::ArrayVec;
 use unlit_ecs::Scope;
-use unlit_wgpu::light::{
-    BoundingSphere, DirectionalGpu, LightGpu, LightKind as GpuLightKind, LightingUniform,
-    MAX_DIRECTIONAL_LIGHTS, PackedLight,
+use unlit_wgpu::mesh::{
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
+    compress_weights, index_fits_u16,
 };
-use unlit_wgpu::pipeline::{UnlitOptions, UnlitVariant};
+use unlit_wgpu::pipeline::{
+    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GlobalBindings, INSTANCE_SLOT,
+    LitOptions, LitVariant, LitVertexChannels, PRIMARY_SLOT, SECONDARY_SLOT,
+};
+use unlit_wgpu::resources::{ResHandle, TextureView};
+use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
+use unlit_wgpu::specialize::{
+    SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
+};
 use unlit_wgpu::util::Hashed;
+use unlit_wgpu::vertex_pool::VertexStreamPool;
+use zerocopy::IntoBytes;
 
-use crate::components::{GpuRenderPipeline, Transform};
+use crate::bounds::Aabb;
+use crate::components::{GpuMaterial, GpuMesh};
+use crate::mesh::{MeshDesc, MorphDeltas};
 use crate::mesh_source::MeshSource;
-use crate::pipeline::{DrawContext, RenderPipelineKey};
-use crate::unlit::{UnlitFactory, UnlitInstance, unlit_variant};
+use crate::pipeline::{
+    DrawContext, FamilyContext, InstanceContext, InstanceData, InstanceStreamDesc,
+    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
+};
 
-/// A light's shape, as a description rather than the shader cares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum LightKind {
-    /// A light at infinity: one direction, no falloff, no bounds.
-    Directional,
-    /// A light at a point, fading with distance inside its range.
-    Point,
-    /// A point light narrowed to a cone.
-    Spot,
-    /// A convex planar polygon radiating from one side of its plane.
-    Quad,
-}
-
-/// What a light is, for a bridge that reports the frame's lights rather than
-/// shades with them.
+/// The byte size of one index of `format`.
 ///
-/// The record a [`LightGpu`] holds is what the shader reads and is deliberately
-/// lane-shaped; this is the same light in the terms a caller spawned it, so a
-/// report names kinds and shapes instead of lane numbers.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LightDescribe {
-    /// Which kind of light this is.
-    pub kind: LightKind,
-    /// The light's linear colour; alpha is unused.
-    pub color: Vec4,
-    /// The light's dimensionless intensity.
-    pub intensity: f32,
-    /// How far the light reaches, for the kinds that fade; `None` for a
-    /// directional light, which reaches everywhere.
-    pub range: Option<f32>,
-    /// The light's own shape: a spot light's inner and outer half-angles, or a
-    /// quad light's area. `None` for a point or directional light.
-    pub shape: Option<Vec2>,
+/// A pooled index range starts at a multiple of [`wgpu::COPY_BUFFER_ALIGNMENT`],
+/// which is a multiple of either format's size, so dividing its byte offset by
+/// this yields a whole number of indices.
+fn index_format_size(format: wgpu::IndexFormat) -> u32 {
+    match format {
+        wgpu::IndexFormat::Uint16 => size_of::<u16>() as u32,
+        wgpu::IndexFormat::Uint32 => size_of::<u32>() as u32,
+    }
 }
 
-/// A light a scene can hold.
+/// Where a mesh's vertex-pool offset goes, given whether the device has
+/// `base_vertex`.
 ///
-/// Implemented by the four built-in kinds and by any kind a caller adds: the
-/// frame only ever calls [`Self::pack`] and [`Self::describe`], so a new shape of
-/// light is a new implementation rather than a new component, and every light
-/// still shares one query, one array and one cluster pass.
-pub trait Light: 'static {
-    /// Write this light's record into `sink`, given the transform placing it.
-    ///
-    /// The sink starts as an empty record, so an implementation fills the lanes
-    /// its kind uses and leaves the rest at zero. A light with vertices appends
-    /// them to the sink's pool and names the slice it took.
-    fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>);
-    /// Describe this light in the terms it was spawned in.
-    ///
-    /// `world_from_local` is the transform [`Self::pack`] was given: a shape
-    /// whose size is part of its importance has to be measured where it is
-    /// placed, since a transform can scale it.
-    fn describe(&self, world_from_local: &Affine3A) -> LightDescribe;
-}
-
-/// Where a [`Light::pack`] writes: its record, and the frame's shared polygon
-/// vertex pool.
-pub struct LightSink<'a> {
-    /// The record to fill.
-    pub gpu: &'a mut LightGpu,
-    /// The pool every light's polygon vertices share, appended to in world
-    /// space.
-    pub vertices: &'a mut Vec<Vec4>,
-}
-
-/// A light in a scene, whatever kind it is.
+/// A mesh's vertices sit somewhere inside the pool its streams share, so a draw
+/// has to be offset to reach them. A device with `base_vertex` names the offset
+/// on the draw, which leaves the indices mesh-local and keeps them narrow; a
+/// device without it — WebGL2, whose GLES 3.0 has no such draw — has to add the
+/// offset to the indices at upload, where the draw's own stays zero. The two
+/// are complementary, and exactly one is non-zero.
 ///
-/// One component type for every kind, because the frame collects them all the
-/// same way: a scene adds a light by spawning this, and the frame's one query
-/// finds directional, point, spot and quad lights together.
-pub struct LightSource(pub Box<dyn Light>);
-
-impl LightSource {
-    /// A light source holding `light`.
-    pub fn new(light: impl Light) -> Self {
-        Self(Box::new(light))
-    }
+/// Baking can widen the indices when the offset pushes one past `u16::MAX`,
+/// which is the cost of binding the whole pool instead of rebinding a vertex
+/// buffer per mesh. A draw's `base_vertex` has no such cost, but is a signed
+/// 32-bit integer, so the offset has to fit one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexOffset {
+    /// Added to every index at upload.
+    baked: u32,
+    /// Carried by the draw as its `base_vertex`.
+    draw_base_vertex: u32,
 }
 
-/// A light at infinity, shining along its transform's `-Z`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DirectionalLight {
-    /// The light's linear colour; alpha is unused.
-    pub color: Vec4,
-    /// The light's dimensionless intensity.
-    pub intensity: f32,
-}
-
-impl Light for DirectionalLight {
-    fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        sink.gpu.direction_outer = world_from_local
-            .transform_vector3(Vec3::NEG_Z)
-            .normalize_or_zero()
-            .extend(0.0);
-        sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
-        sink.gpu.kind.x = GpuLightKind::Directional as u32;
-    }
-
-    fn describe(&self, _world_from_local: &Affine3A) -> LightDescribe {
-        LightDescribe {
-            kind: LightKind::Directional,
-            color: self.color,
-            intensity: self.intensity,
-            range: None,
-            shape: None,
-        }
-    }
-}
-
-/// A light at a point, fading to nothing at its range.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PointLight {
-    /// The light's linear colour; alpha is unused.
-    pub color: Vec4,
-    /// The light's dimensionless intensity.
-    pub intensity: f32,
-    /// How far the light reaches, in world units.
-    pub range: f32,
-}
-
-impl Light for PointLight {
-    fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        sink.gpu.position_radius = world_from_local.translation.extend(self.range);
-        sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
-        sink.gpu.kind.x = GpuLightKind::Point as u32;
-    }
-
-    fn describe(&self, _world_from_local: &Affine3A) -> LightDescribe {
-        LightDescribe {
-            kind: LightKind::Point,
-            color: self.color,
-            intensity: self.intensity,
-            range: Some(self.range),
-            shape: None,
-        }
-    }
-}
-
-/// A [`PointLight`] narrowed to a cone along the transform's `-Z`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SpotLight {
-    /// The light's linear colour; alpha is unused.
-    pub color: Vec4,
-    /// The light's dimensionless intensity.
-    pub intensity: f32,
-    /// How far the light reaches, in world units.
-    pub range: f32,
-    /// The cone's full angle of constant brightness, in radians.
-    pub inner_angle: f32,
-    /// The cone's full angle where the light reaches nothing, in radians.
-    ///
-    /// Brightness falls off from the inner to the outer angle; a caller that
-    /// wants a hard edge sets both to the same angle, and the light then shines
-    /// at full intensity inside the cone and not at all outside it. An inner
-    /// angle wider than this one is narrowed to it, which is the same hard edge
-    /// at the outer angle.
-    pub outer_angle: f32,
-}
-
-impl Light for SpotLight {
-    fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        // An inner cone wider than the outer one describes no ramp: it would
-        // make the light brightest where it should reach nothing. Narrowing it
-        // to the outer one is the closest cone the angles do describe, and is
-        // the hard edge a caller writing the two the same way gets.
-        let inner = (self.inner_angle.min(self.outer_angle) * 0.5).cos();
-        let outer = (self.outer_angle * 0.5).cos();
-        let gap = inner - outer;
-        sink.gpu.position_radius = world_from_local.translation.extend(self.range);
-        sink.gpu.direction_outer = world_from_local
-            .transform_vector3(Vec3::NEG_Z)
-            .normalize_or_zero()
-            .extend(outer);
-        sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
-        // A gap too narrow to divide by is stored as zero rather than as an
-        // enormous reciprocal: the shader reads that as `the cone is hard` and
-        // steps at the outer cosine instead of ramping between the two. The
-        // cosines also round towards each other, so the gap can land below zero
-        // for two angles that differ by less than the rounding; the mark has to
-        // cover that side too, or the shader reads a negative one as `negative
-        // is narrow` without the step.
-        sink.gpu.cones = Vec4::new(
-            if gap < MIN_CONE_GAP { 0.0 } else { 1.0 / gap },
-            0.0,
-            0.0,
-            0.0,
-        );
-        sink.gpu.kind.x = GpuLightKind::Spot as u32;
-    }
-
-    fn describe(&self, _world_from_local: &Affine3A) -> LightDescribe {
-        LightDescribe {
-            kind: LightKind::Spot,
-            color: self.color,
-            intensity: self.intensity,
-            range: Some(self.range),
-            shape: Some(Vec2::new(self.inner_angle, self.outer_angle)),
-        }
-    }
-}
-
-/// A convex planar polygon radiating from one side of its plane.
-///
-/// The shading is the polygon's own form factor, which already carries the
-/// inverse-square falloff of every point of it, so a patch wider than its range
-/// still lights the corners it covers and the light has no attenuation term of
-/// its own. The vertices are in the light's own space and lie in one plane; the
-/// frame transforms them by the light's transform and shades with the polygon's
-/// form factor, so the light is its shape rather than a bounding rectangle. A
-/// quad light shines out of the side its vertices wind towards: the frame
-/// reverses the winding when it faces away from the transform's `-Z`, so a
-/// caller states a polygon and not a handedness.
-///
-/// A triangle states itself by repeating a corner. The frame drops corners that
-/// coincide, so the polygon is shaded with as many corners as it has distinct
-/// ones, and three of them are a triangle.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct QuadLight {
-    /// The light's linear colour; alpha is unused.
-    pub color: Vec4,
-    /// The light's dimensionless intensity.
-    pub intensity: f32,
-    /// How far the light reaches, in world units.
-    pub range: f32,
-    /// The polygon's corners in order, in the light's own space.
-    ///
-    /// A quad uses all four; a triangle repeats one of them, because a convex
-    /// polygon needs three corners and the array has room for a fourth that a
-    /// horizon clip would produce.
-    pub vertices: [Vec3; 4],
-}
-
-impl QuadLight {
-    /// A quad light on a `width` by `height` rectangle centered on its
-    /// transform, shining along the transform's `-Z`.
-    pub fn rect(color: Vec4, intensity: f32, range: f32, width: f32, height: f32) -> Self {
-        let half_width = width * 0.5;
-        let half_height = height * 0.5;
-        Self {
-            color,
-            intensity,
-            range,
-            vertices: [
-                Vec3::new(-half_width, -half_height, 0.0),
-                Vec3::new(half_width, -half_height, 0.0),
-                Vec3::new(half_width, half_height, 0.0),
-                Vec3::new(-half_width, half_height, 0.0),
-            ],
-        }
-    }
-}
-
-/// Corners closer together than this are one corner, which is how a triangle
-/// stated as a quad collapses to three.
-const MERGED_CORNER_SQUARED: f32 = 1.0e-8;
-
-impl Light for QuadLight {
-    fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        // Drop a corner that sits on its predecessor, which leaves as many
-        // corners as the polygon has distinct ones: three for a triangle stated
-        // as a quad, four for a quad. A polygon left with fewer than three has
-        // no area, and the shader draws nothing for it. The corners are matched
-        // in the light's own space, where the caller stated them, so a scaled
-        // light keeps the corners it was given.
-        let mut live = [Vec3::ZERO; 4];
-        let mut count = 0;
-        for corner in self.vertices {
-            if count > 0 && (live[count - 1] - corner).length_squared() <= MERGED_CORNER_SQUARED {
-                continue;
+impl IndexOffset {
+    /// Split `vertex_offset` between the indices and the draw.
+    fn new(supports_base_vertex: bool, vertex_offset: u32) -> Self {
+        if supports_base_vertex {
+            Self {
+                baked: 0,
+                draw_base_vertex: vertex_offset,
             }
-            live[count] = corner;
-            count += 1;
+        } else {
+            Self {
+                baked: vertex_offset,
+                draw_base_vertex: 0,
+            }
         }
-        if count > 1 && (live[0] - live[count - 1]).length_squared() <= MERGED_CORNER_SQUARED {
-            count -= 1;
-        }
-        let offset = sink.vertices.len() as u32;
-        sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
-        if count < 3 {
-            // A corner or a line: no area to integrate over, so the light names
-            // no corners and the shader draws nothing for it. The record still
-            // carries a position, so culling has somewhere to put it.
-            let anchor = world_from_local.transform_point3(self.vertices[0]);
-            sink.gpu.position_radius = anchor.extend(self.range.max(0.0));
-            sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, 0, 0);
-            return;
-        }
-        let mut world = live.map(|corner| world_from_local.transform_point3(corner));
-        // The winding decides which side of the polygon shines, so it has to be
-        // read where the polygon lands: an affine transform with a negative
-        // determinant mirrors it, which turns the same order of corners into the
-        // other side. Reading it in the light's own space would leave such a
-        // light shining into the surface it was aimed at.
-        let aim = world_from_local.transform_vector3(Vec3::NEG_Z);
-        let normal = (world[1] - world[0]).cross(world[2] - world[0]);
-        if normal.dot(aim) < 0.0 {
-            world[..count].reverse();
-        }
-        let center = world[..count].iter().copied().sum::<Vec3>() / count as f32;
-        // The light reaches its polygon wherever the polygon lies, so the radius
-        // that culls it has to hold the corners and not just the range: a patch
-        // wider than the range still lights its far edge.
-        let extent = world[..count]
+    }
+
+    /// The format `indices` pack into and the number of bytes they occupy,
+    /// with the pool offset applied.
+    ///
+    /// An offset carried by the draw leaves the indices mesh-local, so they
+    /// stay as narrow as the mesh's own vertex count allows; an offset baked in
+    /// here can push an index past `u16::MAX`, which widens *every* index of
+    /// the mesh to `Uint32`. Either way the width is decided on the baked
+    /// values.
+    ///
+    /// The length is padded to [`wgpu::COPY_BUFFER_ALIGNMENT`], which is the
+    /// alignment an index pool hands its ranges out at, so it is both the size
+    /// to allocate and the number of bytes [`Self::write`] fills.
+    ///
+    /// The slice must not be empty: an empty mesh has no index buffer at all.
+    fn packed_len(self, indices: &[u32]) -> (wgpu::IndexFormat, usize) {
+        let widened = indices
             .iter()
-            .map(|corner| corner.distance(center))
-            .fold(0.0_f32, f32::max);
-        for corner in &world[..count] {
-            sink.vertices.push(corner.extend(1.0));
-        }
-        sink.gpu.position_radius = center.extend(self.range.max(0.0) + extent);
-        sink.gpu.kind = UVec4::new(GpuLightKind::Quad as u32, offset, count as u32, 0);
-    }
-
-    fn describe(&self, world_from_local: &Affine3A) -> LightDescribe {
-        // The area that decides the light's importance is the area it covers in
-        // the world: a transform can scale the polygon, and a light scaled up
-        // lights more surface and so ranks above one scaled down.
-        let world = self
-            .vertices
-            .map(|corner| world_from_local.transform_point3(corner));
-        LightDescribe {
-            kind: LightKind::Quad,
-            color: self.color,
-            intensity: self.intensity,
-            range: Some(self.range),
-            shape: Some(Vec2::splat(polygon_area(&world))),
-        }
-    }
-}
-
-/// The smallest gap between a spot light's inner and outer cone cosines the
-/// falloff divides by, so a cone with no soft edge does not divide by zero.
-const MIN_CONE_GAP: f32 = 1.0e-4;
-
-/// The colour and intensity lanes a record stores.
-fn color_intensity(color: Vec4, intensity: f32) -> Vec4 {
-    Vec4::new(color.x, color.y, color.z, intensity)
-}
-
-/// The area of a planar polygon, from its corners in order.
-fn polygon_area(vertices: &[Vec3]) -> f32 {
-    let mut sum = Vec3::ZERO;
-    for index in 0..vertices.len() {
-        sum += vertices[index].cross(vertices[(index + 1) % vertices.len()]);
-    }
-    sum.length() * 0.5
-}
-
-/// Pack every light the frame can see: the bounded ones into `packed`, every
-/// polygon corner into `vertices`, and the lights at infinity into
-/// `lighting`.
-///
-/// `eye` is where the frame is seen from, which only ranks the lights: a cell
-/// that runs out of room keeps the lights reaching it strongest, and a light is
-/// strongest near the camera. The ranking also settles the order the lights are
-/// drawn in, so it decides the cluster's indices too.
-///
-/// A directional light is not clustered: it reaches every fragment, so writing
-/// it into every cell would spend one of each cell's slots to say nothing. It
-/// goes into the frame-wide uniform instead, where at most
-/// [`MAX_DIRECTIONAL_LIGHTS`] fit; the strongest are the ones kept. An unused
-/// slot is left at zero, which is what makes it contribute nothing.
-pub(crate) fn collect_lights(
-    scope: &Scope<'_>,
-    eye: Vec3,
-    packed: &mut Vec<PackedLight>,
-    vertices: &mut Vec<Vec4>,
-    lighting: &mut LightingUniform,
-) {
-    packed.clear();
-    vertices.clear();
-    lighting.directionals = [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS];
-    for (source, transform) in scope.query::<(&LightSource, Option<&Transform>)>() {
-        let world_from_local = transform
-            .map(|transform| transform.compute_matrix())
-            .unwrap_or(Affine3A::IDENTITY);
-        let mut gpu = LightGpu {
-            position_radius: Vec4::ZERO,
-            direction_outer: Vec4::ZERO,
-            color_intensity: Vec4::ZERO,
-            cones: Vec4::ZERO,
-            kind: UVec4::ZERO,
+            .any(|&index| !index_fits_u16(index + self.baked));
+        let element = if widened {
+            size_of::<u32>()
+        } else {
+            size_of::<u16>()
         };
-        source.0.pack(
-            &world_from_local,
-            LightSink {
-                gpu: &mut gpu,
-                vertices,
-            },
+        let format = if widened {
+            wgpu::IndexFormat::Uint32
+        } else {
+            wgpu::IndexFormat::Uint16
+        };
+        let padded_len =
+            (indices.len() * element).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
+        (format, padded_len)
+    }
+
+    /// Write `indices` with the pool offset applied into `out`, which must be
+    /// exactly [`Self::packed_len`]`(indices)` bytes.
+    ///
+    /// The offset is applied as the bytes are written, so no intermediate index
+    /// buffer exists; the trailing alignment padding is zeroed.
+    ///
+    /// The slice must not be empty: an empty mesh has no index buffer at all.
+    fn write(self, indices: &[u32], out: wgpu::WriteOnly<'_, [u8]>) {
+        let (format, padded_len) = self.packed_len(indices);
+        assert_eq!(
+            out.len(),
+            padded_len,
+            "the target must hold exactly the packed index buffer"
         );
-        let describe = source.0.describe(&world_from_local);
-        if gpu.kind.x == GpuLightKind::Directional as u32 {
-            // A light at infinity has no bounds to cluster by: every fragment
-            // sees it, so it belongs to the frame rather than to a cell.
-            keep_directional(&mut lighting.directionals, gpu);
-            continue;
+        let element = index_format_size(format) as usize;
+        let (data, mut padding) = out.split_at(indices.len() * element);
+        match format {
+            wgpu::IndexFormat::Uint16 => {
+                let (chunks, _remainder) = data.into_chunks::<{ size_of::<u16>() }>();
+                chunks.write_iter(
+                    indices
+                        .iter()
+                        .map(|&index| (index + self.baked) as u16)
+                        .map(u16::to_ne_bytes),
+                );
+            }
+            wgpu::IndexFormat::Uint32 => {
+                let (chunks, _remainder) = data.into_chunks::<{ size_of::<u32>() }>();
+                chunks.write_iter(
+                    indices
+                        .iter()
+                        .map(|&index| index + self.baked)
+                        .map(u32::to_ne_bytes),
+                );
+            }
         }
-        let bounds = BoundingSphere {
-            center: gpu.position_radius.truncate(),
-            radius: gpu.position_radius.w,
-        };
-        // A light near the camera lights more of the picture than one far away,
-        // and a larger patch more than a smaller one, so the ranking is roughly
-        // the illumination the light delivers where the frame is seen from.
-        let area = match describe.kind {
-            LightKind::Quad => describe.shape.map_or(1.0, |shape| shape.x.max(0.0)),
-            _ => 1.0,
-        };
-        let distance = (bounds.center - eye).length().max(1.0);
-        // A light that shines nothing is dropped rather than ranked last: a
-        // cell that ran out of room would otherwise spill a light that
-        // contributes nothing in place of one that does.
-        if describe.intensity <= 0.0 {
-            continue;
-        }
-        let importance = describe.intensity * area / (distance * distance);
-        packed.push(PackedLight {
-            gpu,
-            bounds,
-            importance,
-        });
+        padding.fill(0);
+    }
+
+    /// [`Self::write`] into a fresh `Vec`, for tests that inspect the bytes.
+    #[cfg(test)]
+    fn pack(self, indices: &[u32]) -> (wgpu::IndexFormat, Vec<u8>) {
+        let (format, padded_len) = self.packed_len(indices);
+        let mut data = vec![0u8; padded_len];
+        self.write(indices, wgpu::WriteOnly::from_mut(data.as_mut_slice()));
+        (format, data)
     }
 }
 
-/// Put a directional light into the frame's slots, strongest first.
+/// The key of the built-in family, lit or unlit.
 ///
-/// The slots are ordered by intensity because the shader reads all of them and
-/// cannot tell which are unused: an empty slot is one left at zero, so the
-/// ordering is only what makes a frame that keeps more lights than it has room
-/// for keep the strongest ones.
-fn keep_directional(slots: &mut [DirectionalGpu; MAX_DIRECTIONAL_LIGHTS], gpu: LightGpu) {
-    let light = DirectionalGpu {
-        direction: gpu.direction_outer,
-        color_intensity: gpu.color_intensity,
-    };
-    // An empty slot holds no colour at all, so nothing it does can change the
-    // frame -- not even being displaced by a light that shines nothing. A light
-    // darker than the weakest kept one is dropped from either side, keeping the
-    // slot count the frame's lights, not the frame's slots.
-    if light.color_intensity.w <= 0.0 {
-        return;
-    }
-    // Every slot already filled ranks higher than the light, and every empty
-    // one ranks below it, because an empty slot's intensity is zero.
-    let at = slots.partition_point(|slot| slot.color_intensity.w > light.color_intensity.w);
-    if at == MAX_DIRECTIONAL_LIGHTS {
-        return;
-    }
-    for slot in (at..MAX_DIRECTIONAL_LIGHTS - 1).rev() {
-        slots[slot + 1] = slots[slot];
-    }
-    slots[at] = light;
-}
-
-/// A key identifying a lit pipeline family.
-///
-/// A lit pipeline is an unlit pipeline whose fragment also multiplies the
-/// surface by the frame's lights: same vertex channels, same material group,
-/// same instance stream, same meshes. Only the shader differs, so the key holds
-/// the same options and differs from [UnlitPipelineKey](crate::unlit::UnlitPipelineKey)
-/// by its type -- which is what lets a source carry both families, and a mesh
-/// allocated for one draw in the other.
+/// Two entities drawing the same family may start from different options, so
+/// the options live on the entity's key rather than on the source. The key's
+/// type is how the source finds the family it draws with.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LitPipelineKey {
     /// The options the entity's variants are specialized from, with their hash
-    /// computed once.
-    pub options: Hashed<UnlitOptions>,
+    /// computed once. Every per-frame lookup clones this record whole, so the
+    /// variants it resolves to share the stored word instead of recomputing
+    /// it; rewrite the options through [`Hashed::update`], never the value
+    /// itself.
+    pub options: Hashed<LitOptions>,
+    /// Whether the entity draws without the frame's lights.
+    ///
+    /// An unlit draw multiplies its base colour by nothing: it declares none
+    /// of the lighting bindings, so the lights a source clusters cost it
+    /// nothing. Lighting is the common case, so this states the exception.
+    pub unlit: bool,
 }
 
 impl LitPipelineKey {
-    /// A key whose variants start from `options`.
-    pub fn new(options: UnlitOptions) -> Self {
+    /// A lit key whose variants start from `options`.
+    pub fn new(options: LitOptions) -> Self {
         Self {
             options: Hashed::new(options),
+            unlit: false,
+        }
+    }
+
+    /// An unlit key whose variants start from `options`.
+    ///
+    /// The same family drawing the same meshes, with the lighting flag off:
+    /// what a scene that states no lights draws with.
+    pub fn unlit(options: LitOptions) -> Self {
+        Self {
+            options: Hashed::new(options),
+            unlit: true,
         }
     }
 }
 
 impl RenderPipelineKey for LitPipelineKey {
-    type Variant = UnlitVariant;
+    type Variant = LitVariant;
 
-    fn variant(&self, draw: &DrawContext<'_>) -> UnlitVariant {
-        unlit_variant(&self.options, draw, true)
+    fn variant(&self, draw: &DrawContext<'_>) -> LitVariant {
+        lit_variant(&self.options, draw, self.unlit)
     }
 }
 
-/// The built-in lit pipeline, keyed by [LitPipelineKey].
-pub type LitPipeline = GpuRenderPipeline<LitPipelineKey>;
-
-/// Where a source's lit family comes from.
+/// The variant a draw resolves to from the caller's options, lit or not.
 ///
-/// The lit family shares the unlit one's factory and instance record, because a
-/// lit draw differs from an unlit one only in what its fragment reads. What it
-/// adds is the frame's lights: registering it marks the source lit, so every
-/// frame clusters that frame's [LightSource]s and uploads them.
-pub trait MeshSourceLitExt {
-    /// Register the built-in lit family.
+/// Every fact the variant depends on beyond the caller's own options is
+/// resolved here, from the draw itself: the frame target, the channels the
+/// mesh vertex layout carries, whether the draw binds a material, whether the
+/// mesh morphs, and the width of the index buffer a strip topology has to
+/// declare. The last argument is the only thing the caller's key decides on
+/// its own, which is why a lit and an unlit draw share this and the
+/// [LitFactory] that describes the result.
+pub(crate) fn lit_variant(
+    options: &Hashed<LitOptions>,
+    draw: &DrawContext<'_>,
+    unlit: bool,
+) -> LitVariant {
+    let index_format = draw
+        .mesh
+        .parts
+        .index_buffer
+        .as_ref()
+        .map(|(_, format)| *format);
+    LitVariant {
+        options: options.clone(),
+        surface: draw.surface,
+        channels: LitVertexChannels::for_vertex_layout(&draw.mesh.vertex_layout),
+        base_color_texture: draw.material.is_some(),
+        morph: draw.mesh.morph_targets > 0,
+        strip_index_format: strip_index_format(options.primitive.topology, index_format),
+        unlit,
+    }
+}
+
+/// The strip index format a draw's pipeline has to declare.
+///
+/// Only a strip topology reads one, and there it has to equal the format of
+/// the index buffer the draw binds, so a mesh's format is passed through for a
+/// strip and dropped for every other topology — a pipeline that declared one
+/// for a non-strip topology is invalid.
+fn strip_index_format(
+    topology: wgpu::PrimitiveTopology,
+    index_format: Option<wgpu::IndexFormat>,
+) -> Option<wgpu::IndexFormat> {
+    index_format.filter(|_| topology.is_strip())
+}
+
+/// Describes a specialized
+/// [SpecializedLitPipeline](unlit_wgpu::pipeline::SpecializedLitPipeline)
+/// the way the source registers it.
+///
+/// This is what keeps the built-in pipeline an ordinary client of the family
+/// machinery: it packages the shader layouts and a closure over the
+/// shader global bindings — the camera, globals and, for variants that read
+/// a compressed channel, the metadata buffer.
+pub(crate) struct LitFactory;
+
+impl RenderPipelineFactory<LitVariant> for LitFactory {
+    fn descriptor(
+        &self,
+        context: &FamilyContext<'_>,
+        value: &SpecializedPipeline<wgpu::RenderPipeline, LitVariant>,
+    ) -> RegisteredRenderPipeline {
+        // The layouts are a function of the variant the pipeline was compiled
+        // from, so they are derived here rather than stored with the pipeline.
+        // Only the global group is registered: the material group is the
+        // material own, built by `allocate_lit_material`, and the built-in
+        // variants bind nothing at the mesh group.
+        //
+        // The layout and the recipe are the source's own general facilities,
+        // the same ones a caller's factory calls: the lit family has no
+        // private path to the frame's shared buffers.
+        let variant = value.descriptor();
+        let bindings = GlobalBindings {
+            metadata: variant.needs_metadata(),
+            joints: variant.needs_joints(),
+            morphs: variant.needs_morphs(),
+            lights: !variant.unlit,
+        };
+        let layout = context.resources.layout(context.device, bindings);
+        let rebuild = context.resources.rebuild(context.device, layout, bindings);
+        RegisteredRenderPipeline {
+            pipeline: value.pipeline.clone(),
+            global: Some(rebuild),
+        }
+    }
+}
+
+/// The channels of one mesh uploaded through
+/// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh).
+///
+/// Every slice describes the same vertices, in the same order; only
+/// [`Self::positions`] is required, because a variant without a position
+/// stream draws a single point and needs no geometry at all.
+///
+/// The pose a mesh is drawn with is not here: joint matrices and morph weights
+/// are CPU-driven per-frame state, so they live on the entities a
+/// [`SkinBinding`](crate::components::SkinBinding) and a
+/// [`MorphBinding`](crate::components::MorphBinding) name and the renderer
+/// uploads them every frame.
+#[derive(Clone, Debug, Default)]
+pub struct LitMeshDesc<'a> {
+    /// Per-vertex positions, in the mesh's local space.
+    pub positions: &'a [[f32; 3]],
+    /// Per-vertex UVs, for a variant that reads them.
+    pub uvs: Option<&'a [[f32; 2]]>,
+    /// Per-vertex linear RGBA colors, for a variant that reads them.
+    pub colors: Option<&'a [[u8; 4]]>,
+    /// Per-vertex normals, in the mesh's local space, for a variant that
+    /// shades with them.
     ///
-    /// Call this once per source, alongside [register_unlit_family](crate::unlit::MeshSourceUnlitExt::register_unlit_family).
+    /// A normal is octahedral-encoded into the secondary stream, so it needs
+    /// no per-mesh range. A mesh without normals is shaded by the geometric
+    /// normal a lit variant derives from screen-space derivatives, which is
+    /// why the slice is optional rather than required.
+    pub normals: Option<&'a [[f32; 3]]>,
+    /// Triangle indices, for an indexed draw.
+    pub indices: Option<&'a [u32]>,
+    /// The joints each vertex is bound to, for a variant that reads joints.
+    pub joints: Option<&'a [[u16; 4]]>,
+    /// The joint weights of each vertex, four per vertex, for a variant that
+    /// reads joints.
+    ///
+    /// Weights are normalized on upload, so a caller may pass unnormalized
+    /// ones; a vertex whose weights sum to zero is left undeformed.
+    pub weights: Option<&'a [[f32; 4]]>,
+    /// The morph displacements that deform the mesh, for a variant that reads
+    /// them.
+    ///
+    /// Only positions displace: a target carries no normal or tangent, so the
+    /// packed displacements are all this mesh has. How much of them applies is
+    /// the mesh's [`MorphWeights`](crate::components::MorphWeights) component,
+    /// not the mesh's: the same displacements can be weighted differently by
+    /// two meshes.
+    pub morph_deltas: Option<MorphDeltas>,
+}
+
+/// Per-instance color, multiplying the base color.
+///
+/// The renderer packs it into the per-instance vertex stream next to the model
+/// matrix, so two entities sharing a mesh can still be tinted differently.
+/// Entities without this component are drawn white.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct InstanceColor {
+    /// Base color (RGBA, unpremultiplied).
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Vec4Proxy))]
+    pub color: glam::Vec4,
+}
+
+impl Default for InstanceColor {
+    fn default() -> Self {
+        Self {
+            color: glam::Vec4::ONE,
+        }
+    }
+}
+
+impl InstanceColor {
+    /// A color component carrying `color`.
+    pub const fn new(color: glam::Vec4) -> Self {
+        Self { color }
+    }
+}
+
+/// Per-instance alpha cutoff, discarding fragments below it.
+///
+/// The renderer packs it into the per-instance vertex stream next to the model
+/// matrix, so two entities sharing a mesh and a cut-off pipeline can still cut
+/// at different alphas. Entities without this component leave the cutoff at
+/// zero, which no alpha falls below, and so discard nothing.
+///
+/// The component only supplies the value the shader compares against; a
+/// pipeline only reads it when its
+/// [`LitOptions::alpha_cutoff`](unlit_wgpu::pipeline::LitOptions::alpha_cutoff)
+/// is set, which decides whether the stream carries the attribute at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct InstanceCutoff {
+    /// Alpha a fragment has to reach to be drawn.
+    pub cutoff: f32,
+}
+
+impl Default for InstanceCutoff {
+    fn default() -> Self {
+        Self { cutoff: 0.0 }
+    }
+}
+
+impl InstanceCutoff {
+    /// A cutoff component discarding fragments below `cutoff`.
+    pub const fn new(cutoff: f32) -> Self {
+        Self { cutoff }
+    }
+}
+
+/// The built-in lit family's instance record: the resolved [MeshInstance].
+///
+/// It is an ordinary [InstanceData] implementation, with no more privilege than
+/// a caller's: it reads the entity's transform, tint, cutoff, mesh metadata and
+/// skin/morph state from the same world and the same pack methods any family
+/// uses, and writes the [MeshInstance] layout the built-in shader declares.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LitInstance;
+
+impl InstanceData for LitInstance {
+    fn stream(&self) -> InstanceStreamDesc {
+        InstanceStreamDesc {
+            slot: INSTANCE_SLOT,
+            array_stride: size_of::<MeshInstance>() as u32,
+        }
+    }
+
+    fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
+        let world = &context.world;
+        let entity = context.entity;
+        let mesh = world.query_one::<&GpuMesh>(entity).unwrap_or_else(|_| {
+            panic!(
+                "every visible entity carries the mesh culling resolved, but {entity:?} does not"
+            )
+        });
+        let base_color = world
+            .query_one::<&InstanceColor>(entity)
+            .map_or(glam::Vec4::ONE, |color| color.color);
+        let cutoff = world
+            .query_one::<&InstanceCutoff>(entity)
+            .map_or(0.0, |cutoff| cutoff.cutoff);
+        // Skinning and morphing are independent: a mesh may have either, both
+        // or neither, and each packs into its own array.
+        let joints_base = if mesh.skinned {
+            context.pack_joints()
+        } else {
+            0
+        };
+        let morph_base = if mesh.morph_targets > 0 {
+            context.pack_morph_weights(mesh.morph_targets)
+        } else {
+            0
+        };
+        let instance = MeshInstance::new(context.world_from_local, base_color)
+            .with_joints_base(joints_base)
+            .with_morph_base(morph_base)
+            .with_metadata_index(mesh.parts.metadata_index)
+            .with_cutoff(cutoff);
+        out.copy_from_slice(instance.as_bytes());
+    }
+}
+
+/// Mesh allocation and family registration for the built-in lit pipeline.
+///
+/// The methods are inherent work the source already does; the trait only
+/// gathers them next to the shader they serve. A caller's own family uses
+/// [`MeshSource::register_family`] and [`MeshSource::allocate_mesh`] the same
+/// way these use them.
+pub trait MeshSourceLitExt {
+    /// Register the built-in lit shader as a family.
+    ///
+    /// The family specializes each entity's options on the frame's render
+    /// target and the mesh's vertex layout: two draws that agree on both share
+    /// one compiled pipeline, and a draw whose mesh layout implies different
+    /// channels compiles its own. The options are the entity's: a mesh or
+    /// material is built against the [LitOptions] it will be drawn with,
+    /// through [`MeshSourceLitExt::allocate_lit_mesh`] and
+    /// [`MeshSourceLitExt::allocate_lit_material`]. Those take the options
+    /// rather than the key, so any pipeline whose variant reads the same
+    /// channels can draw the mesh.
+    ///
+    /// This compiles nothing; like any family, its first concrete pipeline is
+    /// built when an entity that uses it is first drawn.
+    ///
+    /// Registering marks the source lit, so every frame clusters that frame's
+    /// [LightSource](crate::light::LightSource)s and uploads them. A source
+    /// whose keys are all [unlit](LitPipelineKey::unlit) pays for none of it,
+    /// because nothing would read it.
+    ///
+    /// # Panics
+    ///
+    /// If the lit family is already registered.
     fn register_lit_family(&mut self, world: &Scope<'_>);
+    /// Upload raw mesh channels in the layout the built-in lit shader
+    /// expects, and return a [GpuMesh] handle.
+    ///
+    /// Positions and UVs are compressed to the compact vertex formats the
+    /// shader decodes, packed into a position buffer and an interleaved
+    /// UV-and-colour buffer, and bound with the mesh-metadata bind group the
+    /// shader reads its decode parameters from. Colours are already stored in
+    /// the width they are uploaded at, so they are copied through unchanged.
+    ///
+    /// A skinned mesh's joint indices and weights are packed into the *same*
+    /// stream as its positions, right after them. A morphed mesh's per-vertex
+    /// displacements go into a buffer of its own.
+    ///
+    /// Neither mesh carries a pose: the joint matrices and morph weights a
+    /// frame deforms by are per-instance state the CPU writes, so they live in
+    /// the [`SkinPose`](crate::components::SkinPose) and
+    /// [`MorphWeights`](crate::components::MorphWeights) components the mesh's
+    /// entity names through a [`SkinBinding`](crate::components::SkinBinding)
+    /// and a [`MorphBinding`](crate::components::MorphBinding). The frame packs
+    /// them once per frame, so animating a mesh costs a component write and no
+    /// re-upload.
+    ///
+    /// This is a convenience over [`MeshSource::allocate_mesh`]: it builds the
+    /// same [`MeshDesc`] a caller could build by hand, and shares the
+    /// compression in [unlit_wgpu::mesh] with anyone else who wants it.
+    ///
+    /// Which channels are packed follows the slices the caller passes: a
+    /// channel with no slice is left out, and the mesh's vertex layout records
+    /// exactly the channels that were packed, so the pipeline it is later
+    /// drawn with reads back the same shape.
+    /// # Panics
+    ///
+    /// If the input slices are empty or of mismatched length (see the
+    /// compressors in [unlit_wgpu::mesh]); if only one of
+    /// [`LitMeshDesc::joints`] and [`LitMeshDesc::weights`] is `Some`; or
+    /// if [`LitMeshDesc::morph_deltas`] is present but does not hold three
+    /// components per vertex and target.
+    fn allocate_lit_mesh(
+        &mut self,
+        world: &Scope<'_>,
+        options: &Hashed<LitOptions>,
+        desc: LitMeshDesc<'_>,
+    ) -> GpuMesh;
+    /// Allocate the lit material bind group from an existing base-colour
+    /// texture view and sampler, and return its [GpuMaterial] handle.
+    ///
+    /// Only the bind group is built. `view_id` and `sampler_id` name resources
+    /// the caller has already put in the graph, and they become the group
+    /// dependencies, so replacing either marks it dirty. Whether a draw
+    /// samples the texture is the draw own answer — it is what decides the
+    /// variant — so a caller that wants a material calls this, and one that
+    /// does not leaves it out.
+    ///
+    /// # Panics
+    ///
+    /// If `view_id` or `sampler_id` is not a texture view or sampler in the
+    /// graph.
+    fn allocate_lit_material(
+        &mut self,
+        world: &Scope<'_>,
+        options: &Hashed<LitOptions>,
+        view_id: ResHandle<TextureView>,
+        sampler_id: ResHandle<wgpu::Sampler>,
+    ) -> GpuMaterial;
 }
 
 impl MeshSourceLitExt for MeshSource {
     fn register_lit_family(&mut self, world: &Scope<'_>) {
-        self.register_family::<LitPipelineKey, _, _>(world, UnlitFactory, UnlitInstance);
+        self.register_family::<LitPipelineKey, _, _>(world, LitFactory, LitInstance);
+        // A lit family reads the frame lights, so the source has to collect
+        // them; an unlit one alone never does.
         self.lit = true;
+    }
+
+    fn allocate_lit_mesh(
+        &mut self,
+        world: &Scope<'_>,
+        options: &Hashed<LitOptions>,
+        desc: LitMeshDesc<'_>,
+    ) -> GpuMesh {
+        let device = self.device(world);
+        let queue = self.queue(world);
+
+        let LitMeshDesc {
+            positions,
+            uvs,
+            colors,
+            normals,
+            indices,
+            joints,
+            weights,
+            morph_deltas,
+        } = desc;
+
+        // Which channels the mesh carries is the caller's answer, not the
+        // key's: the options are pure policy, so the streams are derived from
+        // the slices the caller actually passed. A channel with no slice is
+        // left out, and the pipeline the mesh is later drawn with reads that
+        // same layout back off the mesh.
+        //
+        // The streams are always packed in their compressed encodings: a
+        // caller that wants to upload full-precision vertices builds its own
+        // buffers and its own variant instead, the way the UI path does.
+        assert_eq!(
+            joints.is_some(),
+            weights.is_some(),
+            "a mesh's joints and weights come as a pair, so one cannot be present without the other"
+        );
+        let mut secondary = SecondaryFlags::empty();
+        if uvs.is_some() {
+            secondary |= SecondaryFlags::UV;
+        }
+        if colors.is_some() {
+            secondary |= SecondaryFlags::COLOR;
+        }
+        if normals.is_some() {
+            secondary |= SecondaryFlags::NORMAL;
+        }
+        let channels = LitVertexChannels {
+            position: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: joints.is_some() && weights.is_some(),
+            },
+            secondary,
+        };
+        // The variant is built only to read the streams and layouts the
+        // channels imply. Its surface, material and strip index format play no
+        // part in any of those, so they are left at placeholders.
+        let variant = LitVariant {
+            options: options.clone(),
+            surface: SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+            channels,
+            base_color_texture: false,
+            morph: morph_deltas.is_some(),
+            unlit: true,
+            strip_index_format: None,
+        };
+        let position_stream = variant.position_stream();
+        let secondary_stream = variant.secondary_stream();
+
+        // The joint pair belongs to the position stream, so a skinned mesh's
+        // stream is wider by it and no separate buffer exists. A variant that
+        // deforms by joints reads them from that stream, so it needs the
+        // caller's joint indices and weights exactly as a compressed variant
+        // needs its UVs. A variant that reads none ignores joints it was
+        // handed, as it ignores UVs it does not declare.
+        let skinned = variant.needs_joints();
+        let (joints, weights) = if skinned {
+            let joints = joints.expect("a variant that reads joints needs the mesh's joints");
+            let weights = weights.expect("a variant that reads joints needs the mesh's weights");
+            assert_eq!(
+                joints.len(),
+                positions.len(),
+                "the joint stream must describe the same vertices as the positions"
+            );
+            assert_eq!(
+                weights.len(),
+                positions.len(),
+                "the weight stream must describe the same vertices as the positions"
+            );
+            (joints, weights)
+        } else {
+            // A variant that reads none ignores the joints it was handed, as
+            // it ignores UVs it does not declare.
+            (&[] as &[[u16; 4]], &[] as &[[f32; 4]])
+        };
+
+        // Both streams' lengths are known before anything is uploaded, so the
+        // pool can be sized first and each stream packed straight into it. The
+        // position stream's compression derives the mesh metadata as it runs.
+        let mut meta = MeshMetadata::default();
+        let vertex_count = positions.len();
+        let position_len = position_stream.byte_len(vertex_count);
+        let secondary_len = secondary_stream.byte_len(vertex_count);
+
+        // The morph displacements, when the draw reads them. They are geometry
+        // the mesh owns, written once here; the weights that blend them are
+        // per-instance pose state the frame's global group binds. The source
+        // pools them into the frame-wide array, so what it hands over is the
+        // raw data rather than a resource.
+        let morph_deltas = variant.needs_morphs().then(|| {
+            let morph_deltas = morph_deltas.expect(
+                "a variant that reads morph positions needs the mesh's morph displacements",
+            );
+            assert_ne!(
+                morph_deltas.target_count, 0,
+                "a morphing mesh needs at least one target"
+            );
+            assert_eq!(
+                morph_deltas.deltas.len(),
+                positions.len() * morph_deltas.target_count as usize * 3,
+                "a morph displacement array must hold three components per vertex and target"
+            );
+            morph_deltas
+        });
+
+        // The vertex layout the key's options declare, slot for slot. An empty
+        // stream still gets a buffer entry — the pipeline simply declares no
+        // attributes for that slot — so the mesh's layout matches the key's.
+        let vertex_layouts = variant.vertex_buffer_layouts();
+        let layout_of = |slot: u32| -> VertexBufferLayoutDesc {
+            vertex_layouts
+                .get(slot as usize)
+                .and_then(|layout| layout.as_ref())
+                .cloned()
+                .unwrap_or(VertexBufferLayoutDesc {
+                    array_stride: 0,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: VertexAttributes::new(),
+                })
+        };
+        let position_layout = layout_of(PRIMARY_SLOT);
+        let secondary_layout = layout_of(SECONDARY_SLOT);
+
+        // The mesh's streams are the vertex pool's: one element allocation
+        // covers every stream of the mesh at the same element index, which is
+        // what lets a draw address them all with one `firstVertex` or
+        // `baseVertex`. A stream the variant declares nothing for — an empty
+        // secondary stream, say — gets no buffer and no part in it.
+        let stream_layouts = [position_layout.clone(), secondary_layout.clone()];
+        let vertices = self
+            .vertex_pool
+            .allocate(&device, &queue, &stream_layouts, vertex_count as u32)
+            .expect("the vertex pool grows with the mesh");
+        let vertex_offset = vertices.allocation.offset;
+        // Each stream is packed straight into the pool through a queue write,
+        // so no CPU-side buffer is built first. The write view is the only
+        // mutable borrow, so the two streams are packed one after the other.
+        for (slot, layout, len) in [
+            (PRIMARY_SLOT, &position_layout, position_len),
+            (SECONDARY_SLOT, &secondary_layout, secondary_len),
+        ] {
+            if layout.array_stride == 0 {
+                continue;
+            }
+            let id = self.vertex_node(world, layout);
+            self.sync_vertex_node(world, &id, layout);
+            let buffer = self
+                .context
+                .graph(world)
+                .get(&id)
+                .expect("the stream's node exists")
+                .clone();
+            let mut view = queue
+                .write_buffer_with(
+                    &buffer,
+                    VertexStreamPool::byte_offset(layout, vertex_offset),
+                    core::num::NonZeroU64::new(len as u64)
+                        .expect("a declared stream is never empty"),
+                )
+                .expect("the stream's range fits its buffer");
+            if slot == PRIMARY_SLOT {
+                position_stream.write(
+                    positions,
+                    joints.iter().copied(),
+                    compress_weights(weights),
+                    &mut meta,
+                    view.slice(..),
+                );
+            } else {
+                secondary_stream.write(
+                    uvs.unwrap_or(&[]),
+                    colors.unwrap_or(&[]),
+                    normals.unwrap_or(&[]),
+                    &mut meta,
+                    view.slice(..),
+                );
+            }
+        }
+
+        // Index buffer (optional): `Uint16` when every index fits, otherwise
+        // `Uint32` — the same choice the compressor makes. The indices go into
+        // the index pool, so every indexed mesh draws out of one shared buffer
+        // and names its own slice through `GpuMesh::first`.
+        //
+        // A mesh's vertices are somewhere inside the pool its streams share, so
+        // a draw has to be offset by `vertex_offset` to reach them. How it is
+        // offset is the one thing that depends on the device: a draw's
+        // `base_vertex` is the direct way, but WebGL2 has no `base_vertex`, so
+        // there the offset is added to the indices themselves at upload and the
+        // draw's stays zero. Baking widens the indices if they no longer fit
+        // `u16`, which is the cost of binding the whole pool instead of
+        // rebinding a vertex buffer per mesh.
+        // A draw's `base_vertex` is a signed 32-bit integer, so an offset the
+        // draw has to carry must fit one. A baked offset is a `u32` index like
+        // any other and has no such limit.
+        let supports_base_vertex = self.capabilities(world).base_vertex();
+        assert!(
+            !supports_base_vertex || vertex_offset <= i32::MAX as u32,
+            "a vertex offset has to fit the i32 a draw's base vertex is"
+        );
+        // Where the pool offset goes. A device with `base_vertex` leaves the
+        // indices mesh-local and lets the draw add the offset; one without has
+        // to bake it into the indices and keep the draw's at zero. The two are
+        // complementary, and exactly one of them is non-zero.
+        let offset = IndexOffset::new(supports_base_vertex, vertex_offset);
+        let draw_base_vertex = offset.draw_base_vertex;
+        let (index_buffer, count, indexed, index_allocation, first) = match indices {
+            Some(indices) if !indices.is_empty() => {
+                let index_count = indices.len() as u32;
+                // The bytes the draw will read, offset where the device
+                // requires and sized for the pool's own alignment. An offset
+                // that pushes an index past `u16::MAX` has to widen the buffer
+                // it is written into, so the format and the bytes are decided
+                // together.
+                let (format, packed_len) = offset.packed_len(indices);
+                let range = self
+                    .index_pool
+                    .allocate(&device, &queue, packed_len as u32)
+                    .expect("the index pool grows with the mesh");
+                {
+                    let mut graph = self.context.graph(world);
+                    MeshSource::sync_pool_node(&self.index_pool, &self.index_pool_id, &mut graph);
+                    let buffer = graph
+                        .get(&self.index_pool_id)
+                        .expect("the index pool node exists")
+                        .clone();
+                    let mut view = queue
+                        .write_buffer_with(
+                            &buffer,
+                            u64::from(range.allocation.offset),
+                            core::num::NonZeroU64::new(packed_len as u64)
+                                .expect("an empty index buffer is never allocated"),
+                        )
+                        .expect("the index range fits its buffer");
+                    offset.write(indices, view.slice(..));
+                }
+                let first = range.allocation.offset / index_format_size(format);
+                (
+                    Some((self.index_pool_id.clone(), format)),
+                    index_count,
+                    true,
+                    Some(range.allocation),
+                    first,
+                )
+            }
+            // A non-indexed draw names its first vertex directly, so the pool
+            // offset goes on the draw's range. A non-zero `base_vertex` is
+            // ignored for a non-indexed draw, so it cannot carry the offset.
+            _ => (None, vertex_count as u32, false, None, vertex_offset),
+        };
+
+        // The mesh owns the metadata entry `meta` — the same AABB and UV
+        // decode parameters the compression just derived, plus the addressing
+        // the draw needs. The vertex offset is known here, and the mesh's own
+        // morph count is taken from the displacements it uploaded.
+        let aabb = Aabb::new(meta.aabb_center, meta.aabb_half_extents);
+        let mut mesh = self.allocate_mesh_with_metadata(
+            world,
+            MeshDesc {
+                // The streams are the vertex pool's, not the mesh's own: the
+                // mesh names the pool's node for each slot and its own range,
+                // so no buffer is registered under the mesh for them.
+                vertex_buffers: ArrayVec::new(),
+                // The indices are the index pool's, not the mesh's own: the
+                // mesh names the pool's node and its own range, so no buffer
+                // is registered under the mesh for them.
+                index_buffer: None,
+                count,
+                indexed,
+                aabb,
+                // The built-in variants bind nothing at the mesh group, so the
+                // mesh carries no group of its own.
+                bind_group: None,
+                morph_deltas,
+            },
+            meta,
+            skinned,
+            vertex_offset,
+        );
+
+        // The mesh's parts are complete only now: the pool-backed slots and
+        // ranges are known once the pools have been allocated above. The handle
+        // is freshly built and shared with nothing, so it is uniquely owned
+        // here and can be patched in place.
+        let parts = Rc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
+
+        // The mesh's layout is only the vertex streams it draws from: the
+        // per-instance stream is the family's own and is bound by the source
+        // at draw time, so it is not part of the mesh's layout at all.
+        let mut layouts = ArrayVec::<_, MAX_VERTEX_BUFFERS>::new();
+
+        // The mesh's slices of the pools it shares: the draw names its ranges
+        // by `first` and `base_vertex`, and the allocations are handed back on
+        // removal. The layout is the key's own, slot by slot: the family keys
+        // on it, so it is owned by the mesh even though the buffers behind it
+        // are the pool's. A stream the variant declares nothing for is left
+        // out, as it is for a mesh that owns its buffers.
+        for (slot, layout) in [
+            (PRIMARY_SLOT, &position_layout),
+            (SECONDARY_SLOT, &secondary_layout),
+        ] {
+            if layout.array_stride > 0 {
+                layouts.push((slot, layout.clone()));
+                // Resolved before the parts are borrowed mutably below: the
+                // lookup needs the source, which the borrow would rule out.
+                let node = self.vertex_node(world, layout);
+                parts.vertex_buffers.push((slot, node));
+            }
+        }
+        // The pool-backed slots join the layout only here, once the pools have
+        // been allocated; the mesh's handle is replaced with the complete one.
+        parts.index_buffer = index_buffer;
+        parts.index_allocation = index_allocation;
+        parts.vertex_allocation = Some(vertices.allocation);
+        mesh.vertex_layout = VertexLayout::new(layouts);
+        mesh.first = first;
+        // Zero whenever the offset was baked into the indices instead, which is
+        // what a draw on a device without `base_vertex` requires. The metadata
+        // entry carries `vertex_offset` either way: the shader reads
+        // pool-global vertex ordinals on both paths.
+        mesh.base_vertex = draw_base_vertex;
+        mesh
+    }
+
+    fn allocate_lit_material(
+        &mut self,
+        world: &Scope<'_>,
+        options: &Hashed<LitOptions>,
+        view_id: ResHandle<TextureView>,
+        sampler_id: ResHandle<wgpu::Sampler>,
+    ) -> GpuMaterial {
+        let layout = options.material_bind_group_layout(&self.device(world));
+
+        let device = self.device(world).clone();
+        // The recipe reads the view and the sampler back out of the graph each
+        // time it runs, so replacing either rebuilds the group from the current
+        // handle rather than the one captured here.
+        let mut dependencies = ArrayVec::<ResHandle, 2>::new();
+        dependencies.push(view_id.erase());
+        dependencies.push(sampler_id.erase());
+        self.allocate_material(
+            world,
+            move |graph| {
+                let view = graph
+                    .get(&view_id)
+                    .expect("the view is in the graph")
+                    .view()
+                    .clone();
+                let sampler = graph
+                    .get(&sampler_id)
+                    .expect("the sampler is in the graph")
+                    .clone();
+                let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 2>::new();
+                entries.push(wgpu::BindGroupEntry {
+                    binding: BASE_COLOR_TEXTURE_BINDING,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                });
+                entries.push(wgpu::BindGroupEntry {
+                    binding: BASE_COLOR_SAMPLER_BINDING,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                });
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("unlit3d::material::bind_group"),
+                    layout: &layout,
+                    entries: &entries,
+                })
+            },
+            dependencies,
+        )
     }
 }
 
@@ -556,234 +982,154 @@ impl MeshSourceLitExt for MeshSource {
 mod tests {
     use super::*;
 
-    /// Pack a light as the frame would, returning its record and the vertices
-    /// it appended.
-    fn pack(light: &impl Light, transform: Affine3A) -> (LightGpu, Vec<Vec4>) {
-        let mut gpu = LightGpu {
-            position_radius: Vec4::ZERO,
-            direction_outer: Vec4::ZERO,
-            color_intensity: Vec4::ZERO,
-            cones: Vec4::ZERO,
-            kind: UVec4::ZERO,
-        };
-        let mut vertices = Vec::new();
-        light.pack(
-            &transform,
-            LightSink {
-                gpu: &mut gpu,
-                vertices: &mut vertices,
-            },
-        );
-        (gpu, vertices)
+    #[test]
+    fn default_instance_color_is_white() {
+        assert_eq!(InstanceColor::default().color, glam::Vec4::ONE);
     }
 
     #[test]
-    fn a_light_shines_along_its_transforms_negative_z() {
-        let light = DirectionalLight {
-            color: Vec4::ONE,
-            intensity: 2.0,
-        };
-        let (gpu, _) = pack(&light, Affine3A::IDENTITY);
-        assert_eq!(gpu.direction_outer.truncate(), Vec3::NEG_Z);
-        assert_eq!(gpu.color_intensity.w, 2.0);
-        assert_eq!(gpu.kind.x, GpuLightKind::Directional as u32);
-
-        // A quarter turn about Y aims the light along -X.
-        let (turned, _) = pack(
-            &light,
-            Affine3A::from_rotation_y(core::f32::consts::FRAC_PI_2),
-        );
-        assert!((turned.direction_outer.truncate() - Vec3::NEG_X).length() < 1e-6);
-    }
-
-    #[test]
-    fn a_spot_light_stores_the_reciprocal_of_its_cone_gap() {
-        let light = SpotLight {
-            color: Vec4::ONE,
-            intensity: 1.0,
-            range: 4.0,
-            inner_angle: 0.2,
-            outer_angle: 0.6,
-        };
-        let (gpu, _) = pack(&light, Affine3A::IDENTITY);
-        let inner = (0.1_f32).cos();
-        let outer = (0.3_f32).cos();
-        assert_eq!(gpu.direction_outer.w, outer);
-        assert!((gpu.cones.x - 1.0 / (inner - outer)).abs() < 1e-6);
-        assert_eq!(gpu.position_radius.w, 4.0);
-    }
-
-    #[test]
-    fn a_spot_light_whose_inner_cone_is_wider_keeps_its_hard_edge() {
-        let light = SpotLight {
-            color: Vec4::ONE,
-            intensity: 1.0,
-            range: 4.0,
-            inner_angle: 1.0,
-            outer_angle: 0.4,
-        };
-        let (gpu, _) = pack(&light, Affine3A::IDENTITY);
-        // The ramp these angles describe would be brightest where the light
-        // reaches nothing. The inner cone is narrowed to the outer one, so the
-        // light steps at it -- the hard edge, not a silent inversion.
-        assert_eq!(gpu.cones.x, 0.0);
-        assert_eq!(gpu.direction_outer.w, (0.2_f32).cos());
-        assert_eq!(gpu.color_intensity.w, 1.0);
-    }
-
-    #[test]
-    fn a_hard_edged_spot_light_does_not_divide_by_zero() {
-        let light = SpotLight {
-            color: Vec4::ONE,
-            intensity: 1.0,
-            range: 4.0,
-            inner_angle: 0.5,
-            outer_angle: 0.5,
-        };
-        let (gpu, _) = pack(&light, Affine3A::IDENTITY);
-        // Zero is the shader's `the cone is hard` mark. The record keeps its
-        // colour, intensity and outer cosine, so the light still shines: only
-        // the ramp between the two cones is gone.
-        assert_eq!(gpu.cones.x, 0.0);
-        assert_eq!(gpu.color_intensity.w, 1.0);
-        assert_eq!(gpu.direction_outer.w, (0.25_f32).cos());
-    }
-
-    #[test]
-    fn a_quad_light_takes_the_winding_that_faces_its_aim() {
-        let quad = QuadLight {
-            color: Vec4::ONE,
-            intensity: 1.0,
-            range: 8.0,
-            vertices: [
-                Vec3::new(-1.0, -1.0, 0.0),
-                Vec3::new(1.0, -1.0, 0.0),
-                Vec3::new(1.0, 1.0, 0.0),
-                Vec3::new(-1.0, 1.0, 0.0),
-            ],
-        };
-        let (gpu, vertices) = pack(&quad, Affine3A::IDENTITY);
-        assert_eq!(gpu.kind.x, GpuLightKind::Quad as u32);
-        assert_eq!(gpu.kind.y, 0, "the first light starts the vertex pool");
-        assert_eq!(gpu.kind.z, 4);
-        assert_eq!(vertices.len(), 4);
-        let normal = (vertices[1] - vertices[0])
-            .truncate()
-            .cross((vertices[2] - vertices[0]).truncate());
-        assert!(
-            normal.normalize().dot(Vec3::NEG_Z) > 0.0,
-            "the frame reverses a winding that faces away from the aim"
-        );
-    }
-
-    #[test]
-    fn a_quad_light_is_wound_in_the_world_it_lands_in() {
-        let quad = QuadLight::rect(Vec4::ONE, 1.0, 8.0, 2.0, 2.0);
-        // A mirror turns the same order of corners into the other side, so a
-        // frame that read the winding in the light's own space would keep a
-        // polygon facing away from its aim and light nothing at all.
-        let mirror = Affine3A::from_scale(Vec3::new(-1.0, 1.0, 1.0));
-        let (gpu, vertices) = pack(&quad, mirror);
-        assert_eq!(gpu.kind.z, 4);
-        let normal = (vertices[1] - vertices[0])
-            .truncate()
-            .cross((vertices[2] - vertices[0]).truncate());
-        assert!(
-            normal.normalize().dot(Vec3::NEG_Z) > 0.0,
-            "the winding still faces the mirrored aim"
-        );
-    }
-
-    #[test]
-    fn a_scaled_quad_light_weighs_the_area_it_covers() {
-        let quad = QuadLight::rect(Vec4::ONE, 1.0, 8.0, 2.0, 2.0);
-        let unscaled = quad.describe(&Affine3A::IDENTITY);
-        let scaled = quad.describe(&Affine3A::from_scale(Vec3::splat(2.0)));
-        assert_eq!(unscaled.shape, Some(Vec2::splat(4.0)));
-        assert_eq!(scaled.shape, Some(Vec2::splat(16.0)));
-    }
-
-    #[test]
-    fn a_quad_light_places_its_corners_in_the_world() {
-        let quad = QuadLight::rect(Vec4::ONE, 1.0, 8.0, 2.0, 2.0);
-        let transform = Affine3A::from_translation(Vec3::new(3.0, 0.0, 0.0));
-        let (gpu, vertices) = pack(&quad, transform);
-        assert_eq!(gpu.position_radius.truncate(), Vec3::new(3.0, 0.0, 0.0));
-        assert!(vertices.iter().all(|vertex| vertex.x >= 2.0 - 1e-6));
-    }
-
-    #[test]
-    fn a_triangle_states_itself_by_repeating_a_corner() {
-        let triangle = QuadLight {
-            color: Vec4::ONE,
-            intensity: 1.0,
-            range: 8.0,
-            vertices: [
-                Vec3::new(-1.0, -1.0, 0.0),
-                Vec3::new(1.0, -1.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
-            ],
-        };
-        let (gpu, vertices) = pack(&triangle, Affine3A::IDENTITY);
-        assert_eq!(gpu.kind.z, 3, "the repeated corner is one corner");
-        assert_eq!(vertices.len(), 3);
-        assert_eq!(gpu.kind.y, 0);
-    }
-
-    #[test]
-    fn a_quad_light_with_every_corner_on_one_spot_has_no_area() {
-        let degenerate = QuadLight {
-            color: Vec4::ONE,
-            intensity: 1.0,
-            range: 8.0,
-            vertices: [Vec3::ZERO; 4],
-        };
-        let (gpu, vertices) = pack(&degenerate, Affine3A::IDENTITY);
-        assert_eq!(gpu.kind.z, 0);
-        assert!(vertices.is_empty());
-        assert!(gpu.position_radius.truncate().is_finite());
-    }
-
-    #[test]
-    fn a_directional_light_that_shines_nothing_keeps_the_other_slots() {
-        let mut slots = [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS];
-        for intensity in 1..=MAX_DIRECTIONAL_LIGHTS as u32 {
-            let light = DirectionalLight {
-                color: Vec4::ONE,
-                intensity: intensity as f32,
-            };
-            let (gpu, _) = pack(&light, Affine3A::IDENTITY);
-            keep_directional(&mut slots, gpu);
-        }
-        // A spawn-and-fade cycle can leave a light at zero intensity, and a
-        // slot it took would be a light the frame no longer draws with.
-        let dark = DirectionalLight {
-            color: Vec4::ONE,
-            intensity: 0.0,
-        };
-        let (gpu, _) = pack(&dark, Affine3A::IDENTITY);
-        keep_directional(&mut slots, gpu);
+    fn a_strip_pipeline_declares_the_mesh_index_width() {
+        use wgpu::{IndexFormat, PrimitiveTopology as Topology};
+        // A strip's pipeline must declare the width its draw binds, so the
+        // mesh's format reaches it whichever width the source picked.
         assert_eq!(
-            slots.map(|slot| slot.color_intensity.w),
-            [4.0, 3.0, 2.0, 1.0],
-            "the frame keeps the lights it had"
+            strip_index_format(Topology::LineStrip, Some(IndexFormat::Uint16)),
+            Some(IndexFormat::Uint16)
         );
-        assert!(
-            slots
-                .iter()
-                .all(|slot| slot.color_intensity.truncate() != Vec3::ZERO)
+        assert_eq!(
+            strip_index_format(Topology::TriangleStrip, Some(IndexFormat::Uint32)),
+            Some(IndexFormat::Uint32)
         );
+        // A non-indexed strip binds no index buffer, so it declares none.
+        assert_eq!(strip_index_format(Topology::LineStrip, None), None);
+        assert_eq!(strip_index_format(Topology::TriangleStrip, None), None);
     }
 
     #[test]
-    fn a_polygon_area_follows_its_corners() {
-        let square = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(2.0, 3.0, 0.0),
-            Vec3::new(0.0, 3.0, 0.0),
-        ];
-        assert_eq!(polygon_area(&square), 6.0);
+    fn a_non_strip_pipeline_declares_no_index_width() {
+        use wgpu::{IndexFormat, PrimitiveTopology as Topology};
+        // `wgpu` rejects a strip index format on a non-strip topology, so an
+        // indexed mesh of one must not leak its format into the pipeline.
+        for topology in [
+            Topology::PointList,
+            Topology::LineList,
+            Topology::TriangleList,
+        ] {
+            assert_eq!(
+                strip_index_format(topology, Some(IndexFormat::Uint16)),
+                None
+            );
+            assert_eq!(
+                strip_index_format(topology, Some(IndexFormat::Uint32)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_device_with_base_vertex_puts_the_offset_on_the_draw() {
+        let offset = IndexOffset::new(true, 7);
+
+        assert_eq!(offset.draw_base_vertex, 7, "the draw carries the offset");
+        let (format, data) = offset.pack(&[0, 1, 2]);
+        assert_eq!(
+            format,
+            wgpu::IndexFormat::Uint16,
+            "the indices stay mesh-local, so they keep their width"
+        );
+        assert_eq!(packed_indices(format, &data, 3), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_device_without_base_vertex_bakes_the_offset_into_the_indices() {
+        // WebGL2's GLES 3.0 has no `base_vertex`, and the backend would panic
+        // rather than emulate it, so the offset has to be in the indices.
+        let offset = IndexOffset::new(false, 7);
+
+        assert_eq!(offset.draw_base_vertex, 0, "the draw must not name one");
+        let (format, data) = offset.pack(&[0, 1, 2]);
+        assert_eq!(format, wgpu::IndexFormat::Uint16);
+        assert_eq!(packed_indices(format, &data, 3), vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn a_mesh_at_the_start_of_the_pool_needs_no_offset_either_way() {
+        // The common case, and the one where both paths agree: nothing is
+        // baked and the draw's `base_vertex` is zero.
+        for supports_base_vertex in [true, false] {
+            let offset = IndexOffset::new(supports_base_vertex, 0);
+            assert_eq!(offset.baked, 0);
+            assert_eq!(offset.draw_base_vertex, 0);
+            let (format, data) = offset.pack(&[0, 1, 2]);
+            assert_eq!(format, wgpu::IndexFormat::Uint16);
+            assert_eq!(packed_indices(format, &data, 3), vec![0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn a_baked_offset_can_widen_the_indices() {
+        // Baking is what forces the wider format: an index that fitted `u16`
+        // before the offset may not after it, and the compression is decided on
+        // the baked values.
+        let indices = [0u32, 1, 2];
+        let offset = IndexOffset::new(false, u32::from(u16::MAX));
+        let (format, data) = offset.pack(&indices);
+        assert_eq!(
+            format,
+            wgpu::IndexFormat::Uint32,
+            "an index past `u16::MAX` cannot be narrowed"
+        );
+        assert_eq!(packed_indices(format, &data, 3), vec![65535, 65536, 65537]);
+    }
+
+    #[test]
+    fn packed_indices_are_padded_to_the_pool_alignment() {
+        // The pool hands ranges out at `COPY_BUFFER_ALIGNMENT`, so `pack` pads
+        // what it writes and its length is the size the pool is asked for.
+        let offset = IndexOffset::new(true, 0);
+
+        // Three `Uint16` indices are 6 bytes, rounded up to the alignment.
+        let (format, data) = offset.pack(&[0, 1, 2]);
+        assert_eq!(format, wgpu::IndexFormat::Uint16);
+        assert_eq!(
+            data.len(),
+            (3 * size_of::<u16>()).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize)
+        );
+        assert!(
+            data[3 * size_of::<u16>()..].iter().all(|&byte| byte == 0),
+            "the padding is zeroed"
+        );
+
+        // Many indices round up by that alignment without a whole extra block
+        // when they already land on one.
+        let indices: Vec<u32> = (0..(u16::MAX as u32 - 1)).collect();
+        let (format, data) = offset.pack(&indices);
+        assert_eq!(format, wgpu::IndexFormat::Uint16);
+        assert_eq!(
+            data.len(),
+            (indices.len() * size_of::<u16>())
+                .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize)
+        );
+    }
+
+    /// The first `count` indices [`IndexOffset::pack`] wrote, as `u32`s.
+    ///
+    /// The bytes past them are the pool-alignment padding, which the caller
+    /// sizes to but does not read.
+    fn packed_indices(format: wgpu::IndexFormat, bytes: &[u8], count: usize) -> Vec<u32> {
+        match format {
+            wgpu::IndexFormat::Uint16 => bytes[..count * size_of::<u16>()]
+                .as_chunks::<{ size_of::<u16>() }>()
+                .0
+                .iter()
+                .map(|index| u32::from(u16::from_ne_bytes(*index)))
+                .collect(),
+            wgpu::IndexFormat::Uint32 => bytes[..count * size_of::<u32>()]
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|index| u32::from_ne_bytes(*index))
+                .collect(),
+        }
     }
 }

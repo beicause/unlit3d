@@ -15,7 +15,7 @@
 |---------|------|-----------|
 | `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
-| `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `UnlitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
+| `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
 | `mcp` | 否 | `mcp` 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
 
@@ -93,7 +93,7 @@ world root                              根 scope 看得见所有实体
 ├── FramePass(FramePassOrder(0)) + RenderLoadOps
 │   ├── Source(MeshSource)                    源自身也是一个 scope
 │   │   ├── Camera
-│   │   ├── Transform + GpuMesh + GpuMaterial + UnlitPipeline
+│   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
 │   └── Source(UiSource)
 │       └── UiPanel
@@ -127,8 +127,8 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 - 每个源在 `build_scene` 中填充一个 `Scene`，随后渲染器把该场景录制进以这个 pass
   自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
 - 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：内置
-  unlit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
-  东西——它的 key、实例记录、mesh 与材质辅助方法——都住在 `unlit` 模块里。
+  lit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
+  东西——它的 key、实例记录、mesh 与材质辅助方法——都住在 `lit` 模块里。
   渲染器里没有任何 mesh 专用的字段或绘制路径。
 - GPU 状态——`wgpu::Device`、`wgpu::Queue` 与 `ResourceGraph`——作为资源组件存在于
   world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址；
@@ -207,10 +207,10 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 几个字节的包围盒而让每次遍历都把它们拖一遍。拆分的依据是读取频率而不是字段类别，所以新增
 字段应放在读取它的那一侧。
 
-`MeshSourceUnlitExt::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`
+`MeshSourceLitExt::register_lit_family` 注册内置的 lit 家族；`MeshSource::register_family`
 注册调用者自己的家族，这与内置家族走的是同一条路——连家族自己拥有并声明的逐实例
 顶点流也不例外（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)）。其他组件
-包括 `Transform`、`Camera`、`RenderLoadOps`、`unlit::InstanceColor`、
+包括 `Transform`、`Camera`、`RenderLoadOps`、`lit::InstanceColor`、
 `InstanceVisibility` 以及 `ZSortedDrawing` 标记。
 
 带 `InstanceVisibility` 且 `visible` 为 `false` 的实体在剔除之前就被跳过，因此不会为它
@@ -246,11 +246,11 @@ z-sorted 绘制排序与透视相机完全一致。
   （`variant`）。key 随组件走，一个家族因此能服务策略不同的实体；又因为 key 就是组件
   本身，渲染器不必对外发放家族句柄。
 - 变体是从**绘制本身**推导的，而不是事先声明：`DrawContext` 把本帧的渲染目标、网格的
-  顶点布局与其索引格式交给 key，key 再把它们各归其位——目标进 `UnlitVariant::surface`，
+  顶点布局与其索引格式交给 key，key 再把它们各归其位——目标进 `LitVariant::surface`，
   顶点布局进 `channels`，索引格式（与拓扑）进 `strip_index_format`。索引格式之所以重要，
   是因为 strip 拓扑的管线必须声明其绘制所绑定的索引宽度，而只有网格知道这个宽度——格式
   由 source 挑：取该网格顶点数能容纳的最窄格式，并在没有 `base_vertex` 的设备上烘入池
-  偏移时把它加宽。**按什么维度特化因此是家族的自由**：内置 unlit 按其策略加上目标、顶点
+  偏移时把它加宽。**按什么维度特化因此是家族的自由**：内置 lit 按其策略加上目标、顶点
   布局与索引格式特化，自定义家族可以是任何东西。
 - 蓝图**延迟求值**：只在缓存未命中、真正要编译时才向 key 索取变体。
 - 家族编译出管线后，由 `RenderPipelineFactory` 把它转成渲染器要注册的
@@ -286,9 +286,9 @@ z-sorted 绘制排序与透视相机完全一致。
 
 </details>
 
-## unlit 管线
+## lit 管线
 
-内置 unlit 管线作为普通家族注册，实体所用的着色器变体只含其网格实际拥有的通道。它
+内置 lit 管线作为普通家族注册，实体所用的着色器变体只含其网格实际拥有的通道。它
 没有任何特权：调用者自己的家族通过同一个 `MeshSource::register_family` 注册，
 拥有自己的逐实例顶点流，并通过同一套公开构造函数绑定本帧共享输入。见
 [自定义着色器与逐实例数据](#自定义着色器与逐实例数据)。
@@ -326,11 +326,14 @@ z-sorted 绘制排序与透视相机完全一致。
 
 </details>
 
-## lit 管线
+### 受光或无光
 
-`LitPipelineKey` 是同一个家族，只是打开了光照路径。它复用 unlit 管线的一切——
-网格通道、实例流、绑定组布局、着色器包——只在一点上不同：片段阶段把本帧的光源累加
-进去，而不是只返回基础色。依然没有 prepass、没有阴影贴图、没有计算通道。
+`LitPipelineKey` 就是调用方的选项加一个 `unlit` 开关。两种模式走同一个家族——网格
+通道、实例流、绑定组布局、着色器包都是共用的——开关只决定一件事：片段阶段要不要累加
+本帧的光源。默认的受光绘制读灯记录、格数组与聚类参数；无光绘制不声明这些绑定，原样
+返回基础色。依然没有 prepass、没有阴影贴图、没有计算通道。
+
+### 光源与着色
 
 光源就是普通实体上的普通组件，因此摆放和移动它们与其他东西完全一样，一帧里通过
 同样的场景遍历收集进来。内置提供四种，调用者用它所用的同一套 trait 扩展这个集合：
@@ -347,9 +350,10 @@ z-sorted 绘制排序与透视相机完全一致。
 那一格——于是成本是一次格子查询加上格内的灯，而不是遍历全场每一盏灯。这条路径同样
 跑在完全没有计算着色器的 WebGL2 上。
 
-方向光不参与聚类。它照亮每一个片元，因此与 source 的环境项一起放进同一个 uniform，
-而不是写进每一格：`MeshSource::ambient` 是每个被照亮像素都收到的项，本帧的方向光就
-摆在它旁边，最多 `MAX_DIRECTIONAL_LIGHTS` 盏，超出的部分丢掉最弱的。
+方向光不参与聚类。它照亮每一个片元，因此放进一个 uniform 而不是写进每一格，最多
+`MAX_DIRECTIONAL_LIGHTS` 盏，超出的部分丢掉最弱的。环境项也在同一个 uniform 里，
+但它与别的灯一样是组件而不是 source 的字段：`AmbientLight` 就是普通组件，本帧把
+source 作用域里的每一盏加起来，场景添加、搬动或移除它与其他东西完全一样。
 
 多边形面光携带的是从被照点看过去的多边形在经典 Lambert 下的形状因子，而不是拟合出来的
 查找表：它是沿多边形各边求和的闭式解，对漫反射受光面是精确的，且不需要预计算纹理。
@@ -357,15 +361,15 @@ z-sorted 绘制排序与透视相机完全一致。
 
 ## 自定义着色器与逐实例数据
 
-帧路径中没有任何东西是留给内置 unlit 着色器的：它作为一个普通家族住在 `unlit` 模块里。
+帧路径中没有任何东西是留给内置 lit 着色器的：它作为一个普通家族住在 `lit` 模块里。
 调用者的家族通过与内置家族同一个
 `MeshSource::register_family` 调用注册，并提供自己的管线——手写的
 `wgpu::RenderPipeline`，或用本 crate 公开的着色器包组合出的 WESL 模块——需要时还提供
 自己的逐实例顶点数据。
 
 若想保留内置家族——它的布局、顶点流、逐实例记录——只换掉如何着色，则不必注册任何东西：
-把 `UnlitShader` 放进 `unlit_wgpu::pipeline::UnlitOptions::shader`，再构造
-`unlit::UnlitPipelineKey` 即可。它装着三段 WESL：一段拼在顶层，一段拼在顶点阶段末尾，
+把 `LitShader` 放进 `unlit_wgpu::pipeline::LitOptions::shader`，再构造
+`lit::LitPipelineKey` 即可。它装着三段 WESL：一段拼在顶层，一段拼在顶点阶段末尾，
 一段拼在片段阶段末尾。内置阶段照旧做它的事——解码顶点、变换、着色、裁剪——而片段改变
 结果：顶层片段添加另两段要调用的函数或常量，顶点片段在被照亮之前重塑表面，片段片段在
 之后重新给像素上色。布局仍由变体决定——这正是「只改一个字段」的原因。自己实现一个
@@ -389,9 +393,9 @@ pub trait InstanceData: 'static {
 「收集」一侧：由家族决定收集哪些组件、记录长什么样。自身没有逐实例状态的家族传
 `()`，其流为空。
 
-内置 unlit 家族只是这个 trait 的一个实现（`UnlitInstance`，槽位 `INSTANCE_SLOT`，
+内置 lit 家族只是这个 trait 的一个实现（`LitInstance`，槽位 `INSTANCE_SLOT`，
 步长 `size_of::<MeshInstance>()`）——与调用者实现的接口相同，背后没有任何私有路径。
-它也是唯一构造内置记录 `MeshInstance` 的地方：那条记录属于 unlit 家族，而不属于共享
+它也是唯一构造内置记录 `MeshInstance` 的地方：那条记录属于 lit 家族，而不属于共享
 帧路径，因此自定义家族不会拿到任何由帧代造的记录——它写的是自己管线声明的格式。
 
 ### 蒙皮与形变状态
@@ -409,11 +413,11 @@ impl InstanceContext<'_> {
 `pack_joints` 把实体的关节矩阵——即其 `SkinBinding` 指名的 `SkinPose`——追加到
 本帧关节数组，并返回其切片起始下标；`pack_morph_weights` 对 `MorphBinding` 指名的
 `MorphWeights` 做同样的事，并校验权重数量与网格 target 数一致。两者都不画的家族
-两者都不调用；unlit 家族对蒙皮网格调用 `pack_joints`、对形变网格调用
+两者都不调用；lit 家族对蒙皮网格调用 `pack_joints`、对形变网格调用
 `pack_morph_weights`，把返回的两个基址写进记录。
 
 数组本身归 source 所有：由它持有、扩容，并在所有家族写完记录后每帧统一上传。家族
-只在写记录时向其中追加，这正是它们作为通用共享设施、而非 unlit 专属状态的原因。
+只在写记录时向其中追加，这正是它们作为通用共享设施、而非 lit 专属状态的原因。
 
 <details>
 <summary>家族的记录如何到达绘制</summary>
@@ -435,15 +439,15 @@ impl InstanceContext<'_> {
 想要相机、globals 或姿势与元数据数组的自定义管线，通过公开构造函数绑定它们，而无需
 自己重造布局：`GlobalResources::layout` 从 `GlobalBindings` 描述构造
 `wgpu::BindGroupLayout`，`GlobalResources::rebuild` 返回渲染器注册的
-`Rebuild` 配方，因此数组变化时该组会被重建。内置的 `UnlitFactory` 调用的正是
+`Rebuild` 配方，因此数组变化时该组会被重建。内置的 `LitFactory` 调用的正是
 同一批函数。
 
 ## 加载 glTF 文档
 
 `gltf` 模块（cargo feature `gltf`，默认关闭）把一个
 [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) 文档——`.glb`
-或 `.gltf`——加载为 `UnlitGltf`。文档、缓冲与图像在构造函数里被急切地解析和解码，
-每个节点的世界空间变换也提前算好，因此 `UnlitGltf` 是模型的**记录**，而不是 GPU
+或 `.gltf`——加载为 `LitGltf`。文档、缓冲与图像在构造函数里被急切地解析和解码，
+每个节点的世界空间变换也提前算好，因此 `LitGltf` 是模型的**记录**，而不是 GPU
 资源：它既不拥有 `World`，也不拥有 `MeshSource`。
 
 它做的是修补你已经在渲染的那个世界：
@@ -458,31 +462,31 @@ impl InstanceContext<'_> {
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
   的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
-  `GpuMesh`、该网格的 `unlit::UnlitPipeline`、以材质基础色因子着色的 `unlit::InstanceColor`，
+  `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
   primitive 还会带上 `ZSortedDrawing` 标记，于是渲染器在绘制完不透明几何之后按由远及近
   的顺序混合它。`alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
-  `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `UnlitOptions::alpha_cutoff` 被置位，
-  生成的实体带上 `unlit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
+  `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `LitOptions::alpha_cutoff` 被置位，
+  生成的实体带上 `lit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
 - 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：
   `spawn_node` / `spawn_default_scene` 为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
   放置 `SkinBinding`，因此写入该 pose 的矩阵就是调用方驱动骨架的方式。
-  `UnlitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
-  pose（每个关节一个矩阵）作为起点，`UnlitGltf::skin_joint_count` 报告某节点的 skin 有几个
+  `LitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
+  pose（每个关节一个矩阵）作为起点，`LitGltf::skin_joint_count` 报告某节点的 skin 有几个
   关节。
 - 网格若声明了位移位置的形变目标，该 primitive 会连这些位移一起上传并按形变绘制：
   `spawn_node` / `spawn_default_scene` 为该节点生成一个 `MorphWeights` 实体，并在网格上放置
-  `MorphBinding`，因此写入该实体的权重就是调用方形变网格的方式。`UnlitGltf::morph_weights`
+  `MorphBinding`，因此写入该实体的权重就是调用方形变网格的方式。`LitGltf::morph_weights`
   返回节点的起始权重——节点自身给出 `weights` 时用它，否则用网格的，未加权的目标为零——
   并按「位移位置的目标个数」补齐或截断，这正是渲染器要求的长度。只位移法线或切线的目标
   不计入也不上传，因此当网格的所有目标都不位移本加载器所读的数据时，它会以未形变的方式
   绘制，而不是走形变路径。
 - 材质为 `doubleSided` 的 primitive 从两面绘制：该管线变体去掉剔除模式，于是单面变体本会
-  丢弃的背面会被光栅化。变体的其他部分都不变，因为 unlit 片元着色器不读法线——没有背面
+  丢弃的背面会被光栅化。变体的其他部分都不变，因为 lit 片元着色器不读法线——没有背面
   法线需要反转，也没有光照方程需要求值。
-- 文档中的动画按需采样而非自动播放：`UnlitGltf::animation_count`、
-  `UnlitGltf::animation_name` 与 `UnlitGltf::animation_duration` 描述它含有的片段，
-  `UnlitGltf::apply_animation(world, clip, time, &spawned)` 在选定的时间求值其中一个。
+- 文档中的动画按需采样而非自动播放：`LitGltf::animation_count`、
+  `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
+  `LitGltf::apply_animation(world, clip, time, &spawned)` 在选定的时间求值其中一个。
   它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，旋转走球面插值）采样进被动画节点的局部
   变换，沿节点层级重新组合出世界矩阵，再把结果写到生成实体读取它的地方：每个被动画节点的
   `Transform`（以及继承其变化的子孙节点）、每个因关节移动而跟随的网格的 `SkinPose`、以及
@@ -492,18 +496,18 @@ impl InstanceContext<'_> {
 支持加载：位置、UV、顶点色、关节、权重与索引；基础色纹理及采样它们的材质；混合
 （`alphaMode: BLEND`）、裁剪（`alphaMode: MASK`）与双面材质；蒙皮 primitive；位移位置的形变目标；
 按世界变换累加的节点层级；以及驱动它们的动画。暂不支持：法线与切线形变、法线与切线。网格上传所用的管线 key 总是由
-primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它绘制所用的变体绝不会
+primitive 自身的属性推导（见 `LitGltf::pipeline_key`），所以它绘制所用的变体绝不会
 要求网格不存在的流。
 
 图像按「最接近解码出像素」的 GPU 格式上传，因此纹理保留自己的通道数与精度，而不会被一
 律拓宽成 RGBA8：8 位布局上传为 `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`，16 位上传为同宽
 度的半浮点格式，32 位浮点上传为 `Rgba32Float`；三通道布局则补一个通道，因为 sRGB 与浮
 点格式都没有三通道的。两个后果值得一提：灰度纹理把亮度放在红通道里——WebGPU 既没有亮度
-格式也没有分量重排——因此 unlit 着色器的 `BaseColorChannels::Luminance` 与
+格式也没有分量重排——因此 lit 着色器的 `BaseColorChannels::Luminance` 与
 `BaseColorChannels::LuminanceAlpha` 会把它展开成 RGB(A) 并把亮度从 sRGB 解码，
-`UnlitGltf::pipeline_key` 正好为这类上传设置它们；以及 `Rgba32Float` 在缺
+`LitGltf::pipeline_key` 正好为这类上传设置它们；以及 `Rgba32Float` 在缺
 少 `Features::FLOAT32_FILTERABLE` 的设备上是 `unfilterable-float`，此时材质绑定不可过滤
-的采样器，并由 `UnlitOptions::texture_filtering` 特化绑定组布局来匹配。
+的采样器，并由 `LitOptions::texture_filtering` 特化绑定组布局来匹配。
 
 ## UI
 
@@ -557,7 +561,7 @@ world，`MeshSource` 作为源生成，`Renderer` 是帧驱动器：
 
 ```rust
 use unlit3d::prelude::*;
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::resources::ResourceGraph;
 
 let (device, queue) =
@@ -565,7 +569,7 @@ let (device, queue) =
 let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
-//    frame driver, and register the built-in unlit family.
+//    frame driver, and register the built-in lit family.
 // `DeviceCapabilities` carries what the device cannot report about itself
 // (its `base_vertex` support). Derive it from the adapter when one is at
 // hand; `default()` is the WebGPU baseline, which is also what `noop` is.
@@ -577,8 +581,8 @@ let ctx = spawn_context(
     DeviceCapabilities::default(),
 );
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
-mesh_source.register_unlit_family(&world.root_scope());
-let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
+mesh_source.register_lit_family(&world.root_scope());
+let key = LitPipelineKey::new(LitOptions::standard(&mesh_source.device(&world.root_scope())));
 let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 
 // 2. Spawn the frame's pass and mount the mesh source under it. A pass is a
@@ -594,7 +598,7 @@ let source = world
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
-//    renderable entity under it, carrying the unlit key.
+//    renderable entity under it, carrying the lit key.
 let (mesh, material) = scope
     .query_one::<&mut Source>(source)
     .map(|mut source| {
@@ -603,10 +607,10 @@ let (mesh, material) = scope
         let uvs = [[0.0; 2]; 3];
         let colors = [[255u8; 4]; 3];
         let indices = [0u32, 1, 2];
-        let mesh = source.allocate_unlit_mesh(
+        let mesh = source.allocate_lit_mesh(
             &scope,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
@@ -629,14 +633,14 @@ let (mesh, material) = scope
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-        let material = source.allocate_unlit_material(&scope, &key.options, texture_view, sampler);
+        let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
         (mesh, material)
     })
     .unwrap();
 world
     .scope_mut(source)
     .unwrap()
-    .spawn(bundle![Transform::default(), mesh, material, UnlitPipeline::new(key)]);
+    .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
 
 // 4. Give the pass a render target and render one frame (uses the noop
 //    device, so it produces a valid command buffer without touching a GPU).

@@ -114,7 +114,7 @@ struct RegisteredPipeline {
 /// [`Scene`] the frame's draws are assembled into, and it fetches the device,
 /// the queue and the resource graph from the world through the
 /// [`RenderContext`] it was created with. Register the families it draws with
-/// — [`MeshSourceUnlitExt::register_unlit_family`](crate::unlit::MeshSourceUnlitExt::register_unlit_family) for the built-in unlit shader — and
+/// — [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) for the built-in unlit shader — and
 /// spawn it with [`Source::new`](crate::source::Source::new).
 pub struct MeshSource {
     /// The world addresses of the frame's GPU state, kept so every entry point
@@ -183,13 +183,6 @@ pub struct MeshSource {
     light_vertices: Vec<glam::Vec4>,
     /// Reused per-frame light records, in the order the clusterer ranked them.
     light_records: Vec<LightGpu>,
-    /// The colour a lit surface receives with no light on it, which the
-    /// lighting uniform carries to every lit draw.
-    ///
-    /// It belongs to the source rather than to a pipeline because the uniform
-    /// is frame-wide: a frame collects its lights once, and every lit draw reads
-    /// the same ambient with them.
-    pub ambient: glam::Vec4,
     /// The frame-wide lighting uniform, rebuilt and uploaded every lit frame.
     lighting: LightingUniform,
     /// Staging buffer for the cluster uniform, reused across frames.
@@ -235,7 +228,7 @@ pub struct MeshSource {
     globals_staging: StagingBuffer,
 
     /// The pool every mesh uploaded through
-    /// [`MeshSourceUnlitExt::allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh) keeps its indices in, as one large
+    /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps its indices in, as one large
     /// buffer shared by every indexed mesh.
     ///
     /// A mesh names it through [`MeshParts::index_buffer`], which is why the
@@ -245,7 +238,7 @@ pub struct MeshSource {
     /// The graph node of [`MeshSource::index_pool`]'s buffer.
     pub(crate) index_pool_id: ResHandle<wgpu::Buffer>,
     /// The pool every mesh uploaded through
-    /// [`MeshSourceUnlitExt::allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh) keeps its vertices in: one large
+    /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps its vertices in: one large
     /// buffer per vertex layout, so meshes that share a layout share a buffer,
     /// and one element allocation covers every stream of a mesh at the same
     /// element index.
@@ -298,7 +291,7 @@ impl MeshSource {
     /// into the context's resource graph. The source starts with no families:
     /// register the ones you draw with through
     /// [`MeshSource::register_family`] — for the built-in unlit shader,
-    /// [`MeshSourceUnlitExt::register_unlit_family`](crate::unlit::MeshSourceUnlitExt::register_unlit_family) does it for you. Registration
+    /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) does it for you. Registration
     /// compiles nothing; a family's first concrete pipeline is built the first
     /// time an entity that uses it is drawn.
     ///
@@ -493,7 +486,6 @@ impl MeshSource {
             light_clusters: LightClusters::default(),
             light_vertices: Vec::new(),
             light_records: Vec::new(),
-            ambient: glam::Vec4::ZERO,
             lighting: LightingUniform {
                 directionals: [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS],
                 ambient: glam::Vec4::ZERO,
@@ -587,7 +579,7 @@ impl MeshSource {
     /// built lazily, the first time a draw resolves a variant, and are
     /// appended to the source pipeline list in resolution order.
     ///
-    /// [`MeshSourceUnlitExt::register_unlit_family`](crate::unlit::MeshSourceUnlitExt::register_unlit_family) is the built-in unlit family; a
+    /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) is the built-in unlit family; a
     /// caller registers their own by supplying the key whose
     /// [RenderPipelineKey::variant] resolves a draw into a variant, the
     /// [RenderPipelineFactory] that describes the compiled result, and the
@@ -630,7 +622,7 @@ impl MeshSource {
     /// The mesh's [`Aabb`](crate::bounds::Aabb) is recorded in the source's
     /// mesh-metadata array, which the next built scene uploads.
     ///
-    /// [`MeshSourceUnlitExt::allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh) is the helper that builds the
+    /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) is the helper that builds the
     /// compressed layout the built-in unlit shader expects.
     ///
     /// # Panics
@@ -645,7 +637,7 @@ impl MeshSource {
         };
         // The raw API says nothing about the mesh's channels, so the mesh is
         // not known to carry joints; a caller that uploads a skinned layout
-        // goes through `allocate_unlit_mesh`, which does know. It owns its
+        // goes through `allocate_lit_mesh`, which does know. It owns its
         // buffers whole, so it is drawn from vertex zero and morphs nothing.
         self.allocate_mesh_with_metadata(world, desc, metadata, false, 0)
     }
@@ -860,7 +852,7 @@ impl MeshSource {
     /// dependency is replaced, so it has to read whatever it binds back out of
     /// the graph rather than capture a handle. The layout is the material layout
     /// of the pipeline the material is for —
-    /// [`UnlitVariant::bind_group_layouts`](unlit_wgpu::pipeline::UnlitVariant::bind_group_layouts)
+    /// [`LitVariant::bind_group_layouts`](unlit_wgpu::pipeline::LitVariant::bind_group_layouts)
     /// for the built-in shader, or the one a custom pipeline registered.
     ///
     /// # Panics
@@ -896,7 +888,7 @@ impl MeshSource {
     /// root — makes them collectable, and the next
     /// [`Self::maintain`](MeshSource::maintain) frees the root, its bind group
     /// and the per-mesh uniform that only fed that bind group. A mesh uploaded
-    /// through [`allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh) keeps
+    /// through [`allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps
     /// its vertices and indices in pools the source shares between meshes;
     /// those allocations are handed back here, and the pool buffers outlive the
     /// mesh. A mesh uploaded with [`allocate_mesh`](MeshSource::allocate_mesh)
@@ -1015,14 +1007,13 @@ impl MeshSource {
         size: (u32, u32),
     ) {
         let device = self.device(world);
-        crate::lit::collect_lights(
+        crate::light::collect_lights(
             world,
             camera.position(),
             &mut self.packed_lights,
             &mut self.light_vertices,
             &mut self.lighting,
         );
-        self.lighting.ambient = self.ambient;
         self.light_clusters.update(
             &self.clustering,
             &camera.clip_from_view,
@@ -1640,16 +1631,16 @@ impl FrameSource for MeshSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{InstanceVisibility, Transform, ZSortedDrawing};
+    use crate::components::{GpuRenderPipeline, InstanceVisibility, Transform, ZSortedDrawing};
+    use crate::lit::{LitMeshDesc, LitPipelineKey, MeshSourceLitExt};
     use crate::mesh::MorphDeltas;
     use crate::pass::PassInfo;
     use crate::scene::DrawShape;
     use crate::source::spawn_context;
-    use crate::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
     use unlit_ecs::bundle;
     use unlit_ecs::{Entity, World};
     use unlit_wgpu::mesh::{MeshInstance, SecondaryFlags};
-    use unlit_wgpu::pipeline::{UnlitOptions, UnlitVertexChannels};
+    use unlit_wgpu::pipeline::{LitOptions, LitVertexChannels};
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
     use unlit_wgpu::scene::DrawRange;
 
@@ -1669,7 +1660,7 @@ mod tests {
     struct Harness {
         world: World,
         source: MeshSource,
-        key: UnlitPipelineKey,
+        key: LitPipelineKey,
         target: PassInfo,
     }
 
@@ -1686,10 +1677,10 @@ mod tests {
         /// A mesh whose bounds are offset from its origin is what tells a
         /// depth that reads the bounds apart from one that reads the origin.
         fn tri_mesh_at(&mut self, z: f32) -> GpuMesh {
-            self.source.allocate_unlit_mesh(
+            self.source.allocate_lit_mesh(
                 &self.world.root_scope(),
                 &self.key.options,
-                UnlitMeshDesc {
+                LitMeshDesc {
                     positions: &[[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
                     uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                     colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -1709,7 +1700,7 @@ mod tests {
             self.world.root_scope_mut().spawn(bundle![
                 transform,
                 mesh,
-                UnlitPipeline::new(self.key.clone()),
+                GpuRenderPipeline::new(self.key.clone()),
             ])
         }
 
@@ -1718,7 +1709,7 @@ mod tests {
             self.world.root_scope_mut().spawn(bundle![
                 transform,
                 mesh,
-                UnlitPipeline::new(self.key.clone()),
+                GpuRenderPipeline::new(self.key.clone()),
                 ZSortedDrawing,
             ])
         }
@@ -1778,9 +1769,8 @@ mod tests {
             DeviceCapabilities::default(),
         );
         let mut source = MeshSource::new(&world.root_scope(), ctx);
-        source.register_unlit_family(&world.root_scope());
-        let key =
-            UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_scope())));
+        source.register_lit_family(&world.root_scope());
+        let key = LitPipelineKey::unlit(LitOptions::standard(&source.device(&world.root_scope())));
         let target = bind_test_target(&world.root_scope(), ctx);
         Harness {
             world,
@@ -1853,8 +1843,8 @@ mod tests {
 
     /// A second policy that differs from the standard one in a field the
     /// pipeline is specialized on, so it resolves to its own variant.
-    fn alternative_options(device: &wgpu::Device) -> UnlitOptions {
-        let mut options = UnlitOptions::standard(device);
+    fn alternative_options(device: &wgpu::Device) -> LitOptions {
+        let mut options = LitOptions::standard(device);
         options.srgb_to_linear_output = true;
         options
     }
@@ -1862,16 +1852,16 @@ mod tests {
     /// A triangle mesh with one morph target, for the tests that need the
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(
+        let key = LitPipelineKey::unlit(LitOptions::standard(
             &harness.source.device(&harness.world.root_scope()),
         ));
         // One target displacing all three vertices by the same amount, packed
         // vertex-major: three components per vertex.
         let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
-        harness.source.allocate_unlit_mesh(
+        harness.source.allocate_lit_mesh(
             &harness.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),
                 morph_deltas: Some(MorphDeltas {
@@ -1884,7 +1874,7 @@ mod tests {
     }
 
     /// Register a 2D texture with `source` and return a view id and a sampler
-    /// id, ready for [`MeshSourceUnlitExt::allocate_unlit_material`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_material).
+    /// id, ready for [`MeshSourceLitExt::allocate_lit_material`](crate::lit::MeshSourceLitExt::allocate_lit_material).
     fn test_material_resources(
         harness: &mut Harness,
     ) -> (ResHandle<TextureView>, ResHandle<wgpu::Sampler>) {
@@ -2004,7 +1994,7 @@ mod tests {
         );
         let mut source = MeshSource::new(&world.root_scope(), ctx);
 
-        source.register_unlit_family(&world.root_scope());
+        source.register_lit_family(&world.root_scope());
 
         // Registration records the family; its first concrete pipeline is
         // built only when a draw resolves a variant.
@@ -2032,16 +2022,16 @@ mod tests {
     #[test]
     fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
         let mut h = harness();
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(
+        let key = LitPipelineKey::unlit(LitOptions::standard(
             &h.source.device(&h.world.root_scope()),
         ));
 
         // The mesh packs the channels the caller passed, not the ones the key
         // used to declare: the options are pure policy now.
-        let textured = h.source.allocate_unlit_mesh(
+        let textured = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -2049,19 +2039,19 @@ mod tests {
                 ..Default::default()
             },
         );
-        let bare = h.source.allocate_unlit_mesh(
+        let bare = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),
                 ..Default::default()
             },
         );
-        let textured_channels = UnlitVertexChannels::for_vertex_layout(&textured.vertex_layout);
+        let textured_channels = LitVertexChannels::for_vertex_layout(&textured.vertex_layout);
         assert!(textured_channels.secondary.contains(SecondaryFlags::UV));
         assert!(textured_channels.secondary.contains(SecondaryFlags::COLOR));
-        let bare_channels = UnlitVertexChannels::for_vertex_layout(&bare.vertex_layout);
+        let bare_channels = LitVertexChannels::for_vertex_layout(&bare.vertex_layout);
         assert!(!bare_channels.secondary.contains(SecondaryFlags::UV));
         assert!(!bare_channels.secondary.contains(SecondaryFlags::COLOR));
 
@@ -2070,7 +2060,7 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let material =
             h.source
-                .allocate_unlit_material(&h.world.root_scope(), &key.options, view, sampler);
+                .allocate_lit_material(&h.world.root_scope(), &key.options, view, sampler);
         let ctx = h.source.context();
         assert!(
             ctx.graph(&h.world.root_scope())
@@ -2136,7 +2126,7 @@ mod tests {
         let mut h = harness();
         let (view, sampler) = test_material_resources(&mut h);
 
-        let material = h.source.allocate_unlit_material(
+        let material = h.source.allocate_lit_material(
             &h.world.root_scope(),
             &h.key.options,
             view.clone(),
@@ -2260,7 +2250,7 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         let (view, sampler) = test_material_resources(&mut h);
-        let material = h.source.allocate_unlit_material(
+        let material = h.source.allocate_lit_material(
             &h.world.root_scope(),
             &h.key.options,
             view.clone(),
@@ -2382,13 +2372,13 @@ mod tests {
     #[test]
     fn a_non_indexed_mesh_holds_no_index_allocation() {
         let mut h = harness();
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(
+        let key = LitPipelineKey::unlit(LitOptions::standard(
             &h.source.device(&h.world.root_scope()),
         ));
-        let mesh = h.source.allocate_unlit_mesh(
+        let mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -2684,15 +2674,15 @@ mod tests {
         // A second key whose specialized options differ, so it resolves to its
         // own concrete pipeline.
         let alternative_key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
+            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
 
         // Warm both variants, first key first, so their pipeline ids follow
         // the order they were resolved in.
         let standard_mesh = h.tri_mesh();
-        let alternative_mesh = h.source.allocate_unlit_mesh(
+        let alternative_mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &alternative_key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -2706,7 +2696,7 @@ mod tests {
         let warm_alternative = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             alternative_mesh.clone(),
-            UnlitPipeline::new(alternative_key.clone()),
+            GpuRenderPipeline::new(alternative_key.clone()),
         ]);
         h.source
             .collect_and_sort_visible(&h.world.root_scope(), &camera, surface);
@@ -2733,7 +2723,7 @@ mod tests {
         let second = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             alternative_mesh,
-            UnlitPipeline::new(alternative_key),
+            GpuRenderPipeline::new(alternative_key),
         ]);
         let first = h.spawn_mesh(standard_mesh);
 
@@ -2748,14 +2738,14 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         let (view, sampler) = test_material_resources(&mut h);
-        let shared = h.source.allocate_unlit_material(
+        let shared = h.source.allocate_lit_material(
             &h.world.root_scope(),
             &h.key.options,
             view.clone(),
             sampler.clone(),
         );
         let (view, sampler) = test_material_resources(&mut h);
-        let other = h.source.allocate_unlit_material(
+        let other = h.source.allocate_lit_material(
             &h.world.root_scope(),
             &h.key.options,
             view.clone(),
@@ -2766,7 +2756,7 @@ mod tests {
         let a = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
-            UnlitPipeline::new(h.key.clone()),
+            GpuRenderPipeline::new(h.key.clone()),
             shared.clone(),
         ]);
         // The odd one out: sharing no material with the other two, so it is
@@ -2774,13 +2764,13 @@ mod tests {
         let _other_material = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
-            UnlitPipeline::new(h.key.clone()),
+            GpuRenderPipeline::new(h.key.clone()),
             other.clone(),
         ]);
         let c = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
-            UnlitPipeline::new(h.key.clone()),
+            GpuRenderPipeline::new(h.key.clone()),
             shared.clone(),
         ]);
 
@@ -3062,11 +3052,11 @@ mod tests {
         // A variant that binds no material group, so the frame needs no
         // material to be a complete draw.
         let key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
-        let mesh = h.source.allocate_unlit_mesh(
+            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
+        let mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -3080,7 +3070,7 @@ mod tests {
         h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
             ZSortedDrawing,
         ]);
 
@@ -3134,13 +3124,13 @@ mod tests {
     fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let mut h = harness();
         let key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
+            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
         // Both meshes are indexed and share the pool's index buffer, so what
         // tells their draws apart is the slice each one names.
-        let first = h.source.allocate_unlit_mesh(
+        let first = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -3148,10 +3138,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        let second = h.source.allocate_unlit_mesh(
+        let second = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -3168,12 +3158,12 @@ mod tests {
         h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             first,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
         ]);
         h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             second,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
         ]);
 
         let ctx = h.source.context();
@@ -3309,7 +3299,7 @@ mod tests {
         let hidden = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
-            UnlitPipeline::new(h.key.clone()),
+            GpuRenderPipeline::new(h.key.clone()),
             InstanceVisibility { visible: false },
         ]);
 
@@ -3371,12 +3361,12 @@ mod tests {
         h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             first,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
         ]);
         h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             second,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
         ]);
 
         let ctx = h.source.context();
@@ -3411,7 +3401,7 @@ mod tests {
                 ..Default::default()
             },
             mesh.clone(),
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
             ZSortedDrawing,
         ]);
         h.world.root_scope_mut().spawn(bundle![
@@ -3420,7 +3410,7 @@ mod tests {
                 ..Default::default()
             },
             mesh,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
             ZSortedDrawing,
         ]);
 
@@ -3536,11 +3526,11 @@ mod tests {
         // A different policy specializes to a different variant, hence a
         // different RenderPipelineId.
         let other_key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
-        let other = h.source.allocate_unlit_mesh(
+            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
+        let other = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &other_key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),
                 ..Default::default()
@@ -3560,7 +3550,7 @@ mod tests {
                 ..Default::default()
             },
             other,
-            UnlitPipeline::new(other_key),
+            GpuRenderPipeline::new(other_key),
             ZSortedDrawing,
         ]);
 

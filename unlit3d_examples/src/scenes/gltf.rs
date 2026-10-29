@@ -12,7 +12,7 @@
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit_ecs::bundle;
-use unlit3d::gltf::UnlitGltf;
+use unlit3d::gltf::LitGltf;
 use unlit3d::prelude::*;
 
 /// The frames a snapshot capture freezes, one snapshot each.
@@ -92,13 +92,13 @@ fn build(
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let fox = UnlitGltf::from_bytes(unlit3d_asset_bytes::fox())
+    let fox = LitGltf::from_bytes(unlit3d_asset_bytes::fox())
         .expect("the fox asset is a valid glTF document");
-    let morph = UnlitGltf::from_bytes(unlit3d_asset_bytes::morph_stress_test())
+    let morph = LitGltf::from_bytes(unlit3d_asset_bytes::morph_stress_test())
         .expect("the morph asset is a valid glTF document");
 
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -208,7 +208,7 @@ fn build(
 ///
 /// The assets name their animations, so the scene asks for one by name rather
 /// than by a position that a re-export could shuffle.
-fn animation_index(document: &UnlitGltf, name: &str) -> usize {
+fn animation_index(document: &LitGltf, name: &str) -> usize {
     (0..document.animation_count())
         .find(|&animation| document.animation_name(animation) == Some(name))
         .unwrap_or_else(|| panic!("the document has an animation named `{name}`"))

@@ -115,7 +115,7 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
                 scale: glam::Vec3::splat(0.7),
             },
             mesh,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
         ],
     );
 

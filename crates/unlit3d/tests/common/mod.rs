@@ -37,8 +37,8 @@ pub struct TestGpu {
     /// The built-in mesh source, or `None` in a UI-only world.
     source: Option<Entity>,
     /// The built-in unlit family's key; every renderable entity carries an
-    /// [`UnlitPipeline`] built from it. Meaningless without a mesh source.
-    pub key: UnlitPipelineKey,
+    /// [`GpuRenderPipeline`] built from it. Meaningless without a mesh source.
+    pub key: LitPipelineKey,
 }
 
 impl TestGpu {
@@ -47,7 +47,7 @@ impl TestGpu {
     pub fn new(world: &mut World, ctx: &Ctx) -> Self {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(&world.root_scope(), test.context);
-        source.register_unlit_family(&world.root_scope());
+        source.register_lit_family(&world.root_scope());
         test.source = Some(test.spawn_source(world, source));
         test
     }
@@ -84,7 +84,7 @@ impl TestGpu {
         // carries the tint as well as the transform: the ECS tests tint their
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
-        let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+        let key = LitPipelineKey::unlit(default_options(&ctx.device));
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
@@ -231,10 +231,10 @@ impl TestGpu {
             })
             .collect::<Vec<_>>();
         self.with_mesh_source(world, |source, world| {
-            source.allocate_unlit_mesh(
+            source.allocate_lit_mesh(
                 world,
                 &self.key.options,
-                UnlitMeshDesc {
+                LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
                     colors: Some(&colors),
@@ -253,10 +253,10 @@ impl TestGpu {
     pub fn allocate_grid_cube_mesh(&self, world: &World, steps: u32) -> GpuMesh {
         let (positions, uvs, colors, indices) = grid_cube(steps);
         self.with_mesh_source(world, |source, world| {
-            source.allocate_unlit_mesh(
+            source.allocate_lit_mesh(
                 world,
                 &self.key.options,
-                UnlitMeshDesc {
+                LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
                     colors: Some(&colors),
@@ -294,17 +294,17 @@ impl TestGpu {
     pub fn allocate_deformed_cube_mesh(
         &self,
         world: &World,
-        key: &UnlitPipelineKey,
+        key: &LitPipelineKey,
         joints: Option<&[[u16; 4]]>,
         weights: Option<&[[f32; 4]]>,
         morph_deltas: Option<MorphDeltas>,
     ) -> GpuMesh {
         let (positions, uvs, colors, indices) = cube();
         self.with_mesh_source(world, |source, world| {
-            source.allocate_unlit_mesh(
+            source.allocate_lit_mesh(
                 world,
                 &key.options,
-                UnlitMeshDesc {
+                LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
                     colors: Some(&colors),
@@ -326,16 +326,16 @@ impl TestGpu {
     pub fn allocate_bent_cube_mesh(
         &self,
         world: &World,
-        key: &UnlitPipelineKey,
+        key: &LitPipelineKey,
         angle: f32,
     ) -> (GpuMesh, BendSkin) {
         let (positions, uvs, colors, indices) = cube();
         let skin = BendSkin::new(&positions, angle);
         let mesh = self.with_mesh_source(world, |source, world| {
-            source.allocate_unlit_mesh(
+            source.allocate_lit_mesh(
                 world,
                 &key.options,
-                UnlitMeshDesc {
+                LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
                     colors: Some(&colors),
@@ -358,7 +358,7 @@ impl TestGpu {
     pub fn allocate_morphed_cube_mesh(
         &self,
         world: &World,
-        key: &UnlitPipelineKey,
+        key: &LitPipelineKey,
         deltas: MorphDeltas,
     ) -> GpuMesh {
         self.allocate_deformed_cube_mesh(world, key, None, None, Some(deltas))
@@ -487,7 +487,7 @@ impl TestGpu {
     }
 }
 
-/// Unlit options for the ECS tests: vertex colour + per-instance transform,
+/// Default options for the ECS tests: vertex colour + per-instance transform,
 /// no texture, no MSAA, with reverse-z depth.
 ///
 /// The per-instance tint an ECS entity may carry rides the same stream as the
@@ -498,9 +498,9 @@ impl TestGpu {
 /// The options are pure policy: they say nothing about the channels a mesh
 /// carries. Those follow the slices `allocate_deformed_cube_mesh` uploads, so a
 /// deformed test and a plain one share these options.
-pub fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
+pub fn default_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::LitOptions {
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    unlit_wgpu::pipeline::UnlitOptions {
+    unlit_wgpu::pipeline::LitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
@@ -521,7 +521,7 @@ pub fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOption
             count: 1,
             ..Default::default()
         },
-        ..unlit_wgpu::pipeline::UnlitOptions::standard(device)
+        ..unlit_wgpu::pipeline::LitOptions::standard(device)
     }
 }
 

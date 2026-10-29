@@ -48,12 +48,12 @@ pub const fn color_clear() -> wgpu::LoadOp<wgpu::Color> {
 /// The depth load op of the renderer's reverse-z convention: a clear to the
 /// far plane.
 ///
-/// Pipelines built by [`UnlitOptions::standard`] compare with
+/// Pipelines built by [`LitOptions::standard`] compare with
 /// `CompareFunction::Greater`, so depth starts at the far plane and nearer
 /// geometry carries the greater value. Clearing a depth attachment with any
 /// other value would put the convention out of joint.
 ///
-/// [`UnlitOptions::standard`]: crate::pipeline::UnlitOptions::standard
+/// [`LitOptions::standard`]: crate::pipeline::LitOptions::standard
 #[must_use]
 pub const fn depth_clear() -> wgpu::LoadOp<f32> {
     wgpu::LoadOp::Clear(0.0)

@@ -44,7 +44,7 @@ add the coverage the ported scenes lack — every primitive topology drawn both
 indexed and non-indexed, and overlapping translucent draws whose composite
 depends on both the z-sort and the blend state. `gltf` is the other exception:
 it draws the glTF documents in `unlit3d_asset_files/assets` through
-`UnlitGltf`, so the loader's skinning and morph-target animation are checked
+`LitGltf`, so the loader's skinning and morph-target animation are checked
 against real assets rather than the hand-written ones the unit tests use. The
 example reaches those documents through
 [`asset_bytes`](asset_bytes/README.md), the crate that embeds them, so the

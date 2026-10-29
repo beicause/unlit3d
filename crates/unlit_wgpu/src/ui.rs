@@ -80,8 +80,8 @@ use crate::globals::View;
 use crate::mesh::{ChannelEncoding, MeshInstance, PositionStreamChannels, SecondaryFlags};
 use crate::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, INSTANCE_SLOT,
-    MATERIAL_GROUP, PRIMARY_SLOT, SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions,
-    UnlitVariant, UnlitVertexChannels,
+    LitOptions, LitVariant, LitVertexChannels, MATERIAL_GROUP, PRIMARY_SLOT, SECONDARY_SLOT,
+    SpecializedLitPipeline,
 };
 use crate::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureExt, TextureView};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
@@ -184,16 +184,16 @@ pub fn ui_variant(
     device: &wgpu::Device,
     srgb_to_linear_output: bool,
     surface: SurfaceKey,
-) -> UnlitVariant {
-    let mut options = UnlitOptions::standard(device);
+) -> LitVariant {
+    let mut options = LitOptions::standard(device);
     apply_ui_settings(&mut options, srgb_to_linear_output);
-    UnlitVariant {
+    LitVariant {
         options: Hashed::new(options),
         surface,
         channels: ui_channels(),
         base_color_texture: true,
         morph: false,
-        lit: false,
+        unlit: true,
         strip_index_format: None,
     }
 }
@@ -204,8 +204,8 @@ pub fn ui_variant(
 /// with the shader supplying the zero third — and needs no skinning, and every
 /// vertex carries a texture coordinate and a premultiplied color. A caller
 /// packing a UI mesh builds its streams to match this.
-pub fn ui_channels() -> UnlitVertexChannels {
-    UnlitVertexChannels {
+pub fn ui_channels() -> LitVertexChannels {
+    LitVertexChannels {
         position: PositionStreamChannels {
             position: Some(ChannelEncoding::PlanarPosition),
             joints: false,
@@ -220,11 +220,11 @@ pub fn ui_channels() -> UnlitVertexChannels {
 /// The geometry the UI draws with is not policy and lives in
 /// [`ui_channels`] and the variant: an encoding, a skin or a morph target is
 /// a property of the mesh, not of what the caller picked.
-fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
+fn apply_ui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
     options.srgb_to_linear_output = srgb_to_linear_output;
     // No culling: egui does not guarantee a consistent winding order across
     // the primitives it emits, so neither face can be discarded safely.
-    // (`UnlitOptions::standard` culls back faces for closed meshes; the UI is
+    // (`LitOptions::standard` culls back faces for closed meshes; the UI is
     // flat, overlay geometry with no inside to hide.)
     options.primitive.cull_mode = None;
     // egui tessellates premultiplied colors, so the source's RGB is added to
@@ -415,7 +415,7 @@ struct TextureSlot {
 pub struct EguiIntegration {
     /// Kept to build the resources a frame turns out to need.
     device: wgpu::Device,
-    pipeline: SpecializedUnlitPipeline,
+    pipeline: SpecializedLitPipeline,
     /// Graph node of the caller's global bind group: camera and frame
     /// globals, written by the caller.
     global_group: ResHandle<wgpu::BindGroup>,
@@ -574,7 +574,7 @@ impl EguiIntegration {
     pub fn new(
         device: &wgpu::Device,
         global_group: ResHandle<wgpu::BindGroup>,
-        pipeline: SpecializedUnlitPipeline,
+        pipeline: SpecializedLitPipeline,
     ) -> Self {
         Self {
             device: device.clone(),
@@ -1166,16 +1166,16 @@ mod tests {
     /// The UI options for a device-free test. Only the policy these tests
     /// assert on matters, so the depth-stencil format is the
     /// device-independent placeholder.
-    fn ui_options_for_tests(srgb_to_linear_output: bool) -> UnlitOptions {
-        let mut options = UnlitOptions::standard_shape();
+    fn ui_options_for_tests(srgb_to_linear_output: bool) -> LitOptions {
+        let mut options = LitOptions::standard_shape();
         apply_ui_settings(&mut options, srgb_to_linear_output);
         options
     }
 
     /// A UI variant over the device-free options, for tests that assert on
     /// what a variant derives rather than on a compiled pipeline.
-    fn ui_variant_for_tests(srgb_to_linear_output: bool) -> UnlitVariant {
-        UnlitVariant {
+    fn ui_variant_for_tests(srgb_to_linear_output: bool) -> LitVariant {
+        LitVariant {
             options: Hashed::new(ui_options_for_tests(srgb_to_linear_output)),
             surface: SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1185,7 +1185,7 @@ mod tests {
             channels: ui_channels(),
             base_color_texture: true,
             morph: false,
-            lit: false,
+            unlit: true,
             strip_index_format: None,
         }
     }

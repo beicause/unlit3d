@@ -1,7 +1,7 @@
 //! End-to-end GPU tests for the built-in unlit pipeline.
 //!
 //! Every test builds real resources through the library's public API — the
-//! vertex compressors, the built-in [`SpecializedUnlitPipeline`] and the single-pass
+//! vertex compressors, the built-in [`SpecializedLitPipeline`] and the single-pass
 //! [`Renderer`] — renders offscreen, and inspects the pixels that come back.
 //! The snapshot tests additionally compare frames against stored references
 //! with the SSIMULACRA2 perceptual metric.
@@ -14,9 +14,9 @@ use unlit_wgpu::mesh::{
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
-    SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitShader, UnlitVariant,
-    UnlitVertexChannels, supports_storage_buffers,
+    GLOBAL_GROUP, INSTANCE_SLOT, LitOptions, LitShader, LitVariant, LitVertexChannels,
+    MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT, SECONDARY_SLOT, SpecializedLitPipeline,
+    supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
@@ -38,7 +38,7 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// The tolerance the two cube snapshots are compared within.
 ///
 /// Both frames are cubes seen at an angle: their silhouette and the edges
-/// between their faces are hard, and in `unlit_cubes_instanced` the cubes
+/// between their faces are hard, and in `lit_cubes_instanced` the cubes
 /// overlap, so which of two cubes owns a pixel where they meet is the depth
 /// test's to decide. Where two depths are equal, or where a multisampled edge
 /// resolves differently, that is the implementation's choice rather than the
@@ -49,7 +49,7 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// gate. A differing pixel sits on a hard edge, where the metric is most
 /// sensitive, so the scatter costs far more than its area suggests — enough to
 /// turn the metric's own ranking inside out: the WebGL2 frame of
-/// `unlit_cubes_instanced`, which draws the cubes in the right places with the
+/// `lit_cubes_instanced`, which draws the cubes in the right places with the
 /// right colors, scores 48.97, *below* the 57.38 that shifting that whole frame
 /// one pixel scores. A gate the metric cannot order correctly must not be the
 /// one deciding these frames, which is what the outlier allowance is for.
@@ -63,7 +63,7 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 ///
 /// Measured against the stored snapshots, as score / outliers:
 ///
-/// | frame | `unlit_cubes_instanced` | `unlit_cube_textured` |
+/// | frame | `lit_cubes_instanced` | `lit_cube_textured` |
 /// |-------|-------------------------|-----------------------|
 /// | Vulkan (where they were captured) | 95.88 / 0.000% | 100.00 / 0.000% |
 /// | native GL | 73.11 / 0.157% | 100.00 / 0.000% |
@@ -131,7 +131,7 @@ impl GpuMesh {
     fn upload(
         ctx: &Ctx,
         label: &str,
-        variant: &UnlitVariant,
+        variant: &LitVariant,
         positions: &[[f32; 3]],
         uvs: &[[f32; 2]],
         colors: &[[u8; 4]],
@@ -367,7 +367,7 @@ struct SceneFixture {
     /// Whether the pipeline declares a depth-stencil state, which the render
     /// pass must then match: `wgpu` rejects a mismatch when binding it.
     has_depth: bool,
-    pipeline: SpecializedUnlitPipeline,
+    pipeline: SpecializedLitPipeline,
     mesh: GpuMesh,
     material: Option<wgpu::BindGroup>,
     /// Multisample state the pipeline was compiled for; the render pass's
@@ -383,7 +383,7 @@ struct SceneFixture {
 /// follows the variant's depth state, so a variant with one is built for a
 /// target that has a depth attachment and a depth-less variant for one that
 /// does not.
-fn fixture(ctx: &Ctx, variant: &UnlitVariant, sample_count: u32) -> SceneFixture {
+fn fixture(ctx: &Ctx, variant: &LitVariant, sample_count: u32) -> SceneFixture {
     let mut variant = variant.clone();
     variant.surface = SurfaceKey {
         color_format: COLOR_FORMAT,
@@ -609,23 +609,26 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 /// A variant built for the test's render target from `options` and the draw
 /// facts the test supplies.
 fn variant(
-    options: UnlitOptions,
-    channels: UnlitVertexChannels,
+    options: LitOptions,
+    channels: LitVertexChannels,
     base_color_texture: bool,
     morph: bool,
-) -> UnlitVariant {
+) -> LitVariant {
     let surface = SurfaceKey {
         color_format: COLOR_FORMAT,
         depth_stencil_format: options.depth_stencil.as_ref().map(|state| state.format),
         sample_count: options.multisample.count,
     };
-    UnlitVariant {
+    LitVariant {
         options: Hashed::new(options),
         surface,
         channels,
         base_color_texture,
         morph,
-        lit: false,
+        // These tests draw without lights: their global group carries the
+        // camera, the frame clock and the mesh metadata, and a lit variant
+        // would also demand the light arrays and the cluster.
+        unlit: true,
         strip_index_format: None,
     }
 }
@@ -634,10 +637,10 @@ fn variant(
 ///
 /// The standard policy with its channels narrowed to the vertex color alone —
 /// no UV, so no base-color texture either.
-fn vertex_color_variant(device: &wgpu::Device) -> UnlitVariant {
+fn vertex_color_variant(device: &wgpu::Device) -> LitVariant {
     variant(
-        UnlitOptions::standard(device),
-        UnlitVertexChannels {
+        LitOptions::standard(device),
+        LitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::CompressedPosition),
                 joints: false,
@@ -756,12 +759,12 @@ async fn msaa_produces_more_partial_coverage_than_no_msaa() {
     );
 }
 
-async fn unlit_cube_matches_snapshot() {
+async fn lit_cube_matches_snapshot() {
     let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
     assert_image_snapshot(
-        snapshot!("unlit_cube.webp"),
+        snapshot!("lit_cube.webp"),
         &frame,
         frame.width,
         frame.height,
@@ -826,7 +829,7 @@ async fn instanced_cubes_match_snapshot() {
     );
 
     assert_image_snapshot_with_tolerance(
-        snapshot!("unlit_cubes_instanced.webp"),
+        snapshot!("lit_cubes_instanced.webp"),
         &frame,
         frame.width,
         frame.height,
@@ -840,8 +843,8 @@ async fn instanced_cubes_match_snapshot() {
 async fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless().await;
     let variant = variant(
-        UnlitOptions::standard(&ctx.device),
-        UnlitVertexChannels {
+        LitOptions::standard(&ctx.device),
+        LitVertexChannels {
             position: PositionStreamChannels {
                 position: None,
                 joints: false,
@@ -904,17 +907,17 @@ async fn a_caller_shader_splices_into_the_built_in_stages() {
     // the geometry arrives at the built-in vertex stage's own attributes and
     // leaves it exactly where the built-in shader puts it, and the fragment
     // snippet repaints the result through the function the top level added.
-    let shader = UnlitShader::new(
+    let shader = LitShader::new(
         "test::flat",
         "fn test_flat_color() -> vec4<f32> { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }",
         "",
         "color = test_flat_color();",
     );
-    let mut options = UnlitOptions::standard(&ctx.device);
+    let mut options = LitOptions::standard(&ctx.device);
     options.shader = Some(shader);
     let variant = variant(
         options,
-        UnlitVertexChannels {
+        LitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::UncompressedPosition),
                 joints: false,
@@ -946,8 +949,8 @@ async fn a_caller_shader_splices_into_the_built_in_stages() {
 async fn textured_cube_matches_snapshot() {
     let ctx = Ctx::headless().await;
     let variant = variant(
-        UnlitOptions::standard(&ctx.device),
-        UnlitVertexChannels {
+        LitOptions::standard(&ctx.device),
+        LitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::CompressedPosition),
                 joints: false,
@@ -961,7 +964,7 @@ async fn textured_cube_matches_snapshot() {
     let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
     let frame = render(&ctx, &fixture, &[instance]);
     assert_image_snapshot_with_tolerance(
-        snapshot!("unlit_cube_textured.webp"),
+        snapshot!("lit_cube_textured.webp"),
         &frame,
         frame.width,
         frame.height,
@@ -1158,7 +1161,7 @@ async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gpu_unlit::unaligned_clear"),
+            label: Some("gpu_lit::unaligned_clear"),
         });
     {
         let mut pass = ft.attachments.begin_pass(
@@ -1227,7 +1230,7 @@ async fn the_readback_module_returns_a_texture_as_tight_rows() {
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gpu_unlit::readback_module"),
+            label: Some("gpu_lit::readback_module"),
         });
     {
         let mut pass = ft.attachments.begin_pass(
@@ -1277,7 +1280,7 @@ async fn the_readback_module_returns_a_buffer_slice() {
     let ctx = Ctx::headless().await;
     let values: [u32; 16] = core::array::from_fn(|index| index as u32 * 3 + 1);
     let source = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("gpu_unlit::readback_source"),
+        label: Some("gpu_lit::readback_source"),
         size: core::mem::size_of_val(&values) as u64,
         usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -1313,7 +1316,7 @@ gpu_tests! {
     base_color_reaches_the_frame,
     depth_ordering_hides_the_far_instance,
     msaa_produces_more_partial_coverage_than_no_msaa,
-    unlit_cube_matches_snapshot,
+    lit_cube_matches_snapshot,
     instanced_cubes_match_snapshot,
     position_less_variant_draws_points_at_instance_origins,
     a_caller_shader_splices_into_the_built_in_stages,

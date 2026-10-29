@@ -50,7 +50,7 @@ async fn mismatched_morph_weight_count_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+    let key = LitPipelineKey::unlit(default_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
@@ -62,7 +62,7 @@ async fn mismatched_morph_weight_count_panics() {
         &mut world,
         bundle![
             mesh,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
             MorphBinding {
                 weights: weights_entity
             },
@@ -78,13 +78,13 @@ async fn morphing_without_a_weight_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+    let key = LitPipelineKey::unlit(default_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
 
     gpu.spawn(&mut world, bundle![camera()]);
-    gpu.spawn(&mut world, bundle![mesh, UnlitPipeline::new(key)]);
+    gpu.spawn(&mut world, bundle![mesh, GpuRenderPipeline::new(key)]);
     gpu.bind_offscreen_target(&world, "test::morphed_unbound");
     gpu.render(&world);
 }
@@ -94,7 +94,7 @@ async fn meshes_can_share_one_morph_weights() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+    let key = LitPipelineKey::unlit(default_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas.clone()));
@@ -118,7 +118,7 @@ async fn meshes_can_share_one_morph_weights() {
                     ..Default::default()
                 },
                 mesh,
-                UnlitPipeline::new(key.clone()),
+                GpuRenderPipeline::new(key.clone()),
                 MorphBinding {
                     weights: weights_entity
                 },

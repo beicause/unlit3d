@@ -519,7 +519,7 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
                 scale: glam::Vec3::splat(0.7),
             },
             mesh,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
         ],
     );
     gpu

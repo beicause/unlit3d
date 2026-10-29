@@ -39,7 +39,7 @@ glam.workspace = true
 hashbrown.workspace = true
 log.workspace = true
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3" }
-unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"] }
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["lit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["ui", "winit"] }
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3" }
 # The soundfont the demo embeds. Its own crate because the bytes are fourteen

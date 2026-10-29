@@ -188,7 +188,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 调用方就自己搭这套形状。`unlit3dx_examples` crate 就是现成的范例：它的 render 桥是写在
 示例 crate 里的资源服务器，建立在 `unlit3d` 的 `MeshSource` 这个通用注册表之上，注册
 自己的管线族、经由同一套 API 分配资源。渲染 world 的管线选项来自其中放入的
-`UnlitPipelineKey` 组件；不放则由 mesh source 的设备推导出标准选项。
+`LitPipelineKey` 组件；不放则由 mesh source 的设备推导出标准选项。
 
 各桥如下：
 

@@ -7,7 +7,7 @@
 use glam::Vec3;
 use unlit3dx::prelude::*;
 
-use crate::render::{OwnedUnlitMeshDesc, WHITE_COLOR, cuboid_mesh, uv_sphere};
+use crate::render::{OwnedLitMeshDesc, WHITE_COLOR, cuboid_mesh, uv_sphere};
 
 /// Every ball's radius, in metres.
 pub const BALL_RADIUS: f32 = 0.8;
@@ -110,7 +110,7 @@ pub fn pattern_texture(kind: ShapeKind, color: [u8; 4]) -> Vec<[u8; 4]> {
 /// The mesh one shape kind draws. Every kind is about [`BALL_RADIUS`]
 /// across, so every shape shares one visual weight.
 #[must_use]
-pub fn shape_mesh(kind: ShapeKind) -> OwnedUnlitMeshDesc {
+pub fn shape_mesh(kind: ShapeKind) -> OwnedLitMeshDesc {
     match kind {
         ShapeKind::Ball => uv_sphere(BALL_RADIUS, 32, 22),
         ShapeKind::Cube => cuboid_mesh(Vec3::splat(BALL_RADIUS * 0.8)),
@@ -121,9 +121,9 @@ pub fn shape_mesh(kind: ShapeKind) -> OwnedUnlitMeshDesc {
 
 /// Lift a raw mesh's arrays into the owned description the render server
 /// takes.
-fn into_desc(mesh: RawMesh) -> OwnedUnlitMeshDesc {
+fn into_desc(mesh: RawMesh) -> OwnedLitMeshDesc {
     let (positions, uvs, colors, indices) = mesh;
-    OwnedUnlitMeshDesc {
+    OwnedLitMeshDesc {
         positions,
         uvs: Some(uvs),
         colors: Some(colors),
@@ -254,7 +254,7 @@ pub(crate) mod tests {
     /// Every triangle of every generated mesh faces outward: the unlit
     /// pipeline culls back faces, so a single inward triangle shows as a
     /// hole in the surface.
-    pub(crate) fn assert_faces_outward(name: &str, mesh: &OwnedUnlitMeshDesc) {
+    pub(crate) fn assert_faces_outward(name: &str, mesh: &OwnedLitMeshDesc) {
         let indices = mesh.indices.as_deref().unwrap_or(&[]);
         for triangle in indices.as_chunks::<3>().0 {
             let [a, b, c] = triangle.map(|index| Vec3::from(mesh.positions[index as usize]));

@@ -44,7 +44,7 @@ use super::{
     camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
-use unlit_wgpu::pipeline::UnlitShader;
+use unlit_wgpu::pipeline::LitShader;
 use unlit3d::prelude::*;
 
 /// How far above the floor, and how far back, the camera sits.
@@ -183,14 +183,13 @@ fn build(
     // the variant's lighting flag set, so the mesh and material allocation
     // below is the unlit pipeline's own.
     source.register_lit_family(&world.root_scope());
-    source.ambient = AMBIENT;
     let device = source.device(&world.root_scope());
-    let key = LitPipelineKey::new(super::unlit_options(&device));
+    let key = LitPipelineKey::new(super::default_options(&device));
     // The wall's own key: the relief rides in the vertex stage, and a shader
     // is part of the options a variant is compiled from, so the wall draws
     // through a second pipeline of the same family.
-    let mut relief = super::unlit_options(&device);
-    relief.shader = Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), ""));
+    let mut relief = super::default_options(&device);
+    relief.shader = Some(LitShader::new("lit::wall_relief", "", wall_relief(), ""));
     let relief_key = LitPipelineKey::new(relief);
 
     let source_entity = world
@@ -218,14 +217,15 @@ fn build(
     floor.normals = Some(vec![glam::Vec3::Y.to_array(); floor.positions.len()]);
     let floor_mesh = allocate_surface(world, source_entity, &key, &floor);
     let wall_mesh = allocate_surface(world, source_entity, &relief_key, &wall);
-    let pipeline = LitPipeline::new(key);
-    let relief_pipeline = LitPipeline::new(relief_key);
+    let pipeline = GpuRenderPipeline::new(key);
+    let relief_pipeline = GpuRenderPipeline::new(relief_key);
 
     let camera_entity = super::spawn_in(
         world,
         source_entity,
         bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
     );
+    super::spawn_in(world, source_entity, bundle![AmbientLight::new(AMBIENT)]);
 
     super::spawn_in(
         world,

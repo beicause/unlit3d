@@ -70,7 +70,7 @@ pub const DEFAULT_TOLERANCE: Tolerance = Tolerance {
 /// web, and it has to see the name as a literal to do it.
 #[derive(Clone, Copy)]
 pub struct Snapshot {
-    /// The baseline's name, such as `unlit_cube.webp`.
+    /// The baseline's name, such as `lit_cube.webp`.
     name: &'static str,
     /// The baseline's bytes where the target has no filesystem to read them
     /// from, and `None` where it does.
@@ -122,8 +122,8 @@ impl Snapshot {
 /// ```rust
 /// use unlit_wgpu_test_util::snapshot;
 ///
-/// let baseline = snapshot!("unlit_cube.webp");
-/// assert_eq!(baseline.name(), "unlit_cube.webp");
+/// let baseline = snapshot!("lit_cube.webp");
+/// assert_eq!(baseline.name(), "lit_cube.webp");
 /// ```
 #[macro_export]
 macro_rules! snapshot {

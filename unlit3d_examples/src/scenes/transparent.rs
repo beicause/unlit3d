@@ -58,7 +58,7 @@ const BACKDROP_TINT: glam::Vec4 = glam::Vec4::new(0.85, 0.8, 0.35, 1.0);
 /// blending with them.
 struct Backdrop {
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for Backdrop {
@@ -84,7 +84,7 @@ struct Pane {
     tint: glam::Vec4,
     translation: glam::Vec3,
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for Pane {
@@ -130,7 +130,7 @@ fn build(
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     let device = source.device(&world.root_scope());
 
     // Two variants of the same unlit pipeline: the opaque one every other
@@ -143,8 +143,8 @@ fn build(
     // still occlude them.
     // Both variants read the instance tint: the backdrop is tinted through it,
     // and every pane's tint is its own.
-    let opaque_key = UnlitPipelineKey::new(super::unlit_options(&device));
-    let mut translucent = super::unlit_options(&device);
+    let opaque_key = LitPipelineKey::unlit(super::default_options(&device));
+    let mut translucent = super::default_options(&device);
     translucent.color_target.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -169,7 +169,7 @@ fn build(
     // The pane mesh carries positions and indices only: no UV, no color. The
     // draw derives exactly those channels back off the mesh, and each pane's
     // tint is its own instance colour, so one mesh serves all of them.
-    let translucent_key = UnlitPipelineKey::new(translucent);
+    let translucent_key = LitPipelineKey::unlit(translucent);
 
     let source_entity = world
         .scope_mut(pass)
@@ -181,10 +181,10 @@ fn build(
     // The backdrop the panes composite over: an opaque cube drawn with depth
     // writes, so it also occludes nothing that should be in front of it.
     let backdrop = super::with_mesh_source(world, source_entity, |source, world| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &opaque_key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
@@ -197,10 +197,10 @@ fn build(
     // The panes: one mesh, three instances, each tinted and placed by its
     // instance stream.
     let pane_mesh = super::with_mesh_source(world, source_entity, |source, world| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &translucent_key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: None,
                 colors: None,
@@ -221,7 +221,7 @@ fn build(
         source_entity,
         Backdrop {
             mesh: backdrop,
-            pipeline: UnlitPipeline::new(opaque_key),
+            pipeline: GpuRenderPipeline::new(opaque_key),
         },
     );
 
@@ -236,7 +236,7 @@ fn build(
                 tint: *tint,
                 translation: glam::Vec3::new(*x, 0.0, *z),
                 mesh: pane_mesh.clone(),
-                pipeline: UnlitPipeline::new(translucent_key.clone()),
+                pipeline: GpuRenderPipeline::new(translucent_key.clone()),
             },
         );
     }

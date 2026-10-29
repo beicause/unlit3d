@@ -230,7 +230,7 @@ and a caller that wants another library builds that shape itself. The
 asset server written in the example crate over `unlit3d`'s generic
 `MeshSource` registry, registering its own pipeline family and allocating
 through the same API a caller would. A render world's pipeline options come
-from the `UnlitPipelineKey` component installed in it; without one they are
+from the `LitPipelineKey` component installed in it; without one they are
 derived from the mesh source's device.
 
 The bridges:

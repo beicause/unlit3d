@@ -32,7 +32,7 @@ pub mod transparent;
 pub mod ui_only;
 
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::scene::ViewportRect;
 use unlit3d::prelude::*;
 
@@ -375,10 +375,10 @@ pub fn allocate_surface(
 ) -> GpuMesh {
     let colors = vec![grid.albedo; grid.positions.len()];
     with_mesh_source(world, source_entity, |source, world| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &grid.positions,
                 uvs: Some(&grid.uvs),
                 colors: Some(&colors),
@@ -395,7 +395,7 @@ pub struct LitSurface {
     /// The mesh this surface draws.
     pub mesh: GpuMesh,
     /// The pipeline its instances are drawn with.
-    pub pipeline: LitPipeline,
+    pub pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for LitSurface {
@@ -536,7 +536,7 @@ pub fn aim_camera(
         .expect("the entity carries a camera");
 }
 
-/// Unlit options for the ported ECS scenes: per-instance transform and tint,
+/// Default options for the ported ECS scenes: per-instance transform and tint,
 /// no texture, no MSAA, with reverse-z depth.
 ///
 /// The options are pure policy, so they say nothing about the geometry a draw
@@ -544,9 +544,9 @@ pub fn aim_camera(
 /// uploads, and which of them a draw reads follows the mesh it draws. The tint
 /// rides the same per-instance record as the transform, so a draw that reads
 /// instances reads the tint too.
-pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
+pub fn default_options(device: &wgpu::Device) -> LitOptions {
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    UnlitOptions {
+    LitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
@@ -567,7 +567,7 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
             count: 1,
             ..Default::default()
         },
-        ..UnlitOptions::standard(device)
+        ..LitOptions::standard(device)
     }
 }
 
@@ -728,7 +728,7 @@ pub fn with_mesh_source<R>(
 pub fn allocate_offset_cube_mesh(
     world: &World,
     source_entity: Entity,
-    key: &UnlitPipelineKey,
+    key: &LitPipelineKey,
     offset: glam::Vec3,
 ) -> GpuMesh {
     let (positions, uvs, colors, indices) = cube();
@@ -743,10 +743,10 @@ pub fn allocate_offset_cube_mesh(
         })
         .collect::<Vec<_>>();
     with_mesh_source(world, source_entity, |source, world| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),

@@ -6,7 +6,7 @@
 //! as its own snapshot.
 
 use super::{
-    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, unlit_options,
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options,
 };
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
@@ -41,7 +41,7 @@ pub static SCENE: SceneDef = SceneDef {
 /// the scene, so they are the bundle's own.
 struct SkinnedCube {
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
     pose: Entity,
 }
 
@@ -70,10 +70,10 @@ fn build(
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     // The variant that reads the joint stream: its position buffer is wider by
     // the joint pair, so a stream packed for the plain cube would misread.
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    let key = LitPipelineKey::unlit(default_options(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -82,10 +82,10 @@ fn build(
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
@@ -108,7 +108,7 @@ fn build(
         source_entity,
         SkinnedCube {
             mesh,
-            pipeline: UnlitPipeline::new(key),
+            pipeline: GpuRenderPipeline::new(key),
             pose: pose_entity,
         },
     );

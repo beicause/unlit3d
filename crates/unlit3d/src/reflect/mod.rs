@@ -89,11 +89,11 @@ mod tests {
             "InstanceVisibility"
         );
         assert_eq!(
-            crate::unlit::InstanceColor::SHAPE.type_identifier,
+            crate::lit::InstanceColor::SHAPE.type_identifier,
             "InstanceColor"
         );
         assert_eq!(
-            crate::unlit::InstanceCutoff::SHAPE.type_identifier,
+            crate::lit::InstanceCutoff::SHAPE.type_identifier,
             "InstanceCutoff"
         );
     }

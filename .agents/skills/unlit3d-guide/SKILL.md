@@ -28,16 +28,16 @@ API 速查见同目录的 [REFERENCE.md](REFERENCE.md)；可跑的例子见本�
 
 ```rust
 use unlit3d::prelude::*;
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::resources::ResourceGraph;
 
 // 一 world 一份：GPU 状态（device/queue/graph/capabilities）与 FrameClock 一起进 shared 子树。
 let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new(), DeviceCapabilities::default());
 
-// 内建 unlit family 只登记策略，不立刻编译 pipeline：首个 draw 才建。
+// 内建 lit family 只登记策略，不立刻编译 pipeline：首个 draw 才建。
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
-mesh_source.register_unlit_family(&world.root_scope());
-let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
+mesh_source.register_lit_family(&world.root_scope());
+let key = LitPipelineKey::new(LitOptions::standard(&mesh_source.device(&world.root_scope())));
 let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 
 // pass 是作用域：它录制挂在自己下面的 source。
@@ -47,7 +47,7 @@ let source = world.scope_mut(pass).unwrap().spawn(bundle![Source::new(mesh_sourc
 // 相机与渲染实体都挂在 source 自己的子树里。
 world.scope_mut(source).unwrap().spawn(bundle![camera]);
 world.scope_mut(source).unwrap()
-    .spawn(bundle![Transform::default(), mesh, material, UnlitPipeline::new(key)]);
+    .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
 
 // 每帧：先给 pass 挂附件，再让 renderer 录一次。
 let attachments = FrameAttachments::new(&world, ctx, format, size, 1, true);
@@ -110,20 +110,20 @@ for index in 0..frames {
 
 | 想做 | 做法 |
 | --- | --- |
-| 建 mesh | `source.allocate_unlit_mesh(&scope, &key, UnlitMeshDesc { .. })` 返回 `GpuMesh`；顶点通道由你给的 slice 决定（positions 必填，uvs/colors/indices/joints/weights/morph 可选） |
-| 建材质 | 纹理 `register_texture_and_default_view`、采样器 `register_sampler`，再 `allocate_unlit_material(&scope, &key, view, sampler)` |
-| 画一份 | `spawn(bundle![Transform, mesh, material, UnlitPipeline::new(key)])`，挂在 source 子树里 |
+| 建 mesh | `source.allocate_lit_mesh(&scope, &key, LitMeshDesc { .. })` 返回 `GpuMesh`；顶点通道由你给的 slice 决定（positions 必填，uvs/colors/indices/joints/weights/morph 可选） |
+| 建材质 | 纹理 `register_texture_and_default_view`、采样器 `register_sampler`，再 `allocate_lit_material(&scope, &key, view, sampler)` |
+| 画一份 | `spawn(bundle![Transform, mesh, material, GpuRenderPipeline::new(key)])`，挂在 source 子树里 |
 | 画多份 | 同一个 `key` / `mesh` / `material` clone 到多个实体；每份差异用 `InstanceColor` / `InstanceCutoff` / `Transform`，**不要**为每个颜色重建 mesh |
 | 暂时隐藏 | `InstanceVisibility { visible: false }`，不要 despawn |
 | 释放 | `source.remove_mesh(mesh)` |
 
-不假设顶点布局：通用版 `allocate_mesh` 接受你自定的 `MeshDesc`。`UnlitOptions` 是**纯策略**（剔除、深度、混合、采样、目标格式）；顶点通道有无、是否带材质、是否 morph，是 family 在解析 draw 时自己折叠进 `UnlitVariant` 的事实。
+不假设顶点布局：通用版 `allocate_mesh` 接受你自定的 `MeshDesc`。`LitOptions` 是**纯策略**（剔除、深度、混合、采样、目标格式）；顶点通道有无、是否带材质、是否 morph，是 family 在解析 draw 时自己折叠进 `LitVariant` 的事实。
 
 ## 管线与渲染目标
 
-- `UnlitOptions::standard(device)` 面向「4x MSAA + 设备默认深度格式 + `Rgba8UnormSrgb` + reverse-z」。深度格式**不要写死**：它与 `create_depth_target` 一样取 `unlit_wgpu::render_attachments::default_depth_stencil_format(device)`——设备支持 `DEPTH32FLOAT_STENCIL8` 时是 `Depth32FloatStencil8`，否则才是 `Depth24PlusStencil8`。换成单采样目标或别的颜色格式时**不必**自己改这三个字段：内建 unlit family 在创建管线时按这一帧附件的 surface（`attachments.surface_key()`）重写它们（`SurfaceTarget::set_surface`，`crates/unlit_wgpu/src/pipeline.rs:888`），`UnlitOptions` 里写的是占位。只有自己实现的 family 才要负责这件事——在管线描述符上同样调 `set_surface`，内建的 blit family 就是这么做的（`crates/unlit3d/src/blit.rs:337`）。
+- `LitOptions::standard(device)` 面向「4x MSAA + 设备默认深度格式 + `Rgba8UnormSrgb` + reverse-z」。深度格式**不要写死**：它与 `create_depth_target` 一样取 `unlit_wgpu::render_attachments::default_depth_stencil_format(device)`——设备支持 `DEPTH32FLOAT_STENCIL8` 时是 `Depth32FloatStencil8`，否则才是 `Depth24PlusStencil8`。换成单采样目标或别的颜色格式时**不必**自己改这三个字段：内建 lit family 在创建管线时按这一帧附件的 surface（`attachments.surface_key()`）重写它们（`SurfaceTarget::set_surface`，`crates/unlit_wgpu/src/pipeline.rs:888`），`LitOptions` 里写的是占位。只有自己实现的 family 才要负责这件事——在管线描述符上同样调 `set_surface`，内建的 blit family 就是这么做的（`crates/unlit3d/src/blit.rs:337`）。
 - 深度是 **reverse-z**：`depth_compare: Greater`、清成 0.0（`depth_clear()`）、投影用 `glam::camera::rh::proj::directx::perspective_infinite_reverse`。配 forward-z 投影会整片被裁掉。
-- 要自定义管线就 `register_family::<K, F, I>`：内建 unlit 没有特权路径，它只是其中一个 family。同一个 world 里同一 key 类型只能注册一次（重复会 panic: `a pipeline family is already registered for this key type`）。
+- 要自定义管线就 `register_family::<K, F, I>`：内建 lit 没有特权路径，它只是其中一个 family。同一个 world 里同一 key 类型只能注册一次（重复会 panic: `a pipeline family is already registered for this key type`）。
 
 ## 透明与排序
 
@@ -203,13 +203,13 @@ world.apply().expect("the queue is drained");
 **几何体与材质**
 
 7. 一个 mesh 多份实例：颜色走 `InstanceColor`、镂空走 `InstanceCutoff`，不要为每个颜色建一个 mesh。
-8. 顶点通道由你上传的 slice 决定，不由 `UnlitOptions` 决定；少传一个通道就少打包一份数据。
-9. 材质是 bind group 的配方：纹理与采样器先注册进 `ResourceGraph`，只把 `ResHandle` 交给 `allocate_unlit_material`。
+8. 顶点通道由你上传的 slice 决定，不由 `LitOptions` 决定；少传一个通道就少打包一份数据。
+9. 材质是 bind group 的配方：纹理与采样器先注册进 `ResourceGraph`，只把 `ResHandle` 交给 `allocate_lit_material`。
 10. 高频纹理开各向异性过滤（`anisotropy_clamp: 4` 起），点采样在掠射角会出摩尔纹。
 
 **管线与目标**
 
-11. `UnlitOptions::standard` 假设 4x MSAA + Rgba8UnormSrgb + 设备默认深度格式（`default_depth_stencil_format(device)`，别写死 `Depth24PlusStencil8`）；内建 unlit 的这三个目标字段由附件覆盖，自定义 family 得自己 `set_surface`。
+11. `LitOptions::standard` 假设 4x MSAA + Rgba8UnormSrgb + 设备默认深度格式（`default_depth_stencil_format(device)`，别写死 `Depth24PlusStencil8`）；内建 unlit 的这三个目标字段由附件覆盖，自定义 family 得自己 `set_surface`。
 12. reverse-z：`Greater` + 清 0.0 + `perspective_infinite_reverse`，三者缺一画面就空。
 13. 透明用**第二个 key**（blend + 不写深度 + 仍测深度 + 背面剔除）+ `ZSortedDrawing`；spawn 顺序故意与绘制顺序不同，才验证得出排序。
 14. 要新管线用 `register_family` 自己注册，别去找内建的内部路径（内建 unlit 只是其中一个 family）。
@@ -238,8 +238,8 @@ world.apply().expect("the queue is drained");
 | pass 完全不画 | 没 `set_attachments`：`FramePass` 在拿到颜色附件之前不画任何东西 |
 | 整片被裁掉 / 深度反了 | forward-z 投影配 `Greater`，或 reverse-z 投影配 `Less` |
 | pipeline 创建失败 | 自定义 family 没在自己的管线描述符上 `set_surface`，`multisample.count` / `color_target.format` / `depth_stencil.format` 与附件不一致（内建 unlit 已自动覆盖） |
-| panic: a pipeline family is already registered for this key type | 同一个 world 里 `register_unlit_family` 调了两次 |
-| `allocate_unlit_mesh` panic | slice 为空、通道长度不一致、joints/weights 只给一边、morph 数量不对 |
+| panic: a pipeline family is already registered for this key type | 同一个 world 里 `register_lit_family` 调了两次 |
+| `allocate_lit_mesh` panic | slice 为空、通道长度不一致、joints/weights 只给一边、morph 数量不对 |
 | 借用 panic | 行为回调里取自己这个组件类型；或同一实体同时 `query_one` 两次 |
 | 结构变更没生效 | 回调里 spawn/despawn 没走 `queue`，或没调 `apply` |
 | 透明面发黑 / 错位 | 没开 blend、`depth_write_enabled` 没关，或没加 `ZSortedDrawing` |
@@ -277,7 +277,7 @@ world.apply().expect("the queue is drained");
 | `transparent` | 透明 + `ZSortedDrawing` + blend |
 | `animated` | 八帧内 mesh 的分配、回收、平移旋转 |
 | `skinned` / `morphed` / `instanced_skinned_morph` | 蒙皮、morph，以及共享一个 mesh 的实例合并 |
-| `gltf` | `UnlitGltf` 加载、动画采样、`spawn_default_scene` |
+| `gltf` | `LitGltf` 加载、动画采样、`spawn_default_scene` |
 | `mesh_topologies` | 五种 primitive topology，索引与非索引各一遍 |
 | `custom_pipeline` | 自己注册 family（程序化天空 + 粒子） |
 | `unlit3dx_examples`（另一个二进制，不是场景 id） | 多 world：render / physics / audio / gameplay 分工，跨 world UI，MIDI |
@@ -286,9 +286,9 @@ world.apply().expect("the queue is drained");
 
 - 单 world 骨架与四步示例：`crates/unlit3d/README.md` 的「Example」一节（doctest，可直接抄）。
 - frame 模型与 source/pass 语义：`crates/unlit3d/src/source.rs`、`crates/unlit3d/src/pass.rs`、`crates/unlit3d/src/renderer.rs`。
-- 内建 unlit family 与实例组件：`crates/unlit3d/src/unlit.rs`。
+- 内建 lit family 与实例组件：`crates/unlit3d/src/lit.rs`。
 - mesh 分配与资源注册：`crates/unlit3d/src/mesh_source.rs`。
-- 管线策略与 `UnlitOptions`：`crates/unlit_wgpu/src/pipeline.rs`。
+- 管线策略与 `LitOptions`：`crates/unlit_wgpu/src/pipeline.rs`。
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。
 - 输入：`crates/unlit3d/src/input/mod.rs`。
 - UI：`crates/unlit3d/src/ui/mod.rs`。

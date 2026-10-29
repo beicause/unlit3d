@@ -6,7 +6,7 @@
 
 use crate::common::*;
 use unlit_wgpu::globals::Globals;
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline, UnlitVariant};
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, LitVariant, SpecializedLitPipeline};
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
 use unlit_wgpu::resources::ResourceGraph;
@@ -178,7 +178,7 @@ fn render_ui_with(
 
 /// A uniform buffer of `size` bytes, written through the queue.
 /// The UI variant the tests build, for the test's render target.
-fn ui_variant_for_target(device: &wgpu::Device) -> UnlitVariant {
+fn ui_variant_for_target(device: &wgpu::Device) -> LitVariant {
     ui_variant(
         device,
         true,
@@ -215,7 +215,7 @@ fn globals_size() -> u64 {
 /// is created from the shared pipeline ahead of the UI that draws with it.
 fn global_group(
     device: &wgpu::Device,
-    pipeline: &SpecializedUnlitPipeline,
+    pipeline: &SpecializedLitPipeline,
     camera: &wgpu::Buffer,
     globals: &wgpu::Buffer,
 ) -> wgpu::BindGroup {

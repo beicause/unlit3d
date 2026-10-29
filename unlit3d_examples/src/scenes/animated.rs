@@ -104,7 +104,7 @@ struct CellCube {
     transform: Transform,
     tint: glam::Vec4,
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for CellCube {
@@ -128,9 +128,9 @@ fn build(
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     // Every cell is tinted through its instance colour.
-    let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_scope())));
+    let key = LitPipelineKey::unlit(super::default_options(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -192,7 +192,7 @@ fn build(
                         transform: cell_transform(cell, step_index),
                         tint: TINTS[allocated % TINTS.len()],
                         mesh: mesh.clone(),
-                        pipeline: UnlitPipeline::new(key.clone()),
+                        pipeline: GpuRenderPipeline::new(key.clone()),
                     },
                 );
                 cells[cell] = Some((entity, mesh));

@@ -28,11 +28,11 @@ async fn skinning_without_a_pose_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+    let key = LitPipelineKey::unlit(default_options(&ctx.device));
     let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 
     gpu.spawn(&mut world, bundle![camera()]);
-    gpu.spawn(&mut world, bundle![mesh, UnlitPipeline::new(key)]);
+    gpu.spawn(&mut world, bundle![mesh, GpuRenderPipeline::new(key)]);
     gpu.bind_offscreen_target(&world, "test::skinned_unbound");
     gpu.render(&world);
 }
@@ -42,7 +42,7 @@ async fn meshes_can_share_one_skin_pose() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+    let key = LitPipelineKey::unlit(default_options(&ctx.device));
     let (first, skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
     let (second, _) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 
@@ -58,7 +58,7 @@ async fn meshes_can_share_one_skin_pose() {
                 ..Default::default()
             },
             first,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
             SkinBinding { pose: pose_entity },
         ],
     );
@@ -70,7 +70,7 @@ async fn meshes_can_share_one_skin_pose() {
                 ..Default::default()
             },
             second,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
             SkinBinding { pose: pose_entity },
         ],
     );

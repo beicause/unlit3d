@@ -18,21 +18,23 @@
 
 use glam::{Affine3A, Vec3};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World};
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::bounds::FrustumPlanes;
-use unlit3d::components::{Camera, GpuMaterial, GpuMesh, InstanceVisibility, Transform};
+use unlit3d::components::{
+    Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceVisibility, Transform,
+};
 use unlit3d::culling::is_culled;
+use unlit3d::lit::{LitMeshDesc, LitPipelineKey, MeshSourceLitExt};
 use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
-use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
 
 use unlit_ecs::bundle;
 use unlit3dx::job::Job;
 
 /// A mesh description that owns its vertex data, so it can cross a thread
-/// inside a job; [`UnlitMeshDesc`] is what the render world finally sees.
+/// inside a job; [`LitMeshDesc`] is what the render world finally sees.
 #[derive(Clone, Debug, Default)]
-pub struct OwnedUnlitMeshDesc {
+pub struct OwnedLitMeshDesc {
     /// Per-vertex positions, in the mesh's local space.
     pub positions: Vec<[f32; 3]>,
     /// Per-vertex UVs, for a variant that reads them.
@@ -43,11 +45,11 @@ pub struct OwnedUnlitMeshDesc {
     pub indices: Option<Vec<u32>>,
 }
 
-impl OwnedUnlitMeshDesc {
+impl OwnedLitMeshDesc {
     /// The borrowed view the allocation API takes.
     #[must_use]
-    fn borrowed(&self) -> UnlitMeshDesc<'_> {
-        UnlitMeshDesc {
+    fn borrowed(&self) -> LitMeshDesc<'_> {
+        LitMeshDesc {
             positions: &self.positions,
             uvs: self.uvs.as_deref(),
             colors: self.colors.as_deref(),
@@ -72,14 +74,14 @@ pub struct RenderEntity(pub Entity);
 /// use.
 ///
 /// The key is the one installed in the render world: a caller that spawns
-/// an [`UnlitPipelineKey`] component chooses the options. Without one the
+/// an [`LitPipelineKey`] component chooses the options. Without one the
 /// standard unlit options are built from the mesh source's device, so a
 /// caller that only wants the built-in look never has to touch a device.
 ///
 /// For a pipeline of the caller's own, register a family and allocate
 /// through `unlit3d`'s [`MeshSource`] directly; the world is the same
 /// registry either way.
-pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, UnlitPipelineKey)> {
+pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey)> {
     let (source, entity) = world
         .root_scope()
         .query::<(&Source, Entity)>()
@@ -87,11 +89,11 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, UnlitPipelineK
     let mesh_source = source.as_ref::<MeshSource>()?;
     let key = world
         .root_scope()
-        .query::<&UnlitPipelineKey>()
+        .query::<&LitPipelineKey>()
         .next()
         .map(|unlit_pipeline_key| unlit_pipeline_key.clone())
         .unwrap_or_else(|| {
-            UnlitPipelineKey::new(UnlitOptions::standard(
+            LitPipelineKey::unlit(LitOptions::standard(
                 &mesh_source.device(&world.root_scope()),
             ))
         });
@@ -104,7 +106,7 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, UnlitPipelineK
 /// makes for itself. Panics when the world carries no `MeshSource`.
 /// several things in one step. Panics when the world carries no
 /// `MeshSource`.
-pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedUnlitMeshDesc) -> RenderEntity {
+pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> RenderEntity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
@@ -115,7 +117,7 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedUnlitMeshDesc) -> Ren
             source
                 .as_mut::<MeshSource>()
                 .expect("the source carries a MeshSource")
-                .allocate_unlit_mesh(&root, &key.options, desc.borrowed())
+                .allocate_lit_mesh(&root, &key.options, desc.borrowed())
         })
         .expect("the mesh source entity exists");
     // The asset hangs under the source that draws it, so the world holds
@@ -177,7 +179,7 @@ fn allocate_material(
             let texture = build_texture(source, &root);
             let view = source.register_texture_and_default_view(&root, texture).1;
             let sampler = source.register_sampler(&root, Some(descriptor));
-            source.allocate_unlit_material(&root, &key.options, view, sampler)
+            source.allocate_lit_material(&root, &key.options, view, sampler)
         })
         .expect("the mesh source entity exists");
     RenderEntity(
@@ -223,7 +225,7 @@ pub(crate) fn instance_of(
                 transform,
                 mesh,
                 material,
-                pipeline: UnlitPipeline::new(key),
+                pipeline: GpuRenderPipeline::new(key),
             }),
     )
 }
@@ -243,7 +245,7 @@ struct Rendered {
     /// The material bound to that mesh.
     material: GpuMaterial,
     /// The pipeline family the mesh's vertex layout was compiled for.
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for Rendered {
@@ -509,7 +511,7 @@ pub fn camera_looking_at(
 /// Panics when `slices` or `stacks` is zero: the sphere would divide by
 /// zero and carry NaN positions.
 #[must_use]
-pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> OwnedUnlitMeshDesc {
+pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> OwnedLitMeshDesc {
     assert!(slices > 0 && stacks > 0, "a sphere needs slices and stacks");
     let count = (slices + 1) * (stacks + 1);
     let mut positions = Vec::with_capacity(count);
@@ -540,7 +542,7 @@ pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> OwnedUnlitMeshDes
             indices.extend_from_slice(&[row, row + 1, next, row + 1, next + 1, next]);
         }
     }
-    OwnedUnlitMeshDesc {
+    OwnedLitMeshDesc {
         positions,
         uvs: Some(uvs),
         colors: Some(colors),
@@ -563,7 +565,7 @@ const FACES: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
 /// face, so each face has clean uvs) and 36 indices, wound CCW as seen
 /// from outside.
 #[must_use]
-pub fn cuboid_mesh(half: Vec3) -> OwnedUnlitMeshDesc {
+pub fn cuboid_mesh(half: Vec3) -> OwnedLitMeshDesc {
     let mut positions = Vec::with_capacity(24);
     let mut uvs = Vec::with_capacity(24);
     let mut colors = Vec::with_capacity(24);
@@ -608,7 +610,7 @@ pub fn cuboid_mesh(half: Vec3) -> OwnedUnlitMeshDesc {
             indices.extend_from_slice(&[base + 2, base + 1, base, base, base + 3, base + 2]);
         }
     }
-    OwnedUnlitMeshDesc {
+    OwnedLitMeshDesc {
         positions,
         uvs: Some(uvs),
         colors: Some(colors),

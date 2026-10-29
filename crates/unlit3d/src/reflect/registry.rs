@@ -13,14 +13,14 @@ use crate::components::{
     MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
 };
 use crate::input::InputEvents;
-use crate::unlit::{InstanceColor, InstanceCutoff, UnlitPipelineKey};
+use crate::lit::{InstanceColor, InstanceCutoff};
 
 inventory::submit! { ComponentEntry::new::<Transform>() }
 inventory::submit! { ComponentEntry::new::<Camera>() }
 inventory::submit! { ComponentEntry::new::<RenderLoadOps>() }
 inventory::submit! { ComponentEntry::new::<GpuMesh>() }
 inventory::submit! { ComponentEntry::new::<GpuMaterial>() }
-inventory::submit! { ComponentEntry::new::<GpuRenderPipeline<UnlitPipelineKey>>() }
+inventory::submit! { ComponentEntry::new::<GpuRenderPipeline>() }
 inventory::submit! { ComponentEntry::new::<ZSortedDrawing>() }
 inventory::submit! { ComponentEntry::new::<InstanceVisibility>() }
 inventory::submit! { ComponentEntry::new::<SkinPose>() }

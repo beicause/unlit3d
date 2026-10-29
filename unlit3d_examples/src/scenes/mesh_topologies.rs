@@ -20,9 +20,9 @@
 //! pool offset on a device without `base_vertex`. The top row's strip cells
 //! are what exercise the specializer that derives it from the mesh.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, unlit_options};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, default_options};
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
 /// The topologies drawn, left to right.
@@ -122,7 +122,7 @@ const CAMERA_DISTANCE: f32 = 3.0;
 /// describe, so the two only mean anything together.
 struct Patch {
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for Patch {
@@ -148,7 +148,7 @@ pub static SCENE: SceneDef = SceneDef {
     build,
 };
 
-/// The unlit options one topology draws with.
+/// The options one topology draws with.
 ///
 /// The topology is part of the options, so it is part of the pipeline key: a
 /// family variant is compiled per topology, which is why an entity cannot
@@ -159,8 +159,8 @@ pub static SCENE: SceneDef = SceneDef {
 /// strip alternates the winding of the triangles it composes, so a back-face
 /// test would drop every other one and the snapshot could no longer show the
 /// topology whole. Pinning culling is the opaque scenes' job.
-fn options_for(device: &wgpu::Device, topology: wgpu::PrimitiveTopology) -> UnlitOptions {
-    let mut options = unlit_options(device);
+fn options_for(device: &wgpu::Device, topology: wgpu::PrimitiveTopology) -> LitOptions {
+    let mut options = default_options(device);
     options.primitive.topology = topology;
     options.primitive.cull_mode = None;
     options
@@ -211,7 +211,7 @@ fn build(
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     let device = source.device(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
@@ -222,9 +222,9 @@ fn build(
     // and a non-indexed draw share a pipeline wherever the topology cannot
     // tell them apart, and a strip is the one that can, through the index
     // width the specializer reads off the mesh.
-    let keys: Vec<UnlitPipelineKey> = TOPOLOGIES
+    let keys: Vec<LitPipelineKey> = TOPOLOGIES
         .iter()
-        .map(|&topology| UnlitPipelineKey::new(options_for(&device, topology)))
+        .map(|&topology| LitPipelineKey::unlit(options_for(&device, topology)))
         .collect();
     let indices = index_buffer();
 
@@ -253,10 +253,10 @@ fn build(
             // channels describing the same vertices.
             let uvs: Vec<[f32; 2]> = (0..PATCH_VERTICES).map(|_| [0.0, 0.0]).collect();
             let mesh = super::with_mesh_source(world, source_entity, |source, world| {
-                source.allocate_unlit_mesh(
+                source.allocate_lit_mesh(
                     world,
                     &key.options,
-                    UnlitMeshDesc {
+                    LitMeshDesc {
                         positions: &positions,
                         uvs: Some(&uvs),
                         colors: Some(&colors),
@@ -275,7 +275,7 @@ fn build(
             source_entity,
             Patch {
                 mesh,
-                pipeline: UnlitPipeline::new(keys[column].clone()),
+                pipeline: GpuRenderPipeline::new(keys[column].clone()),
             },
         );
     }

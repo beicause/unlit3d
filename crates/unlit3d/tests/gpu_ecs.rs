@@ -35,7 +35,7 @@ async fn ecs_cube_covers_the_frame() {
             scale: glam::Vec3::splat(0.7),
         },
         mesh,
-        UnlitPipeline::new(key),
+        GpuRenderPipeline::new(key),
     ]);
 
     // Render offscreen.
@@ -86,7 +86,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
             },
             InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
             mesh_far,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
         ],
     );
 
@@ -101,7 +101,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
             },
             InstanceColor::new(glam::Vec4::new(0.0, 1.0, 0.0, 1.0)),
             mesh_near,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
         ],
     );
 
@@ -203,7 +203,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
                 scale: glam::Vec3::splat(0.7),
             },
             cube,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
         ],
     );
 
@@ -240,7 +240,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
             },
             InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
             replacement,
-            UnlitPipeline::new(key),
+            GpuRenderPipeline::new(key),
         ],
     );
 
@@ -307,7 +307,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
                 scale: glam::Vec3::splat(0.7),
             },
             first,
-            UnlitPipeline::new(key.clone()),
+            GpuRenderPipeline::new(key.clone()),
         ],
     );
 
@@ -324,7 +324,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
                     scale: glam::Vec3::splat(0.05),
                 },
                 mesh,
-                UnlitPipeline::new(key.clone()),
+                GpuRenderPipeline::new(key.clone()),
             ],
         );
 
@@ -364,7 +364,7 @@ async fn a_source_draws_only_its_own_subtree() {
 
     // A second source beside the first, both children of the frame's pass.
     let mut second_source = MeshSource::new(&world.root_scope(), gpu.context);
-    second_source.register_unlit_family(&world.root_scope());
+    second_source.register_lit_family(&world.root_scope());
     let second = gpu.spawn_source(&mut world, second_source);
 
     // One cube per source, each with the camera that frames it.
@@ -376,7 +376,7 @@ async fn a_source_draws_only_its_own_subtree() {
         scope.spawn(bundle![
             Transform::default(),
             mesh,
-            UnlitPipeline::new(gpu.key.clone()),
+            GpuRenderPipeline::new(gpu.key.clone()),
         ]);
     }
 

@@ -278,7 +278,7 @@ pub struct MeshMetadata {
 /// the lanes of one vector — a variant that only skins reads no weight base.
 ///
 /// Vertex attributes are addressed by the explicit offsets of
-/// [`crate::pipeline::UnlitVariant::vertex_buffer_layouts`], not by WGSL
+/// [`crate::pipeline::LitVariant::vertex_buffer_layouts`], not by WGSL
 /// shader-layout rules, so this type makes no `const_shader_layout` claim;
 /// that the offsets line up is asserted by a test instead.
 ///

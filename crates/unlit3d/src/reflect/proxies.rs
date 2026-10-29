@@ -174,7 +174,7 @@ impl TryFrom<GpuMeshProxy> for GpuMesh {
     type Error = String;
 
     fn try_from(_proxy: GpuMeshProxy) -> Result<Self, Self::Error> {
-        Err("GpuMesh is read-only; allocate one with allocate_unlit_mesh".to_string())
+        Err("GpuMesh is read-only; allocate one with allocate_lit_mesh".to_string())
     }
 }
 
@@ -198,7 +198,7 @@ impl TryFrom<GpuMaterialProxy> for GpuMaterial {
     type Error = String;
 
     fn try_from(_proxy: GpuMaterialProxy) -> Result<Self, Self::Error> {
-        Err("GpuMaterial is read-only; allocate one with allocate_unlit_material".to_string())
+        Err("GpuMaterial is read-only; allocate one with allocate_lit_material".to_string())
     }
 }
 
@@ -207,13 +207,13 @@ impl TryFrom<GpuMaterialProxy> for GpuMaterial {
 #[facet(transparent)]
 pub struct GpuRenderPipelineProxy(#[facet(default)] pub String);
 
-impl<Key> From<&GpuRenderPipeline<Key>> for GpuRenderPipelineProxy {
-    fn from(_pipeline: &GpuRenderPipeline<Key>) -> Self {
-        Self("unlit".to_string())
+impl From<&GpuRenderPipeline> for GpuRenderPipelineProxy {
+    fn from(pipeline: &GpuRenderPipeline) -> Self {
+        Self(pipeline.key_type_name().to_string())
     }
 }
 
-impl<Key> TryFrom<GpuRenderPipelineProxy> for GpuRenderPipeline<Key> {
+impl TryFrom<GpuRenderPipelineProxy> for GpuRenderPipeline {
     type Error = String;
 
     fn try_from(_proxy: GpuRenderPipelineProxy) -> Result<Self, Self::Error> {

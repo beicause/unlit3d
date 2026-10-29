@@ -18,7 +18,7 @@ directly, and you are expected to know WebGPU to use it well.
 |---------|---------|----------|
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
-| `gltf` | no | the `gltf` module: load a glTF document into an `UnlitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
+| `gltf` | no | the `gltf` module: load a glTF document into an `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 | `mcp` | no | the `mcp` module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
 
@@ -126,7 +126,7 @@ world root                              the root scope sees every entity
 ├── FramePass(FramePassOrder(0)) + RenderLoadOps
 │   ├── Source(MeshSource)                    a source is a scope of its own
 │   │   ├── Camera
-│   │   ├── Transform + GpuMesh + GpuMaterial + UnlitPipeline
+│   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
 │   └── Source(UiSource)
 │       └── UiPanel
@@ -176,11 +176,11 @@ without the tree changing.
 
 - The built-in mesh rendering is one source, [`MeshSource`](mesh_source::MeshSource), and it has no more
   privilege than a caller's own. There is no mesh-specific field or draw path in
-  the renderer: the built-in unlit family is registered through the same
+  the renderer: the built-in lit family is registered through the same
   [`MeshSource::register_family`](mesh_source::MeshSource::register_family) a
   caller's own family uses, and everything specific to it — its key, its
   instance record, its mesh and material helpers — lives in the
-  [`unlit`](unlit) module.
+  [`lit`](lit) module.
 - The GPU state — the [`wgpu::Device`], the [`wgpu::Queue`] and the
   [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph) — lives in the world as
   resource components, addressed by a [`RenderContext`](source::RenderContext).
@@ -303,15 +303,15 @@ used; a mesh carrying its buffers inline would drag them through every walk for
 the sake of a few bytes of bounds. The split is by read frequency, not by kind,
 so a new field belongs on the side that reads it.
 
-[`MeshSourceUnlitExt::register_unlit_family`](unlit::MeshSourceUnlitExt::register_unlit_family)
-registers the built-in unlit family;
+[`MeshSourceLitExt::register_lit_family`](lit::MeshSourceLitExt::register_lit_family)
+registers the built-in lit family;
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family)
 registers a caller's own, which is the same route the built-in one takes — down
 to the per-instance vertex stream the family owns and declares (see
-[The unlit pipeline](#the-unlit-pipeline)). Other
+[The lit pipeline](#the-lit-pipeline)). Other
 components: [`Transform`](components::Transform), [`Camera`](components::Camera),
 [`RenderLoadOps`](components::RenderLoadOps),
-[`InstanceColor`](unlit::InstanceColor),
+[`InstanceColor`](lit::InstanceColor),
 [`InstanceVisibility`](components::InstanceVisibility) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
 
@@ -370,14 +370,14 @@ A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
 - The variant is **derived from the draw**, not declared up front: the
   [`DrawContext`](pipeline::DrawContext) hands the key the frame's render
   target, the mesh's vertex layout and its index format, and the key folds each
-  of them where it belongs — the target into `UnlitVariant::surface`, the
+  of them where it belongs — the target into `LitVariant::surface`, the
   vertex layout into `channels`, the index format (and topology) into
   `strip_index_format`. The index format matters because a strip topology's
   pipeline has to declare the width its draw binds, and only the mesh knows it —
   the source picks the narrowest format a mesh's vertex count fits, and widens it
   while baking in a pool offset on a device without `base_vertex`. **Which
   dimensions to specialize on is therefore the family's freedom**: the built-in
-  unlit family specializes on its policy plus the target, the vertex layout and
+  lit family specializes on its policy plus the target, the vertex layout and
   the index format, and a custom family can specialize on anything.
 - The blueprint is **lazily evaluated**: the variant is asked of the key only on
   a cache miss, when a compilation is actually about to happen.
@@ -429,9 +429,9 @@ draws rather than its pivot or its straight-line distance to the eye.
 
 </details>
 
-## The unlit pipeline
+## The lit pipeline
 
-The built-in unlit pipeline is registered as an ordinary family, and the shader
+The built-in lit pipeline is registered as an ordinary family, and the shader
 variant an entity uses contains exactly the channels its mesh has. Nothing about
 it is privileged: a caller's own family is registered through the same
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family) call,
@@ -489,25 +489,29 @@ through the same public builders. See
 
 </details>
 
-## The lit pipeline
+### Lit or unlit
 
-[`LitPipelineKey`](lit::LitPipelineKey) is the same family with the light path
-switched on. It reuses everything the unlit one does — the mesh channels, the
-instance stream, the bind group layouts, the shader package — and differs in one
-thing: the fragment stage adds up the frame's lights instead of just its
-albedo. There is still no prepass, no shadow map, and no compute pass.
+[`LitPipelineKey`](lit::LitPipelineKey) is the caller's options plus one flag,
+`unlit`. Both modes draw through the same family — the mesh channels, the
+instance stream, the bind group layouts and the shader package are shared — and
+the flag decides one thing: whether the fragment stage adds up the frame's
+lights. A lit draw, the default, reads the light arrays and the cluster uniform;
+an unlit one declares none of those bindings and returns its albedo. There is
+still no prepass, no shadow map, and no compute pass.
+
+### Lights and shading
 
 The lights are ordinary components on ordinary entities, so they are placed and
 moved the way anything else in the world is, and a frame pulls them in through
 the same scene walk that pulls in the meshes. Four kinds are provided, and a
 caller extends the set through the same trait the built-in ones use:
 
-- [`DirectionalLight`](lit::DirectionalLight) — the sun; its translation does not
+- [`DirectionalLight`](light::DirectionalLight) — the sun; its translation does not
   matter, only its rotation.
-- [`PointLight`](lit::PointLight) — a position with a range.
-- [`SpotLight`](lit::SpotLight) — a point light with inner and outer cone
+- [`PointLight`](light::PointLight) — a position with a range.
+- [`SpotLight`](light::SpotLight) — a point light with inner and outer cone
   angles; it emits along the entity's local −Z.
-- [`QuadLight`](lit::QuadLight) — an arbitrary convex polygon of four vertices
+- [`QuadLight`](light::QuadLight) — an arbitrary convex polygon of four vertices
   in local space, for area light and soft window light. Its `rect` constructor
   builds the common rectangle.
 
@@ -521,11 +525,13 @@ is one cell lookup plus the lights in it, not one loop over every light in the
 scene. The same path runs on WebGL2, which has no compute shaders at all.
 
 A directional light is not clustered. It reaches every fragment, so it goes into
-a uniform together with the source's ambient term instead of into every cell:
-[`MeshSource::ambient`](mesh_source::MeshSource::ambient) is the term every lit
-pixel receives, and the frame's directional lights sit beside it, up to
-[`MAX_DIRECTIONAL_LIGHTS`](unlit_wgpu::light::MAX_DIRECTIONAL_LIGHTS) of them, with
-the weakest dropped past that.
+a uniform instead of into every cell, up to
+[`MAX_DIRECTIONAL_LIGHTS`](unlit_wgpu::light::MAX_DIRECTIONAL_LIGHTS) of them,
+with the weakest dropped past that. The ambient term sits in the same uniform,
+but it is a light like any other rather than a field of the source:
+[`AmbientLight`](light::AmbientLight) is an ordinary component, the frame sums
+every one in the source's scope, and a scene adds, moves or removes one the way
+it does anything else.
 
 Polygon lights carry the classic Lambert form factor of the polygon seen from
 the shaded point rather than a fitted lookup table: it is a closed form over
@@ -535,8 +541,8 @@ accumulator and nothing more.
 
 ## Custom shaders and per-instance data
 
-Nothing in the frame path is reserved for the built-in unlit shader: it lives
-in the [`unlit`](unlit) module as an ordinary family. A caller's family
+Nothing in the frame path is reserved for the built-in lit shader: it lives
+in the [`lit`](lit) module as an ordinary family. A caller's family
 registers through the same
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family) call as
 the built-in one and supplies its own pipeline — a hand-written
@@ -545,9 +551,9 @@ shader package — plus, if it needs any, its own per-instance vertex data.
 
 A caller who wants the built-in family — its layouts, its vertex streams, its
 per-instance record — and only a different piece of shade does not register
-anything: they put an [`UnlitShader`](unlit_wgpu::pipeline::UnlitShader) in
-[`UnlitOptions::shader`](unlit_wgpu::pipeline::UnlitOptions::shader) before
-building the [`UnlitPipelineKey`](unlit::UnlitPipelineKey). It holds three WESL
+anything: they put an [`LitShader`](unlit_wgpu::pipeline::LitShader) in
+[`LitOptions::shader`](unlit_wgpu::pipeline::LitOptions::shader) before
+building the [`LitPipelineKey`](lit::LitPipelineKey). It holds three WESL
 snippets, spliced into the top level, the end of the vertex stage and the end of
 the fragment stage, so the built-in stages keep doing what they do — decoding
 the vertex, transforming it, lighting it, clipping it — and the snippet changes
@@ -581,13 +587,13 @@ family decides which components it collects and what its record looks like. A
 family that carries no instance state of its own passes `()`, whose stream is
 empty.
 
-The built-in unlit family is just an implementation of this trait
-([`UnlitInstance`](unlit::UnlitInstance), slot
+The built-in lit family is just an implementation of this trait
+([`LitInstance`](lit::LitInstance), slot
 [`INSTANCE_SLOT`](unlit_wgpu::pipeline::INSTANCE_SLOT), stride
 [`size_of::<MeshInstance>()`]) — the same interface a caller implements, with
 no private path behind it. It is also the only place the built-in record's
 [`MeshInstance`](unlit_wgpu::mesh::MeshInstance) is built: that record belongs
-to the unlit family, not to the shared frame path, so a custom family is handed
+to the lit family, not to the shared frame path, so a custom family is handed
 no record of the frame's making — it writes whatever its own pipeline declares.
 
 ### Skin and morph state
@@ -611,13 +617,13 @@ returns the index its slice starts at.
 same for the [`MorphWeights`](components::MorphWeights) its
 [`MorphBinding`](components::MorphBinding) names, checking the weight count
 against the mesh's target count. A family that draws neither calls neither; the
-unlit family calls `pack_joints` for a skinned mesh and `pack_morph_weights`
+lit family calls `pack_joints` for a skinned mesh and `pack_morph_weights`
 for a morphed one, and puts the two returned bases into its record.
 
 The arrays themselves are the source's: it owns them, grows them and uploads
 them once per frame, after every family has written its records. A family only
 appends to them while it writes, which is what keeps them a shared, general
-facility rather than unlit-specific state.
+facility rather than lit-specific state.
 
 <details>
 <summary>How a family's records reach the draw</summary>
@@ -649,16 +655,16 @@ than reimplementing the layout:
 [`GlobalBindings`](unlit_wgpu::pipeline::GlobalBindings) description, and
 [`GlobalResources::rebuild`](pipeline::GlobalResources::rebuild) returns the
 [`Rebuild`](pipeline::Rebuild) recipe the renderer registers, so the group is
-rebuilt whenever the arrays behind it change. The built-in unlit family is a
+rebuilt whenever the arrays behind it change. The built-in lit family is a
 caller of these same functions.
 
 ## Loading glTF documents
 
 The `gltf` module (cargo feature `gltf`, off by default) loads a
 [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) document —
-`.glb` or `.gltf` — into an `UnlitGltf`. The document, its
+`.glb` or `.gltf` — into an `LitGltf`. The document, its
 buffers and its images are parsed and decoded eagerly in the constructor, and
-the world-space transform of every node is computed up front, so `UnlitGltf` is
+the world-space transform of every node is computed up front, so `LitGltf` is
 a *record* of the model, not a GPU resource: it owns no `World` and no
 [`MeshSource`](mesh_source::MeshSource).
 
@@ -679,8 +685,8 @@ What it does is patch the world you already render:
 - `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
   mesh (or every node reachable from the default scene): one entity per
   primitive, each carrying the node's world-space [`Transform`](components::Transform), the uploaded
-  [`GpuMesh`](components::GpuMesh), the [`UnlitPipeline`](unlit::UnlitPipeline)
-  for the mesh, an [`InstanceColor`](unlit::InstanceColor) tinted with the
+  [`GpuMesh`](components::GpuMesh), the [`GpuRenderPipeline`](components::GpuRenderPipeline)
+  for the mesh, an [`InstanceColor`](lit::InstanceColor) tinted with the
   material's base-color factor, and — when the mesh reads a base-color texture —
   the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
   material is `alphaMode: BLEND` is also marked
@@ -688,8 +694,8 @@ What it does is patch the world you already render:
   back-to-front after the opaque geometry. A `alphaMode: MASK` material instead
   draws binary coverage: the fragment shader discards every fragment whose alpha
   falls below the material's `alphaCutoff` (0.5 when the document leaves it
-  out), so the pipeline's `UnlitOptions::alpha_cutoff` is set, the spawned entity
-  carries an [`InstanceCutoff`](unlit::InstanceCutoff) whose value travels
+  out), so the pipeline's `LitOptions::alpha_cutoff` is set, the spawned entity
+  carries an [`InstanceCutoff`](lit::InstanceCutoff) whose value travels
   in the per-instance stream, and the primitive needs neither blending nor a
   sort.
 - A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its
@@ -697,15 +703,15 @@ What it does is patch the world you already render:
   [`SkinPose`](components::SkinPose) entity for the node's skin and put a
   [`SkinBinding`](components::SkinBinding) on the mesh, so writing that pose's
   matrices is how a caller animates the skeleton.
-  `UnlitGltf::skin_pose` builds the document's rest pose — one matrix per
+  `LitGltf::skin_pose` builds the document's rest pose — one matrix per
   joint, from the joint nodes' world transforms and the skin's inverse bind
-  matrices — as a starting point, and `UnlitGltf::skin_joint_count` reports how
+  matrices — as a starting point, and `LitGltf::skin_joint_count` reports how
   many joints a node's skin has.
 - A primitive whose mesh declares a morph target that displaces positions is
   uploaded with those displacements and drawn morphed: `spawn_node` /
   `spawn_default_scene` create a [`MorphWeights`](components::MorphWeights) entity for the node and
   put a [`MorphBinding`](components::MorphBinding) on the mesh, so writing that entity's weights is
-  how a caller morphs the mesh. `UnlitGltf::morph_weights` returns the node's
+  how a caller morphs the mesh. `LitGltf::morph_weights` returns the node's
   starting weights — the node's own `weights` when it states them, the mesh's
   otherwise, and zero for a target left unweighted — padded or truncated to the
   number of targets that displace positions, which is the length the renderer
@@ -715,12 +721,12 @@ What it does is patch the world you already render:
 - A primitive whose material is `doubleSided` is drawn from either side: the
   pipeline variant drops its cull mode, so the back faces the single-sided
   variant would discard are rasterized instead. Nothing else about the variant
-  changes, because the unlit fragment shader reads no normal — there is no
+  changes, because the lit fragment shader reads no normal — there is no
   back-face normal to reverse and no lighting equation to evaluate.
 - A document's animations are sampled rather than played:
-  `UnlitGltf::animation_count`, `UnlitGltf::animation_name` and
-  `UnlitGltf::animation_duration` describe the clips it carries, and
-  `UnlitGltf::apply_animation(world, clip, time, &spawned)` evaluates one at a
+  `LitGltf::animation_count`, `LitGltf::animation_name` and
+  `LitGltf::animation_duration` describe the clips it carries, and
+  `LitGltf::apply_animation(world, clip, time, &spawned)` evaluates one at a
   chosen time. It samples each channel — `STEP`, `LINEAR` or `CUBICSPLINE`, with
   rotations slerped — into the animated nodes' local transforms, recomposes the
   world matrices down the node hierarchy, and writes the result where the
@@ -737,7 +743,7 @@ skinned primitives; positional morph targets; node hierarchies, accumulated
 into world transforms; and the animations that drive them. What does not yet:
 normal and tangent morphs, normals and tangents.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
-own attributes (see `UnlitGltf::pipeline_key`),
+own attributes (see `LitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.
 
 An image is uploaded in the GPU format closest to the pixels the loader decoded,
@@ -747,12 +753,12 @@ ones as the half-float formats of the same width, and 32-bit float ones as
 `Rgba32Float`. Three-channel layouts widen by one, since neither an sRGB nor a
 float format comes in three channels. Two consequences are worth knowing: a
 grayscale texture carries its luminance in the red channel — WebGPU has neither
-a luminance format nor a component swizzle — so the unlit shader's
+a luminance format nor a component swizzle — so the lit shader's
 `BaseColorChannels::Luminance` and `BaseColorChannels::LuminanceAlpha` expand it
-to RGB(A) and decode the luminance from sRGB, which `UnlitGltf::pipeline_key`
+to RGB(A) and decode the luminance from sRGB, which `LitGltf::pipeline_key`
 picks for exactly those uploads; and `Rgba32Float` is `unfilterable-float` on devices
 without `Features::FLOAT32_FILTERABLE`, in which case the material binds a
-non-filtering sampler and `UnlitOptions::texture_filtering` specializes the
+non-filtering sampler and `LitOptions::texture_filtering` specializes the
 bind-group layout to match.
 
 ## UI
@@ -833,7 +839,7 @@ puts the GPU state in the world, `MeshSource` is mounted as a source, and
 
 ```rust
 use unlit3d::prelude::*;
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::resources::ResourceGraph;
 
 let (device, queue) =
@@ -841,7 +847,7 @@ let (device, queue) =
 let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
-//    frame driver, and register the built-in unlit family.
+//    frame driver, and register the built-in lit family.
 // `DeviceCapabilities` carries what the device cannot report about itself
 // (its `base_vertex` support). Derive it from the adapter when one is at
 // hand; `default()` is the WebGPU baseline, which is also what `noop` is.
@@ -853,8 +859,8 @@ let ctx = spawn_context(
     DeviceCapabilities::default(),
 );
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
-mesh_source.register_unlit_family(&world.root_scope());
-let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
+mesh_source.register_lit_family(&world.root_scope());
+let key = LitPipelineKey::new(LitOptions::standard(&mesh_source.device(&world.root_scope())));
 let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 
 // 2. Spawn the frame's pass and mount the mesh source under it. A pass is a
@@ -870,7 +876,7 @@ let source = world
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
-//    renderable entity under it, carrying the unlit key.
+//    renderable entity under it, carrying the lit key.
 let (mesh, material) = scope
     .query_one::<&mut Source>(source)
     .map(|mut source| {
@@ -879,10 +885,10 @@ let (mesh, material) = scope
         let uvs = [[0.0; 2]; 3];
         let colors = [[255u8; 4]; 3];
         let indices = [0u32, 1, 2];
-        let mesh = source.allocate_unlit_mesh(
+        let mesh = source.allocate_lit_mesh(
             &scope,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
@@ -905,14 +911,14 @@ let (mesh, material) = scope
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-        let material = source.allocate_unlit_material(&scope, &key.options, texture_view, sampler);
+        let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
         (mesh, material)
     })
     .unwrap();
 world
     .scope_mut(source)
     .unwrap()
-    .spawn(bundle![Transform::default(), mesh, material, UnlitPipeline::new(key)]);
+    .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
 
 // 4. Give the pass a render target and render one frame (uses the noop
 //    device, so it produces a valid command buffer without touching a GPU).

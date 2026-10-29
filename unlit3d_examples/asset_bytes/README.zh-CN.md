@@ -27,7 +27,7 @@
 
 ```rust,ignore
 let fox = unlit3d_asset_bytes::fox();
-let document = UnlitGltf::from_bytes(fox).expect("the fox asset is a valid glTF document");
+let document = LitGltf::from_bytes(fox).expect("the fox asset is a valid glTF document");
 ```
 
 | 函数 | 资产 |

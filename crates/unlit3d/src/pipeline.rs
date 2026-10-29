@@ -95,7 +95,7 @@ pub struct GlobalResources {
     /// displacements, one array for the whole frame. A mesh names its slice
     /// through its metadata entry's `morph_deltas_offset`.
     pub morph_deltas: ResHandle<ArrayHandle>,
-    /// The frame's lights, one entry per [`LightSource`](crate::lit::LightSource).
+    /// The frame's lights, one entry per [`LightSource`](crate::light::LightSource).
     pub lights: ResHandle<ArrayHandle>,
     /// The frame's cluster cells: how many lights each cell holds and which.
     pub light_cells: ResHandle<ArrayHandle>,
@@ -334,6 +334,40 @@ pub trait RenderPipelineKey: 'static {
     /// find the compiled pipeline, so it should be cheap and derive every
     /// field the compiled pipeline depends on.
     fn variant(&self, draw: &DrawContext<'_>) -> Self::Variant;
+}
+
+/// A [RenderPipelineKey] behind a trait object, so a
+/// [GpuRenderPipeline](crate::components::GpuRenderPipeline) component can hold
+/// any family's key without naming it in its type.
+///
+/// The family is still chosen by the key's type: [Self::as_any] is what a
+/// family downcasts with to tell its own keys from another family's, exactly as
+/// the component's type parameter used to.
+pub trait DynRenderPipelineKey: 'static {
+    /// This key as [`Any`](core::any::Any), for a family to downcast to its
+    /// own key type.
+    fn as_any(&self) -> &dyn core::any::Any;
+    /// A copy of this key, boxed the same way.
+    fn clone_key(&self) -> Box<dyn DynRenderPipelineKey>;
+    /// The key's type name, for diagnostics.
+    fn key_type_name(&self) -> &'static str;
+}
+
+impl<Key> DynRenderPipelineKey for Key
+where
+    Key: RenderPipelineKey + Clone,
+{
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn clone_key(&self) -> Box<dyn DynRenderPipelineKey> {
+        Box::new(self.clone())
+    }
+
+    fn key_type_name(&self) -> &'static str {
+        core::any::type_name::<Key>()
+    }
 }
 
 /// Everything about a draw that an entity's [RenderPipelineKey] cannot know

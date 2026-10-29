@@ -9,7 +9,7 @@ on WebGPU as well as on the WebGL2 baseline. A built-in pipeline shades the
 scene with Lambert diffuse lighting.
 
 The crate is layered: the modules below are general facilities a caller builds
-any pipeline on top of, and the built-in unlit pipeline — and the egui backend
+any pipeline on top of, and the built-in lit pipeline — and the egui backend
 that draws with it — are added by features. Nothing in the general modules knows
 about the built-in pipeline: it uses the same binding and slot conventions, the
 same vertex compression and the same resource tracking a caller's own pipeline
@@ -23,8 +23,8 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `unlit` | yes | [`pipeline`] — `SpecializedUnlitPipeline`, `UnlitOptions`, `UnlitVariant`, and the WESL module they compose |
-| `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws. Implies `unlit` |
+| `lit` | yes | [`pipeline`] — `SpecializedLitPipeline`, `LitOptions`, `LitVariant`, and the WESL module they compose |
+| `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws. Implies `lit` |
 
 With `--no-default-features` the crate keeps its general facilities — the
 resource graph, mesh compression, the offset allocator and buffer pools,
@@ -94,7 +94,7 @@ checks that combination separately.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, the `GlobalBindings` description and the global
   bind-group layout builder every pipeline binds the frame's shared inputs
-  through, plus the built-in unlit pipeline under the `unlit` feature.
+  through, plus the built-in lit pipeline under the `lit` feature.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front: hashing it writes the stored word instead of walking the value, which
   keeps a per-frame key cheap when its members are large. The hash comes from
@@ -111,7 +111,7 @@ is what runs in the frame loop. The walkthrough below is complete: device setup,
 mesh compression, every bind group and the draw.
 
 ```rust
-# #[cfg(feature = "unlit")]
+# #[cfg(feature = "lit")]
 # {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
@@ -121,7 +121,7 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
-    SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
+    SECONDARY_SLOT, SpecializedLitPipeline, LitOptions, LitVariant, LitVertexChannels,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -135,7 +135,7 @@ use zerocopy::IntoBytes;
 struct Example {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: SpecializedUnlitPipeline,
+    pipeline: SpecializedLitPipeline,
     globals: wgpu::BindGroup,
     material: wgpu::BindGroup,
     positions: wgpu::Buffer,
@@ -154,16 +154,16 @@ impl Example {
         //    whether a material and morph targets are bound, and the target
         //    the pipeline renders into. Equal variants share one compiled
         //    pipeline, so the variant doubles as the cache key.
-        let options = UnlitOptions::standard(device);
+        let options = LitOptions::standard(device);
         let surface = SurfaceKey {
             color_format: options.color_target.format,
             depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
             sample_count: options.multisample.count,
         };
-        let variant = UnlitVariant {
+        let variant = LitVariant {
             options: Hashed::new(options),
             surface,
-            channels: UnlitVertexChannels {
+            channels: LitVertexChannels {
                 position: PositionStreamChannels {
                     position: Some(ChannelEncoding::CompressedPosition),
                     joints: false,
@@ -173,7 +173,10 @@ impl Example {
             base_color_texture: true,
             morph: false,
             strip_index_format: None,
-            lit: false,
+            // Unlit: the fragment returns its base color without reading the
+            // frame's light arrays, which is what keeps this example's global
+            // group to the camera, the frame clock and the mesh metadata.
+            unlit: true,
         };
         let pipeline = SpecializedPipeline::create(device, variant.clone());
 
@@ -458,16 +461,16 @@ The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
 caller binds (`globals`, `view`, `mesh_metadata`, the `mesh_compression`
 decode functions and — under `lit` — the light records, the cluster uniform and
-the polygon form factor); the `unlit` feature adds the built-in entry shader,
-which `SpecializedUnlitPipeline` composes with the
-[`UnlitVariant`](pipeline::UnlitVariant) a draw resolves. One entry shader
+the polygon form factor); the `lit` feature adds the built-in entry shader,
+which `SpecializedLitPipeline` composes with the
+[`LitVariant`](pipeline::LitVariant) a draw resolves. One entry shader
 covers every built-in variant, lit ones included: the differences are WESL
 conditional-compilation flags, so each composed variant holds one code path and
 declares only the bindings and attributes it uses.
 
 A caller who wants their own shader has two ways to it. The closest is
-[`UnlitOptions::shader`](pipeline::UnlitOptions::shader): an
-[`UnlitShader`](pipeline::UnlitShader) names a module, a vertex and a fragment
+[`LitOptions::shader`](pipeline::LitOptions::shader): an
+[`LitShader`](pipeline::LitShader) names a module, a vertex and a fragment
 snippet, and each is spliced into the built-in `lit.wesl` at a marked point. The
 module one sits among the top-level declarations, after the imports and the
 bindings and before the first struct, so it can add functions, types and
@@ -627,7 +630,7 @@ Automating "compile once per configuration, then reuse" needs two concepts:
   **injective** — equal variants build equal blueprints, and draws whose
   blueprints differ resolve to different variants — which is what lets the cache
   be a single map from variant to index. A variant may be its own blueprint
-  (`type Descriptor = Self`), as the built-in unlit one is.
+  (`type Descriptor = Self`), as the built-in lit one is.
 - A **blueprint** (`PipelineDescriptor<P>`) is the wgpu state that compiles into
   a pipeline of type `P`. Caching has nothing to do with the kind of pipeline,
   so `P` is not fixed: a render pipeline is a
@@ -662,7 +665,7 @@ than keeping a stale format.
 
 </details>
 
-**A bind-group layout is not pipeline state.** The built-in unlit pipeline's
+**A bind-group layout is not pipeline state.** The built-in lit pipeline's
 three layouts (global, material, mesh) follow entirely from the variant, and can
 be used standalone without compiling anything — to describe a material's binding
 interface, say — so they are derived from the variant on demand rather than
@@ -670,9 +673,9 @@ stored beside the compiled product, which avoids a second source of truth
 drifting from the blueprint.
 
 **The built-in pipeline has no privileges.** It is an ordinary user of the same
-mechanism: `UnlitVariant` is its own blueprint (its `PipelineDescriptor`), and
-`SpecializedUnlitPipeline` is nothing more than the alias
-`SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>`. There is no second
+mechanism: `LitVariant` is its own blueprint (its `PipelineDescriptor`), and
+`SpecializedLitPipeline` is nothing more than the alias
+`SpecializedPipeline<wgpu::RenderPipeline, LitVariant>`. There is no second
 compilation path laid down for the built-in shader, and the frame's shared
 inputs are equally open: `GlobalBindings` and `global_bind_group_layout` build
 the global layout any pipeline can bind, so a caller's own shader reaches the
@@ -683,13 +686,12 @@ business.
 
 ### Lighting: forward clustered Lambert
 
-The lit pipeline is the unlit one with a shader flag:
-[`UnlitVariant::lit`](pipeline::UnlitVariant::lit) turns on one WESL flag, and
-the composed fragment
-multiplies the base color by the frame's lights instead of passing it through.
-Everything else is shared — the layouts, the vertex streams, the instance
-record, the mesh allocator — so a mesh allocated for one family draws in the
-other, and a source can carry both.
+Lighting is a variant flag:
+[`LitVariant::unlit`](pipeline::LitVariant::unlit) turns one WESL flag off, and
+the composed fragment multiplies the base color by the frame's lights instead of
+passing it through. Everything else is shared — the layouts, the vertex streams,
+the instance record, the mesh allocator — so the same family draws both, and a
+mesh allocated for one mode draws in the other.
 
 The shading is Lambert and nothing more: a light contributes its color times a
 brightness factor, and the sum modulates the base color. There is no specular
@@ -710,8 +712,9 @@ A **directional** light is not in the grid. It reaches every fragment, so writin
 it into every cell would spend one of a cell's slots to say nothing; it goes into
 [`LightingUniform`](light::LightingUniform) instead, which carries up to
 [`MAX_DIRECTIONAL_LIGHTS`](light::MAX_DIRECTIONAL_LIGHTS) of them together with
-the frame's ambient term. Every lit fragment reads that uniform first and then
-the lights of its own cell.
+the frame's ambient term, which the layer above sums from its ambient-light
+components. Every lit fragment reads that uniform first and then the lights of
+its own cell.
 
 Clustering is CPU work. The view is cut into screen tiles of about
 [`cell_pixels`](light::ClusterConfig::cell_pixels) and into
@@ -738,9 +741,9 @@ view direction.
 
 </details>
 
-Its options are the unlit family's own, and the higher layer's `LitPipelineKey`
-is those options under a type of its own — which is what lets one source carry
-both families.
+Its options are the family's own, and the higher layer's `LitPipelineKey` is
+those options under a type of its own, with `unlit` as one more flag of them —
+which is what lets one source draw lit and unlit meshes alike.
 
 ### Reading the frame's arrays: storage buffers or texels
 
@@ -765,7 +768,7 @@ which resource arrived.
 
 Both paths keep the binding numbers, the byte layout and the element order, so
 the difference stays confined to the resource type. Which one is used follows
-the device: [`UnlitVariant`](pipeline::UnlitVariant) reads the device's limits
+the device: [`LitVariant`](pipeline::LitVariant) reads the device's limits
 when it compiles the pipeline, so a storage-less device is never asked for a
 binding it rejects. The choice is a property of the device a pipeline is
 compiled on rather than of the variant, so it is never part of the cache key.
@@ -838,7 +841,7 @@ cargo xtask test     # the whole workspace, through nextest plus the doctests
 cargo nextest run -p unlit_wgpu --all-features   # just this crate
 ```
 
-The integration tests are one binary, and it requires `unlit` and `egui`. A run
+The integration tests are one binary, and it requires `lit` and `egui`. A run
 without the latter does not fail: Cargo skips the target whole, so the suite
 leaves the run silently and only the unit tests report.
 

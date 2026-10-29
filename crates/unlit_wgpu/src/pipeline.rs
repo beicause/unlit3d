@@ -1,26 +1,26 @@
 //! The built-in unlit pipeline and the WESL composition behind it.
 //!
-//! [`SpecializedUnlitPipeline`] composes an [`UnlitVariant`]'s entry shader —
+//! [`SpecializedLitPipeline`] composes an [`LitVariant`]'s entry shader —
 //! the built-in `lit.wesl`, or the caller's own when
-//! [`UnlitOptions::shader`] carries one — builds the layouts the shader
+//! [`LitOptions::shader`] carries one — builds the layouts the shader
 //! expects, and exposes the vertex-buffer layouts the caller declares when
 //! creating meshes. Each variant contains exactly the bindings and attributes
 //! the selected channels need, so nothing unused reaches the GPU.
 
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 use crate::mesh::{
     ChannelEncoding, PositionStreamChannels, PositionStreamWriter, SecondaryFlags,
     SecondaryStreamWriter,
 };
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 use crate::render_attachments::default_depth_stencil_format;
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 use crate::specialize::{
     PipelineDescriptor, PipelineVariant, SurfaceKey, SurfaceTarget, VertexBufferLayoutDesc,
 };
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 use crate::util::Hashed;
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 use std::sync::Arc;
 
 /// Binding slot of the camera uniform in the global bind group.
@@ -131,7 +131,7 @@ pub mod location {
     pub const METADATA_INDEX: u32 = 10;
     /// Per-instance alpha cutoff (`Float32`), read from the instance stream.
     ///
-    /// A [`UnlitOptions::alpha_cutoff`](crate::pipeline::UnlitOptions::alpha_cutoff)
+    /// A [`LitOptions::alpha_cutoff`](crate::pipeline::LitOptions::alpha_cutoff)
     /// variant compares a fragment's alpha against it and discards the
     /// fragment when it is below.
     pub const CUTOFF: u32 = 11;
@@ -152,36 +152,36 @@ pub mod location {
 }
 
 /// Entry point name of the built-in shader's vertex stage.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 pub const VS_MAIN: &str = "vs_main";
 /// Entry point name of the built-in shader's fragment stage.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 pub const FS_MAIN: &str = "fs_main";
 /// Label of the built-in entry shader: its shader module's label, and the name
 /// a composition error is reported under.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 const BUILT_IN_SHADER_LABEL: &str = "unlit_wgpu::lit";
 
 /// Name of the WESL module the built-in entry shader is composed from: the file
 /// `shaders/lit.wesl` of this crate's package.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 const BUILT_IN_MODULE: &str = "lit";
 
 /// The per-vertex channels the built-in shader variant reads.
 ///
-/// These are not part of [`UnlitOptions`]: they are a property of the geometry
+/// These are not part of [`LitOptions`]: they are a property of the geometry
 /// rather than of anything a caller picks, so a pipeline reads them off the
 /// vertex buffers its draws are recorded with — every draw of a mesh carries
 /// the channels that mesh's buffers hold, so there is nothing to specialize on
 /// and nothing for a caller to get wrong. A family resolves them into
-/// [`UnlitVariant::channels`].
+/// [`LitVariant::channels`].
 ///
 /// The two halves are [`crate::mesh`]'s own channel types, so the attributes a
 /// pipeline declares and the bytes a packed mesh writes come from one
 /// description and cannot drift apart.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct UnlitVertexChannels {
+pub struct LitVertexChannels {
     /// The position stream: whether it carries a position at all — and in
     /// which encoding — plus the joint pair that rides along with it.
     ///
@@ -194,8 +194,8 @@ pub struct UnlitVertexChannels {
     pub secondary: SecondaryFlags,
 }
 
-#[cfg(feature = "unlit")]
-impl UnlitVertexChannels {
+#[cfg(feature = "lit")]
+impl LitVertexChannels {
     /// The channels of a layout that carries none: no position, no joints, and
     /// an empty secondary stream.
     ///
@@ -276,7 +276,7 @@ impl UnlitVertexChannels {
 }
 
 /// How a sampled base-color texel expands into the fragment's color.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BaseColorChannels {
     /// The texel is a color in all four channels.
@@ -331,17 +331,17 @@ pub enum BaseColorChannels {
 ///
 /// The label names the shader: it is the shader module's label, and a
 /// composition error is reported under it.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct UnlitShader {
+pub struct LitShader {
     label: Arc<str>,
     module: Arc<str>,
     vertex: Arc<str>,
     fragment: Arc<str>,
 }
 
-#[cfg(feature = "unlit")]
-impl UnlitShader {
+#[cfg(feature = "lit")]
+impl LitShader {
     /// A shader named `label` whose `module`, `vertex` and `fragment` snippets
     /// are spliced into the built-in entry shader.
     ///
@@ -382,12 +382,12 @@ impl UnlitShader {
     }
 }
 
-#[cfg(feature = "unlit")]
-impl core::fmt::Debug for UnlitShader {
+#[cfg(feature = "lit")]
+impl core::fmt::Debug for LitShader {
     /// Prints the label and each snippet's length rather than the snippets
-    /// themselves, so an [`UnlitOptions`] dump stays readable.
+    /// themselves, so an [`LitOptions`] dump stays readable.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("UnlitShader")
+        f.debug_struct("LitShader")
             .field("label", &self.label)
             .field("module", &format_args!("{} bytes", self.module.len()))
             .field("vertex", &format_args!("{} bytes", self.vertex.len()))
@@ -400,23 +400,23 @@ impl core::fmt::Debug for UnlitShader {
 ///
 /// Everything a draw resolves is absent: the vertex channels, whether the draw
 /// samples a material, whether its mesh morphs, the render target and the
-/// device's array path are facts a family folds into an [`UnlitVariant`] when
+/// device's array path are facts a family folds into an [`LitVariant`] when
 /// it resolves a draw, not choices a caller can make. What is left is what a
 /// caller actually picks.
 ///
-/// [`UnlitOptions::standard`] is the usual starting point: back-face culling,
+/// [`LitOptions::standard`] is the usual starting point: back-face culling,
 /// a filtering base-color texture binding and a four-sample sRGB target with a
 /// depth attachment.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct UnlitOptions {
+pub struct LitOptions {
     /// The entry shader this policy draws with, or `None` for the built-in
     /// `lit.wesl`.
     ///
     /// A caller's snippets extend the built-in source and nothing else: the
     /// layouts, vertex streams and entry-point names stay the variant's. See
-    /// [`UnlitShader`].
-    pub shader: Option<UnlitShader>,
+    /// [`LitShader`].
+    pub shader: Option<LitShader>,
     /// The color target is sRGB-aware: it encodes the values written to it, so
     /// the fragment converts them from sRGB to linear first.
     ///
@@ -491,8 +491,8 @@ pub struct UnlitOptions {
     pub multisample: wgpu::MultisampleState,
 }
 
-#[cfg(feature = "unlit")]
-impl UnlitOptions {
+#[cfg(feature = "lit")]
+impl LitOptions {
     /// The usual starting point: the full compressed mesh variant — positions,
     /// UVs, vertex colors, a base-color texture and per-instance transforms —
     /// with the device's default depth-stencil format.
@@ -552,7 +552,7 @@ impl UnlitOptions {
     ///
     /// The layout holds the base-color texture and its sampler; whether a
     /// variant actually declares it is the draw's answer
-    /// ([`UnlitVariant::base_color_texture`]), so this is only the shape of the
+    /// ([`LitVariant::base_color_texture`]), so this is only the shape of the
     /// group. Building it here rather than from a variant lets a caller
     /// allocate a material without having resolved a draw first.
     pub fn material_bind_group_layout(&self, device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -588,24 +588,24 @@ impl UnlitOptions {
 
 /// The complete identity of a built-in unlit pipeline, and its blueprint.
 ///
-/// A family resolves one from an entity's [`UnlitOptions`] and the facts its
+/// A family resolves one from an entity's [`LitOptions`] and the facts its
 /// draw carries: the mesh's vertex channels, whether the draw binds a material,
 /// whether the mesh morphs, the mesh's index format and the render target. Two
 /// draws that agree on all of it share one compiled pipeline; because the
 /// variant is the complete description of the blueprint, the cache key is
 /// canonical by construction.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct UnlitVariant {
+pub struct LitVariant {
     /// The caller's policy, with its hash computed once. The variant is the
     /// cache key, so the stored word is what every per-frame lookup hashes;
     /// rewrite the policy through [`Hashed::update`] rather than the value
     /// itself, so the word follows the change.
-    pub options: Hashed<UnlitOptions>,
+    pub options: Hashed<LitOptions>,
     /// The render target the pipeline is built for.
     pub surface: SurfaceKey,
     /// The per-vertex channels the mesh's layout carries.
-    pub channels: UnlitVertexChannels,
+    pub channels: LitVertexChannels,
     /// Whether the draw binds a material group and so samples a base-color
     /// texture.
     pub base_color_texture: bool,
@@ -613,17 +613,19 @@ pub struct UnlitVariant {
     pub morph: bool,
     /// The strip index format the mesh's index buffer requires, if any.
     pub strip_index_format: Option<wgpu::IndexFormat>,
-    /// Whether the variant shades its fragments with the frame's lights.
+    /// Whether the variant skips the frame's lights and draws its base color
+    /// unchanged.
     ///
-    /// A lit variant reads the light arrays and the cluster uniform from the
-    /// global group and multiplies its base color by what they sum to. An
-    /// unlit one declares none of those bindings, so the capability costs it
-    /// nothing.
-    pub lit: bool,
+    /// A variant that is not unlit reads the light arrays and the cluster
+    /// uniform from the global group and multiplies its base color by what they
+    /// sum to. An unlit one declares none of those bindings, so the capability
+    /// costs it nothing. Lighting is the common case, so the flag is stated as
+    /// the exception the caller asks for.
+    pub unlit: bool,
 }
 
-#[cfg(feature = "unlit")]
-impl UnlitVariant {
+#[cfg(feature = "lit")]
+impl LitVariant {
     /// The WESL `@if` features the variant asks for, paired with their state.
     ///
     /// Every name appears, so the composed variant never sees a name it does
@@ -684,7 +686,7 @@ impl UnlitVariant {
                 self.options.base_color == BaseColorChannels::LuminanceAlpha,
             ),
             ("ALPHA_CUTOFF", self.options.alpha_cutoff),
-            ("LIT", self.lit),
+            ("LIT", !self.unlit),
         ]
     }
 
@@ -758,18 +760,18 @@ impl UnlitVariant {
     ///
     /// If the variant reads storage buffers on a device that has none.
     fn assert_device_supports_arrays(&self, device: &wgpu::Device, texel_arrays: bool) {
-        let reads_an_array = self.needs_metadata() || self.needs_joints() || self.lit;
+        let reads_an_array = self.needs_metadata() || self.needs_joints() || !self.unlit;
         assert!(
             !reads_an_array || texel_arrays || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
              (its `max_storage_buffers_per_shader_stage` is 0, as WebGL2's is): start from \
-             `UnlitOptions::standard`, which picks the device's array path"
+             `LitOptions::standard`, which picks the device's array path"
         );
     }
 }
 
-#[cfg(feature = "unlit")]
-impl UnlitVariant {
+#[cfg(feature = "lit")]
+impl LitVariant {
     /// Build the bind-group layouts this variant declares, without compiling
     /// the pipeline.
     ///
@@ -781,7 +783,7 @@ impl UnlitVariant {
     /// The array path is the device's answer rather than the variant's, so it
     /// is read here: a cache is built for one device, which is why the path
     /// never enters the variant key.
-    pub fn bind_group_layouts(&self, device: &wgpu::Device) -> UnlitBindGroupLayouts {
+    pub fn bind_group_layouts(&self, device: &wgpu::Device) -> LitBindGroupLayouts {
         let texel_arrays = !supports_storage_buffers(device);
         self.assert_device_supports_arrays(device, texel_arrays);
         // The group holds the frame's shared inputs: the camera, the frame
@@ -796,7 +798,7 @@ impl UnlitVariant {
             morphs: self.needs_morphs(),
             // A lit variant reads the frame's lights, its cells and its
             // polygon vertices; an unlit one declares no such binding.
-            lights: self.lit,
+            lights: !self.unlit,
         };
         let global = global_bind_group_layout(device, bindings, texel_arrays);
 
@@ -809,7 +811,7 @@ impl UnlitVariant {
         // index remains a general extension point a caller's pipeline can use.
         let mesh = None;
 
-        UnlitBindGroupLayouts {
+        LitBindGroupLayouts {
             global,
             material,
             mesh,
@@ -926,8 +928,8 @@ impl UnlitVariant {
     }
 }
 
-#[cfg(feature = "unlit")]
-impl PipelineVariant<wgpu::RenderPipeline> for UnlitVariant {
+#[cfg(feature = "lit")]
+impl PipelineVariant<wgpu::RenderPipeline> for LitVariant {
     type Descriptor = Self;
 
     fn descriptor(&self, _device: &wgpu::Device) -> Self {
@@ -935,14 +937,14 @@ impl PipelineVariant<wgpu::RenderPipeline> for UnlitVariant {
     }
 }
 
-#[cfg(feature = "unlit")]
-impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
+#[cfg(feature = "lit")]
+impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
     /// Compose this variant's entry shader and build the pipeline, so a variant
     /// compiles through the same [PipelineDescriptor] mechanism a caller's own
     /// descriptor does.
     ///
     /// The entry shader is the built-in `lit.wesl`, with the options' own
-    /// snippets ([`UnlitOptions::shader`]) spliced into it at its marks.
+    /// snippets ([`LitOptions::shader`]) spliced into it at its marks.
     fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
         let texel_arrays = !supports_storage_buffers(device);
         let label = match &self.options.shader {
@@ -1007,7 +1009,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
 /// The entry shader is always the built-in `lit` module of the crate's package:
 /// a caller's snippets are spliced into that module rather than replacing it,
 /// so the path does not depend on the options.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 fn entry_shader_path() -> wesl::syntax::ModulePath {
     wesl::syntax::ModulePath::new(
         wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
@@ -1016,22 +1018,22 @@ fn entry_shader_path() -> wesl::syntax::ModulePath {
 }
 
 /// The comment the built-in entry shader marks its module-scope splice with.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 const MODULE_HOOK: &str = "// unlit_wgpu::hook module";
 
 /// The comment the built-in entry shader marks its vertex-stage splice with.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 const VERTEX_HOOK: &str = "// unlit_wgpu::hook vertex";
 
 /// The comment the built-in entry shader marks its fragment-stage splice with.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 const FRAGMENT_HOOK: &str = "// unlit_wgpu::hook fragment";
 
 /// The source of the built-in entry shader, exactly as the package bundles it.
 ///
 /// It is the file `shaders/lit.wesl` itself, so it carries the hook marks a
 /// snippet is spliced at.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 fn built_in_entry_source() -> &'static str {
     crate::shader::lit::MODULE.source
 }
@@ -1047,8 +1049,8 @@ fn built_in_entry_source() -> &'static str {
 /// If the built-in source does not carry all three marks. They are checked
 /// rather than trusted because a mark is a bare comment: losing one while
 /// editing the shader would otherwise silently drop every snippet aimed at it.
-#[cfg(feature = "unlit")]
-fn splice(source: &str, shader: &UnlitShader) -> String {
+#[cfg(feature = "lit")]
+fn splice(source: &str, shader: &LitShader) -> String {
     let spliced = splice_at(source, MODULE_HOOK, shader.module());
     let spliced = splice_at(&spliced, VERTEX_HOOK, shader.vertex());
     let spliced = splice_at(&spliced, FRAGMENT_HOOK, shader.fragment());
@@ -1067,7 +1069,7 @@ fn splice(source: &str, shader: &UnlitShader) -> String {
 /// mark stood and an empty snippet leaves a blank line rather than an indented
 /// tail. A missing mark leaves the source untouched; [`splice`] is what
 /// rejects one.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 fn splice_at(source: &str, mark: &str, snippet: &str) -> String {
     let Some(at) = source.find(mark) else {
         return source.to_owned();
@@ -1103,12 +1105,12 @@ fn splice_at(source: &str, mark: &str, snippet: &str) -> String {
 ///
 /// The per-vertex channels cannot contradict each other the way flags once
 /// could: an encoding is a property of the channel it encodes, so
-/// [`UnlitVertexChannels`] has no state in which a channel is uncompressed
+/// [`LitVertexChannels`] has no state in which a channel is uncompressed
 /// without being read. The per-instance fields cannot either: the instance
 /// stream is bound for every variant, so there is no state in which one is
 /// read without the stream that carries it.
-#[cfg(feature = "unlit")]
-fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
+#[cfg(feature = "lit")]
+fn compose(variant: &LitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
     let main_path = entry_shader_path();
     assert!(
         !variant.base_color_texture || variant.channels.secondary.contains(SecondaryFlags::UV),
@@ -1167,14 +1169,14 @@ fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, Compose
         .map_err(ComposeError::Compile)
 }
 /// Failure reasons reported by [`compose`].
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Debug)]
 enum ComposeError {
     /// The WESL compiler rejected the module.
     Compile(wesl::Error),
 }
 
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 impl core::fmt::Display for ComposeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -1183,7 +1185,7 @@ impl core::fmt::Display for ComposeError {
     }
 }
 
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 impl std::error::Error for ComposeError {}
 
 /// Which of a source's global buffers a pipeline reads.
@@ -1375,16 +1377,16 @@ pub fn global_bind_group_layout(
     })
 }
 
-/// The bind-group layouts a [`SpecializedUnlitPipeline`] variant declares.
+/// The bind-group layouts a [`SpecializedLitPipeline`] variant declares.
 ///
-/// Built by [`UnlitVariant::bind_group_layouts`] from the same variant a
+/// Built by [`LitVariant::bind_group_layouts`] from the same variant a
 /// pipeline is built from, so the two agree: the global group always exists and
 /// the material group only for a variant that samples a base-color texture. The
 /// mesh group is always `None` — the built-in variants bind nothing there — but
 /// stays in the structure because the index is a general extension point.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 #[derive(Clone, Debug)]
-pub struct UnlitBindGroupLayouts {
+pub struct LitBindGroupLayouts {
     /// Layout of the global bind group (index 0).
     pub global: wgpu::BindGroupLayout,
     /// Layout of the material bind group (index 1), for a variant that
@@ -1398,15 +1400,15 @@ pub struct UnlitBindGroupLayouts {
 }
 
 /// The built-in unlit pipeline: a compiled [wgpu::RenderPipeline] together
-/// with the [`UnlitVariant`] it was built from.
+/// with the [`LitVariant`] it was built from.
 ///
-/// [`UnlitVariant`] is its own [`PipelineVariant`] and [`PipelineDescriptor`],
+/// [`LitVariant`] is its own [`PipelineVariant`] and [`PipelineDescriptor`],
 /// so the built-in shader compiles through the same cache a caller's own
 /// variant does, and the layouts it declares are derived from the variant
 /// rather than stored beside the pipeline.
-#[cfg(feature = "unlit")]
-pub type SpecializedUnlitPipeline =
-    crate::specialize::SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>;
+#[cfg(feature = "lit")]
+pub type SpecializedLitPipeline =
+    crate::specialize::SpecializedPipeline<wgpu::RenderPipeline, LitVariant>;
 
 /// Whether `device` can read a storage buffer from a shader.
 ///
@@ -1417,19 +1419,19 @@ pub type SpecializedUnlitPipeline =
 ///
 /// A device that can bind storage buffers reports a non-zero limit, so this is
 /// what decides between the built-in shader's buffer and texel array paths.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 pub fn supports_storage_buffers(device: &wgpu::Device) -> bool {
     let limits = device.limits();
     limits.max_storage_buffers_per_shader_stage > 0 && limits.max_storage_buffer_binding_size > 0
 }
 
-#[cfg(feature = "unlit")]
-impl SurfaceTarget for UnlitOptions {
+#[cfg(feature = "lit")]
+impl SurfaceTarget for LitOptions {
     /// Rewrites exactly the three fields the target reaches: the color format,
     /// the sample count and the depth-stencil format. The shader variant,
     /// primitive state, blend state and write mask stay the caller's.
     ///
-    /// [`UnlitOptions::srgb_to_linear_output`] is deliberately left alone: it
+    /// [`LitOptions::srgb_to_linear_output`] is deliberately left alone: it
     /// describes the fragment's input encoding, not the target format.
     ///
     /// The depth-stencil state follows the target. `wgpu` compares it against
@@ -1452,8 +1454,8 @@ impl SurfaceTarget for UnlitOptions {
     }
 }
 
-#[cfg(feature = "unlit")]
-impl SurfaceTarget for UnlitVariant {
+#[cfg(feature = "lit")]
+impl SurfaceTarget for LitVariant {
     /// The variant's policy is hashed, so the rewrite goes through
     /// [`Hashed::update`] rather than a mutable borrow of the options: the
     /// stored word follows the changed fields, and the variant stays its own
@@ -1465,7 +1467,7 @@ impl SurfaceTarget for UnlitVariant {
 
 /// The depth-stencil state a target with a depth attachment starts from: the
 /// reverse-z convention, with the format filled in from the attachment.
-#[cfg(feature = "unlit")]
+#[cfg(feature = "lit")]
 fn default_depth_stencil_state() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth24PlusStencil8,
@@ -1476,7 +1478,7 @@ fn default_depth_stencil_state() -> wgpu::DepthStencilState {
     }
 }
 
-#[cfg(all(test, feature = "unlit"))]
+#[cfg(all(test, feature = "lit"))]
 mod tests {
     use super::*;
     use crate::specialize::Variants;
@@ -1546,13 +1548,13 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// statements are what the marks were replaced with.
     #[test]
     fn a_caller_shader_is_spliced_into_the_built_in_source() {
-        let shader = UnlitShader::new(
+        let shader = LitShader::new(
             "caller",
             "fn marker_module() -> f32 { return 0.5; }",
             "let marker_vertex = marker_module() * 0.25; world = world + vec3<f32>(0.0, marker_vertex, 0.0);",
             "let marker_fragment = 0.25; color = vec4<f32>(marker_fragment, color.g, color.b, color.a);",
         );
-        let mut options = UnlitOptions::standard_shape();
+        let mut options = LitOptions::standard_shape();
         options.shader = Some(shader);
         let candidate = variant(
             options,
@@ -1595,7 +1597,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn an_empty_snippet_leaves_the_built_in_stage_alone() {
         let built_in = variant(
-            UnlitOptions::standard_shape(),
+            LitOptions::standard_shape(),
             channels(
                 Some(ChannelEncoding::UncompressedPosition),
                 false,
@@ -1604,8 +1606,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             false,
             false,
         );
-        let mut options = UnlitOptions::standard_shape();
-        options.shader = Some(UnlitShader::new("empty", "", "", ""));
+        let mut options = LitOptions::standard_shape();
+        options.shader = Some(LitShader::new("empty", "", "", ""));
         let with_snippets = variant(
             options,
             channels(
@@ -1651,18 +1653,18 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
     /// A variant from its caller policy and the facts a draw carries.
     fn variant(
-        options: UnlitOptions,
-        channels: UnlitVertexChannels,
+        options: LitOptions,
+        channels: LitVertexChannels,
         base_color_texture: bool,
         morph: bool,
-    ) -> UnlitVariant {
-        UnlitVariant {
+    ) -> LitVariant {
+        LitVariant {
             options: Hashed::new(options),
             surface: surface(),
             channels,
             base_color_texture,
             morph,
-            lit: false,
+            unlit: true,
             strip_index_format: None,
         }
     }
@@ -1672,8 +1674,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         position: Option<ChannelEncoding>,
         joints: bool,
         secondary: SecondaryFlags,
-    ) -> UnlitVertexChannels {
-        UnlitVertexChannels {
+    ) -> LitVertexChannels {
+        LitVertexChannels {
             position: PositionStreamChannels { position, joints },
             secondary,
         }
@@ -1692,7 +1694,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// so a per-instance field never has to be declared separately. The array path
     /// is not one either: it is the device's answer and is passed to
     /// [`compose`] rather than carried by the variant.
-    fn all_variants() -> Vec<UnlitVariant> {
+    fn all_variants() -> Vec<LitVariant> {
         // A position is absent — leaving the geometry a point at the instance
         // origin — or present in one of the three encodings.
         let positions: &[Option<ChannelEncoding>] = &[
@@ -1732,7 +1734,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                 continue;
                             }
                             let base = variant(
-                                UnlitOptions::standard_shape(),
+                                LitOptions::standard_shape(),
                                 channels(*position, joints, *secondary),
                                 base_color_texture,
                                 morph,
@@ -1776,10 +1778,10 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn srgb_output_flag_switches_the_conversion() {
         let composed = |srgb_to_linear_output: bool| {
-            let mut options = UnlitOptions::standard_shape();
+            let mut options = LitOptions::standard_shape();
             options.srgb_to_linear_output = srgb_to_linear_output;
             compose(
-                &variant(options, UnlitVertexChannels::empty(), false, false),
+                &variant(options, LitVertexChannels::empty(), false, false),
                 false,
             )
             .expect("compose")
@@ -1807,7 +1809,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn luminance_layouts_expand_a_sampled_texel() {
         let composed = |base_color: BaseColorChannels| {
-            let mut options = UnlitOptions::standard_shape();
+            let mut options = LitOptions::standard_shape();
             options.base_color = base_color;
             compose(
                 &variant(
@@ -1857,7 +1859,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn alpha_cutoff_flag_discards_a_fragment_below_the_cutoff() {
         let composed = |alpha_cutoff: bool| {
-            let mut options = UnlitOptions::standard_shape();
+            let mut options = LitOptions::standard_shape();
             options.alpha_cutoff = alpha_cutoff;
             compose(
                 &variant(
@@ -1888,7 +1890,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let cut = composed(true);
         let layouts = variant(
             {
-                let mut options = UnlitOptions::standard_shape();
+                let mut options = LitOptions::standard_shape();
                 options.alpha_cutoff = true;
                 options
             },
@@ -1932,7 +1934,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     a sampled base-color texture"
     )]
     fn a_luminance_layout_without_a_texture_is_rejected() {
-        let mut options = UnlitOptions::standard_shape();
+        let mut options = LitOptions::standard_shape();
         options.base_color = BaseColorChannels::Luminance;
         let _ = compose(
             &variant(
@@ -1956,7 +1958,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             depth_stencil_format: Some(wgpu::TextureFormat::Depth24Plus),
             sample_count: 1,
         };
-        let mut options = UnlitOptions::standard_shape();
+        let mut options = LitOptions::standard_shape();
         let srgb_to_linear_output = options.srgb_to_linear_output;
         let base_color = options.base_color;
         let alpha_cutoff = options.alpha_cutoff;
@@ -1988,7 +1990,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// what that state compares or writes.
     #[test]
     fn a_target_without_a_depth_attachment_clears_the_base() {
-        let mut options = UnlitOptions::standard_shape();
+        let mut options = LitOptions::standard_shape();
         assert!(
             options.depth_stencil.is_some(),
             "the base options start with a depth state"
@@ -2010,7 +2012,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// the reverse-z convention back, so specialization is not one-way.
     #[test]
     fn a_target_with_a_depth_attachment_restores_the_state() {
-        let mut options = UnlitOptions::standard_shape();
+        let mut options = LitOptions::standard_shape();
         options.set_surface(SurfaceKey {
             color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
             depth_stencil_format: None,
@@ -2044,8 +2046,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         };
         let make = |surface: SurfaceKey| {
             let mut candidate = variant(
-                UnlitOptions::standard(&device),
-                UnlitVertexChannels::empty(),
+                LitOptions::standard(&device),
+                LitVertexChannels::empty(),
                 false,
                 false,
             );
@@ -2053,7 +2055,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             candidate
         };
 
-        let mut variants = Variants::<wgpu::RenderPipeline, UnlitVariant>::new(&device);
+        let mut variants = Variants::<wgpu::RenderPipeline, LitVariant>::new(&device);
         let first = variants.specialize(make(surface));
         assert_eq!(
             variants.specialize(make(surface)),
@@ -2089,7 +2091,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             attributes: attributes.into(),
         };
         let channels = |slot, layout: &VertexBufferLayoutDesc| {
-            UnlitVertexChannels::for_vertex_buffer(slot, layout)
+            LitVertexChannels::for_vertex_buffer(slot, layout)
         };
         let position_of =
             |slot, layout: &VertexBufferLayoutDesc| channels(slot, layout).position.position;
@@ -2172,7 +2174,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
         assert_eq!(
             channels(INSTANCE_SLOT, &instance),
-            UnlitVertexChannels::empty(),
+            LitVertexChannels::empty(),
             "the per-instance record is not a vertex channel"
         );
 
@@ -2182,7 +2184,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             wgpu::VertexStepMode::Vertex,
             &[attribute(wgpu::VertexFormat::Float32x3, 9)],
         );
-        let whole = UnlitVertexChannels::for_vertex_layout(&[
+        let whole = LitVertexChannels::for_vertex_layout(&[
             (PRIMARY_SLOT, skinned_layout),
             (SECONDARY_SLOT, uncompressed_uv),
             (INSTANCE_SLOT, instance),
@@ -2205,8 +2207,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             // Lighting is the one dimension the variant's channels do not already
             // cover: a lit draw reads the frame's lights and clusters with them,
             // which is why both are compiled here.
-            for lit in [false, true] {
-                candidate.lit = lit;
+            for unlit in [false, true] {
+                candidate.unlit = unlit;
                 // The array path is the device's, so both are exercised here.
                 for texel_arrays in [false, true] {
                     let wgsl = compose(&candidate, texel_arrays)
@@ -2243,24 +2245,24 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     // fragment shades with one.
                     assert_eq!(
                         wgsl.contains("decode_normal"),
-                        lit && vertex.secondary.contains(SecondaryFlags::NORMAL),
+                        !candidate.unlit && vertex.secondary.contains(SecondaryFlags::NORMAL),
                         "variant {candidate:?}"
                     );
                     // The light arrays, the cluster lookup and the shading terms are
                     // a lit draw's own.
                     assert_eq!(
                         wgsl.contains("fragment_cluster_index"),
-                        lit,
+                        !candidate.unlit,
                         "variant {candidate:?}"
                     );
                     assert_eq!(
                         wgsl.contains("load_cell_word") && wgsl.contains("load_light"),
-                        lit,
+                        !candidate.unlit,
                         "variant {candidate:?}"
                     );
                     assert_eq!(
                         wgsl.contains("polygon_form_factor"),
-                        lit,
+                        !candidate.unlit,
                         "variant {candidate:?}"
                     );
                     // Every array read goes through an accessor, whose name survives
@@ -2293,7 +2295,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     // device has them, textures when it does not. Neither path ever
                     // leaves the other's declarations behind.
                     let reads_an_array =
-                        candidate.needs_metadata() || candidate.needs_joints() || candidate.lit;
+                        candidate.needs_metadata() || candidate.needs_joints() || !candidate.unlit;
                     if texel_arrays {
                         assert_eq!(
                             wgsl.matches("var<storage, read>").count(),
@@ -2356,7 +2358,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// deformation without a position, and a luminance layout without a texel.
     #[test]
     fn contradictory_variants_are_rejected() {
-        let shape = UnlitOptions::standard_shape;
+        let shape = LitOptions::standard_shape;
         let compressed = Some(ChannelEncoding::CompressedPosition);
         let mut luminance_without_a_texture = shape();
         luminance_without_a_texture.base_color = BaseColorChannels::Luminance;
@@ -2397,7 +2399,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn vertex_strides_follow_the_attribute_formats() {
         let layouts = variant(
-            UnlitOptions::standard_shape(),
+            LitOptions::standard_shape(),
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
@@ -2433,7 +2435,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn uncompressed_channels_widen_their_slots() {
         let candidate = variant(
-            UnlitOptions::standard_shape(),
+            LitOptions::standard_shape(),
             channels(
                 Some(ChannelEncoding::UncompressedPosition),
                 false,
@@ -2467,7 +2469,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn planar_channels_narrow_their_slots() {
         let candidate = variant(
-            UnlitOptions::standard_shape(),
+            LitOptions::standard_shape(),
             channels(
                 Some(ChannelEncoding::PlanarPosition),
                 false,
@@ -2490,7 +2492,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn secondary_slot_follows_its_channels() {
         let stride = |secondary: SecondaryFlags| {
             variant(
-                UnlitOptions::standard_shape(),
+                LitOptions::standard_shape(),
                 channels(None, false, secondary),
                 false,
                 false,
@@ -2537,7 +2539,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn position_slot_follows_its_channels() {
         let position = |position: Option<ChannelEncoding>, joints: bool| {
             variant(
-                UnlitOptions::standard_shape(),
+                LitOptions::standard_shape(),
                 channels(position, joints, SecondaryFlags::empty()),
                 false,
                 false,
@@ -2579,7 +2581,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         use core::mem::{offset_of, size_of};
 
         let layouts = variant(
-            UnlitOptions::standard_shape(),
+            LitOptions::standard_shape(),
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
@@ -2673,7 +2675,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn instance_layout_declares_the_cutoff_only_when_it_cuts() {
         let locations = |alpha_cutoff: bool| {
-            let mut options = UnlitOptions::standard_shape();
+            let mut options = LitOptions::standard_shape();
             options.alpha_cutoff = alpha_cutoff;
             variant(
                 options,

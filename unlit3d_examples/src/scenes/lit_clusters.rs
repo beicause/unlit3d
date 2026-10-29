@@ -12,7 +12,7 @@ use super::{
     camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
-use unlit_wgpu::pipeline::UnlitShader;
+use unlit_wgpu::pipeline::LitShader;
 use unlit3d::prelude::*;
 
 /// The frame's cluster grid, composited over the lighting.
@@ -101,22 +101,14 @@ fn build_clusters(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    // A dim floor keeps the unoccupied cells readable beneath the translucent
-    // grid, while the local lights remain visible through their cells.
-    source.ambient = glam::Vec4::new(0.08, 0.08, 0.08, 0.0);
     source.clustering = ClusterConfig {
         first_slice_depth: CLUSTER_NEAR,
         far: CLUSTER_FAR,
         ..ClusterConfig::DEFAULT
     };
     let device = source.device(&world.root_scope());
-    let mut options = super::unlit_options(&device);
-    options.shader = Some(UnlitShader::new(
-        "lit::cluster_grid",
-        "",
-        "",
-        cluster_grid(),
-    ));
+    let mut options = super::default_options(&device);
+    options.shader = Some(LitShader::new("lit::cluster_grid", "", "", cluster_grid()));
     let key = LitPipelineKey::new(options);
 
     let source_entity = world
@@ -138,12 +130,19 @@ fn build_clusters(
     );
     floor.normals = Some(vec![glam::Vec3::Y.to_array(); floor.positions.len()]);
     let mesh = allocate_surface(world, source_entity, &key, &floor);
-    let pipeline = LitPipeline::new(key);
+    let pipeline = GpuRenderPipeline::new(key);
 
     let camera_entity = super::spawn_in(
         world,
         source_entity,
         bundle![camera_looking_at(CLUSTER_EYE, CLUSTER_TARGET, size)],
+    );
+    // A dim ambient keeps the unoccupied cells readable beneath the grid, while
+    // the local lights remain visible through their cells.
+    super::spawn_in(
+        world,
+        source_entity,
+        bundle![AmbientLight::new(glam::Vec4::new(0.08, 0.08, 0.08, 0.0))],
     );
     super::spawn_in(world, source_entity, LitSurface { mesh, pipeline });
 

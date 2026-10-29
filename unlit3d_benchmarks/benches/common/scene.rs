@@ -13,7 +13,7 @@
 use glam::{Quat, Vec3};
 use unlit_ecs::bundle;
 use unlit_wgpu::capabilities::DeviceCapabilities;
-use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
+use unlit_wgpu::pipeline::{BaseColorChannels, LitOptions};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -65,7 +65,7 @@ impl Frame {
         // and colors is the whole of the shape. That keeps a benchmark's
         // per-entity work on the frame path rather than on binding a fuller
         // material.
-        let key = UnlitPipelineKey::new(UnlitOptions {
+        let key = LitPipelineKey::unlit(LitOptions {
             // The built-in entry shader: a benchmark measures the frame path
             // rather than a replacement shader.
             shader: None,
@@ -87,11 +87,11 @@ impl Frame {
                 ..Default::default()
             },
         });
-        source.register_unlit_family(&world.root_scope());
-        let mesh = source.allocate_unlit_mesh(
+        source.register_lit_family(&world.root_scope());
+        let mesh = source.allocate_lit_mesh(
             &world.root_scope(),
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 colors: Some(&[[255; 4], [0, 255, 0, 255], [0, 0, 255, 255]]),
                 indices: Some(&[0u32, 1, 2]),
@@ -112,7 +112,7 @@ impl Frame {
                     scale: Vec3::ONE,
                 },
                 mesh.clone(),
-                UnlitPipeline::new(key.clone()),
+                GpuRenderPipeline::new(key.clone()),
             ]);
         }
 

@@ -5,7 +5,7 @@ use unlit_ecs::bundle;
 
 use glam::Mat4;
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
-use unlit3d::gltf::UnlitGltf;
+use unlit3d::gltf::LitGltf;
 use unlit3d::prelude::*;
 
 pub mod cli;
@@ -245,14 +245,14 @@ pub fn build_world(
     );
 
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
         .spawn(bundle![Source::new(source)]);
 
     for document in &config.documents {
-        let gltf = UnlitGltf::load(&document.path)?;
+        let gltf = LitGltf::load(&document.path)?;
         let resources = with_mesh_source(&world, source_entity, |source, world| {
             gltf.insert_resources(source, world)
         });
@@ -331,7 +331,7 @@ pub fn offscreen_world(
     // with the defaults; the mesh source hangs under it.
     let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
@@ -569,7 +569,7 @@ fn camera(config: &CameraConfig, render_size: (u32, u32)) -> Camera {
 }
 
 /// Resolve the animation a document reference names.
-fn animation_index(document: &UnlitGltf, reference: &AnimationRef) -> Result<usize, Error> {
+fn animation_index(document: &LitGltf, reference: &AnimationRef) -> Result<usize, Error> {
     match reference {
         AnimationRef::Index(index) => {
             if *index < document.animation_count() {
@@ -593,7 +593,7 @@ fn animation_index(document: &UnlitGltf, reference: &AnimationRef) -> Result<usi
 }
 
 /// The comma-separated animation names of a document.
-fn animation_list(document: &UnlitGltf) -> String {
+fn animation_list(document: &LitGltf) -> String {
     let mut list = String::new();
     for animation in 0..document.animation_count() {
         if animation > 0 {

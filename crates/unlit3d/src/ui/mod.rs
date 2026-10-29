@@ -40,7 +40,7 @@ use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::globals::{Globals, View};
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedLitPipeline};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
@@ -564,7 +564,7 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
 /// it feeds are always specialized for the same target.
 fn global_group(
     device: &wgpu::Device,
-    pipeline: &SpecializedUnlitPipeline,
+    pipeline: &SpecializedLitPipeline,
     camera: &wgpu::Buffer,
     globals: &wgpu::Buffer,
 ) -> wgpu::BindGroup {

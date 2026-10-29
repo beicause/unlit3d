@@ -42,7 +42,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
         .root_scope_mut()
         .spawn(bundle![Renderer::new(context)]);
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")

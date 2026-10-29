@@ -201,7 +201,7 @@ pub fn setup_render_world(
     // it rather than to the world's root.
     let pass = nested.root_scope_mut().spawn(Pass::new(SCENE_PASS_ORDER));
     let mut source = MeshSource::new(&nested.root_scope(), context);
-    source.register_unlit_family(&nested.root_scope());
+    source.register_lit_family(&nested.root_scope());
     nested
         .scope_mut(pass)
         .expect("the scene's pass is alive")

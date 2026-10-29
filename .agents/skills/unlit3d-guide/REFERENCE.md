@@ -43,23 +43,23 @@
 | 释放 | `remove_mesh(&mut self, GpuMesh)`、`maintain(&mut self, &Scope)` | 同上 |
 | 描述 | `MeshDesc { vertex_buffers: ArrayVec<VertexBufferDesc, MAX_VERTEX_BUFFERS>, index_buffer: Option<(Buffer, IndexFormat)>, count: u32, indexed: bool, aabb: Aabb, bind_group: Option<BindGroup>, morph_deltas: Option<MorphDeltas> }` | `crates/unlit3d/src/mesh.rs` |
 
-## 内建 unlit family
+## 内建 lit family
 
 | 项 | 签名 | 源 |
 | --- | --- | --- |
-| 注册 | `MeshSourceUnlitExt::register_unlit_family(&mut self, world: &Scope)` | `crates/unlit3d/src/unlit.rs` |
-| 建 mesh | `allocate_unlit_mesh(&mut self, world: &Scope, key: &UnlitPipelineKey, desc: UnlitMeshDesc) -> GpuMesh` | 同上 |
-| 建材质 | `allocate_unlit_material(&mut self, world: &Scope, key, view: ResHandle<TextureView>, sampler: ResHandle<Sampler>) -> GpuMaterial` | 同上 |
-| 描述 | `UnlitMeshDesc { positions: &[[f32;3]], uvs: Option<&[[f32;2]]>, colors: Option<&[[u8;4]]>, indices: Option<&[u32]>, joints: Option<&[[u16;4]]>, weights: Option<&[[f32;4]]>, morph_deltas: Option<MorphDeltas> }`，positions 之外的 slice 缺省即不打包该通道 | 同上 |
-| key | `UnlitPipelineKey::new(options: UnlitOptions)`，`pub options: Hashed<UnlitOptions>` | 同上 |
-| 管线组件 | `type UnlitPipeline = GpuRenderPipeline<UnlitPipelineKey>`；实例=`bundle![mesh, material, UnlitPipeline::new(key)]` | 同上 |
+| 注册 | `MeshSourceLitExt::register_lit_family(&mut self, world: &Scope)` | `crates/unlit3d/src/lit.rs` |
+| 建 mesh | `allocate_lit_mesh(&mut self, world: &Scope, key: &LitPipelineKey, desc: LitMeshDesc) -> GpuMesh` | 同上 |
+| 建材质 | `allocate_lit_material(&mut self, world: &Scope, key, view: ResHandle<TextureView>, sampler: ResHandle<Sampler>) -> GpuMaterial` | 同上 |
+| 描述 | `LitMeshDesc { positions: &[[f32;3]], uvs: Option<&[[f32;2]]>, colors: Option<&[[u8;4]]>, indices: Option<&[u32]>, joints: Option<&[[u16;4]]>, weights: Option<&[[f32;4]]>, morph_deltas: Option<MorphDeltas> }`，positions 之外的 slice 缺省即不打包该通道 | 同上 |
+| key | `LitPipelineKey::new(options: LitOptions)`（受光）、`LitPipelineKey::unlit(options)`（无光），`pub options: Hashed<LitOptions>` + `pub unlit: bool` | 同上 |
+| 管线组件 | `GpuRenderPipeline::new(key)`，不带 key 类型参数；实例=`bundle![mesh, material, GpuRenderPipeline::new(key)]` | `crates/unlit3d/src/components.rs` |
 | 每实例覆盖 | `InstanceColor(pub Vec4)`（默认白）、`InstanceCutoff(pub f32)`、`InstanceVisibility { visible: bool }`（默认 true） | 同上 |
-| 实例记录 | `UnlitInstance`（family 的 `InstanceData`） | 同上 |
+| 实例记录 | `LitInstance`（family 的 `InstanceData`） | 同上 |
 | 排序 | `ZSortedDrawing`：带它的在不带它的之后画，按视轴深度从后往前；不改 blend | 同上 |
 
-## 管线策略 UnlitOptions
+## 管线策略 LitOptions
 
-`UnlitOptions` 全部字段都不带默认值，用构造函数起底再改：
+`LitOptions` 全部字段都不带默认值，用构造函数起底再改：
 
 | 构造 | 内容 | 源 |
 | --- | --- | --- |
@@ -69,7 +69,7 @@
 
 | 字段 | 类型 |
 | --- | --- |
-| `shader` | `Option<UnlitShader>` |
+| `shader` | `Option<LitShader>` |
 | `srgb_to_linear_output` | `bool` |
 | `base_color` | `BaseColorChannels` |
 | `alpha_cutoff` | `bool` |
@@ -173,7 +173,7 @@
 
 ## glTF
 
-`UnlitGltf`（`crates/unlit3d/src/gltf.rs`）：`load(path)` / `from_bytes`、`pipeline_key`、`insert_resources(&self, source: &mut MeshSource, world: &Scope) -> GltfResources`、`spawn_default_scene(&self, world: &mut ScopeMut, &GltfResources) -> Vec<GltfNode>`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。
+`LitGltf`（`crates/unlit3d/src/gltf.rs`）：`load(path)` / `from_bytes`、`pipeline_key`、`insert_resources(&self, source: &mut MeshSource, world: &Scope) -> GltfResources`、`spawn_default_scene(&self, world: &mut ScopeMut, &GltfResources) -> Vec<GltfNode>`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。
 
 ## 常用常量与命令
 

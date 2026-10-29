@@ -35,7 +35,7 @@ profiling = { workspace = true, default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"], optional = true }
 unlit_ecs = { path = "../crates/unlit_ecs" }
-unlit_wgpu = { path = "../crates/unlit_wgpu", default-features = false, features = ["unlit"] }
+unlit_wgpu = { path = "../crates/unlit_wgpu", default-features = false, features = ["lit"] }
 unlit3d = { path = "../crates/unlit3d" }
 wgpu = { workspace = true, features = ["noop"] }
 

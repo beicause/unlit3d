@@ -43,7 +43,7 @@ inventory = { workspace = true, optional = true }
 log.workspace = true
 profiling.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3" }
-unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"] }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["lit"] }
 web-time = { workspace = true, optional = true }
 wesl.workspace = true
 wgpu.workspace = true

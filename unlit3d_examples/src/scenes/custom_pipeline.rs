@@ -236,7 +236,7 @@ struct Particle {
 /// spawned as one object rather than as two independent components.
 struct Sky {
     mesh: GpuMesh,
-    pipeline: GpuRenderPipeline<SkyKey>,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for Sky {
@@ -252,7 +252,7 @@ impl Bundle for Sky {
 /// while the record is what places this one; a spawn states all four together.
 struct Sprite {
     mesh: GpuMesh,
-    pipeline: GpuRenderPipeline<ParticleKey>,
+    pipeline: GpuRenderPipeline,
     material: GpuMaterial,
     particle: Particle,
 }

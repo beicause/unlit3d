@@ -69,13 +69,13 @@ on the CPU so that the same path runs on a device with no compute shaders.
   [unlit_ecs](./crates/unlit_ecs/README.md). A renderable entity carries its
   mesh, material and pipeline as components, so game logic and drawing share
   one model.
-- **A variant-driven unlit pipeline.** A shader variant contains exactly the
+- **A variant-driven lit pipeline.** A shader variant contains exactly the
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
 - **Lambert lighting, forward clustered.** A directional, point, spot or convex
-  polygon light shades the same forward pass as the unlit pipeline, which it
-  extends: one extra variant flag, the same vertex streams and the same mesh
+  polygon light shades the same forward pass as the unlit one: lighting is one
+  more flag of the same variant, over the same vertex streams and the same mesh
   group. The frame's lights are clustered on the CPU into a grid of screen
   tiles and logarithmic depth slices, so a fragment reads one cell and the
   shader needs no compute. No shadows.
@@ -83,7 +83,7 @@ on the CPU so that the same path runs on a device with no compute shaders.
   through the same call as the built-in one, draws with its own pipeline — a
   hand-written `wgpu` one or a WESL module composed against the crate's public
   shader package — and owns its own per-instance vertex stream, described by the
-  same `InstanceData` trait the built-in unlit family implements.
+  same `InstanceData` trait the built-in lit family implements.
 - **Optional glTF loading.** The `unlit3d` `gltf` feature loads a glTF 2.0
   document into a plain record of the model — no `World`, no GPU state — and
   patches its images, materials and meshes into the resource graph of a world
@@ -113,7 +113,7 @@ on the CPU so that the same path runs on a device with no compute shaders.
 
 | Crate | Role |
 |-------|------|
-| [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit and lit pipelines, and an egui backend. Knows nothing about ECS. |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in lit and lit pipelines, and an egui backend. Knows nothing about ECS. |
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. It also carries the MCP server that exposes a running world over stdio, which each crate extends with its own tools. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
@@ -140,7 +140,7 @@ pass differing in nothing.
 Each crate's README carries the design rationale for what it owns:
 [`unlit_wgpu`](crates/unlit_wgpu/README.md) covers the resource graph, the
 declarative scene, pipeline specialization and per-frame uploads;
-[`unlit3d`](crates/unlit3d/README.md) covers the frame model, the unlit
+[`unlit3d`](crates/unlit3d/README.md) covers the frame model, the lit
 pipeline, UI and input; [`unlit_ecs`](crates/unlit_ecs/README.md) covers why the
 ECS is as small as it is.
 
@@ -148,7 +148,7 @@ ECS is as small as it is.
 
 - **Prefer general mechanisms over privileges for built-in features.** Design
   for generality so users can customize and extend the library. Built-in
-  implementations (unlit rendering, say) should not have privileges or private
+  implementations (lit rendering, say) should not have privileges or private
   internal paths; internal implementations should move outward to keep the
   library customizable and extensible.
 - **Route around a backend bug where it bites, and write down why.** A driver
@@ -339,7 +339,7 @@ request:
 
 - **lint** — `typos`, `tombi lint --error-on-warnings` and `tombi format
   --check` over the TOML, and `cargo fmt --all -- --check`.
-- **build** (Linux) — clippy with and without the `unlit` feature,
+- **build** (Linux) — clippy with and without the `lit` feature,
   `cargo build --workspace --all-targets`, `cargo xtask test`, `cargo doc`
   with `-D warnings`, and the workspace's snapshot comparisons twice: once at
   the WebGPU baseline's limits, once with every offscreen device narrowed to

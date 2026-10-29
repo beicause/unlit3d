@@ -19,7 +19,7 @@ const MORPH: &str = concat!(
 
 /// How long the named animation of a document lasts, in seconds.
 fn duration(path: &str, name: &str) -> f32 {
-    let document = unlit3d::gltf::UnlitGltf::load(path).expect("the document loads");
+    let document = unlit3d::gltf::LitGltf::load(path).expect("the document loads");
     let index = (0..document.animation_count())
         .find(|&animation| document.animation_name(animation) == Some(name))
         .expect("the animation exists");

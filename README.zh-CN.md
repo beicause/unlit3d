@@ -50,15 +50,15 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
 - **精简的 ECS。** 借鉴 OPP 重视对象状态，实体原型不可变，系统由外部驱动而非内置，
   行为是持有闭包的组件而非 system，参见[unlit_ecs](./crates/unlit_ecs/README.zh-CN.md)。
   可渲染实体把网格、材质与管线作为组件携带，游戏逻辑与绘制共用同一套模型。
-- **按变体组合的 unlit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
+- **按变体组合的 lit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
   逐实例变换与颜色、基础色纹理、蒙皮、形变目标——并针对本帧的渲染目标特化。
-- **Lambert 光照，前向聚类。** 方向光、点光、聚光与凸多边形面光在与 unlit 管线相同的
-  前向 pass 里着色，它是 unlit 管线的扩展：多一个变体开关、同一套顶点流与同一个 mesh
-  组。本帧的光源在 CPU 上聚类成屏幕瓦片与对数深度切片的网格，于是片元只读一个格子，
-  着色器不需要计算着色器。没有阴影。
+- **Lambert 光照，前向聚类。** 方向光、点光、聚光与凸多边形面光在与无光绘制同一个
+  前向 pass 里着色：光照只是同一个变体的又一个开关，顶点流与 mesh 组都不变。本帧的
+  光源在 CPU 上聚类成屏幕瓦片与对数深度切片的网格，于是片元只读一个格子，着色器
+  不需要计算着色器。没有阴影。
 - **自定义着色器与逐实例数据。** 调用者自己的家族通过与内置家族同一个调用注册，用自己的
   管线绘制——手写的 `wgpu` 管线，或用本库公开着色器包组合出的 WESL 模块——并拥有
-  自己的逐实例顶点流，由内置 unlit 家族所实现的同一个 `InstanceData` trait 描述。
+  自己的逐实例顶点流，由内置 lit 家族所实现的同一个 `InstanceData` trait 描述。
 - **可选的 glTF 加载。** `unlit3d` 的 `gltf` feature 把一个 glTF 2.0 文档加载为纯粹的
   模型记录——没有 `World`，没有 GPU 状态——并把它的图像、材质与网格修补进你已在渲染
   的世界的资源图，再卸载它们，并生成绘制文档默认场景的实体。节点层级、蒙皮与形变
@@ -80,7 +80,7 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
 
 | Crate | 职责 |
 |-------|------|
-| [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 与 lit 管线、egui 后端。不认识 ECS。 |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 lit 与 lit 管线、egui 后端。不认识 ECS。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
@@ -103,13 +103,13 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
 
 各 crate 的 README 记述它自己那部分的设计取舍：
 [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) 讲资源图、声明式场景、管线特化与
-逐帧上传；[`unlit3d`](crates/unlit3d/README.zh-CN.md) 讲帧模型、unlit 管线、UI 与
+逐帧上传；[`unlit3d`](crates/unlit3d/README.zh-CN.md) 讲帧模型、lit 管线、UI 与
 输入；[`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) 讲 ECS 为何如此精简。
 
 ## 编码原则
 
 - **尽量采用通用方法而不是给内置功能特权**，要考虑功能的通用性，便于用户使用本库进行
-  自定义和拓展。本库的一些内置实现（如 unlit 渲染）不应该拥有特权和内部专用实现，
+  自定义和拓展。本库的一些内置实现（如 lit 渲染）不应该拥有特权和内部专用实现，
   内部实现应该挪到外部以保证本库的可自定义性和可拓展性。
 - **在出问题的那一处绕开后端 bug，并把原因写下来。**驱动把合法代码编错时，就在绊到它
   的代码处绕开，并把症状、成因与代价记进 [`WORKAROUND.zh-CN.md`](WORKAROUND.zh-CN.md)，
@@ -217,7 +217,7 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 
 - **lint** —— 对全部文件跑 `typos`；对 TOML 跑 `tombi lint --error-on-warnings` 与
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
-- **build**（Linux）—— 带与不带 `unlit` feature 的 clippy、
+- **build**（Linux）—— 带与不带 `lit` feature 的 clippy、
   `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
   `cargo doc`，以及工作区的快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，
   一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa

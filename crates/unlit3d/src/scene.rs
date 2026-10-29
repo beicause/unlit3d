@@ -200,11 +200,16 @@ where
         // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
             let Ok((pipeline, gpu_mesh, material, z_sorted)) = world.query_one::<(
-                &GpuRenderPipeline<K>,
+                &GpuRenderPipeline,
                 &GpuMesh,
                 Option<&GpuMaterial>,
                 Has<ZSortedDrawing>,
             )>(candidate.entity) else {
+                continue;
+            };
+            // Another family's entity: its key is not this family's type, so
+            // this family does not draw it.
+            let Some(key) = pipeline.key::<K>() else {
                 continue;
             };
             let (sort_key, material_bg) = match &material {
@@ -216,7 +221,7 @@ where
             };
             self.push(
                 candidate,
-                &pipeline,
+                key,
                 &gpu_mesh,
                 material.as_deref(),
                 sort_key,
@@ -235,7 +240,7 @@ where
     fn push(
         &mut self,
         mesh: VisibleMesh,
-        pipeline: &GpuRenderPipeline<K>,
+        key: &K,
         gpu_mesh: &GpuMesh,
         material: Option<&GpuMaterial>,
         sort_key: u64,
@@ -253,7 +258,7 @@ where
             mesh: gpu_mesh,
             material,
         };
-        let variant = pipeline.key().variant(&draw);
+        let variant = key.variant(&draw);
         let ordinal = self.variants.specialize(variant);
 
         let pipeline_id = match self.registered.get(ordinal as usize) {

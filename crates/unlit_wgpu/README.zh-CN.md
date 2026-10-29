@@ -6,7 +6,7 @@
 不透明与透明实例一视同仁——绘制到调用者指定的一个 `wgpu::TextureView`；移动端优先，
 并且跑在 WebGPU 与 WebGL2 基线上。内置管线用 Lambert 漫反射光照为场景着色。
 
-本 crate 是分层的：下面这些模块是调用者搭建任意管线所用的通用设施，而内置 unlit
+本 crate 是分层的：下面这些模块是调用者搭建任意管线所用的通用设施，而内置 lit
 管线——以及用它的 egui 后端——由 feature 添加。通用模块完全不知道内置管线的存在：
 它使用与调用者自建管线完全相同的绑定槽位约定、顶点压缩与资源追踪。
 
@@ -18,8 +18,8 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `unlit` | 是 | `pipeline::SpecializedUnlitPipeline`、`pipeline::UnlitOptions`、`pipeline::UnlitVariant`，以及它们所组合的 WESL 模块 |
-| `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端。隐含 `unlit` |
+| `lit` | 是 | `pipeline::SpecializedLitPipeline`、`pipeline::LitOptions`、`pipeline::LitVariant`，以及它们所组合的 WESL 模块 |
+| `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端。隐含 `lit` |
 
 使用 `--no-default-features` 时，本 crate 保留其通用设施——资源图、网格压缩、偏移
 分配器与缓冲池、staging、readback、`Scene`、`RenderAttachments`、变体缓存，以及
@@ -68,7 +68,7 @@
   间隔划分。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、
   `GlobalBindings` 描述以及每条管线绑定本帧共享输入所用的全局绑定组布局构造函数；
-  在 `unlit` feature 下还包含内置 unlit 管线。
+  在 `lit` feature 下还包含内置 lit 管线。
 - `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
   而不必遍历值本身；当每帧 key 的成员较大时，这让 key 保持廉价。哈希来自
   `foldhash` 的定种子哈希器——hashbrown 自身的映射正是构建在这一族之上的。
@@ -82,7 +82,7 @@
 部分。下面是一次完整的走查：设备创建、网格压缩、每一个绑定组与绘制。
 
 ```rust
-# #[cfg(feature = "unlit")]
+# #[cfg(feature = "lit")]
 # {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
@@ -92,7 +92,7 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
-    SECONDARY_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
+    SECONDARY_SLOT, SpecializedLitPipeline, LitOptions, LitVariant, LitVertexChannels,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -106,7 +106,7 @@ use zerocopy::IntoBytes;
 struct Example {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: SpecializedUnlitPipeline,
+    pipeline: SpecializedLitPipeline,
     globals: wgpu::BindGroup,
     material: wgpu::BindGroup,
     positions: wgpu::Buffer,
@@ -125,16 +125,16 @@ impl Example {
         //    whether a material and morph targets are bound, and the target
         //    the pipeline renders into. Equal variants share one compiled
         //    pipeline, so the variant doubles as the cache key.
-        let options = UnlitOptions::standard(device);
+        let options = LitOptions::standard(device);
         let surface = SurfaceKey {
             color_format: options.color_target.format,
             depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
             sample_count: options.multisample.count,
         };
-        let variant = UnlitVariant {
+        let variant = LitVariant {
             options: Hashed::new(options),
             surface,
-            channels: UnlitVertexChannels {
+            channels: LitVertexChannels {
                 position: PositionStreamChannels {
                     position: Some(ChannelEncoding::CompressedPosition),
                     joints: false,
@@ -427,14 +427,14 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
 调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata`、`mesh_compression`
-解码函数，以及 `lit` 下的光源记录、聚类 uniform 与多边形形状因子）；`unlit` feature
-额外加入内置入口着色器，由 `pipeline::SpecializedUnlitPipeline` 把它与一次绘制解析出的
-`pipeline::UnlitVariant` 组合起来。一份入口着色器覆盖所有内置变体，lit 的也在内：
+解码函数，以及 `lit` 下的光源记录、聚类 uniform 与多边形形状因子）；`lit` feature
+额外加入内置入口着色器，由 `pipeline::SpecializedLitPipeline` 把它与一次绘制解析出的
+`pipeline::LitVariant` 组合起来。一份入口着色器覆盖所有内置变体，lit 的也在内：
 差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
 绑定与顶点属性。
 
 若要编写自己的着色器，有两条路。最近的一条是
-`pipeline::UnlitOptions::shader`：`pipeline::UnlitShader` 各给出一段顶层、一段顶点、
+`pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段顶层、一段顶点、
 一段片段片段，分别拼进内置 `lit.wesl` 的三个标记位置。顶层那段落在顶层声明区，在 import
 与绑定之后、第一个 struct 之前，于是它能在每个同形变体都已声明的绑定之上添加函数、类型与
 常量。顶点那段在实例变换之后、构造裁剪坐标之前，那里的顶点是 `var world`；片段那段在
@@ -555,7 +555,7 @@ for draw in scene.draws {
 - **变体**（`PipelineVariant`）是一种配置的完整可哈希身份。它既是缓存键，*也是*
   蓝图的配方：`descriptor` 把它变成要编译的蓝图。变体必须**单射**——相等的变体构造
   出相等的蓝图，蓝图不同的绘制解析到不同的变体——这正是缓存得以是从变体到下标的单层
-  映射的原因。变体可以就是自己的蓝图（`type Descriptor = Self`），内置 unlit 即是
+  映射的原因。变体可以就是自己的蓝图（`type Descriptor = Self`），内置 lit 即是
   如此。
 - **蓝图**（`PipelineDescriptor<P>`）是编译成类型 `P` 的管线的 wgpu 状态。缓存与
   管线种类无关，所以 `P` 不该被写死：渲染管线是
@@ -582,13 +582,13 @@ for draw in scene.draws {
 
 </details>
 
-**绑定组的布局不是管线的状态。** 内置 unlit 的三个布局（全局、材质、网格）完全由
+**绑定组的布局不是管线的状态。** 内置 lit 的三个布局（全局、材质、网格）完全由
 变体决定，且能在不编译任何东西的情况下独立使用——比如描述一条材质的绑定接口——因此
 它们按需从变体推导，而不是与编译产物并排存一份，避免布局与蓝图两份真相漂移。
 
-**内置管线没有特权。** 它只是同一套机制的一个普通使用者：`UnlitVariant` 就是它自己的
-蓝图（即其 `PipelineDescriptor`），而 `SpecializedUnlitPipeline` 不过是
-`SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>` 的别名。不存在第二条专为
+**内置管线没有特权。** 它只是同一套机制的一个普通使用者：`LitVariant` 就是它自己的
+蓝图（即其 `PipelineDescriptor`），而 `SpecializedLitPipeline` 不过是
+`SpecializedPipeline<wgpu::RenderPipeline, LitVariant>` 的别名。不存在第二条专为
 内置着色器铺设的编译路径；本帧的共享输入同样开放：`GlobalBindings` 与
 `global_bind_group_layout` 构造出任何管线都能绑定的全局布局，调用者自己的着色器因此
 无需重造内置布局即可读到相机、globals 与姿势数组。把它注册进更高层的家族机制，是
@@ -597,7 +597,7 @@ for draw in scene.draws {
 
 ### 光照：前向聚簇的 Lambert
 
-lit 管线就是多一个着色器 flag 的 unlit 管线：[`UnlitVariant::lit`](pipeline::UnlitVariant::lit) 打开一个 WESL flag，组合出的片元阶段把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——因此给一个家族分配的网格可以在另一个家族里绘制，一个 source 也能同时携带两者。
+光照是一个变体 flag：[`LitVariant::unlit`](pipeline::LitVariant::unlit) 关掉一个 WESL flag，组合出的片元阶段就把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——所以同一个家族两种模式都画，为一个模式分配的网格在另一个模式里也能画。
 
 着色只有 Lambert：一盏灯贡献它的颜色乘一个亮度系数，求和后调制基础色。没有镜面项、没有金属反射、没有菲涅耳、也没有能量守恒，所以被照亮的表面是自身反照率的一种调制，而不是材质的物理模型。
 
@@ -616,7 +616,7 @@ lit 管线就是多一个着色器 flag 的 unlit 管线：[`UnlitVariant::lit`]
 
 </details>
 
-它的选项就是 unlit 家族自己的选项，上层的 `LitPipelineKey` 只是把这些选项放在一个自己的类型下——正是一个 source 能同时携带两个家族的原因。
+它的选项就是这个家族自己的选项，上层的 `LitPipelineKey` 只是把这些选项放在一个自己的类型下，`unlit` 是其中一个 flag——正是一个 source 能同时画受光与无光网格的原因。
 ### 读取本帧的数组：storage buffer 还是 texel
 
 内置着色器要读帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重与形变位移，
@@ -632,7 +632,7 @@ WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 于是着色器主体只写一遍，只有那个模块知道到达的是哪种资源。
 
 两条路径保持相同的绑定编号、字节布局与元素顺序，差异因此被限制在资源类型上。
-用哪条由设备决定：[`UnlitVariant`](pipeline::UnlitVariant) 在编译管线时读取设备
+用哪条由设备决定：[`LitVariant`](pipeline::LitVariant) 在编译管线时读取设备
 limits，于是永远不会向没有 storage buffer 的设备索要一个会被拒绝的绑定。这一选择属于
 编译管线的设备而非变体，因此从不进入缓存键。
 
@@ -688,7 +688,7 @@ cargo xtask test     # 整个工作区：nextest 加 doctest
 cargo nextest run -p unlit_wgpu --all-features   # 只跑本 crate
 ```
 
-集成测试是一个二进制，它要求 `unlit` 与 `egui`。不带后者跑并不会报错：Cargo 会把整个
+集成测试是一个二进制，它要求 `lit` 与 `egui`。不带后者跑并不会报错：Cargo 会把整个
 target 跳过，于是 suite 悄无声息地不在这一趟里，只有单元测试报告结果。
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用

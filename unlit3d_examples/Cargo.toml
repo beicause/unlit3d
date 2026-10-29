@@ -44,7 +44,7 @@ log.workspace = true
 serde_json.workspace = true
 # The MCP command types the `--mcp` mode carries come from the ECS crate.
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", features = ["mcp"] }
-unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"] }
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["lit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", features = ["gltf"] }
 # The glTF documents the scenes embed. Their own crate because the bytes would
 # otherwise sit in this crate's metadata, copied for every crate that reads it.

@@ -47,10 +47,10 @@ has one test target for its whole suite — the files are modules of it — and 
 root joins those shares and emits the `main` that runs them:
 
 ```rust,ignore
-#[path = "gpu_unlit.rs"]
-mod gpu_unlit;
+#[path = "gpu_lit.rs"]
+mod gpu_lit;
 
-gpu_test_main!([gpu_unlit::all_tests()].concat());
+gpu_test_main!([gpu_lit::all_tests()].concat());
 ```
 
 Native test targets are declared `harness = false` in their `Cargo.toml`,

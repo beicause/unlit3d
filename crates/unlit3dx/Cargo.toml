@@ -42,7 +42,7 @@ rustysynth-ext = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3" }
-unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"], optional = true }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["lit"], optional = true }
 unlit3d = { path = "../unlit3d", version = "0.1.0-dev.3", default-features = false }
 web-time.workspace = true
 wgpu = { workspace = true, optional = true }

@@ -12,6 +12,10 @@ pub mod frame;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 pub mod input;
+/// The frame's lights, and the clustering a lit frame does of them.
+pub mod light;
+/// The built-in lit pipeline: the shader, the family it registers and the
+/// meshes it draws.
 pub mod lit;
 /// The rendering tools a world answers through the Model Context Protocol
 /// server in [`unlit_ecs::mcp`].
@@ -35,22 +39,20 @@ pub mod scene;
 pub mod source;
 #[cfg(feature = "ui")]
 pub mod ui;
-pub mod unlit;
 #[cfg(feature = "winit")]
 pub mod winit;
 
 /// The types most callers need for typical usage.
 pub mod prelude {
+    pub use crate::light::{
+        AmbientLight, DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource,
+        PointLight, QuadLight, SpotLight,
+    };
     pub use crate::lit::{
-        DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource, LitPipeline,
-        LitPipelineKey, MeshSourceLitExt, PointLight, QuadLight, SpotLight,
+        InstanceColor, InstanceCutoff, LitInstance, LitMeshDesc, LitPipelineKey, MeshSourceLitExt,
     };
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};
-    pub use crate::unlit::{
-        InstanceColor, InstanceCutoff, MeshSourceUnlitExt, UnlitInstance, UnlitMeshDesc,
-        UnlitPipeline, UnlitPipelineKey,
-    };
     pub use crate::{
         attachments::FrameAttachments,
         blit::BlitSource,

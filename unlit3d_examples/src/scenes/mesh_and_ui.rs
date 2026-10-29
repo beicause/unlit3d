@@ -5,7 +5,7 @@
 //! state and the frame's load ops. The snapshot `mesh_and_ui.webp` freezes the
 //! second frame.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, unlit_options};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, default_options};
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
 
@@ -23,7 +23,7 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// fields; the placement belongs to the scene, so it is the bundle's own.
 struct TiltedCube {
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for TiltedCube {
@@ -67,8 +67,8 @@ fn build(
     options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    source.register_lit_family(&world.root_scope());
+    let key = LitPipelineKey::unlit(default_options(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -76,10 +76,10 @@ fn build(
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
@@ -95,7 +95,7 @@ fn build(
         source_entity,
         TiltedCube {
             mesh,
-            pipeline: UnlitPipeline::new(key),
+            pipeline: GpuRenderPipeline::new(key),
         },
     );
 

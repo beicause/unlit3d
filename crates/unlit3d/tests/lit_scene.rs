@@ -39,6 +39,7 @@ struct Floor {
     world: World,
     gpu: TestGpu,
     source: Entity,
+    ambient: Entity,
     target: wgpu::Texture,
 }
 
@@ -52,15 +53,14 @@ fn floor(ctx: &Ctx) -> Floor {
     let gpu = TestGpu::new(&mut world, ctx);
     let mut source = MeshSource::new(&world.root_scope(), gpu.context);
     source.register_lit_family(&world.root_scope());
-    source.ambient = AMBIENT;
     let source = gpu.spawn_source(&mut world, source);
-    let key = LitPipelineKey::new(unlit_options(&ctx.device));
+    let key = LitPipelineKey::new(default_options(&ctx.device));
 
     let mesh = with_mesh_source(&world, source, |source, scope| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             scope,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &floor_positions(),
                 normals: Some(&floor_normals()),
                 indices: Some(&floor_indices()),
@@ -71,13 +71,15 @@ fn floor(ctx: &Ctx) -> Floor {
     let camera = camera_looking_at(EYE, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
     let mut scope = world.scope_mut(source).expect("the source is a scope");
     scope.spawn(bundle![camera]);
-    scope.spawn(bundle![mesh, LitPipeline::new(key.clone())]);
+    scope.spawn(bundle![mesh, GpuRenderPipeline::new(key.clone())]);
+    let ambient = scope.spawn(bundle![AmbientLight::new(AMBIENT)]);
 
     let target = gpu.bind_offscreen_target(&world, "test::lit_floor");
     Floor {
         world,
         gpu,
         source,
+        ambient,
         target,
     }
 }
@@ -110,11 +112,16 @@ impl Floor {
         ]);
     }
 
-    /// The ambient term of the frames this floor draws.
+    /// Replace the ambient light this floor draws with, which is a component
+    /// rather than a source field: the scene owns the entity, so changing it
+    /// changes what every later frame sums.
     fn set_ambient(&mut self, ambient: glam::Vec4) {
-        with_mesh_source(&self.world, self.source, |source, _| {
-            source.ambient = ambient;
-        });
+        let mut light = self
+            .world
+            .root_scope()
+            .query_one::<&mut AmbientLight>(self.ambient)
+            .expect("the floor's ambient light is alive");
+        light.color = ambient;
     }
 
     /// The pixels the floor covers: everything the ambient term alone lifts off
@@ -306,8 +313,8 @@ async fn a_mirrored_quad_light_still_shines() {
     );
 }
 
-/// The ambient term is the source's own, and it belongs to the frame rather than
-/// to a cell: every lit pixel receives it, and raising it raises them all.
+/// The ambient term is the frame's, not a cell's: every lit pixel receives it,
+/// and raising it raises them all.
 async fn the_ambient_term_reaches_every_lit_pixel() {
     let ctx = Ctx::headless().await;
     let mut scene = floor(&ctx);

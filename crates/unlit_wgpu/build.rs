@@ -15,7 +15,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shaders");
     // The feature set selects which modules the package holds, so a change to
     // it has to be seen as a change to the inputs.
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_UNLIT");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LIT");
 
     let mut package = wesl::PackageBuilder::new("unlit_wgpu")
         .scan_root("shaders")
@@ -23,7 +23,7 @@ fn main() {
         .validate()
         .unwrap_or_else(|error| panic!("WESL validation failed: {error}"));
 
-    if std::env::var_os("CARGO_FEATURE_UNLIT").is_none() {
+    if std::env::var_os("CARGO_FEATURE_LIT").is_none() {
         package
             .root
             .submodules

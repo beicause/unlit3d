@@ -6,7 +6,7 @@
 
 use super::{BASELINE_SIZE, SceneControl, SceneDef, SceneOptions};
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
 
@@ -56,8 +56,8 @@ fn build(
 
     // The built-in mesh source and the frame driver, as resource entities.
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
-    let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_scope())));
+    source.register_lit_family(&world.root_scope());
+    let key = LitPipelineKey::unlit(LitOptions::standard(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -73,10 +73,10 @@ fn build(
                 .as_mut::<MeshSource>()
                 .expect("the source entity carries a MeshSource");
             let (positions, uvs, colors, indices) = super::cube();
-            let mesh = source.allocate_unlit_mesh(
+            let mesh = source.allocate_lit_mesh(
                 &root,
                 &key.options,
-                UnlitMeshDesc {
+                LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
                     colors: Some(&colors),
@@ -99,7 +99,7 @@ fn build(
                     ..Default::default()
                 }),
             );
-            let material = source.allocate_unlit_material(&root, &key.options, view, sampler);
+            let material = source.allocate_lit_material(&root, &key.options, view, sampler);
             (mesh, material)
         })
         .expect("the source entity exists");
@@ -139,7 +139,7 @@ fn build(
         TexturedCube {
             mesh,
             material,
-            pipeline: UnlitPipeline::new(key),
+            pipeline: GpuRenderPipeline::new(key),
         },
     );
 
@@ -387,7 +387,7 @@ fn build(
 struct TexturedCube {
     mesh: GpuMesh,
     material: GpuMaterial,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
 }
 
 impl Bundle for TexturedCube {

@@ -41,10 +41,10 @@ gpu_tests! {
 根部把这些份额拼接起来，并生成运行它们的 `main`：
 
 ```rust,ignore
-#[path = "gpu_unlit.rs"]
-mod gpu_unlit;
+#[path = "gpu_lit.rs"]
+mod gpu_lit;
 
-gpu_test_main!([gpu_unlit::all_tests()].concat());
+gpu_test_main!([gpu_lit::all_tests()].concat());
 ```
 
 原生测试 target 在 `Cargo.toml` 中声明为 `harness = false`，因为要跑的是这个列表，

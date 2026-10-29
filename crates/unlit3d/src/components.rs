@@ -249,7 +249,7 @@ pub struct MeshParts {
 /// A handle to a mesh stored in the source's GPU resource graph.
 ///
 /// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
-/// [`MeshSourceUnlitExt::allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh).
+/// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh).
 /// The mesh is ready to draw immediately, and it lives as long as some
 /// [`GpuMesh`] names it: dropping the last handle makes it collectable by the
 /// next `maintain`, after which the pool ranges it held are handed back with
@@ -426,26 +426,55 @@ pub struct MorphBinding {
 /// Every renderable entity carries one: an entity without this component is
 /// not drawn at all. The key selects the family, so an entity whose key type
 /// no registered family uses is silently skipped.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(
     feature = "reflect",
     derive(facet::Facet),
     facet(opaque, proxy = crate::reflect::GpuRenderPipelineProxy)
 )]
-pub struct GpuRenderPipeline<Key> {
+pub struct GpuRenderPipeline {
     /// The entity's pipeline key.
-    pub(crate) key: Key,
+    pub(crate) key: Box<dyn crate::pipeline::DynRenderPipelineKey>,
 }
 
-impl<Key> GpuRenderPipeline<Key> {
+impl GpuRenderPipeline {
     /// A pipeline component carrying `key`.
-    pub fn new(key: Key) -> Self {
-        Self { key }
+    pub fn new<Key>(key: Key) -> Self
+    where
+        Key: crate::pipeline::RenderPipelineKey + Clone,
+    {
+        Self { key: Box::new(key) }
     }
 
-    /// The entity's pipeline key.
-    pub(crate) fn key(&self) -> &Key {
-        &self.key
+    /// The entity's pipeline key, if it is this family's `Key`.
+    ///
+    /// A family asks for its own key type; an entity of another family's is
+    /// skipped rather than read as this one's.
+    pub(crate) fn key<Key>(&self) -> Option<&Key>
+    where
+        Key: crate::pipeline::RenderPipelineKey,
+    {
+        self.key.as_any().downcast_ref::<Key>()
+    }
+
+    /// The type name of the key, for diagnostics.
+    pub(crate) fn key_type_name(&self) -> &'static str {
+        self.key.key_type_name()
+    }
+}
+
+impl Clone for GpuRenderPipeline {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone_key(),
+        }
+    }
+}
+
+impl core::fmt::Debug for GpuRenderPipeline {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GpuRenderPipeline")
+            .field("key", &self.key_type_name())
+            .finish()
     }
 }
 
@@ -454,7 +483,7 @@ impl<Key> GpuRenderPipeline<Key> {
 /// Created by
 /// [`MeshSource::allocate_material`](crate::mesh_source::MeshSource::allocate_material) for a
 /// caller's own layout, or by
-/// [`MeshSourceUnlitExt::allocate_unlit_material`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_material)
+/// [`MeshSourceLitExt::allocate_lit_material`](crate::lit::MeshSourceLitExt::allocate_lit_material)
 /// for the built-in shader's base-color texture and sampler. The bind group
 /// lives as long as some handle names it; dropping the last one makes it
 /// collectable by the next `maintain`.

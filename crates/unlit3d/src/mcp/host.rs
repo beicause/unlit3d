@@ -17,13 +17,13 @@ use unlit_ecs::mcp::host::{
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{CreateMesh, EncodedImage, Output};
 use unlit_ecs::{DynamicBundle, Entity, Scope, World};
-use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
 use unlit_wgpu::resources::{
     ResId, Resource, ResourceGraph, ResourceGraphInfo, ResourceGraphMaintain,
 };
 
-use crate::gltf::UnlitGltf;
+use crate::gltf::LitGltf;
 use crate::prelude::*;
 use crate::reflect;
 
@@ -547,7 +547,7 @@ pub fn create_mesh(
     {
         return Err("indices must be triangles, three per primitive".to_string());
     }
-    let desc = UnlitMeshDesc {
+    let desc = LitMeshDesc {
         positions: &args.positions,
         uvs: args.uvs.as_deref(),
         colors: args.colors.as_deref(),
@@ -558,8 +558,8 @@ pub fn create_mesh(
         morph_deltas: None,
     };
     let (key, mesh) = with_mesh_source(world, source, |source, scope| {
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(scope)));
-        let mesh = source.allocate_unlit_mesh(scope, &key.options, desc);
+        let key = LitPipelineKey::unlit(LitOptions::standard(&source.device(scope)));
+        let mesh = source.allocate_lit_mesh(scope, &key.options, desc);
         (key, mesh)
     })?;
     let transform = match args.transform {
@@ -579,7 +579,7 @@ pub fn create_mesh(
     let mut builder = DynamicBundle::new();
     builder.push_component(transform);
     builder.push_component(mesh);
-    builder.push_component(UnlitPipeline::new(key));
+    builder.push_component(GpuRenderPipeline::new(key));
     builder.push_component(InstanceColor::new(color));
     if let Some(cutoff) = args.cutoff {
         builder.push_component(InstanceCutoff::new(cutoff));
@@ -729,7 +729,7 @@ pub fn load_gltf(
     scope: Option<Entity>,
     path: &str,
 ) -> Result<Value, String> {
-    let gltf = UnlitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
+    let gltf = LitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
     let resources = with_mesh_source(world, source, |source, scope| {
         gltf.insert_resources(source, scope)
     })?;

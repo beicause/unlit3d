@@ -11,8 +11,8 @@
 //! sequence is what proves a merged draw still reads each instance's own pose.
 
 use super::{
-    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas,
-    rest_pose, unlit_options,
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options,
+    morph_deltas, rest_pose,
 };
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
@@ -32,7 +32,7 @@ struct Instance {
     transform: Transform,
     tint: glam::Vec4,
     mesh: GpuMesh,
-    pipeline: UnlitPipeline,
+    pipeline: GpuRenderPipeline,
     pose: Entity,
     weights: Entity,
 }
@@ -80,9 +80,9 @@ fn build(
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
-    source.register_unlit_family(&world.root_scope());
+    source.register_lit_family(&world.root_scope());
     // The variant that reads both the joint stream and the morph bindings.
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    let key = LitPipelineKey::unlit(default_options(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -92,10 +92,10 @@ fn build(
     let skin = BendSkin::new(&positions, 0.0);
     let deltas = morph_deltas(&positions);
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
-        source.allocate_unlit_mesh(
+        source.allocate_lit_mesh(
             world,
             &key.options,
-            UnlitMeshDesc {
+            LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
                 colors: Some(&colors),
@@ -146,7 +146,7 @@ fn build(
                 },
                 tint: color,
                 mesh: mesh.clone(),
-                pipeline: UnlitPipeline::new(key.clone()),
+                pipeline: GpuRenderPipeline::new(key.clone()),
                 pose: pose_entity,
                 weights: weight_entity,
             },
