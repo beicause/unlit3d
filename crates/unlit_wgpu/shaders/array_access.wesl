@@ -282,7 +282,22 @@ public fn load_cell_word(cell: u32, word: u32) -> u32 {
 public fn load_cell_word(cell: u32, word: u32) -> u32 {
     let first = cell * LIGHT_CELL_TEXELS + word / 4u;
     let texel = textureLoad(light_cells_tex, texel_of(light_cells_tex, first), 0);
-    return bitcast<u32>(texel[word % 4u]);
+    // The lane is picked by name rather than by subscripting the vector: a
+    // dynamic subscript is what the word the caller asks for is, but not every
+    // backend reads the lane it names -- DX12 returns zero for all of them --
+    // so the four candidates are selected and summed instead. See
+    // WORKAROUND.md for the driver bug behind this.
+    let lane = word % 4u;
+    let lanes = vec4<u32>(
+        bitcast<u32>(texel.x),
+        bitcast<u32>(texel.y),
+        bitcast<u32>(texel.z),
+        bitcast<u32>(texel.w),
+    );
+    return lanes.x * select(0u, 1u, lane == 0u)
+        + lanes.y * select(0u, 1u, lane == 1u)
+        + lanes.z * select(0u, 1u, lane == 2u)
+        + lanes.w * select(0u, 1u, lane == 3u);
 }
 
 /// Read the polygon vertex at `index`.
