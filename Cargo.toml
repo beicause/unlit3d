@@ -112,7 +112,9 @@ web-time = { version = "1.1.0", default-features = false }
 webbrowser = "1.2.4"
 wesl = { version = "0.5.0", default-features = false }
 wesl-core = { version = "0.1.0", default-features = false }
-wgpu = { version = "30.0.1", default-features = false, features = ["dx12", "gles", "metal", "std", "vulkan", "web", "webgl", "webgpu", "wgsl"] }
+# The trunk branch, not a release: the renderer tracks wgpu's
+# unreleased API so a fix here lands there without waiting for a release.
+wgpu = { git = "https://github.com/gfx-rs/wgpu", branch = "trunk", default-features = false, features = ["dx12", "gles", "metal", "std", "vulkan", "web", "webgl", "webgpu", "wgsl"] }
 winit = { version = "0.30.13", default-features = false, features = ["default"] }
 zerocopy = { version = "0.8.56", default-features = false, features = ["alloc", "std"] }
 zerocopy-derive = { version = "0.8.56", default-features = false }

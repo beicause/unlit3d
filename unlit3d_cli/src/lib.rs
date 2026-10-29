@@ -177,6 +177,7 @@ pub async fn request_device() -> Result<(wgpu::Device, wgpu::Queue, DeviceCapabi
             label: Some("unlit3d_cli"),
             required_features: wgpu::Features::empty(),
             required_limits: tier.limits(&adapter.limits()),
+            default_queue: wgpu::QueueDescriptor { label: None },
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,

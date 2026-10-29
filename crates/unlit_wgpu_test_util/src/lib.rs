@@ -158,6 +158,7 @@ impl Ctx {
                 label: Some("unlit_wgpu_test_util"),
                 required_features: wgpu::Features::empty(),
                 required_limits: tier.limits(&adapter.limits()),
+                default_queue: wgpu::QueueDescriptor { label: None },
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
