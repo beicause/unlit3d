@@ -211,14 +211,16 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     );
 
     // Only the frames a scene freezes are read back, so the frames between two
-    // captures are stepped without being drawn. That leans on a draw being
-    // idempotent: it reads the scene the steps left behind and writes nothing
-    // back into it, so a frame drawn late is the frame that would have been
-    // drawn on time. A scene that accumulates across draws -- a ping-pong
-    // target, a temporal filter -- would have to draw every frame. One frame is
-    // drawn before the loop: egui lays a window out over two passes — the first
-    // records only the space it will take — so a capture that were the first
-    // drawn frame would compare against an empty panel.
+    // captures are stepped without being drawn. That leans on a draw not
+    // advancing the scene: it reads what the steps left behind, and the state it
+    // does write is only what a frame publishes for its readers -- the target a
+    // panel lays itself out against and the URLs its widgets opened -- which the
+    // next frame replaces anyway. So a frame drawn late is the frame that would
+    // have been drawn on time. A scene that accumulates across draws -- a
+    // ping-pong target, a temporal filter -- would have to draw every frame. One
+    // frame is drawn before the loop: egui lays a window out over two passes
+    // — the first records only the space it will take — so a capture that were
+    // the first drawn frame would compare against an empty panel.
     scene.render(&world);
     let mut compared = 0;
     for frame in 0..def.frames {

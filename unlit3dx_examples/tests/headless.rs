@@ -172,6 +172,49 @@ async fn frames_match_the_baselines() {
     }
 }
 
+/// A frame the run draws must not depend on whether the frames before it were
+/// drawn too: a draw reads what the steps left behind, which is what lets the
+/// run step between two captures without drawing. So the frame a run captures
+/// alone and the same frame captured after three earlier ones have to hand
+/// back the same pixels.
+///
+/// The run is its own, shorter than the baseline capture, so this check does
+/// not lean on the baseline table naming a frame the second run draws.
+async fn an_undrawn_frame_matches_a_drawn_one() {
+    let soundfont = soundfont().unwrap_or_else(|| Arc::from(embedded_soundfont()));
+    let ctx = Ctx::headless().await;
+    let frames = 60;
+    let captured = [15, 30, 45, frames - 1];
+    let last = frames - 1;
+    let alone = run(
+        &config(soundfont.clone(), frames, vec![last]),
+        &ctx.device,
+        &ctx.queue,
+        ctx.capabilities,
+    );
+    let surrounded = run(
+        &config(soundfont, frames, captured.to_vec()),
+        &ctx.device,
+        &ctx.queue,
+        ctx.capabilities,
+    );
+    assert_eq!(alone.frames.len(), 1);
+    assert_eq!(surrounded.frames.len(), captured.len());
+    let drawn_late = &alone.frames[0];
+    let drawn_on_time = &surrounded.frames[captured.len() - 1];
+    if drawn_late != drawn_on_time {
+        let differing = drawn_late
+            .iter()
+            .zip(drawn_on_time)
+            .filter(|(late, on_time)| late != on_time)
+            .count();
+        panic!(
+            "frame {last} differs in {differing} of {} bytes whether the frames before it were drawn",
+            drawn_late.len()
+        );
+    }
+}
+
 /// The audio baseline is a host-only check: it needs the real soundfont and
 /// a filesystem, neither of which a browser has. A skipped check has to say
 /// so out loud: a green run that quietly tested nothing is worse than a red
@@ -213,6 +256,7 @@ async fn audio_matches_the_baseline() {
 // the page has no test for.
 gpu_tests! {
     frames_match_the_baselines,
+    an_undrawn_frame_matches_a_drawn_one,
     #[host_only]
     audio_matches_the_baseline,
 }

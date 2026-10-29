@@ -36,9 +36,15 @@ pub struct HeadlessConfig {
     pub size: (u32, u32),
     /// How many frames to step before the run ends.
     pub frames: u32,
-    /// Which frames to capture, by index. An empty list makes the run
-    /// audio-only: the render world still drains its commands, but no
-    /// frame is dispatched or drawn.
+    /// Which frames to capture, by index, ascending.
+    /// An empty list makes the run audio-only: the render world still drains
+    /// its commands and dispatches its frames, but none is drawn.
+    ///
+    /// The frames come back in the order they were stepped. Every index must
+    /// name a frame the run steps and each must follow the one before, or
+    /// [`run`] panics: an index past the last frame matches nothing, and a
+    /// list that went backwards would hand its frames back in an order the
+    /// caller did not name them in.
     pub capture: Vec<u32>,
     /// The rate the mix is pulled at, and the rate the recorded audio is
     /// written at. The synthesizer takes it from the stream it renders into.
@@ -66,6 +72,26 @@ pub fn run(
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
 ) -> HeadlessOutput {
+    // Every capture entry has to name a frame the run steps, and the entries
+    // have to ascend: a frame is drawn where the steps left it, so the frames
+    // come back in the order they were stepped. An index past the last frame
+    // matches nothing, and a list that went backwards would answer in its own
+    // order rather than the caller's.
+    for (position, index) in config.capture.iter().enumerate() {
+        assert!(
+            *index < config.frames,
+            "capture entry {position} names frame {index}, but the run steps {} frames",
+            config.frames
+        );
+        if position > 0 {
+            assert!(
+                config.capture[position - 1] < *index,
+                "capture entry {position} names frame {index} after frame {}, so the capture does not ascend",
+                config.capture[position - 1]
+            );
+        }
+    }
+
     let mut host = World::new();
 
     // The render sub-world, drained inline every frame, exactly as the
@@ -165,35 +191,36 @@ pub fn run(
         }
 
         // Render: drain the sub-world's commands — the scene build rides
-        // on that drain — then dispatch and draw. An audio-only run
-        // captures no frames and skips the whole block: nothing reads
-        // the picture, and the camera behaviour it would drive belongs
-        // to the picture alone. Only the captured frames are drawn, which
-        // holds because a draw is idempotent: it reads the scene the steps
-        // left behind and writes nothing back into it, so the frame drawn
-        // for a capture is the frame that would have been drawn on time.
+        // on that drain — then dispatch the frame. The dispatch happens every
+        // frame, an audio-only run included: it is what advances the frame's
+        // behaviours, so the path a capture freezes is the path the run walked.
+        // Only the frames a capture names are drawn.
+        //
+        // Drawing every captured frame is enough because a draw does not
+        // advance the scene: it reads what the steps left behind, and the state
+        // it writes is only what a frame publishes for its readers — the
+        // target a panel lays itself out against and the URLs its widgets
+        // opened — which the next frame overwrites anyway. So the frame drawn
+        // for a capture is the frame that would have been drawn on time. A
+        // scene that accumulates across draws — a ping-pong target, a temporal
+        // filter — would have to draw every frame.
         let mut nested = host
             .root_scope()
             .query_one::<&mut World>(render.entity)
             .expect("the render sub-world exists");
         drain_sub_world(&mut nested);
-        if !config.capture.is_empty() {
-            // The camera behaviour runs every frame, so the path a capture
-            // freezes is the path the run walked; the draw itself is what only
-            // the captured frames need.
-            dispatch_frame(&mut nested, &mut frame);
-            if config.capture.contains(&index) {
-                let _ = nested
-                    .root_scope()
-                    .query_one::<&mut Renderer>(renderer.0)
-                    .map(|mut r| {
-                        r.render(&nested);
-                    });
-                let target = offscreen.as_ref().expect("the offscreen target exists");
-                output
-                    .frames
-                    .push(readback_texture(device, queue, &target.texture));
-            }
+        dispatch_frame(&mut nested, &mut frame);
+        if config.capture.contains(&index) {
+            let _ = nested
+                .root_scope()
+                .query_one::<&mut Renderer>(renderer.0)
+                .map(|mut r| {
+                    r.render(&nested);
+                });
+            let target = offscreen.as_ref().expect("the offscreen target exists");
+            output
+                .frames
+                .push(readback_texture(device, queue, &target.texture));
         }
     }
 

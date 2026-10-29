@@ -50,8 +50,9 @@ impl Interactive {
     /// Nothing is drawn here, so a run that only reads the state back rather
     /// than the picture costs no draw calls. [`Interactive::draw`] draws the
     /// frame where the scene then stands, which is the same frame a step would
-    /// have drawn: a draw reads the scene the steps left behind and writes
-    /// nothing back into it.
+    /// have drawn: a draw does not advance the scene, and what it does write is
+    /// only what a frame publishes for its readers, which the next frame
+    /// replaces anyway.
     pub fn step(&mut self, host: &World, frames: u32) {
         for _ in 0..frames {
             dispatch_input(host);
