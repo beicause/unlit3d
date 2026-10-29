@@ -185,12 +185,26 @@ fn build(
     source.register_lit_family(&world.root_scope());
     source.ambient = AMBIENT;
     let device = source.device(&world.root_scope());
-    let key = LitPipelineKey::new(super::unlit_options(&device));
+    let mut plain = super::unlit_options(&device);
     // The wall's own key: the relief rides in the vertex stage, and a shader
     // is part of the options a variant is compiled from, so the wall draws
     // through a second pipeline of the same family.
     let mut relief = super::unlit_options(&device);
     relief.shader = Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), ""));
+    if std::env::var_os("UNLIT3D_DEBUG_LIGHT_DATA").is_some() {
+        let probe = r#"
+let probe_depth = view_depth(in.world);
+let probe_cell = fragment_cluster_index(fragment_ndc(in.world), probe_depth);
+let probe_count = array_access::load_cell_word(probe_cell, 0u);
+color = vec4<f32>(f32(probe_count) / 16.0, f32(probe_cell) / 4096.0, probe_depth / 1024.0, 1.0);
+"#;
+        plain.shader = Some(UnlitShader::new("lit::probe", "", "", probe));
+        let mut probe_relief = super::unlit_options(&device);
+        probe_relief.shader =
+            Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), probe));
+        relief = probe_relief;
+    }
+    let key = LitPipelineKey::new(plain);
     let relief_key = LitPipelineKey::new(relief);
 
     let source_entity = world
