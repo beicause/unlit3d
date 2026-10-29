@@ -193,12 +193,27 @@ fn build(
     relief.shader = Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), ""));
     if std::env::var_os("UNLIT3D_DEBUG_LIGHT_DATA").is_some() {
         let probe = r#"
-let probe_n = fragment_normal(in);
+let probe_cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.world));
+let probe_count = min(array_access::load_cell_word(probe_cell, 0u), cluster.dims.w);
+var probe_point = 0u;
+var probe_spot = 0u;
+var probe_quad = 0u;
+for (var probe_i = 0u; probe_i < probe_count; probe_i += 1u) {
+    let probe_kind = array_access::load_light(
+        array_access::load_cell_word(probe_cell, probe_i + 1u)).kind.x;
+    if probe_kind == light::LIGHT_KIND_POINT {
+        probe_point += 1u;
+    } else if probe_kind == light::LIGHT_KIND_SPOT {
+        probe_spot += 1u;
+    } else if probe_kind == light::LIGHT_KIND_QUAD {
+        probe_quad += 1u;
+    }
+}
 color = vec4<f32>(
-    probe_n.x * 0.5 + 0.5,
-    probe_n.y * 0.5 + 0.5,
-    probe_n.z * 0.5 + 0.5,
-    in.world.z / 16.0 + 0.5,
+    f32(probe_point) / 16.0,
+    f32(probe_spot) / 16.0,
+    f32(probe_quad) / 16.0,
+    1.0,
 );
 "#;
         plain.shader = Some(UnlitShader::new("lit::probe", "", "", probe));
