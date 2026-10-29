@@ -409,6 +409,35 @@ pub fn run() {
             )
             .await;
 
+        // A channel that does not describe the mesh is a bad request, not a
+        // panic: the mesh allocator asserts the lengths agree.
+        assert!(
+            server
+                .try_tool(
+                    "create_mesh",
+                    json!({
+                        "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        "normals": [[0.0, 0.0, 1.0]],
+                    }),
+                )
+                .await
+                .is_none(),
+            "a normals slice shorter than the positions is refused"
+        );
+        assert!(
+            server
+                .try_tool(
+                    "create_mesh",
+                    json!({
+                        "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        "indices": [0, 1],
+                    }),
+                )
+                .await
+                .is_none(),
+            "an index list that is not triangles is refused"
+        );
+
         // A red triangle, so the centre of the frame is the mesh and the rest
         // is the clear colour.
         server

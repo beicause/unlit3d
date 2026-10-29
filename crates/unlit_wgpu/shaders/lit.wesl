@@ -493,7 +493,10 @@ fn directional_radiance(light: light::DirectionalGpu, n: vec3<f32>) -> vec3<f32>
 /// Every directional light's contribution, which reaches every fragment.
 ///
 /// The slots an unused light left at zero contribute nothing, so the fragment
-/// reads all of them and the frame's count never arrives.
+/// reads all of them and the frame's count never arrives. That makes the term
+/// a fixed `MAX_DIRECTIONAL_LIGHTS` contributions per fragment whatever the
+/// frame holds: the count is a constant rather than a per-frame value, so a
+/// scene with fewer directional lights pays for the slots it leaves empty.
 @if(LIT)
 fn directional_irradiance(n: vec3<f32>) -> vec3<f32> {
     var irradiance = vec3<f32>(0.0);

@@ -196,13 +196,19 @@ pub struct SpotLight {
     ///
     /// Brightness falls off from the inner to the outer angle; a caller that
     /// wants a hard edge sets both to the same angle, and the light then shines
-    /// at full intensity inside the cone and not at all outside it.
+    /// at full intensity inside the cone and not at all outside it. An inner
+    /// angle wider than this one is narrowed to it, which is the same hard edge
+    /// at the outer angle.
     pub outer_angle: f32,
 }
 
 impl Light for SpotLight {
     fn pack(&self, world_from_local: &Affine3A, sink: LightSink<'_>) {
-        let inner = (self.inner_angle * 0.5).cos();
+        // An inner cone wider than the outer one describes no ramp: it would
+        // make the light brightest where it should reach nothing. Narrowing it
+        // to the outer one is the closest cone the angles do describe, and is
+        // the hard edge a caller writing the two the same way gets.
+        let inner = (self.inner_angle.min(self.outer_angle) * 0.5).cos();
         let outer = (self.outer_angle * 0.5).cos();
         let gap = inner - outer;
         sink.gpu.position_radius = world_from_local.translation.extend(self.range);
@@ -213,13 +219,13 @@ impl Light for SpotLight {
         sink.gpu.color_intensity = color_intensity(self.color, self.intensity);
         // A gap too narrow to divide by is stored as zero rather than as an
         // enormous reciprocal: the shader reads that as `the cone is hard` and
-        // steps at the outer cosine instead of ramping between the two.
+        // steps at the outer cosine instead of ramping between the two. The
+        // cosines also round towards each other, so the gap can land below zero
+        // for two angles that differ by less than the rounding; the mark has to
+        // cover that side too, or the shader reads a negative one as `negative
+        // is narrow` without the step.
         sink.gpu.cones = Vec4::new(
-            if gap.abs() < MIN_CONE_GAP {
-                0.0
-            } else {
-                1.0 / gap
-            },
+            if gap < MIN_CONE_GAP { 0.0 } else { 1.0 / gap },
             0.0,
             0.0,
             0.0,
@@ -446,6 +452,12 @@ pub(crate) fn collect_lights(
             _ => 1.0,
         };
         let distance = (bounds.center - eye).length().max(1.0);
+        // A light that shines nothing is dropped rather than ranked last: a
+        // cell that ran out of room would otherwise spill a light that
+        // contributes nothing in place of one that does.
+        if describe.intensity <= 0.0 {
+            continue;
+        }
         let importance = describe.intensity * area / (distance * distance);
         packed.push(PackedLight {
             gpu,
@@ -466,6 +478,13 @@ fn keep_directional(slots: &mut [DirectionalGpu; MAX_DIRECTIONAL_LIGHTS], gpu: L
         direction: gpu.direction_outer,
         color_intensity: gpu.color_intensity,
     };
+    // An empty slot holds no colour at all, so nothing it does can change the
+    // frame -- not even being displaced by a light that shines nothing. A light
+    // darker than the weakest kept one is dropped from either side, keeping the
+    // slot count the frame's lights, not the frame's slots.
+    if light.color_intensity.w <= 0.0 {
+        return;
+    }
     // Every slot already filled ranks higher than the light, and every empty
     // one ranks below it, because an empty slot's intensity is zero.
     let at = slots.partition_point(|slot| slot.color_intensity.w > light.color_intensity.w);
@@ -595,6 +614,24 @@ mod tests {
     }
 
     #[test]
+    fn a_spot_light_whose_inner_cone_is_wider_keeps_its_hard_edge() {
+        let light = SpotLight {
+            color: Vec4::ONE,
+            intensity: 1.0,
+            range: 4.0,
+            inner_angle: 1.0,
+            outer_angle: 0.4,
+        };
+        let (gpu, _) = pack(&light, Affine3A::IDENTITY);
+        // The ramp these angles describe would be brightest where the light
+        // reaches nothing. The inner cone is narrowed to the outer one, so the
+        // light steps at it -- the hard edge, not a silent inversion.
+        assert_eq!(gpu.cones.x, 0.0);
+        assert_eq!(gpu.direction_outer.w, (0.2_f32).cos());
+        assert_eq!(gpu.color_intensity.w, 1.0);
+    }
+
+    #[test]
     fn a_hard_edged_spot_light_does_not_divide_by_zero() {
         let light = SpotLight {
             color: Vec4::ONE,
@@ -706,6 +743,37 @@ mod tests {
         assert_eq!(gpu.kind.z, 0);
         assert!(vertices.is_empty());
         assert!(gpu.position_radius.truncate().is_finite());
+    }
+
+    #[test]
+    fn a_directional_light_that_shines_nothing_keeps_the_other_slots() {
+        let mut slots = [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS];
+        for intensity in 1..=MAX_DIRECTIONAL_LIGHTS as u32 {
+            let light = DirectionalLight {
+                color: Vec4::ONE,
+                intensity: intensity as f32,
+            };
+            let (gpu, _) = pack(&light, Affine3A::IDENTITY);
+            keep_directional(&mut slots, gpu);
+        }
+        // A spawn-and-fade cycle can leave a light at zero intensity, and a
+        // slot it took would be a light the frame no longer draws with.
+        let dark = DirectionalLight {
+            color: Vec4::ONE,
+            intensity: 0.0,
+        };
+        let (gpu, _) = pack(&dark, Affine3A::IDENTITY);
+        keep_directional(&mut slots, gpu);
+        assert_eq!(
+            slots.map(|slot| slot.color_intensity.w),
+            [4.0, 3.0, 2.0, 1.0],
+            "the frame keeps the lights it had"
+        );
+        assert!(
+            slots
+                .iter()
+                .all(|slot| slot.color_intensity.truncate() != Vec3::ZERO)
+        );
     }
 
     #[test]

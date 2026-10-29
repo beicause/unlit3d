@@ -524,6 +524,29 @@ pub fn create_mesh(
     if args.positions.is_empty() {
         return Err("positions must not be empty".to_string());
     }
+    // Every channel describes the same vertices, and the mesh allocator asserts
+    // it: a bridge that passed a short slice would panic the world rather than
+    // report a bad request, so the lengths are checked here.
+    let vertices = args.positions.len();
+    let channels: [(&str, Option<usize>); 3] = [
+        ("uvs", args.uvs.as_ref().map(Vec::len)),
+        ("colors", args.colors.as_ref().map(Vec::len)),
+        ("normals", args.normals.as_ref().map(Vec::len)),
+    ];
+    for (channel, length) in channels {
+        if let Some(length) = length.filter(|length| *length != vertices) {
+            return Err(format!(
+                "{channel} describes {length} vertices but positions describes {vertices}"
+            ));
+        }
+    }
+    if args
+        .indices
+        .as_ref()
+        .is_some_and(|indices| indices.len() % 3 != 0)
+    {
+        return Err("indices must be triangles, three per primitive".to_string());
+    }
     let desc = UnlitMeshDesc {
         positions: &args.positions,
         uvs: args.uvs.as_deref(),
