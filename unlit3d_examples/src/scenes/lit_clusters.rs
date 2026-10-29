@@ -114,11 +114,14 @@ fn build_clusters(
     let overlay = cluster_grid();
     let debug = if std::env::var_os("UNLIT3D_DEBUG_LIGHT_DATA").is_some() {
         r#"
-let debug_cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.world));
+let debug_depth = view_depth(in.world);
+let debug_cell = fragment_cluster_index(fragment_ndc(in.world), debug_depth);
 let debug_count = array_access::load_cell_word(debug_cell, 0u);
 let debug_index = array_access::load_cell_word(debug_cell, 1u);
 let debug_light = array_access::load_light(debug_index);
-color = vec4<f32>(debug_light.color_intensity.rgb, 1.0);
+let debug_offset = debug_light.position_radius.xyz - in.world;
+let debug_cosine = max(dot(fragment_normal(in), normalize(debug_offset)), 0.0);
+color = vec4<f32>(f32(debug_cell) / 4096.0, debug_depth / 128.0, debug_cosine, 1.0);
 "#
     } else {
         &overlay
