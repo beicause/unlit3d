@@ -23,10 +23,11 @@ on:
       focus:
         description: Run the Windows leg of the lit snapshot tests alone.
         type: boolean
-        default: false
+        default: true
   push:
-    # Every branch but `main`, which `ci-main.yml` runs instead.
-    branches: ["**", "!main"]
+    # Every branch but `main`, which `ci-main.yml` runs instead. The investigation
+    # branch is dispatched by hand with `focus`, so a push to it runs nothing.
+    branches: ["**", "!main", "!investigate/windows-webgl2-lit"]
   # Every pull request, whatever it targets: a change opened against a branch
   # other than `main` is no more reviewed than any other.
   pull_request:
@@ -288,7 +289,7 @@ jobs:
     name: Check wasm
     # Lints the workspace for the target, which is a smaller build than the host
     # one, twice over — without a link and without a browser.
-    if: ${{ !inputs.full }}
+    if: ${{ !inputs.full && !inputs.focus }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     # The target rustflags in `.cargo/config.toml` carry the simd flag, and a
@@ -355,7 +356,7 @@ jobs:
     # runner image already carries. `build-android` in `ci-main.yml` runs the
     # same `cargo ndk ... clippy` before it builds the APK, so `main` takes that
     # job and skips this one.
-    if: ${{ !inputs.full }}
+    if: ${{ !inputs.full && !inputs.focus }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     # `cargo ndk` builds for the phone target alone, so that target's variable
