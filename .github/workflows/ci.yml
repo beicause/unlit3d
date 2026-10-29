@@ -199,6 +199,12 @@ jobs:
       # `cargo xtask test` runs the second pass with `UNLIT3D_DEVICE_TIER=webgl2`.
       # The same tests then run again in a real browser under `build-wasm`,
       # which is a WebGL2 implementation the device tiers only imitate.
+      # What the run drew with, before it draws anything: a snapshot mismatch
+      # is usually one driver disagreeing with another, so the backend, adapter,
+      # features and limits belong in the log of the run that compared them.
+      - name: Show the GPU
+        run: cargo xtask print-gpu
+
       - name: Test ${{matrix.os}}
         id: test
         run: cargo xtask test

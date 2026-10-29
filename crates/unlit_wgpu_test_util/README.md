@@ -91,6 +91,13 @@ sets it.
 - [`init_logging`] — the logger backend on its own, for tests that never build a
   [`Ctx`]. Natively it is `env_logger` reading `RUST_LOG`; on the web,
   `console_log` forwards to the browser console. The default level is `warn`.
+- [`GpuInfo`] — the device a run drew with: the tier, whether an indexed draw
+  can use `base_vertex`, and the adapter, features and limits, all of them
+  serialized as wgpu declares them. A mismatch against a stored frame is
+  usually one driver disagreeing with another, so this is what a failing run
+  is read against. The `gpu-info` binary prints it, and `cargo xtask print-gpu`
+  runs that; the browser pass reports the same record, which is the only way to
+  describe the device a page was given.
 - Texture readback through `unlit_wgpu::readback::readback_texture`, plus
   [`ColorTarget`], [`Frame`], [`texel_bytes`], [`bg_entry`], [`rgb`],
   [`srgb_to_linear_u8`] and [`count_pixels_off_background`].

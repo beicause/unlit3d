@@ -14,6 +14,7 @@
 ```text
 cargo xtask check          # 对全工作区跑 clippy 与 cargo doc，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
+cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备（两个档位各一份）
 cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
 cargo xtask build-android  # 构建 Android 动态库及其 APK
@@ -56,6 +57,23 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 档位那趟放在 `target/snapshot-mismatches-webgl2`——各占一个目录，因此两个档位下都
 不同的帧可以被区分开。测试失败时 CI 会上传它们，于是不匹配可以被人查看，而不只是被
 打分。
+
+### `cargo xtask print-gpu`
+
+以 JSON 打印一趟测试会用来绘制的设备——档位、索引绘制能否使用 `base_vertex`，以及
+适配器、features 与 limits。一趟测试会依次走两个档位：默认档位，然后是 `webgl2`，
+因此两者都会被打印。`--tier` 则只报告其中一个：`webgpu`、`webgl2` 或 `native`，
+拼写与测试运行时用 `UNLIT3D_DEVICE_TIER` 指定档位一致。
+
+设备是 wgpu 的，描述也是：`AdapterInfo`、`Features` 与 `Limits` 按 wgpu 自己声明
+的字段序列化，因此输出带有 `wgpu-info` 会打印的那些字段与拼写，无需维护一张随 wgpu
+升级而失准的对照表。任务执行器不链接任何图形代码，所以它通过
+`unlit_wgpu_test_util` 的 `gpu-info` 二进制产出描述，再把结果打印出来。
+
+CI 在每个测试 job 里、跑测试套件之前执行一次：与存档帧不匹配，通常是一个驱动与
+另一个驱动不一致，因此报告分数的这一趟同时也记录它跑在什么设备上。
+`cargo xtask test-wasm` 会为浏览器打印同一份记录——那是任何宿主进程都描述不了的
+设备。
 
 ### `cargo xtask test-wasm`
 
@@ -174,6 +192,7 @@ crate 继续。
 src/main.rs          参数解析（argh）与任务分发
 src/check.rs         cargo xtask check
 src/test.rs          cargo xtask test
+src/print_gpu.rs      cargo xtask print-gpu：由 gpu-info 读出的设备
 src/test_wasm.rs      cargo xtask test-wasm：浏览器那一趟及其 runner
 src/run_wasm.rs      cargo xtask run-wasm：wasm 构建、bindgen 与页面
 src/build_android.rs cargo xtask build-android：交叉构建与 APK

@@ -12,7 +12,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::TestEntry;
+use crate::{GpuInfo, TestEntry};
 
 #[wasm_bindgen(inline_js = "
   export function test_success() {
@@ -22,6 +22,13 @@ use crate::TestEntry;
   export function test_failure(message) {
     window.sessionStorage.test_failure = message;
     console.error(message);
+  }
+
+  export function set_gpu_info(text) {
+    // `sessionStorage` rather than a window property: the runner reads it back
+    // once per description, and a string of a few kilobytes fits the quota
+    // `test_success` already relies on.
+    window.sessionStorage.gpu_info = text;
   }
 
   export function publish_mismatch(name, bytes) {
@@ -36,6 +43,7 @@ use crate::TestEntry;
 extern "C" {
     fn test_success();
     fn test_failure(message: String);
+    fn set_gpu_info(text: String);
     fn publish_mismatch(name: String, bytes: &[u8]);
 }
 
@@ -48,6 +56,21 @@ extern "C" {
 /// a human needs in order to see why.
 pub fn record_mismatch(name: &str, webp: &[u8]) {
     publish_mismatch(name.to_owned(), webp);
+}
+
+/// Publish the device this page draws with, for the runner to print.
+///
+/// The host prints the same description, from the same [`GpuInfo`] and the same
+/// serializer, so the two passes of a run can be compared line for line. A
+/// browser is the only place this side of it exists: a WebGL2 adapter is what
+/// the page was given, not something a Node process can look up.
+pub fn report_gpu_info() {
+    wasm_bindgen_futures::spawn_local(async {
+        let ctx = crate::Ctx::headless().await;
+        let text = serde_json::to_string_pretty(&GpuInfo::read(&ctx))
+            .expect("the device description is serializable");
+        set_gpu_info(text);
+    });
 }
 
 /// Run the registered test called `name`, publishing its result for the page.

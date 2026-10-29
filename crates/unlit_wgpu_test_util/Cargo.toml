@@ -20,7 +20,11 @@ pollster.workspace = true
 # (`unlit_wgpu` dev-depends on this crate for its own tests), which Cargo
 # resolves by building `unlit_wgpu` without its dev-dependencies here.
 unlit_wgpu = { path = "../unlit_wgpu" }
-wgpu.workspace = true
+# `serde` is what lets a run describe its device without this crate spelling out
+# every field of `AdapterInfo`, `Features` and `Limits`.
+serde.workspace = true
+serde_json.workspace = true
+wgpu = { workspace = true, features = ["serde"] }
 
 [dependencies.image]
 version = "0.25"
@@ -62,6 +66,12 @@ web-sys = {
     "Window",
   ]
 }
+
+# The description a broken snapshot wants first: `cargo xtask print-gpu` runs
+# this and prints what it says.
+[[bin]]
+name = "gpu-info"
+path = "src/bin/gpu-info.rs"
 
 [features]
 snapshot = ["dep:image", "dep:ssimulacra2"]

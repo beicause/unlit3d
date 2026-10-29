@@ -78,6 +78,11 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 - `init_logging()` —— 单独的日志后端，供从不创建 `Ctx` 的测试使用。原生平台上是读取
   `RUST_LOG` 的 `env_logger`；web 上是转发到浏览器控制台的 `console_log`。默认级别
   为 `warn`。
+- `GpuInfo` —— 一趟运行用来绘制的设备：档位、索引绘制能否使用 `base_vertex`，以及
+  适配器、features 与 limits，全部按 wgpu 自己声明的方式序列化。与存档帧不匹配，
+  通常是一个驱动与另一个驱动不一致，因此失败的一趟要对照的正是这份记录。
+  `gpu-info` 二进制会打印它，`cargo xtask print-gpu` 运行的就是那个二进制；浏览器
+  那一趟报告同一份记录——那是描述页面所得到的设备的唯一办法。
 - 纹理回读经由 `unlit_wgpu::readback::readback_texture`，另有
   `ColorTarget`、`Frame`、`texel_bytes`、`bg_entry`、`rgb`、
   `srgb_to_linear_u8` 与 `count_pixels_off_background`。

@@ -16,6 +16,7 @@ cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
 ```text
 cargo xtask check          # clippy and `cargo doc` over the whole workspace, then `cargo fmt --check`
 cargo xtask test           # nextest over unit and integration tests, then the doctests
+cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
 cargo xtask test-wasm      # run the GPU tests in a browser, through wasm and WebGL2
 cargo xtask run-wasm       # build the web examples and serve them for a browser
 cargo xtask build-android  # build the Android library and the APK around it
@@ -67,6 +68,26 @@ A frame that fails its snapshot comparison is written before the test fails, und
 `target/snapshot-mismatches-webgl2` for the tier pass — a directory each, so a
 frame that differs under both tiers can be told apart. CI uploads them when a
 test fails, so a mismatch can be looked at rather than only scored.
+
+### `cargo xtask print-gpu`
+
+Prints the devices a test run would draw with — the tier, whether an indexed
+draw can use `base_vertex`, and the adapter, features and limits — as JSON. A
+test run draws through two tiers, the default one and then `webgl2`, so both are
+printed, one after the other. `--tier` reports a single one instead: `webgpu`,
+`webgl2` or `native`, spelled the way `UNLIT3D_DEVICE_TIER` spells them for a
+test run.
+
+The device is wgpu's, and so is the description: `AdapterInfo`, `Features` and
+`Limits` are serialized as wgpu declares them, so the output carries the fields
+— and the spellings — `wgpu-info` would print, without a table to keep in step
+with a wgpu upgrade. The task runner links no graphics code, so it runs this
+through `unlit_wgpu_test_util`'s `gpu-info` binary and prints what that says.
+
+CI runs it once per test job, before the suite: a mismatch against a stored
+frame is usually one driver disagreeing with another, so the run that reports a
+score also records what it ran on. `cargo xtask test-wasm` prints the same
+record for the browser, which is a device no host process can describe.
 
 ### `cargo xtask test-wasm`
 
@@ -213,6 +234,7 @@ the crate that failed.
 src/main.rs           argument parsing (argh) and task dispatch
 src/check.rs          `cargo xtask check`
 src/test.rs           `cargo xtask test`
+src/print_gpu.rs      `cargo xtask print-gpu`: the device, read by `gpu-info`
 src/test_wasm.rs      `cargo xtask test-wasm`: the browser pass and its runner
 src/run_wasm.rs       `cargo xtask run-wasm`: the wasm build, bindgen and page
 src/build_android.rs  `cargo xtask build-android`: the cross-build and the APK

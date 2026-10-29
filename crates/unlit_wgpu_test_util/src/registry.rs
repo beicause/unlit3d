@@ -174,6 +174,14 @@ macro_rules! gpu_test_main {
             $crate::browser::run($tests, name);
         }
 
+        /// Publish the browser's device for the runner to print, as
+        /// `cargo xtask test-wasm` asks it to before running anything.
+        #[cfg(target_arch = "wasm32")]
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub fn report_gpu_info() {
+            $crate::browser::report_gpu_info();
+        }
+
         // A test target is a binary on every target, so wasm needs a `main`
         // too. The registry is reached through the export above instead.
         #[cfg(target_arch = "wasm32")]

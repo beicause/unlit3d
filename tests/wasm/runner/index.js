@@ -162,6 +162,35 @@ app.get("/run_test", async (req, res) => {
   }
 });
 
+// The device the browser draws with, in the same JSON `cargo xtask print-gpu`
+// prints. The page publishes it into `sessionStorage` for the same reason a
+// test's verdict goes there: a wasm export returns to a page that has moved
+// on, so the value has to outlive the call.
+app.get("/gpu_info", async (req, res) => {
+  const module = String(req.query.wasm ?? "");
+  console.error(`describe the device ${module} draws with`);
+
+  const context = await browser.newContext();
+  context.setDefaultTimeout(TIMEOUT_MS);
+  const page = await context.newPage();
+
+  const logs = [];
+  page.on("console", (message) => logs.push(`[${message.type()}] ${message.text()}`));
+  page.on("pageerror", (error) => logs.push(`[pageerror] ${error.message}`));
+
+  try {
+    const url = new URL(BASE_URL);
+    url.search = new URLSearchParams({ wasm: module, info: "1" }).toString();
+    await page.goto(url.toString());
+    const info = await page.waitForFunction(() => window.sessionStorage.gpu_info);
+    res.send(await info.jsonValue());
+  } catch (error) {
+    res.status(500).send(`${error?.stack ?? error}\n\n${logs.join("\n")}`);
+  } finally {
+    await context.close();
+  }
+});
+
 // The examples' own pages, built and bindgened by `cargo xtask test-wasm`.
 // Serving them here is what lets one route load either in a browser.
 const EXAMPLES = path.join(HERE, "..", "examples");

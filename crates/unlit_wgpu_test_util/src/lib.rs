@@ -35,6 +35,13 @@ pub use proxy::{WASM_TEST_ENV, run_wasm};
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
 
+// What the run drew with, described by wgpu itself. Read by both entry points
+// a task prints it from (`cargo xtask print-gpu` and the browser pass), so the
+// two descriptions are the same record serialized the same way.
+pub mod gpu_info;
+
+pub use gpu_info::GpuInfo;
+
 /// Drive a future to completion on the calling thread.
 ///
 /// The harness's own entry points already do this, so this is for a
@@ -81,6 +88,13 @@ pub fn init_logging() {
 
 /// A ready-to-use GPU context.
 pub struct Ctx {
+    /// The tier the device was requested at.
+    ///
+    /// Kept beside the device because a device reports what it was given, not
+    /// what was asked for: a WebGL2-shaped device on a desktop adapter has the
+    /// adapter's features and limits as lowered by the tier, which is only
+    /// readable as a description when the tier is part of it.
+    pub tier: DeviceTier,
     /// The device every resource in a test is created on.
     pub device: wgpu::Device,
     /// The queue a test's writes and submissions go through.
@@ -152,6 +166,7 @@ impl Ctx {
             .expect("failed to request device");
         drop(surface);
         Ctx {
+            tier,
             device,
             queue,
             capabilities,

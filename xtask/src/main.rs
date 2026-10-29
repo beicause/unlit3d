@@ -11,6 +11,7 @@
 mod build_android;
 mod check;
 mod http;
+mod print_gpu;
 mod publish;
 mod run_wasm;
 mod step;
@@ -35,6 +36,7 @@ fn run() -> Result<(), String> {
         Task::RunWasm(task) => run_wasm::run(&task),
         Task::BuildAndroid(task) => build_android::run(&task),
         Task::Publish(task) => publish::run(&task),
+        Task::PrintGpu(task) => print_gpu::run(&task),
     }
 }
 
@@ -66,6 +68,8 @@ enum Task {
     BuildAndroid(BuildAndroidArgs),
     /// Publish the workspace's crates to crates.io, in dependency order.
     Publish(PublishArgs),
+    /// Print the GPU device the tests draw with, as JSON.
+    PrintGpu(PrintGpuArgs),
 }
 
 /// Arguments of `cargo xtask check`.
@@ -149,6 +153,20 @@ struct BuildAndroidArgs {
     /// build a release APK instead of a debug one.
     #[argh(switch)]
     release: bool,
+}
+
+/// Arguments of `cargo xtask print-gpu`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "print-gpu",
+    description = "print the GPU device the tests draw with, as JSON"
+)]
+struct PrintGpuArgs {
+    /// report only this tier: webgpu, webgl2 or native. Omit to report every
+    /// tier `cargo xtask test` runs at.
+    #[argh(option)]
+    tier: Option<String>,
 }
 
 /// Arguments of `cargo xtask publish`.

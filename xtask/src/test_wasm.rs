@@ -118,6 +118,9 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
     let mut runner = Runner::start(args.show)?;
     runner.wait_until_listening()?;
 
+    println!("==> describing the device the browser draws with");
+    print_browser_gpu(&modules)?;
+
     println!("==> running the examples in the browser");
     check_examples()?;
 
@@ -423,6 +426,34 @@ fn check_examples() -> Result<(), String> {
     for example in crate::run_wasm::EXAMPLES {
         check_example(example)?;
     }
+    Ok(())
+}
+
+/// Print the device the browser draws with, as the page describes it.
+///
+/// The browser is a backend the host pass cannot report on — a WebGL2 adapter
+/// only exists inside the page — so this is the browser's half of what
+/// `cargo xtask print-gpu` prints for the host. Any test module answers, since
+/// the description comes from the harness rather than from the test.
+fn print_browser_gpu(modules: &[String]) -> Result<(), String> {
+    let Some(module) = modules.first() else {
+        return Err("no wasm test binary was built to ask for the device".to_owned());
+    };
+    let response = ureq::get(&format!("{BASE_URL}/gpu_info?wasm={module}"))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|error| format!("describing the browser's device: {error}"))?;
+
+    let body = response
+        .into_body()
+        .read_to_string()
+        .unwrap_or_else(|error| format!("the description could not be read: {error}"));
+    if body.is_empty() {
+        return Err("the browser described no device".to_owned());
+    }
+    println!("{body}");
     Ok(())
 }
 

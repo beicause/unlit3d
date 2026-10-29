@@ -4834,6 +4834,8 @@ dependencies = [
  "libtest-mimic",
  "log",
  "pollster",
+ "serde",
+ "serde_json",
  "ssimulacra2",
  "unlit_wgpu",
  "ureq",
