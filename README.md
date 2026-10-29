@@ -151,6 +151,11 @@ ECS is as small as it is.
   implementations (unlit rendering, say) should not have privileges or private
   internal paths; internal implementations should move outward to keep the
   library customizable and extensible.
+- **Route around a backend bug where it bites, and write down why.** A driver
+  that miscompiles valid code is worked around at the code that trips it, with
+  the symptom, the cause and the cost recorded in
+  [`WORKAROUND.md`](WORKAROUND.md), so a later reader can tell a deliberate
+  oddity from a mistake.
 
 ## Common commands
 

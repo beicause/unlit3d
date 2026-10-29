@@ -329,6 +329,7 @@ impl Renderer {
                 // scissor. A clipped draw left last — the UI window, say — would
                 // resolve only that rectangle and leave the rest of the frame
                 // stale. Cover the whole target so the pass ends unclipped.
+                // See WORKAROUND.md for why the GL backend behaves this way.
                 render_pass.set_scissor_rect(0, 0, attachments.width(), attachments.height());
             }
         }
