@@ -111,12 +111,19 @@ fn build_clusters(
     };
     let device = source.device(&world.root_scope());
     let mut options = super::unlit_options(&device);
-    options.shader = Some(UnlitShader::new(
-        "lit::cluster_grid",
-        "",
-        "",
-        cluster_grid(),
-    ));
+    let overlay = cluster_grid();
+    let debug = if std::env::var_os("UNLIT3D_DEBUG_LIGHT_DATA").is_some() {
+        r#"
+let debug_cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.world));
+let debug_count = array_access::load_cell_word(debug_cell, 0u);
+let debug_index = array_access::load_cell_word(debug_cell, 1u);
+let debug_kind = array_access::load_light(debug_index).kind.x;
+color = vec4<f32>(f32(debug_count), f32(debug_index), f32(debug_kind), 1.0);
+"#
+    } else {
+        &overlay
+    };
+    options.shader = Some(UnlitShader::new("lit::cluster_grid", "", "", debug));
     let key = LitPipelineKey::new(options);
 
     let source_entity = world
