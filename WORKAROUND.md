@@ -5,8 +5,7 @@ code is wrong, and what the workaround costs. Each entry names the place the
 workaround lives, so a later reader can find it without searching for the
 symptom first.
 
-An entry is removed once the upstream fix reaches the version we build
-against; until then, the code carries a comment pointing here.
+The code that works around one carries a comment pointing here.
 
 [中文版](WORKAROUND.zh-CN.md)
 
