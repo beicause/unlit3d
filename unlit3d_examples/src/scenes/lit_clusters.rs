@@ -118,7 +118,7 @@ let debug_cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.wo
 let debug_count = array_access::load_cell_word(debug_cell, 0u);
 let debug_index = array_access::load_cell_word(debug_cell, 1u);
 let debug_kind = array_access::load_light(debug_index).kind.x;
-color = vec4<f32>(f32(debug_count), f32(debug_index), f32(debug_kind), 1.0);
+color = vec4<f32>(f32(debug_count) / 255.0, f32(debug_index) / 255.0, f32(debug_kind) / 255.0, 1.0);
 "#
     } else {
         &overlay
