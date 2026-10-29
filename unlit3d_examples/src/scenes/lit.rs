@@ -193,10 +193,29 @@ fn build(
     relief.shader = Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), ""));
     if std::env::var_os("UNLIT3D_DEBUG_LIGHT_DATA").is_some() {
         let probe = r#"
-let probe_depth = view_depth(in.world);
-let probe_cell = fragment_cluster_index(fragment_ndc(in.world), probe_depth);
-let probe_count = array_access::load_cell_word(probe_cell, 0u);
-color = vec4<f32>(f32(probe_count) / 16.0, f32(probe_cell) / 4096.0, probe_depth / 1024.0, 1.0);
+let probe_n = fragment_normal(in);
+let probe_cell = fragment_cluster_index(fragment_ndc(in.world), view_depth(in.world));
+let probe_count = min(array_access::load_cell_word(probe_cell, 0u), cluster.dims.w);
+var probe_point = vec3<f32>(0.0);
+var probe_spot = vec3<f32>(0.0);
+var probe_quad = vec3<f32>(0.0);
+for (var probe_i = 0u; probe_i < probe_count; probe_i += 1u) {
+    let probe_light = array_access::load_light(array_access::load_cell_word(probe_cell, probe_i + 1u));
+    let probe_kind = probe_light.kind.x;
+    if probe_kind == light::LIGHT_KIND_POINT {
+        probe_point += point_radiance(probe_light, in.world, probe_n);
+    } else if probe_kind == light::LIGHT_KIND_SPOT {
+        probe_spot += spot_radiance(probe_light, in.world, probe_n);
+    } else if probe_kind == light::LIGHT_KIND_QUAD {
+        probe_quad += quad_radiance(probe_light, in.world, probe_n);
+    }
+}
+color = vec4<f32>(
+    log2(1.0 + dot(probe_point, vec3<f32>(1.0))) / 32.0,
+    log2(1.0 + dot(probe_spot, vec3<f32>(1.0))) / 32.0,
+    log2(1.0 + dot(probe_quad, vec3<f32>(1.0))) / 32.0,
+    log2(1.0 + dot(directional_irradiance(probe_n), vec3<f32>(1.0))) / 32.0,
+);
 "#;
         plain.shader = Some(UnlitShader::new("lit::probe", "", "", probe));
         let mut probe_relief = super::unlit_options(&device);
