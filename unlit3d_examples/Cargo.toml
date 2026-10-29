@@ -53,8 +53,11 @@ web-time.workspace = true
 # A URL the UI asks to open is opened by this one call on every platform.
 webbrowser.workspace = true
 # The GPU-info panel reads the device's limits from their serde description,
-# so this is the one crate that needs wgpu to serialise them.
-wgpu = { workspace = true, features = ["serde"] }
+# so this is the one crate that needs wgpu to serialise them. Static DXC links
+# the DX12 shader compiler into the binary, so a Windows build compiles its
+# shaders with the compiler it was tested against rather than with whatever
+# the machine happens to have installed.
+wgpu = { workspace = true, features = ["serde", "static-dxc"] }
 winit.workspace = true
 # A caller-owned instance record and uniform block are written as bytes, which
 # is what these two describe and derive.

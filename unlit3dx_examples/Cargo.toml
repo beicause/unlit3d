@@ -46,7 +46,9 @@ unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3" }
 # megabytes: a constant holding them would copy them into this crate's own
 # metadata and slow every downstream rebuild.
 unlit3dx_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.3" }
-wgpu.workspace = true
+# Static DXC links the DX12 shader compiler into the binary, so a Windows build
+# compiles its shaders with the compiler it was tested against.
+wgpu = { workspace = true, features = ["static-dxc"] }
 winit.workspace = true
 
 [dev-dependencies]

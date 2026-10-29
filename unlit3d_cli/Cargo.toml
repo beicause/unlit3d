@@ -31,7 +31,9 @@ serde_json.workspace = true
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", features = ["mcp"] }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false, features = ["unlit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf"] }
-wgpu.workspace = true
+# Static DXC links the DX12 shader compiler into the binary, so a Windows build
+# compiles its shaders with the compiler it was tested against.
+wgpu = { workspace = true, features = ["static-dxc"] }
 
 [dev-dependencies]
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"] }
