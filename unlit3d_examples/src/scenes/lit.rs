@@ -193,11 +193,12 @@ fn build(
     relief.shader = Some(UnlitShader::new("lit::wall_relief", "", wall_relief(), ""));
     if std::env::var_os("UNLIT3D_DEBUG_LIGHT_DATA").is_some() {
         let probe = r#"
+let probe_n = fragment_normal(in);
 color = vec4<f32>(
-    f32(cluster.dims.x) / 64.0,
-    f32(cluster.dims.y) / 64.0,
-    f32(cluster.dims.z) / 64.0,
-    f32(cluster.dims.w) / 64.0,
+    probe_n.x * 0.5 + 0.5,
+    probe_n.y * 0.5 + 0.5,
+    probe_n.z * 0.5 + 0.5,
+    in.world.z / 16.0 + 0.5,
 );
 "#;
         plain.shader = Some(UnlitShader::new("lit::probe", "", "", probe));
