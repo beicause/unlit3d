@@ -5,10 +5,14 @@
 //! printed by the task that wraps it. `UNLIT3D_DEVICE_TIER` picks the tier, the
 //! same variable a test run reads.
 
-// Printing it is the whole job.
-#![expect(
-    clippy::print_stdout,
-    reason = "printing the description is this binary's job"
+// Printing it is the whole job, and only a native build has a device to
+// print.
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::print_stdout,
+        reason = "printing the description is this binary's job"
+    )
 )]
 
 fn main() {
