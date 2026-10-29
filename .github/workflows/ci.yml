@@ -234,6 +234,7 @@ jobs:
         run: cargo nextest run -p unlit3d_examples -E 'test(lit)'
         env:
           UNLIT3D_DEVICE_TIER: webgl2
+          UNLIT3D_DEBUG_LIGHT_DATA: "1"
           # nextest runs a test from its package's own directory, so the path
           # has to be the one the upload step looks in.
           UNLIT3D_SNAPSHOT_MISMATCH_DIR: ${{ github.workspace }}/target/snapshot-mismatches-webgl2
