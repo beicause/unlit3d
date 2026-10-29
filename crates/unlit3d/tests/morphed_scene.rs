@@ -50,7 +50,7 @@ async fn mismatched_morph_weight_count_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::unlit(default_options(&ctx.device));
+    let key = LitPipelineKey::new(default_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
@@ -78,7 +78,7 @@ async fn morphing_without_a_weight_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::unlit(default_options(&ctx.device));
+    let key = LitPipelineKey::new(default_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
@@ -94,7 +94,7 @@ async fn meshes_can_share_one_morph_weights() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::unlit(default_options(&ctx.device));
+    let key = LitPipelineKey::new(default_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas.clone()));

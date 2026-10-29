@@ -125,12 +125,16 @@ impl Example {
         //    whether a material and morph targets are bound, and the target
         //    the pipeline renders into. Equal variants share one compiled
         //    pipeline, so the variant doubles as the cache key.
-        let options = LitOptions::standard(device);
+        let mut options = LitOptions::standard(device);
         let surface = SurfaceKey {
             color_format: options.color_target.format,
             depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
             sample_count: options.multisample.count,
         };
+        // Unlit: the fragment returns its base color without reading the
+        // frame's light arrays, which is what keeps this example's global
+        // group to the camera, the frame clock and the mesh metadata.
+        options.unlit = true;
         let variant = LitVariant {
             options: Hashed::new(options),
             surface,
@@ -144,7 +148,6 @@ impl Example {
             base_color_texture: true,
             morph: false,
             strip_index_format: None,
-            lit: false,
         };
         let pipeline = SpecializedPipeline::create(device, variant.clone());
 
@@ -597,7 +600,7 @@ for draw in scene.draws {
 
 ### 光照：前向聚簇的 Lambert
 
-光照是一个变体 flag：[`LitVariant::unlit`](pipeline::LitVariant::unlit) 关掉一个 WESL flag，组合出的片元阶段就把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——所以同一个家族两种模式都画，为一个模式分配的网格在另一个模式里也能画。
+光照是选项里的一个 flag：[`LitOptions::unlit`](pipeline::LitOptions::unlit) 关掉一个 WESL flag，组合出的片元阶段就把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——所以同一个家族两种模式都画，为一个模式分配的网格在另一个模式里也能画。
 
 着色只有 Lambert：一盏灯贡献它的颜色乘一个亮度系数，求和后调制基础色。没有镜面项、没有金属反射、没有菲涅耳、也没有能量守恒，所以被照亮的表面是自身反照率的一种调制，而不是材质的物理模型。
 
@@ -616,7 +619,8 @@ for draw in scene.draws {
 
 </details>
 
-它的选项就是这个家族自己的选项，上层的 `LitPipelineKey` 只是把这些选项放在一个自己的类型下，`unlit` 是其中一个 flag——正是一个 source 能同时画受光与无光网格的原因。
+它的选项就是这个家族自己的选项，上层的 `LitPipelineKey` 只是把这些选项放在一个自己的类型下——正是一个 source 能同时画受光与无光网格的原因。
+
 ### 读取本帧的数组：storage buffer 还是 texel
 
 内置着色器要读帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重与形变位移，

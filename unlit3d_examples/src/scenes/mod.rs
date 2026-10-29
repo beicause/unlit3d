@@ -567,6 +567,9 @@ pub fn default_options(device: &wgpu::Device) -> LitOptions {
             count: 1,
             ..Default::default()
         },
+        // These scenes state no lights, so their variants draw their base
+        // colour unchanged.
+        unlit: true,
         ..LitOptions::standard(device)
     }
 }

@@ -184,11 +184,14 @@ fn build(
     // below is the unlit pipeline's own.
     source.register_lit_family(&world.root_scope());
     let device = source.device(&world.root_scope());
-    let key = LitPipelineKey::new(super::default_options(&device));
+    // The default options draw unlit; this scene is the one that lights.
+    let mut options = super::default_options(&device);
+    options.unlit = false;
+    let key = LitPipelineKey::new(options.clone());
     // The wall's own key: the relief rides in the vertex stage, and a shader
     // is part of the options a variant is compiled from, so the wall draws
     // through a second pipeline of the same family.
-    let mut relief = super::default_options(&device);
+    let mut relief = options;
     relief.shader = Some(LitShader::new("lit::wall_relief", "", wall_relief(), ""));
     let relief_key = LitPipelineKey::new(relief);
 

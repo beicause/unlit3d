@@ -10,14 +10,13 @@
 //!
 //! # Lit or unlit
 //!
-//! One family draws both: a key states [`LitPipelineKey::unlit`](crate::lit::LitPipelineKey::unlit),
-//! and a variant
-//! that is not unlit multiplies its base colour by the frame's lights while an
-//! unlit one draws the colour unchanged and declares none of the lighting
-//! bindings. The two are one family rather than two because everything else is
-//! shared -- the vertex channels, the material group, the instance stream -- so
-//! a mesh allocated for either draws with both, and a scene that adds a light
-//! re-keys nothing.
+//! One family draws both: [`LitOptions::unlit`](unlit_wgpu::pipeline::LitOptions::unlit)
+//! is a flag of the caller's options, and a variant that does not set it
+//! multiplies its base colour by the frame's lights while an unlit one draws
+//! the colour unchanged and declares none of the lighting bindings. The two are
+//! one family rather than two because everything else is shared -- the vertex
+//! channels, the material group, the instance stream -- so a mesh allocated for
+//! either draws with both, and a scene that adds a light re-keys nothing.
 //!
 //! The lights themselves, and the clustering a frame does of them, live in
 //! [crate::light].
@@ -197,32 +196,17 @@ pub struct LitPipelineKey {
     /// variants it resolves to share the stored word instead of recomputing
     /// it; rewrite the options through [`Hashed::update`], never the value
     /// itself.
-    pub options: Hashed<LitOptions>,
-    /// Whether the entity draws without the frame's lights.
     ///
-    /// An unlit draw multiplies its base colour by nothing: it declares none
-    /// of the lighting bindings, so the lights a source clusters cost it
-    /// nothing. Lighting is the common case, so this states the exception.
-    pub unlit: bool,
+    /// [`LitOptions::unlit`] is the one flag of them a key picks on its own:
+    /// every other fact a variant depends on comes from the draw.
+    pub options: Hashed<LitOptions>,
 }
 
 impl LitPipelineKey {
-    /// A lit key whose variants start from `options`.
+    /// A key whose variants start from `options`.
     pub fn new(options: LitOptions) -> Self {
         Self {
             options: Hashed::new(options),
-            unlit: false,
-        }
-    }
-
-    /// An unlit key whose variants start from `options`.
-    ///
-    /// The same family drawing the same meshes, with the lighting flag off:
-    /// what a scene that states no lights draws with.
-    pub fn unlit(options: LitOptions) -> Self {
-        Self {
-            options: Hashed::new(options),
-            unlit: true,
         }
     }
 }
@@ -231,7 +215,7 @@ impl RenderPipelineKey for LitPipelineKey {
     type Variant = LitVariant;
 
     fn variant(&self, draw: &DrawContext<'_>) -> LitVariant {
-        lit_variant(&self.options, draw, self.unlit)
+        lit_variant(&self.options, draw)
     }
 }
 
@@ -241,14 +225,10 @@ impl RenderPipelineKey for LitPipelineKey {
 /// resolved here, from the draw itself: the frame target, the channels the
 /// mesh vertex layout carries, whether the draw binds a material, whether the
 /// mesh morphs, and the width of the index buffer a strip topology has to
-/// declare. The last argument is the only thing the caller's key decides on
-/// its own, which is why a lit and an unlit draw share this and the
-/// [LitFactory] that describes the result.
-pub(crate) fn lit_variant(
-    options: &Hashed<LitOptions>,
-    draw: &DrawContext<'_>,
-    unlit: bool,
-) -> LitVariant {
+/// declare. The lighting flag is the one exception, because it is the caller's
+/// choice rather than the draw's — which is why a lit and an unlit draw share
+/// this function and the [LitFactory] that describes the result.
+pub(crate) fn lit_variant(options: &Hashed<LitOptions>, draw: &DrawContext<'_>) -> LitVariant {
     let index_format = draw
         .mesh
         .parts
@@ -262,7 +242,6 @@ pub(crate) fn lit_variant(
         base_color_texture: draw.material.is_some(),
         morph: draw.mesh.morph_targets > 0,
         strip_index_format: strip_index_format(options.primitive.topology, index_format),
-        unlit,
     }
 }
 
@@ -309,7 +288,7 @@ impl RenderPipelineFactory<LitVariant> for LitFactory {
             metadata: variant.needs_metadata(),
             joints: variant.needs_joints(),
             morphs: variant.needs_morphs(),
-            lights: !variant.unlit,
+            lights: !variant.options.unlit,
         };
         let layout = context.resources.layout(context.device, bindings);
         let rebuild = context.resources.rebuild(context.device, layout, bindings);
@@ -504,7 +483,7 @@ pub trait MeshSourceLitExt {
     ///
     /// Registering marks the source lit, so every frame clusters that frame's
     /// [LightSource](crate::light::LightSource)s and uploads them. A source
-    /// whose keys are all [unlit](LitPipelineKey::unlit) pays for none of it,
+    /// whose keys are all [unlit](LitOptions::unlit) pays for none of it,
     /// because nothing would read it.
     ///
     /// # Panics
@@ -649,7 +628,6 @@ impl MeshSourceLitExt for MeshSource {
             channels,
             base_color_texture: false,
             morph: morph_deltas.is_some(),
-            unlit: true,
             strip_index_format: None,
         };
         let position_stream = variant.position_stream();

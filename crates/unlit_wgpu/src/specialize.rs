@@ -89,7 +89,7 @@ impl<P, D: PipelineDescriptor<P>> SpecializedPipeline<P, D> {
 /// why [Variants] needs only a single map.
 ///
 /// A variant may be its own descriptor (`type Descriptor = Self`), as the
-/// built-in unlit family does, or describe a larger one it does not own.
+/// built-in lit family does, or describe a larger one it does not own.
 pub trait PipelineVariant<P>: Clone + Hash + Eq + 'static {
     /// The blueprint this variant compiles.
     type Descriptor: PipelineDescriptor<P>;

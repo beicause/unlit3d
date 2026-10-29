@@ -143,7 +143,7 @@ fn build(
     // still occlude them.
     // Both variants read the instance tint: the backdrop is tinted through it,
     // and every pane's tint is its own.
-    let opaque_key = LitPipelineKey::unlit(super::default_options(&device));
+    let opaque_key = LitPipelineKey::new(super::default_options(&device));
     let mut translucent = super::default_options(&device);
     translucent.color_target.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
@@ -169,7 +169,7 @@ fn build(
     // The pane mesh carries positions and indices only: no UV, no color. The
     // draw derives exactly those channels back off the mesh, and each pane's
     // tint is its own instance colour, so one mesh serves all of them.
-    let translucent_key = LitPipelineKey::unlit(translucent);
+    let translucent_key = LitPipelineKey::new(translucent);
 
     let source_entity = world
         .scope_mut(pass)

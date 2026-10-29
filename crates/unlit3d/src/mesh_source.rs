@@ -114,7 +114,7 @@ struct RegisteredPipeline {
 /// [`Scene`] the frame's draws are assembled into, and it fetches the device,
 /// the queue and the resource graph from the world through the
 /// [`RenderContext`] it was created with. Register the families it draws with
-/// — [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) for the built-in unlit shader — and
+/// — [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) for the built-in lit shader — and
 /// spawn it with [`Source::new`](crate::source::Source::new).
 pub struct MeshSource {
     /// The world addresses of the frame's GPU state, kept so every entry point
@@ -290,7 +290,7 @@ impl MeshSource {
     /// the index and vertex pools every uploaded mesh draws out of are inserted
     /// into the context's resource graph. The source starts with no families:
     /// register the ones you draw with through
-    /// [`MeshSource::register_family`] — for the built-in unlit shader,
+    /// [`MeshSource::register_family`] — for the built-in lit shader,
     /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) does it for you. Registration
     /// compiles nothing; a family's first concrete pipeline is built the first
     /// time an entity that uses it is drawn.
@@ -579,7 +579,7 @@ impl MeshSource {
     /// built lazily, the first time a draw resolves a variant, and are
     /// appended to the source pipeline list in resolution order.
     ///
-    /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) is the built-in unlit family; a
+    /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) is the built-in lit family; a
     /// caller registers their own by supplying the key whose
     /// [RenderPipelineKey::variant] resolves a draw into a variant, the
     /// [RenderPipelineFactory] that describes the compiled result, and the
@@ -623,7 +623,7 @@ impl MeshSource {
     /// mesh-metadata array, which the next built scene uploads.
     ///
     /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) is the helper that builds the
-    /// compressed layout the built-in unlit shader expects.
+    /// compressed layout the built-in lit shader expects.
     ///
     /// # Panics
     ///
@@ -1770,7 +1770,7 @@ mod tests {
         );
         let mut source = MeshSource::new(&world.root_scope(), ctx);
         source.register_lit_family(&world.root_scope());
-        let key = LitPipelineKey::unlit(LitOptions::standard(&source.device(&world.root_scope())));
+        let key = LitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
         let target = bind_test_target(&world.root_scope(), ctx);
         Harness {
             world,
@@ -1841,18 +1841,27 @@ mod tests {
             .collect()
     }
 
+    /// The standard policy with lighting off: these tests state no lights.
+    fn unlit_options(device: &wgpu::Device) -> LitOptions {
+        LitOptions {
+            unlit: true,
+            ..LitOptions::standard(device)
+        }
+    }
+
     /// A second policy that differs from the standard one in a field the
     /// pipeline is specialized on, so it resolves to its own variant.
     fn alternative_options(device: &wgpu::Device) -> LitOptions {
-        let mut options = LitOptions::standard(device);
-        options.srgb_to_linear_output = true;
-        options
+        LitOptions {
+            srgb_to_linear_output: true,
+            ..unlit_options(device)
+        }
     }
 
     /// A triangle mesh with one morph target, for the tests that need the
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
-        let key = LitPipelineKey::unlit(LitOptions::standard(
+        let key = LitPipelineKey::new(unlit_options(
             &harness.source.device(&harness.world.root_scope()),
         ));
         // One target displacing all three vertices by the same amount, packed
@@ -2022,9 +2031,7 @@ mod tests {
     #[test]
     fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
         let mut h = harness();
-        let key = LitPipelineKey::unlit(LitOptions::standard(
-            &h.source.device(&h.world.root_scope()),
-        ));
+        let key = LitPipelineKey::new(unlit_options(&h.source.device(&h.world.root_scope())));
 
         // The mesh packs the channels the caller passed, not the ones the key
         // used to declare: the options are pure policy now.
@@ -2372,9 +2379,7 @@ mod tests {
     #[test]
     fn a_non_indexed_mesh_holds_no_index_allocation() {
         let mut h = harness();
-        let key = LitPipelineKey::unlit(LitOptions::standard(
-            &h.source.device(&h.world.root_scope()),
-        ));
+        let key = LitPipelineKey::new(unlit_options(&h.source.device(&h.world.root_scope())));
         let mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
@@ -2674,7 +2679,7 @@ mod tests {
         // A second key whose specialized options differ, so it resolves to its
         // own concrete pipeline.
         let alternative_key =
-            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
+            LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
 
         // Warm both variants, first key first, so their pipeline ids follow
         // the order they were resolved in.
@@ -3051,8 +3056,7 @@ mod tests {
         let mut h = harness();
         // A variant that binds no material group, so the frame needs no
         // material to be a complete draw.
-        let key =
-            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
+        let key = LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         let mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
@@ -3123,8 +3127,7 @@ mod tests {
     #[test]
     fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let mut h = harness();
-        let key =
-            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
+        let key = LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         // Both meshes are indexed and share the pool's index buffer, so what
         // tells their draws apart is the slice each one names.
         let first = h.source.allocate_lit_mesh(
@@ -3526,7 +3529,7 @@ mod tests {
         // A different policy specializes to a different variant, hence a
         // different RenderPipelineId.
         let other_key =
-            LitPipelineKey::unlit(alternative_options(&h.source.device(&h.world.root_scope())));
+            LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         let other = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &other_key.options,

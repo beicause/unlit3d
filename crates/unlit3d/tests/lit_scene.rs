@@ -45,16 +45,18 @@ struct Floor {
 
 /// A floor under a camera, drawn by a source of its own.
 ///
-/// The harness's own source registers the unlit family only; a lit scene needs
-/// `register_lit_family`, which is what makes the source cluster the frame's
-/// lights at all.
+/// The harness's own source registers the lit family; a scene that shades
+/// needs `register_lit_family`, which is what makes the source cluster the
+/// frame's lights at all.
 fn floor(ctx: &Ctx) -> Floor {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, ctx);
     let mut source = MeshSource::new(&world.root_scope(), gpu.context);
     source.register_lit_family(&world.root_scope());
     let source = gpu.spawn_source(&mut world, source);
-    let key = LitPipelineKey::new(default_options(&ctx.device));
+    let mut options = default_options(&ctx.device);
+    options.unlit = false;
+    let key = LitPipelineKey::new(options);
 
     let mesh = with_mesh_source(&world, source, |source, scope| {
         source.allocate_lit_mesh(

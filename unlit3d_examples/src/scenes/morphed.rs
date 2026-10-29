@@ -74,7 +74,7 @@ fn build(
     source.register_lit_family(&world.root_scope());
     // The variant that reads the morph bindings: its mesh group carries the
     // displacement buffer a plain cube's does not.
-    let key = LitPipelineKey::unlit(default_options(&source.device(&world.root_scope())));
+    let key = LitPipelineKey::new(default_options(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")

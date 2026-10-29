@@ -48,10 +48,10 @@
 | 项 | 签名 | 源 |
 | --- | --- | --- |
 | 注册 | `MeshSourceLitExt::register_lit_family(&mut self, world: &Scope)` | `crates/unlit3d/src/lit.rs` |
-| 建 mesh | `allocate_lit_mesh(&mut self, world: &Scope, key: &LitPipelineKey, desc: LitMeshDesc) -> GpuMesh` | 同上 |
-| 建材质 | `allocate_lit_material(&mut self, world: &Scope, key, view: ResHandle<TextureView>, sampler: ResHandle<Sampler>) -> GpuMaterial` | 同上 |
+| 建 mesh | `allocate_lit_mesh(&mut self, world: &Scope, options: &Hashed<LitOptions>, desc: LitMeshDesc) -> GpuMesh` | 同上 |
+| 建材质 | `allocate_lit_material(&mut self, world: &Scope, options: &Hashed<LitOptions>, view: ResHandle<TextureView>, sampler: ResHandle<Sampler>) -> GpuMaterial` | 同上 |
 | 描述 | `LitMeshDesc { positions: &[[f32;3]], uvs: Option<&[[f32;2]]>, colors: Option<&[[u8;4]]>, indices: Option<&[u32]>, joints: Option<&[[u16;4]]>, weights: Option<&[[f32;4]]>, morph_deltas: Option<MorphDeltas> }`，positions 之外的 slice 缺省即不打包该通道 | 同上 |
-| key | `LitPipelineKey::new(options: LitOptions)`（受光）、`LitPipelineKey::unlit(options)`（无光），`pub options: Hashed<LitOptions>` + `pub unlit: bool` | 同上 |
+| key | `LitPipelineKey::new(options: LitOptions)`，`pub options: Hashed<LitOptions>`；受光还是无光由 `LitOptions::unlit` 决定（`false` 受光、`true` 无光） | 同上 |
 | 管线组件 | `GpuRenderPipeline::new(key)`，不带 key 类型参数；实例=`bundle![mesh, material, GpuRenderPipeline::new(key)]` | `crates/unlit3d/src/components.rs` |
 | 每实例覆盖 | `InstanceColor(pub Vec4)`（默认白）、`InstanceCutoff(pub f32)`、`InstanceVisibility { visible: bool }`（默认 true） | 同上 |
 | 实例记录 | `LitInstance`（family 的 `InstanceData`） | 同上 |

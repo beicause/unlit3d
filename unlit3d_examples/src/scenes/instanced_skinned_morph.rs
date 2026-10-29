@@ -82,7 +82,7 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
     // The variant that reads both the joint stream and the morph bindings.
-    let key = LitPipelineKey::unlit(default_options(&source.device(&world.root_scope())));
+    let key = LitPipelineKey::new(default_options(&source.device(&world.root_scope())));
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")

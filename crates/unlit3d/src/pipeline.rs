@@ -9,7 +9,7 @@
 //! wgpu render pipeline: the pipeline itself and -- for a pipeline that reads
 //! the source's own camera, globals or metadata buffers -- a way to rebuild
 //! its global bind group when those buffers change. Nothing here is specific
-//! to the built-in unlit shader: the unlit family is registered through the
+//! to the built-in lit shader: its family is registered through the
 //! same [register_family](crate::mesh_source::MeshSource::register_family) a
 //! caller's own family uses, and supplies its own factory like anyone else.
 //!
@@ -139,7 +139,7 @@ impl GlobalResources {
     /// The camera and frame globals are always present; the arrays only when
     /// `bindings` names them. The array path is the device's, so it is read
     /// here. A caller's own pipeline builds its layout here and its group
-    /// through [`Self::rebuild`], exactly as the built-in unlit family does.
+    /// through [`Self::rebuild`], exactly as the built-in lit family does.
     pub fn layout(&self, device: &wgpu::Device, bindings: GlobalBindings) -> wgpu::BindGroupLayout {
         global_bind_group_layout(device, bindings, !supports_storage_buffers(device))
     }
@@ -277,7 +277,7 @@ impl GlobalResources {
 ///
 /// This is what a [RenderPipelineFactory] returns and what the renderer
 /// registers. Every concrete pipeline in the renderer is described this way,
-/// the built-in unlit ones included.
+/// the built-in lit ones included.
 pub struct RegisteredRenderPipeline {
     /// The compiled render pipeline.
     pub pipeline: wgpu::RenderPipeline,
@@ -409,7 +409,7 @@ pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
 /// Everything a family may read -- and the frame arrays it may append to --
 /// while it writes one instance record.
 ///
-/// The record is the family's own: the built-in unlit family builds a
+/// The record is the family's own: the built-in lit family builds a
 /// [MeshInstance](unlit_wgpu::mesh::MeshInstance), while a caller's family writes whatever its pipeline's
 /// instance-step attributes declare, reading the components it needs from the
 /// world. Culling resolved only the entity and its placement; what else a draw
@@ -539,7 +539,7 @@ impl<'a> InstanceContext<'a> {
 /// record per visible instance into a buffer shaped by [Self::stream] and binds
 /// it at the declared slot. That is what lets a caller's family carry its own
 /// per-instance data -- a tint, a transform palette, a material parameter --
-/// without sharing a record layout or a buffer with the built-in unlit family,
+/// without sharing a record layout or a buffer with the built-in lit family,
 /// and without the built-in family having any privilege over it.
 ///
 /// A family that reads no per-instance state passes the unit type.

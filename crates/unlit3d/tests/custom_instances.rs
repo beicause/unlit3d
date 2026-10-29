@@ -1,6 +1,6 @@
 //! A caller's family carries its own per-instance vertex data.
 //!
-//! The built-in unlit family reads a per-instance record from a buffer the
+//! The built-in lit family reads a per-instance record from a buffer the
 //! source owns and binds at a fixed slot. This test registers a second family
 //! whose pipeline declares a different instance-step layout, at a different
 //! vertex-buffer slot, and whose records come from an ordinary world component
@@ -32,7 +32,7 @@ struct Vertex {
 ///
 /// The mesh's own attributes are authored in clip space, and the instance
 /// stream supplies the placement and tint: exactly the division of labour the
-/// built-in unlit pipeline uses, but with a record layout of the caller's
+/// built-in lit pipeline uses, but with a record layout of the caller's
 /// choosing.
 const SHADER: &str = r#"
 struct VertexInput {
@@ -305,7 +305,7 @@ struct CustomInstance {
 
 /// The family's [InstanceData].
 ///
-/// It owns slot [INSTANCE_SLOT] and a 32-byte record, unlike the built-in unlit
+/// It owns slot [INSTANCE_SLOT] and a 32-byte record, unlike the built-in lit
 /// family's slot 2 and `MeshInstance`.
 #[derive(Clone, Copy, Debug, Default)]
 struct CustomInstances;

@@ -65,7 +65,7 @@ impl Frame {
         // and colors is the whole of the shape. That keeps a benchmark's
         // per-entity work on the frame path rather than on binding a fuller
         // material.
-        let key = LitPipelineKey::unlit(LitOptions {
+        let key = LitPipelineKey::new(LitOptions {
             // The built-in entry shader: a benchmark measures the frame path
             // rather than a replacement shader.
             shader: None,
@@ -86,6 +86,9 @@ impl Frame {
                 count: 1,
                 ..Default::default()
             },
+            // The frame states no lights, so a benchmark measures the path a
+            // light-free scene draws with.
+            unlit: true,
         });
         source.register_lit_family(&world.root_scope());
         let mesh = source.allocate_lit_mesh(

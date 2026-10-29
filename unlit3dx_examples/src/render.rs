@@ -93,9 +93,10 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey
         .next()
         .map(|unlit_pipeline_key| unlit_pipeline_key.clone())
         .unwrap_or_else(|| {
-            LitPipelineKey::unlit(LitOptions::standard(
-                &mesh_source.device(&world.root_scope()),
-            ))
+            LitPipelineKey::new(LitOptions {
+                unlit: true,
+                ..LitOptions::standard(&mesh_source.device(&world.root_scope()))
+            })
         });
     Some((RenderEntity(entity), key))
 }

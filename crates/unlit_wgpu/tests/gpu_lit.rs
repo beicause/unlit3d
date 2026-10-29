@@ -1,4 +1,4 @@
-//! End-to-end GPU tests for the built-in unlit pipeline.
+//! End-to-end GPU tests for the built-in lit pipeline.
 //!
 //! Every test builds real resources through the library's public API — the
 //! vertex compressors, the built-in [`SpecializedLitPipeline`] and the single-pass
@@ -609,7 +609,7 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 /// A variant built for the test's render target from `options` and the draw
 /// facts the test supplies.
 fn variant(
-    options: LitOptions,
+    mut options: LitOptions,
     channels: LitVertexChannels,
     base_color_texture: bool,
     morph: bool,
@@ -619,16 +619,16 @@ fn variant(
         depth_stencil_format: options.depth_stencil.as_ref().map(|state| state.format),
         sample_count: options.multisample.count,
     };
+    // These tests draw without lights: their global group carries the camera,
+    // the frame clock and the mesh metadata, and a lit variant would also
+    // demand the light arrays and the cluster.
+    options.unlit = true;
     LitVariant {
         options: Hashed::new(options),
         surface,
         channels,
         base_color_texture,
         morph,
-        // These tests draw without lights: their global group carries the
-        // camera, the frame clock and the mesh metadata, and a lit variant
-        // would also demand the light arrays and the cluster.
-        unlit: true,
         strip_index_format: None,
     }
 }

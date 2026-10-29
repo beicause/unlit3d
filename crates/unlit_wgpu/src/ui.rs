@@ -1,4 +1,4 @@
-//! An [egui](https://egui.rs) backend built on the built-in unlit pipeline.
+//! An [egui](https://egui.rs) backend built on the built-in lit pipeline.
 //!
 //! [`EguiIntegration`] takes what egui produces each frame — tessellated, clipped
 //! meshes plus a set of texture updates — and draws it with the built-in
@@ -193,7 +193,6 @@ pub fn ui_variant(
         channels: ui_channels(),
         base_color_texture: true,
         morph: false,
-        unlit: true,
         strip_index_format: None,
     }
 }
@@ -222,6 +221,9 @@ pub fn ui_channels() -> LitVertexChannels {
 /// a property of the mesh, not of what the caller picked.
 fn apply_ui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
     options.srgb_to_linear_output = srgb_to_linear_output;
+    // A UI fragment composites what egui tessellated and shades nothing: the
+    // overlay is drawn after the scene, so a light would tint text.
+    options.unlit = true;
     // No culling: egui does not guarantee a consistent winding order across
     // the primitives it emits, so neither face can be discarded safely.
     // (`LitOptions::standard` culls back faces for closed meshes; the UI is
@@ -404,7 +406,7 @@ struct TextureSlot {
     view: ResHandle<TextureView>,
 }
 
-/// Draws tessellated egui output with the built-in unlit pipeline.
+/// Draws tessellated egui output with the built-in lit pipeline.
 ///
 /// The UI's GPU resources are registered in a [`ResourceGraph`] the caller
 /// supplies — normally the one kept alongside the
@@ -534,7 +536,7 @@ struct MaterialKey {
 
 /// A one-element buffer holding the identity [`MeshInstance`].
 ///
-/// The built-in unlit pipeline declares the instance stream for every variant,
+/// The built-in lit pipeline declares the instance stream for every variant,
 /// so a draw that binds nothing at [`INSTANCE_SLOT`] is rejected. A UI draw
 /// reads no instance state — its vertices are already in screen space — so one
 /// default record satisfies the slot for every draw the integration records.
@@ -559,7 +561,7 @@ impl EguiIntegration {
     /// Build the UI integration around a caller-supplied `pipeline`,
     /// registering the UI's per-texture resources in `graph`.
     ///
-    /// `pipeline` is the built-in unlit pipeline the UI draws with, configured
+    /// `pipeline` is the built-in lit pipeline the UI draws with, configured
     /// for the target the pass renders into — its color format, sample count
     /// and blend state. The caller builds it (and the global bind group from
     /// its layout) up front, so the UI does not compile a pipeline of its own.
@@ -1185,7 +1187,6 @@ mod tests {
             channels: ui_channels(),
             base_color_texture: true,
             morph: false,
-            unlit: true,
             strip_index_format: None,
         }
     }

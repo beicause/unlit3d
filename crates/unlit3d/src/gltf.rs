@@ -62,7 +62,7 @@
 //! A one- or two-channel image is the interesting case: WebGPU has no
 //! luminance format and no component swizzle, so a grayscale texture samples
 //! as `(l, 0, 0, 1)` — the red channel carrying the luma — unless the shader
-//! expands it. The built-in unlit shader does, under
+//! expands it. The built-in lit shader does, under
 //! `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA`, which
 //! [`LitGltf::pipeline_key`] sets for exactly those uploads: the texel
 //! fans out to RGB (and its second channel to alpha) and the luminance is
@@ -339,7 +339,12 @@ impl LitGltf {
     ) -> LitPipelineKey {
         let primitive = self.primitive(mesh, primitive);
         let material = primitive.material();
-        let mut options = LitOptions::standard(device);
+        // A glTF scene states no lights of its own, so its draws shade
+        // nothing: the base colour it imports is what the file says.
+        let mut options = LitOptions {
+            unlit: true,
+            ..LitOptions::standard(device)
+        };
         // The texture the material samples decides whether the base-color
         // binding is a filtering one: the pipeline and the material bind group
         // have to agree, or the group does not fit the pipeline.
@@ -375,7 +380,7 @@ impl LitGltf {
         if material.double_sided() {
             options.primitive.cull_mode = None;
         }
-        LitPipelineKey::unlit(options)
+        LitPipelineKey::new(options)
     }
 
     // -- images ---------------------------------------------------------------
@@ -1459,7 +1464,8 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 /// do not enter the material group, and wgpu deduplicates identical layout
 /// descriptors, so the group fits the pipeline whatever else its key reads.
 fn textured_key(device: &wgpu::Device, filtering: bool) -> LitPipelineKey {
-    LitPipelineKey::unlit(LitOptions {
+    LitPipelineKey::new(LitOptions {
+        unlit: true,
         texture_filtering: filtering,
         ..LitOptions::standard(device)
     })

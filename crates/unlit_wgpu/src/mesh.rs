@@ -392,7 +392,7 @@ impl Default for MeshInstance {
 
 /// One compressed vertex position: `Snorm16x4` relative to the mesh AABB.
 ///
-/// The `w` lane is unused by the built-in unlit shader and is written as `0`.
+/// The `w` lane is unused by the built-in lit shader and is written as `0`.
 pub type CompressedPosition = [i16; 4];
 
 /// One compressed vertex UV: `Snorm16x2` remapped by

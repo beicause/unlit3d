@@ -53,7 +53,7 @@ pub const FIXED_STEP: f32 = 1.0 / 60.0;
 /// The format a scene is rendered into when it is drawn without a display.
 ///
 /// sRGB, like the view a window surface presents through: it is what lets the
-/// built-in unlit shader's colors reach the readback unchanged.
+/// built-in lit shader's colors reach the readback unchanged.
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The order of the pass a scene draws its content in.

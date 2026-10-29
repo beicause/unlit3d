@@ -51,7 +51,7 @@ example reaches those documents through
 binary carries the models it draws and needs no file at run time.
 
 `custom_pipeline` is the third: it registers two families of its own rather than
-drawing through the built-in unlit one. A sky family reconstructs a view ray
+drawing through the built-in lit one. A sky family reconstructs a view ray
 from the frame's camera, samples a procedurally generated cube map and blends a
 gradient and a sun from a uniform block the example writes every frame; a
 particle family takes its per-instance records from an ordinary world component

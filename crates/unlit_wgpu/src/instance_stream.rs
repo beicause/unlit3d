@@ -4,7 +4,7 @@
 //! [`InstanceBuffer`]: every frame it packs one record per visible instance and
 //! uploads them through the frame's encoder. Keeping the stream per family is
 //! what lets a caller's family carry its own per-instance data without sharing
-//! a record layout or a buffer with the built-in unlit family.
+//! a record layout or a buffer with the built-in lit family.
 
 use crate::staging::StagingBuffer;
 

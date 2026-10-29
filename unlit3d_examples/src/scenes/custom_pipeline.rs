@@ -1,6 +1,6 @@
 //! A caller-owned pipeline: a procedural sky and an animated particle cloud.
 //!
-//! Every other scene in the example draws through the built-in unlit family.
+//! Every other scene in the example draws through the built-in lit family.
 //! This one registers two families of its own — pipelines, vertex layouts and
 //! bind groups the example owns — to pin the parts of the renderer a caller
 //! reaches without going through the built-in shader at all:
@@ -540,7 +540,7 @@ impl PipelineVariant<wgpu::RenderPipeline> for SkyVariant {
 /// The sky family's factory.
 ///
 /// The family owns its whole group 0, so the factory's job is to hand the
-/// renderer the recipe that builds it — the same rebuild the built-in unlit
+/// renderer the recipe that builds it — the same rebuild the built-in lit
 /// family returns, over a group whose entries the example chose.
 struct SkyFactory {
     /// The device the group is created on.
@@ -1197,7 +1197,7 @@ fn build(
         )
     };
 
-    // No family of the built-in unlit pipeline is registered: every draw in this
+    // No family of the built-in lit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
     let source_entity = world
         .scope_mut(pass)

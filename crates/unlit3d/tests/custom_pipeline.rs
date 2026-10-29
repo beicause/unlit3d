@@ -369,7 +369,7 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
 
     let ctx = Ctx::headless().await;
 
-    // A source with no unlit family at all: the only family is ours.
+    // A source with no built-in family at all: the only family is ours.
     let mut world = unlit_ecs::World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
 

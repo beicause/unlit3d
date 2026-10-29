@@ -36,13 +36,13 @@ pub struct TestGpu {
     pass: Entity,
     /// The built-in mesh source, or `None` in a UI-only world.
     source: Option<Entity>,
-    /// The built-in unlit family's key; every renderable entity carries an
+    /// The built-in lit family's key; every renderable entity carries an
     /// [`GpuRenderPipeline`] built from it. Meaningless without a mesh source.
     pub key: LitPipelineKey,
 }
 
 impl TestGpu {
-    /// Spawn the frame's context, a mesh source with the built-in unlit family
+    /// Spawn the frame's context, a mesh source with the built-in lit family
     /// registered, and the frame driver into `world`.
     pub fn new(world: &mut World, ctx: &Ctx) -> Self {
         let mut test = Self::frame_only(world, ctx);
@@ -84,7 +84,7 @@ impl TestGpu {
         // carries the tint as well as the transform: the ECS tests tint their
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
-        let key = LitPipelineKey::unlit(default_options(&ctx.device));
+        let key = LitPipelineKey::new(default_options(&ctx.device));
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
@@ -521,6 +521,9 @@ pub fn default_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::LitOption
             count: 1,
             ..Default::default()
         },
+        // These tests state no lights, so their variants draw their base
+        // colour unchanged.
+        unlit: true,
         ..unlit_wgpu::pipeline::LitOptions::standard(device)
     }
 }

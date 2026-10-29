@@ -491,13 +491,13 @@ through the same public builders. See
 
 ### Lit or unlit
 
-[`LitPipelineKey`](lit::LitPipelineKey) is the caller's options plus one flag,
-`unlit`. Both modes draw through the same family — the mesh channels, the
-instance stream, the bind group layouts and the shader package are shared — and
-the flag decides one thing: whether the fragment stage adds up the frame's
-lights. A lit draw, the default, reads the light arrays and the cluster uniform;
-an unlit one declares none of those bindings and returns its albedo. There is
-still no prepass, no shadow map, and no compute pass.
+[`LitOptions::unlit`](unlit_wgpu::pipeline::LitOptions::unlit) is one flag of
+the caller's options. Both modes draw through the same family — the mesh
+channels, the instance stream, the bind group layouts and the shader package are
+shared — and the flag decides one thing: whether the fragment stage adds up the
+frame's lights. A lit draw, the default, reads the light arrays and the cluster
+uniform; an unlit one declares none of those bindings and returns its albedo.
+There is still no prepass, no shadow map, and no compute pass.
 
 ### Lights and shading
 

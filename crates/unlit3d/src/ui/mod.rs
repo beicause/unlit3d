@@ -31,7 +31,7 @@
 //! ]);
 //! ```
 //!
-//! The UI draws with the same built-in unlit pipeline as everything else, but
+//! The UI draws with the same built-in lit pipeline as everything else, but
 //! through its own camera uniform: one pass carries one camera value, so the UI
 //! cannot borrow the 3D camera's. The source therefore owns a camera and a
 //! frame-globals buffer of its own, plus the bind group binding them.

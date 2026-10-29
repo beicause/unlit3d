@@ -170,7 +170,7 @@ impl WindowSurface {
     /// surface that supports none — the web's canvas does not — is configured
     /// with a non-sRGB format instead and its frames are viewed as sRGB, which
     /// encodes them on write in exactly the same way. An sRGB attachment is
-    /// what lets the built-in unlit shader's colors reach the display
+    /// what lets the built-in lit shader's colors reach the display
     /// unchanged.
     ///
     /// # Panics

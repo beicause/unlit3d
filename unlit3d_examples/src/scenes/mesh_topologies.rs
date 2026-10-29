@@ -224,7 +224,7 @@ fn build(
     // width the specializer reads off the mesh.
     let keys: Vec<LitPipelineKey> = TOPOLOGIES
         .iter()
-        .map(|&topology| LitPipelineKey::unlit(options_for(&device, topology)))
+        .map(|&topology| LitPipelineKey::new(options_for(&device, topology)))
         .collect();
     let indices = index_buffer();
 

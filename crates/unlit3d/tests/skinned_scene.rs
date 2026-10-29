@@ -28,7 +28,7 @@ async fn skinning_without_a_pose_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::unlit(default_options(&ctx.device));
+    let key = LitPipelineKey::new(default_options(&ctx.device));
     let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 
     gpu.spawn(&mut world, bundle![camera()]);
@@ -42,7 +42,7 @@ async fn meshes_can_share_one_skin_pose() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::unlit(default_options(&ctx.device));
+    let key = LitPipelineKey::new(default_options(&ctx.device));
     let (first, skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
     let (second, _) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 

@@ -154,12 +154,16 @@ impl Example {
         //    whether a material and morph targets are bound, and the target
         //    the pipeline renders into. Equal variants share one compiled
         //    pipeline, so the variant doubles as the cache key.
-        let options = LitOptions::standard(device);
+        let mut options = LitOptions::standard(device);
         let surface = SurfaceKey {
             color_format: options.color_target.format,
             depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
             sample_count: options.multisample.count,
         };
+        // Unlit: the fragment returns its base color without reading the
+        // frame's light arrays, which is what keeps this example's global
+        // group to the camera, the frame clock and the mesh metadata.
+        options.unlit = true;
         let variant = LitVariant {
             options: Hashed::new(options),
             surface,
@@ -173,10 +177,6 @@ impl Example {
             base_color_texture: true,
             morph: false,
             strip_index_format: None,
-            // Unlit: the fragment returns its base color without reading the
-            // frame's light arrays, which is what keeps this example's global
-            // group to the camera, the frame clock and the mesh metadata.
-            unlit: true,
         };
         let pipeline = SpecializedPipeline::create(device, variant.clone());
 
@@ -686,8 +686,8 @@ business.
 
 ### Lighting: forward clustered Lambert
 
-Lighting is a variant flag:
-[`LitVariant::unlit`](pipeline::LitVariant::unlit) turns one WESL flag off, and
+Lighting is an option flag:
+[`LitOptions::unlit`](pipeline::LitOptions::unlit) turns one WESL flag off, and
 the composed fragment multiplies the base color by the frame's lights instead of
 passing it through. Everything else is shared — the layouts, the vertex streams,
 the instance record, the mesh allocator — so the same family draws both, and a
@@ -742,8 +742,8 @@ view direction.
 </details>
 
 Its options are the family's own, and the higher layer's `LitPipelineKey` is
-those options under a type of its own, with `unlit` as one more flag of them —
-which is what lets one source draw lit and unlit meshes alike.
+those options under a type of its own — which is what lets one source draw lit
+and unlit meshes alike.
 
 ### Reading the frame's arrays: storage buffers or texels
 

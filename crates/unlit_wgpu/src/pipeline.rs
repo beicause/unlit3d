@@ -1,4 +1,4 @@
-//! The built-in unlit pipeline and the WESL composition behind it.
+//! The built-in lit pipeline and the WESL composition behind it.
 //!
 //! [`SpecializedLitPipeline`] composes an [`LitVariant`]'s entry shader —
 //! the built-in `lit.wesl`, or the caller's own when
@@ -83,7 +83,7 @@ pub const BASE_COLOR_TEXTURE_BINDING: u32 = 0;
 pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
 /// Bind-group index of the mesh group.
 ///
-/// The built-in unlit variants bind nothing here: every input they read is in
+/// The built-in lit variants bind nothing here: every input they read is in
 /// the global group or on the instance stream. The index stays a general
 /// extension point, so a caller's own pipeline can bind per-mesh data — a tint,
 /// a transform palette, a material parameter — and
@@ -396,7 +396,7 @@ impl core::fmt::Debug for LitShader {
     }
 }
 
-/// The policy a caller decides about a built-in unlit pipeline.
+/// The policy a caller decides about a built-in lit pipeline.
 ///
 /// Everything a draw resolves is absent: the vertex channels, whether the draw
 /// samples a material, whether its mesh morphs, the render target and the
@@ -417,6 +417,15 @@ pub struct LitOptions {
     /// layouts, vertex streams and entry-point names stay the variant's. See
     /// [`LitShader`].
     pub shader: Option<LitShader>,
+    /// Whether the fragment stage returns its base color unchanged instead of
+    /// multiplying it by the frame's lights.
+    ///
+    /// An unlit variant declares none of the lighting bindings, so the lights a
+    /// source clusters cost it nothing; a lit one reads the light records, the
+    /// cell array, the polygon vertices and the cluster uniform from the global
+    /// group. Lighting is the common case, so this states the exception and
+    /// [`Self::standard`] leaves it off.
+    pub unlit: bool,
     /// The color target is sRGB-aware: it encodes the values written to it, so
     /// the fragment converts them from sRGB to linear first.
     ///
@@ -459,7 +468,7 @@ pub struct LitOptions {
     /// index format a strip topology requires.
     ///
     /// [`Self::standard`] leaves `strip_index_format` at its default, and the
-    /// built-in unlit family fills it from the mesh's index buffer, so the
+    /// built-in lit family fills it from the mesh's index buffer, so the
     /// field is a caller's concern only for a pipeline a mesh does not
     /// describe.
     pub primitive: wgpu::PrimitiveState,
@@ -521,6 +530,7 @@ impl LitOptions {
     pub(crate) fn standard_shape() -> Self {
         Self {
             shader: None,
+            unlit: false,
             srgb_to_linear_output: false,
             base_color: BaseColorChannels::Rgba,
             alpha_cutoff: false,
@@ -586,7 +596,7 @@ impl LitOptions {
     }
 }
 
-/// The complete identity of a built-in unlit pipeline, and its blueprint.
+/// The complete identity of a built-in lit pipeline, and its blueprint.
 ///
 /// A family resolves one from an entity's [`LitOptions`] and the facts its
 /// draw carries: the mesh's vertex channels, whether the draw binds a material,
@@ -613,15 +623,6 @@ pub struct LitVariant {
     pub morph: bool,
     /// The strip index format the mesh's index buffer requires, if any.
     pub strip_index_format: Option<wgpu::IndexFormat>,
-    /// Whether the variant skips the frame's lights and draws its base color
-    /// unchanged.
-    ///
-    /// A variant that is not unlit reads the light arrays and the cluster
-    /// uniform from the global group and multiplies its base color by what they
-    /// sum to. An unlit one declares none of those bindings, so the capability
-    /// costs it nothing. Lighting is the common case, so the flag is stated as
-    /// the exception the caller asks for.
-    pub unlit: bool,
 }
 
 #[cfg(feature = "lit")]
@@ -686,7 +687,7 @@ impl LitVariant {
                 self.options.base_color == BaseColorChannels::LuminanceAlpha,
             ),
             ("ALPHA_CUTOFF", self.options.alpha_cutoff),
-            ("LIT", !self.unlit),
+            ("LIT", !self.options.unlit),
         ]
     }
 
@@ -760,7 +761,7 @@ impl LitVariant {
     ///
     /// If the variant reads storage buffers on a device that has none.
     fn assert_device_supports_arrays(&self, device: &wgpu::Device, texel_arrays: bool) {
-        let reads_an_array = self.needs_metadata() || self.needs_joints() || !self.unlit;
+        let reads_an_array = self.needs_metadata() || self.needs_joints() || !self.options.unlit;
         assert!(
             !reads_an_array || texel_arrays || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
@@ -798,7 +799,7 @@ impl LitVariant {
             morphs: self.needs_morphs(),
             // A lit variant reads the frame's lights, its cells and its
             // polygon vertices; an unlit one declares no such binding.
-            lights: !self.unlit,
+            lights: !self.options.unlit,
         };
         let global = global_bind_group_layout(device, bindings, texel_arrays);
 
@@ -1193,7 +1194,7 @@ impl std::error::Error for ComposeError {}
 /// The camera and frame-globals uniforms are always bound; the three arrays are
 /// optional and a pipeline declares only the ones it reads. A caller's own
 /// pipeline passes the same description to `global_bind_group_layout` as the
-/// built-in unlit variants do, so binding the frame's shared inputs is not a
+/// built-in lit variants do, so binding the frame's shared inputs is not a
 /// privilege of the built-in shader.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GlobalBindings {
@@ -1250,7 +1251,7 @@ pub fn array_entry(
 /// with storage buffers binds each array as one, a device without them — WebGL2
 /// — binds the same bytes as a texture.
 ///
-/// The built-in unlit variants build their global layout here, so a caller's own
+/// The built-in lit variants build their global layout here, so a caller's own
 /// pipeline declares the same group by the same rules.
 pub fn global_bind_group_layout(
     device: &wgpu::Device,
@@ -1399,7 +1400,7 @@ pub struct LitBindGroupLayouts {
     pub mesh: Option<wgpu::BindGroupLayout>,
 }
 
-/// The built-in unlit pipeline: a compiled [wgpu::RenderPipeline] together
+/// The built-in lit pipeline: a compiled [wgpu::RenderPipeline] together
 /// with the [`LitVariant`] it was built from.
 ///
 /// [`LitVariant`] is its own [`PipelineVariant`] and [`PipelineDescriptor`],
@@ -1653,18 +1654,22 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
     /// A variant from its caller policy and the facts a draw carries.
     fn variant(
-        options: LitOptions,
+        mut options: LitOptions,
         channels: LitVertexChannels,
         base_color_texture: bool,
         morph: bool,
     ) -> LitVariant {
+        // These variants draw without lights: their global group carries the
+        // camera, the frame clock and the mesh metadata, and a lit one would
+        // also demand the light arrays and the cluster. The lighting dimension
+        // is enumerated on its own where a test composes both.
+        options.unlit = true;
         LitVariant {
             options: Hashed::new(options),
             surface: surface(),
             channels,
             base_color_texture,
             morph,
-            unlit: true,
             strip_index_format: None,
         }
     }
@@ -2208,7 +2213,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             // cover: a lit draw reads the frame's lights and clusters with them,
             // which is why both are compiled here.
             for unlit in [false, true] {
-                candidate.unlit = unlit;
+                candidate.options.update(|options| options.unlit = unlit);
                 // The array path is the device's, so both are exercised here.
                 for texel_arrays in [false, true] {
                     let wgsl = compose(&candidate, texel_arrays)
@@ -2245,24 +2250,25 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     // fragment shades with one.
                     assert_eq!(
                         wgsl.contains("decode_normal"),
-                        !candidate.unlit && vertex.secondary.contains(SecondaryFlags::NORMAL),
+                        !candidate.options.unlit
+                            && vertex.secondary.contains(SecondaryFlags::NORMAL),
                         "variant {candidate:?}"
                     );
                     // The light arrays, the cluster lookup and the shading terms are
                     // a lit draw's own.
                     assert_eq!(
                         wgsl.contains("fragment_cluster_index"),
-                        !candidate.unlit,
+                        !candidate.options.unlit,
                         "variant {candidate:?}"
                     );
                     assert_eq!(
                         wgsl.contains("load_cell_word") && wgsl.contains("load_light"),
-                        !candidate.unlit,
+                        !candidate.options.unlit,
                         "variant {candidate:?}"
                     );
                     assert_eq!(
                         wgsl.contains("polygon_form_factor"),
-                        !candidate.unlit,
+                        !candidate.options.unlit,
                         "variant {candidate:?}"
                     );
                     // Every array read goes through an accessor, whose name survives
@@ -2294,8 +2300,9 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     // The path decides the resource type: storage buffers when the
                     // device has them, textures when it does not. Neither path ever
                     // leaves the other's declarations behind.
-                    let reads_an_array =
-                        candidate.needs_metadata() || candidate.needs_joints() || !candidate.unlit;
+                    let reads_an_array = candidate.needs_metadata()
+                        || candidate.needs_joints()
+                        || !candidate.options.unlit;
                     if texel_arrays {
                         assert_eq!(
                             wgsl.matches("var<storage, read>").count(),

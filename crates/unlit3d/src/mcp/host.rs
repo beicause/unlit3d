@@ -558,7 +558,10 @@ pub fn create_mesh(
         morph_deltas: None,
     };
     let (key, mesh) = with_mesh_source(world, source, |source, scope| {
-        let key = LitPipelineKey::unlit(LitOptions::standard(&source.device(scope)));
+        let key = LitPipelineKey::new(LitOptions {
+            unlit: true,
+            ..LitOptions::standard(&source.device(scope))
+        });
         let mesh = source.allocate_lit_mesh(scope, &key.options, desc);
         (key, mesh)
     })?;

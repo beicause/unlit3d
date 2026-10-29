@@ -209,10 +209,10 @@ world.apply().expect("the queue is drained");
 
 **管线与目标**
 
-11. `LitOptions::standard` 假设 4x MSAA + Rgba8UnormSrgb + 设备默认深度格式（`default_depth_stencil_format(device)`，别写死 `Depth24PlusStencil8`）；内建 unlit 的这三个目标字段由附件覆盖，自定义 family 得自己 `set_surface`。
+11. `LitOptions::standard` 假设 4x MSAA + Rgba8UnormSrgb + 设备默认深度格式（`default_depth_stencil_format(device)`，别写死 `Depth24PlusStencil8`）；内建 lit family 的这三个目标字段由附件覆盖，自定义 family 得自己 `set_surface`。
 12. reverse-z：`Greater` + 清 0.0 + `perspective_infinite_reverse`，三者缺一画面就空。
 13. 透明用**第二个 key**（blend + 不写深度 + 仍测深度 + 背面剔除）+ `ZSortedDrawing`；spawn 顺序故意与绘制顺序不同，才验证得出排序。
-14. 要新管线用 `register_family` 自己注册，别去找内建的内部路径（内建 unlit 只是其中一个 family）。
+14. 要新管线用 `register_family` 自己注册，别去找内建的内部路径（内建 lit family 只是其中一个 family）。
 
 **帧、输入、UI**
 
@@ -237,7 +237,7 @@ world.apply().expect("the queue is drained");
 | 什么都不画 | 渲染实体或相机不在 source 的子树里；`Renderer` 只画 source 自己的子树 |
 | pass 完全不画 | 没 `set_attachments`：`FramePass` 在拿到颜色附件之前不画任何东西 |
 | 整片被裁掉 / 深度反了 | forward-z 投影配 `Greater`，或 reverse-z 投影配 `Less` |
-| pipeline 创建失败 | 自定义 family 没在自己的管线描述符上 `set_surface`，`multisample.count` / `color_target.format` / `depth_stencil.format` 与附件不一致（内建 unlit 已自动覆盖） |
+| pipeline 创建失败 | 自定义 family 没在自己的管线描述符上 `set_surface`，`multisample.count` / `color_target.format` / `depth_stencil.format` 与附件不一致（内建 lit family 已自动覆盖） |
 | panic: a pipeline family is already registered for this key type | 同一个 world 里 `register_lit_family` 调了两次 |
 | `allocate_lit_mesh` panic | slice 为空、通道长度不一致、joints/weights 只给一边、morph 数量不对 |
 | 借用 panic | 行为回调里取自己这个组件类型；或同一实体同时 `query_one` 两次 |

@@ -1,4 +1,4 @@
-// lit -- the built-in unlit and lit vertex/fragment pair.
+// lit -- the built-in lit vertex/fragment pair, lit or unlit by one flag.
 //
 // One entry shader covers every built-in variant: the differences are
 // orthogonal WESL conditional-compilation flags, so each composed variant
