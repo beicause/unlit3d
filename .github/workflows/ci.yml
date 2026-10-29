@@ -14,7 +14,16 @@ name: Rust CI
 # wasm suite and the APK. Keeping the shared jobs here is what stops the two
 # tiers from being two copies of the same steps.
 on:
+  # `focus` narrows the whole workflow to the one leg a frame investigation
+  # needs — the Windows runner, running the lit scenes under the WebGL2 tier
+  # alone. It exists on `workflow_dispatch` only, so a branch pushed for review
+  # still gets the checks a reviewer reads.
   workflow_dispatch:
+    inputs:
+      focus:
+        description: Run the Windows leg of the lit snapshot tests alone.
+        type: boolean
+        default: false
   push:
     # Every branch but `main`, which `ci-main.yml` runs instead.
     branches: ["**", "!main"]
@@ -55,6 +64,7 @@ env:
 
 jobs:
   lint:
+    if: ${{ !inputs.focus }}
     runs-on: ubuntu-latest
     # runtime is normally 10 seconds
     timeout-minutes: 2
@@ -105,7 +115,10 @@ jobs:
         # and the queue that consumes the result only needs them before a
         # release, which a merge to `main` is the last chance for.
         # `ci-main.yml` passes `full`, which is what asks for them.
-        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
+        # A focused run asks for the Windows leg alone: the frame this branch
+        # investigates only differs there, and one runner is what keeps the
+        # round trip short enough to iterate on.
+        os: ${{ fromJSON(inputs.focus && '["windows-latest"]' || (inputs.full && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest"]')) }}
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -158,16 +171,22 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
+      # A focused run is about one frame, not about whether the workspace is
+      # clean: the linting and the whole build would only repeat what the branch
+      # already had checked on the way in, and they are most of the job's clock.
       # Without `unlit` this crate compiles down to its general facilities,
       # so the built-in pipeline stays something a caller could have written.
       - name: Clippy (no features)
+        if: ${{ !inputs.focus }}
         run: cargo clippy -p unlit_wgpu --no-default-features --all-targets -- -Dwarnings
 
       - name: Clippy (all features)
+        if: ${{ !inputs.focus }}
         run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings
 
       - name: Build ${{matrix.os}}
         id: build
+        if: ${{ !inputs.focus }}
         run: cargo build --workspace --all-targets
 
       # `cargo xtask test` runs nextest over the unit and integration tests,
@@ -205,8 +224,21 @@ jobs:
       - name: Show the GPU
         run: cargo xtask print-gpu
 
+      # A focused run asks nextest for the lit scenes alone, under the tier the
+      # failure appears in, and stores the frame it drew where the upload below
+      # looks for it — the same comparison the full command makes, narrowed to
+      # the two scenes under investigation.
+      - name: Test ${{matrix.os}} (lit scenes, WebGL2 tier)
+        id: test_focus
+        if: ${{ inputs.focus }}
+        run: cargo nextest run -p unlit3d_examples -E 'test(lit)'
+        env:
+          UNLIT3D_DEVICE_TIER: webgl2
+          UNLIT3D_SNAPSHOT_MISMATCH_DIR: target/snapshot-mismatches-webgl2
+
       - name: Test ${{matrix.os}}
         id: test
+        if: ${{ !inputs.focus }}
         run: cargo xtask test
         env:
           # The soundfont was fetched above, so the audio snapshot test has
@@ -221,7 +253,7 @@ jobs:
       # wrong. `cargo xtask test` gives each device tier a directory of its own,
       # so a run that fails under both keeps them apart.
       - name: Upload the mismatched snapshot frames
-        if: ${{ failure() && steps.test.outcome == 'failure' }}
+        if: ${{ failure() && (steps.test.outcome == 'failure' || steps.test_focus.outcome == 'failure') }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: snapshot-mismatches-${{ matrix.os }}
@@ -237,7 +269,7 @@ jobs:
       # they wait on that step and on nothing else. `!cancelled()` keeps a
       # cancelled run from starting them at all.
       - name: Doc
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.focus && steps.build.outcome == 'success' }}
         run: cargo doc --workspace --no-deps --document-private-items --keep-going
         env:
           RUSTDOCFLAGS: -D warnings
