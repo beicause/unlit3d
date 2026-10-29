@@ -161,14 +161,14 @@ ECS is as small as it is.
 
 Commands follow the `cargo xtask` convention:
 
-- **`cargo xtask check`** — clippy over the whole workspace, with the default
-  features and then with all of them, plus each package on its own with the
-  default features (`-D warnings`); then the doc build with every feature and
-  `-D warnings`, so a broken intra-doc link fails here as it would in CI; then
-  `cargo fmt --check`. The gate before a commit. The per-package pass is what
-  catches an optional feature a crate's own code no longer uses, which a
-  workspace-wide run hides by unifying features. `--release` uses the release
-  profile.
+- **`cargo xtask check`** — `typos` and `tombi` over the repository, then clippy
+  over the whole workspace, with the default features and then with all of them,
+  plus each package on its own with the default features (`-D warnings`); then
+  the doc build with every feature and `-D warnings`, so a broken intra-doc link
+  fails here as it would in CI; then `cargo fmt --check`. The gate before a
+  commit. The per-package pass is what catches an optional feature a crate's own
+  code no longer uses, which a workspace-wide run hides by unifying features.
+  `--release` uses the release profile.
 - **`cargo xtask test`** — `cargo nextest run` over the unit and integration
   tests, then `cargo test --doc` for the doctests nextest does not cover.
   `--release` uses the release profile.
@@ -208,9 +208,11 @@ Commands follow the `cargo xtask` convention:
   `--features profile-tracing` prints one line per frame phase. See
   [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) for what each target
   covers.
-- **`typos`** — spell check, over the whole repository.
+- **`typos`** — spell check, over the whole repository. Part of `cargo xtask
+  check`; a word it flags that is legitimate goes into `typos.toml`.
 - **`tombi lint --error-on-warnings`** and **`tombi format`** — TOML lint and
-  format check. Run them after touching any `Cargo.toml`.
+  format check, also part of `cargo xtask check`. A feature table is expected
+  to be sorted, and `tombi format` is what sorts it.
 
 ## Tests and benchmarks
 

@@ -12,7 +12,7 @@
 ## 任务
 
 ```text
-cargo xtask check          # 对全工作区跑 clippy 与 cargo doc，随后 cargo fmt --check
+cargo xtask check          # typos、tombi、clippy 与文档构建，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
 cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备（两个档位各一份）
 cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
@@ -23,10 +23,18 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask check`
 
-先在整个工作区上运行 clippy，再跑文档构建，最后运行 `cargo fmt --all -- --check`。
-clippy 排在前面，因为它的诊断可能让代码树处于 `rustfmt` 会重写的状态，因此格式化
-拥有最后发言权；文档构建夹在两者之间，因为 rustdoc 的警告与 clippy 的一样属于 lint，
-而它可能重写的文档注释仍归 rustfmt 收尾。接受 `--release`。
+先跑 `typos` 与 `tombi`，再在整个工作区上运行 clippy，然后跑文档构建，最后运行
+`cargo fmt --all -- --check`。两个不需要编译器的工具排在最前，因此一处拼写错误或一张
+没排序的 feature 表只花一秒钟，而不是 clippy 那几分钟。clippy 紧随其后，因为它的诊断
+可能让代码树处于 `rustfmt` 会重写的状态，因此格式化拥有最后发言权；文档构建夹在两者
+之间，因为 rustdoc 的警告与 clippy 的一样属于 lint，而它可能重写的文档注释仍归 rustfmt
+收尾。接受 `--release`。
+
+`typos` 覆盖仓库里的每个文件，`tombi` 覆盖每个 TOML 文件——先 `lint
+--error-on-warnings`，再 `format --check`——这正是 CI 的 lint job 所跑的，因此一处
+拼写错误或一个格式不对的 `Cargo.toml` 在这里就会失败，而不是只在那边失败。两者都指向
+工作区根目录而不是当前目录，因为 `typos.toml` 与 `tombi.toml` 就在那里。两者都不随
+cargo 一起提供：缺了哪一个，该步骤会给出安装它的命令。
 
 clippy 跑三趟，因为每一趟编译的代码集合不同：
 

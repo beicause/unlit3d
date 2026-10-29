@@ -14,7 +14,7 @@ cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
 ## Tasks
 
 ```text
-cargo xtask check          # clippy and `cargo doc` over the whole workspace, then `cargo fmt --check`
+cargo xtask check          # typos, tombi, clippy and the doc build, then `cargo fmt --check`
 cargo xtask test           # nextest over unit and integration tests, then the doctests
 cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
 cargo xtask test-wasm      # run the GPU tests in a browser, through wasm and WebGL2
@@ -25,12 +25,22 @@ cargo xtask publish        # publish the workspace's crates to crates.io, in dep
 
 ### `cargo xtask check`
 
-Runs clippy over the workspace, then the doc build, then
-`cargo fmt --all -- --check`. Clippy goes first because its diagnostics may
-leave the tree in a state `rustfmt` would rewrite, so formatting is the last
-word; the doc build sits between them because a rustdoc warning is a lint like
-clippy's, and a doc comment rustdoc would rewrite is still rustfmt's to settle.
-Accepts `--release`.
+Runs `typos` and `tombi`, then clippy over the workspace, then the doc build,
+then `cargo fmt --all -- --check`. The two tools that need no compiler go
+first, so a misspelling or an unsorted feature table costs a second rather than
+the minutes clippy takes. Clippy comes next because its diagnostics may leave
+the tree in a state `rustfmt` would rewrite, so formatting is the last word; the
+doc build sits between them because a rustdoc warning is a lint like clippy's,
+and a doc comment rustdoc would rewrite is still rustfmt's to settle. Accepts
+`--release`.
+
+`typos` covers every file in the repository and `tombi` every TOML one — `lint
+--error-on-warnings` and then `format --check` — which is what CI's lint job
+runs, so a misspelling or a misformatted `Cargo.toml` fails here instead of
+only there. Both are pointed at the workspace root rather than the working
+directory, since that is where `typos.toml` and `tombi.toml` live. Neither
+ships with cargo: when one is missing the step names the command that installs
+it.
 
 Clippy runs three times, because each compiles a different set of code:
 

@@ -1,18 +1,22 @@
-//! `cargo xtask check`: clippy over the workspace, the doc build, then a
+//! `cargo xtask check`: the typo and TOML checks, clippy, the doc build, then a
 //! formatting check.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::step;
 
-/// Run clippy over every workspace target, build the documentation, then check
-/// formatting.
+/// Run the typo and TOML checks, clippy over every workspace target, the doc
+/// build, then the formatting check.
 ///
-/// Clippy first: its warnings and the diagnostics it raises may leave the
-/// tree in a state `rustfmt` would rewrite, so formatting is the last word.
-/// The doc build sits between the two because a rustdoc warning is a lint like
-/// clippy's — it should fail here rather than only in CI — while a doc comment
-/// it would rewrite is still rustfmt's to settle.
+/// The two checks that need no compiler go first, so a misspelling or an
+/// unsorted feature table costs a second rather than the minutes clippy takes.
+///
+/// Clippy next: its warnings and the diagnostics it raises may leave the tree
+/// in a state `rustfmt` would rewrite, so formatting is the last word. The doc
+/// build sits between the two because a rustdoc warning is a lint like clippy's
+/// — it should fail here rather than only in CI — while a doc comment it would
+/// rewrite is still rustfmt's to settle.
 ///
 /// Clippy runs three times, because each builds a different set of code:
 ///
@@ -36,6 +40,32 @@ use crate::step;
 /// Every run denies warnings, as CI does. Without it a warning here is a
 /// warning CI turns into an error, which is the same gap in a different guise.
 pub fn run(release: bool) -> Result<(), String> {
+    let root = workspace_root()?;
+
+    // Both tools take the directory to work on as their only argument, and both
+    // are run from here rather than from the working directory: a task may be
+    // started from anywhere inside the workspace, and these two read their
+    // configuration — `typos.toml`, `tombi.toml` — from where they are pointed.
+    require("typos", "cargo install typos-cli")?;
+    require("tombi", "cargo install tombi")?;
+
+    let mut typos = Command::new("typos");
+    typos.arg(&root);
+    step::run(&mut typos, "typos")?;
+
+    // `lint` and `format --check` are separate invocations because they report
+    // different things: a schema violation and a file the formatter would
+    // rewrite. The lint denies warnings, as CI does, so the two runs agree.
+    let mut tombi_lint = Command::new("tombi");
+    tombi_lint.args(["lint", "--error-on-warnings"]).arg(&root);
+    step::run(&mut tombi_lint, "tombi lint")?;
+
+    let mut tombi_format = Command::new("tombi");
+    tombi_format
+        .args(["format", "--check", "--diff"])
+        .arg(&root);
+    step::run(&mut tombi_format, "tombi format")?;
+
     let profile: &[&str] = if release { &["--release"] } else { &[] };
     let deny: &[&str] = &["--", "-D", "warnings"];
 
@@ -84,6 +114,50 @@ pub fn run(release: bool) -> Result<(), String> {
     step::run(&mut fmt, "fmt")?;
 
     Ok(())
+}
+
+/// Fail with the command that installs it when `tool` is not on `PATH`.
+///
+/// Neither tool is a cargo subcommand, so unlike nextest nothing else here
+/// installs them; without this the step fails on a bare "No such file or
+/// directory", which names the symptom but not the fix.
+fn require(tool: &str, install: &str) -> Result<(), String> {
+    Command::new(tool)
+        .arg("--version")
+        .output()
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "running `{tool} --version`: {error}\n\
+                 install it with `{install}`"
+            )
+        })
+}
+
+/// The directory the task's tools work on, which is the workspace root.
+///
+/// Asked of cargo rather than read from the working directory, so that a task
+/// started from a crate's own directory covers the whole workspace: these
+/// tools read their configuration from the directory they are pointed at, and
+/// `typos.toml` and `tombi.toml` live at the root.
+fn workspace_root() -> Result<PathBuf, String> {
+    let mut metadata = Command::new("cargo");
+    metadata.args(["locate-project", "--workspace", "--message-format", "plain"]);
+    let output = metadata
+        .output()
+        .map_err(|error| format!("running `cargo locate-project`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`cargo locate-project` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let manifest = String::from_utf8(output.stdout)
+        .map_err(|error| format!("reading `cargo locate-project`'s output: {error}"))?;
+    Path::new(manifest.trim())
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "`cargo locate-project` named a manifest with no directory".to_owned())
 }
 
 /// The workspace's own packages that have a library target, from
