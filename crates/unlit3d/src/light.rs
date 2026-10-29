@@ -432,6 +432,16 @@ pub(crate) fn collect_lights(
         let world_from_local = transform
             .map(|transform| transform.compute_matrix())
             .unwrap_or(Affine3A::IDENTITY);
+        let describe = source.0.describe(&world_from_local);
+        // A light that shines nothing is dropped rather than ranked last: a
+        // cell that ran out of room would otherwise spill a light that
+        // contributes nothing in place of one that does. The record is read
+        // first, because packing a quad light appends its corners to the pool
+        // every light shares, and a record the frame discards has no corners to
+        // point at.
+        if describe.intensity <= 0.0 {
+            continue;
+        }
         let mut gpu = LightGpu {
             position_radius: Vec4::ZERO,
             direction_outer: Vec4::ZERO,
@@ -446,7 +456,6 @@ pub(crate) fn collect_lights(
                 vertices,
             },
         );
-        let describe = source.0.describe(&world_from_local);
         if gpu.kind.x == GpuLightKind::Directional as u32 {
             // A light at infinity has no bounds to cluster by: every fragment
             // sees it, so it belongs to the frame rather than to a cell.
@@ -465,12 +474,6 @@ pub(crate) fn collect_lights(
             _ => 1.0,
         };
         let distance = (bounds.center - eye).length().max(1.0);
-        // A light that shines nothing is dropped rather than ranked last: a
-        // cell that ran out of room would otherwise spill a light that
-        // contributes nothing in place of one that does.
-        if describe.intensity <= 0.0 {
-            continue;
-        }
         let importance = describe.intensity * area / (distance * distance);
         packed.push(PackedLight {
             gpu,
@@ -732,6 +735,39 @@ mod tests {
                 .iter()
                 .all(|slot| slot.color_intensity.truncate() != Vec3::ZERO)
         );
+    }
+
+    #[test]
+    fn a_quad_light_that_shines_nothing_leaves_no_corners() {
+        use unlit_ecs::{World, bundle};
+
+        let mut world = World::new();
+        world
+            .root_scope_mut()
+            .spawn(bundle![LightSource::new(QuadLight::rect(
+                Vec4::ONE,
+                0.0,
+                4.0,
+                2.0,
+                2.0
+            ))]);
+        let mut packed = Vec::new();
+        let mut vertices = Vec::new();
+        let mut lighting = LightingUniform {
+            directionals: [DirectionalGpu::default(); MAX_DIRECTIONAL_LIGHTS],
+            ambient: Vec4::ZERO,
+        };
+        collect_lights(
+            &world.root_scope(),
+            Vec3::ZERO,
+            &mut packed,
+            &mut vertices,
+            &mut lighting,
+        );
+        // Packing a quad light appends its corners to the pool every light
+        // shares, so a light the frame drops has to be dropped before it packs.
+        assert!(packed.is_empty());
+        assert!(vertices.is_empty());
     }
 
     #[test]

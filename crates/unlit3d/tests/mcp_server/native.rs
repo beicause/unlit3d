@@ -437,6 +437,21 @@ pub fn run() {
                 .is_none(),
             "an index list that is not triangles is refused"
         );
+        // An index past the last vertex would read whatever follows the vertex
+        // buffer, which the allocator does not check either.
+        assert!(
+            server
+                .try_tool(
+                    "create_mesh",
+                    json!({
+                        "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        "indices": [0, 1, 3],
+                    }),
+                )
+                .await
+                .is_none(),
+            "an index past the last vertex is refused"
+        );
 
         // A red triangle, so the centre of the frame is the mesh and the rest
         // is the clear colour.

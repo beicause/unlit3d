@@ -168,7 +168,10 @@ pub fn run(
         // on that drain — then dispatch and draw. An audio-only run
         // captures no frames and skips the whole block: nothing reads
         // the picture, and the camera behaviour it would drive belongs
-        // to the picture alone.
+        // to the picture alone. Only the captured frames are drawn, which
+        // holds because a draw is idempotent: it reads the scene the steps
+        // left behind and writes nothing back into it, so the frame drawn
+        // for a capture is the frame that would have been drawn on time.
         let mut nested = host
             .root_scope()
             .query_one::<&mut World>(render.entity)

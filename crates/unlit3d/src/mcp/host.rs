@@ -540,12 +540,18 @@ pub fn create_mesh(
             ));
         }
     }
-    if args
-        .indices
-        .as_ref()
-        .is_some_and(|indices| indices.len() % 3 != 0)
-    {
-        return Err("indices must be triangles, three per primitive".to_string());
+    // An index past the last vertex reads whatever follows the vertex buffer,
+    // which the mesh allocator does not check either, so a request naming one is
+    // refused here rather than drawn.
+    if let Some(indices) = args.indices.as_deref() {
+        if indices.len() % 3 != 0 {
+            return Err("indices must be triangles, three per primitive".to_string());
+        }
+        if let Some(&index) = indices.iter().find(|&&index| index as usize >= vertices) {
+            return Err(format!(
+                "indices name vertex {index}, but positions describes {vertices} vertices"
+            ));
+        }
     }
     let desc = LitMeshDesc {
         positions: &args.positions,

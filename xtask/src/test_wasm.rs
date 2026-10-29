@@ -446,6 +446,18 @@ fn print_browser_gpu(modules: &[String]) -> Result<(), String> {
         .call()
         .map_err(|error| format!("describing the browser's device: {error}"))?;
 
+    // The runner reports a failure as a 500 whose body is a stack, which a
+    // caller that only reads the body would print as the device it drew with.
+    if !response.status().is_success() {
+        let message = response
+            .into_body()
+            .read_to_string()
+            .unwrap_or_else(|error| {
+                format!("the runner's failure message could not be read: {error}")
+            });
+        return Err(format!("the browser described no device:\n{message}"));
+    }
+
     let body = response
         .into_body()
         .read_to_string()
