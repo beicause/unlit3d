@@ -34,7 +34,8 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 --error-on-warnings`，再 `format --check`——这正是 CI 的 lint job 所跑的，因此一处
 拼写错误或一个格式不对的 `Cargo.toml` 在这里就会失败，而不是只在那边失败。两者都指向
 工作区根目录而不是当前目录，因为 `typos.toml` 与 `tombi.toml` 就在那里。两者都不随
-cargo 一起提供：缺了哪一个，该步骤会给出安装它的命令。
+cargo 一起提供：缺了哪一个，该步骤会说明是哪个工具缺了，而不给安装命令——两者都在
+cargo 之外分发。
 
 clippy 跑三趟，因为每一趟编译的代码集合不同：
 

@@ -189,9 +189,6 @@ pub struct MeshSource {
     cluster_staging: StagingBuffer,
     /// Staging buffer for the lighting uniform, reused across frames.
     lighting_staging: StagingBuffer,
-    /// Whether a lit family was registered with this source, so the frame's
-    /// lights have a reader.
-    pub(crate) lit: bool,
     /// Whether a mesh's displacements were written into the pool since the
     /// array was last uploaded.
     ///
@@ -492,7 +489,6 @@ impl MeshSource {
             },
             cluster_staging: StagingBuffer::new(),
             lighting_staging: StagingBuffer::new(),
-            lit: false,
             morph_deltas_dirty: false,
             globals,
             metadata: Vec::new(),
@@ -1601,9 +1597,11 @@ impl FrameSource for MeshSource {
             // below.
             self.upload_morph_deltas(world, encoder);
         }
-        // A frame with no lit family registered has nothing to read the lights,
-        // so clustering it would only cost the upload.
-        if self.lit {
+        {
+            // The lights are uploaded every frame: which frames draw a lit
+            // variant is not known ahead of the upload — a family serves
+            // whatever the scene presents each frame — so it cannot wait for
+            // the first one. A source that never draws one pays for nothing.
             profiling::scope!("mesh_source.lights.upload");
             self.upload_lights(world, encoder, &camera, (info.width, info.height));
         }

@@ -39,8 +39,8 @@ and a doc comment rustdoc would rewrite is still rustfmt's to settle. Accepts
 runs, so a misspelling or a misformatted `Cargo.toml` fails here instead of
 only there. Both are pointed at the workspace root rather than the working
 directory, since that is where `typos.toml` and `tombi.toml` live. Neither
-ships with cargo: when one is missing the step names the command that installs
-it.
+ships with cargo: when one is missing the step says which tool, not how to
+install it — both are distributed outside cargo.
 
 Clippy runs three times, because each compiles a different set of code:
 

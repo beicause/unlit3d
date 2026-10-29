@@ -46,8 +46,8 @@ pub fn run(release: bool) -> Result<(), String> {
     // are run from here rather than from the working directory: a task may be
     // started from anywhere inside the workspace, and these two read their
     // configuration — `typos.toml`, `tombi.toml` — from where they are pointed.
-    require("typos", "cargo install typos-cli")?;
-    require("tombi", "cargo install tombi")?;
+    require("typos")?;
+    require("tombi")?;
 
     let mut typos = Command::new("typos");
     typos.arg(&root);
@@ -116,22 +116,25 @@ pub fn run(release: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Fail with the command that installs it when `tool` is not on `PATH`.
+/// Fail, naming the tool, when `tool` is not usable.
 ///
-/// Neither tool is a cargo subcommand, so unlike nextest nothing else here
-/// installs them; without this the step fails on a bare "No such file or
-/// directory", which names the symptom but not the fix.
-fn require(tool: &str, install: &str) -> Result<(), String> {
-    Command::new(tool)
+/// Neither tool ships with cargo, so a missing one reaches the step as a bare
+/// "No such file or directory" under a name that says what the step wanted;
+/// this reports which tool is absent instead. How to install it is left to
+/// the contributor: both are distributed outside cargo, so a command named
+/// here would be a guess.
+fn require(tool: &str) -> Result<(), String> {
+    let output = Command::new(tool)
         .arg("--version")
         .output()
-        .map(|_| ())
-        .map_err(|error| {
-            format!(
-                "running `{tool} --version`: {error}\n\
-                 install it with `{install}`"
-            )
-        })
+        .map_err(|error| format!("`{tool}` is not on PATH: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`{tool} --version` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
 }
 
 /// The directory the task's tools work on, which is the workspace root.

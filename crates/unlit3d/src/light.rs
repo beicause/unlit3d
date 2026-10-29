@@ -117,8 +117,10 @@ impl LightSource {
 /// rather than writing a field on the source. It carries no intensity of its
 /// own: the colour is the term.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct AmbientLight {
     /// The ambient term, in the linear space the lights' colours are in.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Vec4Proxy))]
     pub color: Vec4,
 }
 

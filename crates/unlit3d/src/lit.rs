@@ -481,10 +481,12 @@ pub trait MeshSourceLitExt {
     /// This compiles nothing; like any family, its first concrete pipeline is
     /// built when an entity that uses it is first drawn.
     ///
-    /// Registering marks the source lit, so every frame clusters that frame's
-    /// [LightSource](crate::light::LightSource)s and uploads them. A source
-    /// whose keys are all [unlit](LitOptions::unlit) pays for none of it,
-    /// because nothing would read it.
+    /// The source clusters and uploads every frame's
+    /// [LightSource](crate::light::LightSource)s whether or not this family is
+    /// registered: registration says which family a draw resolves with, not
+    /// which frames draw, so the lights have to be there before the first lit
+    /// draw. A source that never draws a lit variant pays that upload for
+    /// nothing.
     ///
     /// # Panics
     ///
@@ -559,9 +561,6 @@ pub trait MeshSourceLitExt {
 impl MeshSourceLitExt for MeshSource {
     fn register_lit_family(&mut self, world: &Scope<'_>) {
         self.register_family::<LitPipelineKey, _, _>(world, LitFactory, LitInstance);
-        // A lit family reads the frame lights, so the source has to collect
-        // them; an unlit one alone never does.
-        self.lit = true;
     }
 
     fn allocate_lit_mesh(
