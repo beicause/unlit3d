@@ -48,6 +48,6 @@ pub use world::World;
 pub mod prelude {
     pub use crate::{
         ArchetypeAccessError, ArchetypeFilter, Entity, EntityAccessError, Has, Query, QueryBorrow,
-        QueryOne, Scope, World, bundle,
+        QueryOne, Scope, World, bundle, query,
     };
 }
