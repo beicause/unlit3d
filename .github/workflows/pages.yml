@@ -92,13 +92,15 @@ jobs:
         uses: cargo-bins/cargo-binstall@v1.23.0
 
       # `wasm-bindgen` reads the crate's metadata, so the CLI has to be the
-      # same version the crate was compiled against. Neither `Cargo.lock` is
-      # committed nor the version pinned here, so the build resolves the newest
-      # crate and this installs the newest CLI; the two are released together
-      # and so agree. Pinning one of them would be the bug: the other would
-      # move ahead of it on the next release and the bindgen step would fail.
+      # same version the crate was compiled against. `Cargo.lock` is committed
+      # and pins the crate, so the version is taken from the workspace rather
+      # than installed at its newest: a CLI that moved ahead of the lock writes
+      # a schema the compiled module does not speak, and the bindgen step fails.
       - name: Install wasm-bindgen
-        run: cargo binstall --no-confirm wasm-bindgen-cli
+        run: |
+          version=$(cargo metadata --format-version 1 --all-features \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo binstall --no-confirm --version "$version" wasm-bindgen-cli
 
       - name: Setup Pages
         uses: actions/configure-pages@v6.0.0
