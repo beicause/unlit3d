@@ -686,10 +686,17 @@ mod declared {
         let world = scene();
         assert_eq!(world.root_scope().query::<Combatant>().iter().count(), 2);
         assert_eq!(
-            world.root_scope().query::<Combatant<'static>>().iter().count(),
+            world
+                .root_scope()
+                .query::<Combatant<'static>>()
+                .iter()
+                .count(),
             2,
         );
-        assert_eq!(world.root_scope().query::<Combatant<'_>>().iter().count(), 2);
+        assert_eq!(
+            world.root_scope().query::<Combatant<'_>>().iter().count(),
+            2
+        );
     }
 
     #[test]
@@ -717,7 +724,9 @@ mod wide {
         };
     }
 
-    components!(C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14, C15, C16, C17);
+    components!(
+        C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14, C15, C16, C17
+    );
 
     query! {
         /// Eighteen components, past the widest tuple impl.
@@ -747,8 +756,24 @@ mod wide {
     fn a_declared_query_covers_more_fields_than_a_tuple_impl() {
         let mut world = World::new();
         world.root_scope_mut().spawn(bundle![
-            C0(0), C1(1), C2(2), C3(3), C4(4), C5(5), C6(6), C7(7), C8(8), C9(9), C10(10), C11(11),
-            C12(12), C13(13), C14(14), C15(15), C16(16), C17(17),
+            C0(0),
+            C1(1),
+            C2(2),
+            C3(3),
+            C4(4),
+            C5(5),
+            C6(6),
+            C7(7),
+            C8(8),
+            C9(9),
+            C10(10),
+            C11(11),
+            C12(12),
+            C13(13),
+            C14(14),
+            C15(15),
+            C16(16),
+            C17(17),
         ]);
 
         let rows: Vec<u32> = world

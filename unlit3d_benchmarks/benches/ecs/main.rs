@@ -289,9 +289,13 @@ fn grouping(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("interleaved"), &(), |b, ()| {
         b.iter(|| black_box(query_one_three(&fixture.world, &fixture.interleaved)));
     });
-    group.bench_with_input(BenchmarkId::from_parameter("archetype_major"), &(), |b, ()| {
-        b.iter(|| black_box(query(&fixture.world)));
-    });
+    group.bench_with_input(
+        BenchmarkId::from_parameter("archetype_major"),
+        &(),
+        |b, ()| {
+            b.iter(|| black_box(query(&fixture.world)));
+        },
+    );
     group.finish();
 }
 

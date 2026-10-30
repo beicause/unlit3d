@@ -10,12 +10,12 @@
 //! operations are confined to the scope's own subtree.
 
 use crate::archetype::{Archetype, ScopeSummary};
+use crate::borrow::Claims;
 use crate::bundle::Bundle;
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::error::{ArchetypeAccessError, EntityAccessError};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
-use crate::borrow::Claims;
 use crate::query::{PlanBuilder, Query, QueryBorrow, QueryOne};
 use crate::world::World;
 

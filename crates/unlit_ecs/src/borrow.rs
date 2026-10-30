@@ -160,7 +160,7 @@ impl<'w> Claims<'w> {
         }
     }
 
-    /// Claim on [`index`] every component the holder's asks named.
+    /// Claim on `index` every component the holder's asks named.
     pub(crate) fn claim_archetype(
         &mut self,
         index: u32,
@@ -171,7 +171,7 @@ impl<'w> Claims<'w> {
         claim_archetype(self.world, self.group, index, archetype, asks, origin);
     }
 
-    /// Claim on the row of [`entity`] every component the holder's asks named.
+    /// Claim on the row of `entity` every component the holder's asks named.
     pub(crate) fn claim_row(
         &mut self,
         index: u32,
@@ -192,7 +192,7 @@ impl Drop for Claims<'_> {
     }
 }
 
-/// Claim on [`archetype`] every component the asks named, shared or exclusive.
+/// Claim on `archetype` every component the asks named, shared or exclusive.
 ///
 /// Components the archetype does not carry are skipped: an optional item reaches
 /// nothing there, and claiming it anyway would refuse another query for no

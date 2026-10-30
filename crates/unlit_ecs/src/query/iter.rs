@@ -72,10 +72,10 @@ impl<'q, 'w, Q: Query> QueryIter<'q, 'w, Q> {
         }
     }
 
-    /// Whether [`archetype`] is one this query may visit.
+    /// Whether `archetype` is one this query may visit.
     ///
     /// This is only the cheap half: whether the query can resolve its plan on
-    /// the archetype is decided by [`Q::prepare`] itself, once, when that
+    /// the archetype is decided by `Q::prepare` itself, once, when that
     /// archetype is resolved. Resolving here as well would reach the columns
     /// twice per archetype.
     fn archetype_matches(&self, archetype: &Archetype) -> bool {
@@ -85,7 +85,7 @@ impl<'q, 'w, Q: Query> QueryIter<'q, 'w, Q> {
                 .any_visible(self.world, self.scope)
     }
 
-    /// Whether [`row`] of [`archetype`] is visible from this query's scope.
+    /// Whether `row` of `archetype` is visible from this query's scope.
     fn row_matches(&self, archetype: &Archetype, row: usize) -> bool {
         match self.uniform_visible {
             // The whole archetype lives in one scope, so the tree walk is done
@@ -138,8 +138,12 @@ impl<'q, 'w: 'q, Q: Query + 'q> Iterator for QueryIter<'q, 'w, Q> {
                     self.row = self.world.content_start(self.archetype as u32);
                     continue;
                 };
-                self.claims
-                    .claim_archetype(self.archetype as u32, archetype, self.asks, self.origin);
+                self.claims.claim_archetype(
+                    self.archetype as u32,
+                    archetype,
+                    self.asks,
+                    self.origin,
+                );
                 self.plan = Some(plan);
                 let summary = archetype.scope_summary();
                 self.uniform_visible = match summary {
