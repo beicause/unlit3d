@@ -242,6 +242,65 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The ECS keeps every component value in an `UnsafeCell` and hands out plain
+  # references to it through a shared `&World`, so the aliasing rules the
+  # compiler would otherwise enforce are its borrow ledger's to keep at runtime.
+  # A mistake there is undefined behaviour rather than a panic, and no test can
+  # see it: the miscompiled read returns the same bytes as the correct one. Miri
+  # is the interpreter that does check it, which makes this job the only gate
+  # over that crate's `unsafe`, and it sits in the light tier so a branch is
+  # refused before a review rather than after a merge.
+  #
+  # Only `unlit_ecs` is interpreted. Every test runs one to two orders of
+  # magnitude slower under Miri, and the other crates hold no `unsafe` of their
+  # own — `unlit_wgpu`'s is behind a `cfg!(debug_assertions)` branch that Miri's
+  # dev profile never reaches.
+  miri:
+    name: Miri
+    # Measured on this suite: the interpreter takes a little over a minute over
+    # the whole crate, and the toolchain, the sysroot build and the compile run
+    # in front of it.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # `cargo xtask miri` asks for `+nightly` itself; this is what gives it one
+      # and the component, which stable does not carry.
+      #
+      # The two things the cache below needs are recorded here rather than
+      # spelled in its `with:` block: the `env` context only holds the
+      # variables a workflow sets, and a `~` in a cache path is expanded by the
+      # action rather than by the shell, which makes it a guess. The nightly's
+      # commit hash is what tells one sysroot from another — a restored sysroot
+      # belongs to the nightly that built it, so a mismatch has to be a cache
+      # miss and not a confusing link error.
+      - name: Install the nightly toolchain
+        run: |
+          rustup toolchain install nightly --no-self-update --profile=minimal --component miri
+          echo "MIRI_NIGHTLY=$(rustc +nightly -vV | sed -n 's/^commit-hash: //p')" >> "$GITHUB_ENV"
+          echo "MIRI_CACHE_DIR=$HOME/.cache/miri" >> "$GITHUB_ENV"
+
+      # Miri builds its own sysroot from that nightly's standard library — about
+      # twenty seconds of work over the same sources on every run of one nightly
+      # — and keeps it in `~/.cache/miri`, outside the workspace. `cache-directories`
+      # is what brings such a directory into the cache, and `env-vars` is what
+      # puts the nightly's commit hash into its key, so a sysroot built by another
+      # nightly is a miss rather than a link error. Both variables are set by the
+      # step above, which is why this one comes second.
+      - name: Caching
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: miri-${{ env.CACHE_SUFFIX }}
+          env-vars: ImageVersion MIRI_NIGHTLY
+          cache-directories: ${{ env.MIRI_CACHE_DIR }}
+          cache-bin: false
+          cache-on-failure: true
+
+      # The same command a contributor runs, so the two cannot drift.
+      - name: Miri
+        run: cargo xtask miri
+
   # What the light tier checks about the web build is that it lints for the
   # target: the `wasm32` build of the workspace and the `wasm32` build of every
   # test binary. `build-wasm` in `ci-main.yml` goes on to bindgen the test

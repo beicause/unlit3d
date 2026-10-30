@@ -17,6 +17,7 @@ cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
 cargo xtask check          # typos, tombi, clippy and the doc build, then `cargo fmt --check`
 cargo xtask test           # nextest over unit and integration tests, then the doctests
 cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
+cargo xtask miri           # run the ECS's tests under Miri, which is what checks its unsafe
 cargo xtask test-wasm      # run the GPU tests in a browser, through wasm and WebGL2
 cargo xtask run-wasm       # build the web examples and serve them for a browser
 cargo xtask build-android  # build the Android library and the APK around it
@@ -98,6 +99,22 @@ CI runs it once per test job, before the suite: a mismatch against a stored
 frame is usually one driver disagreeing with another, so the run that reports a
 score also records what it ran on. `cargo xtask test-wasm` prints the same
 record for the browser, which is a device no host process can describe.
+
+### `cargo xtask miri`
+
+Runs `unlit_ecs`'s tests under Miri, the interpreter that checks the aliasing
+the compiler cannot. The world keeps component values in `UnsafeCell`s and hands
+out plain references through a shared `&World`, so a mistake in the borrow
+ledger is undefined behaviour rather than a panic, and no ordinary test can see
+it — a release build reads the same bytes as a debug one. `cargo xtask test`
+therefore cannot stand in for this, and Miri is the gate for that code.
+
+It interprets every test, which is one to two orders of magnitude slower, so it
+names the one crate whose storage is `unsafe` rather than the workspace. The
+toolchain is nightly's, since Miri is not on stable and its sysroot is built
+against the nightly it ships with; `rustup component add miri --toolchain
+nightly` installs it. CI runs this as its own job, keyed on the nightly's commit
+hash so a toolchain bump rebuilds the sysroot instead of reusing a stale one.
 
 ### `cargo xtask test-wasm`
 
@@ -245,6 +262,7 @@ src/main.rs           argument parsing (argh) and task dispatch
 src/check.rs          `cargo xtask check`
 src/test.rs           `cargo xtask test`
 src/print_gpu.rs      `cargo xtask print-gpu`: the device, read by `gpu-info`
+src/miri.rs           `cargo xtask miri`: the ECS's tests under Miri
 src/test_wasm.rs      `cargo xtask test-wasm`: the browser pass and its runner
 src/run_wasm.rs       `cargo xtask run-wasm`: the wasm build, bindgen and page
 src/build_android.rs  `cargo xtask build-android`: the cross-build and the APK

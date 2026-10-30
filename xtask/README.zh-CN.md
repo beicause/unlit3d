@@ -15,6 +15,7 @@
 cargo xtask check          # typos、tombi、clippy 与文档构建，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
 cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备（两个档位各一份）
+cargo xtask miri           # 在 Miri 下跑 ECS 的测试，那是校验其 unsafe 的门禁
 cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
 cargo xtask build-android  # 构建 Android 动态库及其 APK
@@ -83,6 +84,18 @@ CI 在每个测试 job 里、跑测试套件之前执行一次：与存档帧不
 另一个驱动不一致，因此报告分数的这一趟同时也记录它跑在什么设备上。
 `cargo xtask test-wasm` 会为浏览器打印同一份记录——那是任何宿主进程都描述不了的
 设备。
+
+### `cargo xtask miri`
+
+在 Miri 下跑 `unlit_ecs` 的测试——Miri 会检查编译器检查不了的别名关系。world 把组件值
+放在 `UnsafeCell` 里，并经共享的 `&World` 交出裸引用，所以借用账本出错时是未定义行为而不是
+panic，普通测试看不见它：release 构建读的字节和 debug 的一模一样。因此 `cargo xtask test`
+替代不了这一步，Miri 才是那段代码的门禁。
+
+它把每个测试都解释执行，慢一到两个数量级，所以只点名存储含 `unsafe` 的那一个 crate，而不跑
+整个工作区。工具链用的是 nightly：Miri 不在 stable 上，它的 sysroot 也要对着它自带的 nightly
+构建，装法是 `rustup component add miri --toolchain nightly`。CI 把它作为独立 job 跑，缓存键
+带上 nightly 的 commit hash，这样工具链一升级就重建 sysroot，而不是复用旧的。
 
 ### `cargo xtask test-wasm`
 
@@ -202,6 +215,7 @@ src/main.rs          参数解析（argh）与任务分发
 src/check.rs         cargo xtask check
 src/test.rs          cargo xtask test
 src/print_gpu.rs      cargo xtask print-gpu：由 gpu-info 读出的设备
+src/miri.rs           cargo xtask miri：在 Miri 下跑 ECS 的测试
 src/test_wasm.rs      cargo xtask test-wasm：浏览器那一趟及其 runner
 src/run_wasm.rs      cargo xtask run-wasm：wasm 构建、bindgen 与页面
 src/build_android.rs cargo xtask build-android：交叉构建与 APK

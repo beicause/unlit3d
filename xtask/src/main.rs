@@ -11,6 +11,7 @@
 mod build_android;
 mod check;
 mod http;
+mod miri;
 mod print_gpu;
 mod publish;
 mod run_wasm;
@@ -33,6 +34,7 @@ fn run() -> Result<(), String> {
         Task::Check(task) => check::run(task.release),
         Task::Test(task) => test::run(task.release),
         Task::TestWasm(task) => test_wasm::run(&task),
+        Task::Miri(task) => miri::run(&task),
         Task::RunWasm(task) => run_wasm::run(&task),
         Task::BuildAndroid(task) => build_android::run(&task),
         Task::Publish(task) => publish::run(&task),
@@ -62,6 +64,8 @@ enum Task {
     Test(TestArgs),
     /// Run the GPU tests in a real browser, through wasm and WebGL2.
     TestWasm(TestWasmArgs),
+    /// Run the ECS's tests under Miri, which is what checks its `unsafe`.
+    Miri(MiriArgs),
     /// Build and serve the web examples.
     RunWasm(RunWasmArgs),
     /// Build the Android example's shared library and the APK around it.
@@ -110,6 +114,15 @@ struct TestWasmArgs {
     #[argh(switch)]
     show: bool,
 }
+
+/// Arguments of `cargo xtask miri`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "miri",
+    description = "run the ECS's tests under Miri, which is what checks its unsafe"
+)]
+struct MiriArgs {}
 
 /// Arguments of `cargo xtask run-wasm`.
 #[derive(FromArgs)]
