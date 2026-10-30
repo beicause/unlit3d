@@ -543,7 +543,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 mount_controls(world);
                 world.root_scope_mut().spawn(bundle![OnFrame::with_order(
                     PUBLISH_ORDER,
-                    |world, _entity, _frame| publish_panels(world)
+                    |world, _entity, frame| publish_panels(world, frame)
                 ),]);
             }
         },
@@ -597,13 +597,13 @@ pub fn spawn_scene<R: WorldRunner>(
 ///
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
-fn publish_panels(world: &World) {
+fn publish_panels(world: &World, frame: &Frame) {
     if let Some((_, mut host)) = world
         .root_scope()
         .query::<(Entity, &mut UiPanelHost)>()
         .next()
     {
-        host.publish(world);
+        host.publish(world, frame);
     }
 }
 

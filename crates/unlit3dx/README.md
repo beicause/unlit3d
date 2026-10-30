@@ -323,7 +323,11 @@ The bridges:
   target, no repaint due — sends nothing, so a still UI costs nothing, and the
   frame already there is drawn until a newer one replaces it. A frame the
   drawing world's queue refused is sent again rather than counted as
-  delivered, so a full queue delays the picture instead of losing it. They
+  delivered, so a full queue delays the picture instead of losing it. The
+  clock egui animates against is the frames' own time, summed from each
+  frame's duration rather than read off the wall clock: an animation is at the
+  same point at the same frame however long the run took, so a frame captured
+  for comparison does not depend on how busy the machine was. They
   keep separate contexts: sharing
   one would have both worlds writing the same memory and font atlas, and egui
   treats one `run_ui` call as one whole frame. Their texture ids both start

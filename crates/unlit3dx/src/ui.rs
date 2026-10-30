@@ -28,14 +28,13 @@
 
 use core::time::Duration;
 
+use crate::job::{Job, JobSender, SendError};
 use unlit_ecs::World;
+use unlit3d::frame::Frame;
 use unlit3d::input::{InputEvent, InputEvents};
 use unlit3d::relay::SnapshotReader;
 use unlit3d::source::Source;
 use unlit3d::ui::{ExternalFrame, UiSource, UiTarget, egui, lay_out, raw_input};
-use web_time::Instant;
-
-use crate::job::{Job, JobSender, SendError};
 
 /// A world's panel publishing: the context its panels are built in, where its
 /// frames are sent and the target it lays out against.
@@ -52,8 +51,13 @@ use crate::job::{Job, JobSender, SendError};
 pub struct UiPanelHost {
     /// The context the panels in this world are built in.
     ctx: egui::Context,
-    /// When the host was created, the origin of egui's frame clock.
-    start: Instant,
+    /// The frame time this host has been driven through, in seconds.
+    ///
+    /// egui's animations are paced by it, so a run that steps the same deltas
+    /// draws the same picture however long those steps took: an animation is
+    /// over after a number of frames rather than after an amount of wall
+    /// clock, which is what lets a snapshot of a panel be compared.
+    time: f64,
     /// The queue of the world that draws the frames.
     render: JobSender,
     /// The target the drawing side last drew at.
@@ -75,9 +79,10 @@ pub struct UiPanelHost {
     /// it. A frame the drawing world's queue refused leaves this behind, so
     /// the next tick sends it again.
     laid_out_at: Option<UiTarget>,
-    /// When the last frame laid out asked to be laid out again, for a frame
-    /// that named a moment rather than asking for the next possible pass.
-    repaint_at: Option<Instant>,
+    /// The moment, in this host's own [time](Self::time), at which the last
+    /// frame laid out asked to be laid out again: a frame that named a moment
+    /// rather than asking for the next possible pass.
+    repaint_at: Option<f64>,
 }
 
 impl UiPanelHost {
@@ -87,7 +92,7 @@ impl UiPanelHost {
     pub fn new(render: JobSender, screen: SnapshotReader<UiTarget>, slot: usize) -> Self {
         Self {
             ctx: egui::Context::default(),
-            start: Instant::now(),
+            time: 0.0,
             render,
             screen,
             slot,
@@ -115,7 +120,18 @@ impl UiPanelHost {
     ///
     /// The events are this world's own, read from its [`InputEvents`]: a panel
     /// sees exactly what the rest of the world sees on the same tick.
-    pub fn publish(&mut self, world: &World) {
+    ///
+    /// `frame` is the frame being stepped, and its duration is what moves this
+    /// host's own clock on. egui paces its animations by that clock, so a panel
+    /// animated across a run of frames looks the same at the same frame however
+    /// long the run took: a capture compared against a stored picture does not
+    /// depend on how busy the machine was. A frame that named a moment to be
+    /// laid out again is due once the clock has reached it.
+    pub fn publish(&mut self, world: &World, frame: &Frame) {
+        // The host's clock is the world's, so it moves on whether or not there
+        // is a target to lay out against: a frame stepped before the drawing
+        // side first drew is time the panel has still lived through.
+        self.time += f64::from(frame.delta_time.max(0.0));
         // The drawing side is the only party that knows the frame's target, so
         // there is nothing to lay out against until it has drawn once.
         let Some(target) = self.screen.latest().map(|target| *target) else {
@@ -131,7 +147,7 @@ impl UiPanelHost {
         }
         let due = self
             .repaint_at
-            .is_some_and(|deadline| Instant::now() >= deadline);
+            .is_some_and(|deadline| self.time >= deadline);
         if self.laid_out_at == Some(target) && !due && events.is_empty() {
             self.input_scratch = events;
             return;
@@ -147,15 +163,12 @@ impl UiPanelHost {
             &mut scratch,
         );
         self.input_scratch = events;
-        // egui's clock is this host's own, so a panel's animations run on the
-        // world that builds it, however fast that world ticks.
-        let input = raw_input(
-            target,
-            Some(self.start.elapsed().as_secs_f64()),
-            true,
-            scratch,
-        );
-        let frame = lay_out(world, &self.ctx, input, target.screen);
+        // The clock this host has been driven through, which is the one egui
+        // animates against. It is the frames' own time rather than the wall
+        // clock: a panel stepped at a rate of its own animates at that rate,
+        // and two runs of the same frames draw the same picture.
+        let input = raw_input(target, Some(self.time), true, scratch);
+        let laid_out = lay_out(world, &self.ctx, input, target.screen);
         // The pass is over, so egui no longer needs the list it was handed:
         // taking it back is what turns the next frame's fill into a reuse.
         self.event_scratch = self
@@ -164,15 +177,19 @@ impl UiPanelHost {
         // A frame that asked for nothing named no moment, and the picture is
         // settled. One that asked for the next possible pass is answered on
         // the next tick, whenever that is; one that named a delay is answered
-        // once it is over. Either way the request lives only in the pass that
-        // made it, so keeping the moment is this side's job.
-        self.repaint_at = match frame.repaint_delay {
+        // once this host's clock has reached it. Either way the request lives
+        // only in the pass that made it, so keeping the moment is this side's
+        // job.
+        self.repaint_at = match laid_out.repaint_delay {
             delay if delay == Duration::MAX => None,
-            Duration::ZERO => Some(Instant::now()),
+            Duration::ZERO => Some(self.time),
             // A delay the clock cannot place is one that never comes.
-            delay => Instant::now().checked_add(delay),
+            delay => {
+                let deadline = self.time + delay.as_secs_f64();
+                deadline.is_finite().then_some(deadline)
+            }
         };
-        match self.render.send(panel_frame_job(self.slot, frame)) {
+        match self.render.send(panel_frame_job(self.slot, laid_out)) {
             Ok(()) => self.laid_out_at = Some(target),
             // The queue is full: nobody took the frame, and it was dropped
             // with its texture deltas. Leaving the target unset sends it
@@ -258,7 +275,7 @@ mod tests {
         /// Lay out and send a frame, then run what was sent in the drawing
         /// world, the way a tick there would.
         fn publish(&mut self, world: &World) {
-            self.host.publish(world);
+            self.host.publish(world, &frame(1.0 / 60.0));
             self.drain();
         }
 
@@ -279,6 +296,15 @@ mod tests {
                 }
             }
             panic!("the drawing world holds a UI source");
+        }
+    }
+
+    /// A frame of the duration these tests step at.
+    fn frame(delta_time: f32) -> Frame {
+        Frame {
+            delta_time,
+            index: 0,
+            size: (128, 96),
         }
     }
 
@@ -421,7 +447,7 @@ mod tests {
         // egui answers a request for the next possible pass with a second
         // one, so the first passes are immediate; the delay is what the
         // passes after those report.
-        let before = Instant::now();
+        let before = test.host.time;
         (0..8)
             .find_map(|_| {
                 test.publish(&world);
@@ -433,14 +459,14 @@ mod tests {
         // rather than dropped by the tick that skipped. The deadline is put
         // out of reach first, so the check does not depend on how long a
         // pass takes.
-        test.host.repaint_at = Some(Instant::now() + Duration::from_secs(60));
+        test.host.repaint_at = Some(test.host.time + Duration::from_secs(60).as_secs_f64());
         let laid_out = runs.get();
         test.publish(&world);
         assert_eq!(runs.get(), laid_out, "the deadline has not come due");
         assert!(test.host.repaint_at.is_some(), "the moment is still kept");
 
         // Stand in for the ticks until the deadline elapses.
-        test.host.repaint_at = Some(Instant::now());
+        test.host.repaint_at = Some(test.host.time);
         test.publish(&world);
         assert!(runs.get() > laid_out, "the deadline brought a frame");
     }
@@ -485,7 +511,7 @@ mod tests {
 
         // The send, without the drain: the queue is still full when it is
         // made, so the frame is refused rather than delivered.
-        test.host.publish(&world);
+        test.host.publish(&world, &frame(1.0 / 60.0));
         assert_eq!(test.jobs.len(), 1, "the placeholder is still queued");
         assert_eq!(test.published_slots(), 0, "no frame reached the source");
 
