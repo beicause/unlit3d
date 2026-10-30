@@ -43,7 +43,7 @@
 //!     Presses(0),
 //!     OnKey::new(|world, entity, key| {
 //!         if key.pressed {
-//!             let _ = world.root_scope().query_one::<&mut Presses>(entity).map(|mut presses| presses.0 += 1);
+//!             let _ = world.root_scope().query_one::<&mut Presses>(entity).map(|mut presses| presses.get().0 += 1);
 //!         }
 //!     }),
 //! ]);
@@ -736,7 +736,7 @@ pub enum InputEvent {
 ///                     .with_state(|state| state.modifiers.ctrl)
 ///             });
 ///         if ctrl {
-///             let _ = world.root_scope().query_one::<&mut CtrlPresses>(entity).map(|mut presses| presses.0 += 1);
+///             let _ = world.root_scope().query_one::<&mut CtrlPresses>(entity).map(|mut presses| presses.get().0 += 1);
 ///         }
 ///     }),
 /// ]);
@@ -744,7 +744,7 @@ pub enum InputEvent {
 /// input.push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
 /// dispatch_input(&world);
 ///
-/// assert_eq!(world.root_scope().query_one::<&CtrlPresses>(observer).unwrap().0, 1);
+/// assert_eq!(world.root_scope().query_one::<&CtrlPresses>(observer).unwrap().get().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputState {
@@ -1093,8 +1093,8 @@ pub fn refresh_input(world: &World) -> bool {
         .collect();
     let present = !entities.is_empty();
     for entity in entities {
-        if let Ok(buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
-            buffer.refresh();
+        if let Ok(mut buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
+            buffer.get().refresh();
         }
     }
     present

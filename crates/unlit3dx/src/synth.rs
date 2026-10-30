@@ -565,7 +565,7 @@ pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job {
         let Ok(mut guard) = world.root_scope().query_one::<&mut SynthVoice>(voice) else {
             return;
         };
-        let voice = &mut *guard;
+        let voice = &mut *guard.get();
         // A queue a voice that gave up can never drain only grows.
         if voice.gave_up {
             return;
@@ -582,7 +582,7 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
     };
     // Borrowed through the guard the fields are not disjoint; reborrowed as a
     // reference they are, so the render can fill the voice's own block.
-    let voice = &mut *guard;
+    let voice = &mut *guard.get();
     let Ok(rate) = i32::try_from(chunk.sample_rate) else {
         voice.give_up(format!("the stream's {} Hz", chunk.sample_rate));
         return;

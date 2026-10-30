@@ -702,23 +702,28 @@ impl InstanceData for ParticleInstances {
     }
 
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
-        let particle = context
+        let mut particle = context
             .world
             .query_one::<&Particle>(context.entity)
             .expect("every visible particle carries a Particle component");
         let record = ParticleRecord {
             origin: [
-                particle.origin.x,
-                particle.origin.y,
-                particle.origin.z,
-                particle.phase,
+                particle.get().origin.x,
+                particle.get().origin.y,
+                particle.get().origin.z,
+                particle.get().phase,
             ],
-            motion: [particle.radius, particle.speed, particle.size, particle.bob],
+            motion: [
+                particle.get().radius,
+                particle.get().speed,
+                particle.get().size,
+                particle.get().bob,
+            ],
             tint: [
-                particle.tint.x,
-                particle.tint.y,
-                particle.tint.z,
-                particle.shape,
+                particle.get().tint.x,
+                particle.get().tint.y,
+                particle.get().tint.z,
+                particle.get().shape,
             ],
         };
         out.copy_from_slice(record.as_bytes());
@@ -1087,12 +1092,12 @@ fn build(
     let (sky_view, sky_uniforms) = {
         let root = world.root_scope();
         let mut graph = context.graph(&root);
-        let sky_texture = graph.insert(sky_texture, None);
-        let sky_view = graph.insert(sky_view, None);
+        let sky_texture = graph.get().insert(sky_texture, None);
+        let sky_view = graph.get().insert(sky_view, None);
         // The view keeps the texture alive, so the graph needs no other handle
         // on it.
-        graph.add_dependency(&sky_view, &sky_texture);
-        let sky_uniforms = graph.insert(sky_uniforms_buffer.clone(), None);
+        graph.get().add_dependency(&sky_view, &sky_texture);
+        let sky_uniforms = graph.get().insert(sky_uniforms_buffer.clone(), None);
         (sky_view, sky_uniforms)
     };
     let sky_sampler = source.register_sampler(
@@ -1147,6 +1152,7 @@ fn build(
     });
     let particle_uniforms = context
         .graph(&world.root_scope())
+        .get()
         .insert(particle_uniforms_buffer.clone(), None);
     source.register_family::<ParticleKey, _, _>(
         &world.root_scope(),
@@ -1268,7 +1274,7 @@ fn build(
                 frame_size,
             );
 
-            let camera = world
+            let mut camera = world
                 .scope(source_entity)
                 .expect("the source is alive")
                 .query_one::<&Camera>(camera_entity)
@@ -1287,11 +1293,11 @@ fn build(
                 // The ray is built in view space and rotated here, so the sky
                 // follows whatever camera the frame chose.
                 view_rotation: glam::Mat4::from_mat3(
-                    glam::Mat3::from_mat4(camera.view_from_world).transpose(),
+                    glam::Mat3::from_mat4(camera.get().view_from_world).transpose(),
                 ),
                 projection: glam::Vec4::new(
-                    1.0 / camera.clip_from_view.x_axis.x,
-                    1.0 / camera.clip_from_view.y_axis.y,
+                    1.0 / camera.get().clip_from_view.x_axis.x,
+                    1.0 / camera.get().clip_from_view.y_axis.y,
                     0.0,
                     0.0,
                 ),

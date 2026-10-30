@@ -75,8 +75,9 @@ impl Interactive {
                 .root_scope()
                 .query_one::<&mut World>(self.render)
                 .expect("the render sub-world exists");
-            drain_sub_world(&mut nested);
-            dispatch_frame(&mut nested, &mut self.frame);
+            let world = nested.get();
+            drain_sub_world(world);
+            dispatch_frame(world, &mut self.frame);
             self.frame.index = self.frame.index.wrapping_add(1);
         }
     }
@@ -136,11 +137,12 @@ impl Interactive {
             .root_scope()
             .query_one::<&mut World>(self.render)
             .expect("the render sub-world exists");
-        drain_sub_world(&mut nested);
-        let _ = nested
+        let world = nested.get();
+        drain_sub_world(world);
+        let _ = world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| renderer.render(&nested));
+            .map(|mut renderer| renderer.get().render(&*world));
     }
 
     /// The samples the last step pulled from the audio world.
@@ -239,7 +241,10 @@ pub fn scene_status(host: &World, worlds: &SceneHandles) -> SceneStatus {
                 scope
                     .query_one::<&Track>(tracks.sequence)
                     .ok()
-                    .map(|track| (track.midi.paused, track.midi.time, track.midi.finished))
+                    .map(|mut track| {
+                        let track = track.get();
+                        (track.midi.paused, track.midi.time, track.midi.finished)
+                    })
             });
         SceneStatus { balls, sequence }
     })
@@ -296,16 +301,18 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
     );
     mount_scene_content(&render, pass, Some(panels));
     let target = {
-        let nested = host
+        let mut nested = host
             .root_scope()
             .query_one::<&mut World>(render.entity)
             .expect("the render sub-world exists");
-        let context = nested
+        let world = nested.get();
+        let context = world
             .root_scope()
             .query_one::<&Renderer>(renderer.0)
             .expect("the renderer is a resource entity")
+            .get()
             .context();
-        bind_offscreen(&nested, context, pass.0, &config.device, WINDOW_SIZE)
+        bind_offscreen(world, context, pass.0, &config.device, WINDOW_SIZE)
             .expect("the offscreen target binds")
     };
     let interactive = Interactive {

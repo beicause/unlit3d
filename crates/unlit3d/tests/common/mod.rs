@@ -5,9 +5,8 @@
 
 pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_off_background};
 
-use core::ops::DerefMut;
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, Scope, World};
+use unlit_ecs::{Entity, QueryOne, Scope, World};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
@@ -179,7 +178,7 @@ impl TestGpu {
     }
 
     /// The frame's resource graph.
-    pub fn graph<'w>(&self, world: &'w World) -> impl DerefMut<Target = ResourceGraph> + 'w {
+    pub fn graph<'w>(&self, world: &'w World) -> QueryOne<'w, &'w mut ResourceGraph> {
         world
             .root_scope()
             .query_one::<&mut ResourceGraph>(self.context.graph)
@@ -197,6 +196,7 @@ impl TestGpu {
         texture: wgpu::Texture,
     ) -> (ResHandle<wgpu::Texture>, ResHandle<TextureView>) {
         let mut graph = self.graph(world);
+        let graph = graph.get();
         let texture_id = graph.insert(texture, None);
         let view = TextureExt::create_view(
             graph

@@ -141,14 +141,14 @@ fn build(
             for &entity in &node.entities {
                 let _ = scope
                     .query_one::<&mut Transform>(entity)
-                    .map(|mut current| *current = FOX_PLACEMENT);
+                    .map(|mut current| *current.get() = FOX_PLACEMENT);
             }
         }
         for node in &morph_nodes {
             for &entity in &node.entities {
                 let _ = scope
                     .query_one::<&mut Transform>(entity)
-                    .map(|mut current| *current = MORPH_PLACEMENT);
+                    .map(|mut current| *current.get() = MORPH_PLACEMENT);
             }
         }
     }

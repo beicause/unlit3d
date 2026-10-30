@@ -107,8 +107,9 @@ impl<'w> Scope<'w> {
     /// A lookup that finds nothing says why: the entity is not alive, out of
     /// this scope's reach, or its row does not satisfy the query. The last one
     /// covers two cases a caller answers the same way, so it is one error: the
-    /// archetype does not match `Q`, or the row is in the shared subtree, which
-    /// a non-root scope reads through [`Scope::query`] but not handle by handle.
+    /// archetype does not match `Q`, or the row sits outside what this scope
+    /// reaches. A shared row is reachable from every scope, the same by handle
+    /// as it is through [`Scope::query`].
     ///
     /// A lookup by handle does not filter the scaffolding: the root and the
     /// shared scope answer like any other entity, which is what lets the

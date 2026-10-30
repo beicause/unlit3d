@@ -80,7 +80,7 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
         let is_mesh_source = world
             .root_scope()
             .query_one::<&Source>(entity)
-            .is_ok_and(|source| source.as_ref::<MeshSource>().is_some());
+            .is_ok_and(|mut source| source.get().as_ref::<MeshSource>().is_some());
         return is_mesh_source
             .then_some(entity)
             .ok_or_else(|| format!("entity {entity:?} carries no mesh source"));
@@ -113,6 +113,7 @@ fn with_mesh_source<R>(
         .query_one::<&mut Source>(entity)
         .map_err(|_| "the mesh source entity is gone".to_string())?;
     let mesh_source = source
+        .get()
         .as_mut::<MeshSource>()
         .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
     Ok(f(mesh_source, &scope))
@@ -194,7 +195,8 @@ struct BufferRead {
 
 pub fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, String> {
     let context = render_context(world, context)?;
-    let graph = graph_of(world, context)?;
+    let mut graph_row = graph_of(world, context)?;
+    let graph = graph_row.get();
     let info: ResourceGraphInfo = graph.info();
     to_value(&info)
 }
@@ -202,7 +204,8 @@ pub fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, St
 /// Every resource slot in the graph.
 pub fn list_resources(world: &World, context: Option<Entity>) -> Result<Value, String> {
     let context = render_context(world, context)?;
-    let graph = graph_of(world, context)?;
+    let mut graph_row = graph_of(world, context)?;
+    let graph = graph_row.get();
     to_value(&graph.resource_infos())
 }
 
@@ -213,7 +216,8 @@ pub fn resource_dependencies(
     id: ResId,
 ) -> Result<Value, String> {
     let context = render_context(world, context)?;
-    let graph = graph_of(world, context)?;
+    let mut graph_row = graph_of(world, context)?;
+    let graph = graph_row.get();
     let handle = graph
         .resolve(id)
         .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
@@ -227,11 +231,12 @@ pub fn resource_dependencies(
 /// Drop unreferenced resources and rebuild dirty ones.
 pub fn graph_maintain(world: &World, context: Option<Entity>) -> Result<Value, String> {
     let context = render_context(world, context)?;
-    let mut graph = graph_of_mut(world, context)?;
+    let mut graph_row = graph_of_mut(world, context)?;
+    let graph = graph_row.get();
     let before = graph.len();
     graph.maintain();
     let after = graph.len();
-    drop(graph);
+    drop(graph_row);
     to_value(&ResourceGraphMaintain { before, after })
 }
 
@@ -245,11 +250,12 @@ fn read_buffer_bytes(
 ) -> Result<(u64, Vec<u8>), String> {
     let context = render_context(world, context)?;
     let buffer = {
-        let graph = graph_of(world, context)?;
+        let mut graph_row = graph_of(world, context)?;
+        let graph = graph_row.get();
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        match (*graph).get::<Resource>(&handle) {
+        match graph.get::<Resource>(&handle) {
             Some(Resource::Buffer(buffer)) => buffer.clone(),
             _ => return Err(format!("resource id {} is not a buffer", id.to_bits())),
         }
@@ -423,11 +429,12 @@ fn save_image(directory: &str, file_name: &str, frame: &Frame) -> Result<SavedFi
 fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Result<Frame, String> {
     let context = render_context(world, context)?;
     let texture = {
-        let graph = graph_of(world, context)?;
+        let mut graph_row = graph_of(world, context)?;
+        let graph = graph_row.get();
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        match (*graph).get::<Resource>(&handle) {
+        match graph.get::<Resource>(&handle) {
             Some(Resource::Texture(texture)) => texture.clone(),
             Some(Resource::TextureView(view)) => view.texture().clone(),
             _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
@@ -670,12 +677,13 @@ fn screenshot_target(
     context: RenderContext,
     id: Option<ResId>,
 ) -> Result<wgpu::Texture, String> {
-    let graph = graph_of(world, context)?;
+    let mut graph_row = graph_of(world, context)?;
+    let graph = graph_row.get();
     if let Some(id) = id {
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        return match (*graph).get::<Resource>(&handle) {
+        return match graph.get::<Resource>(&handle) {
             Some(Resource::Texture(texture)) => Ok(texture.clone()),
             _ => Err(format!("resource id {} is not a texture", id.to_bits())),
         };

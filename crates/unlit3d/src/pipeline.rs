@@ -464,7 +464,7 @@ impl<'a> InstanceContext<'a> {
     /// If the entity names no pose entity, if that entity carries no
     /// [`SkinPose`], or if the pose is empty.
     pub fn pack_joints(&mut self) -> u32 {
-        let binding = self
+        let mut binding_row = self
             .world
             .query_one::<&SkinBinding>(self.entity)
             .unwrap_or_else(|_| {
@@ -473,7 +473,8 @@ impl<'a> InstanceContext<'a> {
                  its `SkinPose`"
                 )
             });
-        let pose = self
+        let binding = binding_row.get();
+        let mut pose_row = self
             .world
             .query_one::<&SkinPose>(binding.pose)
             .unwrap_or_else(|_| {
@@ -482,6 +483,7 @@ impl<'a> InstanceContext<'a> {
                     binding.pose,
                 )
             });
+        let pose = pose_row.get();
         assert!(
             !pose.matrices.is_empty(),
             "a skinned mesh's pose needs at least one joint matrix"
@@ -504,7 +506,7 @@ impl<'a> InstanceContext<'a> {
     /// If the entity names no weights entity, if that entity carries no
     /// [`MorphWeights`], or if the weight count does not match `targets`.
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32 {
-        let binding = self
+        let mut binding_row = self
             .world
             .query_one::<&MorphBinding>(self.entity)
             .unwrap_or_else(|_| {
@@ -513,7 +515,8 @@ impl<'a> InstanceContext<'a> {
                  that holds its `MorphWeights`"
                 )
             });
-        let weights = self
+        let binding = binding_row.get();
+        let mut weights_row = self
             .world
             .query_one::<&MorphWeights>(binding.weights)
             .unwrap_or_else(|_| {
@@ -522,6 +525,7 @@ impl<'a> InstanceContext<'a> {
                     binding.weights,
                 )
             });
+        let weights = weights_row.get();
         assert_eq!(
             weights.weights.len() as u32,
             targets,

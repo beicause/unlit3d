@@ -384,8 +384,9 @@ impl FrameSource for UiSource {
         // so its layout is built against the same target this one draws at.
         self.screen.publish(target_screen);
 
-        let mut graph = ctx.graph(scope);
-        let index = self.target_index(&device, &mut graph, target.surface);
+        let mut graph_holder = ctx.graph(scope);
+        let graph = graph_holder.get();
+        let index = self.target_index(&device, graph, target.surface);
 
         // The events reached egui's own types while the world's `InputEvents`
         // were read, and they stay in the world afterwards: the UI reads them,
@@ -480,7 +481,7 @@ impl FrameSource for UiSource {
                 });
             }
             gpu.integration
-                .update_with(&mut graph, &queue, encoder, &mut sources, screen);
+                .update_with(graph, &queue, encoder, &mut sources, screen);
             // The deltas were applied and cleared; a frame's geometry stayed
             // where it was, so the slot still holds what it will draw again.
         });
@@ -499,11 +500,12 @@ impl FrameSource for UiSource {
         // integration just uploaded marked their readers dirty, and the scene
         // assembled below reads the rebuilt groups. The graph borrow is given
         // up first, because the scope takes it again to run the pass.
-        drop(graph);
+        drop(graph_holder);
         drop(maintain);
-        let graph = ctx.graph(scope);
+        let mut graph_holder = ctx.graph(scope);
+        let graph = graph_holder.get();
 
-        let mut ui_scene = gpu.integration.scene(&graph);
+        let mut ui_scene = gpu.integration.scene(graph);
         scene.draws.append(&mut ui_scene.draws);
     }
 

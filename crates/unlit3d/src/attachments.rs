@@ -21,9 +21,7 @@
 //! exactly. `with_depth` decides whether one is allocated at all, and
 //! [`FrameAttachments::depth_view`] reports it.
 
-use core::ops::DerefMut;
-
-use unlit_ecs::World;
+use unlit_ecs::{QueryOne, World};
 use unlit_wgpu::render_attachments::{create_depth_target, create_msaa_target};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 
@@ -48,10 +46,7 @@ fn context_device(world: &World, ctx: RenderContext) -> wgpu::Device {
 /// # Panics
 ///
 /// If the context's graph resource is gone.
-fn context_graph<'w>(
-    world: &'w World,
-    ctx: RenderContext,
-) -> impl DerefMut<Target = ResourceGraph> + 'w {
+fn context_graph<'w>(world: &'w World, ctx: RenderContext) -> QueryOne<'w, &'w mut ResourceGraph> {
     world
         .root_scope()
         .query_one::<&mut ResourceGraph>(ctx.graph)
@@ -99,7 +94,8 @@ impl FrameAttachments {
         with_depth: bool,
     ) -> Self {
         let device = context_device(world, ctx);
-        let mut graph = context_graph(world, ctx);
+        let mut graph_holder = context_graph(world, ctx);
+        let graph = graph_holder.get();
         let depth_view = with_depth.then(|| {
             let texture = create_depth_target(&device, size.0, size.1, sample_count);
             graph.insert(
@@ -136,7 +132,8 @@ impl FrameAttachments {
         }
         self.size = size;
         let device = context_device(world, self.ctx);
-        let mut graph = context_graph(world, self.ctx);
+        let mut graph_holder = context_graph(world, self.ctx);
+        let graph = graph_holder.get();
         if let Some(id) = self.depth_view.as_ref() {
             let texture = create_depth_target(&device, size.0, size.1, self.sample_count);
             graph

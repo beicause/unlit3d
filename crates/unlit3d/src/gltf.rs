@@ -506,14 +506,16 @@ impl LitGltf {
         let sampler = source.register_sampler(world, Some(descriptor));
         let view = {
             let texture = {
-                let graph = source.context().graph(world);
+                let mut graph_row = source.context().graph(world);
+                let graph = graph_row.get();
                 graph
                     .get(&image.texture)
                     .expect("the image's texture is in the graph")
                     .clone()
             };
             let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-            let mut graph = source.context().graph(world);
+            let mut graph_row = source.context().graph(world);
+            let graph = graph_row.get();
             let view = graph.insert(view, None);
             graph.add_dependency(&view, &image.texture);
             view

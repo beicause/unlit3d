@@ -136,11 +136,11 @@ async fn removing_a_mesh_leaves_no_resource_behind() {
     // A first mesh warms up any lazily created global state, so the second
     // mesh's resources are the only difference measured below.
     let baseline_mesh = gpu.allocate_cube_mesh(&world);
-    let baseline = gpu.graph(&world).len();
+    let baseline = gpu.graph(&world).get().len();
 
     let mesh = gpu.allocate_cube_mesh(&world);
     assert!(
-        gpu.graph(&world).len() > baseline,
+        gpu.graph(&world).get().len() > baseline,
         "allocating a mesh should add resources"
     );
 
@@ -150,13 +150,14 @@ async fn removing_a_mesh_leaves_no_resource_behind() {
     gpu.maintain(&world);
 
     assert_eq!(
-        gpu.graph(&world).len(),
+        gpu.graph(&world).get().len(),
         baseline,
         "remove_mesh should free the mesh's buffers and bind group"
     );
     // The warmed-up mesh and the source's own resources are untouched.
     assert!(
         gpu.graph(&world)
+            .get()
             .get(&baseline_mesh.parts.vertex_buffers[0].1)
             .is_some()
     );

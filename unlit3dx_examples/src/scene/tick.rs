@@ -55,6 +55,6 @@ fn advance<T: 'static>(
         let _ = world
             .root_scope()
             .query_one::<&mut T>(entity)
-            .map(|mut component| tick(&mut component, world, frame));
+            .map(|mut component| tick(component.get(), world, frame));
     })
 }

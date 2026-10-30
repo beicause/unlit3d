@@ -114,18 +114,19 @@ impl Presenter {
     /// the pass that draws into the surface takes the frame's view just
     /// before the renderer walks the passes in order.
     fn present(&mut self, host: &World) {
-        let Ok(nested) = host.root_scope().query_one::<&World>(self.render) else {
+        let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
             return;
         };
         let presenting = self.presenting();
-        let _ = nested
+        let world = nested.get();
+        let _ = world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
             .map(|mut renderer| {
-                let Some(swap_frame) = self.surface.acquire(&nested, &mut renderer) else {
+                let Some(swap_frame) = self.surface.acquire(world, &mut *renderer.get()) else {
                     return;
                 };
-                let _ = nested
+                let _ = world
                     .root_scope()
                     .query_one::<&mut FramePass>(presenting)
                     .map(|mut pass| {
@@ -137,10 +138,10 @@ impl Presenter {
                             );
                         }
                     });
-                renderer.render(&nested);
-                let mut queue_row = nested
+                renderer.get().render(world);
+                let mut queue_row = world
                     .root_scope()
-                    .query_one::<&wgpu::Queue>(renderer.context().queue)
+                    .query_one::<&wgpu::Queue>(renderer.get().context().queue)
                     .expect("the render world carries its queue resource");
 
                 let queue = queue_row.get();
@@ -157,16 +158,17 @@ impl Presenter {
     /// input, which makes the source rebuild its bind group on the next
     /// frame.
     fn resize(&mut self, host: &World, size: (u32, u32)) {
-        let Ok(nested) = host.root_scope().query_one::<&World>(self.render) else {
+        let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
             return;
         };
-        let Some(size) = nested
+        let world = nested.get();
+        let Some(size) = world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
             .map(|mut renderer| {
                 let renderer = renderer.get();
                 {
-                    self.surface.resize(&nested, &mut *renderer, size.0, size.1);
+                    self.surface.resize(world, &mut *renderer, size.0, size.1);
                     self.surface.size()
                 }
             })
@@ -175,11 +177,11 @@ impl Presenter {
         else {
             return;
         };
-        self.attachments.resize(&nested, size);
+        self.attachments.resize(world, size);
         let Some(blit) = self.blit.as_ref() else {
             return;
         };
-        let Ok(context) = nested
+        let Ok(context) = world
             .root_scope()
             .query_one::<&Renderer>(self.renderer)
             .map(|mut renderer| {
@@ -189,12 +191,11 @@ impl Presenter {
         else {
             return;
         };
-        let Ok(offscreen) =
-            bind_offscreen(&nested, context, self.scene_pass, &self.gpu.device, size)
+        let Ok(offscreen) = bind_offscreen(world, context, self.scene_pass, &self.gpu.device, size)
         else {
             return;
         };
-        let _ = nested
+        let _ = world
             .root_scope()
             .query_one::<&mut Source>(blit.source)
             .map(|mut source| {
@@ -244,12 +245,12 @@ pub fn bind_offscreen(
         let mut graph = world
             .root_scope()
             .query_one::<&mut ResourceGraph>(context.graph)?;
-        let texture = graph.insert(color.clone(), None);
-        let view = graph.insert(
+        let texture = graph.get().insert(color.clone(), None);
+        let view = graph.get().insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             None,
         );
-        graph.add_dependency(&view, &texture);
+        graph.get().add_dependency(&view, &texture);
         view
     };
     let attachments =
@@ -351,25 +352,30 @@ pub fn setup_presenter(
             .query_one::<&mut World>(render)
             .map_err(|_| "the scene setup found no render world")?;
         let context = nested
+            .get()
             .root_scope()
             .query_one::<&Renderer>(renderer)
             .map_err(|_| "the scene setup found no renderer")
-            .map(|renderer| renderer.context())?;
+            .map(|mut renderer| renderer.get().context())?;
         // The offscreen path keeps the scene away from the swap chain: the
         // scene's pass draws into a target of its own, and a pass added
         // after it copies that target over the surface.
         if offscreen {
-            let target = bind_offscreen(&nested, context, scene_pass, &gpu.device, size)
+            let target = bind_offscreen(nested.get(), context, scene_pass, &gpu.device, size)
                 .map_err(|_| "failed to bind the offscreen target: the resource graph was gone")?;
-            let blit_pass = nested.root_scope_mut().spawn(Pass::new(BLIT_PASS_ORDER));
+            let blit_pass = nested
+                .get()
+                .root_scope_mut()
+                .spawn(Pass::new(BLIT_PASS_ORDER));
             let blit_source = nested
+                .get()
                 .scope_mut(blit_pass)
                 .expect("the blit pass is alive")
                 .spawn(bundle![Source::new(BlitSource::new(target.view))]);
             // The presenting pass takes each frame's swap chain image in
             // [`Presenter::present`], which is the only place that knows it.
             let (surface, attachments) =
-                open_surface(&nested, renderer, gpu, window, surface, 1, false)
+                open_surface(nested.get(), renderer, gpu, window, surface, 1, false)
                     .map_err(|_| "failed to open the window surface: the renderer was gone")?;
             (
                 Some(Blit {
@@ -380,9 +386,16 @@ pub fn setup_presenter(
                 attachments,
             )
         } else {
-            let (surface, attachments) =
-                open_surface(&nested, renderer, gpu, window, surface, FRAME_SAMPLES, true)
-                    .map_err(|_| "failed to open the window surface: the renderer was gone")?;
+            let (surface, attachments) = open_surface(
+                nested.get(),
+                renderer,
+                gpu,
+                window,
+                surface,
+                FRAME_SAMPLES,
+                true,
+            )
+            .map_err(|_| "failed to open the window surface: the renderer was gone")?;
             (None, surface, attachments)
         }
     };
@@ -477,11 +490,11 @@ pub fn draw_presented() -> OnFrame {
             let Ok(mut nested) = world.root_scope().query_one::<&mut World>(render) else {
                 return;
             };
-            drain_sub_world(&mut nested);
+            drain_sub_world(&mut *nested.get());
             // The render world's tasks run between the jobs that queued them
             // and the dispatch that draws what they landed.
-            LocalTasks::pump(&mut nested);
-            dispatch_frame(&mut nested, frame);
+            LocalTasks::pump(&mut *nested.get());
+            dispatch_frame(&mut *nested.get(), frame);
             drop(nested);
             presenter.present(world);
         },

@@ -208,7 +208,7 @@ fn build(
                         .scope(source_entity)
                         .expect("the source is alive")
                         .query_one::<&mut Transform>(*entity)
-                        .map(|mut current| *current = transform)
+                        .map(|mut current| *current.get() = transform)
                         .expect("a live mesh carries a transform");
                 }
             }

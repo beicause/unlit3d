@@ -253,8 +253,8 @@ impl Balls {
             .root_scope()
             .query_one::<&SceneState>(state)
             .ok()
-            .and_then(|state| {
-                state.loaded.as_ref().map(|assets| {
+            .and_then(|mut state| {
+                state.get().loaded.as_ref().map(|assets| {
                     (
                         assets.meshes[kind],
                         assets.materials[kind * BALL_COLORS.len() + color],
@@ -382,7 +382,7 @@ impl Balls {
                 if let Some(handle) = scope
                     .query_one::<&Ball>(answer.ball)
                     .ok()
-                    .and_then(|found| found.body)
+                    .and_then(|mut found| found.get().body)
                 {
                     self.despawns.push(handle);
                 }
@@ -397,7 +397,7 @@ impl Balls {
         for (ball, answer) in self.settled_instances.drain(..) {
             match (scope.query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(instance)) => {
-                    found.instance = Some(instance);
+                    found.get().instance = Some(instance);
                 }
                 (Err(_), Settled::Answered(instance)) => self.orphans.push(instance),
                 (_, Settled::Expired) => self.expired.push(ball),
@@ -408,7 +408,7 @@ impl Balls {
         for (ball, answer) in self.settled_bodies.drain(..) {
             match (scope.query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(handle)) => {
-                    found.body = Some(handle);
+                    found.get().body = Some(handle);
                 }
                 (Err(_), Settled::Answered(handle)) => self.despawns.push(handle),
                 (_, Settled::Expired) => self.expired.push(ball),
@@ -422,13 +422,13 @@ impl Balls {
         for (ball, answer) in self.settled_shows.drain(..) {
             match (scope.query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(true)) => {
-                    found.phase = BallPhase::Shown;
+                    found.get().phase = BallPhase::Shown;
                 }
                 // A show answered no, or a ball that went away while its show
                 // was in flight: the instance it wore has nobody left to
                 // stand for.
                 (Ok(mut found), Settled::Answered(false)) | (Ok(mut found), Settled::Expired) => {
-                    if let Some(instance) = found.instance.take() {
+                    if let Some(instance) = found.get().instance.take() {
                         self.orphans.push(instance);
                     }
                     self.expired.push(ball);
@@ -484,7 +484,7 @@ impl Balls {
         let assets = scope
             .query_one::<&SceneState>(state)
             .ok()
-            .and_then(|state| state.loaded.clone());
+            .and_then(|mut state| state.get().loaded.clone());
         if let Some(assets) = assets {
             for candidate in showing.drain(..) {
                 let mesh = assets.meshes[candidate.kind];
@@ -500,7 +500,7 @@ impl Balls {
                 match sent {
                     Ok(()) => {
                         if let Ok(mut ball) = scope.query_one::<&mut Ball>(candidate.ball) {
-                            ball.phase = BallPhase::Requested;
+                            ball.get().phase = BallPhase::Requested;
                         }
                     }
                     // A closed queue is the scene going away, not a fault.
@@ -1034,6 +1034,7 @@ mod tests {
         let Ok(mut state) = world.root_scope().query_one::<&mut SceneState>(entity) else {
             panic!("the state was just spawned")
         };
+        let state = state.get();
         state.ready = true;
         state.loaded = Some(SceneAssets {
             meshes: vec![RenderEntity(Entity::from_raw(1, 0))],

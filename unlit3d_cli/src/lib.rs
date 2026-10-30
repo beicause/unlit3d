@@ -144,7 +144,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     world
         .root_scope()
         .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| renderer.render(&world))
+        .map(|mut renderer| renderer.get().render(&world))
         .expect("the renderer entity exists");
 
     let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target);
@@ -269,7 +269,7 @@ pub fn build_world(
                     let _ = world
                         .root_scope()
                         .query_one::<&mut Transform>(entity)
-                        .map(|mut current| *current = transform.clone());
+                        .map(|mut current| *current.get() = transform.clone());
                 }
             }
         }
@@ -293,7 +293,7 @@ pub fn build_world(
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.viewport =
+            pass.get().viewport =
                 Some(ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y));
         })
         .expect("the pass entity exists");
@@ -501,12 +501,12 @@ fn bind_target(
             .root_scope()
             .query_one::<&mut ResourceGraph>(context.graph)
             .expect("the context's resource graph exists");
-        let texture = graph.insert(color.clone(), None);
-        let view = graph.insert(
+        let texture = graph.get().insert(color.clone(), None);
+        let view = graph.get().insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             None,
         );
-        graph.add_dependency(&view, &texture);
+        graph.get().add_dependency(&view, &texture);
         view
     };
     let attachments =
@@ -515,7 +515,7 @@ fn bind_target(
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.set_attachments(&attachments, color_view);
+            pass.get().set_attachments(&attachments, color_view);
         })
         .expect("the pass entity exists");
     color
@@ -536,6 +536,7 @@ fn with_mesh_source<R>(
         .query_one::<&mut Source>(source_entity)
         .expect("the mesh source entity exists");
     let mesh = source
+        .get()
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
     f(mesh, &scope)

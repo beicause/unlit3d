@@ -687,7 +687,7 @@ impl MeshSource {
         for desc in vertex_buffers {
             // The mesh's virtual root is built from it, so the buffer lives
             // exactly as long as the root does.
-            let id = self.context.graph(world).insert(desc.buffer, None);
+            let id = self.context.graph(world).get().insert(desc.buffer, None);
             vertex_slots.push((desc.slot, id.clone()));
             // The layout is owned by the mesh so a family can key on it
             // without reading the description again.
@@ -705,7 +705,7 @@ impl MeshSource {
 
         let index_buffer = index_buffer.map(|(buffer, format)| {
             // Weak for the same reason as the vertex buffers.
-            let id = self.context.graph(world).insert(buffer, None);
+            let id = self.context.graph(world).get().insert(buffer, None);
             (id, format)
         });
 
@@ -742,7 +742,7 @@ impl MeshSource {
         // pool grows, and a dependency would rebuild every group of every mesh
         // sharing the pool for nothing.
         let bind_group_id =
-            bind_group.map(|bind_group| self.context.graph(world).insert(bind_group, None));
+            bind_group.map(|bind_group| self.context.graph(world).get().insert(bind_group, None));
 
         // The entry is owned whether or not the pipeline reads it: a draw that
         // reads no metadata simply leaves the index unused. A slot a removed
@@ -772,7 +772,8 @@ impl MeshSource {
         // them, so dropping the last id to the root leaves the parts nothing
         // else holds for the next `maintain` to collect. Depending on the
         // parts is also what makes a replaced part mark the root dirty.
-        let mut graph = self.context.graph(world);
+        let mut graph_holder = self.context.graph(world);
+        let graph = graph_holder.get();
         let root = graph.insert(Virtual, None);
         for id in &buffers {
             graph.add_dependency(&root, id);
@@ -783,7 +784,7 @@ impl MeshSource {
         if let Some(id) = &bind_group_id {
             graph.add_dependency(&root, id);
         }
-        drop(graph);
+        drop(graph_holder);
 
         GpuMesh {
             parts: Rc::new(MeshParts {
@@ -821,7 +822,8 @@ impl MeshSource {
         world: &Scope<'_>,
         texture: wgpu::Texture,
     ) -> (ResHandle<wgpu::Texture>, ResHandle<TextureView>) {
-        let mut graph = self.context.graph(world);
+        let mut graph_holder = self.context.graph(world);
+        let graph = graph_holder.get();
         let texture_id = graph.insert(texture, None);
         let view = TextureExt::create_view(
             graph.get(&texture_id).expect("texture exists"),
@@ -842,7 +844,7 @@ impl MeshSource {
         let sampler = self
             .device(world)
             .create_sampler(&descriptor.unwrap_or_default());
-        self.context.graph(world).insert(sampler, None)
+        self.context.graph(world).get().insert(sampler, None)
     }
 
     /// Build a material bind group with `build` and return its [GpuMaterial]
@@ -870,10 +872,12 @@ impl MeshSource {
         // The first build is eager: the node has to hold a bind group from the
         // start, and only the rebuilds that follow are deferred to `maintain`.
         let bind_group = {
-            let graph = self.context.graph(world);
-            build(&graph)
+            let mut graph_holder = self.context.graph(world);
+            let graph = graph_holder.get();
+            build(graph)
         };
-        let mut graph = self.context.graph(world);
+        let mut graph_holder = self.context.graph(world);
+        let graph = graph_holder.get();
         let rebuild = Rebuild::new(move |graph| Resource::BindGroup(build(graph)));
         let bind_group_id = graph.insert(bind_group, Some(rebuild));
         for dependency in dependencies {
@@ -968,6 +972,7 @@ impl MeshSource {
             // next maintain rebuilds them.
             self.context
                 .graph(world)
+                .get()
                 .replace(&self.morph_deltas_buf, self.morph_deltas_pool.handle())
                 .expect("the morph-displacement array's node exists");
         }
@@ -1073,6 +1078,7 @@ impl MeshSource {
         let buffer = self
             .context
             .graph(world)
+            .get()
             .get(&self.cluster_buf)
             .expect("cluster buffer exists")
             .clone();
@@ -1082,6 +1088,7 @@ impl MeshSource {
         let buffer = self
             .context
             .graph(world)
+            .get()
             .get(&self.lighting_buf)
             .expect("lighting buffer exists")
             .clone();
@@ -1134,6 +1141,7 @@ impl MeshSource {
             return;
         }
         ctx.graph(world)
+            .get()
             .replace(node, array.handle())
             .expect("the array's node exists");
     }
@@ -1146,7 +1154,7 @@ impl MeshSource {
     /// any of those groups; [`RenderContext::maintain_scope`] is how a build
     /// states that point without a call at each of its returns.
     pub fn maintain(&mut self, world: &Scope<'_>) {
-        self.context.graph(world).maintain();
+        self.context.graph(world).get().maintain();
     }
 
     /// Upload the camera uniform, staging the bytes through the frame's
@@ -1160,6 +1168,7 @@ impl MeshSource {
         let buffer = self
             .context
             .graph(world)
+            .get()
             .get(&self.camera_buf)
             .expect("camera buffer exists")
             .clone();
@@ -1173,6 +1182,7 @@ impl MeshSource {
         let buffer = self
             .context
             .graph(world)
+            .get()
             .get(&self.globals_buf)
             .expect("globals buffer exists")
             .clone();
@@ -1270,7 +1280,7 @@ impl MeshSource {
             .buffer(layout)
             .expect("the layout was allocated a buffer")
             .clone();
-        let id = self.context.graph(world).insert(buffer, None);
+        let id = self.context.graph(world).get().insert(buffer, None);
         self.vertex_pool_ids.insert(layout.clone(), id.clone());
         id
     }
@@ -1289,7 +1299,8 @@ impl MeshSource {
             .vertex_pool
             .buffer(layout)
             .expect("the layout has a buffer");
-        let mut graph = self.context.graph(world);
+        let mut graph_holder = self.context.graph(world);
+        let graph = graph_holder.get();
         if graph.get(id) != Some(buffer) {
             graph
                 .replace(id, buffer.clone())
@@ -1348,8 +1359,9 @@ impl MeshSource {
         );
         let (pipelines, buffers) = (&mut self.pipelines, resources.clone());
         let ctx = self.context;
-        let mut graph = ctx.graph(world);
-        let mut register = |desc| register_concrete(pipelines, &mut graph, buffers.clone(), desc);
+        let mut graph_holder = ctx.graph(world);
+        let graph = graph_holder.get();
+        let mut register = |desc| register_concrete(pipelines, graph, buffers.clone(), desc);
 
         collect_and_sort_visible(
             SceneFrame {
@@ -1383,18 +1395,20 @@ impl MeshSource {
         handles.clear();
         {
             profiling::scope!("mesh_source.assemble.handles");
-            let graph = self.context.graph(world);
+            let mut graph_holder = self.context.graph(world);
+            let graph = graph_holder.get();
             for entry in &self.visible_cache {
                 let key = entry.handles_key.clone();
                 if handles.contains_key(&key) {
                     continue;
                 }
 
-                let mesh = world
+                let mut mesh_row = world
                     .query_one::<&GpuMesh>(entry.mesh.entity)
                     .unwrap_or_else(|_| {
                         panic!("visible entity has GpuMesh: {:?}", entry.mesh.entity)
                     });
+                let mesh = mesh_row.get();
 
                 let mesh_bg = mesh
                     .parts
@@ -1444,7 +1458,8 @@ impl MeshSource {
         let mut pipeline_handles = std::mem::take(&mut self.pipeline_handle_cache);
         pipeline_handles.clear();
         {
-            let graph = self.context.graph(world);
+            let mut graph_holder = self.context.graph(world);
+            let graph = graph_holder.get();
             pipeline_handles.extend(self.pipelines.iter().map(|registered| {
                 RenderPipelineHandles {
                     pipeline: registered.pipeline.clone(),
@@ -1560,8 +1575,8 @@ impl FrameSource for MeshSource {
         // faster because a frame has more passes.
         {
             profiling::scope!("mesh_source.uniforms.upload");
-            if let Ok(clock) = world.query_one::<&FrameClock>(ctx.clock) {
-                let clock = *clock;
+            if let Ok(mut clock_row) = world.query_one::<&FrameClock>(ctx.clock) {
+                let clock = *clock_row.get();
                 self.globals.time = clock.time;
                 self.globals.delta_time = clock.delta_time;
                 self.globals.frame_count = clock.index;
@@ -2086,6 +2101,7 @@ mod tests {
         let ctx = h.source.context();
         assert!(
             ctx.graph(&h.world.root_scope())
+                .get()
                 .get(&material.bind_group_id)
                 .is_some()
         );
@@ -2122,7 +2138,7 @@ mod tests {
             .collect();
         for (index, id) in ids.iter().enumerate() {
             assert!(
-                ctx.graph(&h.world.root_scope()).get(id).is_some(),
+                ctx.graph(&h.world.root_scope()).get().get(id).is_some(),
                 "pipeline {index}'s global group is in the graph"
             );
             // No two pipelines share one: each binds its own layout.
@@ -2157,6 +2173,7 @@ mod tests {
         let ctx = h.source.context();
         assert!(
             ctx.graph(&h.world.root_scope())
+                .get()
                 .get(&material.bind_group_id)
                 .is_some()
         );
@@ -2176,10 +2193,10 @@ mod tests {
         // indices and displacements live in pools, so those are nodes the
         // source owns and survive the mesh — what the mesh loses is its share
         // of them, which `remove_mesh` hands back.
-        let before = ctx.graph(&h.world.root_scope()).len();
+        let before = ctx.graph(&h.world.root_scope()).get().len();
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
-            ctx.graph(&h.world.root_scope()).get(&mesh.parts.root),
+            ctx.graph(&h.world.root_scope()).get().get(&mesh.parts.root),
             Some(Virtual)
         ));
         assert!(
@@ -2195,7 +2212,7 @@ mod tests {
         h.source.maintain(&h.world.root_scope());
 
         assert!(
-            ctx.graph(&h.world.root_scope()).len() < before,
+            ctx.graph(&h.world.root_scope()).get().len() < before,
             "the graph shrank"
         );
         assert!(
@@ -2227,6 +2244,7 @@ mod tests {
         // root and the root holds only what is the mesh's own.
         let dependencies: Vec<_> = ctx
             .graph(&h.world.root_scope())
+            .get()
             .dependencies(&mesh.parts.root)
             .collect();
         let bind_group = mesh
@@ -2244,7 +2262,7 @@ mod tests {
             "the index pool is not under the root"
         );
         assert!(
-            ctx.graph(&h.world.root_scope()).get(&pool).is_some(),
+            ctx.graph(&h.world.root_scope()).get().get(&pool).is_some(),
             "the index pool survives"
         );
     }
@@ -2282,22 +2300,25 @@ mod tests {
         // Giving the handle up is the whole of it: an id is a strong
         // reference, so a clone kept here would keep the bind group alive and
         // the assertion below would have nothing to observe.
-        let before = ctx.graph(&h.world.root_scope()).len();
+        let before = ctx.graph(&h.world.root_scope()).get().len();
         drop(material);
         h.source.maintain(&h.world.root_scope());
 
         assert!(
-            ctx.graph(&h.world.root_scope()).len() < before,
+            ctx.graph(&h.world.root_scope()).get().len() < before,
             "the bind group is gone"
         );
         // The view and sampler are the caller's, so giving up the material
         // that reads them leaves them alone.
         assert!(
-            ctx.graph(&h.world.root_scope()).get(&view).is_some(),
+            ctx.graph(&h.world.root_scope()).get().get(&view).is_some(),
             "the view stays"
         );
         assert!(
-            ctx.graph(&h.world.root_scope()).get(&sampler).is_some(),
+            ctx.graph(&h.world.root_scope())
+                .get()
+                .get(&sampler)
+                .is_some(),
             "the sampler stays"
         );
     }
@@ -2377,7 +2398,7 @@ mod tests {
             Some(first_node.clone())
         );
         assert_eq!(
-            ctx.graph(&h.world.root_scope()).get(&first_node),
+            ctx.graph(&h.world.root_scope()).get().get(&first_node),
             Some(h.source.index_pool.buffer()),
             "the node follows the pool's buffer"
         );
@@ -2430,7 +2451,10 @@ mod tests {
         {
             assert_eq!(first_id, second_id, "the streams share a buffer");
             assert!(
-                ctx.graph(&h.world.root_scope()).get(first_id).is_some(),
+                ctx.graph(&h.world.root_scope())
+                    .get()
+                    .get(first_id)
+                    .is_some(),
                 "the stream's node holds a buffer"
             );
         }
@@ -2485,7 +2509,7 @@ mod tests {
                 .buffer(layout)
                 .expect("the layout has a buffer");
             assert_eq!(
-                ctx.graph(&h.world.root_scope()).get(node),
+                ctx.graph(&h.world.root_scope()).get().get(node),
                 Some(pool_buffer),
                 "the node follows the pool's buffer"
             );
@@ -2988,6 +3012,7 @@ mod tests {
         // A fifth entry outgrows four, so the buffer grows again.
         let before = ctx
             .graph(&h.world.root_scope())
+            .get()
             .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
@@ -3000,7 +3025,9 @@ mod tests {
             "growing past four reaches six (4 * 1.5)"
         );
         assert_ne!(
-            ctx.graph(&h.world.root_scope()).get(&h.source.metadata_buf),
+            ctx.graph(&h.world.root_scope())
+                .get()
+                .get(&h.source.metadata_buf),
             before.as_ref(),
             "growth replaced the buffer"
         );
@@ -3008,6 +3035,7 @@ mod tests {
         // A sixth entry fits in six, so the buffer is left alone.
         let before = ctx
             .graph(&h.world.root_scope())
+            .get()
             .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
@@ -3016,7 +3044,9 @@ mod tests {
             .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 6, "six entries fit");
         assert_eq!(
-            ctx.graph(&h.world.root_scope()).get(&h.source.metadata_buf),
+            ctx.graph(&h.world.root_scope())
+                .get()
+                .get(&h.source.metadata_buf),
             before.as_ref(),
             "no growth means the same buffer, so no global group is rebuilt"
         );
@@ -3473,7 +3503,7 @@ mod tests {
             &mut encoder,
         );
 
-        let before = ctx.graph(&h.world.root_scope()).len();
+        let before = ctx.graph(&h.world.root_scope()).get().len();
         // Read the ids out before the source goes: once it is dropped there is
         // no `h.source` left to name them.
         let camera_buf = h.source.camera_buf.clone();
@@ -3487,8 +3517,8 @@ mod tests {
         h.world.root_scope_mut().despawn(drawn).unwrap();
         drop(mesh);
         drop(h.source);
-        ctx.graph(&h.world.root_scope()).maintain();
-        let after = ctx.graph(&h.world.root_scope()).len();
+        ctx.graph(&h.world.root_scope()).get().maintain();
+        let after = ctx.graph(&h.world.root_scope()).get().len();
 
         assert!(
             after < before,
@@ -3499,11 +3529,15 @@ mod tests {
         // is the point of a counted handle: the resource goes when the last id
         // does, not when its creator does.
         assert!(
-            ctx.graph(&h.world.root_scope()).get(&camera_buf).is_some(),
+            ctx.graph(&h.world.root_scope())
+                .get()
+                .get(&camera_buf)
+                .is_some(),
             "a held id keeps the source's camera buffer alive"
         );
         assert!(
             ctx.graph(&h.world.root_scope())
+                .get()
                 .get(&index_pool_id)
                 .is_some(),
             "a held id keeps the index pool alive"
@@ -3512,9 +3546,9 @@ mod tests {
         // Giving those ids up is what lets the graph collect them.
         drop(camera_buf);
         drop(index_pool_id);
-        ctx.graph(&h.world.root_scope()).maintain();
+        ctx.graph(&h.world.root_scope()).get().maintain();
         assert!(
-            ctx.graph(&h.world.root_scope()).len() < after,
+            ctx.graph(&h.world.root_scope()).get().len() < after,
             "the last ids going is what frees the source's resources"
         );
     }

@@ -157,11 +157,11 @@ fn interleave(world: &World, entities: &[Entity]) -> Vec<Entity> {
 fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let mesh = world
+        let mut mesh = world
             .root_scope()
             .query_one::<&Mesh>(entity)
             .expect("a candidate has a mesh");
-        sum += u64::from(mesh.0);
+        sum += u64::from(mesh.get().0);
     }
     sum
 }
@@ -170,16 +170,18 @@ fn get_one(world: &World, candidates: &[Entity]) -> u64 {
 fn get_three(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let pipeline = world
+        let mut pipeline = world
             .root_scope()
             .query_one::<&Pipeline>(entity)
             .expect("a candidate has one");
-        let mesh = world
+        let mut mesh = world
             .root_scope()
             .query_one::<&Mesh>(entity)
             .expect("a candidate has a mesh");
         let material = world.root_scope().query_one::<&Material>(entity);
-        sum += u64::from(pipeline.0) + u64::from(mesh.0) + material.map_or(0, |m| m.0);
+        sum += u64::from(pipeline.get().0)
+            + u64::from(mesh.get().0)
+            + material.map_or(0, |mut m| m.get().0);
     }
     sum
 }

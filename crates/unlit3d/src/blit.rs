@@ -89,12 +89,11 @@ impl BlitSource {
 
     /// Build the pipeline, the sampler and the bind group for `surface`.
     fn build_gpu(&self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) -> Gpu {
-        let device = wgpu::Device::clone(
-            &scope
-                .query_one::<&wgpu::Device>(ctx.device)
-                .expect("the context's device resource exists"),
-        );
-        let sampler = ctx.graph(scope).insert(sampler(&device), None);
+        let mut device_row = scope
+            .query_one::<&wgpu::Device>(ctx.device)
+            .expect("the context's device resource exists");
+        let device = wgpu::Device::clone(device_row.get());
+        let sampler = ctx.graph(scope).get().insert(sampler(&device), None);
         let layout = bind_group_layout(&device);
         let pipeline = pipeline(&device, &layout, surface);
         let bind_group = allocate_bind_group(
@@ -154,8 +153,9 @@ fn allocate_bind_group(
         view.clone(),
         sampler.clone(),
     );
-    let mut graph = ctx.graph(scope);
-    let bind_group = recipe(&graph);
+    let mut graph_holder = ctx.graph(scope);
+    let graph = graph_holder.get();
+    let bind_group = recipe(graph);
     let rebuild = Rebuild::new(move |graph| Resource::BindGroup(recipe(graph)));
     let bind_group = graph.insert(bind_group, Some(rebuild));
     graph.add_dependency(&bind_group, &view);
@@ -213,7 +213,8 @@ impl FrameSource for BlitSource {
         // Drop the scope so the graph maintains before the group is read back
         // out: a replace this build made must be visible to the draw.
         drop(maintain);
-        let graph = ctx.graph(scope);
+        let mut graph_holder = ctx.graph(scope);
+        let graph = graph_holder.get();
         let gpu = &self.gpus[index].1;
         let bind_group = graph
             .get(&gpu.bind_group)

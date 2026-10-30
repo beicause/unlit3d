@@ -603,7 +603,7 @@ let scope = world.scope(source).unwrap();
 let (mesh, material) = scope
     .query_one::<&mut Source>(source)
     .map(|mut source| {
-        let source = source.as_mut::<MeshSource>().unwrap();
+        let source = source.get().as_mut::<MeshSource>().unwrap();
         let positions = [[0.0; 3]; 3];
         let uvs = [[0.0; 2]; 3];
         let colors = [[255u8; 4]; 3];
@@ -648,7 +648,7 @@ world
 //    The frame's depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
-    &world.root_scope().query_one::<&wgpu::Device>(ctx.device).unwrap(),
+    world.root_scope().query_one::<&wgpu::Device>(ctx.device).unwrap().get(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
     1280, 720,
 );
@@ -665,6 +665,7 @@ let color_view = scope
     .query_one::<&mut Source>(source)
     .map(|mut source| {
         source
+            .get()
             .as_mut::<MeshSource>()
             .unwrap()
             .register_texture_and_default_view(&scope, color)
@@ -675,13 +676,13 @@ world
     .root_scope()
     .query_one::<&mut FramePass>(pass)
     .map(|mut pass| {
-        pass.set_attachments(&attachments, color_view);
+        pass.get().set_attachments(&attachments, color_view);
     })
     .unwrap();
 world
     .root_scope()
     .query_one::<&mut Renderer>(renderer)
-    .map(|mut r| r.render(&world))
+    .map(|mut r| r.get().render(&world))
     .unwrap();
 ```
 

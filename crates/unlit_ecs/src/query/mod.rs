@@ -565,50 +565,6 @@ impl<'w, Q: Query> QueryOne<'w, Q> {
     }
 }
 
-impl<'w, Q: Query> QueryOne<'w, Q> {
-    /// The cell of one component on this entity's row.
-    fn cell<C: 'static>(&self) -> &core::cell::UnsafeCell<C> {
-        let archetype = self
-            .world
-            .archetypes()
-            .get(self.archetype)
-            .expect("a live entity's location names a registered archetype");
-        archetype
-            .column::<C>()
-            .and_then(|column| column.cells().get(self.row))
-            .expect("the row the query matched carries the component")
-    }
-}
-
-impl<T: 'static> core::ops::Deref for QueryOne<'_, &T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: the holder claimed a shared borrow of `T` on this row, and
-        // the claim lives as long as the holder the reference borrows from, so
-        // no exclusive borrow of this row's `T` exists alongside it.
-        unsafe { &*self.cell::<T>().get() }
-    }
-}
-
-impl<T: 'static> core::ops::Deref for QueryOne<'_, &mut T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: the holder claimed `T` exclusively on this row, which
-        // grants reading too, and the claim lives as long as the holder.
-        unsafe { &*self.cell::<T>().get() }
-    }
-}
-
-impl<T: 'static> core::ops::DerefMut for QueryOne<'_, &mut T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: the holder claimed `T` exclusively on this row, and the
-        // reference borrows from the holder, which owns that claim.
-        unsafe { &mut *self.cell::<T>().get() }
-    }
-}
-
 impl<Q: Query> core::fmt::Debug for QueryOne<'_, Q> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("QueryOne")

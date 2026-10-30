@@ -73,6 +73,7 @@ fn build(
         .query_one::<&mut Source>(source_entity)
         .map(|mut source| {
             let source = source
+                .get()
                 .as_mut::<MeshSource>()
                 .expect("the source entity carries a MeshSource");
             let (positions, uvs, colors, indices) = super::cube();
@@ -156,36 +157,36 @@ fn build(
                 .show(ui.ctx(), |ui| {
                     let frames = world
                         .query_one::<&FrameCount>(spin)
-                        .map_or(0, |frames| frames.0);
+                        .map_or(0, |mut frames| frames.get().0);
                     ui.label(format!("frame {frames}"));
                     ui.label("The cube spins behind this panel.");
 
                     let spinning = world
                         .query_one::<&Spin>(spin)
-                        .is_ok_and(|state| state.spinning);
+                        .is_ok_and(|mut state| state.get().spinning);
                     let mut spinning_now = spinning;
                     if ui.checkbox(&mut spinning_now, "Spin").changed() {
                         let _ = world
                             .query_one::<&mut Spin>(spin)
-                            .map(|mut state| state.spinning = spinning_now);
+                            .map(|mut state| state.get().spinning = spinning_now);
                     }
 
                     let mut speed = world
                         .query_one::<&Spin>(spin)
-                        .map_or(SPIN, |state| state.radians_per_second);
+                        .map_or(SPIN, |mut state| state.get().radians_per_second);
                     if ui
                         .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
                         .changed()
                     {
                         let _ = world.query_one::<&mut Spin>(spin).map(|mut state| {
-                            state.radians_per_second = speed;
+                            state.get().radians_per_second = speed;
                         });
                     }
 
                     if ui.button("Reset the spin").clicked() {
                         let _ = world
                             .query_one::<&mut SpinReset>(spin)
-                            .map(|mut reset| reset.0 = true);
+                            .map(|mut reset| reset.get().0 = true);
                     }
 
                     // The world's input state, read out under the panel's own
@@ -201,10 +202,13 @@ fn build(
                         .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.query_one::<&CameraOrbit>(orbit) {
-                        Ok(orbit) => ui.label(format!(
-                            "azimuth {:.2}, elevation {:.2}",
-                            orbit.azimuth, orbit.elevation
-                        )),
+                        Ok(mut orbit) => {
+                            let orbit = orbit.get();
+                            ui.label(format!(
+                                "azimuth {:.2}, elevation {:.2}",
+                                orbit.azimuth, orbit.elevation
+                            ))
+                        }
                         Err(_) => ui.label("no camera state"),
                     };
                 });
@@ -226,7 +230,7 @@ fn build(
                 let _ = world
                     .root_scope()
                     .query_one::<&mut Spin>(spin)
-                    .map(|mut state| state.spinning = !state.spinning);
+                    .map(|mut state| state.get().spinning = !state.get().spinning);
             }
         }),]);
 
@@ -244,7 +248,7 @@ fn build(
                     let _ = world
                         .root_scope()
                         .query_one::<&mut DragFrom>(spin)
-                        .map(|mut drag| drag.0 = None);
+                        .map(|mut drag| drag.get().0 = None);
                 }
                 return;
             };
@@ -270,7 +274,7 @@ fn build(
                 let _ = world
                     .root_scope()
                     .query_one::<&mut DragFrom>(spin)
-                    .map(|mut drag| drag.0 = None);
+                    .map(|mut drag| drag.get().0 = None);
                 return;
             }
 
@@ -280,7 +284,7 @@ fn build(
                         .root_scope()
                         .query_one::<&mut DragFrom>(spin)
                         .map(|mut drag| {
-                            drag.0 = Some(PointerContact {
+                            drag.get().0 = Some(PointerContact {
                                 kind: event.kind,
                                 id: event.id,
                                 position,
@@ -293,7 +297,7 @@ fn build(
                             .root_scope()
                             .query_one::<&mut DragFrom>(spin)
                             .map(|mut drag| {
-                                let tracked = drag.0.as_mut()?;
+                                let tracked = drag.get().0.as_mut()?;
                                 if (tracked.kind, tracked.id) != (event.kind, event.id) {
                                     return None;
                                 }
@@ -309,16 +313,17 @@ fn build(
                             .root_scope()
                             .query_one::<&mut CameraOrbit>(orbit)
                             .map(|mut drag| {
-                                drag.azimuth -= dx * RADIANS_PER_PIXEL;
-                                drag.elevation =
-                                    (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                                drag.get().azimuth -= dx * RADIANS_PER_PIXEL;
+                                drag.get().elevation = (drag.get().elevation
+                                    + dy * RADIANS_PER_PIXEL)
+                                    .clamp(-1.4, 1.4);
                             });
                 }
                 PointerAction::Released { .. } | PointerAction::Left => {
                     let _ = world
                         .root_scope()
                         .query_one::<&mut DragFrom>(spin)
-                        .map(|mut drag| drag.0 = None);
+                        .map(|mut drag| drag.get().0 = None);
                 }
                 PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
             }

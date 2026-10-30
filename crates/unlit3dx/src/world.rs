@@ -360,7 +360,7 @@ pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
     let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
         return;
     };
-    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+    let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return;
     };
     if stepped.status.is_finished() {
@@ -422,7 +422,7 @@ pub fn drain_stepped_world(host: &World, entity: Entity) -> bool {
     let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
         return true;
     };
-    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+    let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return true;
     };
     if stepped.status.is_finished() || stepped.control.stop_requested() {
@@ -462,8 +462,8 @@ pub fn with_stepped_world<R>(
     entity: Entity,
     f: impl FnOnce(&World) -> R,
 ) -> Option<R> {
-    let proxy = host.root_scope().query_one::<&WorldProxy>(entity).ok()?;
-    let WorldKind::Stepped(stepped) = &proxy.kind else {
+    let mut proxy = host.root_scope().query_one::<&WorldProxy>(entity).ok()?;
+    let WorldKind::Stepped(stepped) = &proxy.get().kind else {
         return None;
     };
     Some(f(&stepped.world))
@@ -482,7 +482,7 @@ pub fn with_stepped_world_mut<R>(
         .root_scope()
         .query_one::<&mut WorldProxy>(entity)
         .ok()?;
-    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+    let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return None;
     };
     Some(f(&mut stepped.world))

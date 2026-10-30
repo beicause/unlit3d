@@ -229,12 +229,12 @@ pub fn bind_offscreen_target(
             .root_scope()
             .query_one::<&mut ResourceGraph>(context.graph)
             .expect("the context's resource graph exists");
-        let texture = graph.insert(color.clone(), None);
-        let view = graph.insert(
+        let texture = graph.get().insert(color.clone(), None);
+        let view = graph.get().insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             None,
         );
-        graph.add_dependency(&view, &texture);
+        graph.get().add_dependency(&view, &texture);
         view
     };
     let attachments =
@@ -243,7 +243,7 @@ pub fn bind_offscreen_target(
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.set_attachments(&attachments, color_view.clone());
+            pass.get().set_attachments(&attachments, color_view.clone());
         })
         .expect("the pass entity exists");
 
@@ -288,7 +288,7 @@ fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
         .root_scope()
         .query_one::<&SceneEntity>(app)
         .ok()
-        .and_then(|slot| slot.0)
+        .and_then(|mut slot| slot.get().0)
     else {
         return;
     };
@@ -299,23 +299,27 @@ fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
         .root_scope()
         .query_one::<&InitialScene>(app)
         .expect("the app entity carries its initial scene")
+        .get()
         .0;
-    let scene_world = world
+    let mut scene_world = world
         .root_scope()
         .query_one::<&World>(scene_entity)
         .expect("the scene entity carries a world");
-    let scene = world
+    let mut scene = world
         .root_scope()
         .query_one::<&Scene>(scene_entity)
         .expect("the scene entity carries a scene");
-    let (pass, blit) = (scene.pass, scene.blit);
+    let (pass, blit) = (scene.get().pass, scene.get().blit);
+    let context = scene_world
+        .get()
+        .root_scope()
+        .query_one::<&Renderer>(scene.get().renderer)
+        .expect("the renderer is a resource entity")
+        .get()
+        .context();
     let target = bind_offscreen_target(
-        &scene_world,
-        scene_world
-            .root_scope()
-            .query_one::<&Renderer>(scene.renderer)
-            .expect("the renderer is a resource entity")
-            .context(),
+        scene_world.get(),
+        context,
         pass,
         &gpu.device,
         size,
@@ -332,12 +336,14 @@ fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
     let _ = world
         .root_scope()
         .query_one::<&mut Offscreen>(app)
-        .map(|mut slot| slot.0 = Some(target));
+        .map(|mut slot| slot.get().0 = Some(target));
     let _ = scene_world
+        .get()
         .root_scope()
         .query_one::<&mut Source>(blit.source)
         .map(|mut source| {
             source
+                .get()
                 .as_mut::<BlitSource>()
                 .expect("the blit pass's source is a blit")
                 .view = view;
@@ -784,12 +790,12 @@ impl PanelRects {
                 .root_scope()
                 .query_one::<&SelectorPos>(app)
                 .ok()
-                .and_then(|pos| pos.0),
+                .and_then(|mut pos| pos.get().0),
             gpu_info: world
                 .root_scope()
                 .query_one::<&GpuInfoPos>(app)
                 .ok()
-                .and_then(|pos| pos.0),
+                .and_then(|mut pos| pos.get().0),
         }
     }
 }
@@ -819,11 +825,11 @@ impl Command for DrawFrame {
         let delta_time = world
             .root_scope()
             .query_one::<&LastFrame>(app)
-            .map_or(0.0, |last| (now - last.0).as_secs_f32());
+            .map_or(0.0, |mut last| (now - last.get().0).as_secs_f32());
         let _ = world
             .root_scope()
             .query_one::<&mut LastFrame>(app)
-            .map(|mut slot| slot.0 = now);
+            .map(|mut slot| slot.get().0 = now);
         let mut frame = Frame {
             delta_time,
             index: 0,
@@ -893,7 +899,7 @@ impl Command for RunSceneAdvance {
             .root_scope()
             .query_one::<&mut SceneAdvance>(entity)
             .ok()
-            .and_then(|mut slot| slot.0.take());
+            .and_then(|mut slot| slot.get().0.take());
         let Some(mut advance) = advance else {
             return Ok(());
         };
@@ -901,7 +907,7 @@ impl Command for RunSceneAdvance {
         let _ = world
             .root_scope()
             .query_one::<&mut SceneAdvance>(entity)
-            .map(|mut slot| slot.0 = Some(advance));
+            .map(|mut slot| slot.get().0 = Some(advance));
         Ok(())
     }
 }
@@ -923,7 +929,7 @@ impl Command for RunInWorld {
             command.fail(format!("host entity {entity:?} carries no world"));
             return Ok(());
         };
-        command.dispatch(&mut nested);
+        command.dispatch(&mut *nested.get());
         Ok(())
     }
 }
@@ -945,8 +951,8 @@ impl Command for RunInHost {
 
 /// The GPU context, once the asynchronous setup has landed.
 fn gpu(world: &World, app: Entity) -> Option<Gpu> {
-    let state = world.root_scope().query_one::<&GpuState>(app).ok()?;
-    match &*state {
+    let mut state = world.root_scope().query_one::<&GpuState>(app).ok()?;
+    match state.get() {
         GpuState::Ready(gpu) => Some(gpu.clone()),
         GpuState::Idle | GpuState::Requested => None,
     }
@@ -957,10 +963,20 @@ fn gpu(world: &World, app: Entity) -> Option<Gpu> {
 /// The swap chain is presented by a pass of that same world — the scene's own,
 /// or the MCP run's blit pass — so one world is all a frame reaches through.
 fn with_presented<R>(world: &World, app: Entity, f: impl FnOnce(&World, Entity) -> R) -> Option<R> {
-    let scene = world.root_scope().query_one::<&SceneEntity>(app).ok()?.0?;
-    let nested = world.root_scope().query_one::<&World>(scene).ok()?;
-    let renderer = world.root_scope().query_one::<&Scene>(scene).ok()?.renderer;
-    Some(f(&nested, renderer))
+    let scene = world
+        .root_scope()
+        .query_one::<&SceneEntity>(app)
+        .ok()?
+        .get()
+        .0?;
+    let mut nested = world.root_scope().query_one::<&World>(scene).ok()?;
+    let renderer = world
+        .root_scope()
+        .query_one::<&Scene>(scene)
+        .ok()?
+        .get()
+        .renderer;
+    Some(f(nested.get(), renderer))
 }
 
 /// Bring the scene and the swap chain up, as far as the state allows.
@@ -983,11 +999,12 @@ fn present(world: &World, app: Entity) {
         .root_scope()
         .query_one::<&InitialScene>(app)
         .expect("the app entity carries its initial scene")
+        .get()
         .0;
     let mcp = world
         .root_scope()
         .query_one::<&McpEnabled>(app)
-        .is_ok_and(|mcp| mcp.0);
+        .is_ok_and(|mut mcp| mcp.get().0);
 
     // Phase one: the scene's world. Its build needs the GPU context and the
     // window's size, both of which are known here, and the queue reserves the
@@ -996,7 +1013,7 @@ fn present(world: &World, app: Entity) {
         .root_scope()
         .query_one::<&SceneEntity>(app)
         .ok()
-        .and_then(|slot| slot.0)
+        .and_then(|mut slot| slot.get().0)
     {
         Some(entity) => entity,
         None => {
@@ -1023,7 +1040,7 @@ fn present(world: &World, app: Entity) {
             let _ = world
                 .root_scope()
                 .query_one::<&mut SceneEntity>(app)
-                .map(|mut slot| slot.0 = Some(entity));
+                .map(|mut slot| slot.get().0 = Some(entity));
             window.set_title(&format!(
                 "unlit3d{} — {}",
                 if mcp { " (MCP)" } else { "" },
@@ -1044,37 +1061,40 @@ fn present(world: &World, app: Entity) {
         .root_scope()
         .query_one::<&Scene>(scene_entity)
         .expect("the scene entity carries a scene")
+        .get()
         .renderer;
     let _ = world
         .root_scope()
         .query_one::<&mut Scene>(scene_entity)
-        .map(|mut scene| scene.resize(size, def.baseline));
+        .map(|mut scene| scene.get().resize(size, def.baseline));
 
     // Phase two, MCP mode only: the offscreen target the scene's own pass
     // renders into, and the pass that blits it into the swap chain.
     if mcp {
         let (pass, bound_blit) = {
-            let scene = world
+            let mut scene = world
                 .root_scope()
                 .query_one::<&Scene>(scene_entity)
                 .expect("the scene entity carries a scene");
-            (scene.pass, scene.blit)
+            (scene.get().pass, scene.get().blit)
         };
         let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
             return;
         };
         let context = nested
+            .get()
             .root_scope()
             .query_one::<&Renderer>(renderer)
             .expect("the renderer is a resource entity")
+            .get()
             .context();
         if world
             .root_scope()
             .query_one::<&Offscreen>(app)
-            .is_ok_and(|slot| slot.0.is_none())
+            .is_ok_and(|mut slot| slot.get().0.is_none())
         {
             let target = bind_offscreen_target(
-                &nested,
+                &*nested.get(),
                 context,
                 pass,
                 &gpu.device,
@@ -1086,12 +1106,12 @@ fn present(world: &World, app: Entity) {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Offscreen>(app)
-                .map(|mut slot| slot.0 = Some(target));
-            let blit = mount_blit(&mut nested, view);
+                .map(|mut slot| slot.get().0 = Some(target));
+            let blit = mount_blit(&mut *nested.get(), view);
             let _ = world
                 .root_scope()
                 .query_one::<&mut Scene>(scene_entity)
-                .map(|mut scene| scene.blit = Some(blit));
+                .map(|mut scene| scene.get().blit = Some(blit));
             return;
         }
         if bound_blit.is_none() {
@@ -1099,13 +1119,13 @@ fn present(world: &World, app: Entity) {
                 .root_scope()
                 .query_one::<&Offscreen>(app)
                 .ok()
-                .and_then(|slot| slot.0.as_ref().map(|target| target.view.clone()))
+                .and_then(|mut slot| slot.get().0.as_ref().map(|target| target.view.clone()))
                 .expect("the offscreen target was just built");
-            let blit = mount_blit(&mut nested, view);
+            let blit = mount_blit(&mut *nested.get(), view);
             let _ = world
                 .root_scope()
                 .query_one::<&mut Scene>(scene_entity)
-                .map(|mut scene| scene.blit = Some(blit));
+                .map(|mut scene| scene.get().blit = Some(blit));
             return;
         }
     }
@@ -1113,7 +1133,7 @@ fn present(world: &World, app: Entity) {
     if world
         .root_scope()
         .query_one::<&SurfaceSlot>(app)
-        .is_ok_and(|slot| slot.0.is_some())
+        .is_ok_and(|mut slot| slot.get().0.is_some())
     {
         resize_surface(world, app, size.0, size.1);
         return;
@@ -1132,7 +1152,7 @@ fn present(world: &World, app: Entity) {
             .map(|mut renderer| {
                 let window_surface = WindowSurface::new(
                     nested,
-                    &mut renderer,
+                    &mut *renderer.get(),
                     &gpu.instance,
                     &gpu.adapter,
                     window.clone(),
@@ -1141,7 +1161,7 @@ fn present(world: &World, app: Entity) {
                 let attachments = if mcp {
                     FrameAttachments::new(
                         nested,
-                        renderer.context(),
+                        renderer.get().context(),
                         window_surface.color_format(),
                         window_surface.size(),
                         1,
@@ -1150,7 +1170,7 @@ fn present(world: &World, app: Entity) {
                 } else {
                     FrameAttachments::new(
                         nested,
-                        renderer.context(),
+                        renderer.get().context(),
                         window_surface.color_format(),
                         window_surface.size(),
                         SAMPLE_COUNT,
@@ -1166,11 +1186,11 @@ fn present(world: &World, app: Entity) {
     let _ = world
         .root_scope()
         .query_one::<&mut SurfaceSlot>(app)
-        .map(|mut slot| slot.0 = Some(window_surface));
+        .map(|mut slot| slot.get().0 = Some(window_surface));
     let _ = world
         .root_scope()
         .query_one::<&mut AttachmentsSlot>(app)
-        .map(|mut slot| slot.0 = Some(attachments));
+        .map(|mut slot| slot.get().0 = Some(attachments));
     window.request_redraw();
 }
 
@@ -1179,6 +1199,7 @@ fn resize_surface(world: &World, app: Entity, width: u32, height: u32) {
     let Ok(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
         return;
     };
+    let slot = slot.get();
     let Some(surface) = slot.0.as_mut() else {
         return;
     };
@@ -1187,13 +1208,13 @@ fn resize_surface(world: &World, app: Entity, width: u32, height: u32) {
             .root_scope()
             .query_one::<&mut Renderer>(renderer)
             .map(|mut renderer| {
-                surface.resize(nested, &mut renderer, width, height);
+                surface.resize(nested, &mut *renderer.get(), width, height);
             })
             .expect("the renderer is a resource entity");
     });
     let size = surface.size();
     if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app)
-        && let Some(attachments) = attachments.0.as_mut()
+        && let Some(attachments) = attachments.get().0.as_mut()
     {
         with_presented(world, app, |nested, _renderer| {
             attachments.resize(nested, size);
@@ -1243,7 +1264,7 @@ fn release(world: &World, app: Entity) {
         .root_scope()
         .query_one::<&mut Renderer>(renderer)
         .map(|mut renderer| {
-            surface.release(&nested, &mut renderer);
+            surface.release(&*nested.get(), &mut *renderer.get());
         })
         .expect("the renderer is a resource entity");
     if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app) {
@@ -1257,30 +1278,32 @@ fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
         .root_scope()
         .query_one::<&mut SurfaceSlot>(app)
         .ok()
-        .and_then(|mut slot| slot.0.take());
+        .and_then(|mut slot| slot.get().0.take());
     if let Some(surface) = released
         && let Some(scene_entity) = world
             .root_scope()
             .query_one::<&SceneEntity>(app)
             .ok()
-            .and_then(|slot| slot.0)
-        && let Ok(nested) = world.root_scope().query_one::<&World>(scene_entity)
+            .and_then(|mut slot| slot.get().0)
+        && let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity)
     {
         let renderer = world
             .root_scope()
             .query_one::<&Scene>(scene_entity)
             .expect("the scene entity carries a scene")
+            .get()
             .renderer;
+        let nested = nested.get();
         nested
             .root_scope()
             .query_one::<&mut Renderer>(renderer)
             .map(|mut renderer| {
-                surface.release(&nested, &mut renderer);
+                surface.release(nested, &mut *renderer.get());
             })
             .expect("the renderer is a resource entity");
     }
     if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app) {
-        attachments.0 = None;
+        attachments.get().0 = None;
     }
     // The MCP run's offscreen target was built around the scene a switch just
     // dropped, so it goes with it: the rebuilt scene binds a target of its own,
@@ -1288,18 +1311,18 @@ fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
     // below, passes and sources with it. The switching frame skips drawing, so
     // nothing renders into the target being released.
     if let Ok(mut offscreen) = world.root_scope().query_one::<&mut Offscreen>(app) {
-        offscreen.0 = None;
+        offscreen.get().0 = None;
     }
     if let Some(entity) = world
         .root_scope()
         .query_one::<&mut SceneEntity>(app)
         .ok()
-        .and_then(|mut slot| slot.0.take())
+        .and_then(|mut slot| slot.get().0.take())
     {
         world.root_scope().queue().despawn(entity);
     }
     if let Ok(mut initial) = world.root_scope().query_one::<&mut InitialScene>(app) {
-        initial.0 = def;
+        initial.get().0 = def;
     }
     present(world, app);
 }
@@ -1322,19 +1345,19 @@ fn step_sequence(entity: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&SequenceStep>(entity)
             .ok()
-            .and_then(|step| step.0)
+            .and_then(|mut step| step.get().0)
         {
             Some(step) => world
                 .root_scope()
                 .query_one::<&mut SequenceClock>(entity)
-                .map(|mut clock| tick(&mut clock.0, step, frame.delta_time))
+                .map(|mut clock| tick(&mut clock.get().0, step, frame.delta_time))
                 .expect("the scene frame entity carries a sequence clock"),
             None => true,
         };
         let _ = world
             .root_scope()
             .query_one::<&mut SequenceStepped>(entity)
-            .map(|mut flag| flag.0 = stepped);
+            .map(|mut flag| flag.get().0 = stepped);
     })
 }
 
@@ -1349,7 +1372,7 @@ fn run_scene_advance(entity: Entity) -> OnFrame {
         let stepped = world
             .root_scope()
             .query_one::<&SequenceStepped>(entity)
-            .is_ok_and(|flag| flag.0);
+            .is_ok_and(|mut flag| flag.get().0);
         if !stepped {
             return;
         }
@@ -1382,7 +1405,7 @@ fn ensure_presented(app: Entity) -> OnFrame {
         if world
             .root_scope()
             .query_one::<&SceneEntity>(app)
-            .map_or(true, |slot| slot.0.is_none())
+            .map_or(true, |mut slot| slot.get().0.is_none())
         {
             present(world, app);
             FrameSkip::skip(world);
@@ -1391,13 +1414,13 @@ fn ensure_presented(app: Entity) -> OnFrame {
         if !world
             .root_scope()
             .query_one::<&SurfaceSlot>(app)
-            .is_ok_and(|slot| slot.0.is_some())
+            .is_ok_and(|mut slot| slot.get().0.is_some())
         {
             present(world, app);
             if !world
                 .root_scope()
                 .query_one::<&SurfaceSlot>(app)
-                .is_ok_and(|slot| slot.0.is_some())
+                .is_ok_and(|mut slot| slot.get().0.is_some())
             {
                 FrameSkip::skip(world);
             }
@@ -1439,41 +1462,44 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&SceneEntity>(app)
             .ok()
-            .and_then(|slot| slot.0)
+            .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
         let active = window(world).is_some_and(|window| fullscreen::active(&window));
         let (selector_pos, gpu_info_pos, switch, fullscreen) = {
-            let Ok(nested) = world.root_scope().query_one::<&World>(scene_entity) else {
+            let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) else {
                 return;
             };
             let (selector_pos, gpu_info_pos) = {
-                let scene = world
+                let mut scene = world
                     .root_scope()
                     .query_one::<&Scene>(scene_entity)
                     .expect("the scene component exists");
-                (scene.selector_rect(&nested), scene.gpu_info_rect(&nested))
+                (
+                    scene.get().selector_rect(nested.get()),
+                    scene.get().gpu_info_rect(nested.get()),
+                )
             };
             let switch = world
                 .root_scope()
                 .query_one::<&mut Scene>(scene_entity)
                 .ok()
-                .and_then(|mut scene| scene.pending.take());
+                .and_then(|mut scene| scene.get().pending.take());
             let fullscreen = world
                 .root_scope()
                 .query_one::<&mut Scene>(scene_entity)
-                .is_ok_and(|mut scene| scene.fullscreen_request(&nested, active));
+                .is_ok_and(|mut scene| scene.get().fullscreen_request(nested.get(), active));
             (selector_pos, gpu_info_pos, switch, fullscreen)
         };
         let _ = world
             .root_scope()
             .query_one::<&mut SelectorPos>(app)
-            .map(|mut slot| slot.0 = selector_pos);
+            .map(|mut slot| slot.get().0 = selector_pos);
         let _ = world
             .root_scope()
             .query_one::<&mut GpuInfoPos>(app)
-            .map(|mut slot| slot.0 = gpu_info_pos);
+            .map(|mut slot| slot.get().0 = gpu_info_pos);
         if let Some(def) = switch {
             switch_scene(world, app, def);
             FrameSkip::skip(world);
@@ -1484,8 +1510,8 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
         }
         // The UI publishes the URLs it was asked to open in the scene's own
         // world, so it is drained there rather than here in the host.
-        if let Ok(nested) = world.root_scope().query_one::<&World>(scene_entity) {
-            for url in drain_open_urls(&nested) {
+        if let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) {
+            for url in drain_open_urls(nested.get()) {
                 open_url(&url);
             }
         }
@@ -1502,7 +1528,7 @@ fn advance_scene(app: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&SceneEntity>(app)
             .ok()
-            .and_then(|slot| slot.0)
+            .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
@@ -1513,7 +1539,7 @@ fn advance_scene(app: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| {
-                scene.advance(&mut nested, frame.delta_time);
+                scene.get().advance(&mut *nested.get(), frame.delta_time);
             });
     })
 }
@@ -1546,7 +1572,7 @@ fn present_frame(app: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&SceneEntity>(app)
             .ok()
-            .and_then(|slot| slot.0)
+            .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
@@ -1556,37 +1582,42 @@ fn present_frame(app: Entity) -> OnFrame {
         let mcp = world
             .root_scope()
             .query_one::<&McpEnabled>(app)
-            .is_ok_and(|mcp| mcp.0);
+            .is_ok_and(|mut mcp| mcp.get().0);
         let (renderer, presenting, scene_pass, viewport) = {
-            let scene = world
+            let mut scene = world
                 .root_scope()
                 .query_one::<&Scene>(scene_entity)
                 .expect("the scene entity carries a scene");
             // A world that lost its blit pass has nothing to present: the frame
             // is skipped rather than taken down.
-            let Some(presenting) = presenting_pass(&scene, mcp) else {
+            let Some(presenting) = presenting_pass(scene.get(), mcp) else {
                 return;
             };
-            (scene.renderer, presenting, scene.pass, scene.viewport)
+            (
+                scene.get().renderer,
+                presenting,
+                scene.get().pass,
+                scene.get().viewport,
+            )
         };
 
         let Ok(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
             return;
         };
-        let Some(surface) = slot.0.as_mut() else {
+        let Some(surface) = slot.get().0.as_mut() else {
             return;
         };
-        let nested_world: &World = &nested;
-        let attachments = world
+        let nested_world: &World = nested.get();
+        let mut attachments = world
             .root_scope()
             .query_one::<&mut AttachmentsSlot>(app)
             .expect("the app entity carries its attachments slot");
-        let attachments = attachments.0.as_ref();
+        let attachments = attachments.get().0.as_ref();
         nested_world
             .root_scope()
             .query_one::<&mut Renderer>(renderer)
             .map(|mut renderer| {
-                let Some(frame) = surface.acquire(nested_world, &mut renderer) else {
+                let Some(frame) = surface.acquire(nested_world, &mut *renderer.get()) else {
                     return;
                 };
                 if let Some(attachments) = attachments {
@@ -1594,7 +1625,8 @@ fn present_frame(app: Entity) -> OnFrame {
                         .root_scope()
                         .query_one::<&mut FramePass>(presenting)
                         .map(|mut pass| {
-                            pass.set_attachments(attachments, frame.color_view().clone());
+                            pass.get()
+                                .set_attachments(attachments, frame.color_view().clone());
                         })
                         .expect("the presenting pass exists");
                 }
@@ -1606,21 +1638,21 @@ fn present_frame(app: Entity) -> OnFrame {
                 nested_world
                     .root_scope()
                     .query_one::<&mut FramePass>(scene_pass)
-                    .map(|mut pass| pass.viewport = viewport)
+                    .map(|mut pass| pass.get().viewport = viewport)
                     .expect("the scene's own pass exists");
-                renderer.render(nested_world);
-                let queue = nested_world
+                renderer.get().render(nested_world);
+                let mut queue = nested_world
                     .root_scope()
-                    .query_one::<&wgpu::Queue>(renderer.context().queue)
+                    .query_one::<&wgpu::Queue>(renderer.get().context().queue)
                     .expect("the queue resource");
-                frame.present(&queue);
+                frame.present(queue.get());
             })
             .expect("the renderer is a resource entity");
         let _ = world
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| {
-                if let Err(error) = scene.end_frame(&mut nested) {
+                if let Err(error) = scene.get().end_frame(&mut *nested.get()) {
                     log::error!("a command queued by a scene failed: {error}");
                 }
             });
@@ -1637,7 +1669,7 @@ fn request_gpu(app: Entity) -> OnFrame {
         if !world
             .root_scope()
             .query_one::<&GpuState>(app)
-            .is_ok_and(|state| matches!(&*state, GpuState::Idle))
+            .is_ok_and(|mut state| matches!(state.get(), GpuState::Idle))
         {
             return;
         }
@@ -1656,14 +1688,14 @@ fn request_gpu(app: Entity) -> OnFrame {
         let Ok(proxy) = world
             .root_scope()
             .query_one::<&WinitProxy<UserEvent>>(app)
-            .map(|proxy| proxy.0.clone())
+            .map(|mut proxy| proxy.get().0.clone())
         else {
             return;
         };
         let _ = world
             .root_scope()
             .query_one::<&mut GpuState>(app)
-            .map(|mut state| *state = GpuState::Requested);
+            .map(|mut state| *state.get() = GpuState::Requested);
         // The display handle is owned, not borrowed: the instance it builds has
         // to outlive this callback. The descriptor is the environment-aware one
         // so `WGPU_BACKEND` still selects a backend.
@@ -1695,13 +1727,13 @@ fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
                 .root_scope()
                 .query_one::<&mut GpuState>(app)
                 .map(|mut state| {
-                    *state = GpuState::Ready(gpu.clone());
+                    *state.get() = GpuState::Ready(gpu.clone());
                 });
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
             if world
                 .root_scope()
                 .query_one::<&McpEnabled>(app)
-                .is_ok_and(|mcp| mcp.0)
+                .is_ok_and(|mut mcp| mcp.get().0)
             {
                 start_mcp(world, app);
             }
@@ -1718,7 +1750,7 @@ fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
             let _ = world
                 .root_scope()
                 .query_one::<&mut ExitRequest>(app)
-                .map(|mut request| request.0 = true);
+                .map(|mut request| request.get().0 = true);
         }
     })
 }
@@ -1746,7 +1778,7 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
             .root_scope()
             .query_one::<&SceneEntity>(app)
             .ok()
-            .and_then(|slot| slot.0)
+            .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
@@ -1754,16 +1786,17 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
             .root_scope()
             .query_one::<&InitialScene>(app)
             .expect("the app entity carries its initial scene")
+            .get()
             .0
             .baseline;
         let _ = world
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
-            .map(|mut scene| scene.resize(size, baseline));
+            .map(|mut scene| scene.get().resize(size, baseline));
         if world
             .root_scope()
             .query_one::<&McpEnabled>(app)
-            .is_ok_and(|mcp| mcp.0)
+            .is_ok_and(|mut mcp| mcp.get().0)
         {
             resize_offscreen(world, app, size);
         }
@@ -1788,7 +1821,7 @@ fn start_mcp(world: &World, app: Entity) {
     let Ok(proxy) = world
         .root_scope()
         .query_one::<&WinitProxy<UserEvent>>(app)
-        .map(|proxy| proxy.0.clone())
+        .map(|mut proxy| proxy.get().0.clone())
     else {
         return;
     };
@@ -1818,9 +1851,10 @@ fn dispatch_command(world: &World, command: unlit_ecs::mcp::McpCommand) {
             name: "host",
         }];
         for (entity, _) in world.root_scope().query::<(Entity, &World)>().iter() {
-            let Ok(name) = world.root_scope().query_one::<&WorldName>(entity) else {
+            let Ok(mut name) = world.root_scope().query_one::<&WorldName>(entity) else {
                 continue;
             };
+            let name = name.get();
             worlds.push(WorldEntry {
                 world: WorldId::handle(entity),
                 name: name.0,
@@ -1895,7 +1929,7 @@ impl Scene {
         world
             .root_scope()
             .query_one::<&mut FramePass>(pass)
-            .map(|mut pass| pass.viewport = viewport)
+            .map(|mut pass| pass.get().viewport = viewport)
             .expect("the pass was just spawned");
 
         // The UI source is mounted before the scene is built, so a scene's own
@@ -2023,7 +2057,7 @@ impl Scene {
         world
             .root_scope()
             .query_one::<&mut FrameRate>(self.frame_rate)
-            .map(|mut rate| rate.push(delta_time))
+            .map(|mut rate| rate.get().push(delta_time))
             .expect("the frame-rate component exists");
 
         let mut frame = Frame {
@@ -2038,7 +2072,7 @@ impl Scene {
         self.pending = world
             .root_scope()
             .query_one::<&mut SceneSwitch>(self.switch)
-            .map(|mut s| s.0.take())
+            .map(|mut s| s.get().0.take())
             .expect("the switch component exists");
     }
 
@@ -2088,11 +2122,11 @@ impl Scene {
         let _ = world
             .root_scope()
             .query_one::<&mut FullscreenActive>(self.fullscreen_active)
-            .map(|mut state| state.0 = active);
+            .map(|mut state| state.get().0 = active);
         world
             .root_scope()
             .query_one::<&mut FullscreenRequest>(self.fullscreen)
-            .map(|mut request| std::mem::take(&mut request.0))
+            .map(|mut request| std::mem::take(&mut request.get().0))
             .expect("the fullscreen request component exists")
     }
 
@@ -2105,7 +2139,7 @@ impl Scene {
         world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| renderer.render(world))
+            .map(|mut renderer| renderer.get().render(world))
             .expect("the renderer is a resource entity");
     }
 
@@ -2243,7 +2277,7 @@ fn mount_selector(
                     if ui.selectable_label(selected, scene.title).clicked() {
                         let _ = world
                             .query_one::<&mut SceneSwitch>(switch)
-                            .map(|mut s| s.0 = Some(scene));
+                            .map(|mut s| s.get().0 = Some(scene));
                     }
                 }
             });
@@ -2406,7 +2440,7 @@ fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
         .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
             let text = world
                 .query_one::<&FrameRate>(rate)
-                .map(|rate| rate.text())
+                .map(|mut rate| rate.get().text())
                 .expect("the frame-rate component exists");
             frame_rate_readout(ui, &text);
         },),]);
@@ -2575,10 +2609,10 @@ fn gpu_info_default_pos(ctx: &egui::Context) -> egui::Pos2 {
 fn mount_gpu_info(world: &mut World, ui: Entity, device: Entity, initial: Option<egui::Rect>) {
     let info = {
         let scope = world.scope(ui).expect("the UI source is alive");
-        let device = scope
+        let mut device = scope
             .query_one::<&wgpu::Device>(device)
             .expect("the device component exists");
-        GpuInfo::read(&device)
+        GpuInfo::read(device.get())
     };
     world
         .scope_mut(ui)
@@ -2799,11 +2833,11 @@ fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entit
         .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
             let active = world
                 .query_one::<&FullscreenActive>(state)
-                .is_ok_and(|state| state.0);
+                .is_ok_and(|mut state| state.get().0);
             if fullscreen_button(ui, active) {
                 let _ = world
                     .query_one::<&mut FullscreenRequest>(request)
-                    .map(|mut request| request.0 = true);
+                    .map(|mut request| request.get().0 = true);
             }
         },),]);
 }
@@ -3031,6 +3065,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&Offscreen>(app)
                 .expect("the app keeps its slots")
+                .get()
                 .0
                 .is_none(),
             "the offscreen target went with the scene that filled it"
@@ -3044,6 +3079,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&InitialScene>(app)
                 .expect("the app keeps its initial scene")
+                .get()
                 .0
                 .id,
             "ui_only"

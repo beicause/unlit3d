@@ -252,7 +252,7 @@ let delta = *world.root_scope().query_one::<&f32>(clock).unwrap().get();
         spin.angle += spin.radians_per_second * delta;
     }
 }
-assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().angle, 0.0);
+assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().get().angle, 0.0);
 
 // 谓词在认领任何列之前收窄要访问的 archetype：这里取「没有时钟」的那些。
 let _ = world

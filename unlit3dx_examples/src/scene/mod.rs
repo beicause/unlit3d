@@ -139,7 +139,7 @@ pub fn pose_job(poses: ScenePoses) -> Job {
             let _ = scope
                 .query_one::<&mut Transform>(entity.0)
                 .map(|mut transform| {
-                    transform.clone_from(pose);
+                    transform.get().clone_from(pose);
                 });
         }
     })
@@ -187,22 +187,23 @@ pub fn setup_render_world(
     let Ok(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
+    let world = nested.get();
     let context = spawn_context(
-        &mut nested,
+        world,
         device.clone(),
         queue.clone(),
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = nested
+    let renderer = world
         .root_scope_mut()
         .spawn(bundle![Renderer::new(context)]);
     // The pass draws every source below it, so the scene's sources belong to
     // it rather than to the world's root.
-    let pass = nested.root_scope_mut().spawn(Pass::new(SCENE_PASS_ORDER));
-    let mut source = MeshSource::new(&nested.root_scope(), context);
-    source.register_lit_family(&nested.root_scope());
-    nested
+    let pass = world.root_scope_mut().spawn(Pass::new(SCENE_PASS_ORDER));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_lit_family(&world.root_scope());
+    world
         .scope_mut(pass)
         .expect("the scene's pass is alive")
         .spawn(bundle![Source::new(source)]);
@@ -251,7 +252,7 @@ pub fn camera_job() -> Job {
                     .root_scope()
                     .query_one::<&mut Camera>(camera_entity)
                     .map(|mut current| {
-                        *current = camera;
+                        *current.get() = camera;
                     });
             }),]);
     })

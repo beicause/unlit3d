@@ -172,10 +172,12 @@ fn build(
                     skins[instance].set_angle(instance_angle(frame, instance));
                     *scope
                         .query_one::<&mut SkinPose>(pose_entities[instance])
-                        .expect("the pose entity carries a `SkinPose`") = skins[instance].pose();
+                        .expect("the pose entity carries a `SkinPose`")
+                        .get() = skins[instance].pose();
                     scope
                         .query_one::<&mut MorphWeights>(weight_entities[instance])
                         .expect("the weight entity carries a `MorphWeights`")
+                        .get()
                         .weights = instance_weights(frame, instance).to_vec();
                 }
             }

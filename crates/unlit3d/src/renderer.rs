@@ -282,9 +282,10 @@ impl Renderer {
         for index in 0..self.passes.entities().len() {
             let pass_entity = self.passes.entities()[index];
             let root = world.root_scope();
-            let Ok(pass) = root.query_one::<&FramePass>(pass_entity) else {
+            let Ok(mut pass) = root.query_one::<&FramePass>(pass_entity) else {
                 continue;
             };
+            let pass = pass.get();
             // A pass with no attachment cannot be opened; the world parks one
             // that way while its target is gone.
             let Some(attachments) = pass.attachments(world, self.context) else {
@@ -318,7 +319,7 @@ impl Renderer {
                     ViewportRect::new(attachments.width() as f32, attachments.height() as f32);
                 let load = root
                     .query_one::<&RenderLoadOps>(pass_entity)
-                    .map_or_else(|_| RenderLoadOps::default(), |load| *load);
+                    .map_or_else(|_| RenderLoadOps::default(), |mut load| *load.get());
                 let mut render_pass =
                     attachments.begin_pass(&mut encoder, load.color, load.depth, load.stencil);
                 for index in 0..self.sources.entities().len() {

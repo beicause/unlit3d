@@ -117,6 +117,7 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> Rende
         .query_one::<&mut Source>(source_entity.0)
         .map(|mut source| {
             source
+                .get()
                 .as_mut::<MeshSource>()
                 .expect("the source carries a MeshSource")
                 .allocate_lit_mesh(&root, &key.options, desc.borrowed())
@@ -176,6 +177,7 @@ fn allocate_material(
         .query_one::<&mut Source>(source_entity.0)
         .map(|mut source| {
             let source = source
+                .get()
                 .as_mut::<MeshSource>()
                 .expect("the source carries a MeshSource");
             let texture = build_texture(source, &root);
@@ -211,11 +213,13 @@ pub(crate) fn instance_of(
         .root_scope()
         .query_one::<&GpuMesh>(mesh.0)
         .expect("the mesh asset entity exists")
+        .get()
         .clone();
     let material = world
         .root_scope()
         .query_one::<&GpuMaterial>(material.0)
         .expect("the material asset entity exists")
+        .get()
         .clone();
     // The instance hangs under the source that draws it: a source draws
     // the subtree it owns, so an instance spawned beside it is never seen.
@@ -278,7 +282,7 @@ pub(crate) fn hidden_instance_of(
     };
     let _ = scope
         .query_one::<&mut InstanceVisibility>(instance.0)
-        .map(|mut visibility| visibility.visible = false);
+        .map(|mut visibility| visibility.get().visible = false);
     instance
 }
 
@@ -327,13 +331,15 @@ pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> 
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
             outside.retain(|answer| {
-                let Ok(mesh) = scope.query_one::<&GpuMesh>(answer.instance.0) else {
+                let Ok(mut mesh) = scope.query_one::<&GpuMesh>(answer.instance.0) else {
                     return false;
                 };
                 let model = scope
                     .query_one::<&Transform>(answer.instance.0)
-                    .map_or(Affine3A::IDENTITY, |transform| transform.compute_matrix());
-                is_culled(mesh.aabb, &model, &frustum)
+                    .map_or(Affine3A::IDENTITY, |mut transform| {
+                        transform.get().compute_matrix()
+                    });
+                is_culled(mesh.get().aabb, &model, &frustum)
             });
         }
         if outside.is_empty() {
@@ -386,13 +392,13 @@ pub(crate) fn show(
     };
     let Ok(mesh) = scope
         .query_one::<&GpuMesh>(mesh.0)
-        .map(|mesh| (*mesh).clone())
+        .map(|mut mesh| mesh.get().clone())
     else {
         return false;
     };
     let Ok(material) = scope
         .query_one::<&GpuMaterial>(material.0)
-        .map(|material| (*material).clone())
+        .map(|mut material| material.get().clone())
     else {
         return false;
     };

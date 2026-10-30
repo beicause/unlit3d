@@ -231,7 +231,7 @@ pub struct BodyDesc {
 #[must_use]
 pub fn spawn_body(world: &mut World, desc: BodyDesc) -> RigidBodyHandle {
     let mut physics = physics_world(world);
-    let body = physics.insert_body(
+    let body = physics.get().insert_body(
         RigidBodyBuilder::dynamic()
             .translation(desc.position)
             .linvel(desc.velocity)
@@ -249,7 +249,7 @@ pub fn spawn_body(world: &mut World, desc: BodyDesc) -> RigidBodyHandle {
             radius,
         } => ColliderBuilder::cone(half_height, radius),
     };
-    physics.insert_collider(
+    physics.get().insert_collider(
         collider
             .restitution(desc.restitution)
             .active_events(ActiveEvents::COLLISION_EVENTS),
@@ -270,7 +270,7 @@ pub fn spawn_body(world: &mut World, desc: BodyDesc) -> RigidBodyHandle {
 /// Panics when the world carries no [`PhysicsWorld`].
 #[must_use]
 pub fn despawn_body(world: &World, body: RigidBodyHandle) -> bool {
-    physics_world(world).remove_body(body).is_some()
+    physics_world(world).get().remove_body(body).is_some()
 }
 
 /// Spawn a fixed cuboid: a floor, a wall, whatever gameplay needs.
@@ -280,8 +280,10 @@ pub fn despawn_body(world: &World, body: RigidBodyHandle) -> bool {
 /// Panics when the world carries no [`PhysicsWorld`].
 pub fn spawn_fixed_cuboid(world: &mut World, position: Vec3, half_extents: Vec3, friction: f32) {
     let mut physics = physics_world(world);
-    let body = physics.insert_body(RigidBodyBuilder::fixed().translation(position).build());
-    physics.insert_collider(
+    let body = physics
+        .get()
+        .insert_body(RigidBodyBuilder::fixed().translation(position).build());
+    physics.get().insert_collider(
         ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z).friction(friction),
         Some(body),
     );
@@ -385,20 +387,21 @@ pub fn step_once(world: &World) -> bool {
     // rather than the separation it left behind.
     let mut events = physics_events(world);
     if let Some(events) = events.as_mut() {
-        events.sample_velocities(physics);
+        events.get().sample_velocities(physics);
     }
-    match events.as_ref() {
-        Some(events) => physics.step_with_events(&(), &events.collector),
+    match events.as_mut() {
+        Some(events) => physics.step_with_events(&(), &events.get().collector),
         None => physics.step(),
     }
-    let Some(events) = events.as_ref() else {
+    let Some(mut events) = events else {
         return true;
     };
     let Some(mut contacts) = physics_contacts(world) else {
         return true;
     };
-    contacts.started.clear();
-    contacts.stopped.clear();
+    contacts.get().started.clear();
+    contacts.get().stopped.clear();
+    let events = events.get();
     while let Ok(event) = events.receiver.try_recv() {
         let (one, two) = match event {
             CollisionEvent::Started(one, two, _) => (one, two),
@@ -410,9 +413,9 @@ pub fn step_once(world: &World) -> bool {
         match event {
             CollisionEvent::Started(..) => {
                 let speed = contact_speed(physics, events, one, two);
-                contacts.started.push((body_one, body_two, speed));
+                contacts.get().started.push((body_one, body_two, speed));
             }
-            _ => contacts.stopped.push((body_one, body_two)),
+            _ => contacts.get().stopped.push((body_one, body_two)),
         }
     }
     true

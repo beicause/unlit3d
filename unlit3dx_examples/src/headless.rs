@@ -133,16 +133,18 @@ pub fn run(
     // still the scene's, so it arrives as a job like the meshes do.
     mount_scene_content(&render, pass, None);
     let offscreen = {
-        let nested = host
+        let mut nested = host
             .root_scope()
             .query_one::<&mut World>(render.entity)
             .expect("the render sub-world exists");
-        let context = nested
+        let world = nested.get();
+        let context = world
             .root_scope()
             .query_one::<&Renderer>(renderer.0)
             .expect("the renderer is a resource entity")
+            .get()
             .context();
-        bind_offscreen(&nested, context, pass.0, device, config.size)
+        bind_offscreen(world, context, pass.0, device, config.size)
     };
 
     let mut output = HeadlessOutput {
@@ -208,14 +210,15 @@ pub fn run(
             .root_scope()
             .query_one::<&mut World>(render.entity)
             .expect("the render sub-world exists");
-        drain_sub_world(&mut nested);
-        dispatch_frame(&mut nested, &mut frame);
+        let world = nested.get();
+        drain_sub_world(world);
+        dispatch_frame(world, &mut frame);
         if config.capture.contains(&index) {
-            let _ = nested
+            let _ = world
                 .root_scope()
                 .query_one::<&mut Renderer>(renderer.0)
                 .map(|mut r| {
-                    r.render(&nested);
+                    r.get().render(&*world);
                 });
             let target = offscreen.as_ref().expect("the offscreen target exists");
             output

@@ -199,7 +199,7 @@ fn install(world: &mut World, entry: Box<dyn Entry>) {
                 .root_scope()
                 .query_one::<&mut SnapshotOutlet>(entity)
                 .expect("the subscription outlet exists");
-            outlet.entries.push(entry);
+            outlet.get().entries.push(entry);
         }
         None => {
             world.root_scope_mut().spawn(bundle![SnapshotOutlet {

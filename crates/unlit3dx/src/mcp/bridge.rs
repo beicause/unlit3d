@@ -132,7 +132,7 @@ fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
     }];
     let push = |entity: Entity, worlds: &mut Vec<WorldEntry>| {
         let id = WorldId::handle(entity);
-        let Ok(name) = world.root_scope().query_one::<&WorldName>(entity) else {
+        let Ok(mut name) = world.root_scope().query_one::<&WorldName>(entity) else {
             return;
         };
         if worlds.iter().any(|entry| entry.world == id) {
@@ -140,7 +140,7 @@ fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
         }
         worlds.push(WorldEntry {
             world: id,
-            name: name.0,
+            name: name.get().0,
         });
     };
     for (_world, entity) in world.root_scope().query::<(&World, Entity)>().iter() {
@@ -180,7 +180,7 @@ impl Command for RunInWorld {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let RunInWorld { entity, command } = *self;
         if let Ok(mut nested) = world.root_scope().query_one::<&mut World>(entity) {
-            command.dispatch(&mut nested);
+            command.dispatch(&mut *nested.get());
             return Ok(());
         }
         let Ok(sender) = world

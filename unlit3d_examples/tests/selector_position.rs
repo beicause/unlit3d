@@ -259,6 +259,7 @@ fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
         .expect("the renderer is a resource entity")
+        .get()
         .context();
     let _ = unlit3d_examples::bind_offscreen_target(
         world,

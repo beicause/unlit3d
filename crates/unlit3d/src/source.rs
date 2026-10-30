@@ -21,10 +21,11 @@
 //! [`Scene`]: unlit_wgpu::scene::Scene
 
 use core::any::Any;
-use core::ops::DerefMut;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, Scope, ScopeMut, World};
+use unlit_ecs::{
+    Bundle, DynamicBundle, Entity, EntityAccessError, QueryOne, Scope, ScopeMut, World,
+};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
@@ -106,7 +107,7 @@ impl RenderContext {
     /// # Panics
     ///
     /// If the context's graph resource is gone.
-    pub fn graph<'w>(self, scope: &'w Scope<'w>) -> impl DerefMut<Target = ResourceGraph> + 'w {
+    pub fn graph<'w>(self, scope: &'w Scope<'w>) -> QueryOne<'w, &'w mut ResourceGraph> {
         scope
             .query_one::<&mut ResourceGraph>(self.graph)
             .expect("the context's resource graph exists")
@@ -166,7 +167,7 @@ impl Drop for MaintainScope<'_> {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
         if let Ok(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
-            graph.maintain();
+            graph.get().maintain();
         }
     }
 }

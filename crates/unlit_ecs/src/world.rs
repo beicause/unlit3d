@@ -21,11 +21,13 @@
 //! or remove one later. To change the set of components, despawn the entity
 //! and spawn a new one.
 //!
-//! A borrow conflict is a panic, not a compile error: asking for a component
-//! that is already borrowed, or fetching the same component as `&mut` twice
-//! in one query, reports the component's name and stops. This is the trade for
-//! not doing access analysis. An optional component is optional only about the
-//! component being absent; a cell that cannot be borrowed panics as well.
+//! A borrow conflict is a panic, not a compile error: two claims the ledger
+//! cannot share — a shared claim still held while a write asks for the same
+//! component, or the same component fetched as `&mut` twice in one query —
+//! report the component's name and both claim sites, then stop. This is the
+//! trade for not doing access analysis. An optional component is optional only
+//! about the component being absent: a conflict over one the row does carry
+//! panics as well.
 
 use core::any::TypeId;
 use core::cell::{Ref, RefCell, RefMut};

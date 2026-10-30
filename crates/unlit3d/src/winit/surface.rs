@@ -35,7 +35,7 @@
 //!     .root_scope()
 //!     .query_one::<&mut Renderer>(renderer)
 //!     .map(|mut r| {
-//!         WindowSurface::new(world, &mut r, instance, adapter, window, surface)
+//!         WindowSurface::new(world, r.get(), instance, adapter, window, surface)
 //!     })
 //!     .unwrap();
 //! // The depth and multisample attachments the frame draws with; `true` asks
@@ -44,6 +44,7 @@
 //!     .root_scope()
 //!     .query_one::<&Renderer>(renderer)
 //!     .unwrap()
+//!     .get()
 //!     .context();
 //! let attachments = FrameAttachments::new(
 //!     world,
@@ -76,19 +77,19 @@
 //! let Some(frame) = root
 //!     .query_one::<&mut Renderer>(renderer_entity)
 //!     .ok()
-//!     .and_then(|mut r| window_surface.acquire(world, &mut r))
+//!     .and_then(|mut r| window_surface.acquire(world, r.get()))
 //! else {
 //!     return;
 //! };
 //! root
 //!     .query_one::<&mut FramePass>(pass)
 //!     .map(|mut pass| {
-//!         pass.set_attachments(attachments, frame.color_view().clone());
+//!         pass.get().set_attachments(attachments, frame.color_view().clone());
 //!     })
 //!     .unwrap();
 //! root
 //!     .query_one::<&mut Renderer>(renderer_entity)
-//!     .map(|mut r| r.render(world))
+//!     .map(|mut r| r.get().render(world))
 //!     .unwrap();
 //! frame.present(queue);
 //! # }
@@ -96,7 +97,7 @@
 
 use std::sync::Arc;
 
-use unlit_ecs::World;
+use unlit_ecs::{QueryOne, World};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 use crate::renderer::Renderer;
@@ -123,7 +124,7 @@ fn context_device(world: &World, renderer: &Renderer) -> wgpu::Device {
 fn context_graph<'w>(
     world: &'w World,
     renderer: &Renderer,
-) -> impl core::ops::DerefMut<Target = unlit_wgpu::resources::ResourceGraph> + 'w {
+) -> QueryOne<'w, &'w mut unlit_wgpu::resources::ResourceGraph> {
     world
         .root_scope()
         .query_one::<&mut unlit_wgpu::resources::ResourceGraph>(renderer.context().graph)
@@ -256,7 +257,7 @@ impl WindowSurface {
         // collect the view, before anything can be left naming a swap chain
         // that is gone.
         drop(self);
-        context_graph(world, renderer).maintain();
+        context_graph(world, renderer).get().maintain();
     }
 
     /// Acquire the next frame.
@@ -295,16 +296,17 @@ impl WindowSurface {
         let color = match self.color_view.as_ref() {
             Some(id) => {
                 context_graph(world, renderer)
+                    .get()
                     .replace(id, view)
                     .expect("the color view is in the graph");
                 id.clone()
             }
-            None => context_graph(world, renderer).insert(view, None),
+            None => context_graph(world, renderer).get().insert(view, None),
         };
         self.color_view = Some(color.clone());
         // Replacing the color view marked every reader dirty; drop the old
         // frame's view now rather than holding it until the next scene build.
-        context_graph(world, renderer).maintain();
+        context_graph(world, renderer).get().maintain();
         Some(Frame {
             surface_texture,
             color_view: color,

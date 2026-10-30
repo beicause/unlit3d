@@ -530,8 +530,8 @@ pub fn aim_camera(
         .expect("the scope is alive")
         .query_one::<&mut Camera>(entity)
         .map(|mut current| {
-            camera.active = current.active;
-            *current = camera;
+            camera.active = current.get().active;
+            *current.get() = camera;
         })
         .expect("the entity carries a camera");
 }
@@ -717,6 +717,7 @@ pub fn with_mesh_source<R>(
         .query_one::<&mut Source>(source_entity)
         .expect("the source entity exists");
     let mesh = source
+        .get()
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
     f(mesh, &scope)

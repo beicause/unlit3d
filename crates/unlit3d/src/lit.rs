@@ -427,17 +427,18 @@ impl InstanceData for LitInstance {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let world = &context.world;
         let entity = context.entity;
-        let mesh = world.query_one::<&GpuMesh>(entity).unwrap_or_else(|_| {
+        let mut mesh_row = world.query_one::<&GpuMesh>(entity).unwrap_or_else(|_| {
             panic!(
                 "every visible entity carries the mesh culling resolved, but {entity:?} does not"
             )
         });
+        let mesh = mesh_row.get();
         let base_color = world
             .query_one::<&InstanceColor>(entity)
-            .map_or(glam::Vec4::ONE, |color| color.color);
+            .map_or(glam::Vec4::ONE, |mut color| color.get().color);
         let cutoff = world
             .query_one::<&InstanceCutoff>(entity)
-            .map_or(0.0, |cutoff| cutoff.cutoff);
+            .map_or(0.0, |mut cutoff| cutoff.get().cutoff);
         // Skinning and morphing are independent: a mesh may have either, both
         // or neither, and each packs into its own array.
         let joints_base = if mesh.skinned {
@@ -732,6 +733,7 @@ impl MeshSourceLitExt for MeshSource {
             let buffer = self
                 .context
                 .graph(world)
+                .get()
                 .get(&id)
                 .expect("the stream's node exists")
                 .clone();
@@ -803,8 +805,9 @@ impl MeshSourceLitExt for MeshSource {
                     .allocate(&device, &queue, packed_len as u32)
                     .expect("the index pool grows with the mesh");
                 {
-                    let mut graph = self.context.graph(world);
-                    MeshSource::sync_pool_node(&self.index_pool, &self.index_pool_id, &mut graph);
+                    let mut graph_holder = self.context.graph(world);
+                    let graph = graph_holder.get();
+                    MeshSource::sync_pool_node(&self.index_pool, &self.index_pool_id, graph);
                     let buffer = graph
                         .get(&self.index_pool_id)
                         .expect("the index pool node exists")

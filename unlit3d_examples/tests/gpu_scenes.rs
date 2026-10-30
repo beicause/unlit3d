@@ -199,6 +199,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
         .expect("the renderer is a resource entity")
+        .get()
         .context();
     let target = unlit3d_examples::bind_offscreen_target(
         &world,
@@ -293,6 +294,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
         .expect("the renderer is a resource entity")
+        .get()
         .context();
     let target = unlit3d_examples::bind_offscreen_target(
         &world,

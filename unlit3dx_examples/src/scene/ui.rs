@@ -204,7 +204,7 @@ pub fn mount_controls(world: &mut World) {
                         track_controls(
                             ui,
                             "Background music",
-                            &mut track.midi,
+                            &mut track.get().midi,
                             layout,
                             &scene.audio,
                         );
@@ -213,7 +213,13 @@ pub fn mount_controls(world: &mut World) {
                         world.query::<&Scene>().iter().next(),
                         world.query_one::<&mut Track>(tracks.sequence),
                     ) {
-                        track_controls(ui, "MIDI sequence", &mut track.midi, layout, &scene.audio);
+                        track_controls(
+                            ui,
+                            "MIDI sequence",
+                            &mut track.get().midi,
+                            layout,
+                            &scene.audio,
+                        );
                     }
                     ui.separator();
                 }
