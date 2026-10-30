@@ -310,6 +310,7 @@ impl<'w> Scope<'w> {
             name: stored.name(),
             archetype: location.archetype(),
             row: location.row(),
+            scope: self.world.parent_scope(stored)?,
             components: archetype.names().to_vec(),
         })
     }
@@ -337,6 +338,10 @@ impl<'w> Scope<'w> {
                     name: entity.name(),
                     archetype: index as u32,
                     row,
+                    scope: self
+                        .world
+                        .parent_scope(entity)
+                        .expect("a visible row names a live entity"),
                     components: components.clone(),
                 });
             }

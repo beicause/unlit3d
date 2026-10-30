@@ -51,8 +51,8 @@ It is at an **early stage of development** and its API changes freely.
   component*, a component that holds a closure and is invoked by whatever
   driver the caller writes. A behaviour that needs to wait returns a future and
   the caller decides when to poll it; no executor is built in.
-- **The one relation is the scope.** Every entity carries a [`ScopeOf`]
-  pointing at its parent, which is what makes a scene a subtree: the scene's
+- **The one relation is the scope.** Every entity lives in a scope, which is
+  another entity, and that relation is what makes a scene a subtree: the scene's
   scope sees it and its descendants, and nobody else does — a sibling's subtree
   is out of reach in both directions, so two scenes side by side share nothing.
   Any scope also reaches the [`World::shared`] subtree, which is how a
@@ -75,18 +75,18 @@ It is at an **early stage of development** and its API changes freely.
   [`ArchetypeAccessError`] instead. `Option` stays where absence is not a
   failed access — a query item `Option<&C>` is absent for an entity that
   merely lacks `C`.
-- **Two entities are scaffolding.** `World::new` creates [`World::root`] — a
-  scope whose `ScopeOf` is itself, and the one the root scope opens — and
-  [`World::shared`], whose subtree every scope sees. Both can carry components
+- **Two entities are scaffolding.** `World::new` creates [`World::root`] — its
+  own scope, and the one the root scope opens — and [`World::shared`], whose
+  subtree every scope sees. Both can carry components
   and be opened as scopes; neither is counted, queried, despawned or relinked.
   They keep the first two rows of their archetype, so a query steps over them
   once per archetype instead of testing the identity of every row.
 
 ## Scopes
 
-A scope is an entity. Every entity carries a [`ScopeOf`] naming its parent, and
-that one relation is the whole tree: a scene is a subtree, and what a caller
-holds is [`Scope`], an accessor narrowed to one entity's place in it.
+A scope is an entity. Every entity lives in one, and that one relation is the
+whole tree: a scene is a subtree, and what a caller holds is [`Scope`], an
+accessor narrowed to one entity's place in it.
 
 ```rust
 use unlit_ecs::{Entity, World, bundle};
@@ -109,8 +109,8 @@ assert_eq!(world.root_scope().len(), 3);
 ```
 
 Two entities are scaffolding rather than content. [`World::root`] is the scope
-the root scope opens, and its `ScopeOf` is itself; [`World::shared`] is its
-child, and every scope reaches that subtree. Both can carry components and be
+the root scope opens, and lives in itself; [`World::shared`] is its child, and
+every scope reaches that subtree. Both can carry components and be
 opened as scopes, so a resource belongs on either one — but neither is counted,
 queried, despawned or relinked, which is why an empty world counts zero rather
 than two.
@@ -179,11 +179,14 @@ stays on the row it was spawned with.
 
 **Cost.** Visibility is decided on every access by walking the parent chain, and
 the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
-The index behind [`World::children`] and [`World::is_descendant`] is written by
-the world alongside the `ScopeOf` component, so the two cannot disagree. The
-component is the world's: its field is private, a bundle cannot carry it, and a
-`ScopeOf` written through the reflection registry is refused, because moving an
-entity is [`ScopeMut::link`]'s job. Queries and counts skip the rows a scope
+The relation is kept in one place — the world's tree — rather than in a
+component: visibility is answered on every access, and a component would have to
+be borrowed to answer it, so holding one entity's component exclusively would
+make the visibility check of another entity panic. One copy also means nothing
+to keep in agreement: only [`ScopeMut::link`] and [`unlink`] write the tree, and
+they need `&mut World`, so a borrow taken through a shared world can never race
+them. A read from a [`Scope`] pays one lookup in the tree per entity it asks
+about, which is what [`Scope::entity_info`] reports as `scope`. Queries and counts skip the rows a scope
 cannot see; [`Scope::archetype`] fails for an empty archetype and for one the
 scope only partly sees, [`Scope::archetypes`] yields only the non-empty
 archetypes the scope sees in full, and [`Scope::archetype_infos`] reports the
@@ -253,7 +256,7 @@ rule of its own overrides it.
 ## What is in the box
 
 [`World`], [`Entity`], [`Location`], [`Bundle`] / [`DynamicBundle`] (and the
-[`bundle!`] macro that writes one), [`ScopeOf`] and the
+[`bundle!`] macro that writes one), and the
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
 [`Query`] (the type parameter naming what a row yields, with [`Entity`] and

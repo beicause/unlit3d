@@ -204,7 +204,7 @@ fn more_than_sixteen_components() {
 
     let location = world.root_scope().location(entity).unwrap();
     let archetype = world.root_scope().archetype(location.archetype()).unwrap();
-    assert_eq!(archetype.types().len(), 24, "23 components plus ScopeOf");
+    assert_eq!(archetype.types().len(), 23, "the bundle's own components");
     assert!(
         world
             .root_scope()
@@ -308,11 +308,7 @@ fn into_bundle_returns_exactly_the_bundles_components() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(builder);
 
-    assert_eq!(
-        types_of(&world, entity).len(),
-        3,
-        "2 components plus ScopeOf"
-    );
+    assert_eq!(types_of(&world, entity).len(), 2, "exactly the two components");
     assert!(
         world
             .root_scope()

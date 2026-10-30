@@ -1,7 +1,7 @@
 //! Scopes: which entities a scope can see, and which it may change.
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, EntityAccessError, Scope, ScopeOf, World};
+use unlit_ecs::{Entity, EntityAccessError, Scope, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Marker(u32);
@@ -31,12 +31,9 @@ fn every_entity_carries_the_scope_it_lives_in() {
     assert_eq!(world.parent_scope(scene), Ok(root));
     assert_eq!(world.parent_scope(child), Ok(scene));
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&ScopeOf>(child)
-            .unwrap()
-            .parent(),
-        scene
+        world.root_scope().entity_info(child).unwrap().scope,
+        scene,
+        "the listing reports the same parent"
     );
 }
 
@@ -103,7 +100,7 @@ fn a_sibling_scene_cannot_read_the_other_scenes_entities() {
 fn two_scopes_share_an_archetype_and_still_do_not_mix() {
     let (mut world, scene, child, sibling) = fixture();
     let other = world.scope_mut(sibling).unwrap().spawn(bundle![Marker(2)]);
-    // Both rows are `(Marker, ScopeOf)`, so they share one archetype.
+    // Both rows are `Marker`, so they share one archetype.
     assert_eq!(
         world.root_scope().location(child).unwrap().archetype(),
         world.root_scope().location(other).unwrap().archetype(),
@@ -383,24 +380,10 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
     );
 }
 
-/// The invariants the tree and the components have to agree on.
+/// The invariants the tree keeps with itself and with what a scope counts.
 fn assert_invariants(world: &World) {
     let root = world.root();
     let scope = world.root_scope();
-    // Every row's `ScopeOf` is the parent the tree records.
-    for archetype in scope.archetypes() {
-        for &entity in archetype.entities() {
-            let recorded = scope
-                .query_one::<&ScopeOf>(entity)
-                .unwrap_or_else(|_| panic!("{entity:?} has no scope"))
-                .parent();
-            assert_eq!(
-                world.parent_scope(entity),
-                Ok(recorded),
-                "{entity:?} disagrees with its ScopeOf"
-            );
-        }
-    }
     // The child index is the parent index read the other way.
     for archetype in scope.archetypes() {
         for &entity in archetype.entities() {
@@ -567,14 +550,37 @@ fn spawning_at_a_dead_handle_is_refused() {
 }
 
 #[test]
-#[should_panic(expected = "already borrowed")]
-fn an_exclusive_scope_borrow_during_a_query_panics() {
-    let (mut world, _, child, sibling) = fixture();
-    // Two scopes in one archetype: the query has to read each row's scope.
-    let other = world.scope_mut(sibling).unwrap().spawn(bundle![Marker(2)]);
-    let held = world.root_scope().query_one::<&mut ScopeOf>(other).unwrap();
-    let _: Vec<_> = world.root_scope().query::<&Marker>().collect();
+fn an_exclusive_borrow_does_not_block_a_query_reading_the_scope_tree() {
+    let mut world = World::new();
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    let child = world
+        .scope_mut(scene)
+        .unwrap()
+        .spawn(bundle![Marker(1), Name("child")]);
+    let sibling = world.root_scope_mut().spawn(bundle![Name("other")]);
+    // Both markers land in one archetype, so a query of the scene has to decide
+    // row by row where each row lives. That answer comes from the scope tree,
+    // not from a component, so holding one row's component exclusively cannot
+    // block it.
+    let other = world
+        .scope_mut(sibling)
+        .unwrap()
+        .spawn(bundle![Marker(2), Name("other")]);
+    let mut held = world.root_scope().query_one::<&mut Marker>(other).unwrap();
+    held.0 = 7;
+    let seen: Vec<&str> = world
+        .scope(scene)
+        .unwrap()
+        .query::<&Name>()
+        .map(|name| name.0)
+        .collect();
     drop(held);
+    assert_eq!(seen, ["scene", "child"], "the scene and its subtree");
+    assert_eq!(
+        world.root_scope().query_one::<&Marker>(other).map(|m| m.0),
+        Ok(7),
+        "the write landed"
+    );
     assert!(world.root_scope().contains(child));
 }
 

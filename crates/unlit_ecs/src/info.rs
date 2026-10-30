@@ -46,6 +46,14 @@ pub struct EntityInfo {
     ///
     /// [`Location::row`]: crate::Location::row
     pub row: usize,
+    /// The entity's scope: the entity it lives in, which is its parent in the
+    /// scope tree.
+    ///
+    /// An entity's scope is deliberately not a component, so it is reported
+    /// here instead: a client reading a listing sees the same relation a
+    /// [`Scope`](crate::Scope) traverses.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
+    pub scope: Entity,
     /// The component names of the entity's archetype, in column order.
     pub components: Vec<&'static str>,
 }

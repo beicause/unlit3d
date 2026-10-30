@@ -65,23 +65,6 @@ pub enum ComponentError {
         source: EntityAccessError,
     },
 
-    /// The component is written by the world, so setting it alone would leave
-    /// two sources of truth disagreeing.
-    #[error("{component} is written by the world, not set directly: link the entity to move it")]
-    WorldWritten {
-        /// The component that was asked for.
-        component: &'static str,
-    },
-
-    /// The component is written by the world, so a spawn cannot carry it.
-    #[error(
-        "{component} is written by the world, not by a spawn: pass the scope to the spawn instead"
-    )]
-    WorldWrittenOnSpawn {
-        /// The component that was asked for.
-        component: &'static str,
-    },
-
     /// The reflection could not lay out a value for the component.
     #[error(transparent)]
     Allocate(#[from] AllocError),
@@ -139,9 +122,6 @@ pub struct ComponentEntry {
     set: fn(&Scope<'_>, Entity, Partial<'static, false>) -> Result<(), ComponentError>,
     /// Push the value a partial holds into a builder.
     push: fn(&mut DynamicBundle, Partial<'static, false>) -> Result<(), ComponentError>,
-    /// Whether a spawn may carry the component, as opposed to one the world
-    /// itself writes.
-    spawnable: bool,
 }
 
 impl ComponentEntry {
@@ -162,40 +142,12 @@ impl ComponentEntry {
             current_partial: current_partial_component::<C>,
             set: set_component::<C>,
             push: push_component::<C>,
-            spawnable: true,
-        }
-    }
-
-    /// The entry for a component the world writes itself, which a spawn may
-    /// not carry.
-    ///
-    /// [`ScopeOf`](crate::ScopeOf) is the one such component: an entity's scope
-    /// comes from the scope it is spawned in, so a bundle naming it would be a
-    /// second source for the same fact. The entry is still submitted, because a
-    /// client reads it like any other component.
-    pub const fn scope() -> Self {
-        Self {
-            name: <crate::ScopeOf as Facet<'static>>::SHAPE.type_identifier,
-            module_path: <crate::ScopeOf as Facet<'static>>::SHAPE.module_path,
-            encode_json: encode_json_component::<crate::ScopeOf>,
-            default_partial: default_partial_component::<crate::ScopeOf>,
-            current_partial: current_partial_component::<crate::ScopeOf>,
-            set: set_world_written::<crate::ScopeOf>,
-            push: push_world_written::<crate::ScopeOf>,
-            spawnable: false,
         }
     }
 
     /// The bare type name a client addresses the component by.
     pub const fn name(&self) -> &'static str {
         self.name
-    }
-
-    /// Whether a spawn may carry the component.
-    ///
-    /// `false` for a component the world writes itself; the push reports why.
-    pub const fn spawnable(&self) -> bool {
-        self.spawnable
     }
 }
 
@@ -387,28 +339,6 @@ fn push_component<C: Facet<'static>>(
 ) -> Result<(), ComponentError> {
     builder.push_component(materialize::<C>(partial)?);
     Ok(())
-}
-
-fn set_world_written<C: Facet<'static>>(
-    _scope: &Scope<'_>,
-    _entity: Entity,
-    _partial: Partial<'static, false>,
-) -> Result<(), ComponentError> {
-    // Writing the component alone would leave the scope index pointing at the
-    // old parent, so the two sources of truth would disagree. The world moves
-    // an entity with `link` instead.
-    Err(ComponentError::WorldWritten {
-        component: C::SHAPE.type_identifier,
-    })
-}
-
-fn push_world_written<C: Facet<'static>>(
-    _builder: &mut DynamicBundle,
-    _partial: Partial<'static, false>,
-) -> Result<(), ComponentError> {
-    Err(ComponentError::WorldWrittenOnSpawn {
-        component: C::SHAPE.type_identifier,
-    })
 }
 
 fn materialize<C: Facet<'static>>(partial: Partial<'static, false>) -> Result<C, ComponentError> {

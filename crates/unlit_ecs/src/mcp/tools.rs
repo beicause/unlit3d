@@ -465,26 +465,27 @@ mod tests {
     }
 
     #[test]
-    fn a_scope_is_listed_like_any_other_component() {
-        let (world, _, child, _) = fixture();
+    fn an_entity_listing_reports_the_scope_it_lives_in() {
+        let (world, scene, child, _) = fixture();
         let scope = scoped(&world, None).unwrap();
-        let component = summarize_entity(&scope, child).unwrap();
-        let names: Vec<&str> = component["components"]
+        let info = summarize_entity(&scope, child).unwrap();
+        assert_eq!(info["scope"], serde_json::json!(scene.to_bits()));
+        let names: Vec<&str> = info["components"]
             .as_array()
             .unwrap()
             .iter()
             .map(|name| name.as_str().unwrap())
             .collect();
         assert!(
-            names.iter().any(|name| name.ends_with("ScopeOf")),
-            "{names:?}"
+            !names.iter().any(|name| name.ends_with("ScopeOf")),
+            "the scope is not a component: {names:?}"
         );
     }
 
     #[test]
-    fn a_scope_component_cannot_be_written_through_the_tools() {
-        // The world writes the scope; a client that changed it would move the
-        // entity without moving its index.
+    fn the_scope_of_an_entity_is_not_addressed_as_a_component() {
+        // The scope is reported beside the entity, not stored in it, so there
+        // is no component to read it from and none to write.
         let (world, scene, child, _) = fixture();
         let scope = scoped(&world, None).unwrap();
         let error = write_component(
@@ -493,8 +494,13 @@ mod tests {
             "ScopeOf",
             &serde_json::json!({ "0": scene.to_bits() }),
         )
-        .expect_err("the scope is not writable");
-        assert!(error.contains("written by the world"), "{error}");
+        .expect_err("there is no such component");
+        assert!(!error.is_empty(), "{error}");
+        assert_eq!(
+            world.parent_scope(child).unwrap(),
+            scene,
+            "the failed write moved nothing"
+        );
     }
 
     #[test]

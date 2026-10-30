@@ -114,14 +114,16 @@ fn an_archetype_id_that_was_never_registered_is_reported() {
 
 #[test]
 fn an_archetype_that_holds_no_row_is_reported() {
-    let world = World::new();
-    // The empty archetype is registered first, and nothing ever spawns into
-    // it: a component-less bundle is the one way in, and a spawn carries the
-    // scope the world writes.
-    assert!(world.archetypes().get(0).unwrap().is_empty());
+    let mut world = World::new();
+    // An archetype outlives its rows: spawning into a set of components and
+    // despawning the entity again leaves the archetype registered and empty.
+    let entity = world.root_scope_mut().spawn(bundle![Marker(1)]);
+    let id = world.root_scope().location(entity).unwrap().archetype();
+    world.root_scope_mut().despawn(entity).unwrap();
+    assert!(world.archetypes().get(id).unwrap().is_empty());
     assert_eq!(
-        world.root_scope().archetype(0).unwrap_err(),
-        ArchetypeAccessError::Empty { id: 0 },
+        world.root_scope().archetype(id).unwrap_err(),
+        ArchetypeAccessError::Empty { id },
         "the pool has it, but there is no row to hand out"
     );
 }

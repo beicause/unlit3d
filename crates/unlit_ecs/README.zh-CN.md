@@ -35,9 +35,9 @@
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
-- **唯一的关系是 scope。** 每个实体都带一个指向父实体的 `ScopeOf`，正是它让一个场景
-  成为一棵子树：场景的 scope 看得见它和它的后代，别人看不见——兄弟的子树在两个方向上
-  都够不着，所以并排的两个场景彼此毫无交集。任何 scope 也看得见 `World::shared` 的
+- **唯一的关系是 scope。** 每个实体都活在某个 scope 里，而 scope 本身也是实体，正是它
+  让一个场景成为一棵子树：场景的 scope 看得见它和它的后代，别人看不见——兄弟的子树在
+  两个方向上都够不着，所以并排的两个场景彼此毫无交集。任何 scope 也看得见 `World::shared` 的
   子树，场景被换掉时，每个场景共用的资源正是靠它留着。这是 world 唯一维护的
   关系，因为每次访问都要判定可见性，而由调用者维护的关系做不到这一点。实体之间的其他
   引用仍然是组件里的 `Entity`，由调用者自行维护。
@@ -49,15 +49,15 @@
   它不匹配该查询、它未被预留，或者它不属于调用者去搬动。按 id 问 archetype 则回答
   `ArchetypeAccessError`。`Option` 只留在「缺席本身不算访问失败」的地方——查询项
   `Option<&C>` 对缺 `C` 的实体就是缺席。
-- **有两个实体是脚手架。** `World::new` 创建 `World::root`——它的 `ScopeOf` 指向自己，
+- **有两个实体是脚手架。** `World::new` 创建 `World::root`——它就在自己的 scope 里，
   根 scope 打开的就是它——和 `World::shared`，后者的子树每个 scope 都看得见。两者都能
   携带组件、都能被当作 scope 打开；但它们都不被计数、不被查询、不可 despawn、不可重挂。
   它们占据所在 archetype 的最前两行，于是查询每个 archetype 只跨过一次，不必逐行判断身份。
 
 ## scope
 
-scope 就是一个实体。每个实体都带一个指向父实体的 `ScopeOf`，这一条关系就是整棵树：
-一个场景是一棵子树，而调用者手里拿到的是 `Scope`，一个收窄到树中某个实体位置的访问器。
+scope 就是一个实体。每个实体都活在某个 scope 里，这一条关系就是整棵树：一个场景是一棵
+子树，而调用者手里拿到的是 `Scope`，一个收窄到树中某个实体位置的访问器。
 
 ```rust
 use unlit_ecs::{Entity, World, bundle};
@@ -79,8 +79,8 @@ assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
 assert_eq!(world.root_scope().len(), 3);
 ```
 
-有两个实体是脚手架而不是内容。`World::root` 是根 scope 所打开的 scope，它的 `ScopeOf`
-指向自己；`World::shared` 是它的子实体，每个 scope 都看得见那棵子树。两者都能携带组件、
+有两个实体是脚手架而不是内容。`World::root` 是根 scope 所打开的 scope，它就在自己的
+scope 里；`World::shared` 是它的子实体，每个 scope 都看得见那棵子树。两者都能携带组件、
 都能被当作 scope 指名，所以资源挂在哪一个上都行——但它们都不被计数、不被查询、不可
 despawn、不可重挂，正因如此空 world 计数是零而不是二。
 
@@ -130,10 +130,12 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 当初 spawn 的那一行上。
 
 **开销。** 每次访问都要沿父链走一遍来判定可见性，走查以节点数为上界，所以畸形的树也
-不会把它拖死。`World::children` 与 `World::is_descendant` 背后的索引由 world 与
-`ScopeOf` 组件一并写入，两者不可能互相矛盾。这个组件属于 world：字段私有、bundle
-不能携带它，通过反射注册表写 `ScopeOf` 也会被拒绝，因为搬动实体是 `ScopeMut::link`
-的职责。查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
+不会把它拖死。这条关系只有 world 的树里一份，而不放在组件里：可见性每次访问都要判定，
+而组件要被借用来回答它，于是独占借用某个实体的组件就会让另一个实体的可见性检查
+panic。只有一份也意味着没有东西需要对账：只有 `ScopeMut::link` 与 `unlink` 会写这棵树，
+而它们需要 `&mut World`，所以经共享 world 拿到的借用永远不可能与它们相撞。从 `Scope`
+读取时，每问一个实体就在树里查一次，`Scope::entity_info` 把它报告为 `scope`。
+查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
 看得见一部分的 archetype 都报错，`Scope::archetypes` 只给出非空且完整可见的
 archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::archetype_of` 是
 `Scope::archetype` 的逐行版本：它只问实体所在的那一行，不做整原型判断，所以在
@@ -190,7 +192,7 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 ## 内容概览
 
 `World`、`Entity`、`Location`、`Bundle` / `DynamicBundle`（以及写出 bundle 的
-`bundle!` 宏）、把 world 收窄到一个 scope 的 `ScopeOf` 与
+`bundle!` 宏）、把 world 收窄到一个 scope 的
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`，
 archetype 谓词写作 `QueryIter::by`）、用于延迟结构变更的

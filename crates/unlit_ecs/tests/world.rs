@@ -392,7 +392,6 @@ fn an_archetype_names_its_own_components() {
     let mut expected = vec![
         core::any::type_name::<Position>(),
         core::any::type_name::<Name>(),
-        core::any::type_name::<unlit_ecs::ScopeOf>(),
     ];
     expected.sort_unstable();
     assert_eq!(names, expected);

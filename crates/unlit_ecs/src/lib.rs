@@ -39,7 +39,6 @@ pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
 #[doc(hidden)]
 pub use query::QueryItem;
 pub use query::{ArchetypeFilter, Has, Query, QueryIter};
-pub use scope::ScopeOf;
 pub use view::{Scope, ScopeMut};
 pub use world::World;
 
@@ -47,6 +46,6 @@ pub use world::World;
 pub mod prelude {
     pub use crate::{
         ArchetypeAccessError, ArchetypeFilter, Entity, EntityAccessError, Has, Query, QueryIter,
-        Scope, ScopeOf, World, bundle,
+        Scope, World, bundle,
     };
 }

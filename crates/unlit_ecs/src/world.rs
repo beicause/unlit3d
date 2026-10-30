@@ -11,8 +11,8 @@
 //! changes instead with [`crate::Commands`] and apply them later with
 //! [`World::apply`].
 //!
-//! Every entity lives in a scope, and a scope is another entity: the one its
-//! [`ScopeOf`] component names. The world therefore holds a tree, and the
+//! Every entity lives in a scope, and a scope is another entity: the one the
+//! world's tree says it lives in. The world therefore holds a tree, and the
 //! entry points that read or write it are scopes of a scope rather than
 //! methods on the world -- [`Scope`] and [`ScopeMut`]. A scope sees
 //! its own subtree and nothing beside it; only `&World` reaches the root.
@@ -39,7 +39,7 @@ use crate::entity::{Entities, Entity, Location};
 use crate::error::EntityAccessError;
 use crate::hash::TypeIdHashMap;
 use crate::lifecycle::Lifecycle;
-use crate::scope::{ScopeOf, ScopeTree};
+use crate::scope::ScopeTree;
 use crate::view::{Scope, ScopeMut};
 
 /// Entities and their components.
@@ -51,7 +51,7 @@ pub struct World {
     /// The name of every component type that ever entered the world.
     names: TypeIdHashMap<&'static str>,
     commands: RefCell<VecDeque<Box<dyn Command>>>,
-    /// The scope tree, derived from the [`ScopeOf`] components.
+    /// Where every live entity lives.
     tree: RefCell<ScopeTree>,
     /// The entity that owns the world, whose scope sees everything.
     root: Entity,
@@ -436,49 +436,31 @@ impl World {
         Ok(())
     }
 
-    /// Rewrite the [`ScopeOf`] component of a live entity and reindex it.
+    /// Move a live entity into `scope` and reindex it.
     fn write_scope(&mut self, entity: Entity, scope: Entity) {
         let location = self
             .location(entity)
             .unwrap_or_else(|_| panic!("{entity:?} has no row to move"));
-        let archetype = self
-            .archetypes
+        let old = self
+            .tree_read()
+            .parent(entity)
+            .unwrap_or_else(|_| panic!("{entity:?} is alive but not in the tree"));
+        if old == scope {
+            return;
+        }
+        self.archetypes
             .get_mut(location.archetype())
-            .expect("a live entity's location names a registered archetype");
-        let cell = archetype
-            .cell::<ScopeOf>(location.row())
-            .expect("every spawned row carries its scope");
-        let old = cell.borrow().parent();
-        *cell.borrow_mut() = ScopeOf::new(scope);
-        archetype.move_scope(old, scope);
+            .expect("a live entity's location names a registered archetype")
+            .move_scope(old, scope);
         self.tree_write().attach(entity, scope);
     }
 
     // -- the row itself ----------------------------------------------------
 
-    /// Insert a row for `entity` in `scope`, with the [`ScopeOf`] component the
-    /// world writes and the ones `bundle` carries.
+    /// Insert a row for `entity` in `scope`, made of the components `bundle`
+    /// carries.
     fn insert_row<B: Bundle>(&mut self, entity: Entity, scope: Entity, bundle: B) {
-        let mut components = bundle.into_bundle().finish();
-        // The scope is the world's to write, so a bundle that names it is a
-        // programming error rather than a second source for the same fact.
-        assert!(
-            !components
-                .iter()
-                .any(|component| component.type_id == TypeId::of::<ScopeOf>()),
-            "a bundle cannot carry ScopeOf; spawn in a scope instead",
-        );
-        let scope_component = BundleComponent {
-            type_id: TypeId::of::<ScopeOf>(),
-            name: core::any::type_name::<ScopeOf>(),
-            column: crate::column::Column::<ScopeOf>::eraser(),
-            value: Box::new(ScopeOf::new(scope)),
-        };
-        // The bundle is already in type order, so the scope component slots
-        // into its place rather than the bundle being sorted again.
-        let index =
-            components.partition_point(|component| component.type_id < scope_component.type_id);
-        components.insert(index, scope_component);
+        let components = bundle.into_bundle().finish();
         for component in &components {
             self.ctors
                 .entry(component.type_id)
@@ -508,9 +490,13 @@ impl World {
         let Ok(location) = self.location(entity) else {
             return;
         };
+        // The row's scope is read before the tree forgets it: removing the row
+        // updates the archetype's per-scope count, which needs to know which
+        // scope lost one.
+        let scope = self.parent_scope(entity).unwrap_or(entity);
         self.run_lifecycle::<crate::OnDespawn>(entity);
         self.tree_write().detach(entity);
-        self.remove_row(location);
+        self.remove_row(location, scope);
         self.free_entity(entity);
     }
 
@@ -698,13 +684,14 @@ impl World {
         )
     }
 
-    /// Drop the row at `location`, keeping every other location correct.
-    pub(crate) fn remove_row(&mut self, location: Location) {
+    /// Drop the row at `location`, which lives in `scope`, keeping every other
+    /// location correct.
+    pub(crate) fn remove_row(&mut self, location: Location, scope: Entity) {
         let archetype = self
             .archetypes
             .get_mut(location.archetype())
             .expect("a live entity's location names a registered archetype");
-        if let Some(moved) = archetype.swap_remove(location.row()) {
+        if let Some(moved) = archetype.swap_remove(location.row(), scope) {
             self.entities_write().set_location(
                 moved,
                 Location {
@@ -746,19 +733,6 @@ mod tests {
 
     #[derive(Clone, Copy, Debug)]
     struct Other;
-
-    #[test]
-    #[should_panic(expected = "a bundle cannot carry ScopeOf")]
-    fn a_bundle_cannot_carry_the_scope_the_world_writes() {
-        let mut world = World::new();
-        let root = world.root();
-        // The field is private, so a caller cannot even build this bundle: it
-        // is a compile error outside the crate, and the check stays for the
-        // crate's own code.
-        world
-            .root_scope_mut()
-            .spawn(crate::bundle![ScopeOf::new(root)]);
-    }
 
     /// The lookup behind the lifecycle hooks, which is its only caller: an
     /// archetype that does not carry the component simply has no hook to run.
