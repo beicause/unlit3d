@@ -28,8 +28,9 @@ type Poses = Vec<(RigidBodyHandle, Vec3, Quat)>;
 /// The library defines no payload of its own, so the demo and the tests each
 /// name the state they want: this is the whole of the subscription's work.
 fn collect_poses(world: &World) -> Option<Poses> {
-    let physics = world.root_scope().query::<&PhysicsWorld>().next()?;
-    let physics = physics;
+    let mut physics_world_rows = world.root_scope().query::<&PhysicsWorld>();
+
+    let physics = physics_world_rows.iter().next()?;
     Some(
         physics
             .bodies
@@ -174,7 +175,7 @@ fn a_collector_sees_contacts_from_every_step() {
     // reader is only the subscription's liveness token here.
     let _events: SnapshotReader<()> = sender
         .watch(move |world: &World| {
-            if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().next() {
+            if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().iter().next() {
                 for &contact in &contacts.started {
                     let _ = queue.send(contact);
                 }
@@ -265,16 +266,18 @@ fn a_landing_reports_the_closing_speed() {
         // The contacts live in the world until the next step overwrites
         // them, so read them before stepping again.
         {
-            let contacts = world
-                .root_scope()
-                .query::<&PhysicsContacts>()
+            let mut physics_contacts_rows = world.root_scope().query::<&PhysicsContacts>();
+
+            let contacts = physics_contacts_rows
+                .iter()
                 .next()
                 .expect("the setup creates the contact buffer");
             landings.extend(contacts.started.iter().copied());
         }
-        let physics = world
-            .root_scope()
-            .query::<&PhysicsWorld>()
+        let mut physics_world_rows_2 = world.root_scope().query::<&PhysicsWorld>();
+
+        let physics = physics_world_rows_2
+            .iter()
             .next()
             .expect("the setup created the world");
         height = physics
@@ -287,9 +290,10 @@ fn a_landing_reports_the_closing_speed() {
     let (one, two, speed) = landings[0];
     let partner = if one == ball { two } else { one };
     assert_ne!(partner, ball, "a landing names two different bodies");
-    let physics = world
-        .root_scope()
-        .query::<&PhysicsWorld>()
+    let mut physics_world_rows_3 = world.root_scope().query::<&PhysicsWorld>();
+
+    let physics = physics_world_rows_3
+        .iter()
         .next()
         .expect("the setup created the world");
     let Some(partner_body) = physics.bodies.get(partner) else {
@@ -331,7 +335,9 @@ fn an_empty_world_publishes_empty_contacts() {
         .sender
         .clone()
         .watch(|world: &World| {
-            let contacts = world.root_scope().query::<&PhysicsContacts>().next()?;
+            let mut physics_contacts_rows_2 = world.root_scope().query::<&PhysicsContacts>();
+
+            let contacts = physics_contacts_rows_2.iter().next()?;
             Some((contacts.started.len(), contacts.stopped.len()))
         })
         .expect("the physics world accepts a subscription");
@@ -369,6 +375,7 @@ fn the_configured_gravity_reaches_the_world() {
                 world
                     .root_scope()
                     .query::<&PhysicsWorld>()
+                    .iter()
                     .next()
                     .expect("the setup creates the world before any job")
                     .gravity,

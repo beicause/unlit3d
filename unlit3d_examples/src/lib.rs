@@ -1372,6 +1372,7 @@ fn ensure_presented(app: Entity) -> OnFrame {
         let resumed = world
             .root_scope()
             .query::<(Entity, &Resumed)>()
+            .iter()
             .next()
             .is_some_and(|(_, state)| state.0);
         if !resumed {
@@ -1646,6 +1647,7 @@ fn request_gpu(app: Entity) -> OnFrame {
         let Some(display) = world
             .root_scope()
             .query::<(Entity, &DisplayHandle)>()
+            .iter()
             .next()
             .map(|(_, handle)| handle.0.clone())
         else {
@@ -1815,7 +1817,7 @@ fn dispatch_command(world: &World, command: unlit_ecs::mcp::McpCommand) {
             world: WorldId::Host,
             name: "host",
         }];
-        for (entity, _) in world.root_scope().query::<(Entity, &World)>() {
+        for (entity, _) in world.root_scope().query::<(Entity, &World)>().iter() {
             let Ok(name) = world.root_scope().query_one::<&WorldName>(entity) else {
                 continue;
             };
@@ -2068,6 +2070,7 @@ impl Scene {
         world
             .root_scope()
             .query::<(Entity, &Source)>()
+            .iter()
             .find_map(|(_, source)| {
                 let ui = source.as_ref::<UiSource>()?;
                 ui.context()

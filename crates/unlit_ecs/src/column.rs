@@ -1,47 +1,19 @@
 //! Component storage.
 //!
-//! Every component value lives in its own [`RefCell`], so a component can be
-//! read or written through a shared `&World` without any `unsafe`. The world
-//! itself is therefore `!Send` and stays on the thread that created it, which
+//! Every component value lives in its own [`UnsafeCell`], so a component can be
+//! read or written through a shared `&World`. Aliasing is policed by the borrow
+//! ledger instead of by the compiler: an access path claims what it is about to
+//! reach before it hands out a reference, and the claim is released when it goes
+//! away. See [`crate::borrow`].
+//!
+//! The world is therefore `!Send` and stays on the thread that created it, which
 //! is where a renderer and its other thread-bound state live.
 //!
 //! Structural changes (spawning and despawning) still need `&mut World`, so a
-//! component borrow can never be held while the storage it lives in is moved
-//! around.
+//! claimed row can never be moved around while it is borrowed.
 
 use core::any::Any;
-use core::cell::{Ref, RefCell, RefMut};
-
-use crate::entity::Entity;
-
-/// The shared borrow of a component value.
-pub type CellRef<'a, T> = Ref<'a, T>;
-
-/// The panic for a component that is already borrowed in a conflicting way.
-///
-/// A cell that cannot be borrowed is a programming error, not an absent
-/// component: silently skipping the row would hide an entity the caller can
-/// still reach through the scope.
-pub(crate) fn borrow_conflict<C: 'static>(kind: &str) -> ! {
-    borrow_conflict_on::<C>(kind, None)
-}
-
-/// The same panic for a caller that knows which entity's row it was reaching
-/// for, so the message names the entity instead of only the component.
-pub(crate) fn borrow_conflict_on<C: 'static>(kind: &str, entity: Option<Entity>) -> ! {
-    let component = core::any::type_name::<C>();
-    match entity {
-        Some(entity) => {
-            panic!(
-                "component `{component}` on {entity:?} is already borrowed while it is being {kind}"
-            )
-        }
-        None => panic!("component `{component}` is already borrowed while it is being {kind}"),
-    }
-}
-
-/// The exclusive borrow of a component value.
-pub type CellRefMut<'a, T> = RefMut<'a, T>;
+use core::cell::UnsafeCell;
 
 /// A type-erased component column: one component type's values in one
 /// archetype.
@@ -53,6 +25,8 @@ pub type CellRefMut<'a, T> = RefMut<'a, T>;
 pub trait AnyColumn: 'static {
     /// Downcast support.
     fn as_any(&self) -> &dyn Any;
+    /// Downcast support for a column reached exclusively.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Move the value at `row` out, filling the hole with the last value.
     fn swap_remove(&mut self, row: usize) -> Box<dyn Any>;
     /// Append an already erased value of this column's component type.
@@ -65,7 +39,7 @@ pub trait AnyColumn: 'static {
 /// entities at once. A row's cell index is the row number and never changes
 /// while the row exists.
 pub struct Column<T: 'static> {
-    cells: Vec<RefCell<T>>,
+    cells: Vec<UnsafeCell<T>>,
 }
 
 impl<T: 'static> Column<T> {
@@ -82,10 +56,19 @@ impl<T: 'static> Column<T> {
         make::<T>
     }
 
-    /// The cell at `row`.
+    /// Every cell of the column, one per row.
+    ///
+    /// Handing out the slice is safe; taking the value out of a cell needs the
+    /// claim the caller took on the column. See [`crate::borrow`].
     #[inline]
-    pub(crate) fn cell(&self, row: usize) -> Option<&RefCell<T>> {
-        self.cells.get(row)
+    pub(crate) fn cells(&self) -> &[UnsafeCell<T>] {
+        &self.cells
+    }
+
+    /// Every cell of the column, reached exclusively.
+    #[inline]
+    pub(crate) fn cells_mut(&mut self) -> &mut [UnsafeCell<T>] {
+        &mut self.cells
     }
 
     /// Erase the column.
@@ -99,6 +82,10 @@ impl<T: 'static> AnyColumn for Column<T> {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn swap_remove(&mut self, row: usize) -> Box<dyn Any> {
         Box::new(self.cells.swap_remove(row).into_inner())
     }
@@ -107,6 +94,6 @@ impl<T: 'static> AnyColumn for Column<T> {
         let value = *value
             .downcast::<T>()
             .expect("only a value of this column's component type can be pushed");
-        self.cells.push(RefCell::new(value));
+        self.cells.push(UnsafeCell::new(value));
     }
 }

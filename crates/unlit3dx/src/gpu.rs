@@ -157,17 +157,16 @@ where
             let Some(window) = window(world) else {
                 return;
             };
-            let resumed = world
-                .root_scope()
-                .query::<&Resumed>()
-                .next()
-                .is_some_and(|resumed| resumed.0);
+            let mut resumed_rows = world.root_scope().query::<&Resumed>();
+
+            let resumed = resumed_rows.iter().next().is_some_and(|resumed| resumed.0);
             if !resumed {
                 return;
             }
-            let Some(display) = world
-                .root_scope()
-                .query::<&DisplayHandle>()
+            let mut display_handle_rows = world.root_scope().query::<&DisplayHandle>();
+
+            let Some(display) = display_handle_rows
+                .iter()
                 .next()
                 .map(|display_handle| display_handle.0.clone())
             else {
@@ -215,7 +214,10 @@ impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
                 let _ = world
                     .root_scope()
                     .query_one::<&mut ExitRequest>(self.app)
-                    .map(|mut request| request.0 = true);
+                    .map(|mut request| {
+                        let request = request.get();
+                        request.0 = true
+                    });
             }
         }
         Ok(())

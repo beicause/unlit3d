@@ -129,14 +129,22 @@ impl Presenter {
                     .root_scope()
                     .query_one::<&mut FramePass>(presenting)
                     .map(|mut pass| {
-                        pass.set_attachments(&self.attachments, swap_frame.color_view().clone());
+                        let pass = pass.get();
+                        {
+                            pass.set_attachments(
+                                &self.attachments,
+                                swap_frame.color_view().clone(),
+                            );
+                        }
                     });
                 renderer.render(&nested);
-                let queue = nested
+                let mut queue_row = nested
                     .root_scope()
                     .query_one::<&wgpu::Queue>(renderer.context().queue)
                     .expect("the render world carries its queue resource");
-                swap_frame.present(&queue);
+
+                let queue = queue_row.get();
+                swap_frame.present(queue);
             });
     }
 
@@ -156,8 +164,11 @@ impl Presenter {
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
             .map(|mut renderer| {
-                self.surface.resize(&nested, &mut renderer, size.0, size.1);
-                self.surface.size()
+                let renderer = renderer.get();
+                {
+                    self.surface.resize(&nested, &mut *renderer, size.0, size.1);
+                    self.surface.size()
+                }
             })
             .ok()
             .filter(|size| size.0 > 0 && size.1 > 0)
@@ -171,7 +182,10 @@ impl Presenter {
         let Ok(context) = nested
             .root_scope()
             .query_one::<&Renderer>(self.renderer)
-            .map(|renderer| renderer.context())
+            .map(|mut renderer| {
+                let renderer = renderer.get();
+                renderer.context()
+            })
         else {
             return;
         };
@@ -184,10 +198,13 @@ impl Presenter {
             .root_scope()
             .query_one::<&mut Source>(blit.source)
             .map(|mut source| {
-                source
-                    .as_mut::<BlitSource>()
-                    .expect("the blit pass's source is a blit")
-                    .view = offscreen.view;
+                let source = source.get();
+                {
+                    source
+                        .as_mut::<BlitSource>()
+                        .expect("the blit pass's source is a blit")
+                        .view = offscreen.view;
+                }
             });
     }
 }
@@ -241,7 +258,10 @@ pub fn bind_offscreen(
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.set_attachments(&attachments, view.clone());
+            let pass = pass.get();
+            {
+                pass.set_attachments(&attachments, view.clone());
+            }
         })
         .expect("the bound pass exists");
     Ok(OffscreenTarget {
@@ -268,23 +288,26 @@ fn open_surface(
         .root_scope()
         .query_one::<&mut Renderer>(renderer)
         .map(|mut renderer| {
-            let surface = WindowSurface::new(
-                world,
-                &mut renderer,
-                &gpu.instance,
-                &gpu.adapter,
-                Arc::clone(&window),
-                surface,
-            );
-            let attachments = FrameAttachments::new(
-                world,
-                renderer.context(),
-                surface.color_format(),
-                surface.size(),
-                samples,
-                with_depth,
-            );
-            (surface, attachments)
+            let renderer = renderer.get();
+            {
+                let surface = WindowSurface::new(
+                    world,
+                    &mut *renderer,
+                    &gpu.instance,
+                    &gpu.adapter,
+                    Arc::clone(&window),
+                    surface,
+                );
+                let attachments = FrameAttachments::new(
+                    world,
+                    renderer.context(),
+                    surface.color_format(),
+                    surface.size(),
+                    samples,
+                    with_depth,
+                );
+                (surface, attachments)
+            }
         })
 }
 
@@ -411,6 +434,7 @@ impl Command for DrawFrame {
                 world
                     .root_scope()
                     .query::<(Entity, &Presenter)>()
+                    .iter()
                     .next()
                     .map(|(_, presenter)| presenter.fallback_size)
             })
@@ -444,12 +468,9 @@ pub fn draw_presented() -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(DRAW_ORDER),
         move |world, _entity, frame| {
-            let Some(mut presenter) = world
-                .root_scope()
-                .query::<(Entity, &mut Presenter)>()
-                .next()
-                .map(|(_, p)| p)
-            else {
+            let mut presenter_rows = world.root_scope().query::<(Entity, &mut Presenter)>();
+
+            let Some(presenter) = presenter_rows.iter().next().map(|(_, p)| p) else {
                 return;
             };
             let render = presenter.render;
@@ -525,9 +546,10 @@ pub fn resize_presented() -> OnWindowEvent {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if let Some(mut presenter) = world
+        if let Some(presenter) = world
             .root_scope()
             .query::<(Entity, &mut Presenter)>()
+            .iter()
             .next()
             .map(|(_, p)| p)
         {

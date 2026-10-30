@@ -118,11 +118,13 @@ impl Floor {
     /// rather than a source field: the scene owns the entity, so changing it
     /// changes what every later frame sums.
     fn set_ambient(&mut self, ambient: glam::Vec4) {
-        let mut light = self
+        let mut ambient_light_row = self
             .world
             .root_scope()
             .query_one::<&mut AmbientLight>(self.ambient)
             .expect("the floor's ambient light is alive");
+
+        let light = ambient_light_row.get();
         light.color = ambient;
     }
 
@@ -341,10 +343,12 @@ fn with_mesh_source<R>(
     source: Entity,
     f: impl FnOnce(&mut MeshSource, &unlit_ecs::Scope<'_>) -> R,
 ) -> R {
-    let mut handle = world
+    let mut source_row = world
         .root_scope()
         .query_one::<&mut Source>(source)
         .expect("the source entity exists");
+
+    let handle = source_row.get();
     let mesh = handle
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");

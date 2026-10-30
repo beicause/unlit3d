@@ -39,7 +39,7 @@ fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext
             .map_err(|_| format!("entity {entity:?} carries no render context"));
     }
     let mut found: Option<RenderContext> = None;
-    for render_context in world.root_scope().query::<&RenderContext>() {
+    for render_context in world.root_scope().query::<&RenderContext>().iter() {
         let context = *render_context;
         match found {
             None => found = Some(context),
@@ -60,12 +60,12 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
         return world
             .root_scope()
             .query_one::<Has<Renderer>>(entity)
-            .unwrap_or(false)
+            .is_ok_and(|mut holder| holder.get())
             .then_some(entity)
             .ok_or_else(|| format!("entity {entity:?} carries no renderer"));
     }
     let mut found: Option<Entity> = None;
-    for (_renderer, entity) in world.root_scope().query::<(&Renderer, Entity)>() {
+    for (_renderer, entity) in world.root_scope().query::<(&Renderer, Entity)>().iter() {
         if found.is_some() {
             return Err("the world has more than one renderer; pass `renderer`".to_string());
         }
@@ -86,7 +86,7 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
             .ok_or_else(|| format!("entity {entity:?} carries no mesh source"));
     }
     let mut found: Option<Entity> = None;
-    for (source, entity) in world.root_scope().query::<(&Source, Entity)>() {
+    for (source, entity) in world.root_scope().query::<(&Source, Entity)>().iter() {
         if source.as_ref::<MeshSource>().is_some() {
             if found.is_some() {
                 return Err("the world has more than one mesh source; pass `source`".to_string());
@@ -123,7 +123,10 @@ fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, Stri
     world
         .root_scope()
         .query_one::<&wgpu::Device>(context.device)
-        .map(|device| device.clone())
+        .map(|mut device| {
+            let device = device.get();
+            device.clone()
+        })
         .map_err(|_| "the render context has no device".to_string())
 }
 
@@ -132,7 +135,10 @@ fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String
     world
         .root_scope()
         .query_one::<&wgpu::Queue>(context.queue)
-        .map(|queue| queue.clone())
+        .map(|mut queue| {
+            let queue = queue.get();
+            queue.clone()
+        })
         .map_err(|_| "the render context has no queue".to_string())
 }
 
@@ -140,7 +146,7 @@ fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String
 fn graph_of<'w>(
     world: &'w World,
     context: RenderContext,
-) -> Result<unlit_ecs::CellRef<'w, ResourceGraph>, String> {
+) -> Result<unlit_ecs::QueryOne<'w, &'w ResourceGraph>, String> {
     world
         .root_scope()
         .query_one::<&ResourceGraph>(context.graph)
@@ -151,7 +157,7 @@ fn graph_of<'w>(
 fn graph_of_mut<'w>(
     world: &'w World,
     context: RenderContext,
-) -> Result<unlit_ecs::CellRefMut<'w, ResourceGraph>, String> {
+) -> Result<unlit_ecs::QueryOne<'w, &'w mut ResourceGraph>, String> {
     world
         .root_scope()
         .query_one::<&mut ResourceGraph>(context.graph)
@@ -243,7 +249,7 @@ fn read_buffer_bytes(
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        match graph.get::<Resource>(&handle) {
+        match (*graph).get::<Resource>(&handle) {
             Some(Resource::Buffer(buffer)) => buffer.clone(),
             _ => return Err(format!("resource id {} is not a buffer", id.to_bits())),
         }
@@ -421,7 +427,7 @@ fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Resu
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        match graph.get::<Resource>(&handle) {
+        match (*graph).get::<Resource>(&handle) {
             Some(Resource::Texture(texture)) => texture.clone(),
             Some(Resource::TextureView(view)) => view.texture().clone(),
             _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
@@ -476,12 +482,12 @@ fn single_entity<T: 'static>(
         return world
             .root_scope()
             .query_one::<Has<T>>(entity)
-            .unwrap_or(false)
+            .is_ok_and(|mut holder| holder.get())
             .then_some(entity)
             .ok_or_else(|| format!("entity {entity:?} carries no {what}"));
     }
     let mut found: Option<Entity> = None;
-    for (_t, entity) in world.root_scope().query::<(&T, Entity)>() {
+    for (_t, entity) in world.root_scope().query::<(&T, Entity)>().iter() {
         if found.is_some() {
             return Err(format!("the world has more than one {what}; pass `entity`"));
         }
@@ -510,7 +516,10 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
     let _ = world
         .root_scope()
         .query_one::<&mut InputWriter>(entity)
-        .map(|writer| writer.push_all(decoded));
+        .map(|mut writer| {
+            let writer = writer.get();
+            writer.push_all(decoded)
+        });
     let delivered = dispatch_input(world);
     to_value(&Delivered { delivered })
 }
@@ -627,7 +636,10 @@ pub fn remove_mesh(
     let mesh = world
         .root_scope()
         .query_one::<&GpuMesh>(entity)
-        .map(|mesh| mesh.clone())
+        .map(|mut mesh| {
+            let mesh = mesh.get();
+            mesh.clone()
+        })
         .map_err(|_| format!("entity {entity:?} has no GpuMesh"))?;
     let name = world.entity_name(entity).unwrap_or("");
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
@@ -645,7 +657,10 @@ pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value
     let scope = world_ref.root_scope();
     let _ = scope
         .query_one::<&mut Renderer>(entity)
-        .map(|mut renderer| renderer.render(world_ref));
+        .map(|mut renderer| {
+            let renderer = renderer.get();
+            renderer.render(world_ref)
+        });
     Ok(Value::Null)
 }
 
@@ -660,7 +675,7 @@ fn screenshot_target(
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        return match graph.get::<Resource>(&handle) {
+        return match (*graph).get::<Resource>(&handle) {
             Some(Resource::Texture(texture)) => Ok(texture.clone()),
             _ => Err(format!("resource id {} is not a texture", id.to_bits())),
         };

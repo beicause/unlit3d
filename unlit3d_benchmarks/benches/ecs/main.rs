@@ -231,8 +231,11 @@ fn rows_per_entity(world: &World, candidates: &[Entity]) -> u64 {
             continue;
         }
         let state = <Resolve as Query>::fetch_state(archetype);
-        let (pipeline, mesh, material) = <Resolve as Query>::fetch(&state, location.row());
-        sum += read(&pipeline, &mesh, material.as_deref());
+        // SAFETY: nothing else borrows the fixture world while this shape runs,
+        // and `Resolve` reads its three components shared.
+        let (pipeline, mesh, material) =
+            unsafe { <Resolve as Query>::fetch(state, location.row()) };
+        sum += read(pipeline, mesh, material);
     }
     sum
 }
@@ -258,8 +261,11 @@ fn rows_per_archetype(world: &World, candidates: &[Entity]) -> u64 {
         let Some(state) = state.as_ref() else {
             continue;
         };
-        let (pipeline, mesh, material) = <Resolve as Query>::fetch(state, location.row());
-        sum += read(&pipeline, &mesh, material.as_deref());
+        // SAFETY: as in `rows_per_entity`: the fixture world is not otherwise
+        // borrowed, and `Resolve` only reads.
+        let (pipeline, mesh, material) =
+            unsafe { <Resolve as Query>::fetch(*state, location.row()) };
+        sum += read(pipeline, mesh, material);
     }
     sum
 }
@@ -270,10 +276,11 @@ fn query_one_three(world: &World, candidates: &[Entity]) -> u64 {
     let root = world.root_scope();
     let mut sum = 0u64;
     for &entity in candidates {
-        let Ok((pipeline, mesh, material)) = root.query_one::<Resolve>(entity) else {
+        let Ok(mut row) = root.query_one::<Resolve>(entity) else {
             continue;
         };
-        sum += read(&pipeline, &mesh, material.as_deref());
+        let (pipeline, mesh, material) = row.get();
+        sum += read(pipeline, mesh, material);
     }
     sum
 }
@@ -282,8 +289,8 @@ fn query_one_three(world: &World, candidates: &[Entity]) -> u64 {
 /// archetype, with the entity list coming from the world rather than a cull.
 fn query(world: &World) -> u64 {
     let mut sum = 0u64;
-    for (pipeline, mesh, material) in world.root_scope().query::<Resolve>() {
-        sum += read(&pipeline, &mesh, material.as_deref());
+    for (pipeline, mesh, material) in world.root_scope().query::<Resolve>().iter() {
+        sum += read(pipeline, mesh, material);
     }
     sum
 }

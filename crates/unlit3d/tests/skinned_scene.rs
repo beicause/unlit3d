@@ -90,7 +90,8 @@ async fn meshes_can_share_one_skin_pose() {
     *world
         .root_scope()
         .query_one::<&mut SkinPose>(pose_entity)
-        .expect("the pose entity carries a `SkinPose`") = pose;
+        .expect("the pose entity carries a `SkinPose`")
+        .get() = pose;
     let deformed = read(&gpu);
 
     assert_ne!(rest, deformed, "the shared pose must reach both meshes");

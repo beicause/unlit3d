@@ -59,10 +59,12 @@ fn offscreen_world(ctx: &Ctx) -> World {
 
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);
     let color_view = {
-        let mut graph = world
+        let mut resource_graph_row = world
             .root_scope()
             .query_one::<&mut ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
+
+        let graph = resource_graph_row.get();
         // The texture is registered in its own right so a screenshot can name
         // it, and the view depends on it so the graph keeps it alive.
         let texture = graph.insert(color.clone(), None);
@@ -78,7 +80,10 @@ fn offscreen_world(ctx: &Ctx) -> World {
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.set_attachments(&attachments, color_view);
+            let pass = pass.get();
+            {
+                pass.set_attachments(&attachments, color_view);
+            }
         })
         .expect("the pass entity exists");
 

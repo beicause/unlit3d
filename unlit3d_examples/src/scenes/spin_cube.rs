@@ -196,6 +196,7 @@ fn build(
                     ui.separator();
                     let held = world
                         .query::<(Entity, &InputEvents)>()
+                        .iter()
                         .next()
                         .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
@@ -255,14 +256,16 @@ fn build(
             // one — so a gesture that started on the scene keeps working even when
             // it sweeps over a panel. The contact is dropped here too, so a press
             // that ends over a UI never leaves a drag behind for the scene.
-            let over_ui = world
-                .root_scope()
-                .query::<(Entity, &Source)>()
-                .any(|(_, source)| {
-                    source
-                        .as_ref::<UiSource>()
-                        .is_some_and(|ui| ui.context().egui_wants_pointer_input())
-                });
+            let over_ui =
+                world
+                    .root_scope()
+                    .query::<(Entity, &Source)>()
+                    .iter()
+                    .any(|(_, source)| {
+                        source
+                            .as_ref::<UiSource>()
+                            .is_some_and(|ui| ui.context().egui_wants_pointer_input())
+                    });
             if over_ui {
                 let _ = world
                     .root_scope()
@@ -329,9 +332,9 @@ fn build(
 
             // The panel's button leaves its press as state; consume it here,
             // once.
-            for (_, mut reset) in root.query::<(Entity, &mut SpinReset)>() {
+            for (_, reset) in root.query::<(Entity, &mut SpinReset)>().iter() {
                 if core::mem::take(&mut reset.0) {
-                    for (_, mut spin) in root.query::<(Entity, &mut Spin)>() {
+                    for (_, spin) in root.query::<(Entity, &mut Spin)>().iter() {
                         spin.angle = 0.0;
                     }
                 }
@@ -339,10 +342,10 @@ fn build(
 
             // The behaviour components run first: the world the renderer reads
             // is this frame's.
-            for (_, mut frames) in root.query::<(Entity, &mut FrameCount)>() {
+            for (_, frames) in root.query::<(Entity, &mut FrameCount)>().iter() {
                 frames.0 += 1;
             }
-            for (_, mut spin) in root.query::<(Entity, &mut Spin)>() {
+            for (_, spin) in root.query::<(Entity, &mut Spin)>().iter() {
                 if spin.spinning {
                     spin.angle += spin.radians_per_second * delta_time;
                 }
@@ -355,16 +358,17 @@ fn build(
                 .expect("the source entity is alive");
             let angle = root
                 .query::<(Entity, &Spin)>()
+                .iter()
                 .next()
                 .map_or(0.0, |(_, spin)| spin.angle);
-            for (_, mut transform) in view.query::<(Entity, &mut Transform)>() {
+            for (_, transform) in view.query::<(Entity, &mut Transform)>().iter() {
                 transform.rotation = glam::Quat::from_rotation_y(angle);
             }
 
             // The camera follows the orbit a slider or a drag set — and the
             // frame's own size, so a window that changes shape re-aims it
             // instead of stretching the cube.
-            let orbit = root.query::<(Entity, &CameraOrbit)>().next().map_or(
+            let orbit = root.query::<(Entity, &CameraOrbit)>().iter().next().map_or(
                 CameraOrbit {
                     azimuth: 0.6,
                     elevation: ORBIT_ELEVATION,
@@ -374,7 +378,7 @@ fn build(
                     elevation: orbit.elevation,
                 },
             );
-            for (_, mut camera) in view.query::<(Entity, &mut Camera)>() {
+            for (_, camera) in view.query::<(Entity, &mut Camera)>().iter() {
                 *camera = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
             }
         }),

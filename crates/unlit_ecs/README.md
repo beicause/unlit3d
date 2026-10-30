@@ -3,8 +3,11 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/crates/un
 # unlit_ecs
 
 A compact archetype ECS. Components live in archetypes, one column per type, and
-every component value lives in its own cell — which is what lets a shared
-`&World` read *and* write components without any `unsafe`.
+every component value lives in its own `UnsafeCell` — which is what lets a
+shared `&World` read *and* write components. The aliasing those cells would
+otherwise allow is caught by a borrow ledger: an access path claims the
+components it will touch before it hands out any reference, and the panic on a
+conflict names both holders.
 
 The design is deliberately small: no change detection, no events or observers,
 and no scheduler. Everything that would need
@@ -32,10 +35,11 @@ It is at an **early stage of development** and its API changes freely.
   subtree and nothing beside it. Structural changes — spawning and despawning —
   need a `&mut` [`ScopeMut`], or a [`Commands`] queue applied by the
   driver.
-- **The world is `!Send`.** Components live in `RefCell`s, so the world stays on
-  the thread that created it — this is where a renderer and other thread-bound
-  state belong. Parallelism is the caller's to arrange, by splitting work over
-  plain data rather than by sharing the world.
+- **The world is `!Send`.** Components live in `UnsafeCell`s so that a shared
+  `&World` can reach them, so the world stays on the thread that created it —
+  this is where a renderer and other thread-bound state belong. Parallelism is
+  the caller's to arrange, by splitting work over plain data rather than by
+  sharing the world.
 - **There are no resources.** Nothing in the crate marks or tracks a
   "resource"; an entity a caller wants to reach from anywhere is an ordinary
   entity whose handle the caller keeps, optionally marked with a marker
@@ -61,11 +65,14 @@ It is at an **early stage of development** and its API changes freely.
   on every access and a caller-maintained relation could not be. Any other
   reference between entities is still an [`Entity`] in a component, kept up to
   date by the caller.
-- **A borrow conflict is a panic, not a compile error.** Asking for a component
-  that is already borrowed, or fetching the same component as `&mut` twice in
-  one query, reports the component's name and stops. That is the trade for not
+- **A borrow conflict is a panic, not a compile error.** A query claims the
+  component types it will reach before it hands out any reference, and the claim
+  lives as long as the holder does. Two holders clash when they name the same
+  component with at least one of them writing and their rows can overlap; the
+  panic names the component, both holders and both source locations, so it says
+  who is holding rather than only who was refused. That is the trade for not
   doing access analysis. An optional component is optional only about the
-  component being absent: a cell that cannot be borrowed panics the same way
+  component being absent: a row already claimed exclusively panics the same way
   instead of reading as `None`.
 - **A failed access is an error, not a `None`.** Every function that reaches an
   entity answers [`Result`], and the [`EntityAccessError`] it fails with names
@@ -102,7 +109,8 @@ assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
 assert_eq!(scope.children(scene).unwrap().len(), 2);
-assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
+let mut seen = scope.query::<(&u32, Entity)>();
+assert!(seen.iter().any(|(_, entity)| entity == cube));
 
 // Root is a scope too, and it sees every scope.
 assert_eq!(world.root_scope().len(), 3);
@@ -173,19 +181,22 @@ childless entity.
 **Where callbacks land.** A lifecycle callback receives the scope of the
 entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
 change the tree either — it queues that, the same way a read-only scope does.
-The component is borrowed while its callback runs, so a callback that reaches
-for its own lifecycle component panics on the borrow; a callback that panics
-stays on the row it was spawned with.
+The callback is moved out of the row before it runs and put back after, so a
+callback that reaches for its own lifecycle component reads the row instead of
+tripping the borrow check; a callback that panics stays on the row it was
+spawned with.
 
-**Cost.** Visibility is decided on every access by walking the parent chain, and
-the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
-The relation is kept in one place — the world's tree — rather than in a
-component: visibility is answered on every access, and a component would have to
-be borrowed to answer it, so holding one entity's component exclusively would
-make the visibility check of another entity panic. One copy also means nothing
-to keep in agreement: only [`ScopeMut::link`] and [`unlink`] write the tree, and
-they need `&mut World`, so a borrow taken through a shared world can never race
-them. A read from a [`Scope`] pays one lookup in the tree per entity it asks
+**Cost.** Whether a query row is visible costs one array read: an archetype
+records the scope of every row beside its entities, so filtering no longer walks
+the tree. Asking whether two entities are related still walks the parent chain,
+bounded by the number of nodes, so a malformed tree cannot hang it. The relation
+is kept in one place — the world's tree — rather than in a component: visibility
+is answered on every access, and a component would have to be borrowed to answer
+it, so holding one entity's component exclusively would make the visibility
+check of another entity panic. One copy also means nothing to keep in agreement:
+only [`ScopeMut::link`] and [`ScopeMut::unlink`] write the tree, and they need
+`&mut World`,
+so a borrow taken through a shared world can never race them. A read from a [`Scope`] pays one lookup in the tree per entity it asks
 about, which is what [`Scope::entity_info`] reports as `scope`. Queries and counts skip the rows a scope
 cannot see; [`Scope::archetype`] fails for an empty archetype and for one the
 scope only partly sees, [`Scope::archetypes`] yields only the non-empty
@@ -260,7 +271,9 @@ rule of its own overrides it.
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
 [`Query`] (the type parameter naming what a row yields, with [`Entity`] and
-[`Has<C>`] as items and [`QueryIter::by`] as the archetype predicate),
+[`Has<C>`] as items), [`QueryBorrow`] / [`QueryIter`] / [`QueryOne`] (the holder
+a query hands out and the rows and single row it yields, [`QueryBorrow::by`] as
+the archetype predicate),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection (an archetype names its own
 components), [`World::type_name`] for naming a component type a type-erased
@@ -274,15 +287,19 @@ hash containers
 A query is a type parameter. [`Scope::query`] and [`Scope::query_one`] name what
 to fetch, and `Q` is `&C`, `&mut C`, `Option<&C>`, `Option<&mut C>`, [`Entity`],
 [`Has<C>`], or a tuple of those, in that order. Each archetype resolves its
-columns once, so a yielded row costs no lookup. A borrow lives as long as the
-row, so reading two rows at once is allowed and writing the same component twice
-without dropping the first borrow panics. `Has<C>` reads presence without
-borrowing the cell, and [`QueryIter::by`] narrows the archetypes a query visits
-with a closure over [`Archetype`] before any cell is borrowed. [`Scope::location`] and
-[`Scope::archetype`] expose the same shape to a caller that holds many entities
-— for instance one that culled a scene into a list — so it can group them by
-archetype and resolve each archetype's columns once for all of them instead of
-re-looking up every entity.
+columns once, so a yielded row costs no lookup.
+
+[`Scope::query`] does not yield rows itself: it returns a [`QueryBorrow`] that
+claims the components the query names for as long as it lives, and rows come out
+of [`QueryBorrow::iter`] or from [`QueryBorrow::by`] narrowing the archetypes it
+visits with a closure over [`Archetype`]. Items borrow from the holder rather
+than from the world, so they are gone before the claim is released: reading two
+rows at once is allowed, and asking a second holder for a component the first one
+holds — or writing the same component twice — panics. `Has<C>` reads presence
+without claiming the column. [`Scope::location`] and [`Scope::archetype`] expose
+the same shape to a caller that holds many entities — for instance one that
+culled a scene into a list — so it can group them by archetype and resolve each
+archetype's columns once for all of them instead of re-looking up every entity.
 
 A [`Commands`] queue exists because structural changes need `&mut World`: a
 callback that only holds a shared world queues a spawn or despawn instead, and
@@ -309,22 +326,27 @@ let clock = world.root_scope_mut().spawn(bundle![0.016f32]);
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
-let delta = *world.root_scope().query_one::<&f32>(clock).unwrap();
-for mut spin in world.root_scope().query::<&mut Spin>() {
-    spin.angle += spin.radians_per_second * delta;
+let delta = *world.root_scope().query_one::<&f32>(clock).unwrap().get();
+{
+    let mut spins = world.root_scope().query::<&mut Spin>();
+    for spin in spins.iter() {
+        spin.angle += spin.radians_per_second * delta;
+    }
 }
-assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().angle, 0.0);
+assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().get().angle, 0.0);
 
-// A predicate narrows the archetypes a query visits, before any cell is
-// borrowed: here, everything that is not a clock.
+// A predicate narrows the archetypes a query visits, before any column is
+// claimed: here, everything that is not a clock.
 let _ = world
     .root_scope()
     .query::<&Spin>()
     .by(|archetype: &unlit_ecs::Archetype| !archetype.has::<f32>())
+    .iter()
     .count();
 
-// `Entity` and `Has<C>` are query items too: presence reads do not borrow.
-for (entity, has_spin) in world.root_scope().query::<(Entity, Has<Spin>)>() {
+// `Entity` and `Has<C>` are query items too: presence reads claim no column.
+let mut presence = world.root_scope().query::<(Entity, Has<Spin>)>();
+for (entity, has_spin) in presence.iter() {
     let _ = (entity, has_spin);
 }
 ```
@@ -333,13 +355,15 @@ A query is a type, not a value: `&C` reads a component, `&mut C` writes one,
 `Option<&C>` and `Option<&mut C>` make it optional, [`Entity`] yields the
 entity, and [`Has<C>`] yields whether `C` is there. `Has<C>` narrows nothing, so
 it reports a `false` for an entity that lacks `C` rather than skipping it; a
-query that should visit only the carriers pairs it with [`QueryIter::by`],
+query that should visit only the carriers pairs it with [`QueryBorrow::by`],
 `by(|archetype| archetype.has::<C>())`. Items do not nest —
 `&(a, b)` is one tuple component and `(&a, &b)` is two — and a query with more
 components than a tuple impl covers is written by implementing [`Query`]
-yourself. [`Scope::query_one`] runs the same query over one entity, so a lookup
-by handle and a pass over a scope share one vocabulary; a handle that names no
-visible entity, or one the query does not match, is an [`EntityAccessError`].
+yourself. [`Scope::query_one`] runs the same query over one entity and answers a
+[`QueryOne`] holder whose [`QueryOne::get`] hands out the single row, so a
+lookup by handle and a pass over a scope share one vocabulary; a handle that
+names no visible entity, or one the query does not match, is an
+[`EntityAccessError`].
 
 Spawning and despawning need a `&mut` scope, or a queued command:
 
@@ -375,9 +399,9 @@ let entity = world.root_scope_mut().spawn(bundle![(1u32, 2.0f32), (true, ())]);
 
 // Two components: one tuple, and a nested one.
 let scope = world.root_scope();
-assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap());
-assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap());
-assert!(!scope.query_one::<Has<u32>>(entity).unwrap());
+assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap().get());
+assert!(!scope.query_one::<Has<u32>>(entity).unwrap().get());
 ```
 
 A bundle written as `..value` is spread into its own components, so a bundle
@@ -395,8 +419,8 @@ let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
-assert_eq!(scope.query_one::<Has<u32>>(entity), Ok(true));
-assert_eq!(scope.query_one::<Has<f32>>(entity), Ok(true));
+assert!(scope.query_one::<Has<u32>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<f32>>(entity).unwrap().get());
 ```
 
 ## The MCP server

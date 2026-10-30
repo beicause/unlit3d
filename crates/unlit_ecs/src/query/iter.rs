@@ -1,9 +1,8 @@
 //! The iterator a query hands out.
 
 use crate::archetype::{Archetype, ScopeSummary};
+use crate::borrow::Claims;
 use crate::entity::Entity;
-#[cfg(debug_assertions)]
-use crate::query::assert_no_duplicates;
 use crate::query::{ArchetypeFilter, Query};
 use crate::world::World;
 
@@ -11,21 +10,22 @@ use crate::world::World;
 ///
 /// The per-archetype state is resolved once, before the rows of that archetype
 /// are visited, so the components are looked up a handful of times per archetype
-/// rather than once per row. An item borrows its component from the world, so two
-/// items may be alive at once; asking for one exclusively twice without dropping
-/// the first borrow panics, so a row that writes has to be dropped before the
-/// next one is fetched.
-pub struct QueryIter<'w, Q: Query, F: ArchetypeFilter = ()> {
+/// rather than once per row.
+///
+/// The iterator is lent by the query holder that owns the claims, so an item
+/// cannot outlive it: the items borrow from the holder as well, which is what
+/// lets a caller hold as many as the holder's claims allow and no more.
+pub struct QueryIter<'q, 'w, Q: Query> {
     world: &'w World,
     /// The scope the query looks through.
     scope: Entity,
     /// Narrows which of the archetypes the query matches are visited.
-    filter: F,
+    filter: &'q dyn ArchetypeFilter,
     archetype: usize,
     row: usize,
     /// What the archetype being visited resolves its components to.
     /// [`None`] until that archetype is accepted.
-    state: Option<Q::Fetch<'w>>,
+    state: Option<Q::Fetch<'q>>,
     /// Set once the archetype being visited has been accepted and its visibility
     /// decided, so that the per-row loop repeats neither.
     resolved: bool,
@@ -36,49 +36,32 @@ pub struct QueryIter<'w, Q: Query, F: ArchetypeFilter = ()> {
     /// Resolved here rather than per row because deciding it walks the scope
     /// tree, and a uniform archetype answers the same thing for every row.
     uniform_visible: Option<bool>,
+    /// The holder's claims, which the archetypes accepted here are added to.
+    claims: &'q mut Claims<'w>,
+    /// Where the query was asked for, reported when a claim conflicts with one
+    /// already held.
+    origin: &'static core::panic::Location<'static>,
 }
 
-impl<'w, Q: Query> QueryIter<'w, Q, ()> {
-    pub(crate) fn new(world: &'w World, scope: Entity) -> Self {
-        #[cfg(debug_assertions)]
-        assert_no_duplicates::<Q>(core::panic::Location::caller());
+impl<'q, 'w, Q: Query> QueryIter<'q, 'w, Q> {
+    pub(crate) fn new(
+        world: &'w World,
+        scope: Entity,
+        filter: &'q dyn ArchetypeFilter,
+        claims: &'q mut Claims<'w>,
+        origin: &'static core::panic::Location<'static>,
+    ) -> Self {
         Self {
             world,
             scope,
-            filter: (),
+            filter,
             archetype: 0,
             row: world.content_start(0),
             state: None,
             resolved: false,
             uniform_visible: None,
-        }
-    }
-}
-
-impl<'w, Q: Query, F: ArchetypeFilter> QueryIter<'w, Q, F> {
-    /// Visit only the archetypes the filter accepts.
-    ///
-    /// The filter sees an archetype before any of its rows is fetched and before
-    /// any cell is borrowed, so rejecting an archetype costs one test rather than
-    /// one per row, and works even when that archetype's components are already
-    /// borrowed elsewhere. See [`ArchetypeFilter`].
-    ///
-    /// It may be applied part-way through an iteration, and then narrows the
-    /// archetype being visited too: what the filter rejects is not fetched, and
-    /// the rows already yielded stay yielded.
-    #[must_use]
-    pub fn by<G: ArchetypeFilter>(self, filter: G) -> QueryIter<'w, Q, G> {
-        QueryIter {
-            world: self.world,
-            scope: self.scope,
-            filter,
-            archetype: self.archetype,
-            row: self.row,
-            // The archetype being visited is decided again, since the old
-            // decision was made without this filter.
-            state: None,
-            resolved: false,
-            uniform_visible: None,
+            claims,
+            origin,
         }
     }
 
@@ -106,8 +89,8 @@ impl<'w, Q: Query, F: ArchetypeFilter> QueryIter<'w, Q, F> {
     }
 }
 
-impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
-    type Item = Q::Item<'w>;
+impl<'q, 'w, Q: Query> Iterator for QueryIter<'q, 'w, Q> {
+    type Item = Q::Item<'q>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let archetypes = self.world.archetypes().as_slice();
@@ -130,6 +113,8 @@ impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
                     self.row = self.world.content_start(self.archetype as u32);
                     continue;
                 }
+                self.claims
+                    .claim_archetype::<Q>(self.archetype as u32, archetype, self.origin);
                 self.state = Some(Q::fetch_state(archetype));
                 let summary = archetype.scope_summary();
                 self.uniform_visible = match summary {
@@ -146,8 +131,10 @@ impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
             if !self.row_matches(archetype, row) {
                 continue;
             }
-            let state = self.state.as_ref()?;
-            return Some(Q::fetch(state, row));
+            let state = self.state?;
+            // SAFETY: the holder that lent this iterator claimed exactly what
+            // `Q::access` reports, and the item borrows from it.
+            return Some(unsafe { Q::fetch(state, row) });
         }
     }
 }

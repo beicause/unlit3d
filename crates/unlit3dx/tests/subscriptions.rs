@@ -72,6 +72,7 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
             world
                 .root_scope()
                 .query::<&Marker>()
+                .iter()
                 .next()
                 .map(|marker| marker.0)
         })
@@ -155,6 +156,7 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
             world
                 .root_scope()
                 .query::<&Marker>()
+                .iter()
                 .next()
                 .map(|marker| marker.0)
         })
@@ -169,12 +171,13 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         }))
         .expect("the sub-world accepts a job");
-
-    let mut nested = host
+    let mut world_row = host
         .root_scope()
         .query_one::<&mut World>(proxy.entity)
         .expect("the nested world");
-    drain_sub_world(&mut nested);
+
+    let nested = world_row.get();
+    drain_sub_world(nested);
     assert_eq!(
         reader.latest().map(|value| *value),
         Some(0),

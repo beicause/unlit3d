@@ -368,7 +368,12 @@ mod tests {
             .expect_err("the sibling is out of reach");
         assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
         assert_eq!(
-            world.root_scope().query_one::<&Marker>(sibling).unwrap().0,
+            world
+                .root_scope()
+                .query_one::<&Marker>(sibling)
+                .unwrap()
+                .get()
+                .0,
             2
         );
     }

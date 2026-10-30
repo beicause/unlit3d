@@ -35,9 +35,11 @@ fn a_despawn_callback_runs_before_the_row_is_removed() {
     let entity = world.root_scope_mut().spawn(bundle![
         Marker(7),
         OnDespawn::new(move |scope, doomed| {
+            let mut marker_row = scope.query_one::<&Marker>(doomed).expect("still alive");
+
             // The entity still has its components, which is the whole reason
             // a despawn callback cannot be deferred.
-            let marker = scope.query_one::<&Marker>(doomed).expect("still alive").0;
+            let marker = marker_row.get().0;
             sink.borrow_mut().push(format!("despawn {marker}"));
         }),
     ]);
@@ -73,7 +75,10 @@ fn a_spawn_callback_sees_its_own_components() {
         OnSpawn::new(move |scope, spawned| {
             *sink.borrow_mut() = scope
                 .query_one::<&Marker>(spawned)
-                .map(|marker| marker.0)
+                .map(|mut marker| {
+                    let marker = marker.get();
+                    marker.0
+                })
                 .ok();
         }),
     ]);
@@ -192,16 +197,22 @@ fn a_queued_spawn_runs_the_callback_on_apply() {
 }
 
 #[test]
-#[should_panic(expected = "already borrowed")]
-fn a_callback_cannot_reborrow_its_own_lifecycle_component() {
+fn a_callback_reads_its_own_lifecycle_component() {
     let mut world = World::new();
+    let seen = log();
+    let sink = Rc::clone(&seen);
     world
         .root_scope_mut()
-        .spawn(bundle![OnSpawn::new(|scope, spawned| {
-            // The runner holds the component for the whole run, the same way every
-            // other behaviour component is held while it runs.
-            let _ = scope.query_one::<&mut OnSpawn>(spawned);
+        .spawn(bundle![OnSpawn::new(move |scope, spawned| {
+            // The runner takes the callback out of the row for the run, so the row
+            // itself is free: the callback reads what it is attached to.
+            let mut holder = scope
+                .query_one::<&OnSpawn>(spawned)
+                .expect("the row is free while the callback runs");
+            let _ = holder.get();
+            sink.borrow_mut().push("saw".to_owned());
         }),]);
+    assert_eq!(*seen.borrow(), ["saw"], "the component was reachable");
 }
 
 #[test]

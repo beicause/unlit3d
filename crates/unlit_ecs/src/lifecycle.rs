@@ -8,9 +8,10 @@
 //! its components, because afterwards there is nothing left to read.
 //!
 //! A callback gets the scope of the entity's own scope, which is its parent, and
-//! cannot change the world's structure: it queues those changes instead. Like
-//! every behaviour component it is borrowed while it runs, so reaching for its
-//! own lifecycle component from inside it is a borrow panic.
+//! cannot change the world's structure: it queues those changes instead. The
+//! callback is taken out of the entity's row for the run and put back after, so
+//! a callback that reaches for its own lifecycle component reads the row rather
+//! than finding it held open by its own run.
 
 use crate::entity::Entity;
 use crate::view::Scope;
@@ -38,8 +39,12 @@ macro_rules! lifecycle_component {
         }
 
         impl $crate::lifecycle::Lifecycle for $name {
-            fn callback(&mut self) -> &mut LifecycleCallback {
-                &mut self.0
+            fn take(&mut self) -> LifecycleCallback {
+                core::mem::replace(&mut self.0, Box::new(|_, _| {}))
+            }
+
+            fn restore(&mut self, callback: LifecycleCallback) {
+                self.0 = callback;
             }
         }
     };
@@ -60,8 +65,11 @@ lifecycle_component!(
 /// sealed: the world only knows how to run [`OnSpawn`] and [`OnDespawn`], so
 /// implementing it elsewhere would not make anything run.
 pub trait Lifecycle: 'static + sealed::Sealed {
-    /// The callback the world runs.
-    fn callback(&mut self) -> &mut LifecycleCallback;
+    /// Take the callback out, leaving a placeholder in its place.
+    fn take(&mut self) -> LifecycleCallback;
+
+    /// Put a callback taken by [`Lifecycle::take`] back.
+    fn restore(&mut self, callback: LifecycleCallback);
 }
 
 mod sealed {

@@ -15,9 +15,7 @@ use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::error::{ArchetypeAccessError, EntityAccessError};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
-#[cfg(debug_assertions)]
-use crate::query::assert_no_duplicates;
-use crate::query::{Query, QueryIter};
+use crate::query::{Query, QueryBorrow, QueryOne};
 use crate::world::World;
 
 /// A read-only scope: one entity and everything below it.
@@ -87,12 +85,18 @@ impl<'w> Scope<'w> {
     /// let mut world = World::new();
     /// world.root_scope_mut().spawn(bundle![1u32]);
     ///
-    /// for (entity, value) in world.root_scope().query::<(Entity, &u32)>() {
+    /// for (entity, value) in world.root_scope().query::<(Entity, &u32)>().iter() {
     ///     println!("{entity:?} carries {value}");
     /// }
     /// ````
-    pub fn query<Q: Query>(&self) -> QueryIter<'w, Q> {
-        QueryIter::new(self.world, self.scope)
+    ///
+    /// The answer is a holder: it claims the components the query reaches before
+    /// anything is handed out, and releases them when it is dropped. A claim that
+    /// overlaps one already held is reported here, naming where the other was
+    /// taken, rather than at the row it would have reached.
+    #[track_caller]
+    pub fn query<Q: Query>(&self) -> QueryBorrow<'w, Q> {
+        QueryBorrow::new(self.world, self.scope, core::panic::Location::caller())
     }
 
     /// What `Q` yields for `entity`, when it is visible here and its archetype
@@ -116,21 +120,34 @@ impl<'w> Scope<'w> {
     /// let mut world = World::new();
     /// let entity = world.root_scope_mut().spawn(bundle![1u32]);
     ///
-    /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
-    /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap());
-    /// assert!(!world.root_scope().query_one::<Has<bool>>(entity).unwrap());
+    /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap().get(), 1);
+    /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap().get());
+    /// assert!(!world.root_scope().query_one::<Has<bool>>(entity).unwrap().get());
     /// assert!(world.root_scope().query_one::<&bool>(entity).is_err());
     /// ````
-    pub fn query_one<Q: Query>(&self, entity: Entity) -> Result<Q::Item<'w>, EntityAccessError> {
-        #[cfg(debug_assertions)]
-        assert_no_duplicates::<Q>(core::panic::Location::caller());
+    ///
+    /// The answer is a holder rather than the item itself: it claims the
+    /// components the query reaches on that row while it is built, so the claim
+    /// begins before the item exists and lasts as long as the holder.
+    #[track_caller]
+    pub fn query_one<Q: Query>(
+        &self,
+        entity: Entity,
+    ) -> Result<QueryOne<'w, Q>, EntityAccessError> {
+        let origin = core::panic::Location::caller();
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
         if !self.row_visible(archetype, location.row()) || !Q::matches(archetype) {
             return Err(EntityAccessError::NotMatched { entity });
         }
-        let state = Q::fetch_state(archetype);
-        Ok(Q::fetch(&state, location.row()))
+        Ok(QueryOne::new(
+            self.world,
+            location.archetype(),
+            archetype,
+            entity,
+            location.row(),
+            origin,
+        ))
     }
 
     /// The archetype with this id, when this scope sees every row of it.
@@ -229,7 +246,7 @@ impl<'w> Scope<'w> {
         // The query already skips the scaffolding and applies the visibility
         // rules, so counting this way keeps the number and the iteration in
         // agreement for every scope, the root included.
-        self.query::<Entity>().count()
+        self.query::<Entity>().iter().count()
     }
 
     /// Whether nothing is visible.

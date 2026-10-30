@@ -529,11 +529,8 @@ async fn custom_pipeline_animates_between_frames() {
 
 /// The eye position of the scene's camera.
 fn camera_eye(world: &World) -> glam::Vec3 {
-    let (_, camera) = world
-        .root_scope()
-        .query::<(Entity, &Camera)>()
-        .next()
-        .expect("the scene has a camera");
+    let mut camera_row = world.root_scope().query::<(Entity, &Camera)>();
+    let (_, camera) = camera_row.iter().next().expect("the scene has a camera");
     camera.position()
 }
 

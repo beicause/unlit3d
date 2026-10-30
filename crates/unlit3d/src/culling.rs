@@ -62,12 +62,15 @@ pub(crate) fn collect_visible(
     out: &mut Vec<VisibleMesh>,
 ) {
     out.clear();
-    for (gpu_mesh, option, visibility, entity) in scope.query::<(
-        &GpuMesh,
-        Option<&Transform>,
-        Option<&InstanceVisibility>,
-        Entity,
-    )>() {
+    for (gpu_mesh, option, visibility, entity) in scope
+        .query::<(
+            &GpuMesh,
+            Option<&Transform>,
+            Option<&InstanceVisibility>,
+            Entity,
+        )>()
+        .iter()
+    {
         if visibility.is_some_and(|visibility| !visibility.visible) {
             continue;
         }

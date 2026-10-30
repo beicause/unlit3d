@@ -197,11 +197,13 @@ impl Renderer {
             .root_scope()
             .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
+            .get()
             .clone();
         let queue = world
             .root_scope()
             .query_one::<&wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
+            .get()
             .clone();
 
         // One encoder carries the frame's staged uploads and its passes, so
@@ -234,8 +236,8 @@ impl Renderer {
             profiling::scope!("renderer.frame.build_sources");
             let context = self.context;
             let root = world.root_scope();
-            for (pass_entity, pass) in root.query::<(Entity, &FramePass)>() {
-                let Some(info) = self.pass_info(world, &pass) else {
+            for (pass_entity, pass) in root.query::<(Entity, &FramePass)>().iter() {
+                let Some(info) = self.pass_info(world, pass) else {
                     continue;
                 };
                 // Each source builds against its own subtree: the source
@@ -245,7 +247,7 @@ impl Renderer {
                 // source needs — the device, the graph, the frame's target —
                 // live in the shared subtree, which every scope sees.
                 let pass_scope = world.scope(pass_entity).unwrap_or(root);
-                for (entity, mut source) in pass_scope.query::<(Entity, &mut Source)>() {
+                for (entity, source) in pass_scope.query::<(Entity, &mut Source)>().iter() {
                     let scope = world.scope(entity).unwrap_or(pass_scope);
                     let scene = self.scene_for(pass_entity, entity);
                     source.build_scene(&scope, context, info, scene, &mut encoder);
@@ -271,6 +273,7 @@ impl Renderer {
                 world
                     .root_scope()
                     .query::<(Entity, &FramePass)>()
+                    .iter()
                     .map(|(entity, pass)| (pass.order, entity)),
             );
             self.pass_warnings.check(self.passes.ambiguous());
@@ -293,6 +296,7 @@ impl Renderer {
                 self.sources.resolve(
                     pass_scope
                         .query::<(Entity, &Source)>()
+                        .iter()
                         .map(|(entity, source)| (source.order(), entity)),
                 );
                 // Ambiguities are remembered per pass, so two passes with
@@ -376,13 +380,13 @@ impl Renderer {
     /// pass asks it to build anything, and the frame does not show it.
     fn note_placement(&mut self, world: &World) {
         let root = world.root_scope();
-        for (pass_entity, _) in root.query::<(Entity, &FramePass)>() {
+        for (pass_entity, _) in root.query::<(Entity, &FramePass)>().iter() {
             let pass_scope = world.scope(pass_entity).unwrap_or(root);
-            for (entity, _) in pass_scope.query::<(Entity, &Source)>() {
+            for (entity, _) in pass_scope.query::<(Entity, &Source)>().iter() {
                 self.reached.insert(entity);
             }
         }
-        for (entity, _) in root.query::<(Entity, &Source)>() {
+        for (entity, _) in root.query::<(Entity, &Source)>().iter() {
             if !self.reached.contains(&entity) {
                 self.unreached.push(entity);
             }
@@ -468,7 +472,10 @@ mod tests {
         world
             .root_scope()
             .query_one::<&mut FramePass>(pass)
-            .map(|mut pass| pass.park())
+            .map(|mut pass| {
+                let pass = pass.get();
+                pass.park()
+            })
             .expect("the pass is spawned");
 
         renderer.note_placement(&world);

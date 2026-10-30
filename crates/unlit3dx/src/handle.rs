@@ -99,11 +99,13 @@ mod tests {
                 seen.store(true, std::sync::atomic::Ordering::SeqCst);
             }))
             .expect("the queue has room");
-        let mut nested = host
+        let mut world_row = host
             .root_scope()
             .query_one::<&mut World>(handle.entity)
             .expect("the nested world");
-        crate::host::drain_sub_world(&mut nested);
+
+        let nested = world_row.get();
+        crate::host::drain_sub_world(nested);
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

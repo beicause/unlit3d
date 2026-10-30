@@ -216,14 +216,14 @@ impl Bundle for DynamicBundle {
 /// # use unlit_ecs::{Has, World, bundle};
 /// let mut world = World::new();
 /// let entity = world.root_scope_mut().spawn(bundle![1u32, 2.0f32, true]);
-/// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap_or(false));
-/// assert!(world.root_scope().query_one::<Has<f32>>(entity).unwrap_or(false));
-/// assert!(world.root_scope().query_one::<Has<bool>>(entity).unwrap_or(false));
+/// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap().get());
+/// assert!(world.root_scope().query_one::<Has<f32>>(entity).unwrap().get());
+/// assert!(world.root_scope().query_one::<Has<bool>>(entity).unwrap().get());
 ///
 /// // A tuple is one component.
 /// let entity = world.root_scope_mut().spawn(bundle![(1u8, 2u8)]);
-/// assert!(world.root_scope().query_one::<Has<(u8, u8)>>(entity).unwrap_or(false));
-/// assert!(!world.root_scope().query_one::<Has<u8>>(entity).unwrap_or(false));
+/// assert!(world.root_scope().query_one::<Has<(u8, u8)>>(entity).unwrap().get());
+/// assert!(!world.root_scope().query_one::<Has<u8>>(entity).unwrap().get());
 /// ````
 ///
 /// A bundle written as `..value` is unwrapped into its own components, the way
@@ -237,8 +237,8 @@ impl Bundle for DynamicBundle {
 /// gathered.push_component(1u32);
 /// let mut world = World::new();
 /// let entity = world.root_scope_mut().spawn(bundle![..gathered, true]);
-/// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap_or(false));
-/// assert!(world.root_scope().query_one::<Has<bool>>(entity).unwrap_or(false));
+/// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap().get());
+/// assert!(world.root_scope().query_one::<Has<bool>>(entity).unwrap().get());
 /// ````
 ///
 /// The width is bounded by the compiler's recursion limit rather than by a
@@ -294,21 +294,21 @@ mod tests {
             world
                 .root_scope()
                 .query_one::<&u32>(entity)
-                .map(|value| *value),
+                .map(|mut value| *value.get()),
             Ok(1)
         );
         assert_eq!(
             world
                 .root_scope()
                 .query_one::<&f32>(entity)
-                .map(|value| *value),
+                .map(|mut value| *value.get()),
             Ok(2.0)
         );
         assert_eq!(
             world
                 .root_scope()
                 .query_one::<&bool>(entity)
-                .map(|value| *value),
+                .map(|mut value| *value.get()),
             Ok(true)
         );
         // The pair went in as one component, the way spawning it alone would
@@ -317,7 +317,7 @@ mod tests {
             world
                 .root_scope()
                 .query_one::<&(u8, u8)>(entity)
-                .map(|value| *value),
+                .map(|mut value| *value.get()),
             Ok((7, 8))
         );
     }

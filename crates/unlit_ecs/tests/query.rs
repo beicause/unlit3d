@@ -47,9 +47,9 @@ fn scene() -> (World, Entity, Entity, Entity) {
 fn a_single_component_query_visits_every_holder() {
     let (world, _, _, _) = scene();
 
-    assert_eq!(world.root_scope().query::<&Position>().count(), 3);
-    assert_eq!(world.root_scope().query::<&Velocity>().count(), 2);
-    assert_eq!(world.root_scope().query::<&Visible>().count(), 2);
+    assert_eq!(world.root_scope().query::<&Position>().iter().count(), 3);
+    assert_eq!(world.root_scope().query::<&Velocity>().iter().count(), 2);
+    assert_eq!(world.root_scope().query::<&Visible>().iter().count(), 2);
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
         .spawn(bundle![Position { x: 1.0, y: 2.0 }]);
     let third = world.root_scope_mut().spawn(bundle![]);
 
-    let mut found: Vec<Entity> = world.root_scope().query::<Entity>().collect();
+    let mut found: Vec<Entity> = world.root_scope().query::<Entity>().iter().collect();
     found.sort();
     let mut expected = vec![first, second, third];
     expected.sort();
@@ -72,16 +72,17 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
 
     // The same archetype keeps the roots at the front while its content churns.
     assert!(world.root_scope_mut().despawn(first).is_ok());
-    assert_eq!(world.root_scope().query::<Entity>().count(), 2);
+    assert_eq!(world.root_scope().query::<Entity>().iter().count(), 2);
     assert_eq!(world.root_scope().len(), 2);
 
     // A query that names a component skips the archetype whole, so the bare
     // entities are neither visited nor reported as carrying it.
-    assert_eq!(world.root_scope().query::<&Position>().count(), 1);
+    assert_eq!(world.root_scope().query::<&Position>().iter().count(), 1);
     assert_eq!(
         world
             .root_scope()
             .query::<Has<Position>>()
+            .iter()
             .filter(|&has| has)
             .count(),
         1,
@@ -95,6 +96,7 @@ fn a_two_component_query_requires_every_component() {
     let mut found: Vec<Entity> = world
         .root_scope()
         .query::<(Entity, &Position, &Velocity)>()
+        .iter()
         .map(|(entity, _, _)| entity)
         .collect();
     found.sort();
@@ -107,14 +109,11 @@ fn a_two_component_query_requires_every_component() {
 #[test]
 fn a_query_yields_its_items_in_the_order_written() {
     let (world, mover, _, _) = scene();
+    let mut position_rows = world.root_scope().query::<(&Position, Entity)>();
 
     // The component is written first and the entity second, and that is the
     // order they come out in.
-    let (position, entity) = world
-        .root_scope()
-        .query::<(&Position, Entity)>()
-        .next()
-        .unwrap();
+    let (position, entity) = position_rows.iter().next().unwrap();
     assert_eq!(entity, mover);
     assert_eq!(position.x, 0.0);
 }
@@ -123,7 +122,7 @@ fn a_query_yields_its_items_in_the_order_written() {
 fn a_query_can_fetch_the_entity_alone() {
     let (world, _, _, _) = scene();
 
-    let entities: Vec<Entity> = world.root_scope().query::<Entity>().collect();
+    let entities: Vec<Entity> = world.root_scope().query::<Entity>().iter().collect();
     assert_eq!(entities.len(), 3);
 }
 
@@ -131,21 +130,37 @@ fn a_query_can_fetch_the_entity_alone() {
 fn mutable_components_are_written_through_a_query() {
     let (world, mover, hidden, still) = scene();
 
-    for (mut position, velocity) in world.root_scope().query::<(&mut Position, &Velocity)>() {
+    for (position, velocity) in world
+        .root_scope()
+        .query::<(&mut Position, &Velocity)>()
+        .iter()
+    {
         position.x += velocity.dx;
         position.y += velocity.dy;
     }
 
     assert_eq!(
-        *world.root_scope().query_one::<&Position>(mover).unwrap(),
+        *world
+            .root_scope()
+            .query_one::<&Position>(mover)
+            .unwrap()
+            .get(),
         Position { x: 1.0, y: 0.0 }
     );
     assert_eq!(
-        *world.root_scope().query_one::<&Position>(hidden).unwrap(),
+        *world
+            .root_scope()
+            .query_one::<&Position>(hidden)
+            .unwrap()
+            .get(),
         Position { x: 12.0, y: 0.0 }
     );
     assert_eq!(
-        *world.root_scope().query_one::<&Position>(still).unwrap(),
+        *world
+            .root_scope()
+            .query_one::<&Position>(still)
+            .unwrap()
+            .get(),
         Position { x: 20.0, y: 0.0 },
         "no velocity"
     );
@@ -158,6 +173,7 @@ fn optional_components_are_none_when_missing() {
     let seen: Vec<(Entity, Option<f32>)> = world
         .root_scope()
         .query::<(Entity, &Position, Option<&Velocity>)>()
+        .iter()
         .map(|(entity, _, velocity)| (entity, velocity.map(|velocity| velocity.dx)))
         .collect();
 
@@ -175,6 +191,7 @@ fn an_optional_component_alone_yields_none_for_holders_without_it() {
     let seen: Vec<(Entity, Option<f32>)> = world
         .root_scope()
         .query::<(Entity, Option<&Velocity>)>()
+        .iter()
         .map(|(entity, velocity)| (entity, velocity.map(|velocity| velocity.dx)))
         .collect();
 
@@ -188,16 +205,22 @@ fn an_optional_component_alone_yields_none_for_holders_without_it() {
 fn an_optional_mutable_component_writes_only_where_present() {
     let (world, mover, hidden, still) = scene();
 
-    for mut velocity in world
+    for velocity in world
         .root_scope()
         .query::<Option<&mut Velocity>>()
+        .iter()
         .flatten()
     {
         velocity.dx += 10.0;
     }
 
     assert_eq!(
-        world.root_scope().query_one::<&Velocity>(mover).unwrap().dx,
+        world
+            .root_scope()
+            .query_one::<&Velocity>(mover)
+            .unwrap()
+            .get()
+            .dx,
         11.0
     );
     assert_eq!(
@@ -205,6 +228,7 @@ fn an_optional_mutable_component_writes_only_where_present() {
             .root_scope()
             .query_one::<&Velocity>(hidden)
             .unwrap()
+            .get()
             .dx,
         12.0
     );
@@ -224,6 +248,7 @@ fn a_filter_narrows_which_archetypes_are_visited() {
         .root_scope()
         .query::<(Entity, Option<&Velocity>)>()
         .by(|archetype: &Archetype| archetype.has::<Visible>())
+        .iter()
         .map(|(entity, velocity)| (entity, velocity.map(|velocity| velocity.dx)))
         .collect();
 
@@ -240,6 +265,7 @@ fn a_filter_can_forbid_a_component() {
         .root_scope()
         .query::<(Entity, &Position)>()
         .by(|archetype: &Archetype| !archetype.has::<Velocity>())
+        .iter()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found, [still]);
@@ -253,6 +279,7 @@ fn a_filter_can_require_two_components() {
         .root_scope()
         .query::<(Entity, &Position)>()
         .by(|archetype: &Archetype| archetype.has::<Velocity>() && archetype.has::<Hidden>())
+        .iter()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found, [hidden]);
@@ -266,6 +293,7 @@ fn a_filter_can_take_the_union_of_two_components() {
         .root_scope()
         .query::<(Entity, &Position)>()
         .by(|archetype: &Archetype| archetype.has::<Velocity>() || archetype.has::<Hidden>())
+        .iter()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found.len(), 2);
@@ -291,6 +319,7 @@ fn a_filter_can_read_a_component_set_known_only_at_run_time() {
                 .iter()
                 .all(|type_id| archetype.types().contains(type_id))
         })
+        .iter()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found, [mover]);
@@ -306,6 +335,7 @@ fn query_one_reads_a_component_the_filter_would_have_rejected() {
         .root_scope()
         .query::<(Entity, Has<Velocity>)>()
         .by(|archetype: &Archetype| archetype.has::<Hidden>())
+        .iter()
     {
         assert_eq!(entity, hidden);
         assert!(has_velocity);
@@ -315,6 +345,7 @@ fn query_one_reads_a_component_the_filter_would_have_rejected() {
             .root_scope()
             .query_one::<Has<Velocity>>(mover)
             .unwrap()
+            .get()
     );
 }
 
@@ -325,7 +356,7 @@ fn a_query_over_entities_with_no_matches_is_empty() {
     struct Unused;
 
     let (world, _, _, _) = scene();
-    assert_eq!(world.root_scope().query::<&Unused>().count(), 0);
+    assert_eq!(world.root_scope().query::<&Unused>().iter().count(), 0);
 }
 
 #[test]
@@ -335,11 +366,13 @@ fn iteration_is_deterministic_between_runs() {
     let first: Vec<Entity> = world
         .root_scope()
         .query::<(Entity, &Position)>()
+        .iter()
         .map(|(entity, _)| entity)
         .collect();
     let second: Vec<Entity> = world
         .root_scope()
         .query::<(Entity, &Position)>()
+        .iter()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(first, second);
@@ -358,31 +391,36 @@ fn a_query_skips_an_empty_archetype() {
         .root_scope_mut()
         .spawn(bundle![Position { x: 5.0, y: 5.0 }]);
 
-    let mut found = world.root_scope().query::<(&Position, &Velocity)>();
-    assert!(found.next().is_none());
-    assert_eq!(world.root_scope().query::<&Position>().count(), 1);
+    let mut empty = world.root_scope().query::<(&Position, &Velocity)>();
+    assert!(empty.iter().next().is_none());
+    assert_eq!(world.root_scope().query::<&Position>().iter().count(), 1);
 }
 
 #[test]
 fn has_reports_a_component_without_borrowing_it() {
     let (world, mover, _, still) = scene();
-
-    // An exclusive borrow of the component held across the lookup is no
-    // obstacle, which is what makes `Has` usable beside an exclusive item.
-    let mut position = world
+    let mut position_row = world
         .root_scope()
         .query_one::<&mut Position>(mover)
         .unwrap();
+
+    // An exclusive borrow of the component held across the lookup is no
+    // obstacle, which is what makes `Has` usable beside an exclusive item.
+    let position = position_row.get();
     assert!(
         world
             .root_scope()
             .query_one::<Has<Position>>(mover)
             .unwrap()
+            .get()
     );
     // `Has` narrows nothing, so a component the entity lacks answers `false`
     // rather than dropping the row.
     assert_eq!(
-        world.root_scope().query_one::<Has<Velocity>>(still),
+        world
+            .root_scope()
+            .query_one::<Has<Velocity>>(still)
+            .map(|mut holder| holder.get()),
         Ok(false)
     );
     position.x = 42.0;
@@ -393,13 +431,17 @@ fn has_narrows_nothing_and_by_narrows_for_it() {
     let (world, _, _, _) = scene();
 
     // Every row is visited, including the one entity without a `Velocity`.
-    assert_eq!(world.root_scope().query::<Has<Velocity>>().count(), 3);
+    assert_eq!(
+        world.root_scope().query::<Has<Velocity>>().iter().count(),
+        3
+    );
     // Narrowing to the carriers is the predicate's job.
     assert_eq!(
         world
             .root_scope()
             .query::<Has<Velocity>>()
             .by(|archetype: &Archetype| archetype.has::<Velocity>())
+            .iter()
             .count(),
         2
     );
@@ -409,20 +451,16 @@ fn has_narrows_nothing_and_by_narrows_for_it() {
 fn by_applies_to_the_archetype_being_visited() {
     let (world, _, _, _) = scene();
 
-    // The filter decides an archetype at a time, and may be attached after the
-    // first rows were taken: it narrows what is being visited too.
-    let mut midway = world.root_scope().query::<&Position>();
-    let taken = midway.next().is_some();
-    assert!(taken);
-    let narrowed = midway
-        .by(|archetype: &Archetype| archetype.has::<Velocity>())
-        .count();
-    let whole = world
+    // The filter decides an archetype at a time, and is attached to the holder
+    // before anything is visited.
+    let narrowed = world
         .root_scope()
         .query::<&Position>()
         .by(|archetype: &Archetype| archetype.has::<Velocity>())
+        .iter()
         .count();
-    assert_eq!(narrowed, whole - 1);
+    let whole = world.root_scope().query::<&Position>().iter().count();
+    assert_eq!(narrowed, whole - 1, "the one archetype without a Velocity");
 }
 
 #[test]
@@ -435,6 +473,7 @@ fn has_beside_a_component_is_not_a_duplicate() {
         world
             .root_scope()
             .query::<(&Position, Has<Position>)>()
+            .iter()
             .count(),
         3
     );
@@ -445,7 +484,11 @@ fn query_one_yields_the_row_of_one_entity() {
     let (world, mover, hidden, still) = scene();
 
     assert_eq!(
-        *world.root_scope().query_one::<&Position>(mover).unwrap(),
+        *world
+            .root_scope()
+            .query_one::<&Position>(mover)
+            .unwrap()
+            .get(),
         Position { x: 0.0, y: 0.0 }
     );
     assert_eq!(
@@ -453,11 +496,18 @@ fn query_one_yields_the_row_of_one_entity() {
             .root_scope()
             .query_one::<(&Position, Entity)>(hidden)
             .unwrap()
+            .get()
             .1,
         hidden
     );
     assert!(world.root_scope().query_one::<&Velocity>(still).is_err());
-    assert!(world.root_scope().query_one::<Has<Visible>>(mover).unwrap());
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<Visible>>(mover)
+            .unwrap()
+            .get()
+    );
 }
 
 #[test]
@@ -488,12 +538,13 @@ fn an_optional_component_that_cannot_be_borrowed_panics() {
     let entity = world
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
-
-    let _writing = world
+    let mut position_row_2 = world
         .root_scope()
         .query_one::<&mut Position>(entity)
         .unwrap();
-    for _ in world.root_scope().query::<Option<&Position>>() {}
+
+    let _writing = position_row_2.get();
+    for _ in world.root_scope().query::<Option<&Position>>().iter() {}
 }
 
 #[test]
@@ -503,33 +554,41 @@ fn an_optional_mutable_component_that_cannot_be_borrowed_panics() {
     let entity = world
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
+    let mut position_row_3 = world.root_scope().query_one::<&Position>(entity).unwrap();
 
-    let _reading = world.root_scope().query_one::<&Position>(entity).unwrap();
-    for _ in world.root_scope().query::<Option<&mut Position>>() {}
+    let _reading = position_row_3.get();
+    for _ in world.root_scope().query::<Option<&mut Position>>().iter() {}
 }
 
-/// Type ids cannot be compared in a `const` context, so naming a component
-/// twice is caught when the query is iterated.
+/// Naming a component twice as a shared item is two shared claims, which do not
+/// conflict: the row is handed out twice.
 #[test]
-#[should_panic(expected = "cannot name")]
-fn asking_for_the_same_component_twice_panics() {
+fn asking_for_the_same_component_twice_reads_it_twice() {
     let mut world = World::new();
     world
         .root_scope_mut()
-        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
+        .spawn(bundle![Position { x: 1.0, y: 2.0 }]);
 
-    for _ in world.root_scope().query::<(&Position, &Position)>() {}
+    for (left, right) in world.root_scope().query::<(&Position, &Position)>().iter() {
+        assert_eq!(left.x, right.x);
+    }
 }
 
+/// A shared and an exclusive item over one component are two claims that cannot
+/// share a row, so the holder refuses to be built.
 #[test]
-#[should_panic(expected = "cannot name")]
+#[should_panic(expected = "already borrowed")]
 fn mixing_a_shared_and_an_exclusive_fetch_panics() {
     let mut world = World::new();
     world
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
-    for _ in world.root_scope().query::<(&Position, &mut Position)>() {}
+    for _ in world
+        .root_scope()
+        .query::<(&Position, &mut Position)>()
+        .iter()
+    {}
 }
 
 #[test]
@@ -539,10 +598,11 @@ fn reading_a_component_while_it_is_written_panics() {
     let entity = world
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
-
-    let _writing = world
+    let mut position_row_4 = world
         .root_scope()
         .query_one::<&mut Position>(entity)
         .unwrap();
+
+    let _writing = position_row_4.get();
     let _ = world.root_scope().query_one::<&Position>(entity);
 }

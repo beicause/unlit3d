@@ -330,7 +330,7 @@ impl Balls {
     fn clear_balls(&mut self, world: &World, scene: &Scene) {
         let scope = world.root_scope();
         let mut cleared = 0;
-        for (mut ball, entity) in scope.query::<(&mut Ball, Entity)>() {
+        for (ball, entity) in scope.query::<(&mut Ball, Entity)>().iter() {
             // Taken rather than read: the halves are sent away, and a ball
             // that is gone must not leave them to be sent a second time.
             if let Some(handle) = ball.body.take() {
@@ -442,8 +442,8 @@ impl Balls {
         let stale = world_ended(&scene.physics_state) || world_ended(&scene.render_state);
         let mut showing = std::mem::take(&mut self.showing);
         showing.clear();
-        for (mut ball, entity) in scope.query::<(&mut Ball, Entity)>() {
-            match waiting(&ball, entity, &self.expired, stale) {
+        for (ball, entity) in scope.query::<(&mut Ball, Entity)>().iter() {
+            match waiting(ball, entity, &self.expired, stale) {
                 Waiting::Wait => {}
                 Waiting::Reclaim => {
                     // A reclaim is the one way a ball leaves without anyone
@@ -567,7 +567,7 @@ impl Balls {
     fn sweep_outside_view(&mut self, world: &World, scene: &Scene) {
         let mut sweeping = std::mem::take(&mut self.sweeping);
         sweeping.clear();
-        for (ball, entity) in world.root_scope().query::<(&Ball, Entity)>() {
+        for (ball, entity) in world.root_scope().query::<(&Ball, Entity)>().iter() {
             // Only a ball the render world confirmed is out there to be seen:
             // one still waiting for its show has no instance to lose.
             if ball.phase != BallPhase::Shown {
@@ -637,6 +637,7 @@ impl Balls {
                 world
                     .root_scope()
                     .query::<&Ball>()
+                    .iter()
                     .filter(|ball| ball.phase == BallPhase::Shown)
                     .count(),
                 snapshot.transforms.len(),
@@ -713,6 +714,7 @@ impl BallDrops {
         let Some((state, ready)) = world
             .root_scope()
             .query::<(&SceneState, Entity)>()
+            .iter()
             .next()
             .map(|(state, entity)| (entity, state.ready))
         else {
@@ -807,7 +809,7 @@ fn live_poses(
     snapshot: &GamePhysics,
     poses: &mut Vec<(RenderEntity, Transform)>,
 ) {
-    for ball in scope.query::<&Ball>() {
+    for ball in scope.query::<&Ball>().iter() {
         if ball.phase == BallPhase::Waiting {
             continue;
         }
@@ -1073,7 +1075,7 @@ mod tests {
         let _ = world.apply();
 
         assert_eq!(
-            world.root_scope().query::<&Ball>().count(),
+            world.root_scope().query::<&Ball>().iter().count(),
             0,
             "the clear takes the ball the answers landed on"
         );

@@ -348,7 +348,12 @@ fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     sender
         .watch(move |world: &World| {
             let mut transforms = HashMap::new();
-            if let Some(physics) = world.root_scope().query::<(Entity, &PhysicsWorld)>().next() {
+            if let Some(physics) = world
+                .root_scope()
+                .query::<(Entity, &PhysicsWorld)>()
+                .iter()
+                .next()
+            {
                 for (handle, body) in physics.1.bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
                         transforms.insert(handle, (body.translation(), *body.rotation()));
@@ -598,9 +603,10 @@ pub fn spawn_scene<R: WorldRunner>(
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World, frame: &Frame) {
-    if let Some((_, mut host)) = world
+    if let Some((_, host)) = world
         .root_scope()
         .query::<(Entity, &mut UiPanelHost)>()
+        .iter()
         .next()
     {
         host.publish(world, frame);
@@ -696,7 +702,7 @@ pub fn drop_ball(sender: &JobSender) {
 
 /// Ask the balls to drop the next one, from inside the gameplay world.
 pub fn drop_ball_in(world: &Scope<'_>) {
-    if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
+    if let Some((_, balls)) = world.query::<(Entity, &mut Balls)>().iter().next() {
         balls.queue_drop();
     }
 }
@@ -705,7 +711,7 @@ pub fn drop_ball_in(world: &Scope<'_>) {
 ///
 /// The music keeps playing; the panel drives it.
 pub fn clear_balls_in(world: &Scope<'_>) {
-    if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
+    if let Some((_, balls)) = world.query::<(Entity, &mut Balls)>().iter().next() {
         balls.queue_clear();
     }
 }
@@ -814,7 +820,9 @@ mod tests {
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![UiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
-                        if let Some((_, events)) = world.query::<(Entity, &InputEvents)>().next() {
+                        if let Some((_, events)) =
+                            world.query::<(Entity, &InputEvents)>().iter().next()
+                        {
                             events.with_batch(|batch| {
                                 counted.fetch_add(batch.len(), Ordering::Relaxed);
                             });

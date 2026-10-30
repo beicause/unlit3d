@@ -113,7 +113,9 @@ impl JobSender {
 /// guard: a host that drives a world of its own calls this once per turn, and
 /// calling it twice would run every collector twice.
 pub fn publish_collected(world: &World) -> usize {
-    let Some(mut outlet) = world.root_scope().query::<&mut SnapshotOutlet>().next() else {
+    let mut snapshot_outlet_rows = world.root_scope().query::<&mut SnapshotOutlet>();
+
+    let Some(outlet) = snapshot_outlet_rows.iter().next() else {
         return 0;
     };
     outlet.entries.retain_mut(|entry| entry.publish(world));
@@ -188,15 +190,17 @@ fn install(world: &mut World, entry: Box<dyn Entry>) {
     let existing = world
         .root_scope()
         .query::<(&SnapshotOutlet, Entity)>()
+        .iter()
         .next()
         .map(|(_snapshot_outlet, entity)| entity);
     match existing {
-        Some(entity) => world
-            .root_scope()
-            .query_one::<&mut SnapshotOutlet>(entity)
-            .expect("the subscription outlet exists")
-            .entries
-            .push(entry),
+        Some(entity) => {
+            let mut outlet = world
+                .root_scope()
+                .query_one::<&mut SnapshotOutlet>(entity)
+                .expect("the subscription outlet exists");
+            outlet.entries.push(entry);
+        }
         None => {
             world.root_scope_mut().spawn(bundle![SnapshotOutlet {
                 entries: vec![entry],

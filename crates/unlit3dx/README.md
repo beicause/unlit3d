@@ -69,8 +69,8 @@ and ties every bridge into one scene.
 
 ## Why separate worlds
 
-A `unlit_ecs` world is not `Send`: its components live behind `RefCell`s, and
-structural changes need `&mut World`. The usual answer is to share one world
+A `unlit_ecs` world is not `Send`: its components live in `UnsafeCell`s so a
+shared `&World` can reach them, and structural changes need `&mut World`. The usual answer is to share one world
 across threads behind locks, which turns every system into a contention site
 and every access into a borrow argument. `unlit3dx` answers differently: keep
 one world per concern, and never share one.

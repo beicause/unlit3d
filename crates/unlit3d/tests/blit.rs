@@ -121,10 +121,13 @@ async fn a_new_view_changes_what_the_frame_shows() {
         .root_scope()
         .query_one::<&mut Source>(source)
         .map(|mut source| {
-            source
-                .as_mut::<BlitSource>()
-                .expect("the source is a BlitSource")
-                .view = view;
+            let source = source.get();
+            {
+                source
+                    .as_mut::<BlitSource>()
+                    .expect("the source is a BlitSource")
+                    .view = view;
+            }
         })
         .expect("the source entity exists");
     gpu.render(&world);

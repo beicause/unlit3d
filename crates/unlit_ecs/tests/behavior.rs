@@ -110,14 +110,17 @@ fn drive_fixed_step(world: &World, entity: Entity, delta_seconds: f32) {
         .root_scope()
         .query_one::<&mut StepState>(entity)
         .map(|mut state| {
-            state.accumulator += delta_seconds;
-            let mut fired = 0;
-            while state.accumulator >= state.interval {
-                state.accumulator -= state.interval;
-                state.ticks += 1;
-                fired += 1;
+            let state = state.get();
+            {
+                state.accumulator += delta_seconds;
+                let mut fired = 0;
+                while state.accumulator >= state.interval {
+                    state.accumulator -= state.interval;
+                    state.ticks += 1;
+                    fired += 1;
+                }
+                fired
             }
-            fired
         })
         .unwrap_or(0);
 
@@ -125,7 +128,10 @@ fn drive_fixed_step(world: &World, entity: Entity, delta_seconds: f32) {
         let _ = world
             .root_scope()
             .query_one::<&mut OnFixedStep>(entity)
-            .map(|mut behaviour| behaviour.run(world, entity));
+            .map(|mut behaviour| {
+                let behaviour = behaviour.get();
+                behaviour.run(world, entity)
+            });
     }
 }
 
@@ -138,7 +144,10 @@ fn a_closure_behaviour_runs_and_reaches_the_world() {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Position>(entity)
-                .map(|mut position| position.y += 1.0);
+                .map(|mut position| {
+                    let position = position.get();
+                    position.y += 1.0
+                });
         }),
     ]);
 
@@ -147,10 +156,18 @@ fn a_closure_behaviour_runs_and_reaches_the_world() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().y,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .y,
         1.0
     );
 }
@@ -161,7 +178,10 @@ fn a_function_pointer_behaviour_runs() {
         let _ = world
             .root_scope()
             .query_one::<&mut Position>(entity)
-            .map(|mut position| position.x += 2.0);
+            .map(|mut position| {
+                let position = position.get();
+                position.x += 2.0
+            });
     }
 
     let mut world = World::new();
@@ -172,14 +192,25 @@ fn a_function_pointer_behaviour_runs() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrameFn>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrameFn>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .x,
         4.0,
         "ran twice"
     );
@@ -191,7 +222,10 @@ fn a_function_pointer_field_is_copy_so_one_callback_serves_many_entities() {
         let _ = world
             .root_scope()
             .query_one::<&mut Position>(entity)
-            .map(|mut position| position.x += 2.0);
+            .map(|mut position| {
+                let position = position.get();
+                position.x += 2.0
+            });
     }
 
     let mut world = World::new();
@@ -210,15 +244,28 @@ fn a_function_pointer_field_is_copy_so_one_callback_serves_many_entities() {
         let _ = world
             .root_scope()
             .query_one::<&mut OnFrameFn>(entity)
-            .map(|mut behaviour| behaviour.run(&world, entity));
+            .map(|mut behaviour| {
+                let behaviour = behaviour.get();
+                behaviour.run(&world, entity)
+            });
     }
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(first).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(first)
+            .unwrap()
+            .get()
+            .x,
         2.0
     );
     assert_eq!(
-        world.root_scope().query_one::<&Position>(second).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(second)
+            .unwrap()
+            .get()
+            .x,
         2.0
     );
 }
@@ -240,7 +287,10 @@ fn one_named_function_serves_both_component_shapes() {
         let _ = world
             .root_scope()
             .query_one::<&mut Position>(entity)
-            .map(|mut position| position.x += 2.0);
+            .map(|mut position| {
+                let position = position.get();
+                position.x += 2.0
+            });
     }
 
     let mut world = World::new();
@@ -253,14 +303,25 @@ fn one_named_function_serves_both_component_shapes() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrameFn>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .x,
         4.0
     );
 }
@@ -277,8 +338,9 @@ fn a_behaviour_can_act_on_the_whole_world() {
         .spawn(bundle![OnFrame::new(move |world, _entity| {
             // This closure is a system: it acts on every matching entity, not just
             // the one it is attached to.
-            let count = world.root_scope().query::<&Speed>().count() as f32;
-            let scale = *world.root_scope().query_one::<&f32>(scale).unwrap();
+            let count = world.root_scope().query::<&Speed>().iter().count() as f32;
+            let mut held = world.root_scope().query_one::<&f32>(scale).unwrap();
+            let scale = *held.get();
             sink.set(count * scale);
         }),]);
     world.root_scope_mut().spawn(bundle![Speed(1.0)]);
@@ -287,7 +349,10 @@ fn a_behaviour_can_act_on_the_whole_world() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(system)
-        .map(|mut behaviour| behaviour.run(&world, system));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, system)
+        });
 
     assert_eq!(seen.get(), 20.0, "two movers at scale 10");
 }
@@ -304,13 +369,16 @@ fn a_behaviour_reads_a_marked_entity() {
         .spawn(bundle![OnFrame::new(move |world, _entity| {
             // A resource is reachable from anywhere because the closure holds its
             // handle.
-            sink.set(*world.root_scope().query_one::<&f32>(clock).unwrap());
+            sink.set(*world.root_scope().query_one::<&f32>(clock).unwrap().get());
         }),]);
 
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
 
     assert_eq!(seen.get(), 0.25);
 }
@@ -332,7 +400,10 @@ fn a_behaviour_keeps_state_itself() {
         let _ = world
             .root_scope()
             .query_one::<&mut OnFrame>(entity)
-            .map(|mut behaviour| behaviour.run(&world, entity));
+            .map(|mut behaviour| {
+                let behaviour = behaviour.get();
+                behaviour.run(&world, entity)
+            });
     }
 
     assert_eq!(frames.get(), 3);
@@ -350,7 +421,10 @@ fn a_behaviour_can_queue_structural_changes() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
     assert_eq!(world.root_scope().len(), 1, "queued, not applied");
 
     world.apply().unwrap();
@@ -372,7 +446,10 @@ fn a_behaviour_cannot_reborrow_its_own_component() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
 }
 
 #[test]
@@ -395,7 +472,10 @@ fn a_fixed_interval_callback_runs_once_per_interval() {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Position>(entity)
-                .map(|mut position| position.x += 1.0);
+                .map(|mut position| {
+                    let position = position.get();
+                    position.x += 1.0
+                });
         }),
     ]);
 
@@ -405,11 +485,18 @@ fn a_fixed_interval_callback_runs_once_per_interval() {
     }
 
     assert_eq!(ticks.get(), 2, "two intervals elapsed");
-    let state = world.root_scope().query_one::<&StepState>(entity).unwrap();
+    let mut step_state_row = world.root_scope().query_one::<&StepState>(entity).unwrap();
+
+    let state = step_state_row.get();
     assert_eq!(state.ticks, 2);
     assert_eq!(state.accumulator, 1.0, "the leftover carries forward");
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .x,
         2.0
     );
 }
@@ -421,7 +508,9 @@ fn an_input_callback_reacts_to_a_key() {
         Position { x: 0.0, y: 0.0 },
         Speed(4.0),
         OnInput::new(|key, world, entity| {
-            let speed = world.root_scope().query_one::<&Speed>(entity).unwrap().0;
+            let mut speed_row = world.root_scope().query_one::<&Speed>(entity).unwrap();
+
+            let speed = speed_row.get().0;
             let step = match key {
                 Key::Left => -speed,
                 Key::Right => speed,
@@ -429,7 +518,10 @@ fn an_input_callback_reacts_to_a_key() {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Position>(entity)
-                .map(|mut position| position.x += step);
+                .map(|mut position| {
+                    let position = position.get();
+                    position.x += step
+                });
         }),
     ]);
 
@@ -437,11 +529,19 @@ fn an_input_callback_reacts_to_a_key() {
         let _ = world
             .root_scope()
             .query_one::<&mut OnInput>(entity)
-            .map(|mut behaviour| behaviour.run(&world, entity, key));
+            .map(|mut behaviour| {
+                let behaviour = behaviour.get();
+                behaviour.run(&world, entity, key)
+            });
     }
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .x,
         4.0
     );
 }
@@ -462,13 +562,19 @@ fn callbacks_compose_as_separate_components() {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Position>(entity)
-                .map(|mut position| position.y += 1.0);
+                .map(|mut position| {
+                    let position = position.get();
+                    position.y += 1.0
+                });
         }),
         OnFixedStep::new(|world, entity| {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Position>(entity)
-                .map(|mut position| position.x += 10.0);
+                .map(|mut position| {
+                    let position = position.get();
+                    position.x += 10.0
+                });
         }),
         OnInput::new(|key, world, entity| {
             let step = match key {
@@ -478,7 +584,10 @@ fn callbacks_compose_as_separate_components() {
             let _ = world
                 .root_scope()
                 .query_one::<&mut Position>(entity)
-                .map(|mut position| position.y += step);
+                .map(|mut position| {
+                    let position = position.get();
+                    position.y += step
+                });
         }),
     ]);
 
@@ -486,14 +595,21 @@ fn callbacks_compose_as_separate_components() {
     let _ = world
         .root_scope()
         .query_one::<&mut OnFrame>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity)
+        });
     drive_fixed_step(&world, entity, 2.5);
     let _ = world
         .root_scope()
         .query_one::<&mut OnInput>(entity)
-        .map(|mut behaviour| behaviour.run(&world, entity, Key::Right));
+        .map(|mut behaviour| {
+            let behaviour = behaviour.get();
+            behaviour.run(&world, entity, Key::Right)
+        });
+    let mut position_row = world.root_scope().query_one::<&Position>(entity).unwrap();
 
-    let position = world.root_scope().query_one::<&Position>(entity).unwrap();
+    let position = position_row.get();
     assert_eq!(position.y, 2.0, "one frame plus one input step");
     assert_eq!(position.x, 20.0, "two fixed steps");
     assert_eq!(
@@ -501,6 +617,7 @@ fn callbacks_compose_as_separate_components() {
             .root_scope()
             .query_one::<&StepState>(entity)
             .unwrap()
+            .get()
             .ticks,
         2
     );
@@ -528,7 +645,10 @@ fn the_caller_chooses_which_behaviours_run() {
         let _ = world
             .root_scope()
             .query_one::<&mut OnFrame>(*entity)
-            .map(|mut behaviour| behaviour.run(&world, *entity));
+            .map(|mut behaviour| {
+                let behaviour = behaviour.get();
+                behaviour.run(&world, *entity)
+            });
     }
 
     assert_eq!(ran.get(), 2);

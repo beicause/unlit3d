@@ -239,7 +239,7 @@ impl UiSource {
     fn run_panels(&self, scope: &Scope<'_>, input: egui::RawInput) -> egui::FullOutput {
         let root = *scope;
         self.ctx.run_ui(input, |ui| {
-            for (mut ui_panel, entity) in root.query::<(&mut UiPanel, Entity)>() {
+            for (ui_panel, entity) in root.query::<(&mut UiPanel, Entity)>().iter() {
                 ui_panel.run(root, entity, ui);
             }
         })
@@ -325,18 +325,21 @@ impl FrameSource for UiSource {
         let device = scope
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context's device resource exists")
+            .get()
             .clone();
         let queue = scope
             .query_one::<&wgpu::Queue>(ctx.queue)
             .expect("the context's queue resource exists")
+            .get()
             .clone();
+        let mut input_events_rows = scope.query::<&InputEvents>();
 
         // Input arrives as world resources: the world's own [`InputEvents`] is
         // both the state and what arrived for this tick. It is shared with
         // everything else in the world — the UI reads this tick's batch, it
         // does not take it. A world without one is not an error: the UI still
         // lays out at the target's own size, unfeed.
-        let state = scope.query::<&InputEvents>().next().map(|input_events| {
+        let state = input_events_rows.iter().next().map(|input_events| {
             input_events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
         });
         let (scale_factor, size_px, focused) = match state {
@@ -363,7 +366,7 @@ impl FrameSource for UiSource {
         // once the pass is over rather than allocated again.
         let mut event_scratch = core::mem::take(&mut self.event_scratch);
         event_scratch.clear();
-        if let Some(input_events) = scope.query::<&InputEvents>().next() {
+        if let Some(input_events) = scope.query::<&InputEvents>().iter().next() {
             input_events.with_batch(|batch| {
                 convert::to_egui_events_into(batch, pixels_per_point, &mut event_scratch);
             });
@@ -535,17 +538,17 @@ fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '
 /// a previous frame left behind cannot be served twice; `urls` is emptied
 /// either way, so its allocation is reused by the next frame.
 fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
-    let Some(entity) = scope
-        .query::<(&OpenUrls, Entity)>()
-        .next()
-        .map(|(_open_urls, e)| e)
-    else {
+    let Some(entity) = ({
+        let mut open_urls_rows = scope.query::<(&OpenUrls, Entity)>();
+        open_urls_rows.iter().next().map(|(_open_urls, e)| e)
+    }) else {
         urls.clear();
         return;
     };
-    let _ = scope
-        .query_one::<&mut OpenUrls>(entity)
-        .map(|mut slot| slot.replace(urls.drain(..)));
+    let _ = scope.query_one::<&mut OpenUrls>(entity).map(|mut slot| {
+        let slot = slot.get();
+        slot.replace(urls.drain(..))
+    });
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
@@ -766,7 +769,7 @@ pub fn lay_out(
 ) -> ExternalFrame {
     let scope = world.root_scope();
     let mut output = ctx.run_ui(input, |ui| {
-        for (mut ui_panel, entity) in scope.query::<(&mut UiPanel, Entity)>() {
+        for (ui_panel, entity) in scope.query::<(&mut UiPanel, Entity)>().iter() {
             ui_panel.run(scope, entity, ui);
         }
     });
@@ -856,6 +859,7 @@ mod tests {
             .root_scope()
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context's device")
+            .get()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("test::encoder"),
             })
@@ -877,10 +881,12 @@ mod tests {
                     let seen = world
                         .query_one::<&Runs>(entity)
                         .expect("the sibling exists")
+                        .get()
                         .0;
-                    let _ = world
-                        .query_one::<&mut Runs>(entity)
-                        .map(|mut runs| runs.0 = seen + 1);
+                    let _ = world.query_one::<&mut Runs>(entity).map(|mut runs| {
+                        let runs = runs.get();
+                        runs.0 = seen + 1
+                    });
                     ui.label("panel");
                 }),
             ]);
@@ -902,6 +908,7 @@ mod tests {
         let panels: Vec<Entity> = world
             .root_scope()
             .query::<(&UiPanel, Entity)>()
+            .iter()
             .map(|(_ui_panel, entity)| entity)
             .collect();
         assert_eq!(panels.len(), 2, "both panels are driven by one query");
@@ -911,6 +918,7 @@ mod tests {
                     .root_scope()
                     .query_one::<&Runs>(entity)
                     .expect("the sibling")
+                    .get()
                     .0,
                 1,
                 "the panel ran once and wrote its sibling"
@@ -976,7 +984,7 @@ mod tests {
                 .borrow_mut()
                 .root_scope_mut()
                 .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
-                    if world.query::<&Spawned>().next().is_none() {
+                    if world.query::<&Spawned>().iter().next().is_none() {
                         world.queue().spawn(bundle![Spawned]);
                     }
                     ui.label("once");
@@ -997,14 +1005,24 @@ mod tests {
         };
         output.textures_delta.clear();
         assert_eq!(
-            world.borrow().root_scope().query::<&Spawned>().count(),
+            world
+                .borrow()
+                .root_scope()
+                .query::<&Spawned>()
+                .iter()
+                .count(),
             0,
             "a queued spawn has not happened yet"
         );
 
         world.borrow_mut().apply().unwrap();
         assert_eq!(
-            world.borrow().root_scope().query::<&Spawned>().count(),
+            world
+                .borrow()
+                .root_scope()
+                .query::<&Spawned>()
+                .iter()
+                .count(),
             1,
             "the queue landed on apply"
         );
@@ -1014,7 +1032,12 @@ mod tests {
         output.textures_delta.clear();
         world.borrow_mut().apply().unwrap();
         assert_eq!(
-            world.borrow().root_scope().query::<&Spawned>().count(),
+            world
+                .borrow()
+                .root_scope()
+                .query::<&Spawned>()
+                .iter()
+                .count(),
             1,
             "the panel re-ran and found what it asked for"
         );
@@ -1085,12 +1108,14 @@ mod tests {
             .root_scope()
             .query::<Entity>()
             .by(|archetype: &unlit_ecs::Archetype| archetype.has::<Foreground>())
+            .iter()
             .collect();
         assert_eq!(foreground.len(), 1, "the filter picked one of two panels");
 
         let all: Vec<Entity> = world
             .root_scope()
             .query::<(&UiPanel, Entity)>()
+            .iter()
             .map(|(_ui_panel, e)| e)
             .collect();
         assert_eq!(all.len(), 2, "the unfiltered query sees both");

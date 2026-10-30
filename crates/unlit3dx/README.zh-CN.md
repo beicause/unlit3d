@@ -63,8 +63,8 @@ note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的�
 
 ## 为什么要分离 world
 
-`unlit_ecs` 的 world 不是 `Send`：组件藏在 `RefCell` 后面，结构性修改需要
-`&mut World`。常见的答案是用锁把一个 world 跨线程共享起来，于是每个 system 都
+`unlit_ecs` 的 world 不是 `Send`：组件住在 `UnsafeCell` 里，共享的 `&World` 才能触及它们，
+结构性修改需要 `&mut World`。常见的答案是用锁把一个 world 跨线程共享起来，于是每个 system 都
 变成争用点，每次访问都变成一场借用辩论。`unlit3dx` 给出另一个答案：每个关注点
 一个 world，永不共享。
 

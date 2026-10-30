@@ -103,9 +103,10 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
                 state.max_samples = frames.saturating_mul(usize::from(format.channels).max(1));
                 state.format = Some(format);
             }
-            let gain = world
-                .root_scope()
-                .query::<&GlobalAudioGain>()
+            let mut global_audio_gain_rows = world.root_scope().query::<&GlobalAudioGain>();
+
+            let gain = global_audio_gain_rows
+                .iter()
                 .next()
                 .map(|audio_gain| audio_gain.0)
                 .unwrap_or(1.0);

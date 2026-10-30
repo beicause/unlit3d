@@ -993,21 +993,28 @@ impl LitGltf {
                     let _ = world
                         .query_one::<&mut Transform>(entity)
                         .map(|mut current| {
-                            *current = transform.clone();
+                            let current = current.get();
+                            {
+                                *current = transform.clone();
+                            }
                         });
                 }
             }
             if let Some(entity) = handle.pose {
                 let pose = self.skin_pose_with_matrices(node, &matrices);
-                let _ = world
-                    .query_one::<&mut SkinPose>(entity)
-                    .map(|mut current| *current = pose.clone());
+                let _ = world.query_one::<&mut SkinPose>(entity).map(|mut current| {
+                    let current = current.get();
+                    *current = pose.clone()
+                });
             }
             if let (Some(entity), Some(sampled)) = (handle.weights, weights[node].as_ref()) {
                 let _ = world
                     .query_one::<&mut MorphWeights>(entity)
                     .map(|mut current| {
-                        current.weights = sampled.clone();
+                        let current = current.get();
+                        {
+                            current.weights = sampled.clone();
+                        }
                     });
             }
         }
@@ -2924,15 +2931,18 @@ mod tests {
                 .root_scope()
                 .query_one::<&Transform>(parent)
                 .expect("the parent carries a transform")
+                .get()
                 .translation,
             glam::Vec3::new(2.0, 0.0, 0.0)
         );
-        // ...and the child, which no translation channel names, inherits it
-        // along with the quarter turn its own channel reaches at the midpoint.
-        let child = world
+        let mut transform_row = world
             .root_scope()
             .query_one::<&Transform>(child)
             .expect("the child carries a transform");
+
+        // ...and the child, which no translation channel names, inherits it
+        // along with the quarter turn its own channel reaches at the midpoint.
+        let child = transform_row.get();
         assert_eq!(child.translation, glam::Vec3::new(2.0, 0.0, 0.0));
         let quarter = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
         assert!(child.rotation.dot(quarter).abs() > 1.0 - 1e-5, "{child:?}");
@@ -2961,6 +2971,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&Transform>(parent)
                 .expect("the parent carries a transform")
+                .get()
                 .translation,
             glam::Vec3::ZERO
         );
@@ -2983,10 +2994,12 @@ mod tests {
             weights: None,
         }];
         gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
-        let pose = world
+        let mut skin_pose_row = world
             .root_scope()
             .query_one::<&SkinPose>(pose)
             .expect("the pose entity carries a pose");
+
+        let pose = skin_pose_row.get();
         assert!(
             pose.matrices[0].abs_diff_eq(
                 glam::Mat4::from_translation(glam::Vec3::new(2.0, 0.0, 0.0)),
@@ -3013,10 +3026,12 @@ mod tests {
             weights: Some(weights),
         }];
         gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
-        let weights = world
+        let mut morph_weights_row = world
             .root_scope()
             .query_one::<&MorphWeights>(weights)
             .expect("the weights entity carries weights");
+
+        let weights = morph_weights_row.get();
         assert_eq!(weights.weights, vec![1.0]);
     }
 }

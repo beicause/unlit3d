@@ -1,8 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 mod archetype;
+mod borrow;
 mod bundle;
 mod column;
 mod command;
@@ -25,7 +26,6 @@ mod world;
 
 pub use archetype::{Archetype, Archetypes};
 pub use bundle::{Bundle, DynamicBundle};
-pub use column::{CellRef, CellRefMut};
 pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]
 pub use component::Component;
@@ -38,14 +38,14 @@ pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
 #[doc(hidden)]
 pub use query::QueryItem;
-pub use query::{ArchetypeFilter, Has, Query, QueryIter};
+pub use query::{ArchetypeFilter, Has, Query, QueryBorrow, QueryIter, QueryOne};
 pub use view::{Scope, ScopeMut};
 pub use world::World;
 
 /// The types most callers need.
 pub mod prelude {
     pub use crate::{
-        ArchetypeAccessError, ArchetypeFilter, Entity, EntityAccessError, Has, Query, QueryIter,
-        Scope, World, bundle,
+        ArchetypeAccessError, ArchetypeFilter, Entity, EntityAccessError, Has, Query, QueryBorrow,
+        QueryOne, Scope, World, bundle,
     };
 }

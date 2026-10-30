@@ -82,16 +82,17 @@ pub struct RenderEntity(pub Entity);
 /// through `unlit3d`'s [`MeshSource`] directly; the world is the same
 /// registry either way.
 pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey)> {
-    let (source, entity) = world
-        .root_scope()
-        .query::<(&Source, Entity)>()
+    let mut sources = world.root_scope().query::<(&Source, Entity)>();
+    let (source, entity) = sources
+        .iter()
         .find(|(source, _)| source.as_ref::<MeshSource>().is_some())?;
     let mesh_source = source.as_ref::<MeshSource>()?;
     let key = world
         .root_scope()
         .query::<&LitPipelineKey>()
+        .iter()
         .next()
-        .map(|unlit_pipeline_key| unlit_pipeline_key.clone())
+        .cloned()
         .unwrap_or_else(|| {
             LitPipelineKey::new(LitOptions {
                 unlit: true,
@@ -308,15 +309,13 @@ pub struct BallInstance {
 /// answer, so the answer is the request's own.
 pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> Vec<BallInstance> {
     move |world: &mut World| {
-        let Some(camera) = world
-            .root_scope()
-            .query::<&Camera>()
-            .find(|camera| camera.active)
-        else {
-            return Vec::new();
+        let frustum = {
+            let mut cameras = world.root_scope().query::<&Camera>();
+            let Some(camera) = cameras.iter().find(|camera| camera.active) else {
+                return Vec::new();
+            };
+            FrustumPlanes::from_clip_from_world(camera.clip_from_world())
         };
-        let frustum = FrustumPlanes::from_clip_from_world(camera.clip_from_world());
-        drop(camera);
         let Some((source, _)) = mesh_source(world) else {
             return Vec::new();
         };
@@ -404,15 +403,14 @@ pub(crate) fn show(
             &mut Transform,
             &mut InstanceVisibility,
         )>(instance.0)
-        .map(
-            |(mut instance_mesh, mut instance_material, mut instance_transform, mut visibility)| {
-                *instance_mesh = mesh;
-                *instance_material = material;
-                instance_transform.clone_from(transform);
-                visibility.visible = true;
-                true
-            },
-        )
+        .map(|mut row| {
+            let (instance_mesh, instance_material, instance_transform, visibility) = row.get();
+            *instance_mesh = mesh;
+            *instance_material = material;
+            instance_transform.clone_from(transform);
+            visibility.visible = true;
+            true
+        })
         .unwrap_or(false)
 }
 

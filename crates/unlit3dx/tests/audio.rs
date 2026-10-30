@@ -167,7 +167,14 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     world
         .sender
         .send(Box::new(move |world: &mut World| {
-            publish.publish(world.root_scope().query::<&Marker>().next().is_some());
+            publish.publish(
+                world
+                    .root_scope()
+                    .query::<&Marker>()
+                    .iter()
+                    .next()
+                    .is_some(),
+            );
         }))
         .expect("the audio world accepts jobs");
     assert!(
@@ -214,8 +221,9 @@ fn the_audio_world_reports_its_output_opening() {
             world
                 .root_scope()
                 .query::<&AudioFormat>()
+                .iter()
                 .next()
-                .map(|audio_format| *audio_format)
+                .copied()
         })
         .expect("the audio world accepts a subscription");
     let opened = sender
@@ -223,6 +231,7 @@ fn the_audio_world_reports_its_output_opening() {
             world
                 .root_scope()
                 .query::<&AudioOutputOpen>()
+                .iter()
                 .next()
                 .map(|_audio_output_open| ())
         })
@@ -262,6 +271,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
             world
                 .root_scope()
                 .query::<&AudioOutputOpen>()
+                .iter()
                 .next()
                 .map(|_audio_output_open| ())
         })
@@ -312,6 +322,7 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
             world
                 .root_scope()
                 .query::<&AudioOutputOpen>()
+                .iter()
                 .next()
                 .map(|_audio_output_open| ())
         })
@@ -355,7 +366,12 @@ fn a_failed_soundfont_leaves_the_world_silent() {
     let mut world = World::new();
     assert!(install_synth(&mut world, b"not a soundfont", 4.0).is_none());
     assert!(
-        world.root_scope().query::<&OnAudioFill>().next().is_none(),
+        world
+            .root_scope()
+            .query::<&OnAudioFill>()
+            .iter()
+            .next()
+            .is_none(),
         "a world whose soundfont failed carries no source"
     );
     let mut out = vec![1.0f32; 256];

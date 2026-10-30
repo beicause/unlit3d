@@ -716,7 +716,10 @@ mod tests {
         world
             .root_scope()
             .query_one::<&SynthVoice>(voice)
-            .map(|voice| voice.queued.clone())
+            .map(|mut voice| {
+                let voice = voice.get();
+                voice.queued.clone()
+            })
             .unwrap_or_default()
     }
 
@@ -1076,6 +1079,7 @@ mod tests {
             .root_scope()
             .query_one::<&mut SynthVoice>(source)
             .expect("the voice was spawned")
+            .get()
             .give_up("no soundfont");
         midi_job(source, kind, 0.0)(&mut world);
         assert!(queued(&world, source).is_empty(), "a dead voice queued");

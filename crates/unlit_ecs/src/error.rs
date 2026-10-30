@@ -13,7 +13,7 @@
 //! to "scaffolding" is to stop asking.
 //!
 //! A borrow conflict is deliberately not one of these. It says nothing about the
-//! handle, only that the cell is busy at the moment it was asked for, and it
+//! handle, only that another holder has already claimed the component, and it
 //! stays a panic; see the module documentation of [`crate`].
 
 use crate::Entity;

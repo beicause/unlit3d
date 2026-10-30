@@ -74,6 +74,7 @@ fn a_query_only_yields_what_the_view_can_see() {
     let all: Vec<Entity> = world
         .root_scope()
         .query::<(&Marker, Entity)>()
+        .iter()
         .map(|(_marker, e)| e)
         .collect();
     assert_eq!(all, [child]);
@@ -81,6 +82,7 @@ fn a_query_only_yields_what_the_view_can_see() {
         .scope(scene)
         .unwrap()
         .query::<(&Marker, Entity)>()
+        .iter()
         .map(|(_marker, e)| e)
         .collect();
     assert_eq!(mine, [child]);
@@ -92,8 +94,15 @@ fn a_sibling_scene_cannot_read_the_other_scenes_entities() {
     let scope = world.scope(sibling).unwrap();
     assert!(!scope.contains(child));
     assert!(scope.query_one::<&Marker>(child).is_err());
-    assert!(scope.query_one::<&mut Marker>(child).map(|_| ()).is_err());
-    assert_eq!(scope.query::<&Marker>().count(), 0);
+    assert!(
+        scope
+            .query_one::<&mut Marker>(child)
+            .map(|mut holder| {
+                let _ = holder.get();
+            })
+            .is_err()
+    );
+    assert_eq!(scope.query::<&Marker>().iter().count(), 0);
 }
 
 #[test]
@@ -109,6 +118,7 @@ fn two_scopes_share_an_archetype_and_still_do_not_mix() {
         .scope(scene)
         .unwrap()
         .query::<&Marker>()
+        .iter()
         .map(|marker| marker.0)
         .collect();
     assert_eq!(in_scene, [1], "the sibling's row is filtered out");
@@ -141,7 +151,15 @@ fn a_scene_can_be_spawned_before_its_content_and_used_as_a_scope() {
     let scene = world.root_scope_mut().spawn(bundle![Name("late")]);
     let child = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
     assert_eq!(world.parent_scope(child), Ok(scene));
-    assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 1);
+    assert_eq!(
+        world
+            .scope(scene)
+            .unwrap()
+            .query::<&Marker>()
+            .iter()
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -158,8 +176,24 @@ fn link_moves_an_entity_into_another_scope() {
     );
     assert!(world.root_scope_mut().link(child, sibling).is_ok());
     assert_eq!(world.parent_scope(child), Ok(sibling));
-    assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 0);
-    assert_eq!(world.scope(sibling).unwrap().query::<&Marker>().count(), 1);
+    assert_eq!(
+        world
+            .scope(scene)
+            .unwrap()
+            .query::<&Marker>()
+            .iter()
+            .count(),
+        0
+    );
+    assert_eq!(
+        world
+            .scope(sibling)
+            .unwrap()
+            .query::<&Marker>()
+            .iter()
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -173,7 +207,15 @@ fn link_keeps_the_component_set_so_the_archetype_is_unchanged() {
         world.root_scope().location(child).unwrap().archetype(),
         before
     );
-    assert_eq!(world.root_scope().query_one::<&Marker>(child).unwrap().0, 1);
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&Marker>(child)
+            .unwrap()
+            .get()
+            .0,
+        1
+    );
 }
 
 #[test]
@@ -189,7 +231,15 @@ fn unlink_moves_an_entity_into_the_views_scope() {
         "move it up to the root"
     );
     assert_eq!(world.parent_scope(child), Ok(root));
-    assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 0);
+    assert_eq!(
+        world
+            .scope(scene)
+            .unwrap()
+            .query::<&Marker>()
+            .iter()
+            .count(),
+        0
+    );
     // Moving it back is the root's call now: the scene no longer owns it.
     assert!(world.scope_mut(scene).unwrap().unlink(child).is_err());
     assert!(world.root_scope_mut().link(child, scene).is_ok());
@@ -368,10 +418,17 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
         "visible through the shared subtree"
     );
     assert_eq!(
-        scope.query_one::<&Marker>(resource).map(|marker| marker.0),
+        scope.query_one::<&Marker>(resource).map(|mut marker| {
+            let marker = marker.get();
+            marker.0
+        }),
         Ok(1)
     );
-    let mut found: Vec<u32> = scope.query::<&Marker>().map(|marker| marker.0).collect();
+    let mut found: Vec<u32> = scope
+        .query::<&Marker>()
+        .iter()
+        .map(|marker| marker.0)
+        .collect();
     found.sort_unstable();
     assert_eq!(
         found,
@@ -404,7 +461,7 @@ fn assert_invariants(world: &World) {
         world.scope(world.shared()).unwrap(),
     ] {
         let counted = scope.len();
-        assert_eq!(counted, scope.query::<Entity>().count(), "{scope:?}");
+        assert_eq!(counted, scope.query::<Entity>().iter().count(), "{scope:?}");
         let summed: usize = scope.archetype_infos().iter().map(|info| info.len).sum();
         assert_eq!(summed, counted, "{scope:?}");
         assert_eq!(scope.info().entities, counted, "{scope:?}");
@@ -566,21 +623,20 @@ fn an_exclusive_borrow_does_not_block_a_query_reading_the_scope_tree() {
         .scope_mut(sibling)
         .unwrap()
         .spawn(bundle![Marker(2), Name("other")]);
-    let mut held = world.root_scope().query_one::<&mut Marker>(other).unwrap();
-    held.0 = 7;
-    let seen: Vec<&str> = world
-        .scope(scene)
-        .unwrap()
-        .query::<&Name>()
-        .map(|name| name.0)
-        .collect();
-    drop(held);
+    let seen: Vec<&str> = {
+        let mut marker_of = world.root_scope().query_one::<&mut Marker>(other).unwrap();
+        marker_of.get().0 = 7;
+        world
+            .scope(scene)
+            .unwrap()
+            .query::<&Name>()
+            .iter()
+            .map(|name| name.0)
+            .collect()
+    };
     assert_eq!(seen, ["scene", "child"], "the scene and its subtree");
-    assert_eq!(
-        world.root_scope().query_one::<&Marker>(other).map(|m| m.0),
-        Ok(7),
-        "the write landed"
-    );
+    let mut marker_of = world.root_scope().query_one::<&Marker>(other).unwrap();
+    assert_eq!(marker_of.get().0, 7, "the write landed");
     assert!(world.root_scope().contains(child));
 }
 

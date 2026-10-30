@@ -17,19 +17,25 @@
 //! items. Items do not nest: `&(a, b)` is one tuple component, `(&a, &b)` is
 //! two components, and an item outside the forms above fails to compile.
 //!
+//! A query is held rather than borrowed one row at a time: [`crate::QueryBorrow`]
+//! is what a scope hands out, it claims the components it will reach when it is
+//! built, and the claims are released when it is dropped. Iterating it is
+//! [`crate::QueryBorrow::iter`].
+//!
 //! ```rust
 //! # use unlit_ecs::{Entity, Has, World, bundle};
 //! let mut world = World::new();
 //! world.root_scope_mut().spawn(bundle![1u32, 10.0f32]);
 //! world.root_scope_mut().spawn(bundle![2u32, true]);
 //!
-//! let sum: u32 = world.root_scope().query::<&u32>().map(|value| *value).sum();
+//! let mut query = world.root_scope().query::<&u32>();
+//! let sum: u32 = query.iter().map(|value| *value).sum();
 //! assert_eq!(sum, 3);
 //!
 //! // The entity, its component, and whether it also carries a `bool`. The
 //! // `Has<bool>` reports the answer without narrowing anything, so both spawns
 //! // above are visited and the one without a `bool` prints `false`.
-//! for (entity, value, has_bool) in world.root_scope().query::<(Entity, &u32, Has<bool>)>() {
+//! for (entity, value, has_bool) in world.root_scope().query::<(Entity, &u32, Has<bool>)>().iter() {
 //!     println!("{entity:?} has {value}, and a bool: {has_bool}");
 //! }
 //! ```
@@ -39,18 +45,50 @@
 //! tree's two scaffolding entities.
 //!
 //! Narrowing which archetypes a query visits, including by a component set only
-//! known at run time, is [`QueryIter::by`].
+//! known at run time, is [`crate::QueryBorrow::by`].
 
 use core::any::TypeId;
 use core::marker::PhantomData;
 
 use crate::archetype::Archetype;
-use crate::column::{CellRef, CellRefMut, Column, borrow_conflict};
+use crate::borrow::Claims;
+use crate::column::Column;
 use crate::entity::Entity;
+use crate::world::World;
 
 mod iter;
 
 pub use iter::QueryIter;
+
+/// Whether a component is reached shared or exclusive.
+///
+/// Reported per component by [`Query::access`], so a query knows what to claim
+/// before it hands anything out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Reached shared.
+    Read,
+    /// Reached exclusive.
+    Write,
+}
+
+impl Mode {
+    /// The verb a conflict message uses for this mode as a requirement.
+    pub(crate) fn verb(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+
+    /// How a conflict message describes a claim already held in this mode.
+    pub(crate) fn adverb(self) -> &'static str {
+        match self {
+            Self::Read => "shared",
+            Self::Write => "exclusively",
+        }
+    }
+}
 
 /// Panics when an archetype a query matched unexpectedly lacks a component.
 ///
@@ -74,17 +112,28 @@ fn missing<C: 'static>() -> ! {
 /// with a shape none of them expresses implements this trait itself: `matches`
 /// says which archetypes it visits, `fetch_state` resolves what it needs from
 /// one of them, and `fetch` reads one row.
+///
+/// # Safety
+///
+/// [`Query::access`] has to report every component the query reaches and whether
+/// it reaches it shared or exclusive, and [`Query::fetch`] has to reach nothing
+/// else. The holder claims exactly what `access` reports and derives the
+/// references `fetch` hands out from them; an impl that under-reports is what
+/// lets two exclusive references to one value exist.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a query",
     label = "a query is `&C`, `&mut C`, `Option<&C>`, `Option<&mut C>`, `Entity`, `Has<C>`, or a tuple of those",
     note = "`&(a, b)` is one tuple component and `(&a, &b)` is two; items do not nest"
 )]
-pub trait Query {
+pub unsafe trait Query {
     /// What one matched row yields.
     type Item<'a>;
 
     /// What is resolved once per archetype and then read once per row.
-    type Fetch<'a>;
+    ///
+    /// Copied out for every row, so it describes where the values are rather
+    /// than owning them.
+    type Fetch<'a>: Copy;
 
     /// Whether an archetype carries the components this query requires.
     fn matches(archetype: &Archetype) -> bool;
@@ -95,16 +144,20 @@ pub trait Query {
     fn fetch_state(archetype: &Archetype) -> Self::Fetch<'_>;
 
     /// Read the row at `row` through the resolved state.
-    fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a>;
-
-    /// Report the components this query names, for the development-time check
-    /// that none of them is named twice.
     ///
-    /// Items that borrow nothing, such as [`Has<T>`] and `Entity`, report
-    /// nothing: naming one beside an item that borrows the same component is not
+    /// # Safety
+    ///
+    /// The caller must hold a claim on every component the query reaches on this
+    /// archetype, shared for the shared items and exclusive for the exclusive
+    /// ones, and must not let the item outlive it.
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a>;
+
+    /// Report the components this query reaches, and how.
+    ///
+    /// Items that borrow nothing, such as [`Has<T>`] and [`Entity`], report
+    /// nothing: naming one beside an item that reaches the same component is not
     /// a conflict.
-    #[doc(hidden)]
-    fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str));
+    fn access(visit: &mut dyn FnMut(TypeId, &'static str, Mode));
 }
 
 /// A query that can be one element of a query tuple.
@@ -120,8 +173,8 @@ pub trait Query {
 pub trait QueryItem: Query {}
 
 /// Asks for `T` shared.
-impl<T: 'static> Query for &T {
-    type Item<'a> = CellRef<'a, T>;
+unsafe impl<T: 'static> Query for &T {
+    type Item<'a> = &'a T;
     type Fetch<'a> = &'a Column<T>;
 
     fn matches(archetype: &Archetype) -> bool {
@@ -132,24 +185,23 @@ impl<T: 'static> Query for &T {
         archetype.column::<T>().unwrap_or_else(|| missing::<T>())
     }
 
-    fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
-        state
-            .cell(row)
-            .unwrap_or_else(|| missing::<T>())
-            .try_borrow()
-            .unwrap_or_else(|_| borrow_conflict::<T>("read"))
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
+        let cell = state.cells().get(row).unwrap_or_else(|| missing::<T>());
+        // SAFETY: the holder claimed this archetype's `T` shared, so nothing
+        // writes it and no exclusive reference to it exists.
+        unsafe { &*cell.get() }
     }
 
-    fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
-        visit(TypeId::of::<T>(), core::any::type_name::<T>());
+    fn access(visit: &mut dyn FnMut(TypeId, &'static str, Mode)) {
+        visit(TypeId::of::<T>(), core::any::type_name::<T>(), Mode::Read);
     }
 }
 
 impl<T: 'static> QueryItem for &T {}
 
 /// Asks for `T` exclusive.
-impl<T: 'static> Query for &mut T {
-    type Item<'a> = CellRefMut<'a, T>;
+unsafe impl<T: 'static> Query for &mut T {
+    type Item<'a> = &'a mut T;
     type Fetch<'a> = &'a Column<T>;
 
     fn matches(archetype: &Archetype) -> bool {
@@ -160,24 +212,23 @@ impl<T: 'static> Query for &mut T {
         archetype.column::<T>().unwrap_or_else(|| missing::<T>())
     }
 
-    fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
-        state
-            .cell(row)
-            .unwrap_or_else(|| missing::<T>())
-            .try_borrow_mut()
-            .unwrap_or_else(|_| borrow_conflict::<T>("write"))
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
+        let cell = state.cells().get(row).unwrap_or_else(|| missing::<T>());
+        // SAFETY: the holder claimed this archetype's `T` exclusively, so neither
+        // another exclusive reference nor a shared one exists.
+        unsafe { &mut *cell.get() }
     }
 
-    fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
-        visit(TypeId::of::<T>(), core::any::type_name::<T>());
+    fn access(visit: &mut dyn FnMut(TypeId, &'static str, Mode)) {
+        visit(TypeId::of::<T>(), core::any::type_name::<T>(), Mode::Write);
     }
 }
 
 impl<T: 'static> QueryItem for &mut T {}
 
 /// Asks for `T` shared when the archetype carries it.
-impl<T: 'static> Query for Option<&T> {
-    type Item<'a> = Option<CellRef<'a, T>>;
+unsafe impl<T: 'static> Query for Option<&T> {
+    type Item<'a> = Option<&'a T>;
     type Fetch<'a> = Option<&'a Column<T>>;
 
     fn matches(_: &Archetype) -> bool {
@@ -188,24 +239,23 @@ impl<T: 'static> Query for Option<&T> {
         archetype.column::<T>()
     }
 
-    fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
-        let cell = (*state)?.cell(row)?;
-        Some(
-            cell.try_borrow()
-                .unwrap_or_else(|_| borrow_conflict::<T>("read")),
-        )
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
+        let cell = state?.cells().get(row)?;
+        // SAFETY: where the archetype carries `T` the holder claimed it shared;
+        // where it does not, this never runs.
+        Some(unsafe { &*cell.get() })
     }
 
-    fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
-        visit(TypeId::of::<T>(), core::any::type_name::<T>());
+    fn access(visit: &mut dyn FnMut(TypeId, &'static str, Mode)) {
+        visit(TypeId::of::<T>(), core::any::type_name::<T>(), Mode::Read);
     }
 }
 
 impl<T: 'static> QueryItem for Option<&T> {}
 
 /// Asks for `T` exclusive when the archetype carries it.
-impl<T: 'static> Query for Option<&mut T> {
-    type Item<'a> = Option<CellRefMut<'a, T>>;
+unsafe impl<T: 'static> Query for Option<&mut T> {
+    type Item<'a> = Option<&'a mut T>;
     type Fetch<'a> = Option<&'a Column<T>>;
 
     fn matches(_: &Archetype) -> bool {
@@ -216,16 +266,15 @@ impl<T: 'static> Query for Option<&mut T> {
         archetype.column::<T>()
     }
 
-    fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
-        let cell = (*state)?.cell(row)?;
-        Some(
-            cell.try_borrow_mut()
-                .unwrap_or_else(|_| borrow_conflict::<T>("write")),
-        )
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
+        let cell = state?.cells().get(row)?;
+        // SAFETY: where the archetype carries `T` the holder claimed it
+        // exclusively; where it does not, this never runs.
+        Some(unsafe { &mut *cell.get() })
     }
 
-    fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
-        visit(TypeId::of::<T>(), core::any::type_name::<T>());
+    fn access(visit: &mut dyn FnMut(TypeId, &'static str, Mode)) {
+        visit(TypeId::of::<T>(), core::any::type_name::<T>(), Mode::Write);
     }
 }
 
@@ -235,7 +284,7 @@ impl<T: 'static> QueryItem for Option<&mut T> {}
 ///
 /// It is an item like any other, so it can be written first, last, or on its
 /// own: a query over `Entity` alone yields every entity the scope sees.
-impl Query for Entity {
+unsafe impl Query for Entity {
     type Item<'a> = Entity;
     type Fetch<'a> = &'a Archetype;
 
@@ -247,18 +296,18 @@ impl Query for Entity {
         archetype
     }
 
-    fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
         state.entities()[row]
     }
 
-    fn type_ids(_: &mut dyn FnMut(TypeId, &'static str)) {}
+    fn access(_: &mut dyn FnMut(TypeId, &'static str, Mode)) {}
 }
 
 impl QueryItem for Entity {}
 
 /// Yields whether the archetype carries `T`.
 ///
-/// The answer is read from the archetype's component set, so it borrows no cell
+/// The answer is read from the archetype's component set, so it reaches no value
 /// and never conflicts: `(&mut T, Has<T>)` is legal. Use it instead of
 /// `Option<&T>::is_some()` to ask about a component without borrowing it.
 ///
@@ -266,12 +315,12 @@ impl QueryItem for Entity {}
 /// `T` yields `false`. That is what lets a query report presence for rows it was
 /// going to visit anyway, and what keeps `query_one::<Has<T>>` answering
 /// `Ok(false)` rather than an error for an entity that lacks `T`. To visit only
-/// the archetypes carrying `T`, pair it with [`QueryIter::by`]:
+/// the archetypes carrying `T`, pair it with [`crate::QueryBorrow::by`]:
 /// `.by(|archetype: &Archetype| archetype.has::<T>())`.
 #[derive(Clone, Copy, Debug)]
 pub struct Has<T>(PhantomData<fn() -> T>);
 
-impl<T: 'static> Query for Has<T> {
+unsafe impl<T: 'static> Query for Has<T> {
     type Item<'a> = bool;
     type Fetch<'a> = bool;
 
@@ -283,11 +332,11 @@ impl<T: 'static> Query for Has<T> {
         archetype.has::<T>()
     }
 
-    fn fetch<'a>(state: &Self::Fetch<'a>, _: usize) -> Self::Item<'a> {
-        *state
+    unsafe fn fetch<'a>(state: Self::Fetch<'a>, _: usize) -> Self::Item<'a> {
+        state
     }
 
-    fn type_ids(_: &mut dyn FnMut(TypeId, &'static str)) {}
+    fn access(_: &mut dyn FnMut(TypeId, &'static str, Mode)) {}
 }
 
 impl<T: 'static> QueryItem for Has<T> {}
@@ -295,7 +344,7 @@ impl<T: 'static> QueryItem for Has<T> {}
 macro_rules! impl_tuple {
     ($($name:ident),+) => {
         /// Asks for every member, yielding a tuple of their items.
-        impl<$($name: QueryItem),+> Query for ($($name,)+) {
+        unsafe impl<$($name: QueryItem),+> Query for ($($name,)+) {
             type Item<'a> = ($($name::Item<'a>,)+);
             type Fetch<'a> = ($($name::Fetch<'a>,)+);
 
@@ -307,14 +356,16 @@ macro_rules! impl_tuple {
                 ($($name::fetch_state(archetype),)+)
             }
 
-            fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
+            unsafe fn fetch<'a>(state: Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
                 #[expect(non_snake_case, reason = "the pattern binds one variable per tuple member")]
                 let ($($name,)+) = state;
-                ($($name::fetch($name, row),)+)
+                // SAFETY: the holder claimed each member's components, which is
+                // what each call's contract asks for.
+                unsafe { ($($name::fetch($name, row),)+) }
             }
 
-            fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
-                $($name::type_ids(visit);)+
+            fn access(visit: &mut dyn FnMut(TypeId, &'static str, Mode)) {
+                $($name::access(visit);)+
             }
         }
     };
@@ -343,14 +394,14 @@ impl_tuple!(
 
 /// Narrows the archetypes a query visits.
 ///
-/// An unadorned `query::<Q>()` accepts every archetype its items match.
-/// [`QueryIter::by`] installs a filter.
+/// An unadorned query accepts every archetype its items match.
+/// [`crate::QueryBorrow::by`] installs a filter.
 ///
 /// A filter is answered from the archetype alone, before any row is fetched and
-/// before any cell is borrowed. Deciding there rather than skipping rows in the
+/// before any value is reached. Deciding there rather than skipping rows in the
 /// loop is both faster -- a rejected archetype costs one test instead of one per
-/// row -- and correct when the rows it rejects carry a component the caller has
-/// already borrowed exclusively.
+/// row -- and correct when the rows it rejects carry a component the caller
+/// reaches exclusively.
 ///
 /// Implemented for `()`, which accepts everything, and for any
 /// `Fn(&Archetype) -> bool`. A closure can decide from anything an archetype
@@ -363,12 +414,11 @@ impl_tuple!(
 /// world.root_scope_mut().spawn(bundle![1u32, true]);
 /// world.root_scope_mut().spawn(bundle![2u32]);
 ///
-/// let sum: u32 = world
+/// let mut query = world
 ///     .root_scope()
 ///     .query::<&u32>()
-///     .by(|archetype: &Archetype| !archetype.has::<bool>())
-///     .map(|value| *value)
-///     .sum();
+///     .by(|archetype: &Archetype| !archetype.has::<bool>());
+/// let sum: u32 = query.iter().map(|value| *value).sum();
 /// assert_eq!(sum, 2);
 /// ```
 pub trait ArchetypeFilter {
@@ -387,31 +437,191 @@ impl<F: Fn(&Archetype) -> bool> ArchetypeFilter for F {
         self(archetype)
     }
 }
-
-/// Panics when a query names one component twice.
+/// What a scope hands out for a query: the claims, and the way to iterate them.
 ///
-/// Type ids cannot be compared in a `const` context, so this is the earliest
-/// place a query can be checked. It is a development-time check: two shared
-/// reads of one component are a query that could have been written once, and
-/// they borrow without conflict, so a release build carries on and only a
-/// exclusive pair panics at the cell.
-#[cfg(debug_assertions)]
-#[track_caller]
-pub(crate) fn assert_no_duplicates<Q: Query>(origin: &'static core::panic::Location<'static>) {
-    /// Enough for any tuple the impls cover; a hand-written query naming more
-    /// distinct components than this goes unchecked rather than panicking.
-    const CAPACITY: usize = 16;
+/// The holder is created by [`crate::Scope::query`] and claims the components
+/// the query reaches before it hands out anything. Iterating is
+/// [`QueryBorrow::iter`], and every item it yields borrows from this holder, so
+/// the claims outlive the items by construction.
+///
+/// Dropping the holder releases the claims. Forgetting it instead
+/// ([`core::mem::forget`]) leaks them: the components stay claimed for the rest
+/// of the world's life, and the next query for them panics rather than running
+/// alongside.
+pub struct QueryBorrow<'w, Q: Query, F: ArchetypeFilter = ()> {
+    world: &'w World,
+    scope: Entity,
+    filter: F,
+    claims: Claims<'w>,
+    origin: &'static core::panic::Location<'static>,
+    marker: PhantomData<fn() -> Q>,
+}
 
-    let mut ids = [TypeId::of::<()>(); CAPACITY];
-    let mut len = 0;
-    Q::type_ids(&mut |type_id, name| {
-        assert!(
-            !ids[..len].contains(&type_id),
-            "a query cannot name `{name}` twice, in {origin}",
-        );
-        if len < CAPACITY {
-            ids[len] = type_id;
-            len += 1;
+impl<'w, Q: Query> QueryBorrow<'w, Q, ()> {
+    pub(crate) fn new(
+        world: &'w World,
+        scope: Entity,
+        origin: &'static core::panic::Location<'static>,
+    ) -> Self {
+        Self {
+            world,
+            scope,
+            filter: (),
+            claims: Claims::new(world),
+            origin,
+            marker: PhantomData,
         }
-    });
+    }
+}
+
+impl<'w, Q: Query, F: ArchetypeFilter> QueryBorrow<'w, Q, F> {
+    /// Visit only the archetypes the filter accepts.
+    ///
+    /// The filter sees an archetype before any of its rows is fetched and before
+    /// any value is reached, so rejecting an archetype costs one test rather than
+    /// one per row, and works even when that archetype's components are already
+    /// claimed elsewhere. See [`ArchetypeFilter`].
+    ///
+    /// It may be applied part-way through an iteration, and then narrows the
+    /// archetype being visited too: what the filter rejects is not fetched, and
+    /// the rows already yielded stay yielded.
+    #[must_use]
+    pub fn by<G: ArchetypeFilter>(self, filter: G) -> QueryBorrow<'w, Q, G> {
+        QueryBorrow {
+            world: self.world,
+            scope: self.scope,
+            filter,
+            claims: self.claims,
+            origin: self.origin,
+            marker: PhantomData,
+        }
+    }
+
+    /// Iterate the visible entities that match `Q`.
+    ///
+    /// The items borrow from this holder, so they cannot outlive it and it
+    /// cannot be iterated for one item at a time while another is alive: collect
+    /// them, or finish with each row before reaching for the next.
+    pub fn iter(&mut self) -> QueryIter<'_, 'w, Q> {
+        QueryIter::new(
+            self.world,
+            self.scope,
+            &self.filter,
+            &mut self.claims,
+            self.origin,
+        )
+    }
+}
+
+/// What a scope hands out for a query over one entity.
+///
+/// Made by [`crate::Scope::query_one`], which claims the components the query
+/// reaches on that entity's row. A missing match is still answered with an
+/// error rather than a holder, so a caller that finds nothing holds no claim.
+///
+/// [`QueryOne::get`] is what reads the row, and it takes the holder exclusively:
+/// an exclusive item borrows from the call, so the compiler refuses a second one
+/// while the first is alive.
+pub struct QueryOne<'w, Q: Query> {
+    world: &'w World,
+    archetype: u32,
+    row: usize,
+    /// Held for the life of the holder: dropping it is what releases the claim.
+    _claims: Claims<'w>,
+    marker: PhantomData<fn() -> Q>,
+}
+
+impl<'w, Q: Query> QueryOne<'w, Q> {
+    pub(crate) fn new(
+        world: &'w World,
+        archetype: u32,
+        archetype_ref: &Archetype,
+        entity: Entity,
+        row: usize,
+        origin: &'static core::panic::Location<'static>,
+    ) -> Self {
+        let mut claims = Claims::new(world);
+        claims.claim_row::<Q>(archetype, entity, archetype_ref, origin);
+        Self {
+            world,
+            archetype,
+            row,
+            _claims: claims,
+            marker: PhantomData,
+        }
+    }
+
+    /// What the query yields for this entity's row.
+    pub fn get(&mut self) -> Q::Item<'_> {
+        let archetype = self
+            .world
+            .archetypes()
+            .get(self.archetype)
+            .expect("a live entity's location names a registered archetype");
+        let state = Q::fetch_state(archetype);
+        // SAFETY: `QueryOne::new` claimed what `Q::access` reports on this row,
+        // and the item borrows from the holder that owns the claims.
+        unsafe { Q::fetch(state, self.row) }
+    }
+}
+
+impl<'w, Q: Query> QueryOne<'w, Q> {
+    /// The cell of one component on this entity's row.
+    fn cell<C: 'static>(&self) -> &core::cell::UnsafeCell<C> {
+        let archetype = self
+            .world
+            .archetypes()
+            .get(self.archetype)
+            .expect("a live entity's location names a registered archetype");
+        archetype
+            .column::<C>()
+            .and_then(|column| column.cells().get(self.row))
+            .expect("the row the query matched carries the component")
+    }
+}
+
+impl<T: 'static> core::ops::Deref for QueryOne<'_, &T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the holder claimed a shared borrow of `T` on this row, and
+        // the claim lives as long as the holder the reference borrows from, so
+        // no exclusive borrow of this row's `T` exists alongside it.
+        unsafe { &*self.cell::<T>().get() }
+    }
+}
+
+impl<T: 'static> core::ops::Deref for QueryOne<'_, &mut T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the holder claimed `T` exclusively on this row, which
+        // grants reading too, and the claim lives as long as the holder.
+        unsafe { &*self.cell::<T>().get() }
+    }
+}
+
+impl<T: 'static> core::ops::DerefMut for QueryOne<'_, &mut T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: the holder claimed `T` exclusively on this row, and the
+        // reference borrows from the holder, which owns that claim.
+        unsafe { &mut *self.cell::<T>().get() }
+    }
+}
+
+impl<Q: Query> core::fmt::Debug for QueryOne<'_, Q> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("QueryOne")
+            .field("archetype", &self.archetype)
+            .field("row", &self.row)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Q: Query, F: ArchetypeFilter> core::fmt::Debug for QueryBorrow<'_, Q, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("QueryBorrow")
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
 }

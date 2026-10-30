@@ -194,13 +194,15 @@ impl FrameSource for BlitSource {
         // sampler stay, and the view's new id gets its own group.
         if self.gpus[index].1.view != self.view {
             let gpu = &mut self.gpus[index].1;
-            let device = scope
+            let mut device_row = scope
                 .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
+
+            let device = device_row.get();
             gpu.bind_group = allocate_bind_group(
                 scope,
                 ctx,
-                &device,
+                device,
                 &gpu.layout,
                 gpu.sampler.clone(),
                 self.view.clone(),

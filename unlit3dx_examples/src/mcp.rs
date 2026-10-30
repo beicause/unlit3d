@@ -39,6 +39,7 @@ pub fn run(soundfont: std::sync::Arc<[u8]>) {
         let exit = host
             .root_scope()
             .query::<&ExitRequest>()
+            .iter()
             .any(|request| request.0);
         if exit {
             break;
@@ -100,11 +101,10 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         if args.frames == 0 {
             return Err("frames must be at least 1".to_owned());
         }
-        let mut interactive = host
-            .root_scope()
-            .query::<&mut Interactive>()
-            .next()
-            .ok_or_else(|| "the host is not an interactive headless scene".to_owned())?;
+        let mut interactive = host.root_scope().query::<&mut Interactive>();
+        let Some(interactive) = interactive.iter().next() else {
+            return Err("the host is not an interactive headless scene".to_owned());
+        };
         interactive.step(host, args.frames);
         // The frame is drawn as the steps leave it, so the frame a client reads
         // back afterwards is the one the steps produced. Drawing is cheap here
@@ -118,12 +118,11 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
 
 async fn scene_status_tool(commands: CommandSender, args: WorldArg) -> ToolResult {
     command(&commands, args.world, |host| {
-        let interactive = host
-            .root_scope()
-            .query::<&Interactive>()
-            .next()
-            .ok_or_else(|| "the host is not an interactive headless scene".to_owned())?;
-        Ok(status(host, &interactive))
+        let mut interactive = host.root_scope().query::<&Interactive>();
+        let Some(interactive) = interactive.iter().next() else {
+            return Err("the host is not an interactive headless scene".to_owned());
+        };
+        Ok(status(host, interactive))
     })
     .await
 }

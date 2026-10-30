@@ -159,13 +159,14 @@ pub fn mount_controls(world: &mut World) {
     // first tick, so only a page whose output waits for the user's first
     // click ever shows the hint below.
     let unlocked = (|| {
-        let scene = world.root_scope().query::<&Scene>().next()?.clone();
+        let scene = world.root_scope().query::<&Scene>().iter().next()?.clone();
         scene
             .audio
             .watch(|audio| {
                 audio
                     .root_scope()
                     .query::<&AudioOutputOpen>()
+                    .iter()
                     .next()
                     .map(|_| ())
             })
@@ -177,7 +178,8 @@ pub fn mount_controls(world: &mut World) {
     world
         .root_scope_mut()
         .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
-            let Some(mut layout) = world.query::<&mut PanelLayout>().next() else {
+            let mut layouts = world.query::<&mut PanelLayout>();
+            let Some(layout) = layouts.iter().next() else {
                 return;
             };
             layout.buttons.clear();
@@ -185,7 +187,7 @@ pub fn mount_controls(world: &mut World) {
                 // The tracks are spawned once the audio world has answered
                 // with its voice, so a scene whose soundfont failed to load
                 // shows the ball buttons alone.
-                if let Some(tracks) = world.query::<&SceneTracks>().next().map(|tracks| *tracks) {
+                if let Some(tracks) = world.query::<&SceneTracks>().iter().next().copied() {
                     // The output waits for the user's first click: say so, so
                     // a silent panel reads as a nudge to press Play rather
                     // than as something broken.
@@ -196,28 +198,22 @@ pub fn mount_controls(world: &mut World) {
                     // back before the next asks for its own. The sender goes
                     // along so Play can unlock the output the same click.
                     if let (Some(scene), Ok(mut track)) = (
-                        world.query::<&Scene>().next(),
+                        world.query::<&Scene>().iter().next(),
                         world.query_one::<&mut Track>(tracks.background),
                     ) {
                         track_controls(
                             ui,
                             "Background music",
                             &mut track.midi,
-                            &mut layout,
+                            layout,
                             &scene.audio,
                         );
                     }
                     if let (Some(scene), Ok(mut track)) = (
-                        world.query::<&Scene>().next(),
+                        world.query::<&Scene>().iter().next(),
                         world.query_one::<&mut Track>(tracks.sequence),
                     ) {
-                        track_controls(
-                            ui,
-                            "MIDI sequence",
-                            &mut track.midi,
-                            &mut layout,
-                            &scene.audio,
-                        );
+                        track_controls(ui, "MIDI sequence", &mut track.midi, layout, &scene.audio);
                     }
                     ui.separator();
                 }

@@ -105,6 +105,7 @@ impl FrameSkip {
         world
             .root_scope()
             .query::<&FrameSkip>()
+            .iter()
             .any(|frame_skip| frame_skip.0)
     }
 
@@ -119,7 +120,10 @@ impl FrameSkip {
             let _ = world
                 .root_scope()
                 .query_one::<&mut FrameSkip>(entity)
-                .map(|mut skip| skip.0 = value);
+                .map(|mut skip| {
+                    let skip = skip.get();
+                    skip.0 = value
+                });
         }
     }
 
@@ -129,6 +133,7 @@ impl FrameSkip {
         world
             .root_scope()
             .query::<(&FrameSkip, Entity)>()
+            .iter()
             .map(|(_frame_skip, entity)| entity)
             .collect()
     }
@@ -263,7 +268,8 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     world
         .root_scope()
         .query::<&mut FrameClock>()
-        .for_each(|mut clock| clock.advance(frame.delta_time, frame.index));
+        .iter()
+        .for_each(|clock| clock.advance(frame.delta_time, frame.index));
     dispatch::<OnFrame>(world, frame);
     // A frame keeps coming whatever a queued command made of itself, and the
     // caller of a frame has nowhere to report the failure to, so it is logged
@@ -285,6 +291,7 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
         .root_scope()
         .query::<(&B, Entity)>()
+        .iter()
         .map(|(b, entity)| (b.order(), entity))
         .collect();
     order.sort_unstable_by_key(|(order, _entity)| *order);
@@ -292,7 +299,10 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
         world
             .root_scope()
             .query_one::<&mut B>(entity)
-            .map(|mut behaviour| behaviour.run(world, entity, frame))
+            .map(|mut behaviour| {
+                let behaviour = behaviour.get();
+                behaviour.run(world, entity, frame)
+            })
             .unwrap_or_else(|_| panic!("the behaviour entity exists: {entity:?}"));
     }
 }
@@ -413,7 +423,7 @@ mod tests {
                 let _ = world.root_scope().queue().spawn(bundle![Marker]);
             }),]);
         dispatch_frame(&mut world, &mut frame());
-        assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
+        assert_eq!(world.root_scope().query::<&Marker>().iter().count(), 1);
     }
 
     /// A stated order runs after the default band, however the two were
@@ -496,10 +506,13 @@ mod tests {
             world
                 .root_scope_mut()
                 .spawn(bundle![OnFrame::new(move |world, _entity, _frame| {
-                    let clock = *world
-                        .root_scope()
-                        .query_one::<&FrameClock>(clock)
-                        .expect("the clock is spawned");
+                    let clock = {
+                        let mut row = world
+                            .root_scope()
+                            .query_one::<&FrameClock>(clock)
+                            .expect("the clock is spawned");
+                        *row.get()
+                    };
                     seen.borrow_mut().push(clock);
                 }),]);
         }

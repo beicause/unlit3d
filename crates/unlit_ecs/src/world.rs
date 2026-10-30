@@ -1,13 +1,13 @@
 //! The world: entities, their components, and the scopes they live in.
 //!
-//! Components live in `RefCell`s, so a component can be read or written
-//! through a shared `&World`. The world is therefore `!Send`: it stays on the
-//! thread that created it, which is where a renderer or any other `!Send`
-//! state lives.
+//! Components live in `UnsafeCell`s so that a shared `&World` can reach them,
+//! and a borrow ledger written through that same shared reference catches two
+//! access paths reaching one value when at least one of them writes. The world
+//! is therefore `!Send`: it stays on the thread that created it, which is where
+//! a renderer or any other `!Send` state lives.
 //!
-//! Reading and writing components needs only `&World`, because every value
-//! lives in a cell. Structural changes -- spawning and despawning -- need
-//! `&mut World`. A callback that only has a shared world can queue those
+//! Reading and writing components needs only `&World`. Structural changes --
+//! spawning and despawning -- need `&mut World`. A callback that only has a shared world can queue those
 //! changes instead with [`crate::Commands`] and apply them later with
 //! [`World::apply`].
 //!
@@ -32,27 +32,51 @@ use core::cell::{Ref, RefCell, RefMut};
 use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
+use crate::borrow::{BorrowLedger, Rows};
 use crate::bundle::{Bundle, BundleComponent, DynamicBundle};
-use crate::column::{AnyColumn, borrow_conflict};
+use crate::column::AnyColumn;
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
 use crate::error::EntityAccessError;
 use crate::hash::TypeIdHashMap;
-use crate::lifecycle::Lifecycle;
+use crate::lifecycle::{Lifecycle, LifecycleCallback};
+use crate::query::Mode;
 use crate::scope::ScopeTree;
 use crate::view::{Scope, ScopeMut};
 
 /// Entities and their components.
 pub struct World {
+    /// Where each handle lives, and the allocator behind it.
+    ///
+    /// Still a cell: [`World::reserve_entity`] hands out a handle through
+    /// `&World` so that [`Commands::spawn`](crate::Commands::spawn) can answer one
+    /// before the queue is applied, and a reservation is a real allocation, not
+    /// a queued intent. Everything else that touches this table runs under
+    /// `&mut World`, so the two never overlap.
     entities: RefCell<Entities>,
     archetypes: Archetypes,
     /// Column constructors, one per component type that ever entered the world.
     ctors: TypeIdHashMap<fn() -> Box<dyn AnyColumn>>,
     /// The name of every component type that ever entered the world.
     names: TypeIdHashMap<&'static str>,
+    /// Structural changes waiting for the next [`World::apply`].
+    ///
+    /// A cell for the same reason: a command is queued from a callback that
+    /// only holds `&World`.
     commands: RefCell<VecDeque<Box<dyn Command>>>,
     /// Where every live entity lives.
-    tree: RefCell<ScopeTree>,
+    ///
+    /// Not a cell: every write to it happens under `&mut World`, and a reader
+    /// borrowing it from `&World` keeps that shared borrow alive, which is what
+    /// excludes one. The visibility walk reads it on every row, so the absence of
+    /// a runtime flag there is the point.
+    tree: ScopeTree,
+    /// Who holds which component values.
+    ///
+    /// A cell because a claim is registered by a query constructed from `&World`
+    /// and dropped by its holder's `Drop`, neither of which has the world
+    /// mutably.
+    borrow: RefCell<BorrowLedger>,
     /// The entity that owns the world, whose scope sees everything.
     root: Entity,
     /// The entity whose subtree every scope sees.
@@ -95,7 +119,8 @@ impl World {
             ctors: TypeIdHashMap::default(),
             names: TypeIdHashMap::default(),
             commands: RefCell::new(VecDeque::new()),
-            tree: RefCell::new(ScopeTree::default()),
+            tree: ScopeTree::default(),
+            borrow: RefCell::new(BorrowLedger::default()),
             // Both are overwritten below, before the world leaves this
             // function and anything can read them.
             root: Entity::from_raw(0, 0),
@@ -157,7 +182,7 @@ impl World {
     /// Whether `entity` is strictly below `ancestor` in the tree.
     #[must_use]
     pub fn is_descendant(&self, ancestor: Entity, entity: Entity) -> bool {
-        self.tree_read().is_descendant(ancestor, entity)
+        self.tree.is_descendant(ancestor, entity)
     }
 
     /// Whether a scope of `caller` sees `candidate`.
@@ -214,7 +239,7 @@ impl World {
 
     /// The parent of a live entity.
     pub fn parent_scope(&self, entity: Entity) -> Result<Entity, EntityAccessError> {
-        self.tree_read().parent(entity)
+        self.tree.parent(entity)
     }
 
     /// The direct children of `entity`.
@@ -223,7 +248,7 @@ impl World {
     /// entity, which an empty list would otherwise hide.
     pub fn children(&self, entity: Entity) -> Result<Vec<Entity>, EntityAccessError> {
         self.location(entity)?;
-        Ok(self.tree_read().children(entity).to_vec())
+        Ok(self.tree.children(entity).to_vec())
     }
 
     /// The first row of `archetype` that holds content rather than scaffolding.
@@ -253,7 +278,7 @@ impl World {
 
     /// The scope of `scope`.
     pub fn scope(&self, scope: Entity) -> Result<Scope<'_>, EntityAccessError> {
-        self.tree_read().parent(scope)?;
+        self.tree.parent(scope)?;
         Ok(Scope::new(self, scope))
     }
 
@@ -265,7 +290,7 @@ impl World {
 
     /// The mutable scope of `scope`.
     pub fn scope_mut(&mut self, scope: Entity) -> Result<ScopeMut<'_>, EntityAccessError> {
-        self.tree_read().parent(scope)?;
+        self.tree.parent(scope)?;
         Ok(ScopeMut::new(self, scope))
     }
 
@@ -367,7 +392,7 @@ impl World {
         }
         self.location(entity)?;
         self.check_owns(caller, entity)?;
-        let doomed = self.tree_read().subtree_post_order(entity);
+        let doomed = self.tree.subtree_post_order(entity);
         for victim in &doomed {
             self.remove_entity(*victim);
         }
@@ -442,7 +467,7 @@ impl World {
             .location(entity)
             .unwrap_or_else(|_| panic!("{entity:?} has no row to move"));
         let old = self
-            .tree_read()
+            .tree
             .parent(entity)
             .unwrap_or_else(|_| panic!("{entity:?} is alive but not in the tree"));
         if old == scope {
@@ -451,8 +476,8 @@ impl World {
         self.archetypes
             .get_mut(location.archetype())
             .expect("a live entity's location names a registered archetype")
-            .move_scope(old, scope);
-        self.tree_write().attach(entity, scope);
+            .move_scope(location.row(), old, scope);
+        self.tree_mut().attach(entity, scope);
     }
 
     // -- the row itself ----------------------------------------------------
@@ -482,7 +507,7 @@ impl World {
         let row = (target.len() - 1) as u32;
         self.entities_write()
             .set_location(entity, Location { archetype, row });
-        self.tree_write().attach(entity, scope);
+        self.tree_mut().attach(entity, scope);
     }
 
     /// Run the despawn callbacks of `entity` and drop its row and handle.
@@ -490,13 +515,9 @@ impl World {
         let Ok(location) = self.location(entity) else {
             return;
         };
-        // The row's scope is read before the tree forgets it: removing the row
-        // updates the archetype's per-scope count, which needs to know which
-        // scope lost one.
-        let scope = self.parent_scope(entity).unwrap_or(entity);
         self.run_lifecycle::<crate::OnDespawn>(entity);
-        self.tree_write().detach(entity);
-        self.remove_row(location, scope);
+        self.tree_mut().detach(entity);
+        self.remove_row(location);
         self.free_entity(entity);
     }
 
@@ -514,15 +535,54 @@ impl World {
         let Ok(scope) = self.parent_scope(entity) else {
             return;
         };
-        // Borrowed for the whole run, like every other behaviour component: a
-        // callback that reaches for its own lifecycle component panics on the
-        // borrow rather than silently missing its own registration.
-        let Some(mut hooks) = self.get_mut::<C>(entity) else {
+        // The callback is moved out of the row for the run, so a callback that
+        // reaches for its own lifecycle component reads it instead of finding
+        // it held open by its own run.
+        let Some(callback) = self.take_lifecycle::<C>(entity) else {
             return;
         };
         let scope = Scope::new(self, scope);
-        let callback = hooks.callback();
+        let mut callback = callback;
         callback(&scope, entity);
+        self.restore_lifecycle::<C>(entity, callback);
+    }
+
+    /// Move the callback of the lifecycle component `C` out of the entity's row.
+    fn take_lifecycle<C: 'static + Lifecycle>(
+        &mut self,
+        entity: Entity,
+    ) -> Option<LifecycleCallback> {
+        let location = self.location(entity).ok()?;
+        let archetype = self.archetypes.get_mut(location.archetype()).ok()?;
+        let column = archetype.column_mut::<C>()?;
+        let cell = column.cells_mut().get_mut(location.row())?;
+        // SAFETY: `&mut World` excludes every query and every other reference to
+        // the world's components, so nothing else can be looking at this row.
+        Some(unsafe { &mut *cell.get() }.take())
+    }
+
+    /// Put back a callback moved out by the world's own run of it.
+    fn restore_lifecycle<C: 'static + Lifecycle>(
+        &mut self,
+        entity: Entity,
+        callback: LifecycleCallback,
+    ) {
+        let location = self
+            .location(entity)
+            .expect("a lifecycle callback was moved out of a live entity's row");
+        let archetype = self
+            .archetypes
+            .get_mut(location.archetype())
+            .expect("a live entity's location names a registered archetype");
+        let column = archetype
+            .column_mut::<C>()
+            .expect("the column the callback came from is still registered");
+        let cell = column
+            .cells_mut()
+            .get_mut(location.row())
+            .expect("the row still exists");
+        // SAFETY: as above, `&mut World` excludes every other reference.
+        unsafe { &mut *cell.get() }.restore(callback)
     }
 
     // -- queries and diagnostics -------------------------------------------
@@ -571,16 +631,9 @@ impl World {
             .unwrap_or_else(|_| panic!("the entity table is already borrowed"))
     }
 
-    pub(crate) fn tree_read(&self) -> Ref<'_, ScopeTree> {
-        self.tree
-            .try_borrow()
-            .unwrap_or_else(|_| panic!("the scope tree is already exclusively borrowed"))
-    }
-
-    fn tree_write(&self) -> RefMut<'_, ScopeTree> {
-        self.tree
-            .try_borrow_mut()
-            .unwrap_or_else(|_| panic!("the scope tree is already borrowed"))
+    #[inline]
+    fn tree_mut(&mut self) -> &mut ScopeTree {
+        &mut self.tree
     }
 
     pub(crate) fn commands_write(&self) -> CommandsGuard<'_> {
@@ -592,6 +645,39 @@ impl World {
     /// Append a command to the deferred queue.
     pub(crate) fn push_command(&self, command: Box<dyn Command>) {
         self.commands_write().push_back(command);
+    }
+
+    /// Register a claim on one component type and answer its id.
+    ///
+    /// Panics when a claim already held for the same type clashes with it. See
+    /// [`crate::borrow`] for what clashes.
+    #[track_caller]
+    pub(crate) fn claim(
+        &self,
+        type_id: TypeId,
+        name: &'static str,
+        mode: Mode,
+        rows: Rows,
+        origin: &'static core::panic::Location<'static>,
+    ) -> u64 {
+        self.borrow
+            .try_borrow_mut()
+            .unwrap_or_else(|_| panic!("the borrow ledger is already borrowed"))
+            .claim(type_id, name, mode, rows, origin)
+    }
+
+    /// Drop the claims with these ids, if they are still held.
+    pub(crate) fn release(&self, ids: &mut Vec<u64>) {
+        if ids.is_empty() {
+            return;
+        }
+        self.borrow_write().release_all(ids);
+    }
+
+    fn borrow_write(&self) -> RefMut<'_, BorrowLedger> {
+        self.borrow
+            .try_borrow_mut()
+            .unwrap_or_else(|_| panic!("the borrow ledger is already borrowed"))
     }
 
     /// The archetype with exactly the types of `components`, creating it when
@@ -661,37 +747,13 @@ impl World {
         &self.archetypes
     }
 
-    /// The component of `entity`, exclusively, or `None` when the entity is
-    /// not alive or its archetype does not carry `C`.
-    ///
-    /// Crate-private, because it is the lookup the lifecycle callbacks run on:
-    /// a caller outside has no way to name the component type in an error, and
-    /// a hook that does not find its own component simply does not run.
-    ///
-    /// Panics when the component is already borrowed, shared or exclusive: a
-    /// busy cell says nothing about the handle and is not an access error.
-    #[inline]
-    pub(crate) fn get_mut<C: 'static>(&self, entity: Entity) -> Option<RefMut<'_, C>> {
-        let location = self.entities_read().location(entity).ok()?;
-        let cell = self
-            .archetypes
-            .get(location.archetype())
-            .ok()?
-            .cell::<C>(location.row())?;
-        Some(
-            cell.try_borrow_mut()
-                .unwrap_or_else(|_| borrow_conflict::<C>("write")),
-        )
-    }
-
-    /// Drop the row at `location`, which lives in `scope`, keeping every other
-    /// location correct.
-    pub(crate) fn remove_row(&mut self, location: Location, scope: Entity) {
+    /// Drop the row at `location`, keeping every other location correct.
+    pub(crate) fn remove_row(&mut self, location: Location) {
         let archetype = self
             .archetypes
             .get_mut(location.archetype())
             .expect("a live entity's location names a registered archetype");
-        if let Some(moved) = archetype.swap_remove(location.row(), scope) {
+        if let Some(moved) = archetype.swap_remove(location.row()) {
             self.entities_write().set_location(
                 moved,
                 Location {
@@ -710,7 +772,7 @@ impl World {
 impl core::fmt::Debug for World {
     /// Reports the tree's roots and the archetype pool, not the entities.
     ///
-    /// The entity table, the scope tree and the command queue live in cells,
+    /// The entity table, the borrow ledger and the command queue live in cells,
     /// and a debug print is most likely to run while one of them is already
     /// borrowed. Borrowing them here would panic inside the panic message that
     /// is being built, so they are left out rather than read on a best effort.
@@ -731,9 +793,6 @@ mod tests {
     #[derive(Clone, Copy, Debug)]
     struct Marker;
 
-    #[derive(Clone, Copy, Debug)]
-    struct Other;
-
     /// The lookup behind the lifecycle hooks, which is its only caller: an
     /// archetype that does not carry the component simply has no hook to run.
     #[test]
@@ -741,11 +800,18 @@ mod tests {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(crate::bundle![Marker]);
         assert!(
-            world.get_mut::<Other>(entity).is_none(),
-            "the archetype has no Other column",
+            world
+                .take_lifecycle::<crate::lifecycle::OnSpawn>(entity)
+                .is_none(),
+            "the archetype has no OnSpawn column",
         );
         let dead = world.root_scope_mut().spawn(crate::bundle![Marker]);
         world.root_scope_mut().despawn(dead).unwrap();
-        assert!(world.get_mut::<Other>(dead).is_none(), "the handle is dead");
+        assert!(
+            world
+                .take_lifecycle::<crate::lifecycle::OnSpawn>(dead)
+                .is_none(),
+            "the handle is dead",
+        );
     }
 }

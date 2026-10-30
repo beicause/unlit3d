@@ -122,6 +122,7 @@ mod tests {
             .root_scope()
             .query_one::<&InputEvents>(entity)
             .expect("the buffer spawned")
+            .get()
             .refresh();
 
         let encoded =

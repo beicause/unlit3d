@@ -288,10 +288,10 @@ fn encode_json_component<C: Facet<'static>>(
     scope: &Scope<'_>,
     entity: Entity,
 ) -> Result<String, ComponentError> {
-    let component = scope
+    let mut component = scope
         .query_one::<&C>(entity)
         .map_err(|error| missing::<C>(entity, error))?;
-    to_json(&*component)
+    to_json(component.get())
 }
 
 /// A partial over a fresh C, seeded with C's [Default] when it has one.
@@ -315,7 +315,7 @@ fn current_partial_component<C: Facet<'static> + Clone>(
 ) -> Result<Partial<'static, false>, ComponentError> {
     let current = scope
         .query_one::<&C>(entity)
-        .map(|component| (*component).clone())
+        .map(|mut component| component.get().clone())
         .map_err(|error| missing::<C>(entity, error))?;
     let partial = Partial::alloc_owned::<C>()?;
     Ok(partial.set(current)?)
@@ -329,7 +329,7 @@ fn set_component<C: Facet<'static>>(
     let mut component = scope
         .query_one::<&mut C>(entity)
         .map_err(|error| missing::<C>(entity, error))?;
-    *component = materialize(partial)?;
+    *component.get() = materialize(partial)?;
     Ok(())
 }
 
@@ -473,10 +473,11 @@ mod tests {
         let partial = partial.set_field("y", 2.0_f32).expect("y is a field");
         set(&world.root_scope(), entity, "Position", partial).expect("the partial is written");
 
-        let value = world
+        let mut written = world
             .root_scope()
             .query_one::<&Position>(entity)
             .expect("the component is there");
+        let value = written.get();
         assert_eq!(value.x, 0.0);
         assert_eq!(value.y, 2.0);
     }

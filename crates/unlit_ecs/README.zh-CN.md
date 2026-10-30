@@ -2,9 +2,10 @@
 
 # unlit_ecs
 
-一个紧凑的 archetype ECS。组件按 archetype 存放，每种类型一列，而每个组件值都活在
-自己的 cell 里——正因如此，一个共享的 `&World` 就能在不使用任何 `unsafe` 的前提下
-读取*并*写入组件。
+一个紧凑的 archetype ECS。组件按 archetype 存放，每种类型一列，而每个组件值都住在
+自己的 `UnsafeCell` 里——正因如此，一个共享的 `&World` 既能读取也能写入组件。
+那些格子本会容许的别名由借用账本抓住：访问路径在交出任何引用之前先认领它要触及的
+组件，冲突时的 panic 指名双方。
 
 设计刻意保持精简：没有变化检测、没有事件与观察者、没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器
 外本 crate 没有其他依赖，也不依赖工作区中的任何其他 crate，因此可以单独使用；它对
@@ -23,8 +24,8 @@
 - **读写只需要一个 scope。** `&World` 可以打开根 scope，它看得见一切；一个场景的 `Scope`
   只看得见该场景的子树，看不见旁边的东西。结构变更——spawn 与 despawn——需要
   `ScopeMut`，或者由驱动器应用的 `Commands` 队列。
-- **world 是 `!Send` 的。** 组件存在 `RefCell` 里，因此 world 留在创建它的线程——
-  渲染器和其他与线程绑定的状态属于这里。并行是调用者的事，办法是把工作切分到纯数据上，
+- **world 是 `!Send` 的。** 组件存在 `UnsafeCell` 里，共享的 `&World` 才能触及它们，
+  因此 world 留在创建它的线程——渲染器和其他与线程绑定的状态属于这里。并行是调用者的事，办法是把工作切分到纯数据上，
   而不是共享 world。
 - **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
   普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
@@ -41,9 +42,11 @@
   子树，场景被换掉时，每个场景共用的资源正是靠它留着。这是 world 唯一维护的
   关系，因为每次访问都要判定可见性，而由调用者维护的关系做不到这一点。实体之间的其他
   引用仍然是组件里的 `Entity`，由调用者自行维护。
-- **借用冲突是 panic，而不是编译错误。** 请求一个已被借用的组件，或在同一个查询里两次
-  以 `&mut` 取同一组件，都会报出组件名并终止。这是不做访问冲突分析的代价。可选组件只在
-  「组件不存在」这件事上可选：借不到时同样 panic，而不会表现为 `None`。
+- **借用冲突是 panic，而不是编译错误。** 查询在交出任何引用之前先认领它将触及的组件
+  类型，认领活到持有者为止。两个持有者指名同一个组件、至少一方在写、且行可能重叠时
+  冲突；panic 报出组件名、两个持有者与两个源码位置，所以它说的是谁正握着，而不只是
+  谁被拒。这是不做访问冲突分析的代价。可选组件只在「组件不存在」这件事上可选：行已被
+  独占认领时同样 panic，而不会表现为 `None`。
 - **访问失败是 error，不是 `None`。** 每个触及实体的函数都回答 `Result`，出错时的
   `EntityAccessError` 会指名被问到的那个句柄并给出原因：实体已经没了、它在 scope 之外、
   它不匹配该查询、它未被预留，或者它不属于调用者去搬动。按 id 问 archetype 则回答
@@ -73,7 +76,8 @@ assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
 assert_eq!(scope.children(scene).unwrap().len(), 2);
-assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
+let mut seen = scope.query::<(&u32, Entity)>();
+assert!(seen.iter().any(|(_, entity)| entity == cube));
 
 // 根也是一个 scope，它看得见所有 scope。
 assert_eq!(world.root_scope().len(), 3);
@@ -125,16 +129,17 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 空列表和没有子实体读起来是一样的。
 
 **回调落在哪里。** 生命周期回调拿到的是该实体父实体的 scope，所以场景子实体上的
-`OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。回调运行期间
-组件一直被借用，所以回调里访问自己的生命周期组件会 panic；回调 panic 时，它仍然留在
-当初 spawn 的那一行上。
+`OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。回调在运行前被搬出这一行，运行后再放回，所以回调里访问自己的生命周期组件会读到那一行，
+而不是撞上借用检查；回调 panic 时，它仍然留在当初 spawn 的那一行上。
 
-**开销。** 每次访问都要沿父链走一遍来判定可见性，走查以节点数为上界，所以畸形的树也
-不会把它拖死。这条关系只有 world 的树里一份，而不放在组件里：可见性每次访问都要判定，
-而组件要被借用来回答它，于是独占借用某个实体的组件就会让另一个实体的可见性检查
-panic。只有一份也意味着没有东西需要对账：只有 `ScopeMut::link` 与 `unlink` 会写这棵树，
-而它们需要 `&mut World`，所以经共享 world 拿到的借用永远不可能与它们相撞。从 `Scope`
-读取时，每问一个实体就在树里查一次，`Scope::entity_info` 把它报告为 `scope`。
+**开销。** 查询的一行可见不可见，代价是一次数组读：archetype 在实体数组旁记下每一行的
+scope，所以过滤不再走树。问两个实体是否相关仍要沿父链走，走查以节点数为上界，所以畸形的树
+也不会把它拖死。这条关系只有 world 的树里
+一份，而不放在组件里：可见性每次访问都要判定，而组件要被借用来回答它，于是独占借用
+某个实体的组件就会让另一个实体的可见性检查 panic。只有一份也意味着没有东西需要对账：
+只有 `ScopeMut::link` 与 `unlink` 会写这棵树，而它们需要 `&mut World`，所以经共享
+world 拿到的借用永远不可能与它们相撞。从 `Scope` 读取时，每问一个实体就在树里查一次，
+`Scope::entity_info` 把它报告为 `scope`。
 查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
 看得见一部分的 archetype 都报错，`Scope::archetypes` 只给出非空且完整可见的
 archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::archetype_of` 是
@@ -194,8 +199,9 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 `World`、`Entity`、`Location`、`Bundle` / `DynamicBundle`（以及写出 bundle 的
 `bundle!` 宏）、把 world 收窄到一个 scope 的
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
-`Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`，
-archetype 谓词写作 `QueryIter::by`）、用于延迟结构变更的
+`Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`）、
+`QueryBorrow` / `QueryIter` / `QueryOne`（查询交出的持有者，以及它交出的行与单行，
+archetype 谓词写作 `QueryBorrow::by`）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`（archetype
 自带其组件名字）、用于给只知 `TypeId` 的擦除类型读取者命名组件类型的
 `World::type_name`、用于把 world
@@ -205,10 +211,13 @@ archetype 谓词写作 `QueryIter::by`）、用于延迟结构变更的
 
 查询是一个类型参数。`Scope::query` 与 `Scope::query_one` 指明要取什么，`Q` 可以是
 `&C`、`&mut C`、`Option<&C>`、`Option<&mut C>`、`Entity`、`Has<C>`，或者它们的元组，
-顺序即书写顺序。每个 archetype 只解析一次列，所以交出的行不再查找；借用与行同寿，
-所以同时读两行是允许的，同一组件写两次而不先 drop 第一个借用则会 panic。`Has<C>`
-只读存在性、不借用格子，`QueryIter::by` 则在借用任何格子之前用 `Archetype` 上的闭包
-收窄要访问的 archetype，`Without` 一类的谓词就写成它。`Scope::location` 与
+顺序即书写顺序。每个 archetype 只解析一次列，所以交出的行不再查找。
+
+`Scope::query` 本身不交出各行：它返回一个 `QueryBorrow`，后者在活着期间认领查询指名的
+组件，行则由 `QueryBorrow::iter` 交出，或先由 `QueryBorrow::by` 用 `Archetype` 上的闭包
+收窄要访问的 archetype 再交出。项借自持有者而不是别的什么，所以在认领被释放之前就已
+消失：同时读两行是允许的，而向第二个持有者索要第一个持有者握着的组件——或把同一组件
+写两次——会 panic。`Has<C>` 只读存在性、不认领列。`Scope::location` 与
 `Scope::archetype` 把同样的形态开放给持有大量实体的调用者——比如把场景剔除成
 一个列表的调用者——让它能按 archetype 分组，一次性解析每个 archetype 的列，
 而不必逐实体重新查找。
@@ -236,21 +245,26 @@ let cube = world.root_scope_mut().spawn(bundle![Spin { radians_per_second: 1.0, 
 let clock = world.root_scope_mut().spawn(bundle![0.016f32]);
 
 // 驱动每一个 `Spin`。由调用者决定碰哪些实体、按什么顺序；库内没有场景图的概念。
-let delta = *world.root_scope().query_one::<&f32>(clock).unwrap();
-for mut spin in world.root_scope().query::<&mut Spin>() {
-    spin.angle += spin.radians_per_second * delta;
+let delta = *world.root_scope().query_one::<&f32>(clock).unwrap().get();
+{
+    let mut spins = world.root_scope().query::<&mut Spin>();
+    for spin in spins.iter() {
+        spin.angle += spin.radians_per_second * delta;
+    }
 }
 assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().angle, 0.0);
 
-// 谓词在借用任何格子之前收窄要访问的 archetype：这里取「没有时钟」的那些。
+// 谓词在认领任何列之前收窄要访问的 archetype：这里取「没有时钟」的那些。
 let _ = world
     .root_scope()
     .query::<&Spin>()
     .by(|archetype: &unlit_ecs::Archetype| !archetype.has::<f32>())
+    .iter()
     .count();
 
-// `Entity` 与 `Has<C>` 也可以是查询项：存在性读取不借用。
-for (entity, has_spin) in world.root_scope().query::<(Entity, Has<Spin>)>() {
+// `Entity` 与 `Has<C>` 也可以是查询项：存在性读取不认领列。
+let mut presence = world.root_scope().query::<(Entity, Has<Spin>)>();
+for (entity, has_spin) in presence.iter() {
     let _ = (entity, has_spin);
 }
 ```
@@ -258,11 +272,11 @@ for (entity, has_spin) in world.root_scope().query::<(Entity, Has<Spin>)>() {
 查询是类型而不是值：`&C` 读组件，`&mut C` 写组件，`Option<&C>` 与 `Option<&mut C>`
 表示可选，`Entity` 交出实体本身，`Has<C>` 交出 `C` 在不在。`Has<C>` 不收窄任何
 东西，所以实体没有 `C` 时它交出 `false` 而不是跳过该行；只想到访携带者的查询要配合
-`QueryIter::by`，即 `by(|archetype| archetype.has::<C>())`。项不可嵌套——`&(a, b)`
+`QueryBorrow::by`，即 `by(|archetype| archetype.has::<C>())`。项不可嵌套——`&(a, b)`
 是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，由调用者自己
-`impl Query`。`Scope::query_one` 在单个实体上跑同一个查询，于是按句柄查找与遍历 scope
-共用同一套词汇；句柄指不到可见实体、或实体不匹配该查询，都是一个
-`EntityAccessError`。
+`impl Query`。`Scope::query_one` 在单个实体上跑同一个查询，交出的是 `QueryOne` 持有者，
+由 `QueryOne::get` 交出那一行，于是按句柄查找与遍历 scope 共用同一套词汇；句柄指不到
+可见实体、或实体不匹配该查询，都是一个 `EntityAccessError`。
 
 spawn 与 despawn 需要 `&mut` scope，或者排入队列的命令：
 
@@ -295,9 +309,9 @@ let entity = world.root_scope_mut().spawn(bundle![(1u32, 2.0f32), (true, ())]);
 
 // 两个组件：一个元组，一个嵌套的元组。
 let scope = world.root_scope();
-assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap());
-assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap());
-assert!(!scope.query_one::<Has<u32>>(entity).unwrap());
+assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap().get());
+assert!(!scope.query_one::<Has<u32>>(entity).unwrap().get());
 ```
 
 用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样
@@ -314,8 +328,8 @@ let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
-assert_eq!(scope.query_one::<Has<u32>>(entity), Ok(true));
-assert_eq!(scope.query_one::<Has<f32>>(entity), Ok(true));
+assert!(scope.query_one::<Has<u32>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<f32>>(entity).unwrap().get());
 ```
 
 ## MCP 服务器

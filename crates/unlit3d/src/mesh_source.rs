@@ -299,14 +299,18 @@ impl MeshSource {
         let device = world
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context names the world's device")
+            .get()
             .clone();
         let queue = world
             .query_one::<&wgpu::Queue>(ctx.queue)
             .expect("the context names the world's queue")
+            .get()
             .clone();
-        let mut graph = world
+        let mut resource_graph_row = world
             .query_one::<&mut ResourceGraph>(ctx.graph)
             .expect("the context names the world's resource graph");
+
+        let graph = resource_graph_row.get();
 
         // Camera uniform buffer.
         let camera_buf = graph.insert(
@@ -531,6 +535,7 @@ impl MeshSource {
         world
             .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
+            .get()
             .clone()
     }
 
@@ -543,6 +548,7 @@ impl MeshSource {
         world
             .query_one::<&wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
+            .get()
             .clone()
     }
 
@@ -559,6 +565,7 @@ impl MeshSource {
         *world
             .query_one::<&DeviceCapabilities>(self.context.capabilities)
             .expect("the context's capabilities resource exists")
+            .get()
     }
 
     // -- pipeline registration -------------------------------------------------
@@ -1486,6 +1493,7 @@ impl MeshSource {
 fn frame_camera(scope: &Scope<'_>) -> Option<Camera> {
     scope
         .query::<(Entity, &Camera)>()
+        .iter()
         .find(|(_, camera)| camera.active)
         .map(|(_, camera)| Camera {
             view_from_world: camera.view_from_world,
@@ -1784,6 +1792,7 @@ mod tests {
         let device = scope
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context's device")
+            .get()
             .clone();
         let ft = create_render_target(
             &device,
@@ -1792,9 +1801,11 @@ mod tests {
             TEST_SIZE,
             1,
         );
-        let mut graph = scope
+        let mut resource_graph_row_2 = scope
             .query_one::<&mut ResourceGraph>(ctx.graph)
             .expect("the context's graph");
+
+        let graph = resource_graph_row_2.get();
         let color = graph.insert(
             TextureExt::create_view(&ft.color, &wgpu::TextureViewDescriptor::default()),
             None,
@@ -1925,7 +1936,10 @@ mod tests {
         world
             .root_scope()
             .query_one::<&mut Camera>(inactive)
-            .map(|mut camera| camera.active = false)
+            .map(|mut camera| {
+                let camera = camera.get();
+                camera.active = false
+            })
             .expect("the entity carries a camera");
         let active = world.root_scope_mut().spawn(bundle![Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
@@ -1941,7 +1955,10 @@ mod tests {
         world
             .root_scope()
             .query_one::<&mut Camera>(active)
-            .map(|mut camera| camera.active = false)
+            .map(|mut camera| {
+                let camera = camera.get();
+                camera.active = false
+            })
             .expect("the entity carries a camera");
         assert!(frame_camera(&world.root_scope()).is_none());
     }
@@ -3329,8 +3346,8 @@ mod tests {
         *h.world
             .root_scope()
             .query_one::<&mut InstanceVisibility>(hidden)
-            .expect("the hidden entity still carries its visibility") =
-            InstanceVisibility::default();
+            .expect("the hidden entity still carries its visibility")
+            .get() = InstanceVisibility::default();
         let mut scene = Scene::new();
         h.source.build_scene(
             &h.world.root_scope(),

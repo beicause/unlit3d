@@ -97,7 +97,7 @@ fn a_query_the_entity_does_not_match_is_reported() {
     );
     // `Has` asks the archetype rather than the row, so a component the
     // archetype does not carry is answered rather than turned down.
-    assert!(!scope.query_one::<Has<Name>>(child).unwrap());
+    assert!(!scope.query_one::<Has<Name>>(child).unwrap().get());
 }
 
 #[test]

@@ -180,6 +180,7 @@ fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
     world
         .root_scope()
         .query::<(Entity, &Source)>()
+        .iter()
         .find_map(|(_, source)| {
             let ui = source.as_ref::<UiSource>()?;
             ui.context()

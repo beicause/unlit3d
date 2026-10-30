@@ -111,6 +111,7 @@ fn context_device(world: &World, renderer: &Renderer) -> wgpu::Device {
         .root_scope()
         .query_one::<&wgpu::Device>(renderer.context().device)
         .expect("the context's device resource exists")
+        .get()
         .clone()
 }
 

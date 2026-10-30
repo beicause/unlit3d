@@ -83,10 +83,10 @@ impl ScopeSummary {
             }
             Self::Mixed => {
                 let entity = archetype.entities()[row];
-                entity == caller
-                    || world
-                        .parent_scope(entity)
-                        .is_ok_and(|parent| world.visible(caller, parent))
+                // The row's own scope, stored beside it: a visibility test per
+                // row is the hot path, and walking the tree for the parent
+                // would be a second lookup for an answer already recorded.
+                entity == caller || world.visible(caller, archetype.scopes()[row])
             }
         }
     }
@@ -102,6 +102,13 @@ pub struct Archetype {
     names: Box<[&'static str]>,
     columns: Box<[Box<dyn AnyColumn>]>,
     entities: Vec<Entity>,
+    /// The scope each row lives in, in the same order as `entities`.
+    ///
+    /// The per-row answer to what a whole-archetype `ScopeSummary` cannot decide.
+    /// It is stored rather than looked up so that a visibility test costs one
+    /// read instead of a walk of the scope tree, and it is the only place the
+    /// scope of a row is recorded.
+    scopes: Vec<Entity>,
     /// How many rows live in each scope, one entry per distinct scope.
     ///
     /// The scope summary is derived from this rather than stored, so it cannot
@@ -131,6 +138,7 @@ impl Archetype {
             names,
             columns,
             entities: Vec::new(),
+            scopes: Vec::new(),
             scope_counts: Vec::new(),
         }
     }
@@ -196,12 +204,6 @@ impl Archetype {
         self.column_index(TypeId::of::<C>()).is_some()
     }
 
-    /// The storage cell of component `C` at `row`.
-    #[inline]
-    pub(crate) fn cell<C: 'static>(&self, row: usize) -> Option<&core::cell::RefCell<C>> {
-        self.column::<C>()?.cell(row)
-    }
-
     /// The column of component `C`.
     ///
     /// A query resolves this once per archetype instead of doing the lookup per
@@ -210,6 +212,16 @@ impl Archetype {
     pub(crate) fn column<C: 'static>(&self) -> Option<&Column<C>> {
         let index = self.column_index(TypeId::of::<C>())?;
         self.columns[index].as_any().downcast_ref::<Column<C>>()
+    }
+
+    /// The column of component `C`, to move a value in or out.
+    ///
+    /// Only reachable from an exclusive borrow of the world, so handing it out
+    /// cannot race a query that holds one of the rows.
+    #[inline]
+    pub(crate) fn column_mut<C: 'static>(&mut self) -> Option<&mut Column<C>> {
+        let index = self.column_index(TypeId::of::<C>())?;
+        self.columns[index].as_any_mut().downcast_mut::<Column<C>>()
     }
 
     /// Append an already erased component value.
@@ -226,7 +238,14 @@ impl Archetype {
     /// Append one entity row that lives in `scope`.
     pub(crate) fn push_entity(&mut self, entity: Entity, scope: Entity) {
         self.entities.push(entity);
+        self.scopes.push(scope);
         self.count_scope(scope, 1);
+    }
+
+    /// The scope each row lives in, aligned with [`Archetype::entities`].
+    #[inline]
+    pub(crate) fn scopes(&self) -> &[Entity] {
+        &self.scopes
     }
 
     /// Which scopes the rows live in.
@@ -238,12 +257,13 @@ impl Archetype {
         }
     }
 
-    /// Move the count of one row from `from` to `to`.
+    /// Move row `row` from `from` to `to`.
     ///
     /// Called when a row's entity is linked into another scope: the component
-    /// set is unchanged, so the row stays where it is and only the counts
-    /// change.
-    pub(crate) fn move_scope(&mut self, from: Entity, to: Entity) {
+    /// set is unchanged, so the row stays where it is and only its scope and
+    /// the counts change.
+    pub(crate) fn move_scope(&mut self, row: usize, from: Entity, to: Entity) {
+        self.scopes[row] = to;
         self.count_scope(from, -1);
         self.count_scope(to, 1);
     }
@@ -274,13 +294,11 @@ impl Archetype {
 
     /// Drop the row at `row`, moving the last row into the hole.
     ///
-    /// `scope` is the scope the row lives in, which the caller already knows:
-    /// it is the one that asked for the row to be removed.
-    ///
     /// Returns the entity that was moved into the hole, so its location can be
     /// updated, or `None` when the row was the last one.
-    pub(crate) fn swap_remove(&mut self, row: usize, scope: Entity) -> Option<Entity> {
+    pub(crate) fn swap_remove(&mut self, row: usize) -> Option<Entity> {
         let last = self.entities.len() - 1;
+        let scope = self.scopes.swap_remove(row);
         for column in self.columns.iter_mut() {
             drop(column.swap_remove(row));
         }
@@ -494,10 +512,10 @@ mod tests {
         for (value, entity) in [a, b, c].into_iter().enumerate() {
             push_row(&mut archetype, entity, scope, value as u32);
         }
-        assert_eq!(archetype.swap_remove(0, scope), Some(c), "the last row moved in");
+        assert_eq!(archetype.swap_remove(0), Some(c), "the last row moved in");
         assert_eq!(archetype.entities(), [c, b]);
         // Removing the last row moves nothing.
-        assert_eq!(archetype.swap_remove(1, scope), None);
+        assert_eq!(archetype.swap_remove(1), None);
         assert_eq!(archetype.entities(), [c]);
     }
 
@@ -514,7 +532,7 @@ mod tests {
         assert_eq!(archetype.scope_summary(), ScopeSummary::Mixed);
         // Removing the only row of a scope drops it from the count, so the
         // archetype is uniform again.
-        archetype.swap_remove(2, second);
+        archetype.swap_remove(2);
         assert_eq!(archetype.scope_summary(), ScopeSummary::Uniform(first));
     }
 
@@ -529,7 +547,8 @@ mod tests {
         );
         archetype.push_erased(TypeId::of::<u32>(), Box::new(7u32));
         archetype.push_entity(Entity::from_raw(0, 0), Entity::from_raw(9, 0));
-        let value = archetype.cell::<u32>(0).unwrap().try_borrow().unwrap();
-        assert_eq!(*value, 7);
+        let value = archetype.column_mut::<u32>().expect("the column is there");
+        // SAFETY: the test is the only reader, and nothing else borrows the row.
+        assert_eq!(unsafe { *value.cells()[0].get() }, 7);
     }
 }

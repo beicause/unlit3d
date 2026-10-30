@@ -79,7 +79,7 @@ impl Bundle for HostWorld {
 /// Sub-worlds are for work that must stay on the host thread — rendering
 /// into a window's swap chain, say — but whose state should not mix with
 /// the host's. Queued jobs run when the host calls [`drain_sub_world`], and
-/// the world itself is driven with [`World::get_mut`] on the entity the
+/// the world itself is reached with a [`World`] query on the entity the
 /// returned handle names.
 ///
 /// # Panics
@@ -131,11 +131,11 @@ pub fn drain_sub_world(nested: &mut World) {
     // before the first one starts. Cloning the receiver is cheap and lets the
     // drain run without collecting the jobs first.
     let (receiver, status) = {
-        let Some((sub_world_inbox, sub_world_status)) = nested
+        let mut sub_world_rows = nested
             .root_scope()
-            .query::<(&SubWorldInbox, &SubWorldStatus)>()
-            .next()
-        else {
+            .query::<(&SubWorldInbox, &SubWorldStatus)>();
+
+        let Some((sub_world_inbox, sub_world_status)) = sub_world_rows.iter().next() else {
             return;
         };
         (sub_world_inbox.0.clone(), sub_world_status.0.clone())

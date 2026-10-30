@@ -199,7 +199,7 @@ where
         // The material is read once and both its uses come from it: it decides
         // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
-            let Ok((pipeline, gpu_mesh, material, z_sorted)) = world.query_one::<(
+            let Ok(mut row) = world.query_one::<(
                 &GpuRenderPipeline,
                 &GpuMesh,
                 Option<&GpuMaterial>,
@@ -207,6 +207,7 @@ where
             )>(candidate.entity) else {
                 continue;
             };
+            let (pipeline, gpu_mesh, material, z_sorted) = row.get();
             // Another family's entity: its key is not this family's type, so
             // this family does not draw it.
             let Some(key) = pipeline.key::<K>() else {
@@ -222,8 +223,8 @@ where
             self.push(
                 candidate,
                 key,
-                &gpu_mesh,
-                material.as_deref(),
+                gpu_mesh,
+                material,
                 sort_key,
                 material_bg,
                 z_sorted,

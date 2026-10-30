@@ -47,6 +47,7 @@ pub fn window(world: &World) -> Option<Arc<Window>> {
     world
         .root_scope()
         .query::<&WinitWindow>()
+        .iter()
         .next()
         .map(|winit_window| winit_window.0.clone())
 }
@@ -100,7 +101,10 @@ pub fn create_window_on_resume() -> OnResumed {
         let Ok(attributes) = world
             .root_scope()
             .query_one::<&WindowSpec>(entity)
-            .map(|spec| spec.0.clone())
+            .map(|mut spec| {
+                let spec = spec.get();
+                spec.0.clone()
+            })
         else {
             log::warn!(
                 "create_window_on_resume: {entity:?} carries no WindowSpec, so no window is created"
@@ -110,7 +114,10 @@ pub fn create_window_on_resume() -> OnResumed {
         let _ = world
             .root_scope()
             .query_one::<&mut CreateWindowRequest>(entity)
-            .map(|mut request| request.0 = Some(attributes));
+            .map(|mut request| {
+                let request = request.get();
+                request.0 = Some(attributes)
+            });
     })
 }
 
@@ -121,7 +128,10 @@ pub fn exit_on_close_requested() -> OnWindowEvent {
             let _ = world
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
-                .map(|mut request| request.0 = true);
+                .map(|mut request| {
+                    let request = request.get();
+                    request.0 = true
+                });
         }
     })
 }
@@ -139,7 +149,10 @@ pub fn exit_on_escape() -> OnWindowEvent {
             let _ = world
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
-                .map(|mut request| request.0 = true);
+                .map(|mut request| {
+                    let request = request.get();
+                    request.0 = true
+                });
         }
     })
 }
@@ -150,11 +163,9 @@ pub fn exit_on_escape() -> OnWindowEvent {
 /// application with a finer policy writes its own [`OnAboutToWait`].
 pub fn request_redraw_while_foreground() -> OnAboutToWait {
     OnAboutToWait::new(|world, _entity, ()| {
-        let resumed = world
-            .root_scope()
-            .query::<&Resumed>()
-            .next()
-            .is_some_and(|resumed| resumed.0);
+        let mut resumed_rows = world.root_scope().query::<&Resumed>();
+
+        let resumed = resumed_rows.iter().next().is_some_and(|resumed| resumed.0);
         if resumed && let Some(window) = window(world) {
             window.request_redraw();
         }
@@ -241,7 +252,10 @@ mod tests {
             world
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
-                .map(|request| request.0),
+                .map(|mut request| {
+                    let request = request.get();
+                    request.0
+                }),
             Ok(true)
         );
     }
@@ -257,7 +271,10 @@ mod tests {
             world
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
-                .map(|request| request.0),
+                .map(|mut request| {
+                    let request = request.get();
+                    request.0
+                }),
             Ok(false)
         );
     }
@@ -269,15 +286,20 @@ mod tests {
             attributes: Window::default_attributes().with_title("unlit3d"),
         });
         world.apply().unwrap();
-        let mut behaviour = world
+        let mut on_resumed_row = world
             .root_scope()
             .query_one::<&mut OnResumed>(entity)
             .expect("the behaviour is there");
+
+        let behaviour = on_resumed_row.get();
         behaviour.run(&world, entity, &());
         let attributes = world
             .root_scope()
             .query_one::<&mut CreateWindowRequest>(entity)
-            .map(|mut request| request.0.take())
+            .map(|mut request| {
+                let request = request.get();
+                request.0.take()
+            })
             .ok()
             .flatten()
             .expect("the request is filled");
@@ -291,10 +313,12 @@ mod tests {
             .root_scope_mut()
             .spawn(bundle![Resumed(false), request_redraw_while_foreground()]);
         world.apply().unwrap();
-        let mut behaviour = world
+        let mut on_about_to_wait_row = world
             .root_scope()
             .query_one::<&mut OnAboutToWait>(entity)
             .expect("the behaviour is there");
+
+        let behaviour = on_about_to_wait_row.get();
         behaviour.run(&world, entity, &());
     }
 }

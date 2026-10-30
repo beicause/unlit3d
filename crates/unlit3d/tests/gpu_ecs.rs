@@ -221,6 +221,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         .root_scope()
         .query_one::<&GpuMesh>(cube_entity)
         .expect("the cube carries a mesh")
+        .get()
         .clone();
     gpu.despawn(&mut world, cube_entity);
     gpu.remove_mesh(&world, cube);
@@ -387,13 +388,18 @@ async fn a_source_draws_only_its_own_subtree() {
             .scope(scope)
             .expect("the source is a scope")
             .query::<(Entity, &GpuMesh)>()
+            .iter()
             .count();
         assert_eq!(owned, 1, "a source draws only the instances it owns");
     }
 
     // The root sees both, which is what makes the two frames one scene.
     assert_eq!(
-        world.root_scope().query::<(Entity, &GpuMesh)>().count(),
+        world
+            .root_scope()
+            .query::<(Entity, &GpuMesh)>()
+            .iter()
+            .count(),
         2,
         "the root sees every source's instances"
     );
@@ -408,14 +414,16 @@ async fn a_source_draws_only_its_own_subtree() {
         let drawn = {
             let root = world.root_scope();
             let source_scope = world.scope(scope).expect("the source is a scope");
-            let mut source = root
+            let mut source_row = root
                 .query_one::<&mut Source>(scope)
                 .expect("the source entity exists");
+
+            let source = source_row.get();
             source
                 .as_mut::<MeshSource>()
                 .expect("the source is a mesh source");
             // The count the renderer would hand this source.
-            source_scope.query::<(Entity, &GpuMesh)>().count()
+            source_scope.query::<(Entity, &GpuMesh)>().iter().count()
         };
         assert_eq!(drawn, 1, "{label} draws exactly its own instance");
     }

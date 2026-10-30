@@ -35,27 +35,40 @@ fn a_spawned_entity_reads_back_its_components() {
         world
             .root_scope()
             .query_one::<Has<Position>>(entity)
+            .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         world
             .root_scope()
             .query_one::<Has<Name>>(entity)
+            .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         !world
             .root_scope()
             .query_one::<Has<Velocity>>(entity)
+            .map(|mut held| held.get())
             .unwrap_or(false)
     );
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .x,
         1.0
     );
     assert_eq!(
-        world.root_scope().query_one::<&Name>(entity).unwrap().0,
+        world
+            .root_scope()
+            .query_one::<&Name>(entity)
+            .unwrap()
+            .get()
+            .0,
         "cube"
     );
 }
@@ -77,6 +90,7 @@ fn an_empty_entity_has_no_components() {
         !world
             .root_scope()
             .query_one::<Has<Position>>(entity)
+            .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(world.root_scope().query_one::<&Position>(entity).is_err());
@@ -95,8 +109,10 @@ fn components_are_written_through_a_scoped_borrow() {
     let moved_x = world
         .root_scope()
         .query_one::<&mut Position>(entity)
-        .map(|mut position| {
-            let velocity = world.root_scope().query_one::<&Velocity>(entity).unwrap();
+        .map(|mut held| {
+            let mut velocity_of = world.root_scope().query_one::<&Velocity>(entity).unwrap();
+            let velocity = velocity_of.get();
+            let position = held.get();
             position.x += velocity.dx;
             position.y += velocity.dy;
             position.x
@@ -104,7 +120,12 @@ fn components_are_written_through_a_scoped_borrow() {
 
     assert_eq!(moved_x, Ok(1.0));
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().y,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .y,
         2.0
     );
 }
@@ -117,15 +138,22 @@ fn get_mut_holds_an_exclusive_borrow() {
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     {
-        let mut position = world
+        let mut position_row = world
             .root_scope()
             .query_one::<&mut Position>(entity)
             .unwrap();
+
+        let position = position_row.get();
         position.x = 5.0;
     }
 
     assert_eq!(
-        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        world
+            .root_scope()
+            .query_one::<&Position>(entity)
+            .unwrap()
+            .get()
+            .x,
         5.0
     );
 }
@@ -140,7 +168,9 @@ fn with_mut_is_none_without_the_component() {
         world
             .root_scope()
             .query_one::<&mut Velocity>(entity)
-            .map(|_| ())
+            .map(|mut holder| {
+                let _ = holder.get();
+            })
             .is_err()
     );
 }
@@ -206,11 +236,17 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
             .root_scope()
             .query_one::<&u32>(entity)
             .unwrap()
+            .get()
             .to_owned(),
         7
     );
     assert_eq!(
-        world.root_scope().query_one::<&Name>(entity).unwrap().0,
+        world
+            .root_scope()
+            .query_one::<&Name>(entity)
+            .unwrap()
+            .get()
+            .0,
         "late"
     );
 }
@@ -286,21 +322,39 @@ fn a_wide_bundle_spawns_every_component() {
         Name("wide"),
     ]);
 
-    assert_eq!(*world.root_scope().query_one::<&u8>(entity).unwrap(), 1);
-    assert_eq!(*world.root_scope().query_one::<&u64>(entity).unwrap(), 4);
-    assert_eq!(*world.root_scope().query_one::<&i64>(entity).unwrap(), 8);
-    assert!(*world.root_scope().query_one::<&bool>(entity).unwrap());
-    assert_eq!(*world.root_scope().query_one::<&char>(entity).unwrap(), 'x');
+    assert_eq!(
+        *world.root_scope().query_one::<&u8>(entity).unwrap().get(),
+        1
+    );
+    assert_eq!(
+        *world.root_scope().query_one::<&u64>(entity).unwrap().get(),
+        4
+    );
+    assert_eq!(
+        *world.root_scope().query_one::<&i64>(entity).unwrap().get(),
+        8
+    );
+    assert!(*world.root_scope().query_one::<&bool>(entity).unwrap().get());
+    assert_eq!(
+        *world.root_scope().query_one::<&char>(entity).unwrap().get(),
+        'x'
+    );
     assert_eq!(
         world
             .root_scope()
             .query_one::<&f64>(entity)
             .unwrap()
+            .get()
             .to_owned(),
         2.5
     );
     assert_eq!(
-        world.root_scope().query_one::<&Name>(entity).unwrap().0,
+        world
+            .root_scope()
+            .query_one::<&Name>(entity)
+            .unwrap()
+            .get()
+            .0,
         "wide"
     );
 }
@@ -451,8 +505,8 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
     let resolved: Vec<(Entity, f32, Option<f32>)> = world
         .root_scope()
         .query::<(&Position, Option<&Velocity>, Entity)>()
+        .iter()
         .map(|(position, option, entity)| {
-            let position = position;
             let velocity = option.map(|velocity| velocity.dx);
             (entity, position.x, velocity)
         })
@@ -460,11 +514,16 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
     assert_eq!(resolved.len(), entities.len());
 
     for &entity in &entities {
-        let expected_x = world.root_scope().query_one::<&Position>(entity).unwrap().x;
+        let mut position_row_2 = world.root_scope().query_one::<&Position>(entity).unwrap();
+
+        let expected_x = position_row_2.get().x;
         let expected_velocity = world
             .root_scope()
             .query_one::<&Velocity>(entity)
-            .map(|velocity| velocity.dx)
+            .map(|mut velocity| {
+                let velocity = velocity.get();
+                velocity.dx
+            })
             .ok();
         let found = resolved
             .iter()

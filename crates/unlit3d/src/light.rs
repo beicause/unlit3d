@@ -427,10 +427,10 @@ pub(crate) fn collect_lights(
     // The ambient term is a component like a light, so several of them add up
     // and a frame with none leaves the term at zero.
     lighting.ambient = Vec4::ZERO;
-    for ambient in scope.query::<&AmbientLight>() {
+    for ambient in scope.query::<&AmbientLight>().iter() {
         lighting.ambient += ambient.color;
     }
-    for (source, transform) in scope.query::<(&LightSource, Option<&Transform>)>() {
+    for (source, transform) in scope.query::<(&LightSource, Option<&Transform>)>().iter() {
         let world_from_local = transform
             .map(|transform| transform.compute_matrix())
             .unwrap_or(Affine3A::IDENTITY);

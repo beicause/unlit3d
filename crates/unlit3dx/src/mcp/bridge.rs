@@ -66,7 +66,9 @@ fn drain_mcp() -> OnAboutToWait {
 
 /// Drain the commands the transport posted.
 fn drain(world: &World) {
-    let Some(inbox) = world.root_scope().query::<&McpInbox>().next() else {
+    let mut mcp_inbox_rows = world.root_scope().query::<&McpInbox>();
+
+    let Some(inbox) = mcp_inbox_rows.iter().next() else {
         return;
     };
     while let Ok(command) = inbox.receiver.try_recv() {
@@ -87,6 +89,7 @@ pub fn pump_mcp(world: &mut World) -> Result<(), EntityAccessError> {
     let stepped: Vec<Entity> = world
         .root_scope()
         .query::<(&WorldSender, Entity)>()
+        .iter()
         .map(|(_sender, entity)| entity)
         .collect();
     for entity in stepped {
@@ -140,10 +143,10 @@ fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
             name: name.0,
         });
     };
-    for (_world, entity) in world.root_scope().query::<(&World, Entity)>() {
+    for (_world, entity) in world.root_scope().query::<(&World, Entity)>().iter() {
         push(entity, &mut worlds);
     }
-    for (_world_sender, entity) in world.root_scope().query::<(&WorldSender, Entity)>() {
+    for (_world_sender, entity) in world.root_scope().query::<(&WorldSender, Entity)>().iter() {
         push(entity, &mut worlds);
     }
     worlds
@@ -183,7 +186,10 @@ impl Command for RunInWorld {
         let Ok(sender) = world
             .root_scope()
             .query_one::<&WorldSender>(entity)
-            .map(|sender| sender.clone())
+            .map(|mut sender| {
+                let sender = sender.get();
+                sender.clone()
+            })
         else {
             command.fail(format!("entity {entity:?} carries no world"));
             return Ok(());
@@ -241,7 +247,7 @@ mod tests {
     /// whatever the transport posted and queues it, then the queued
     /// commands apply — the order the real loop runs them in.
     fn run_turn(host: &mut World) {
-        for mut on_about_to_wait in host.root_scope().query::<&mut OnAboutToWait>() {
+        for on_about_to_wait in host.root_scope().query::<&mut OnAboutToWait>().iter() {
             on_about_to_wait.run(host, Entity::from_bits(0), &());
         }
         host.apply().unwrap();
@@ -327,7 +333,7 @@ mod tests {
         let nested_world = host.root_scope_mut().spawn(bundle![nested]);
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         let command = command.with_world(WorldId::handle(nested_world));
@@ -348,7 +354,7 @@ mod tests {
         host.root_scope_mut().spawn(bundle![Marker]);
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         transport.try_send(command).expect("the inbox takes it");
@@ -411,7 +417,7 @@ mod tests {
         assert!(reader.latest().is_some(), "the thread ran the seeding job");
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         let command = command.with_world(WorldId::handle(threaded.entity));
@@ -441,7 +447,7 @@ mod tests {
         );
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         let command = command.with_world(WorldId::handle(stepped.entity));

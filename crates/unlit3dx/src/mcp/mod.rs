@@ -92,7 +92,7 @@ async fn read_audio_recording(commands: CommandSender, args: ReadRecording) -> T
 async fn request_host_exit(commands: CommandSender, args: WorldArg) -> ToolResult {
     command(&commands, args.world, |world| {
         let mut found = false;
-        for mut request in world.root_scope().query::<&mut ExitRequest>() {
+        for request in world.root_scope().query::<&mut ExitRequest>().iter() {
             request.0 = true;
             found = true;
         }
@@ -119,6 +119,7 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
     if world
         .root_scope()
         .query::<&ActiveRecording>()
+        .iter()
         .next()
         .is_some()
     {
@@ -195,9 +196,10 @@ fn cancel(world: &mut World) -> Result<Value, String> {
 
 /// Report how far the recording in progress has come.
 fn status(world: &mut World) -> Result<Value, String> {
-    let Some(recording) = world
-        .root_scope()
-        .query::<&ActiveRecording>()
+    let mut active_recording_rows = world.root_scope().query::<&ActiveRecording>();
+
+    let Some(recording) = active_recording_rows
+        .iter()
         .next()
         .map(|active_recording| active_recording.0.clone())
     else {
@@ -220,15 +222,17 @@ fn take(world: &mut World) -> Result<RecordingHandle, String> {
     let entity = world
         .root_scope()
         .query::<(&ActiveRecording, Entity)>()
+        .iter()
         .next()
         .map(|(_active_recording, entity)| entity)
         .ok_or_else(|| "no recording is in progress on this world".to_owned())?;
-    let handle = world
-        .root_scope()
-        .query_one::<&ActiveRecording>(entity)
-        .expect("the recording entity exists")
-        .0
-        .clone();
+    let handle = {
+        let mut recording = world
+            .root_scope()
+            .query_one::<&ActiveRecording>(entity)
+            .expect("the recording entity exists");
+        recording.get().0.clone()
+    };
     world.root_scope_mut().despawn(entity).unwrap();
     Ok(handle)
 }

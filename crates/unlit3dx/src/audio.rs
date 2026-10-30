@@ -207,6 +207,7 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
         world
             .root_scope()
             .query::<(&OnAudioFill, Entity)>()
+            .iter()
             .map(|(on_audio_fill, entity)| (on_audio_fill.order(), entity)),
     );
     sources.sort_unstable_by_key(|(order, _entity)| *order);
@@ -221,9 +222,10 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
         }
     }
     SOURCES.with_borrow_mut(|slot| *slot = sources);
-    let gain = world
-        .root_scope()
-        .query::<&GlobalAudioGain>()
+    let mut global_audio_gain_rows = world.root_scope().query::<&GlobalAudioGain>();
+
+    let gain = global_audio_gain_rows
+        .iter()
         .next()
         .map(|audio_gain| audio_gain.0)
         .unwrap_or(1.0);
@@ -281,6 +283,7 @@ pub fn request_audio_output(sender: &JobSender) -> Result<(), SendError> {
         if world
             .root_scope()
             .query::<&AudioOutputRequest>()
+            .iter()
             .next()
             .is_none()
         {
@@ -371,6 +374,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                 && world
                     .root_scope()
                     .query::<&AudioOutputRequest>()
+                    .iter()
                     .next()
                     .is_some()
             {
@@ -423,12 +427,19 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                 && world
                     .root_scope()
                     .query::<&AudioOutputOpen>()
+                    .iter()
                     .next()
                     .is_none()
             {
                 world.root_scope_mut().spawn(bundle![AudioOutputOpen]);
             }
-            let sounding = open && world.root_scope().query::<&OnAudioFill>().next().is_some();
+            let sounding = open
+                && world
+                    .root_scope()
+                    .query::<&OnAudioFill>()
+                    .iter()
+                    .next()
+                    .is_some();
             if sounding != ready {
                 ready = sounding;
                 if sounding {

@@ -142,7 +142,7 @@ impl UiPanelHost {
         // twice.
         let mut events = core::mem::take(&mut self.input_scratch);
         events.clear();
-        if let Some(input_events) = world.root_scope().query::<&InputEvents>().next() {
+        if let Some(input_events) = world.root_scope().query::<&InputEvents>().iter().next() {
             input_events.copy_events_into(&mut events);
         }
         let due = self
@@ -208,7 +208,7 @@ impl UiPanelHost {
 /// source drops the frame, and dropping it clears its texture deltas.
 pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job {
     Box::new(move |world: &mut World| {
-        for mut source in world.root_scope().query::<&mut Source>() {
+        for source in world.root_scope().query::<&mut Source>().iter() {
             if let Some(ui) = source.as_mut::<UiSource>() {
                 ui.frames.publish(slot, frame);
                 return;
@@ -290,7 +290,7 @@ mod tests {
         }
 
         fn frames<R>(&mut self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
-            for mut source in self.render.root_scope().query::<&mut Source>() {
+            for source in self.render.root_scope().query::<&mut Source>().iter() {
                 if let Some(ui) = source.as_mut::<UiSource>() {
                     return ui.frames.with_frames(f);
                 }

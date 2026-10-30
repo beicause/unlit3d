@@ -20,7 +20,7 @@ use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
-use unlit_ecs::{Bundle, DynamicBundle, World};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World};
 
 use crate::handle::WorldHandle;
 use crate::thread::{FixedClock, fixed_steps};
@@ -158,13 +158,31 @@ impl Bundle for Physics {
 }
 
 /// The event plumbing a physics world carries, if it has any.
-fn physics_events(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsEvents>> {
-    world.root_scope().query::<&mut PhysicsEvents>().next()
+fn physics_events(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut PhysicsEvents>> {
+    let entity = world
+        .root_scope()
+        .query::<(Entity, &PhysicsEvents)>()
+        .iter()
+        .next()
+        .map(|(entity, _events)| entity)?;
+    world
+        .root_scope()
+        .query_one::<&mut PhysicsEvents>(entity)
+        .ok()
 }
 
 /// The contact buffer a physics world carries, if it has one.
-fn physics_contacts(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsContacts>> {
-    world.root_scope().query::<&mut PhysicsContacts>().next()
+fn physics_contacts(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut PhysicsContacts>> {
+    let entity = world
+        .root_scope()
+        .query::<(Entity, &PhysicsContacts)>()
+        .iter()
+        .next()
+        .map(|(entity, _contacts)| entity)?;
+    world
+        .root_scope()
+        .query_one::<&mut PhysicsContacts>(entity)
+        .ok()
 }
 
 /// The collider shape a dynamic body carries.
@@ -270,11 +288,17 @@ pub fn spawn_fixed_cuboid(world: &mut World, position: Vec3, half_extents: Vec3,
 }
 
 /// The physics world as a mutable guard, for jobs that build bodies.
-fn physics_world(world: &World) -> unlit_ecs::CellRefMut<'_, PhysicsWorld> {
+fn physics_world(world: &World) -> unlit_ecs::QueryOne<'_, &mut PhysicsWorld> {
+    let entity = world
+        .root_scope()
+        .query::<(Entity, &PhysicsWorld)>()
+        .iter()
+        .next()
+        .map(|(entity, _physics)| entity)
+        .expect("the physics world exists");
     world
         .root_scope()
-        .query::<&mut PhysicsWorld>()
-        .next()
+        .query_one::<&mut PhysicsWorld>(entity)
         .expect("the physics world exists")
 }
 
@@ -349,7 +373,9 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
 /// world's own tick calls this; thread-free callers — deterministic tests,
 /// offline rendering — drive the same simulation on a cadence of their own.
 pub fn step_once(world: &World) -> bool {
-    let Some(mut physics) = world.root_scope().query::<&mut PhysicsWorld>().next() else {
+    let mut physics_world_rows = world.root_scope().query::<&mut PhysicsWorld>();
+
+    let Some(physics) = physics_world_rows.iter().next() else {
         return false;
     };
     // The contact events rapier reports this step describe contacts that
@@ -359,7 +385,7 @@ pub fn step_once(world: &World) -> bool {
     // rather than the separation it left behind.
     let mut events = physics_events(world);
     if let Some(events) = events.as_mut() {
-        events.sample_velocities(&physics);
+        events.sample_velocities(physics);
     }
     match events.as_ref() {
         Some(events) => physics.step_with_events(&(), &events.collector),
@@ -378,12 +404,12 @@ pub fn step_once(world: &World) -> bool {
             CollisionEvent::Started(one, two, _) => (one, two),
             CollisionEvent::Stopped(one, two, _) => (one, two),
         };
-        let Some((body_one, body_two)) = body_pair(&physics, one, two) else {
+        let Some((body_one, body_two)) = body_pair(physics, one, two) else {
             continue;
         };
         match event {
             CollisionEvent::Started(..) => {
-                let speed = contact_speed(&physics, events, one, two);
+                let speed = contact_speed(physics, events, one, two);
                 contacts.started.push((body_one, body_two, speed));
             }
             _ => contacts.stopped.push((body_one, body_two)),

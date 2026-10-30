@@ -102,6 +102,7 @@ impl Interactive {
             world
                 .root_scope()
                 .query::<&PanelLayout>()
+                .iter()
                 .next()
                 .map(|layout| {
                     layout
@@ -160,6 +161,7 @@ impl Interactive {
         };
         host.root_scope()
             .query::<&InputWriter>()
+            .iter()
             .next()
             .expect("the interactive run carries an input writer")
             .push_all([
@@ -228,13 +230,17 @@ pub struct SceneStatus {
 pub fn scene_status(host: &World, worlds: &SceneHandles) -> SceneStatus {
     with_stepped_world(host, worlds.gameplay.entity, |world| {
         let scope = world.root_scope();
-        let balls = scope.query::<&Ball>().count();
-        let sequence = scope.query::<&SceneTracks>().next().and_then(|tracks| {
-            scope
-                .query_one::<&Track>(tracks.sequence)
-                .ok()
-                .map(|track| (track.midi.paused, track.midi.time, track.midi.finished))
-        });
+        let balls = scope.query::<&Ball>().iter().count();
+        let sequence = scope
+            .query::<&SceneTracks>()
+            .iter()
+            .next()
+            .and_then(|tracks| {
+                scope
+                    .query_one::<&Track>(tracks.sequence)
+                    .ok()
+                    .map(|track| (track.midi.paused, track.midi.time, track.midi.finished))
+            });
         SceneStatus { balls, sequence }
     })
     .expect("the gameplay world is a stepped world")

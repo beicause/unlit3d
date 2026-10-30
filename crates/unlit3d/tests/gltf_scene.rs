@@ -277,9 +277,10 @@ async fn a_morphed_quad_follows_its_weights() {
     assert_eq!(entities.len(), 1, "one mesh node draws one entity");
 
     let weights_entity = {
-        let morph_binding = world
-            .root_scope()
-            .query::<&MorphBinding>()
+        let mut morph_binding_rows = world.root_scope().query::<&MorphBinding>();
+
+        let morph_binding = morph_binding_rows
+            .iter()
             .next()
             .expect("a morphed mesh binds to a weight entity");
         morph_binding.weights
@@ -289,6 +290,7 @@ async fn a_morphed_quad_follows_its_weights() {
             .root_scope()
             .query_one::<&MorphWeights>(weights_entity)
             .expect("the weight entity carries a `MorphWeights`")
+            .get()
             .weights,
         vec![0.0, 0.0],
         "the spawn starts at the document's weights"
@@ -314,6 +316,7 @@ async fn a_morphed_quad_follows_its_weights() {
         .root_scope()
         .query_one::<&mut MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
+        .get()
         .weights = vec![1.0, 0.0];
     let collapsed = read(&gpu);
     assert_eq!(
@@ -329,6 +332,7 @@ async fn a_morphed_quad_follows_its_weights() {
         .root_scope()
         .query_one::<&mut MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
+        .get()
         .weights = vec![0.0, 1.0];
     let displaced = read(&gpu);
     assert_eq!(
@@ -472,19 +476,21 @@ async fn a_skinned_quad_follows_its_joint() {
     // The drawn entity names the pose entity the spawn created, and that
     // entity holds the rest pose: the identity, one matrix per joint.
     let pose = {
-        let skin_binding = world
-            .root_scope()
-            .query::<&SkinBinding>()
+        let mut skin_binding_rows = world.root_scope().query::<&SkinBinding>();
+
+        let skin_binding = skin_binding_rows
+            .iter()
             .next()
             .expect("a skinned mesh binds to a pose");
         skin_binding.pose
     };
-    let rest = world
-        .root_scope()
-        .query_one::<&SkinPose>(pose)
-        .expect("the pose entity carries a `SkinPose`")
-        .matrices
-        .clone();
+    let rest = {
+        let mut pose_row = world
+            .root_scope()
+            .query_one::<&SkinPose>(pose)
+            .expect("the pose entity carries a `SkinPose`");
+        pose_row.get().matrices.clone()
+    };
     assert_eq!(rest.len(), 1, "one joint, one matrix");
     assert!(
         rest[0].abs_diff_eq(glam::Mat4::IDENTITY, 1e-6),
@@ -511,7 +517,8 @@ async fn a_skinned_quad_follows_its_joint() {
     *world
         .root_scope()
         .query_one::<&mut SkinPose>(pose)
-        .expect("the pose entity carries a `SkinPose`") = SkinPose {
+        .expect("the pose entity carries a `SkinPose`")
+        .get() = SkinPose {
         matrices: vec![glam::Mat4::from_translation(glam::Vec3::new(
             -5.0, 0.0, 0.0,
         ))],
@@ -805,6 +812,7 @@ async fn a_blended_material_composites_over_the_frame() {
     let z_sorted: Vec<Entity> = world
         .root_scope()
         .query::<(&ZSortedDrawing, Entity)>()
+        .iter()
         .map(|(_zsorted_drawing, entity)| entity)
         .collect();
     let spawned: Vec<Entity> = entities
@@ -877,6 +885,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             world
                 .root_scope()
                 .query::<&ZSortedDrawing>()
+                .iter()
                 .next()
                 .is_none(),
             "a cut-off material draws opaque coverage, so it needs no sort"

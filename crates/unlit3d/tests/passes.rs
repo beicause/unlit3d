@@ -78,6 +78,7 @@ fn bind_target(
         .root_scope()
         .query_one::<&wgpu::Device>(gpu.context.device)
         .expect("the context's device")
+        .get()
         .clone();
     let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
     let (_, color_view) = gpu.register_texture(world, color.clone());
@@ -93,7 +94,10 @@ fn bind_target(
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.set_attachments(&attachments, color_view);
+            let pass = pass.get();
+            {
+                pass.set_attachments(&attachments, color_view);
+            }
         })
         .expect("the pass entity exists");
     color
@@ -279,7 +283,10 @@ async fn a_parked_pass_draws_nothing() {
     world
         .root_scope()
         .query_one::<&mut RenderLoadOps>(pass_b)
-        .map(|mut load| load.color = wgpu::LoadOp::Clear(wgpu::Color::RED))
+        .map(|mut load| {
+            let load = load.get();
+            load.color = wgpu::LoadOp::Clear(wgpu::Color::RED)
+        })
         .expect("the pass carries its load ops");
 
     let texture = solid_texture(&ctx.device, &ctx.queue, COLOR);
@@ -292,7 +299,10 @@ async fn a_parked_pass_draws_nothing() {
     world
         .root_scope()
         .query_one::<&mut FramePass>(pass_b)
-        .map(|mut pass| pass.park())
+        .map(|mut pass| {
+            let pass = pass.get();
+            pass.park()
+        })
         .expect("the pass entity exists");
     gpu.render(&world);
 

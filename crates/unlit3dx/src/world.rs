@@ -520,15 +520,13 @@ mod tests {
                 world
                     .root_scope()
                     .query::<&mut Count>()
+                    .iter()
                     .next()
                     .expect("the counter")
                     .0 += 1;
-                let count = world
-                    .root_scope()
-                    .query::<&Count>()
-                    .next()
-                    .expect("the counter")
-                    .0;
+                let mut count_rows = world.root_scope().query::<&Count>();
+
+                let count = count_rows.iter().next().expect("the counter").0;
                 publish.publish(count);
             }))
             .expect("the world accepts jobs");
@@ -565,7 +563,7 @@ mod tests {
         handle
             .sender
             .send(Box::new(move |world: &mut World| {
-                publish.publish(world.root_scope().query::<&Count>().next().is_some());
+                publish.publish(world.root_scope().query::<&Count>().iter().next().is_some());
             }))
             .expect("the world accepts jobs");
         let mut answered = None;
@@ -609,6 +607,7 @@ mod tests {
                 world
                     .root_scope()
                     .query::<&mut Count>()
+                    .iter()
                     .next()
                     .expect("the counter")
                     .0 += 1;
@@ -620,6 +619,7 @@ mod tests {
                 world
                     .root_scope()
                     .query::<&Count>()
+                    .iter()
                     .next()
                     .expect("the counter")
                     .0

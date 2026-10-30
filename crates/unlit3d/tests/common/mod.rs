@@ -154,10 +154,12 @@ impl TestGpu {
         f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
     ) -> R {
         let entity = self.mesh_source();
-        let mut source = world
+        let mut source_row = world
             .root_scope()
             .query_one::<&mut Source>(entity)
             .expect("the source entity exists");
+
+        let source = source_row.get();
         let mesh = source
             .as_mut::<MeshSource>()
             .expect("the source is a MeshSource");
@@ -172,7 +174,7 @@ impl TestGpu {
         world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| f(&mut renderer, world))
+            .map(|mut renderer| f(renderer.get(), world))
             .expect("the renderer entity exists")
     }
 
@@ -388,6 +390,7 @@ impl TestGpu {
             .root_scope()
             .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device")
+            .get()
             .clone();
         let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
         let (_, color_view) = self.register_texture(world, color.clone());
@@ -403,7 +406,10 @@ impl TestGpu {
             .root_scope()
             .query_one::<&mut FramePass>(self.pass)
             .map(|mut pass| {
-                pass.set_attachments(&attachments, color_view);
+                let pass = pass.get();
+                {
+                    pass.set_attachments(&attachments, color_view);
+                }
             })
             .expect("the pass entity exists");
         color
@@ -425,6 +431,7 @@ impl TestGpu {
             .root_scope()
             .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device")
+            .get()
             .clone();
         let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
         let (_, color_view) = self.register_texture(world, color.clone());
@@ -434,7 +441,10 @@ impl TestGpu {
             .root_scope()
             .query_one::<&mut FramePass>(self.pass)
             .map(|mut pass| {
-                pass.set_attachments(&attachments, color_view);
+                let pass = pass.get();
+                {
+                    pass.set_attachments(&attachments, color_view);
+                }
             })
             .expect("the pass entity exists");
         color
