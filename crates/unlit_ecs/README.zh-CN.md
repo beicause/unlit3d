@@ -273,13 +273,15 @@ for (entity, has_spin) in presence.iter() {
 查询是类型而不是值：`&C` 读组件，`&mut C` 写组件，`Option<&C>` 与 `Option<&mut C>`
 表示可选，`Entity` 交出实体本身，`Has<C>` 交出 `C` 在不在。`Has<C>` 不收窄任何
 东西，所以实体没有 `C` 时它交出 `false` 而不是跳过该行；只想到访携带者的查询要配合
-`QueryBorrow::by`，即 `by(|archetype| archetype.has::<C>())`。项不可嵌套——`&(a, b)`
-是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，用 `query!`
-宏声明，或由调用者自己 `impl Query`。两者都不需要 `unsafe`：查询通过
-`PlanBuilder` 解析自己的列，它交出 `Col` 与 `ColMut` 并记下被索要了什么，
-所以查询认领的组件恰好是它声明的那些。`Scope::query_one` 在单个实体上跑同一个查询，交出的是 `QueryOne` 持有者，
-由 `QueryOne::get` 交出那一行，于是按句柄查找与遍历 scope 共用同一套词汇；句柄指不到
-可见实体、或实体不匹配该查询，都是一个 `EntityAccessError`。
+`QueryBorrow::by`，即 `by(|archetype| archetype.has::<C>())`。元组项交出元组，
+且元组可嵌套——`(&a, (&b, &c))` 与 `(&a, &b, &c)` 索要的是同样三个组件；写成
+`&(a, b)` 的项是一个组件、其类型为该元组，不是两个。组件数超出元组 impl
+覆盖面时，用 `query!` 宏声明，或由调用者自己 `impl Query`。两者都不需要
+`unsafe`：查询通过 `PlanBuilder` 解析自己的列，它交出 `Col` 与 `ColMut` 并记下
+被索要了什么，所以查询认领的组件恰好是它声明的那些。`Scope::query_one` 在单个
+实体上跑同一个查询，交出的是 `QueryOne` 持有者，由 `QueryOne::get` 交出那一行，
+于是按句柄查找与遍历 scope 共用同一套词汇；句柄指不到可见实体、或实体不匹配该查询，
+都是一个 `EntityAccessError`。
 
 spawn 与 despawn 需要 `&mut` scope，或者排入队列的命令：
 

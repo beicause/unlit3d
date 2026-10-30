@@ -879,3 +879,57 @@ mod clashing {
         for _ in world.root_scope().query::<Clashing>().iter() {}
     }
 }
+
+/// Items nest: a tuple of tuples asks for the components of the flat tuple and
+/// yields the nested shape.
+mod nested {
+    use unlit_ecs::{World, bundle};
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct A(pub u32);
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct B(pub u32);
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct C(pub u32);
+
+    #[test]
+    fn a_nested_tuple_query_reads_the_rows_a_flat_one_does() {
+        let mut world = World::new();
+        world.root_scope_mut().spawn(bundle![A(1), B(2), C(3)]);
+        world.root_scope_mut().spawn(bundle![A(4), B(5)]);
+
+        let mut rows: Vec<(u32, (u32, u32))> = world
+            .root_scope()
+            .query::<(&A, (&B, &C))>()
+            .iter()
+            .map(|(a, (b, c))| (a.0, (b.0, c.0)))
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows, [(1, (2, 3))]);
+    }
+
+    #[test]
+    fn a_nested_tuple_writes_where_a_flat_one_would() {
+        let mut world = World::new();
+        let entity = world.root_scope_mut().spawn(bundle![A(1), B(2)]);
+
+        for (a, (b,)) in world.root_scope().query::<(&mut A, (&mut B,))>().iter() {
+            a.0 += b.0;
+            b.0 = 0;
+        }
+
+        let scope = world.root_scope();
+        assert_eq!(scope.query_one::<&A>(entity).unwrap().get().0, 3);
+        assert_eq!(scope.query_one::<&B>(entity).unwrap().get().0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn a_nested_tuple_still_refuses_one_component_named_both_ways() {
+        let mut world = World::new();
+        world.root_scope_mut().spawn(bundle![A(1)]);
+        for _ in world.root_scope().query::<(&A, (&mut A,))>().iter() {}
+    }
+}

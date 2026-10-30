@@ -14,8 +14,10 @@
 //! | [`Has<T>`] | whether the archetype carries `T`, narrowing nothing |
 //!
 //! A tuple of items asks for all of them at once and yields a tuple of their
-//! items. Items do not nest: `&(a, b)` is one tuple component, `(&a, &b)` is
-//! two components, and an item outside the forms above fails to compile.
+//! items, and tuples nest: `(&a, (&b, &c))` asks for the same three components
+//! as `(&a, &b, &c)` and yields `(&A, (&B, &C))`. An item written `&(a, b)` is
+//! one component whose type is that tuple, not two, and an item outside the
+//! forms above fails to compile.
 //!
 //! A query is held rather than borrowed one row at a time: [`crate::QueryBorrow`]
 //! is what a scope hands out, it claims the components it will reach when it is
@@ -37,6 +39,12 @@
 //! // above are visited and the one without a `bool` prints `false`.
 //! for (entity, value, has_bool) in world.root_scope().query::<(Entity, &u32, Has<bool>)>().iter() {
 //!     println!("{entity:?} has {value}, and a bool: {has_bool}");
+//! }
+//!
+//! // Tuples nest, so this asks for the same components and yields
+//! // `(&u32, (&f32,))` instead of `(&u32, &f32)`.
+//! for (value, (height,)) in world.root_scope().query::<(&u32, (&f32,))>().iter() {
+//!     let _ = (value, height);
 //! }
 //! ```
 //!
@@ -325,7 +333,7 @@ impl<'w> PlanBuilder<'w> {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a query",
     label = "a query is `&C`, `&mut C`, `Option<&C>`, `Option<&mut C>`, `Entity`, `Has<C>`, or a tuple of those",
-    note = "`&(a, b)` is one tuple component and `(&a, &b)` is two; items do not nest, and a wider row is declared with `query!`"
+    note = "`&(a, b)` is one component whose type is the tuple, and `(&a, &b)` is two; a row with named fields is declared with `query!`"
 )]
 pub trait Query {
     /// What one matched row yields.
@@ -355,18 +363,6 @@ pub trait Query {
     fn read<'a, 'w: 'a>(plan: &'a mut Self::Plan<'w>, row: usize) -> Self::Item<'a>;
 }
 
-/// A query that can be one element of a query tuple.
-///
-/// The tuple impls require this rather than [`Query`], which is what keeps
-/// items from nesting: `(&a, &b)` is two components, `&(a, b)` is one, and
-/// `(&a, (&b, &c))` does not compile.
-#[diagnostic::on_unimplemented(
-    message = "not a query item",
-    label = "an item is `&C`, `&mut C`, `Option<&C>`, `Option<&mut C>`, `Entity`, or `Has<C>`",
-    note = "`&(a, b)` is one tuple component and `(&a, &b)` is two; items do not nest"
-)]
-pub trait QueryItem: Query {}
-
 /// Asks for `T` shared.
 impl<T: 'static> Query for &T {
     type Item<'a> = &'a T;
@@ -380,8 +376,6 @@ impl<T: 'static> Query for &T {
         plan.at(row)
     }
 }
-
-impl<T: 'static> QueryItem for &T {}
 
 /// Asks for `T` exclusive.
 impl<T: 'static> Query for &mut T {
@@ -397,8 +391,6 @@ impl<T: 'static> Query for &mut T {
     }
 }
 
-impl<T: 'static> QueryItem for &mut T {}
-
 /// Asks for `T` shared when the archetype carries it.
 impl<T: 'static> Query for Option<&T> {
     type Item<'a> = Option<&'a T>;
@@ -413,8 +405,6 @@ impl<T: 'static> Query for Option<&T> {
     }
 }
 
-impl<T: 'static> QueryItem for Option<&T> {}
-
 /// Asks for `T` exclusive when the archetype carries it.
 impl<T: 'static> Query for Option<&mut T> {
     type Item<'a> = Option<&'a mut T>;
@@ -428,8 +418,6 @@ impl<T: 'static> Query for Option<&mut T> {
         plan.as_mut().map(|column| column.at(row))
     }
 }
-
-impl<T: 'static> QueryItem for Option<&mut T> {}
 
 /// Asks for the entity itself.
 ///
@@ -447,8 +435,6 @@ impl Query for Entity {
         plan[row]
     }
 }
-
-impl QueryItem for Entity {}
 
 /// Yields whether the archetype carries `T`.
 ///
@@ -478,12 +464,10 @@ impl<T: 'static> Query for Has<T> {
     }
 }
 
-impl<T: 'static> QueryItem for Has<T> {}
-
 macro_rules! impl_tuple {
     ($($name:ident),+) => {
         /// Asks for every member, yielding a tuple of their items.
-        impl<$($name: QueryItem),+> Query for ($($name,)+) {
+        impl<$($name: Query),+> Query for ($($name,)+) {
             type Item<'a> = ($($name::Item<'a>,)+);
             type Plan<'w> = ($($name::Plan<'w>,)+);
 

@@ -357,13 +357,15 @@ A query is a type, not a value: `&C` reads a component, `&mut C` writes one,
 entity, and [`Has<C>`] yields whether `C` is there. `Has<C>` narrows nothing, so
 it reports a `false` for an entity that lacks `C` rather than skipping it; a
 query that should visit only the carriers pairs it with [`QueryBorrow::by`],
-`by(|archetype| archetype.has::<C>())`. Items do not nest —
-`&(a, b)` is one tuple component and `(&a, &b)` is two — and a query with more
-components than a tuple impl covers is declared with the [`query!`] macro, or
-written by implementing [`Query`] yourself. Neither needs `unsafe`: a query
-resolves its columns through [`PlanBuilder`], which hands out [`Col`] and
-[`ColMut`] and records what it was asked for, so the components a query claims
-are exactly the ones it declares. [`Scope::query_one`] runs the same query over one entity and answers a
+`by(|archetype| archetype.has::<C>())`. A tuple of items yields a tuple of
+their items, and tuples nest: `(&a, (&b, &c))` asks for the same three
+components as `(&a, &b, &c)`. An item written `&(a, b)` is one component whose
+type is that tuple, not two. A query with more components than a tuple impl
+covers is declared with the [`query!`] macro, or written by implementing
+[`Query`] yourself. Neither needs `unsafe`: a query resolves its columns
+through [`PlanBuilder`], which hands out [`Col`] and [`ColMut`] and records
+what it was asked for, so the components a query claims are exactly the ones it
+declares. [`Scope::query_one`] runs the same query over one entity and answers a
 [`QueryOne`] holder whose [`QueryOne::get`] hands out the single row, so a
 lookup by handle and a pass over a scope share one vocabulary; a handle that
 names no visible entity, or one the query does not match, is an

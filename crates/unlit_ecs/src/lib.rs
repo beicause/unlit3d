@@ -36,8 +36,6 @@ pub use error::{ArchetypeAccessError, EntityAccessError};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
-#[doc(hidden)]
-pub use query::QueryItem;
 pub use query::{
     ArchetypeFilter, Col, ColMut, Has, PlanBuilder, Query, QueryBorrow, QueryIter, QueryOne,
 };
