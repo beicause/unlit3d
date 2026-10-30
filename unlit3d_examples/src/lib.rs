@@ -1228,47 +1228,48 @@ fn release(world: &World, app: Entity) {
     let Ok(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
         return;
     };
-    let Some(surface) = slot.0.take() else {
+    let Some(surface) = slot.get().0.take() else {
         return;
     };
     let Some(scene_entity) = world
         .root_scope()
         .query_one::<&SceneEntity>(app)
         .ok()
-        .and_then(|slot| slot.0)
+        .and_then(|mut slot| slot.get().0)
     else {
         return;
     };
-    let Ok(nested) = world.root_scope().query_one::<&World>(scene_entity) else {
+    let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) else {
         return;
     };
-    let scene = world
+    let mut scene = world
         .root_scope()
         .query_one::<&Scene>(scene_entity)
         .expect("the scene entity carries a scene");
-    let renderer = scene.renderer;
+    let renderer = scene.get().renderer;
     let mcp = world
         .root_scope()
         .query_one::<&McpEnabled>(app)
-        .is_ok_and(|mcp| mcp.0);
+        .is_ok_and(|mut mcp| mcp.get().0);
     // The pass that drew into the swap chain still names a view of it, and that
     // id is what keeps the view alive. Parking the pass drops it, so the view
     // goes with the surface the release collects.
-    if let Some(presenting) = presenting_pass(&scene, mcp) {
-        let _ = nested
+    let nested_world = nested.get();
+    if let Some(presenting) = presenting_pass(scene.get(), mcp) {
+        let _ = nested_world
             .root_scope()
             .query_one::<&mut FramePass>(presenting)
-            .map(|mut pass| pass.park());
+            .map(|mut pass| pass.get().park());
     }
-    nested
+    nested_world
         .root_scope()
         .query_one::<&mut Renderer>(renderer)
         .map(|mut renderer| {
-            surface.release(&*nested.get(), &mut *renderer.get());
+            surface.release(nested_world, &mut *renderer.get());
         })
         .expect("the renderer is a resource entity");
     if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app) {
-        attachments.0 = None;
+        attachments.get().0 = None;
     }
 }
 
