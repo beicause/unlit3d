@@ -26,7 +26,12 @@ harness = false
 name = "profile"
 
 [dependencies]
-criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+# Pinned to a commit, not a release: the published 0.8.2 depends on `alloca`
+# unconditionally, and `alloca`'s build script adds `-flto` whenever `CC` is
+# `clang`, which mold then refuses to link without `-plugin`. Upstream made
+# `alloca` optional after 0.8.2, so this commit is the first tree in which
+# `default-features = false` can actually drop it.
+criterion = { git = "https://github.com/criterion-rs/criterion.rs", rev = "82b191ebf278cbe47d8da6c1bff76d8a812f61c0", default-features = false, features = ["cargo_bench_support"] }
 glam.workspace = true
 pollster.workspace = true
 # The backend the `profile` target's scopes are recorded through; the switch
