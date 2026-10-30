@@ -219,9 +219,14 @@ impl OpenUrls {
 /// on the web, and nothing at all where there is no browser. A world without a
 /// queue — one built without [`spawn_context`] — yields none.
 pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
-    let mut open_urls_rows = world.root_scope().query::<(Entity, &OpenUrls)>();
-
-    let Some(entity) = open_urls_rows.iter().next().map(|(e, _)| e) else {
+    // The scan claims every `OpenUrls` row and the write below claims one of
+    // them exclusively, so the scan's borrow has to end before it: the claim
+    // lasts as long as the row holder, not as long as the loop that read it.
+    let scanned = {
+        let mut rows = world.root_scope().query::<(Entity, &OpenUrls)>();
+        rows.iter().next().map(|(entity, _)| entity)
+    };
+    let Some(entity) = scanned else {
         return Vec::new();
     };
     world
@@ -488,6 +493,44 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         )
+    }
+
+    /// Draining hands back what the frame queued, and leaves the queue empty.
+    ///
+    /// The scan that finds the queue's row and the write that empties it cannot
+    /// hold their claims at the same time: the scan claims every row of the
+    /// component and the write claims one of them exclusively. Both drains here
+    /// would panic if the scan outlived the loop that read it.
+    #[test]
+    fn draining_open_urls_empties_the_queue() {
+        let mut world = World::new();
+        let _context = test_context(&mut world);
+        let queue = world
+            .root_scope()
+            .query::<(Entity, &OpenUrls)>()
+            .iter()
+            .next()
+            .map(|(entity, _)| entity)
+            .expect("the frame context spawns the queue");
+        world
+            .root_scope()
+            .query_one::<&mut OpenUrls>(queue)
+            .unwrap()
+            .get()
+            .push("https://example.com", false);
+
+        assert_eq!(
+            drain_open_urls(&world),
+            vec![OpenUrl {
+                url: "https://example.com".to_owned(),
+                new_tab: false,
+            }],
+            "the queued URL is handed to the host"
+        );
+        assert!(
+            drain_open_urls(&world).is_empty(),
+            "the first drain left the queue empty"
+        );
     }
 
     /// A source that records how many times it was built and what it saw.
