@@ -271,7 +271,8 @@ rule of its own overrides it.
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
 [`Query`] (the type parameter naming what a row yields, with [`Entity`] and
-[`Has<C>`] as items), [`QueryBorrow`] / [`QueryIter`] / [`QueryOne`] (the holder
+[`Has<C>`] as items), the [`query!`] macro that declares one from the shape of a
+row, [`QueryBorrow`] / [`QueryIter`] / [`QueryOne`] (the holder
 a query hands out and the rows and single row it yields, [`QueryBorrow::by`] as
 the archetype predicate),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
@@ -358,8 +359,11 @@ it reports a `false` for an entity that lacks `C` rather than skipping it; a
 query that should visit only the carriers pairs it with [`QueryBorrow::by`],
 `by(|archetype| archetype.has::<C>())`. Items do not nest —
 `&(a, b)` is one tuple component and `(&a, &b)` is two — and a query with more
-components than a tuple impl covers is written by implementing [`Query`]
-yourself. [`Scope::query_one`] runs the same query over one entity and answers a
+components than a tuple impl covers is declared with the [`query!`] macro, or
+written by implementing [`Query`] yourself. Neither needs `unsafe`: a query
+resolves its columns through [`PlanBuilder`], which hands out [`Col`] and
+[`ColMut`] and records what it was asked for, so the components a query claims
+are exactly the ones it declares. [`Scope::query_one`] runs the same query over one entity and answers a
 [`QueryOne`] holder whose [`QueryOne::get`] hands out the single row, so a
 lookup by handle and a pass over a scope share one vocabulary; a handle that
 names no visible entity, or one the query does not match, is an

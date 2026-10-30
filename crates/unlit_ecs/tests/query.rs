@@ -606,3 +606,276 @@ fn reading_a_component_while_it_is_written_panics() {
     let _writing = position_row_4.get();
     let _ = world.root_scope().query_one::<&Position>(entity);
 }
+
+/// A query declared with the `query!` macro: the fields are the shape of one
+/// row, and the components it claims are exactly the ones it names.
+#[deny(unsafe_code)]
+mod declared {
+    // The macro matches the field types itself, so `Entity` and `Has` need
+    // no import for a declaration that uses them.
+    use unlit_ecs::{World, bundle, query};
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Health(pub i32);
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Armor(pub i32);
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Mana(pub i32);
+
+    query! {
+        /// One combatant, as the combat pass reads it.
+        #[derive(Debug)]
+        pub struct Combatant<'a> {
+            pub entity: Entity,
+            pub health: &'a mut Health,
+            pub armor: &'a Armor,
+            pub mana: Option<&'a Mana>,
+            pub has_armor: Has<Armor>,
+        }
+    }
+
+    pub fn scene() -> World {
+        let mut world = World::new();
+        world
+            .root_scope_mut()
+            .spawn(bundle![Health(10), Armor(2), Mana(1)]);
+        world.root_scope_mut().spawn(bundle![Health(20), Armor(4)]);
+        world
+    }
+
+    #[test]
+    fn a_declared_query_reads_every_field_it_names() {
+        let world = scene();
+        let mut rows = world.root_scope().query::<Combatant>();
+
+        let mut seen = 0;
+        for row in rows.iter() {
+            seen += 1;
+            assert!(row.has_armor);
+            match row.mana {
+                Some(mana) => assert_eq!(mana.0, 1),
+                None => assert_eq!(row.health.0, 20),
+            }
+            assert_eq!(row.armor.0 * 5, row.health.0);
+            let _ = row.entity;
+        }
+        assert_eq!(seen, 2);
+    }
+
+    #[test]
+    fn a_declared_query_writes_the_components_it_names_exclusively() {
+        let world = scene();
+        for row in world.root_scope().query::<Combatant>().iter() {
+            row.health.0 -= row.armor.0;
+        }
+
+        let mut healths: Vec<i32> = world
+            .root_scope()
+            .query::<&Health>()
+            .iter()
+            .map(|health| health.0)
+            .collect();
+        healths.sort_unstable();
+        assert_eq!(healths, vec![8, 16]);
+    }
+
+    #[test]
+    fn a_declared_query_is_one_type_whatever_lifetime_names_it() {
+        let world = scene();
+        assert_eq!(world.root_scope().query::<Combatant>().iter().count(), 2);
+        assert_eq!(
+            world.root_scope().query::<Combatant<'static>>().iter().count(),
+            2,
+        );
+        assert_eq!(world.root_scope().query::<Combatant<'_>>().iter().count(), 2);
+    }
+
+    #[test]
+    fn a_declared_query_reports_a_missing_required_component_as_no_match() {
+        let mut world = World::new();
+        let entity = world.root_scope_mut().spawn(bundle![Health(1)]);
+        assert!(
+            world.root_scope().query_one::<Combatant>(entity).is_err(),
+            "a declared query requires every field that is not optional",
+        );
+    }
+}
+
+/// A query wider than any tuple impl, declared with the macro.
+#[deny(unsafe_code)]
+mod wide {
+    use unlit_ecs::{World, bundle, query};
+
+    macro_rules! components {
+        ($($name:ident),+ $(,)?) => {
+            $(
+                #[derive(Clone, Copy, Debug, PartialEq)]
+                pub struct $name(pub u32);
+            )+
+        };
+    }
+
+    components!(C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14, C15, C16, C17);
+
+    query! {
+        /// Eighteen components, past the widest tuple impl.
+        pub struct Wide<'a> {
+            pub c0: &'a C0,
+            pub c1: &'a C1,
+            pub c2: &'a C2,
+            pub c3: &'a C3,
+            pub c4: &'a C4,
+            pub c5: &'a C5,
+            pub c6: &'a C6,
+            pub c7: &'a C7,
+            pub c8: &'a C8,
+            pub c9: &'a C9,
+            pub c10: &'a C10,
+            pub c11: &'a C11,
+            pub c12: &'a C12,
+            pub c13: &'a C13,
+            pub c14: &'a C14,
+            pub c15: &'a C15,
+            pub c16: &'a C16,
+            pub c17: &'a C17,
+        }
+    }
+
+    #[test]
+    fn a_declared_query_covers_more_fields_than_a_tuple_impl() {
+        let mut world = World::new();
+        world.root_scope_mut().spawn(bundle![
+            C0(0), C1(1), C2(2), C3(3), C4(4), C5(5), C6(6), C7(7), C8(8), C9(9), C10(10), C11(11),
+            C12(12), C13(13), C14(14), C15(15), C16(16), C17(17),
+        ]);
+
+        let rows: Vec<u32> = world
+            .root_scope()
+            .query::<Wide>()
+            .iter()
+            .map(|row| {
+                row.c0.0
+                    + row.c1.0
+                    + row.c2.0
+                    + row.c3.0
+                    + row.c4.0
+                    + row.c5.0
+                    + row.c6.0
+                    + row.c7.0
+                    + row.c8.0
+                    + row.c9.0
+                    + row.c10.0
+                    + row.c11.0
+                    + row.c12.0
+                    + row.c13.0
+                    + row.c14.0
+                    + row.c15.0
+                    + row.c16.0
+                    + row.c17.0
+            })
+            .collect();
+        assert_eq!(rows, vec![(0..18).sum::<u32>()]);
+    }
+}
+
+/// A query written by hand against the public surface, with no `unsafe` on
+/// the caller's side: the builder hands out claimed columns and refuses the
+/// asks that could not coexist.
+#[deny(unsafe_code)]
+mod handwritten {
+    use unlit_ecs::{Col, ColMut, PlanBuilder, Query, World, bundle};
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Position {
+        pub x: f32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Velocity {
+        pub dx: f32,
+    }
+
+    /// Writes the position it reads the velocity of.
+    pub struct Step<'a> {
+        pub position: &'a mut Position,
+        pub velocity: &'a Velocity,
+    }
+
+    pub struct StepPlan<'w> {
+        position: ColMut<'w, Position>,
+        velocity: Col<'w, Velocity>,
+    }
+
+    impl<'a> Query for Step<'a> {
+        type Item<'row> = Step<'row>;
+        type Plan<'w> = StepPlan<'w>;
+
+        fn prepare<'w>(builder: &mut PlanBuilder<'w>) -> Option<Self::Plan<'w>> {
+            Some(StepPlan {
+                position: builder.write::<Position>()?,
+                velocity: builder.read::<Velocity>()?,
+            })
+        }
+
+        fn read<'row, 'w: 'row>(plan: &'row mut Self::Plan<'w>, row: usize) -> Self::Item<'row> {
+            Step {
+                position: plan.position.at(row),
+                velocity: plan.velocity.at(row),
+            }
+        }
+    }
+
+    #[test]
+    fn a_hand_written_query_steps_the_rows_it_matches() {
+        let mut world = World::new();
+        world
+            .root_scope_mut()
+            .spawn(bundle![Position { x: 0.0 }, Velocity { dx: 2.0 }]);
+
+        for row in world.root_scope().query::<Step>().iter() {
+            row.position.x += row.velocity.dx;
+        }
+        assert_eq!(
+            world
+                .root_scope()
+                .query::<&Position>()
+                .iter()
+                .next()
+                .unwrap()
+                .x,
+            2.0,
+        );
+
+        // It visits only the archetypes carrying both components, because a
+        // required ask answers `None` for one that carries neither.
+        let other = world.root_scope_mut().spawn(bundle![Position { x: 1.0 }]);
+        assert_eq!(world.root_scope().query::<Step>().iter().count(), 1);
+        assert!(world.root_scope().query_one::<Step>(other).is_err());
+    }
+}
+
+/// A declared query that names one component both ways is refused by the
+/// builder, before any rows are handed out.
+mod clashing {
+    use unlit_ecs::{World, bundle, query};
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Marker(pub u32);
+
+    query! {
+        pub struct Clashing<'a> {
+            pub read: &'a Marker,
+            pub write: &'a mut Marker,
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn a_declared_query_cannot_name_one_component_both_ways() {
+        let mut world = World::new();
+        world.root_scope_mut().spawn(bundle![Marker(0)]);
+        for _ in world.root_scope().query::<Clashing>().iter() {}
+    }
+}

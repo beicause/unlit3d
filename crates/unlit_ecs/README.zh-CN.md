@@ -200,6 +200,7 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 `bundle!` 宏）、把 world 收窄到一个 scope 的
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`）、
+用一行形态声明查询的 `query!` 宏、
 `QueryBorrow` / `QueryIter` / `QueryOne`（查询交出的持有者，以及它交出的行与单行，
 archetype 谓词写作 `QueryBorrow::by`）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`（archetype
@@ -273,8 +274,10 @@ for (entity, has_spin) in presence.iter() {
 表示可选，`Entity` 交出实体本身，`Has<C>` 交出 `C` 在不在。`Has<C>` 不收窄任何
 东西，所以实体没有 `C` 时它交出 `false` 而不是跳过该行；只想到访携带者的查询要配合
 `QueryBorrow::by`，即 `by(|archetype| archetype.has::<C>())`。项不可嵌套——`&(a, b)`
-是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，由调用者自己
-`impl Query`。`Scope::query_one` 在单个实体上跑同一个查询，交出的是 `QueryOne` 持有者，
+是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，用 `query!`
+宏声明，或由调用者自己 `impl Query`。两者都不需要 `unsafe`：查询通过
+`PlanBuilder` 解析自己的列，它交出 `Col` 与 `ColMut` 并记下被索要了什么，
+所以查询认领的组件恰好是它声明的那些。`Scope::query_one` 在单个实体上跑同一个查询，交出的是 `QueryOne` 持有者，
 由 `QueryOne::get` 交出那一行，于是按句柄查找与遍历 scope 共用同一套词汇；句柄指不到
 可见实体、或实体不匹配该查询，都是一个 `EntityAccessError`。
 

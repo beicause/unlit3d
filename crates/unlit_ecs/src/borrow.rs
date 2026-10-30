@@ -20,14 +20,16 @@
 //!
 //! Claims are filed under the holder that made them rather than under individual
 //! ids, so a holder carries one word of ledger state and releases in one pass.
+//!
+//! What a holder claims is what it asked a [`crate::PlanBuilder`] for: there is
+//! no separate declaration of reached components, so a query cannot claim less
+//! than it reads.
 
 use core::any::TypeId;
 use core::panic::Location;
 
-use crate::archetype::Archetype;
-
 use crate::entity::Entity;
-use crate::query::{Mode, Query};
+use crate::query::{Ask, Mode};
 use crate::world::World;
 
 /// Which rows a claim covers.
@@ -158,25 +160,29 @@ impl<'w> Claims<'w> {
         }
     }
 
-    /// Claim what `Q` reaches on one archetype.
-    pub(crate) fn claim_archetype<Q: Query>(
+    /// Claim on [`index`] every component the holder's asks named.
+    pub(crate) fn claim_archetype(
         &mut self,
         index: u32,
-        archetype: &Archetype,
+        archetype: &crate::archetype::Archetype,
+        asks: &[Ask],
         origin: &'static Location<'static>,
     ) {
-        claim_archetype::<Q>(self.world, self.group, index, archetype, origin);
+        claim_archetype(self.world, self.group, index, archetype, asks, origin);
     }
 
-    /// Claim what `Q` reaches on the row of one entity.
-    pub(crate) fn claim_row<Q: Query>(
+    /// Claim on the row of [`entity`] every component the holder's asks named.
+    pub(crate) fn claim_row(
         &mut self,
         index: u32,
         entity: Entity,
-        archetype: &Archetype,
+        archetype: &crate::archetype::Archetype,
+        asks: &[Ask],
         origin: &'static Location<'static>,
     ) {
-        claim_row::<Q>(self.world, self.group, index, entity, archetype, origin);
+        claim_row(
+            self.world, self.group, index, entity, archetype, asks, origin,
+        );
     }
 }
 
@@ -186,35 +192,37 @@ impl Drop for Claims<'_> {
     }
 }
 
-/// Claim on `archetype` every component `Q` reaches, shared or exclusive.
+/// Claim on [`archetype`] every component the asks named, shared or exclusive.
 ///
 /// Components the archetype does not carry are skipped: an optional item reaches
 /// nothing there, and claiming it anyway would refuse another query for no
 /// reason.
-pub(crate) fn claim_archetype<Q: Query>(
+pub(crate) fn claim_archetype(
     world: &World,
     group: u64,
     index: u32,
-    archetype: &Archetype,
+    archetype: &crate::archetype::Archetype,
+    asks: &[Ask],
     origin: &'static Location<'static>,
 ) {
-    Q::access(&mut |type_id, name, mode| {
+    for &(type_id, name, mode) in asks {
         if archetype.column_index(type_id).is_some() {
             world.claim(group, type_id, name, mode, Rows::Archetype(index), origin);
         }
-    });
+    }
 }
 
-/// Claim on one entity's row every component `Q` reaches.
-pub(crate) fn claim_row<Q: Query>(
+/// Claim on one entity's row every component the asks named.
+pub(crate) fn claim_row(
     world: &World,
     group: u64,
     index: u32,
     entity: Entity,
-    archetype: &Archetype,
+    archetype: &crate::archetype::Archetype,
+    asks: &[Ask],
     origin: &'static Location<'static>,
 ) {
-    Q::access(&mut |type_id, name, mode| {
+    for &(type_id, name, mode) in asks {
         if archetype.column_index(type_id).is_some() {
             let rows = Rows::Entity {
                 archetype: index,
@@ -222,5 +230,5 @@ pub(crate) fn claim_row<Q: Query>(
             };
             world.claim(group, type_id, name, mode, rows, origin);
         }
-    });
+    }
 }

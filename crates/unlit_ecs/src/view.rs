@@ -15,7 +15,8 @@ use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::error::{ArchetypeAccessError, EntityAccessError};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
-use crate::query::{Query, QueryBorrow, QueryOne};
+use crate::borrow::Claims;
+use crate::query::{PlanBuilder, Query, QueryBorrow, QueryOne};
 use crate::world::World;
 
 /// A read-only scope: one entity and everything below it.
@@ -138,17 +139,27 @@ impl<'w> Scope<'w> {
         let origin = core::panic::Location::caller();
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
-        if !self.row_visible(archetype, location.row()) || !Q::matches(archetype) {
+        if !self.row_visible(archetype, location.row()) {
             return Err(EntityAccessError::NotMatched { entity });
         }
-        Ok(QueryOne::new(
-            self.world,
+        // A query that cannot resolve its plan on this archetype does not
+        // match it, which is the same answer as a row out of reach.
+        let mut builder = PlanBuilder::new(archetype, Vec::new());
+        let Some(plan) = Q::prepare(&mut builder) else {
+            return Err(EntityAccessError::NotMatched { entity });
+        };
+        // The claims are taken before the holder exists and are released with
+        // it, so a row is never reachable through the plan without a claim on
+        // it.
+        let mut claims = Claims::new(self.world);
+        claims.claim_row(
             location.archetype(),
-            archetype,
             entity,
-            location.row(),
+            archetype,
+            builder.asks(),
             origin,
-        ))
+        );
+        Ok(QueryOne::new(plan, location.row(), claims))
     }
 
     /// The archetype with this id, when this scope sees every row of it.
