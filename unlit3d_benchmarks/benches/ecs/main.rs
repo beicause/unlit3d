@@ -2,43 +2,38 @@
 //! and what resolving a whole archetype's columns once saves.
 //!
 //! These are the shapes the renderer's resolve pass can read a visible entity
-//! through. `get_three` is one [`World::get`] per component per entity, and
-//! `rows_per_archetype` is the same reads with each component's column resolved
-//! once per archetype group instead of once per entity. Whether the second is
-//! worth its extra bookkeeping — or whether `World::get` could be made cheap
-//! enough that the first is fine — is the question this target exists to
-//! answer, so the two are measured on equal terms rather than one being treated
-//! as the goal.
+//! through. `get_three` is one [`Scope::query_one`] per component per entity, and
+//! `query` is the same reads with each component's column resolved once per
+//! archetype instead of once per entity. Whether the second is worth its extra
+//! bookkeeping is the question this target exists to answer, so the two are
+//! measured on equal terms rather than one being treated as the goal.
 //!
 //! The per-entity cases form a ladder, each adding one part of a lookup to the
 //! one before it, so `get_three`'s cost can be read apart:
 //!
 //! - `location` — the entity-table borrow and the metadata read;
-//! - `states_per_entity` — adds the archetype lookup and the match itself;
-//! - `rows_per_entity` — adds resolving the query's columns in that archetype
-//!   and borrowing each row's cell, which is the `TypeId` search and the
-//!   downcast.
+//! - `matched_per_entity` — adds the archetype lookup and the component-set test
+//!   that decides whether the archetype matches the query at all;
+//! - `query_one_three` — adds resolving the query's columns in that archetype
+//!   and claiming the row, which is the `TypeId` search, the downcast, and the
+//!   claim bookkeeping.
 //!
 //! The rungs say where a per-entity lookup's time goes and therefore which part
 //! a change to `Scope::query_one` would have to remove to close the gap; a rung
-//! that is small is not what stands between the two shapes. `query` is the
-//! shape the renderer's resolve pass takes instead: it resolves the columns once
-//! per archetype and the entity list comes from the world rather than a cull,
-//! so comparing it with `rows_per_entity` is what the per-archetype resolution
-//! is worth.
+//! that is small is not what stands between the two shapes.
 //!
 //! Every function returns a sum so the compiler cannot discard the work.
 //!
 //! ```text
 //! cargo bench -p unlit3d_benchmarks --bench ecs
-//! cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/rows_per_entity/100000'
+//! cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/query_one_three/100000'
 //! ```
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, Query, World};
+use unlit_ecs::{Entity, World};
 
 /// The pipeline an entity draws through. A visible entity always has one.
 #[derive(Clone, Copy)]
@@ -57,7 +52,7 @@ struct Material(u64);
 /// reads.
 ///
 /// It is a type rather than a value, so every shape below names the same one and
-/// the compiler builds one state per shape instead of looking a descriptor up.
+/// the compiler builds one plan per shape instead of looking a descriptor up.
 type Resolve = (&'static Pipeline, &'static Mesh, Option<&'static Material>);
 
 /// The sum one row contributes: the three components the resolve pass reads.
@@ -105,13 +100,14 @@ impl Fixture {
             }
         }
 
-        // Archetypes are visited in creation order and rows in storage order,
-        // which is the order culling produces; the empty archetype contributes
-        // nothing.
+        // The candidates are the drawable entities in archetype-then-row order,
+        // which is the order culling produces; the root entity, which carries
+        // no components, is not one of them.
         let visible: Vec<Entity> = world
             .root_scope()
-            .archetypes()
-            .flat_map(|archetype| archetype.entities().iter().copied())
+            .query::<(&Pipeline, &Mesh, Entity)>()
+            .iter()
+            .map(|(_, _, entity)| entity)
             .collect();
         let interleaved = interleave(&world, &visible);
 
@@ -152,8 +148,8 @@ fn interleave(world: &World, entities: &[Entity]) -> Vec<Entity> {
     out
 }
 
-/// One [`World::get`] per entity: what a single component costs, entity-table
-/// borrow and column resolution included.
+/// One [`Scope::query_one`] per entity: what a single component costs,
+/// entity-table borrow, archetype match and row claim included.
 fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
@@ -166,7 +162,8 @@ fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     sum
 }
 
-/// Three [`World::get`] per entity: the shape the resolve pass used to have.
+/// Three [`Scope::query_one`] per entity: the shape the resolve pass used to
+/// have.
 fn get_three(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
@@ -187,7 +184,7 @@ fn get_three(world: &World, candidates: &[Entity]) -> u64 {
 }
 
 /// The entity-table borrow and the metadata read alone: what every
-/// [`World::get`] pays before it touches an archetype.
+/// [`Scope::query_one`] pays before it touches an archetype.
 fn location(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
@@ -200,9 +197,13 @@ fn location(world: &World, candidates: &[Entity]) -> u64 {
     sum
 }
 
-/// `location` plus matching the archetype and resolving the query's columns in
-/// it, without fetching a row.
-fn states_per_entity(world: &World, candidates: &[Entity]) -> u64 {
+/// `location` plus the archetype lookup and the component-set test the query
+/// applies to it.
+///
+/// The material is optional in `Resolve`, so every archetype carrying a pipeline
+/// and a mesh matches and only those two are tested; the presence test is the
+/// archetype's, so it reads its component list and nothing in it.
+fn matched_per_entity(world: &World, candidates: &[Entity]) -> u64 {
     let root = world.root_scope();
     let mut sum = 0u64;
     for &entity in candidates {
@@ -210,69 +211,15 @@ fn states_per_entity(world: &World, candidates: &[Entity]) -> u64 {
         let archetype = root
             .archetype(location.archetype())
             .expect("a live entity's archetype exists");
-        if !<Resolve as Query>::matches(archetype) {
+        if !archetype.has::<Pipeline>() || !archetype.has::<Mesh>() {
             continue;
         }
-        let state = <Resolve as Query>::fetch_state(archetype);
-        black_box(&state);
         sum += location.row() as u64;
     }
     sum
 }
 
-/// `states_per_entity` plus borrowing and reading each row's cell.
-fn rows_per_entity(world: &World, candidates: &[Entity]) -> u64 {
-    let root = world.root_scope();
-    let mut sum = 0u64;
-    for &entity in candidates {
-        let location = root.location(entity).expect("a candidate is alive");
-        let archetype = root
-            .archetype(location.archetype())
-            .expect("a live entity's archetype exists");
-        if !<Resolve as Query>::matches(archetype) {
-            continue;
-        }
-        let state = <Resolve as Query>::fetch_state(archetype);
-        // SAFETY: nothing else borrows the fixture world while this shape runs,
-        // and `Resolve` reads its three components shared.
-        let (pipeline, mesh, material) =
-            unsafe { <Resolve as Query>::fetch(state, location.row()) };
-        sum += read(pipeline, mesh, material);
-    }
-    sum
-}
-
-/// The resolve pass's shape: one query state per archetype run, then every row
-/// through that state. Falls back to re-resolving on a miss, so the order of
-/// the candidates only changes what it costs, never what it reads.
-fn rows_per_archetype(world: &World, candidates: &[Entity]) -> u64 {
-    let root = world.root_scope();
-    let mut sum = 0u64;
-    let mut cached = None;
-    let mut state = None;
-    for &entity in candidates {
-        let location = root.location(entity).expect("a candidate is alive");
-        if cached != Some(location.archetype()) {
-            cached = Some(location.archetype());
-            let archetype = root
-                .archetype(location.archetype())
-                .expect("a live entity's archetype exists");
-            state = <Resolve as Query>::matches(archetype)
-                .then(|| <Resolve as Query>::fetch_state(archetype));
-        }
-        let Some(state) = state.as_ref() else {
-            continue;
-        };
-        // SAFETY: as in `rows_per_entity`: the fixture world is not otherwise
-        // borrowed, and `Resolve` only reads.
-        let (pipeline, mesh, material) =
-            unsafe { <Resolve as Query>::fetch(*state, location.row()) };
-        sum += read(pipeline, mesh, material);
-    }
-    sum
-}
-
-/// One `Scope::query_one` per candidate: the shape a resolve pass takes when it
+/// One [`Scope::query_one`] per candidate: the shape a resolve pass takes when it
 /// looks each candidate up on its own.
 fn query_one_three(world: &World, candidates: &[Entity]) -> u64 {
     let root = world.root_scope();
@@ -307,11 +254,9 @@ fn access(c: &mut Criterion) {
         // to compare across sizes.
         group.throughput(Throughput::Elements(u64::from(count)));
 
-        let shapes: [(&str, Shape); 7] = [
+        let shapes: [(&str, Shape); 5] = [
             ("location", location),
-            ("states_per_entity", states_per_entity),
-            ("rows_per_entity", rows_per_entity),
-            ("rows_per_archetype", rows_per_archetype),
+            ("matched_per_entity", matched_per_entity),
             ("query_one_three", query_one_three),
             ("get_one", get_one),
             ("get_three", get_three),
@@ -328,8 +273,9 @@ fn access(c: &mut Criterion) {
     group.finish();
 }
 
-/// The grouped shape against the same work in an order that defeats the
-/// per-archetype cache.
+/// The entity-major shape against the same work in an order that defeats the
+/// entity table's cache, which is what makes the candidate order, rather than
+/// the shape, the thing being measured.
 fn grouping(c: &mut Criterion) {
     let count = COUNTS[COUNTS.len() - 1];
     let fixture = Fixture::new(count);
@@ -338,10 +284,13 @@ fn grouping(c: &mut Criterion) {
     group.sample_size(50);
     group.throughput(Throughput::Elements(u64::from(count)));
     group.bench_with_input(BenchmarkId::from_parameter("grouped"), &(), |b, ()| {
-        b.iter(|| black_box(rows_per_archetype(&fixture.world, &fixture.visible)));
+        b.iter(|| black_box(query_one_three(&fixture.world, &fixture.visible)));
     });
     group.bench_with_input(BenchmarkId::from_parameter("interleaved"), &(), |b, ()| {
-        b.iter(|| black_box(rows_per_archetype(&fixture.world, &fixture.interleaved)));
+        b.iter(|| black_box(query_one_three(&fixture.world, &fixture.interleaved)));
+    });
+    group.bench_with_input(BenchmarkId::from_parameter("archetype_major"), &(), |b, ()| {
+        b.iter(|| black_box(query(&fixture.world)));
     });
     group.finish();
 }

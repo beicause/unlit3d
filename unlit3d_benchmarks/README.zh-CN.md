@@ -42,22 +42,26 @@ Criterion 把报告写在 `target/criterion` 下，并把每次运行与上一�
 渲染器来解释。
 
 `ecs access` 组走一条阶梯，每一级都比上一级多出一次查找的一部分，因此逐实体的
-`World::get` 的开销可以被拆开看：
+`Scope::query_one` 的开销可以被拆开看：
 
 | 用例 | 多出的部分 |
 |------|------------|
 | `location` | 实体表的借用与元数据读取 |
-| `states_per_entity` | 在 archetype 中解析各组件的列——即 `TypeId` 查找与向下转型 |
-| `rows_per_entity` | 借用并读取每一行的 cell |
-| `rows_per_archetype` | 同样的读取，但列按 archetype 分组只解析一次 |
+| `matched_per_entity` | archetype 查找，以及判定它是否匹配查询的组件集测试 |
+| `query_one_three` | 在该 archetype 中解析查询的列并认领该行——即 `TypeId` 查找、向下转型与认领记账 |
 
-`get_one` 与 `get_three` 是逐实体一次和三次 `World::get`——resolve 阶段原先的形态——
-`query` 则是对整个 world 的遍历，用于对照规模。`ecs grouping` 组把分组形态与「同样的
-工作但顺序打乱、使按 archetype 的缓存失效」对比，因此被测量的是分组本身，而不是形态。
+`get_one` 与 `get_three` 是逐实体一次和三次 `Scope::query_one`——resolve 阶段原先的
+形态——`query` 则是对整个 world 的遍历，它按 archetype 只解析一次各组件的列，而不是
+逐实体解析一次。`ecs grouping` 组把逐实体形态与「同样的工作但顺序打乱、使实体表的缓存
+失效」以及按 archetype 的遍历对比，因此被测量的是顺序本身，而不是形态。
+
+在 100000 个实体时，这条阶梯读作 `location` 743 µs、`matched_per_entity` 1.51 ms、
+`query_one_three` 9.96 ms，而 `query` 只要 579 µs：开销落在逐实体的认领上，按 archetype
+的遍历比逐个实体单独查找便宜约 17 倍。
 
 ```text
 cargo bench -p unlit3d_benchmarks --bench ecs
-cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/rows_per_entity/100000'
+cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/query_one_three/100000'
 ```
 
 ## `profile` —— 时间花在哪

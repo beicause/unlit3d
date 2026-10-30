@@ -48,24 +48,31 @@ entity through exactly these shapes, and the difference between them is the
 ECS's to explain rather than the renderer's.
 
 The `ecs access` group walks a ladder, each rung adding one part of a lookup to
-the one before it, so what a per-entity `World::get` costs can be read apart:
+the one before it, so what a per-entity `Scope::query_one` costs can be read
+apart:
 
 | case | what it adds |
 |------|--------------|
 | `location` | the entity-table borrow and the metadata read |
-| `states_per_entity` | resolving each component's column in the archetype — the `TypeId` search and the downcast |
-| `rows_per_entity` | borrowing and reading each row's cell |
-| `rows_per_archetype` | the same reads, with the columns resolved once per archetype group |
+| `matched_per_entity` | the archetype lookup and the component-set test that decides whether it matches the query |
+| `query_one_three` | resolving the query's columns in that archetype and claiming the row — the `TypeId` search, the downcast, and the claim bookkeeping |
 
-`get_one` and `get_three` are one and three `World::get` calls per entity — the
-shape the resolve pass used to have — and `query` is a walk over the whole
-world, for scale. The `ecs grouping` group then runs the grouped shape against
-the same work in an order that defeats the per-archetype cache, which is what
-makes the grouping, rather than the shape, the thing being measured.
+`get_one` and `get_three` are one and three `Scope::query_one` calls per entity
+— the shape the resolve pass used to have — and `query` is a walk over the
+whole world, which resolves each component's column once per archetype instead
+of once per entity. The `ecs grouping` group then runs the per-entity shape
+against the same work in an order that defeats the entity table's cache and
+against the archetype-major walk, which is what makes the order, rather than
+the shape, the thing being measured.
+
+At 100,000 entities the ladder reads `location` 743 µs, `matched_per_entity`
+1.51 ms and `query_one_three` 9.96 ms, against `query`'s 579 µs: the claim per
+entity is what costs, and an archetype-major walk comes out about 17 times
+cheaper than looking each entity up on its own.
 
 ```text
 cargo bench -p unlit3d_benchmarks --bench ecs
-cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/rows_per_entity/100000'
+cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/query_one_three/100000'
 ```
 
 ## `profile` — where it went
