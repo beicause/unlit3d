@@ -22,7 +22,7 @@
 //! built, and the claims are released when it is dropped. Iterating it is
 //! [`crate::QueryBorrow::iter`].
 //!
-//! `~rust
+//! ```rust
 //! # use unlit_ecs::{Entity, Has, World, bundle};
 //! let mut world = World::new();
 //! world.root_scope_mut().spawn(bundle![1u32, 10.0f32]);
@@ -38,7 +38,7 @@
 //! for (entity, value, has_bool) in world.root_scope().query::<(Entity, &u32, Has<bool>)>().iter() {
 //!     println!("{entity:?} has {value}, and a bool: {has_bool}");
 //! }
-//! `~
+//! ```
 //!
 //! A query visits archetypes in creation order and rows in storage order, so
 //! iteration is deterministic. It skips the rows the scope cannot see and the
@@ -50,13 +50,13 @@
 //! # Queries of your own
 //!
 //! A row that carries more than a tuple impl covers, or one whose components are
-//! worth naming, is declared with the [`crate::query`] macro:
+//! worth naming, is declared with the [`crate::query!`] macro:
 //!
-//! `~rust
+//! ```rust
 //! # use unlit_ecs::{Entity, Has, World, bundle, query};
-//! struct Health(pub i32);
-//! struct Armor(pub i32);
-//! struct Mana(pub i32);
+//! pub struct Health(pub i32);
+//! pub struct Armor(pub i32);
+//! pub struct Mana(pub i32);
 //!
 //! query! {
 //!     /// Everything one combatant is made of.
@@ -78,7 +78,7 @@
 //!     assert!(row.has_armor);
 //!     assert!(row.mana.is_none());
 //! }
-//! `~
+//! ```
 //!
 //! The declaration is one row: the macro derives the item struct and the
 //! [`Query`] impl from it. No `unsafe` is involved on the caller's side, and
@@ -318,7 +318,7 @@ impl<'w> PlanBuilder<'w> {
 /// component lookup per archetype rather than one per row.
 ///
 /// The impls cover the forms listed in the [module documentation](self), and the
-/// [`crate::query`] macro derives this trait for a row of the caller's own.
+/// [`crate::query!`] macro derives this trait for a row of the caller's own.
 ///
 /// Implementing it by hand needs no `unsafe`: the plan is built through a
 /// [`PlanBuilder`], which claims the very columns it hands out.
@@ -535,7 +535,7 @@ impl_tuple!(
 /// knows, including a component set only known at run time, which a type-written
 /// query cannot name.
 ///
-/// `~rust
+/// ```rust
 /// # use unlit_ecs::{Archetype, World, bundle};
 /// let mut world = World::new();
 /// world.root_scope_mut().spawn(bundle![1u32, true]);
@@ -547,7 +547,7 @@ impl_tuple!(
 ///     .by(|archetype: &Archetype| !archetype.has::<bool>());
 /// let sum: u32 = query.iter().map(|value| *value).sum();
 /// assert_eq!(sum, 2);
-/// `~
+/// ```
 pub trait ArchetypeFilter {
     /// Whether entities of `archetype` belong to this query.
     fn accept(&self, archetype: &Archetype) -> bool;

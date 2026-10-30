@@ -4,10 +4,10 @@
 //! plan, and an impl with two bodies. This macro derives all of it from one
 //! declaration, so what the caller writes is the shape of one row:
 //!
-//! `~rust
+//! ```rust
 //! # use unlit_ecs::{Entity, Has, World, bundle, query};
-//! struct Health(pub i32);
-//! struct Armor(pub i32);
+//! pub struct Health(pub i32);
+//! pub struct Armor(pub i32);
 //!
 //! query! {
 //!     /// One combatant, as the combat pass reads it.
@@ -26,7 +26,7 @@
 //! }
 //!
 //! assert_eq!(world.root_scope().query_one::<&Health>(entity).unwrap().get().0, 8);
-//! `~
+//! ```
 //!
 //! The lifetime is nominal: the items a query yields borrow from the holder,
 //! never from the declaration, so `Combatant`, `Combatant<'static>` and
@@ -55,7 +55,7 @@
 
 /// Declare a query from the shape of one row.
 ///
-/// See the [module documentation](self) for the fields it accepts.
+/// See the [module documentation](mod@crate::query) for the fields it accepts.
 #[macro_export]
 macro_rules! query {
     (

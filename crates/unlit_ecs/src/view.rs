@@ -78,7 +78,7 @@ impl<'w> Scope<'w> {
     /// Iterate the visible entities that match `Q`.
     ///
     /// The query is a type, so which components to hand out and which
-    /// archetypes to visit are written in the turbofish. See [`crate::query`]
+    /// archetypes to visit are written in the turbofish. See [`mod@crate::query`]
     /// for the items a query is made of.
     ///
     /// ````rust
