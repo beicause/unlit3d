@@ -1,7 +1,7 @@
 
 ## 编码约定
 
-- **项目依然在极早期开发阶段，不怕兼容性破坏**，注重架构和API设计，不怕影响全仓库的大重构，不怕破坏已有API，没用的API要及时删掉。
+- **项目依然在极早期开发阶段，不怕兼容性破坏**，注重代码质量、解法的干净程度、架构和API设计，不怕影响全仓库的大重构，不怕破坏已有API，没用的API要及时删掉。
 - **慎重考虑添加简短的包装函数/帮助函数/getter、setter 函数**。倾向于不添加的情况：
   1. 能通过暴露结构体字段或调用其他更广义的函数实现同等功能，如暴露Vec、暴露更通用统一的函数，而不是添加 push、extend 等函数、添加功能子集函数。
   2. 该函数或功能不常用，节省不了几行代码。
@@ -13,11 +13,11 @@
 - **字节转换统一走 zerocopy**。
 - **可执行程序（`[[bin]]`/`[[example]]`）的名字用连字符（`-`）连接**，包名与库名保持下划线。
 - **单元测试和集成测试**：对于较复杂、易错的函数逻辑要添加单元测试，对于各个库的功能添加集成测试，对于整体渲染的正确性添加快照测试。具体测试所在目录参见根目录 [`README.md`](./README.md) 的「测试与基准」一节。对于发现的bug或回归问题，要告知用户，并尽可能添加针对性测试。
-- **绕开驱动/后端 bug 时，要在绊到它的那一处绕，并把原因记下来**：症状、成因、绕法与代价写进根目录的 [`WORKAROUND.md`](./WORKAROUND.md)（中文版 [`WORKAROUND.zh-CN.md`](./WORKAROUND.zh-CN.md)），绕过代码旁留一行注释指回该文档。不得靠放宽快照阈值、重存快照或跳过测试把后端差异掩盖过去。
+- **绕开驱动/后端 bug 时，要在绊到它的那一处绕，并把原因记下来**：症状、成因、绕法与代价写进根目录的 [`WORKAROUND.md`](./WORKAROUND.md)（中文版 [`WORKAROUND.zh-CN.md`](./WORKAROUND.zh-CN.md)），绕过代码旁留一行注释指回该文档。
 
 ## Git 工作流
 
-- **主分支（`main`）保持线性历史，不要有 merge commit**。合入改动用 `git cherry-pick`、`git rebase` 或 `git merge --squash`，不要用 `git merge`。
+- **主分支（`main`）保持线性历史，不要有 merge commit**。合入改动用 `git cherry-pick`、`git rebase`、`git merge --ff-only` 或 `git merge --squash`，不要用 `git merge`。
 
 ## 提交信息格式约定
 
@@ -57,7 +57,7 @@
 - **测试生成的二进制快照文件一律放`unlit3d_asset_files`子模块中**。
 - **快照不匹配的帧写在 `target/` 下，每一趟各占一个目录**：`cargo xtask test` 的默认档位在 `target/snapshot-mismatches`，`UNLIT3D_DEVICE_TIER=webgl2` 那趟在 `target/snapshot-mismatches-webgl2`，`cargo xtask test-wasm` 在 `target/snapshot-mismatches-wasm`。单独跑测试时，目录由 `UNLIT3D_SNAPSHOT_MISMATCH_DIR` 指定，未设置则用 `target/snapshot-mismatches`。
 - **调试 examples 时，可以用 unlit3d-mcp 技能，绝不用截屏软件**。
-- **跑测试用 `cargo nextest run`，不用 `cargo test`**。唯一例外是 doctest：nextest 不跑 doctest，那部分只能用 `cargo test --doc`，而 `cargo xtask test` 已经把两者都包了。
+- **跑测试用 `cargo nextest run`，不用 `cargo test`**。`nextest`比`test`更快，输出格式更友好。唯一例外是`cargo test --doc`，因为 `nextest` 不跑 doctest。`cargo xtask test`快捷命令会跑 nextest 和 doctest 两者。
 - **本地跑 cargo 时，不用设 RUSTFLAGS**，遵循本地 cargo 配置即可，不要照抄 CI 设置 RUSTFLAGS `debuginfo=0`，设置它会让编译缓存失效。
 - **常用命令见 `cargo xtask --help`**，以及 `xtask` 包目录的 [`README.md`](./xtask/README.md)。
 - **优化二进制程序编译/链接的时间和空间**：本库为编译时间和产物磁盘占用做以下优化：
