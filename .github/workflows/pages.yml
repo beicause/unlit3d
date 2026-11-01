@@ -89,7 +89,7 @@ jobs:
           cache-bin: false
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.23.0
+        uses: cargo-bins/cargo-binstall@v1.26.1
 
       # `wasm-bindgen` reads the crate's metadata, so the CLI has to be the
       # same version the crate was compiled against. `Cargo.lock` is committed
