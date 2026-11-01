@@ -128,6 +128,7 @@ world root                              the root scope sees every entity
 │   │   ├── Camera
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
+│   ├── Source(LineSource)                    strokes, over the meshes already drawn
 │   └── Source(UiSource)
 │       └── UiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
@@ -311,7 +312,8 @@ to the per-instance vertex stream the family owns and declares (see
 [The lit pipeline](#the-lit-pipeline)). Other
 components: [`Transform`](components::Transform), [`Camera`](components::Camera),
 [`RenderLoadOps`](components::RenderLoadOps),
-[`InstanceColor`](lit::InstanceColor),
+[`InstanceColor`](lit::InstanceColor), [`InstanceCutoff`](lit::InstanceCutoff),
+[`InstanceHullWidth`](lit::InstanceHullWidth),
 [`InstanceVisibility`](components::InstanceVisibility) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
 
@@ -445,8 +447,11 @@ through the same public builders. See
 - The variant follows the mesh: whether its position, UV, color and normal channels are
   present, whether they arrive compressed, whether it is skinned or morphed, and
   whether a material is bound — plus the caller's policy and the frame's target.
-  The five per-instance fields (transform, color, joint base, morph base,
-  metadata index) are always bound rather than switched off one by one.
+  The per-instance fields (transform, color, joint base, morph base, metadata
+  index) are always bound rather than switched off one by one; the two a variant
+  reads only in a mode it may not be in — the alpha cutoff and the hull width —
+  are declared when that mode is on, since a vertex attribute the stage never
+  reads is what the validation layers complain about.
 - Joint matrices and morph weights are **not** in the mesh's bind group. Meshes
   and instances are many-to-one: the same mesh can be drawn by several entities,
   and each entity's pose usually differs. A bind group is bound per mesh and
@@ -498,6 +503,36 @@ shared — and the flag decides one thing: whether the fragment stage adds up th
 frame's lights. A lit draw, the default, reads the light arrays and the cluster
 uniform; an unlit one declares none of those bindings and returns its albedo.
 There is still no prepass, no shadow map, and no compute pass.
+
+### Outlines
+
+Two ways of drawing a line around a shape are built in, and they answer
+different questions:
+
+- [`LineSource`](line::LineSource) draws **strokes**: a list of segment records,
+  each with its two endpoints in world space, a colour at each end, a half width
+  and whether either end is rounded. Each segment becomes one instance; the
+  vertex stage expands it into a screen-space quadrilateral of the width it
+  carries, and the fragment stage covers it with a capsule's distance field, so
+  the edge is smooth whatever the width. The width is in **physical pixels**,
+  which is the whole point: a stroke near the camera and the same stroke far
+  away are the same weight, where a width in world units narrows with distance.
+  It is an ordinary [`FrameSource`](source::FrameSource) — a world's strokes are
+  whatever its `segments` hold this frame — and it declares
+  [`FrameSourceOrder::LINE`](source::FrameSourceOrder::LINE), after the mesh
+  source: it tests depth but writes none, so the bodies must already be in the
+  depth buffer for a stroke behind one to be hidden.
+- The inverted hull, [`LitOptions::inverted_hull`](unlit_wgpu::pipeline::LitOptions::inverted_hull),
+  draws a **band** around a body: the same mesh drawn a second time, spread
+  along its own normals with its front faces culled. The width is in **world
+  units** and comes from the instance, so it narrows with distance. It is a
+  variant of the lit family rather than a source of its own, so the two draws
+  share the mesh's buffers and land in one pass; see
+  [`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.md#inked-outlines-the-inverted-hull)
+  for how it is put together. The layers above it are just components: an
+  entity with a mesh, the hull pipeline and an
+  [`InstanceHullWidth`](lit::InstanceHullWidth) is a body with a band, and the
+  body itself is the same mesh under the ordinary lit pipeline.
 
 ### Lights and shading
 

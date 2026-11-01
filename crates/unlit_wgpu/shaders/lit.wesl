@@ -24,7 +24,8 @@
 //                        base color
 //   VERTEX_NORMAL        read a per-vertex normal, octahedral-encoded into
 //                        two `snorm16` lanes; a lit variant shades with it,
-//                        the unlit color does not
+//                        an expanding one pushes the vertex along it, and the
+//                        unlit color does neither
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
 //   SRGB_TO_LINEAR_OUTPUT  the fragment's color values are sRGB-encoded and
 //                        the target expects linear values, so convert the
@@ -46,6 +47,10 @@
 //                        luminance from sRGB
 //   ALPHA_CUTOFF         discard a fragment whose alpha is below the
 //                        instance's cutoff
+//   EXPANDED             push each vertex out along its normal by the
+//                        instance's hull width, which is what turns a mesh
+//                        into the shell an inverted-hull outline draws behind
+//                        it; requires VERTEX_NORMAL
 //   LIT                  shade the fragment with the frame's lights: read the
 //                        cell the fragment's NDC and view depth identify,
 //                        walk its cell and add each light to the ambient term
@@ -87,6 +92,7 @@
 //                      + Uint32 metadata index
 //                      + Float32 alpha cutoff         [ALPHA_CUTOFF]
 //                      + Uint32 morph base
+//                      + Float32 hull width           [EXPANDED]
 //                      stepped per instance
 //
 // Every array the shader reads is frame-wide and lives in the global group, so
@@ -187,6 +193,10 @@ struct VertexInput {
     /// Per-instance morph-weight base, Uint32: the instance's first weight in
     /// the frame's shared array.
     @location(12) morph_base: u32,
+
+    /// Per-instance hull width, Float32: how far the vertex is pushed out
+    /// along its normal, in world units.
+    @if(EXPANDED) @location(14) hull_width: f32,
 }
 
 struct VertexOut {
@@ -356,6 +366,20 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     // position, the world position the lights are addressed from, the normal and
     // the cluster cell -- follows the displaced vertex.
     var world = transform_point(in.model_0, in.model_1, in.model_2, local);
+
+    // A hull is the same mesh, a little larger, so that what pokes out past the
+    // mesh drawn over it reads as a line around it. The widening is along the
+    // world-space normal and measured in world units, which keeps an outline
+    // the same thickness however the instance scales its mesh.
+    @if(EXPANDED) {
+        let outward = transform_vector(
+            in.model_0,
+            in.model_1,
+            in.model_2,
+            mesh_compression::decode_normal(in.normal),
+        );
+        world += normalize(outward) * in.hull_width;
+    }
     // unlit_wgpu::hook vertex
 
     var out: VertexOut;

@@ -43,6 +43,10 @@
   先写入多个切片，再一次性上传到 GPU。
 - `staging` —— 跨帧复用的 host 可见 staging 缓冲，而不是每次上传都让
   `queue.write_buffer` 新分配一个。
+- `globals` —— 每条管线都绑定的两个 uniform：`View`，即 clip-from-world 与
+  view-from-world 矩阵、眼点位置，以及绘制所适配的视口在物理像素下的尺寸（着色器
+  要把长度换算成像素就除以它；它是视口自身的尺寸而非渲染目标的尺寸，因此被加了黑边的
+  pass 量的是它实际画进去的那块）；以及 `Globals`，即本帧的时刻、增量与帧序号。
 - `instance_stream` —— 按需增长、经 staging 池上传记录的逐实例顶点缓冲。调用者
   自己的管线每个家族用一个，因此逐实例状态无需内置着色器给出任何特权。
 - `texel_array` —— 定长元素的平坦数组，既可以绑定为一个 storage buffer，也可以在
@@ -434,7 +438,9 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 额外加入内置入口着色器，由 `pipeline::SpecializedLitPipeline` 把它与一次绘制解析出的
 `pipeline::LitVariant` 组合起来。一份入口着色器覆盖所有内置变体，lit 的也在内：
 差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
-绑定与顶点属性。
+绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读的正是
+lit 着色器所读的那个 `View`，此外什么都不读，于是 `unlit3d` 的 `LineSource` 拿它对着
+这个包组合，并只绑定一个组。
 
 若要编写自己的着色器，有两条路。最近的一条是
 `pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段顶层、一段顶点、
@@ -620,6 +626,18 @@ for draw in scene.draws {
 </details>
 
 它的选项就是这个家族自己的选项，上层的 `LitPipelineKey` 只是把这些选项放在一个自己的类型下——正是一个 source 能同时画受光与无光网格的原因。
+
+### 墨线描边：翻转外壳
+
+[`LitOptions::inverted_hull`](pipeline::LitOptions::inverted_hull) 就是一组这样的选项，而不是一条自己的管线；它画的是水墨画沿轮廓勾出的那道带子。它是同一家族的变体，因此受光变体拥有的一切它都共用——网格、顶点流、实例记录、网格分配器，以及解析出它来的那个家族。
+
+它改的是一个 flag 以及环绕这个 flag 的状态。[`expanded`](pipeline::LitOptions::expanded) 在顶点变换到裁剪空间之前，沿顶点自己的法线把它推出实例所携带的那个宽度；正面被剔除，于是被推出去的那一份只剩探出本体轮廓的部分；深度写入关掉，于是带子永远不会遮挡它围住的本体。它是无光的，这正是带子呈现为一抹平涂墨色而非受光表面的原因。
+
+所以画面就是两个实体画同一个 `GpuMesh`——本体用 [`LitOptions::standard`](pipeline::LitOptions::standard)，外壳用 [`inverted_hull`](pipeline::LitOptions::inverted_hull)——在同一个 pass 里，共享同一个缓冲与同一次绘制。不需要第二个 pass，不需要第二份网格，也不需要模板技巧：外壳只填在本体自身轮廓够不到的地方，这是两次绘制与剔除共同的结果，而不是它们先后次序的结果。
+
+宽度是逐实例的——[`MeshInstance::hull_width`](mesh::MeshInstance::hull_width)，上层若有 [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md) 组件就填它，没有就填零——因为带宽属于实体而不属于管线：一份网格被多个实体绘制时，管线仍是一条，宽度却各有各的。它是**世界单位**下的宽度，所以离相机更远的本体带子更细。如果带宽必须在像素上保持不变，那属于屏幕空间笔画，由 [`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md) 绘制；两者互补，示例的 [`outline`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md) 场景把两者画在同一张图里。
+
+外扩变体需要网格的法线通道：顶点要沿法线推出，没有法线的网格根本推不动。这一点在组合变体时就断言，而不是留给它去画成别的样子，因为这里没有回退可言——受光绘制所回退到的屏幕空间导数是片元阶段的事，而推出发生在顶点变换之前。同一份无法线的网格做受光绘制则没有问题：它逐片元导出法线。
 
 ### 读取本帧的数组：storage buffer 还是 texel
 

@@ -260,8 +260,8 @@ pub struct MeshMetadata {
 }
 
 /// One per-instance record: the affine model matrix, base color, pose bases,
-/// metadata index and alpha cutoff the built-in pipeline reads from its
-/// per-instance vertex buffer.
+/// metadata index, alpha cutoff and inverted-hull width the built-in pipeline
+/// reads from its per-instance vertex buffer.
 ///
 /// This is the vertex stream of `lit.wesl`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
@@ -318,6 +318,17 @@ pub struct MeshInstance {
     pub cutoff: f32,
     /// This instance's first morph weight in the frame's shared weight array.
     pub morph_base: u32,
+    /// How far this instance's vertices are pushed out along their normals, in
+    /// world units.
+    ///
+    /// Zero for an instance that draws the mesh as itself, which is every
+    /// instance that is not an
+    /// [inverted hull](crate::pipeline::LitOptions::inverted_hull). The width
+    /// is per-instance rather than a uniform because one mesh drawn twice —
+    /// once as itself, once as the shell behind it — needs two widths from one
+    /// pipeline, and because two shells of one mesh may be drawn at different
+    /// thicknesses.
+    pub hull_width: f32,
 }
 
 impl MeshInstance {
@@ -325,8 +336,8 @@ impl MeshInstance {
     ///
     /// The color is quantized to the `Unorm8x4` the instance stream carries, so
     /// a component outside `0..=1` saturates rather than wrapping. The instance
-    /// reads no pose data, no metadata and no alpha cutoff; point it at them
-    /// with the `with_*` setters.
+    /// reads no pose data, no metadata, no alpha cutoff and expands by no
+    /// hull; point it at them with the `with_*` setters.
     pub fn new(world_from_local: glam::Affine3A, base_color: glam::Vec4) -> Self {
         let linear = world_from_local.matrix3;
         let translation = world_from_local.translation;
@@ -341,6 +352,7 @@ impl MeshInstance {
             metadata_index: 0,
             cutoff: 0.0,
             morph_base: 0,
+            hull_width: 0.0,
         }
     }
 
@@ -379,6 +391,13 @@ impl MeshInstance {
     #[must_use]
     pub fn with_cutoff(mut self, cutoff: f32) -> Self {
         self.cutoff = cutoff;
+        self
+    }
+
+    /// Push this instance's vertices out along their normals by `hull_width`.
+    #[must_use]
+    pub fn with_hull_width(mut self, hull_width: f32) -> Self {
+        self.hull_width = hull_width;
         self
     }
 }

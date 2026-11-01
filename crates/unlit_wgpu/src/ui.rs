@@ -167,6 +167,9 @@ pub fn screen_view(viewport_points: [f32; 2]) -> View {
         ]),
         glam::Vec3::ZERO,
     )
+    // The clipping is in points, so the size a shader measures against is the
+    // point size too: that is what keeps the two in one unit.
+    .with_viewport_size(width, height)
 }
 
 /// The pipeline variant a UI is drawn with.

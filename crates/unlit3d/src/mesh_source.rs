@@ -1583,11 +1583,20 @@ impl FrameSource for MeshSource {
             }
             self.upload_globals(world, encoder);
 
+            // The viewport the pass draws through, or the whole attachment
+            // when it draws through all of it: either way it is the region a
+            // shader measuring in pixels has to divide by.
+            let (viewport_width, viewport_height) = info
+                .viewport
+                .map_or((info.width as f32, info.height as f32), |viewport| {
+                    (viewport.width, viewport.height)
+                });
             let view = View::new(
                 camera.view_from_world,
                 camera.clip_from_view,
                 camera.position(),
-            );
+            )
+            .with_viewport_size(viewport_width, viewport_height);
             self.upload_camera(world, encoder, &view);
         }
 

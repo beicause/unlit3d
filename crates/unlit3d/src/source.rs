@@ -45,6 +45,12 @@ pub struct FrameSourceOrder(pub i32);
 impl FrameSourceOrder {
     /// The built-in mesh source's order.
     pub const MESH: Self = Self(0);
+    /// The order of lines drawn over the meshes.
+    ///
+    /// A line tests against the depth the meshes wrote and writes none of its
+    /// own, so it belongs after them in the same pass: recording it with the
+    /// meshes would let a mesh drawn later paint over a line in front of it.
+    pub const LINE: Self = Self(50);
     /// A source that composes over the meshes, such as the UI.
     pub const UI: Self = Self(100);
 }

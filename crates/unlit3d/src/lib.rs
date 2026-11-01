@@ -14,6 +14,11 @@ pub mod gltf;
 pub mod input;
 /// The frame's lights, and the clustering a lit frame does of them.
 pub mod light;
+/// Screen-space line segments drawn as coverage.
+///
+/// A line is not a mesh: its width is a pixel count, so its quad is derived in
+/// the vertex stage from the projected ends rather than from a vertex buffer.
+pub mod line;
 /// The built-in lit pipeline: the shader, the family it registers and the
 /// meshes it draws.
 pub mod lit;
@@ -49,7 +54,8 @@ pub mod prelude {
         PointLight, QuadLight, SpotLight,
     };
     pub use crate::lit::{
-        InstanceColor, InstanceCutoff, LitInstance, LitMeshDesc, LitPipelineKey, MeshSourceLitExt,
+        InstanceColor, InstanceCutoff, InstanceHullWidth, LitInstance, LitMeshDesc, LitPipelineKey,
+        MeshSourceLitExt,
     };
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};
@@ -73,6 +79,7 @@ pub mod prelude {
             PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit, dispatch_input,
             distribute_input, refresh_input, subscribe_input,
         },
+        line::{LineSegment, LineSource},
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,
         pass::{FramePass, FramePassOrder, Pass, PassInfo},

@@ -32,6 +32,7 @@ Scenes:
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent            translucent panes composited back to front over opaque cubes
   custom_pipeline        a caller-registered sky family and particle family
+  outline                inverted-hull bands beside screen-space strokes
 ```
 
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
@@ -49,7 +50,15 @@ family。天空 family 从当帧相机重建视线方向，采样一张程序化
 每个精灵的动画由一个示例自己推进的时钟驱动。两者的网格都不带任何顶点属性——天空的三个
 顶点与每个粒子的六个顶点都来自顶点索引——因此这个场景检验的正是：调用方可以拥有自己的
 管线、绑定组、顶点布局与实例流，同时仍能读到当帧相机。它也是示例里最长的动画场景，
-绕行八帧。场景全部用公开的 `unlit3d` API 构建——
+绕行八帧。
+
+`outline` 是第四个例外：它画出库提供的两种线条，并让同一张图替两者说话。三个本体戴着
+翻转外壳的带子——每一个都是同一份 mesh 从一个缓冲画两遍，先受光着色，再沿自身法线外扩
+并剔除正面——所以带宽是世界单位，站得更靠后的本体带子更细。旁边由 `LineSource` 把轨道
+与刻度画成屏幕空间笔画，宽度以物理像素计，于是环从近端到远端粗细不变。两者同框，因为
+单看任何一个都看不出另一个是做什么用的。五个本体里有两个完全不带顶点法线，走屏幕空间
+导数的回退照常受光，因此这一帧同时覆盖两条法线路径——外壳所需的烘焙法线，以及无法线
+通道的网格所回退到的导出法线。场景全部用公开的 `unlit3d` API 构建——
 示例没有任何一处触碰到 crate 的内部实现。
 
 ## 运行方式

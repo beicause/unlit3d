@@ -34,6 +34,23 @@ pub struct View {
     pub view_from_world: glam::Mat4,
     /// World-space eye position; `w` is padding by convention (write `1.0`).
     pub camera_position: glam::Vec4,
+    /// The region of the target this view's clip space is stretched across, in
+    /// physical pixels.
+    ///
+    /// A shader that measures in pixels — a constant-width line, a pixel-sized
+    /// billboard, a screen-space projection — needs this to turn a pixel count
+    /// into clip space: one pixel is `2 / viewport_size` on each axis. It is
+    /// the viewport rather than the attachment's size because a letterboxed
+    /// view stretches its clip space across the smaller rectangle, so a width
+    /// measured against the attachment would shrink along with the picture.
+    ///
+    /// Zero for a caller that never set it, which no pixel measurement can
+    /// divide by; such a caller does not read it.
+    pub viewport_size: glam::Vec2,
+    /// Explicit tail padding: the WGSL struct size rounds up to its mat4
+    /// alignment, and a record with implicit padding could not be written out
+    /// as bytes.
+    pub pad0: glam::Vec2,
 }
 
 impl View {
@@ -51,6 +68,8 @@ impl View {
             clip_from_world: clip_from_view * view_from_world,
             view_from_world,
             camera_position: camera_position.extend(1.0),
+            viewport_size: glam::Vec2::ZERO,
+            pad0: glam::Vec2::ZERO,
         }
     }
 
@@ -65,7 +84,20 @@ impl View {
             clip_from_world,
             view_from_world: glam::Mat4::IDENTITY,
             camera_position: camera_position.extend(1.0),
+            viewport_size: glam::Vec2::ZERO,
+            pad0: glam::Vec2::ZERO,
         }
+    }
+
+    /// Same view with its viewport region set to `width` x `height` pixels.
+    ///
+    /// This is the size a shader measuring in pixels reads; a builder rather
+    /// than a parameter of the constructors because a view whose pixels are
+    /// never measured leaves it zero.
+    #[must_use]
+    pub fn with_viewport_size(mut self, width: f32, height: f32) -> Self {
+        self.viewport_size = glam::Vec2::new(width, height);
+        self
     }
 }
 

@@ -26,6 +26,7 @@ pub mod lit_clusters;
 pub mod mesh_and_ui;
 pub mod mesh_topologies;
 pub mod morphed;
+pub mod outline;
 pub mod skinned;
 pub mod spin_cube;
 pub mod transparent;
@@ -162,6 +163,7 @@ pub static SCENES: &[&SceneDef] = &[
     &mesh_topologies::SCENE,
     &transparent::SCENE,
     &custom_pipeline::SCENE,
+    &outline::SCENE,
 ];
 
 /// The scene whose id is `id`, if any.

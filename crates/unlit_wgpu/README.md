@@ -60,6 +60,12 @@ checks that combination separately.
   one upload reaches the GPU.
 - [`staging`] — host-visible staging buffers reused across frames instead of a
   fresh `queue.write_buffer` allocation per upload.
+- [`globals`] — the two uniforms every pipeline binds: [`View`](globals::View),
+  the clip-from-world and view-from-world matrices, the eye position and the
+  size of the viewport the draw is fitted to in physical pixels (a shader
+  turning a length into pixels divides by it, and it is the viewport's own size
+  rather than the target's, so a letterboxed pass measures what it draws into);
+  and [`Globals`](globals::Globals), the frame's time, delta and index.
 - [`instance_stream`] — a per-instance vertex buffer that grows as needed and
   uploads its records through the staging pool. A caller's own pipeline uses one
   per family, so per-instance state needs no privilege from the built-in shader.
@@ -463,7 +469,11 @@ caller binds (`globals`, `view`, `mesh_metadata`, the `mesh_compression`
 decode functions and — under `lit` — the light records, the cluster uniform and
 the polygon form factor); the `lit` feature adds the built-in entry shader,
 which `SpecializedLitPipeline` composes with the
-[`LitVariant`](pipeline::LitVariant) a draw resolves. One entry shader
+[`LitVariant`](pipeline::LitVariant) a draw resolves. The package also carries
+`line`, the entry shader a screen-space stroke is drawn with; it reads the same
+[`View`](globals::View) the lit shader does and nothing else, so
+[`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
+`LineSource` composes it against the package and binds one group. One entry shader
 covers every built-in variant, lit ones included: the differences are WESL
 conditional-compilation flags, so each composed variant holds one code path and
 declares only the bindings and attributes it uses.
@@ -744,6 +754,47 @@ view direction.
 Its options are the family's own, and the higher layer's `LitPipelineKey` is
 those options under a type of its own — which is what lets one source draw lit
 and unlit meshes alike.
+
+### Inked outlines: the inverted hull
+
+[`LitOptions::inverted_hull`](pipeline::LitOptions::inverted_hull) is one such
+set of options rather than a pipeline of its own, and it draws the band an
+ink drawing puts around a silhouette. It is a variant of the same family, so it
+shares everything the lit one has — the mesh, the vertex streams, the instance
+record, the mesh allocator, the family that resolves it.
+
+What it changes is one flag and the state around it. [`expanded`](pipeline::LitOptions::expanded)
+pushes each vertex along its own normal before the vertex is transformed to clip
+space, by the width the instance carries; the front faces are culled, so of the
+pushed-out copy only the part that reaches past the body is left; and the depth
+is written off, so the band never occludes the body it surrounds. It is unlit,
+which is what makes the band a flat ink colour rather than a shaded surface.
+
+The picture is therefore two entities drawing one `GpuMesh` —
+the body with [`LitOptions::standard`](pipeline::LitOptions::standard), the
+shell with [`inverted_hull`](pipeline::LitOptions::inverted_hull) — in one pass,
+sharing one buffer and one draw. No second pass, no second mesh, no stencil
+trick: the shell only fills where the body's own silhouette does not reach,
+which is a consequence of the two draws and the culling, not of their order.
+
+The width is per instance — [`MeshInstance::hull_width`](mesh::MeshInstance::hull_width),
+which the layer above fills from an [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)
+component if it is there and zero otherwise — because the band's width belongs
+to the entity and not to the pipeline: one mesh drawn by several entities keeps
+one pipeline and several widths. It is a width **in world units**, so a body
+further from the camera wears a thinner band. A band that must hold its width in
+pixels instead is a screen-space stroke, which is what
+[`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)
+draws; the two are complements, and both are in one picture in the example's
+[`outline`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md)
+scene.
+
+An expanding variant needs the mesh's normal channel: the vertex is pushed along
+a normal, so a mesh without one cannot be spread at all. That is asserted while
+the variant composes rather than left to draw something else, because there is
+no fallback here — the screen-space derivative a lit draw falls back to lives in
+the fragment stage, and the push happens before the vertex is transformed. A lit
+draw of the same normal-less mesh is fine: it derives its normals per fragment.
 
 ### Reading the frame's arrays: storage buffers or texels
 

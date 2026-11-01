@@ -45,6 +45,7 @@ use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
+use unlit_wgpu::staging::StagingBuffer;
 use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, ui_variant};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
@@ -123,6 +124,9 @@ struct Gpu {
     camera: wgpu::Buffer,
     /// The frame-globals uniform.
     globals: wgpu::Buffer,
+    /// The staging buffer the two uniforms are rewritten through, so a steady
+    /// frame allocates nothing and the copies join the frame's own encoder.
+    staging: StagingBuffer,
     /// Uploads egui's textures and geometry and records its draws.
     ///
     /// It holds the bind group binding the two uniforms, which is what keeps
@@ -290,6 +294,7 @@ impl UiSource {
             gpu: Gpu {
                 camera,
                 globals,
+                staging: StagingBuffer::new(),
                 integration: EguiIntegration::new(device, group_id, pipeline),
             },
         });
@@ -489,17 +494,25 @@ impl FrameSource for UiSource {
         // The UI's own camera: `screen_view` maps egui's points onto clip
         // space, and its frame globals stay at their defaults — nothing the UI
         // draws reads the frame clock.
-        queue.write_buffer(
+        gpu.staging.write(
+            &device,
+            encoder,
             &gpu.camera,
             0,
             screen_view(screen.size_in_points()).as_bytes(),
         );
-        queue.write_buffer(&gpu.globals, 0, Globals::default().as_bytes());
+        gpu.staging.write(
+            &device,
+            encoder,
+            &gpu.globals,
+            0,
+            Globals::default().as_bytes(),
+        );
 
-        // The frame's one rebuild pass: the uniform writes and the textures the
-        // integration just uploaded marked their readers dirty, and the scene
-        // assembled below reads the rebuilt groups. The graph borrow is given
-        // up first, because the scope takes it again to run the pass.
+        // The frame's one rebuild pass: the textures the integration just
+        // uploaded marked their readers dirty, and the scene assembled below
+        // reads the rebuilt groups. The graph borrow is given up first, because
+        // the scope takes it again to run the pass.
         drop(graph_holder);
         drop(maintain);
         let mut graph_holder = ctx.graph(scope);
@@ -553,7 +566,8 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
     });
 }
 
-/// A uniform buffer of `size` bytes, written through the queue.
+/// A uniform buffer of `size` bytes, rewritten through the source's staging
+/// buffer every frame.
 fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),

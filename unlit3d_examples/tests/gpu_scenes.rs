@@ -149,6 +149,27 @@ const LIT_TOLERANCE: Tolerance = Tolerance {
     channel_delta: 8,
 };
 
+/// The tolerance the outline scene is judged with.
+///
+/// This is [`SCENE_TOLERANCE`] with a looser outlier bound, for the reason
+/// [`LIT_TOLERANCE`] has one: the scene is all thin features — a band a few
+/// pixels wide around each sphere, and strokes a couple of pixels wide with an
+/// anti-aliased edge on each side. Every one of them is a partial coverage a
+/// rasterizer resolves differently from another, so the scatter is spread along
+/// every outline in the frame instead of a few edges, and the strokes make it
+/// wider than a mesh scene's: a stroke is drawn in screen space, so a pixel of
+/// disagreement about it is a pixel of disagreement about its whole length.
+///
+/// The score bound stays where the other scenes have it: a regression here —
+/// dropping the spread, keeping the front faces, or losing the strokes — changes
+/// whole regions rather than their edges, which fails the score long before it
+/// reaches the outlier bound.
+const OUTLINE_TOLERANCE: Tolerance = Tolerance {
+    min_score: Some(75.0),
+    max_outliers: Some(0.01),
+    channel_delta: 8,
+};
+
 /// The tolerance the letterbox comparison is judged with.
 ///
 /// This is [`UI_TOLERANCE`] with a lower score bound, for a reason the other
@@ -453,6 +474,24 @@ async fn lit_clusters_matches_its_snapshot() {
     .await;
 }
 
+/// The scene that draws outlines by both of the ways this library draws them.
+///
+/// A body is one mesh drawn twice — lit, and again spread along its normals
+/// with its faces culled — while its orbit and ticks are screen-space strokes.
+/// So the frame fails if the expanding variant stops spreading, if it stops
+/// culling the faces the body draws, if the band stops being a width in world
+/// units, or if a stroke stops being a width in pixels. It is also the one
+/// capture that mixes the two source kinds in one pass: a camera the strokes
+/// could not reach would leave the orbit out of it.
+async fn outline_matches_its_snapshot() {
+    compare_scene(
+        &scenes::outline::SCENE,
+        OUTLINE_TOLERANCE,
+        &snapshots!["outline.webp"],
+    )
+    .await;
+}
+
 async fn mesh_topologies_matches_its_snapshot() {
     compare_scene(
         &scenes::mesh_topologies::SCENE,
@@ -561,6 +600,7 @@ gpu_tests! {
     transparent_matches_its_snapshot,
     lit_matches_its_snapshot,
     lit_clusters_matches_its_snapshot,
+    outline_matches_its_snapshot,
     mesh_topologies_matches_its_snapshot,
     custom_pipeline_matches_its_snapshots,
     custom_pipeline_animates_between_frames,

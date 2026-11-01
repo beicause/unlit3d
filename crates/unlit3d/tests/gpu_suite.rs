@@ -32,8 +32,12 @@ mod gltf_scene;
 mod gpu_ecs;
 #[path = "gpu_ui_source.rs"]
 mod gpu_ui_source;
+#[path = "inverted_hull.rs"]
+mod inverted_hull;
 #[path = "letterbox.rs"]
 mod letterbox;
+#[path = "line_source.rs"]
+mod line_source;
 #[path = "lit_scene.rs"]
 mod lit_scene;
 #[path = "mcp_server/main.rs"]
@@ -53,7 +57,9 @@ unlit_wgpu_test_util::gpu_test_main!(
         gltf_scene::all_tests(),
         gpu_ecs::all_tests(),
         gpu_ui_source::all_tests(),
+        inverted_hull::all_tests(),
         letterbox::all_tests(),
+        line_source::all_tests(),
         lit_scene::all_tests(),
         mcp_server::all_tests(),
         morphed_scene::all_tests(),

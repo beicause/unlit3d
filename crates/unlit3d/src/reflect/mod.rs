@@ -96,6 +96,10 @@ mod tests {
             crate::lit::InstanceCutoff::SHAPE.type_identifier,
             "InstanceCutoff"
         );
+        assert_eq!(
+            crate::lit::InstanceHullWidth::SHAPE.type_identifier,
+            "InstanceHullWidth"
+        );
     }
 
     /// The frame's events are part of what a reader reads: a state alone

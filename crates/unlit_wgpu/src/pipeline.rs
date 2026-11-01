@@ -149,6 +149,14 @@ pub mod location {
     /// Octahedral-encoded, so the shader decodes it on its own; see
     /// [`crate::mesh::compress_normals`].
     pub const NORMAL: u32 = 13;
+    /// Per-instance inverted-hull width (`Float32`), read from the instance
+    /// stream.
+    ///
+    /// The distance the shader pushes a vertex out along its normal. An
+    /// [`LitOptions::expanded`](crate::pipeline::LitOptions::expanded) variant
+    /// reads it; every other variant leaves the field unread, and an instance
+    /// that is not a hull carries zero.
+    pub const HULL_WIDTH: u32 = 14;
 }
 
 /// Entry point name of the built-in shader's vertex stage.
@@ -449,6 +457,31 @@ pub struct LitOptions {
     /// An untextured fragment can be cut off too: its alpha is the instance
     /// color's, and the cutoff is explicit per instance either way.
     pub alpha_cutoff: bool,
+    /// Push every vertex out along its normal by the instance's hull width.
+    ///
+    /// This is the geometry half of the inverted-hull outline: a mesh drawn
+    /// with this variant expands into a shell, and a mesh drawn behind it with
+    /// the ordinary front-facing variant covers the shell except where it
+    /// pokes out past the silhouette, which is the line. Both halves draw the
+    /// same mesh with the same buffers — the shell reads the very same vertex
+    /// and index streams — so an outline costs one extra draw and no second
+    /// mesh.
+    ///
+    /// The width rides the instance stream
+    /// ([`MeshInstance::hull_width`](crate::mesh::MeshInstance::hull_width)),
+    /// so two instances of one mesh can be shells of different thicknesses,
+    /// and a mesh that is not a hull carries zero. A variant with this set
+    /// reads the mesh's normals and declares the
+    /// [`HULL_WIDTH`](crate::pipeline::location::HULL_WIDTH) attribute, which
+    /// a mesh with no normal channel cannot supply — without a normal there is
+    /// no direction to expand along.
+    ///
+    /// Expansion happens in the vertex stage, so it moves the clip position,
+    /// the world position the lights are addressed from and the shading normal
+    /// together. Which faces are drawn is the primitive state's business:
+    /// [`LitOptions::inverted_hull`] culls the front and writes no depth,
+    /// which is what leaves the ordinary variant's nearer surface in front.
+    pub expanded: bool,
     /// Whether the base-color texture binding is filterable.
     ///
     /// A filtering binding accepts a sampler that interpolates between
@@ -534,6 +567,7 @@ impl LitOptions {
             srgb_to_linear_output: false,
             base_color: BaseColorChannels::Rgba,
             alpha_cutoff: false,
+            expanded: false,
             texture_filtering: true,
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -555,6 +589,59 @@ impl LitOptions {
                 count: 4,
                 ..Default::default()
             },
+        }
+    }
+
+    /// The outline shell that goes behind a mesh drawn with [`Self::standard`].
+    ///
+    /// The inverted-hull trick draws the same mesh twice: once as itself, and
+    /// once expanded along its normals, with its front faces culled and its
+    /// backwards-facing surface — which is now the outside of a slightly
+    /// larger copy — drawn where the real mesh does not cover it. What shows
+    /// is a band the width of the expansion, all the way around the
+    /// silhouette, including the silhouette's own inner folds, which a
+    /// per-triangle line cannot find.
+    ///
+    /// The returned options differ from the standard ones in what makes the
+    /// shell a shell rather than a copy:
+    ///
+    /// - [`Self::expanded`] is set, so the vertex stage pushes each vertex out
+    ///   along its normal by the instance's hull width.
+    /// - The front faces are culled, so the far side of the shell is what
+    ///   covers the near side of the mesh.
+    /// - Depth is not written, so the shell leaves the depth buffer to the
+    ///   meshes drawn around it — the surface it belongs to still occludes and
+    ///   is occluded exactly as if the shell were not there.
+    /// - It is unlit, so the band is one flat color rather than a shaded copy
+    ///   of the mesh, and it declares none of the lighting bindings.
+    ///
+    /// The expansion width and the band's color are per-instance values, so
+    /// these options cannot hold them: the shell entity carries them as its
+    /// [`MeshInstance::hull_width`](crate::mesh::MeshInstance::hull_width) and
+    /// its base color, which is the same record every other instance is packed
+    /// from.
+    ///
+    /// Both options hash into the same `LitPipelineKey`, so the pair
+    /// compiles to two pipelines and needs no family of its own, no second
+    /// mesh and no second pass: the two draws sort against each other by depth
+    /// like any others, and the shell's unwritten depth is what keeps the
+    /// order between them stable.
+    pub fn inverted_hull(device: &wgpu::Device) -> Self {
+        Self {
+            unlit: true,
+            expanded: true,
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Front),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: default_depth_stencil_format(device),
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            ..Self::standard(device)
         }
     }
 
@@ -638,7 +725,7 @@ impl LitVariant {
     ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 16] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 17] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (
@@ -687,6 +774,7 @@ impl LitVariant {
                 self.options.base_color == BaseColorChannels::LuminanceAlpha,
             ),
             ("ALPHA_CUTOFF", self.options.alpha_cutoff),
+            ("EXPANDED", self.options.expanded),
             ("LIT", !self.options.unlit),
         ]
     }
@@ -846,7 +934,8 @@ impl LitVariant {
     /// every draw — so the stride is always the whole [`MeshInstance`]. The
     /// declared attributes mirror the shader's own input declarations: the
     /// model matrix, the base color, the pose bases and the metadata index
-    /// unconditionally, the alpha cutoff under the feature that declares it.
+    /// unconditionally, the alpha cutoff and the hull width under the features
+    /// that declare them.
     /// A pipeline never declares an attribute the shader does not, which the
     /// validation layers would otherwise flag on every draw.
     ///
@@ -894,10 +983,10 @@ impl LitVariant {
                 )),
             ),
         ];
-        // The one conditional instance input: the shader declares the cutoff
-        // only under ALPHA_CUTOFF, so a variant that never cuts must not
-        // declare it either — the validation layers flag an attribute the
-        // vertex stage never touches.
+        // The cutoff is conditional: the shader declares it only under
+        // ALPHA_CUTOFF, so a variant that never cuts must not declare it
+        // either — the validation layers flag an attribute the vertex stage
+        // never touches.
         if self.options.alpha_cutoff {
             fields.push((
                 location::CUTOFF,
@@ -910,6 +999,15 @@ impl LitVariant {
             wgpu::VertexFormat::Uint32,
             field(core::mem::offset_of!(crate::mesh::MeshInstance, morph_base)),
         ));
+        // The other conditional instance input, on the same terms: only an
+        // expanding variant's shader declares the hull width.
+        if self.options.expanded {
+            fields.push((
+                location::HULL_WIDTH,
+                wgpu::VertexFormat::Float32,
+                field(core::mem::offset_of!(crate::mesh::MeshInstance, hull_width)),
+            ));
+        }
         for (shader_location, format, offset) in fields {
             attributes.push(wgpu::VertexAttribute {
                 format,
@@ -1128,6 +1226,10 @@ fn compose(variant: &LitVariant, texel_arrays: bool) -> Result<String, ComposeEr
     assert!(
         variant.options.base_color == BaseColorChannels::Rgba || variant.base_color_texture,
         "the luminance flags describe how a sampled base-color texel expands, so `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` require a sampled base-color texture"
+    );
+    assert!(
+        !variant.options.expanded || variant.channels.secondary.contains(SecondaryFlags::NORMAL),
+        "an expanding variant pushes the vertex along its normal, so `EXPANDED` requires a normal channel"
     );
 
     let mut compile_options = wesl::CompileOptions::default();
@@ -2612,16 +2714,16 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let vec4 = size_of::<[f32; 4]>() as u64;
         // The record has to be tightly packed: `IntoBytes` rejects a type with
         // padding, so the sum of the record's field formats is the whole
-        // stride. This variant cuts nothing, so its layout omits the cutoff
-        // the shader would not declare; the declared formats plus that omitted
-        // word still cover the record exactly.
+        // stride. This variant neither cuts nor expands, so its layout omits
+        // both words the shader would not declare; the declared formats plus
+        // those two omitted words still cover the record exactly.
         let declared: u64 = instance
             .attributes
             .iter()
             .map(|attribute| attribute.format.size())
             .sum();
         assert_eq!(
-            declared + wgpu::VertexFormat::Float32.size(),
+            declared + 2 * wgpu::VertexFormat::Float32.size(),
             instance.array_stride,
             "the instance record carries no padding"
         );
@@ -2675,18 +2777,20 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert_eq!(formats, expected_formats, "{instance:?}");
     }
 
-    /// A cutting variant's instance layout declares the cutoff; a plain one
-    /// omits it, matching the shader's own conditional input declaration. The
-    /// other instance inputs are unconditional in the shader, so the layout
-    /// declares them for every variant.
+    /// A cutting variant's instance layout declares the cutoff and an expanding
+    /// one declares the hull width; a plain one omits both, matching the
+    /// shader's own conditional input declarations. The other instance inputs
+    /// are unconditional in the shader, so the layout declares them for every
+    /// variant.
     #[test]
-    fn instance_layout_declares_the_cutoff_only_when_it_cuts() {
-        let locations = |alpha_cutoff: bool| {
+    fn instance_layout_declares_the_cutoff_and_the_hull_width_only_when_read() {
+        let locations = |alpha_cutoff: bool, expanded: bool| {
             let mut options = LitOptions::standard_shape();
             options.alpha_cutoff = alpha_cutoff;
+            options.expanded = expanded;
             variant(
                 options,
-                channels(None, false, SecondaryFlags::COLOR),
+                channels(None, false, SecondaryFlags::COLOR | SecondaryFlags::NORMAL),
                 false,
                 false,
             )
@@ -2710,16 +2814,92 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         ];
         let mut cutting = plain.to_vec();
         cutting.insert(6, location::CUTOFF);
+        let mut expanding = plain.to_vec();
+        expanding.push(location::HULL_WIDTH);
+        let mut both = cutting.clone();
+        both.push(location::HULL_WIDTH);
 
         assert_eq!(
-            locations(false),
+            locations(false, false),
             plain,
-            "a plain variant declares no cutoff"
+            "a plain variant declares neither the cutoff nor the hull width"
         );
         assert_eq!(
-            locations(true),
+            locations(true, false),
             cutting,
             "a cutting variant declares the cutoff"
+        );
+        assert_eq!(
+            locations(false, true),
+            expanding,
+            "an expanding variant declares the hull width"
+        );
+        assert_eq!(
+            locations(true, true),
+            both,
+            "one variant can do both, and the width stays last"
+        );
+    }
+
+    /// The hull width rides the instance stream, so the vertex stage reads the
+    /// instance attribute and pushes the vertex along the transformed normal.
+    #[test]
+    fn expanded_flag_pushes_the_vertex_along_its_normal() {
+        let composed = |expanded: bool| {
+            let mut options = LitOptions::standard_shape();
+            options.expanded = expanded;
+            compose(
+                &variant(
+                    options,
+                    channels(
+                        Some(ChannelEncoding::CompressedPosition),
+                        false,
+                        SecondaryFlags::NORMAL,
+                    ),
+                    false,
+                    false,
+                ),
+                false,
+            )
+            .expect("compose")
+        };
+
+        let plain = composed(false);
+        assert!(
+            !plain.contains("hull_width"),
+            "a variant that expands by nothing declares no hull width"
+        );
+
+        let expanded = composed(true);
+        assert!(
+            expanded.contains("@location(14)\n    hull_width: f32"),
+            "the shader reads the hull width from its instance attribute"
+        );
+        assert!(
+            expanded.contains("world += normalize(outward) * in.hull_width"),
+            "the vertex is pushed along its transformed normal"
+        );
+    }
+
+    /// A variant cannot expand without a direction to expand in, so composing
+    /// one over a mesh with no normal channel is a mistake worth stopping at.
+    #[test]
+    #[should_panic(expected = "`EXPANDED` requires a normal channel")]
+    fn an_expanding_variant_without_normals_is_rejected() {
+        let mut options = LitOptions::standard_shape();
+        options.expanded = true;
+        let _ = compose(
+            &variant(
+                options,
+                channels(
+                    Some(ChannelEncoding::CompressedPosition),
+                    false,
+                    SecondaryFlags::empty(),
+                ),
+                false,
+                false,
+            ),
+            false,
         );
     }
 }

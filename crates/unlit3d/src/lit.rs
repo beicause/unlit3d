@@ -407,12 +407,51 @@ impl InstanceCutoff {
     }
 }
 
+/// Per-instance inverted-hull width, expanding the mesh along its normals.
+///
+/// The renderer packs it into the per-instance vertex stream next to the model
+/// matrix, so two entities drawing one mesh can expand by different amounts —
+/// which is the whole point of the outline: an entity is drawn twice, once as
+/// itself and once as a shell, and only the shell carries this component.
+///
+/// The component only supplies the distance the shader pushes along; a
+/// pipeline only reads it when its
+/// [`LitOptions::expanded`](unlit_wgpu::pipeline::LitOptions::expanded) is set,
+/// which decides whether the stream carries the attribute at all. Entities
+/// without this component expand by nothing, so a mesh drawn as itself is left
+/// exactly where it is.
+///
+/// The distance is in world units, and the normals are transformed before the
+/// push, so a scaled instance keeps the same outline thickness as an unscaled
+/// one. An outline therefore costs the same at any distance from the camera,
+/// which is what a hand-drawn line looks like.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct InstanceHullWidth {
+    /// Distance along the normal, in world units.
+    pub width: f32,
+}
+
+impl Default for InstanceHullWidth {
+    fn default() -> Self {
+        Self { width: 0.0 }
+    }
+}
+
+impl InstanceHullWidth {
+    /// A hull component expanding the mesh by `width` along its normals.
+    pub const fn new(width: f32) -> Self {
+        Self { width }
+    }
+}
+
 /// The built-in lit family's instance record: the resolved [MeshInstance].
 ///
 /// It is an ordinary [InstanceData] implementation, with no more privilege than
-/// a caller's: it reads the entity's transform, tint, cutoff, mesh metadata and
-/// skin/morph state from the same world and the same pack methods any family
-/// uses, and writes the [MeshInstance] layout the built-in shader declares.
+/// a caller's: it reads the entity's transform, tint, cutoff, hull width, mesh
+/// metadata and skin/morph state from the same world and the same pack methods
+/// any family uses, and writes the [MeshInstance] layout the built-in shader
+/// declares.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LitInstance;
 
@@ -439,6 +478,9 @@ impl InstanceData for LitInstance {
         let cutoff = world
             .query_one::<&InstanceCutoff>(entity)
             .map_or(0.0, |mut cutoff| cutoff.get().cutoff);
+        let hull_width = world
+            .query_one::<&InstanceHullWidth>(entity)
+            .map_or(0.0, |mut hull| hull.get().width);
         // Skinning and morphing are independent: a mesh may have either, both
         // or neither, and each packs into its own array.
         let joints_base = if mesh.skinned {
@@ -455,7 +497,8 @@ impl InstanceData for LitInstance {
             .with_joints_base(joints_base)
             .with_morph_base(morph_base)
             .with_metadata_index(mesh.parts.metadata_index)
-            .with_cutoff(cutoff);
+            .with_cutoff(cutoff)
+            .with_hull_width(hull_width);
         out.copy_from_slice(instance.as_bytes());
     }
 }

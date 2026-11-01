@@ -14,7 +14,7 @@ use crate::components::{
 };
 use crate::input::InputEvents;
 use crate::light::AmbientLight;
-use crate::lit::{InstanceColor, InstanceCutoff};
+use crate::lit::{InstanceColor, InstanceCutoff, InstanceHullWidth};
 
 inventory::submit! { ComponentEntry::new::<Transform>() }
 inventory::submit! { ComponentEntry::new::<Camera>() }
@@ -30,6 +30,7 @@ inventory::submit! { ComponentEntry::new::<SkinBinding>() }
 inventory::submit! { ComponentEntry::new::<MorphBinding>() }
 inventory::submit! { ComponentEntry::new::<InstanceColor>() }
 inventory::submit! { ComponentEntry::new::<InstanceCutoff>() }
+inventory::submit! { ComponentEntry::new::<InstanceHullWidth>() }
 inventory::submit! { ComponentEntry::new::<AmbientLight>() }
 inventory::submit! { ComponentEntry::new::<InputEvents>() }
 

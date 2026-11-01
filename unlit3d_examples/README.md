@@ -35,6 +35,7 @@ Scenes:
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent            translucent panes composited back to front over opaque cubes
   custom_pipeline        a caller-registered sky family and particle family
+  outline                inverted-hull bands beside screen-space strokes
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
@@ -61,6 +62,18 @@ the vertex index — so the scene is what checks that a caller can own a pipelin
 its bind groups, its vertex layout and its instance stream, and still read the
 frame's camera. It is also the example's longest animated scene, at eight frames
 of an orbit.
+
+`outline` is the fourth: it draws two kinds of line the library offers and lets
+one picture argue for both. Three bodies wear an inverted-hull band — each is one
+mesh drawn twice from one buffer, lit and then spread along its own normals with
+its front faces culled — so the band is a width in world units and the bodies
+standing further back wear a thinner one. Beside them a `LineSource` draws the
+orbit and its ticks as screen-space strokes, a width in physical pixels, so the
+ring keeps one weight from the near side to the far side. One frame holds both
+because neither alone shows what the other is for. Two of the five bodies carry
+no vertex normals at all and are lit through the screen-space derivative
+fallback, so the one frame covers both normal paths — the baked one the band
+needs and the derived one a mesh without a normal channel falls back to.
 
 Every scene is built with the same public `unlit3d` API any caller would use —
 nothing in the example reaches into the crates' internals.
