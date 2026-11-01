@@ -23,7 +23,7 @@ arc-swap = { version = "1.9.2", default-features = false }
 argh = "0.1.19"
 arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
 # The FLAC decoder a test reads a stream back with, so an encoder is
 # checked against something other than itself.
