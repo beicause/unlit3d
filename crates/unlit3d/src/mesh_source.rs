@@ -17,7 +17,7 @@ use core::any::TypeId;
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use unlit_ecs::{Entity, Scope, TypeIdHashMap};
+use unlit_ecs::{Scope, TypeIdHashMap};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
@@ -35,7 +35,7 @@ use unlit_wgpu::texel_array::{Array, ArrayHandle};
 use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
 
-use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts};
+use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts, frame_camera};
 use crate::culling::VisibleMesh;
 use crate::frame::FrameClock;
 use crate::mesh::MeshDesc;
@@ -1493,28 +1493,6 @@ impl MeshSource {
         self.entry_handle_cache = handles;
         self.family_instance_cache = family_instances;
     }
-}
-
-/// The camera a frame draws through: the first **active** [`Camera`] in the
-/// view, copied out of its cell so the caller's borrow of the world does not
-/// block the accesses that follow.
-///
-/// The view is the source's own scope, so a world may hold several sources and
-/// each one frames what it owns: a camera beside a source's instances is that
-/// source's camera, and a sibling's is not in reach. Within one scope several
-/// cameras may live — a caller switches between them by toggling
-/// [`Camera::active`] rather than by respawning. `None` means the scope has no
-/// active camera, and the source draws nothing.
-fn frame_camera(scope: &Scope<'_>) -> Option<Camera> {
-    scope
-        .query::<(Entity, &Camera)>()
-        .iter()
-        .find(|(_, camera)| camera.active)
-        .map(|(_, camera)| Camera {
-            view_from_world: camera.view_from_world,
-            clip_from_view: camera.clip_from_view,
-            active: camera.active,
-        })
 }
 
 impl FrameSource for MeshSource {

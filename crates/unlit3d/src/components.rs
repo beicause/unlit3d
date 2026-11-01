@@ -84,6 +84,24 @@ pub struct Camera {
     pub active: bool,
 }
 
+/// The camera a frame draws through: the first **active** [`Camera`] in the
+/// view, copied out of its cell so the caller's borrow of the world does not
+/// block the accesses that follow.
+///
+/// The view is the source's own scope, so a world may hold several sources and
+/// each one frames what it owns: a camera beside a source's instances is that
+/// source's camera, and a sibling's is not in reach. Within one scope several
+/// cameras may live — a caller switches between them by toggling
+/// [`Camera::active`] rather than by respawning. `None` means the scope has no
+/// active camera, and the source draws nothing.
+pub(crate) fn frame_camera(scope: &unlit_ecs::Scope<'_>) -> Option<Camera> {
+    scope
+        .query::<(Entity, &Camera)>()
+        .iter()
+        .find(|(_, camera)| camera.active)
+        .map(|(_, camera)| camera.clone())
+}
+
 impl Camera {
     /// The combined projection x view matrix (world to clip).
     #[must_use]

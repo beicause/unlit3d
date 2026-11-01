@@ -2876,7 +2876,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             "the shader reads the hull width from its instance attribute"
         );
         assert!(
-            expanded.contains("world += normalize(outward) * in.hull_width"),
+            expanded.contains("let reach = length(outward);"),
+            "a degenerate instance matrix is checked before it can be normalized"
+        );
+        assert!(
+            expanded.contains("world += outward / reach * in.hull_width"),
             "the vertex is pushed along its transformed normal"
         );
     }

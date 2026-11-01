@@ -378,7 +378,15 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
             in.model_2,
             mesh_compression::decode_normal(in.normal),
         );
-        world += normalize(outward) * in.hull_width;
+        // An instance scaled to nothing along an axis has no direction left
+        // to spread along, and normalizing the zero vector it hands back would
+        // put a NaN into every vertex of the shell, which the rasterizer then
+        // drops. A shell that cannot be spread stays where its body is, which
+        // is what a width of zero draws anyway.
+        let reach = length(outward);
+        if (reach > 1.0e-6) {
+            world += outward / reach * in.hull_width;
+        }
     }
     // unlit_wgpu::hook vertex
 

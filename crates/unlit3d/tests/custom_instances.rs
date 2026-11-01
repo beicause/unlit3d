@@ -315,6 +315,7 @@ impl InstanceData for CustomInstances {
         InstanceStreamDesc {
             slot: INSTANCE_SLOT,
             array_stride: core::mem::size_of::<InstanceRecord>() as u32,
+            label: None,
         }
     }
 

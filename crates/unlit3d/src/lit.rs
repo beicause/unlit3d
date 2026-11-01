@@ -460,6 +460,7 @@ impl InstanceData for LitInstance {
         InstanceStreamDesc {
             slot: INSTANCE_SLOT,
             array_stride: size_of::<MeshInstance>() as u32,
+            label: Some("unlit3d::lit::instances"),
         }
     }
 

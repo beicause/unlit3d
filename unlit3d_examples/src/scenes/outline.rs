@@ -39,9 +39,14 @@ const HULL_WIDTH: f32 = 0.055;
 /// The colour the band is drawn in.
 const INK: glam::Vec4 = glam::Vec4::new(0.01, 0.01, 0.04, 1.0);
 
-/// The same ink as a stroke carries it: the linear bytes the segment stream
-/// holds, which is what the shader writes before the target encodes it.
-const INK_STROKE: [u8; 4] = [10, 10, 28, 255];
+/// The same ink as a stroke carries it: the bytes the segment stream holds,
+/// which the fragment writes into a linear target before it is encoded.
+///
+/// The band's colour reaches the shader as a float and is quantized to bytes on
+/// the way in, so the stroke states the quantized bytes rather than the floats
+/// again: two colours that look alike in the source would otherwise differ by
+/// a few counts on screen and the scene would show two inks.
+const INK_STROKE: [u8; 4] = [3, 3, 10, 255];
 
 /// The paper the whole scene is drawn on.
 const PAPER: wgpu::Color = wgpu::Color {
@@ -283,9 +288,9 @@ fn build(
             shell: GpuRenderPipeline::new(shell_key.clone()),
             tint,
         };
-        // The shell is recorded before its body: it writes no depth, so drawing
-        // it first is what puts the body's own pixels over it where the two
-        // coincide.
+        // The shell draws the faces the body culls, and at every pixel it is
+        // behind the body, so the body covers it wherever the two coincide
+        // whatever order they land in. The spawn order here is arbitrary.
         outlined.spawn_shell(world, source_entity);
         super::spawn_in(world, source_entity, outlined);
     }

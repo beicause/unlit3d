@@ -82,6 +82,17 @@ struct VertexOutput {
 struct Clipped {
     a: vec4<f32>,
     b: vec4<f32>,
+    /// Where the kept part begins and ends on the segment the caller stated,
+    /// from the `a` end (zero) to the `b` end (one).
+    ///
+    /// The width and the colour are stated at the caller's ends, while the
+    /// geometry runs between the kept ends: the fragment measures its own
+    /// pixel against the quad, which the near plane shortened. Remapping these
+    /// back into the caller's parameter is what keeps the two in step after a
+    /// cut, so the colour a fragment reads is the colour at the point it
+    /// covers.
+    t0: f32,
+    t1: f32,
     visible: bool,
 };
 
@@ -96,17 +107,18 @@ struct Clipped {
 fn clip_near(a: vec4<f32>, b: vec4<f32>) -> Clipped {
     let epsilon = 1.0e-5;
     if (a.w > epsilon && b.w > epsilon) {
-        return Clipped(a, b, true);
+        return Clipped(a, b, 0.0, 1.0, true);
     }
     if (a.w <= epsilon && b.w <= epsilon) {
-        return Clipped(a, b, false);
+        // Nothing is drawn, so the stations say nothing and are left whole.
+        return Clipped(a, b, 0.0, 1.0, false);
     }
     let t = (epsilon - a.w) / (b.w - a.w);
     let cut = mix(a, b, t);
     if (a.w <= epsilon) {
-        return Clipped(cut, b, true);
+        return Clipped(cut, b, t, 1.0, true);
     }
-    return Clipped(a, cut, true);
+    return Clipped(a, cut, 0.0, t, true);
 }
 
 /// The pixel position of a clip-space point, in the viewport's own pixels.
@@ -147,11 +159,19 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     let round_b = (input.caps & 2u) != 0u;
     let half_width_a = max(input.half_width.x, 0.0);
     let half_width_b = max(input.half_width.y, 0.0);
-    let half_width = mix(half_width_a, half_width_b, station);
+    // The quad is built between the kept ends, but the width and the colour are
+    // stated at the caller's own ends: a near-plane cut moves the ends inward,
+    // and taking the corner's station straight would read the width and the
+    // colour of a point the quad no longer reaches.
+    let at = mix(clipped.t0, clipped.t1, station);
+    let half_width = mix(half_width_a, half_width_b, at);
     // A round end reaches past its station by the cap's own radius; a flat one
-    // stops there and needs only the antialiasing margin.
-    let reach_a = select(0.0, half_width_a, round_a) + AA_RADIUS;
-    let reach_b = select(0.0, half_width_b, round_b) + AA_RADIUS;
+    // stops there and needs only the antialiasing margin. Only an end the near
+    // plane kept is a visible end, so a cut end draws no cap.
+    let cap_a = select(0.0, 1.0, round_a && clipped.t0 <= 0.0);
+    let cap_b = select(0.0, 1.0, round_b && clipped.t1 >= 1.0);
+    let reach_a = cap_a * half_width_a + AA_RADIUS;
+    let reach_b = cap_b * half_width_b + AA_RADIUS;
 
     let centre = mix(start - direction * reach_a, end + direction * reach_b, station);
     let offset = centre + normal * side * (half_width + AA_RADIUS);
@@ -176,7 +196,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     out.half_width_a = half_width_a;
     out.half_width_b = half_width_b;
     out.caps = input.caps;
-    out.color = mix(input.color_a, input.color_b, station);
+    out.color = mix(input.color_a, input.color_b, at);
     return out;
 }
 

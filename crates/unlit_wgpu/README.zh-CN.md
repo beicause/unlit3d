@@ -436,7 +436,7 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata`、`mesh_compression`
 解码函数，以及 `lit` 下的光源记录、聚类 uniform 与多边形形状因子）；`lit` feature
 额外加入内置入口着色器，由 `pipeline::SpecializedLitPipeline` 把它与一次绘制解析出的
-`pipeline::LitVariant` 组合起来。一份入口着色器覆盖所有内置变体，lit 的也在内：
+`pipeline::LitVariant` 组合起来。这一份入口着色器覆盖所有 lit 变体：
 差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
 绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读的正是
 lit 着色器所读的那个 `View`，此外什么都不读，于是 `unlit3d` 的 `LineSource` 拿它对着

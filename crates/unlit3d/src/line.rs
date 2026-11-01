@@ -25,15 +25,19 @@
 //!
 //! Segments test against the depth the pass already holds and write none of
 //! their own, so a stroke is hidden by a mesh in front of it and hides nothing
-//! behind it. That makes the order a source records in matter only among the
-//! strokes themselves.
+//! behind it. Writing no depth is also why the source records after the meshes:
+//! a mesh recorded after a stroke would paint over it wherever the two overlap,
+//! since the stroke left no depth to stop it. See
+//! [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE).
 
 use unlit_ecs::Scope;
 use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::instance_stream::{InstanceBuffer, InstanceStreamDesc};
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, FRAME_BINDING, GLOBAL_GROUP, GlobalBindings, global_bind_group_layout,
     supports_storage_buffers,
 };
+use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::resources::ResHandle;
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
@@ -43,7 +47,9 @@ use unlit_wgpu::specialize::{
 use unlit_wgpu::staging::StagingBuffer;
 use zerocopy::IntoBytes;
 
-use crate::components::Camera;
+use crate::builtin::uniform_buffer;
+use crate::components::frame_camera;
+use crate::frame::FrameClock;
 use crate::pass::PassInfo;
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 
@@ -93,7 +99,7 @@ pub struct LineSegment {
     /// [Self::ROUND_B].
     ///
     /// A round end reaches half a width past its station and draws as a disc; a
-    /// flat one stops at it. The two ends are separate because a stroke outer
+    /// flat one stops at it. The two ends are separate because a stroke's outer
     /// ends are round while its inner joints are flat, which is what keeps a
     /// translucent stroke from darkening where two segments meet.
     pub caps: u32,
@@ -136,12 +142,6 @@ impl LineSegment {
     }
 }
 
-impl Default for LineSegment {
-    fn default() -> Self {
-        Self::new([0.0; 3], [0.0; 3])
-    }
-}
-
 // An upload moves whole records and a buffer copy is measured in alignment
 // units, so a record that straddled one would leave a tail of stale bytes
 // behind every upload.
@@ -179,13 +179,11 @@ struct Gpu {
     globals: wgpu::Buffer,
     /// The group binding both uniforms, registered in the frame resource graph.
     bind_group: ResHandle<wgpu::BindGroup>,
-    /// The buffer the segments are uploaded into, allocated on the first
-    /// non-empty frame.
-    segments: Option<wgpu::Buffer>,
-    /// How many records that buffer holds.
-    capacity: u32,
-    /// The staging buffers the upload passes through, so a steady frame
-    /// allocates nothing.
+    /// The instance stream the segments are uploaded into, allocated on the
+    /// first non-empty frame.
+    segments: InstanceBuffer,
+    /// The staging buffer the two uniforms are rewritten through, so a steady
+    /// frame allocates nothing and the copies join the frame's own encoder.
     staging: StagingBuffer,
 }
 
@@ -251,8 +249,11 @@ impl LineSource {
                 camera,
                 globals,
                 bind_group,
-                segments: None,
-                capacity: 0,
+                segments: InstanceBuffer::new(InstanceStreamDesc {
+                    slot: SEGMENT_SLOT,
+                    array_stride: core::mem::size_of::<LineSegment>() as u32,
+                    label: Some("unlit3d::line::segments"),
+                }),
                 staging: StagingBuffer::new(),
             },
         ));
@@ -304,8 +305,17 @@ impl FrameSource for LineSource {
         .with_viewport_size(width, height);
         // The shader measures in pixels and reads the camera alone, but the
         // frame globals share the group every pipeline in the frame binds, so
-        // the slot is filled with what a source without a clock has.
-        let globals = Globals::default();
+        // the slot is filled from the frame's own clock: a stroke that later
+        // wants to animate along time reads the same numbers a mesh does, and
+        // the clock belongs to the frame rather than to this source, whose
+        // build may run once per pass.
+        let mut globals = Globals::default();
+        if let Ok(mut clock_row) = scope.query_one::<&FrameClock>(ctx.clock) {
+            let clock = clock_row.get();
+            globals.time = clock.time;
+            globals.delta_time = clock.delta_time;
+            globals.frame_count = clock.index;
+        }
 
         {
             let mut device_row = scope
@@ -320,18 +330,8 @@ impl FrameSource for LineSource {
                 .write(device, encoder, &gpu.camera, 0, view.as_bytes());
             gpu.staging
                 .write(device, encoder, &gpu.globals, 0, globals.as_bytes());
-            reserve(
-                &mut gpu.segments,
-                &mut gpu.capacity,
-                device,
-                self.segments.len() as u32,
-            );
-            let target = gpu
-                .segments
-                .as_ref()
-                .expect("the buffer was just reserved for a non-empty frame");
-            gpu.staging
-                .write(device, encoder, target, 0, self.segments.as_bytes());
+            gpu.segments
+                .upload(device, encoder, self.segments.as_bytes());
         }
 
         // Drop the scope so the graph maintains before the group is read back
@@ -345,8 +345,8 @@ impl FrameSource for LineSource {
             .expect("the bind group is registered in the graph");
         let target = gpu
             .segments
-            .as_ref()
-            .expect("the buffer was reserved above");
+            .buffer()
+            .expect("the segments were uploaded above");
 
         // The pass letterboxes by narrowing the viewport, and the segments were
         // placed in pixels of that same rectangle, so the draw is confined to it
@@ -365,58 +365,6 @@ impl FrameSource for LineSource {
     fn order(&self) -> FrameSourceOrder {
         FrameSourceOrder::LINE
     }
-}
-
-/// The camera a frame draws through: the first active
-/// [Camera](crate::components::Camera) the scope sees.
-///
-/// Copied out of its cell so the borrow the query holds does not outlive the
-/// lookup; the frame only needs the two matrices and the eye position.
-fn frame_camera(scope: &Scope<'_>) -> Option<Camera> {
-    let mut cameras = scope.query::<(unlit_ecs::Entity, &Camera)>();
-    cameras
-        .iter()
-        .find(|(_, camera)| camera.active)
-        .map(|(_, camera)| Camera {
-            view_from_world: camera.view_from_world,
-            clip_from_view: camera.clip_from_view,
-            active: camera.active,
-        })
-}
-
-/// Grow the segment buffer so it holds `count` records.
-///
-/// The capacity grows by a factor rather than to fit: a stroke that lengthens
-/// by a segment a frame would otherwise rebuild the buffer every frame and
-/// leave the old one to the allocator.
-fn reserve(
-    buffer: &mut Option<wgpu::Buffer>,
-    capacity: &mut u32,
-    device: &wgpu::Device,
-    count: u32,
-) {
-    if count <= *capacity {
-        return;
-    }
-    let grown = count.max(*capacity + *capacity / 2).max(1);
-    *buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("unlit3d::line::segments"),
-        size: u64::from(grown) * core::mem::size_of::<LineSegment>() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    }));
-    *capacity = grown;
-}
-
-/// A uniform buffer of `size` bytes, rewritten through the source's staging
-/// buffer every frame.
-fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 /// The instance-step layout a line pipeline reads its segments through.
@@ -445,7 +393,7 @@ fn pipeline(
     layout: &wgpu::BindGroupLayout,
     surface: SurfaceKey,
 ) -> wgpu::RenderPipeline {
-    let module = shader_module(device);
+    let module = crate::builtin::shader_module(device, SHADER_MODULE, "unlit3d::line::shader");
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::line::pipeline_layout"),
         bind_group_layouts: &[Some(layout)],
@@ -475,7 +423,7 @@ fn pipeline(
         // the state are settled by `set_surface`, which drops it for a target
         // that has no depth at all.
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32FloatStencil8,
+            format: default_depth_stencil_format(device),
             depth_write_enabled: Some(false),
             depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: wgpu::StencilState::default(),
@@ -499,42 +447,9 @@ fn pipeline(
     descriptor.create(device)
 }
 
-/// Compile the line module of the built-in WESL package into a shader module.
-fn shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
-    let wgsl = compose()
-        .unwrap_or_else(|error| panic!("the built-in unlit_wgpu shader compiles: {error}"));
-    unlit_wgpu::util::shader_module(device, &wgsl, "unlit3d::line::shader")
-}
-
-/// Compose the line module as a main module, keeping its entry point names.
-fn compose() -> Result<String, wesl::Error> {
-    let main_path = wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
-        vec![SHADER_MODULE.to_owned()],
-    );
-    let options = wesl::CompileOptions {
-        keep_main: true,
-        ..Default::default()
-    };
-    let mut resolver = wesl::resolver::PackageResolver::new();
-    resolver.add_package(&unlit_wgpu::shader::PACKAGE);
-    wesl::Compiler::new_with_resolver(options, resolver)
-        .compile_module(&main_path)
-        .map(|result| result.syntax.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The stage names survive composition, which is what lets the pipeline
-    /// address them.
-    #[test]
-    fn the_module_keeps_its_entry_point_names() {
-        let wgsl = compose().expect("the line module composes");
-        assert!(wgsl.contains("fn vs_main"));
-        assert!(wgsl.contains("fn fs_main"));
-    }
 
     /// The declared attributes sit where the record fields do, so a record
     /// whose fields are reordered cannot silently feed the shader another.

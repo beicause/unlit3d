@@ -58,6 +58,7 @@ pub use crate::source::{OpenUrl, OpenUrls};
 use crate::input::InputEvents;
 use crate::relay::Snapshot;
 
+use crate::builtin::uniform_buffer;
 use crate::pass::PassInfo;
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 /// egui, re-exported because a [`UiPanel`] is written against its types.
@@ -564,17 +565,6 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
         let slot = slot.get();
         slot.replace(urls.drain(..))
     });
-}
-
-/// A uniform buffer of `size` bytes, rewritten through the source's staging
-/// buffer every frame.
-fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 /// The UI's global bind group: its camera and frame-globals uniforms.

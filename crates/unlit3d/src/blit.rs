@@ -300,8 +300,9 @@ fn pipeline(
     layout: &wgpu::BindGroupLayout,
     surface: SurfaceKey,
 ) -> wgpu::RenderPipeline {
-    let vertex = shader_module(device, VERTEX_MODULE, "unlit3d::blit::vertex");
-    let fragment = shader_module(device, FRAGMENT_MODULE, "unlit3d::blit::fragment");
+    let vertex = crate::builtin::shader_module(device, VERTEX_MODULE, "unlit3d::blit::vertex");
+    let fragment =
+        crate::builtin::shader_module(device, FRAGMENT_MODULE, "unlit3d::blit::fragment");
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::blit::pipeline_layout"),
         bind_group_layouts: &[Some(layout)],
@@ -339,46 +340,4 @@ fn pipeline(
     };
     descriptor.set_surface(surface);
     descriptor.create(device)
-}
-
-/// Compile one module of the built-in WESL package into a shader module.
-///
-/// `keep_main` is what leaves the module's own declarations - the entry points
-/// among them - in the composed WGSL under their own names.
-fn shader_module(device: &wgpu::Device, module: &str, label: &str) -> wgpu::ShaderModule {
-    let wgsl = compose(module)
-        .unwrap_or_else(|error| panic!("the built-in unlit_wgpu shader compiles: {error}"));
-    unlit_wgpu::util::shader_module(device, &wgsl, label)
-}
-
-/// Compose `module` of the built-in unlit_wgpu package as a main module.
-fn compose(module: &str) -> Result<String, wesl::Error> {
-    let main_path = wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
-        vec![module.to_owned()],
-    );
-    let options = wesl::CompileOptions {
-        keep_main: true,
-        ..Default::default()
-    };
-
-    let mut resolver = wesl::resolver::PackageResolver::new();
-    resolver.add_package(&unlit_wgpu::shader::PACKAGE);
-    wesl::Compiler::new_with_resolver(options, resolver)
-        .compile_module(&main_path)
-        .map(|result| result.syntax.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_module_keeps_its_entry_point_name() {
-        let vertex = compose(VERTEX_MODULE).expect("the fullscreen vertex composes");
-        assert!(vertex.contains("fn fullscreen_vertex_shader"));
-
-        let fragment = compose(FRAGMENT_MODULE).expect("the blit fragment composes");
-        assert!(fragment.contains("fn fs_main"));
-    }
 }

@@ -429,6 +429,21 @@ pub fn run() {
                 .is_none(),
             "a normals slice shorter than the positions is refused"
         );
+        // A hull is a spread along the vertex normals, so a request that asks
+        // for one without the normals is refused rather than drawn flat.
+        assert!(
+            server
+                .try_tool(
+                    "create_mesh",
+                    json!({
+                        "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        "hull_width": 0.05,
+                    }),
+                )
+                .await
+                .is_none(),
+            "a hull without normals is refused"
+        );
         assert!(
             server
                 .try_tool(

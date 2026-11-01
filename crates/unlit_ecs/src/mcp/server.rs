@@ -586,6 +586,11 @@ pub struct CreateMesh {
     /// The alpha cutoff, when the mesh should be cut out.
     #[serde(default)]
     pub cutoff: Option<f32>,
+    /// How far the mesh's inverted hull is pushed along its normals, in world
+    /// units. Spawning one entity with this width beside a plain draw of the
+    /// same mesh is what outlines it; an entity without it draws no hull.
+    #[serde(default)]
+    pub hull_width: Option<f32>,
 }
 
 /// A transform as JSON.

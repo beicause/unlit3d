@@ -246,7 +246,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "create_mesh",
-        "Allocate a mesh in a world's mesh source and spawn an entity that draws it.",
+        "Allocate a mesh in a world's mesh source and spawn an entity that draws it. Pass hull_width together with the normals to spawn the inverted-hull variant, which draws the back faces spread along the normals.",
         create_mesh,
     ));
     router.add_route(tool(

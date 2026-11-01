@@ -698,6 +698,7 @@ impl InstanceData for ParticleInstances {
         InstanceStreamDesc {
             slot: PARTICLE_INSTANCE_SLOT,
             array_stride: core::mem::size_of::<ParticleRecord>() as u32,
+            label: None,
         }
     }
 

@@ -579,11 +579,26 @@ pub fn create_mesh(
         weights: None,
         morph_deltas: None,
     };
+    // A hull is a second draw of the same mesh: this request asks for the
+    // variant that spreads its vertices along the normals and culls the faces
+    // the body draws, rather than for the body's own variant. Spawning it
+    // beside a plain request for the same mesh is what puts a band around the
+    // body.
+    let hull = args.hull_width.is_some();
+    if hull && args.normals.is_none() {
+        return Err("a hull needs `normals` to spread along".to_string());
+    }
     let (key, mesh) = with_mesh_source(world, source, |source, scope| {
-        let key = LitPipelineKey::new(LitOptions {
-            unlit: true,
-            ..LitOptions::standard(&source.device(scope))
-        });
+        let device = source.device(scope);
+        let options = if hull {
+            LitOptions::inverted_hull(&device)
+        } else {
+            LitOptions {
+                unlit: true,
+                ..LitOptions::standard(&device)
+            }
+        };
+        let key = LitPipelineKey::new(options);
         let mesh = source.allocate_lit_mesh(scope, &key.options, desc);
         (key, mesh)
     })?;
@@ -608,6 +623,9 @@ pub fn create_mesh(
     builder.push_component(InstanceColor::new(color));
     if let Some(cutoff) = args.cutoff {
         builder.push_component(InstanceCutoff::new(cutoff));
+    }
+    if let Some(hull_width) = args.hull_width {
+        builder.push_component(InstanceHullWidth::new(hull_width));
     }
     // The mesh lands in the requested scope, which defaults to the source
     // entity itself: a frame draws a source's own subtree, so a mesh spawned

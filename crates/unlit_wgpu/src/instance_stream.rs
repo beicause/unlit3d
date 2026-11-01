@@ -16,6 +16,9 @@ pub struct InstanceStreamDesc {
     /// Bytes per instance record. Zero means the family binds no instance
     /// stream at all.
     pub array_stride: u32,
+    /// The label the stream's buffer is created with, as it appears in a
+    /// backend's resource list. `None` takes [InstanceBuffer]'s own.
+    pub label: Option<&'static str>,
 }
 
 impl InstanceStreamDesc {
@@ -23,6 +26,7 @@ impl InstanceStreamDesc {
     pub const NONE: Self = Self {
         slot: 0,
         array_stride: 0,
+        label: None,
     };
 }
 
@@ -110,7 +114,7 @@ impl InstanceBuffer {
         // instance per frame does not reallocate every frame.
         let new_cap = count.max(self.capacity + self.capacity / 2).max(1);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit_wgpu::instance_stream"),
+            label: Some(self.desc.label.unwrap_or("unlit_wgpu::instance_stream")),
             size: u64::from(new_cap) * u64::from(self.desc.array_stride),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,

@@ -473,10 +473,10 @@ which `SpecializedLitPipeline` composes with the
 `line`, the entry shader a screen-space stroke is drawn with; it reads the same
 [`View`](globals::View) the lit shader does and nothing else, so
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
-`LineSource` composes it against the package and binds one group. One entry shader
-covers every built-in variant, lit ones included: the differences are WESL
-conditional-compilation flags, so each composed variant holds one code path and
-declares only the bindings and attributes it uses.
+`LineSource` composes it against the package and binds one group. That one entry
+shader covers every lit variant: the differences are WESL conditional-compilation
+flags, so each composed variant holds one code path and declares only the bindings
+and attributes it uses.
 
 A caller who wants their own shader has two ways to it. The closest is
 [`LitOptions::shader`](pipeline::LitOptions::shader): an

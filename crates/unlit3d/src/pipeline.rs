@@ -563,10 +563,7 @@ pub trait InstanceData: 'static {
 /// A family that binds no per-instance stream.
 impl InstanceData for () {
     fn stream(&self) -> InstanceStreamDesc {
-        InstanceStreamDesc {
-            slot: 0,
-            array_stride: 0,
-        }
+        InstanceStreamDesc::NONE
     }
 
     fn write(&mut self, _context: &mut InstanceContext<'_>, _out: &mut [u8]) {}
