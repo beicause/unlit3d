@@ -1763,7 +1763,9 @@ mod tests {
         }
     }
 
-    /// The entities of the source's visible cache in draw order.
+    /// The entities of the source's visible cache in the order the frame
+    /// resolved them. The pass's composite, not the source, decides the order
+    /// the draws happen in; use the entries' depths to reason about that.
     fn drawn(source: &MeshSource) -> Vec<Entity> {
         source
             .visible_cache
@@ -2498,7 +2500,7 @@ mod tests {
     }
 
     #[test]
-    fn z_sorted_entities_are_drawn_back_to_front() {
+    fn z_sorted_entries_carry_depths_that_sort_back_to_front() {
         let mut h = harness();
         let mesh = h.tri_mesh();
 
@@ -2517,15 +2519,27 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Spawned out of order on purpose: registration order is not draw
-        // order for z-sorted entities.
-        assert_ne!(drawn(&h.source), vec![far, middle, near]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
             .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
-        assert_eq!(drawn(&h.source), vec![far, middle, near]);
+        // The depth each entry carries is what the pass's composite orders
+        // its draws by: the farthest entity is the deepest, the nearest the
+        // shallowest, so the pool draws far before near.
+        let depth_of = |entity: Entity| {
+            h.source
+                .visible_cache
+                .iter()
+                .find(|entry| entry.mesh.entity == entity)
+                .unwrap()
+                .depth
+        };
+        assert!(depth_of(far) > depth_of(middle), "{far:?} against {middle:?}");
+        assert!(
+            depth_of(middle) > depth_of(near),
+            "{middle:?} against {near:?}"
+        );
     }
 
     /// The depth an entry sorts by is measured at the geometry the mesh draws,
@@ -2536,7 +2550,9 @@ mod tests {
     fn z_sorted_entries_sort_by_the_mesh_bounds_not_the_entity_origin() {
         let mut h = harness();
         let near = h.tri_mesh_at(1.5);
+        let near_aabb = near.aabb;
         let far = h.tri_mesh_at(-1.5);
+        let far_aabb = far.aabb;
 
         // Both entity origins are at the same depth; only the geometry differs.
         let translation = glam::Vec3::new(0.0, 0.0, 2.0);
@@ -2559,10 +2575,32 @@ mod tests {
         h.source
             .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
-        // The far mesh is drawn first even though its entity origin is not
-        // deeper than the other's.
-        assert_eq!(drawn(&h.source), vec![far_entity, near_entity]);
-        assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
+        // Each entry's depth reads off its own mesh's bounds centre, not the
+        // entity origin both share: the far mesh is the deeper draw even
+        // though its entity origin is not deeper than the other's.
+        let depth_of = |entity: Entity| {
+            h.source
+                .visible_cache
+                .iter()
+                .find(|entry| entry.mesh.entity == entity)
+                .unwrap()
+                .depth
+        };
+        let near_centre = near_aabb.center + translation;
+        let far_centre = far_aabb.center + translation;
+        assert!(
+            (depth_of(near_entity) - camera.view_depth(near_centre)).abs() < 1e-5,
+            "the near mesh's depth is not its bounds centre: {} against {}",
+            depth_of(near_entity),
+            camera.view_depth(near_centre),
+        );
+        assert!(
+            (depth_of(far_entity) - camera.view_depth(far_centre)).abs() < 1e-5,
+            "the far mesh's depth is not its bounds centre: {} against {}",
+            depth_of(far_entity),
+            camera.view_depth(far_centre),
+        );
+        assert!(depth_of(far_entity) > depth_of(near_entity));
     }
 
     /// The depth is the distance along the camera's view axis, not the
@@ -2634,7 +2672,9 @@ mod tests {
     fn orthographic_z_sorted_entries_sort_by_view_axis_depth() {
         let mut h = harness();
         let near = h.tri_mesh_at(1.5);
+        let near_aabb = near.aabb;
         let far = h.tri_mesh_at(-1.5);
+        let far_aabb = far.aabb;
 
         // Both entity origins are at the same depth; only the geometry differs.
         let translation = glam::Vec3::new(0.0, 0.0, 2.0);
@@ -2657,8 +2697,32 @@ mod tests {
         h.source
             .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
-        assert_eq!(drawn(&h.source), vec![far_entity, near_entity]);
-        assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
+        // No perspective divide to lean on: the depths still come out along
+        // the view axis, each off its own mesh's bounds centre, and the far
+        // mesh is the deeper draw.
+        let depth_of = |entity: Entity| {
+            h.source
+                .visible_cache
+                .iter()
+                .find(|entry| entry.mesh.entity == entity)
+                .unwrap()
+                .depth
+        };
+        let near_centre = near_aabb.center + translation;
+        let far_centre = far_aabb.center + translation;
+        assert!(
+            (depth_of(near_entity) - camera.view_depth(near_centre)).abs() < 1e-5,
+            "the near mesh's depth is not its bounds centre: {} against {}",
+            depth_of(near_entity),
+            camera.view_depth(near_centre),
+        );
+        assert!(
+            (depth_of(far_entity) - camera.view_depth(far_centre)).abs() < 1e-5,
+            "the far mesh's depth is not its bounds centre: {} against {}",
+            depth_of(far_entity),
+            camera.view_depth(far_centre),
+        );
+        assert!(depth_of(far_entity) > depth_of(near_entity));
     }
 
     #[test]
@@ -3426,6 +3490,19 @@ mod tests {
             2,
             "translucent entries keep their own draw order"
         );
+        // Each translucent draw joins the pass's depth-sorted pool at the
+        // depth its entry resolved to: the first-spawned entity sits nearer
+        // the camera at z=1 than the one at z=2, so its depth is smaller.
+        let depth_of_draw = |index: usize| match scene.draws[index].order {
+            unlit_wgpu::scene::DrawOrder::Sorted(depth) => depth,
+            other => panic!("the translucent draw is not depth-sorted: {other:?}"),
+        };
+        assert!(
+            depth_of_draw(0) > depth_of_draw(1),
+            "the deeper entity carries the larger depth: {} against {}",
+            depth_of_draw(0),
+            depth_of_draw(1),
+        );
     }
 
     /// Releasing the source removes the nodes it registered, so a program that
@@ -3571,26 +3648,25 @@ mod tests {
             .iter()
             .map(|entry| entry.pipeline_id)
             .collect();
-        let depths: Vec<f32> = h
-            .source
-            .visible_cache
-            .iter()
-            .map(|entry| entry.depth)
-            .collect();
+        let depth_of = |entity: Entity| {
+            h.source
+                .visible_cache
+                .iter()
+                .find(|entry| entry.mesh.entity == entity)
+                .unwrap()
+                .depth
+        };
 
         assert_eq!(order.len(), 2, "both entities are visible");
         assert_ne!(
             pipelines[0], pipelines[1],
             "the two resolve to different pipelines"
         );
-        assert_eq!(
-            order,
-            vec![far, near],
-            "back-to-front: the deeper entity draws first, not the lower pipeline id"
-        );
         assert!(
-            depths[0] > depths[1],
-            "the first draw is the deeper one: {depths:?}"
+            depth_of(far) > depth_of(near),
+            "the deeper entity sorts first in the pass's pool, whatever pipeline it resolved to: {} against {}",
+            depth_of(far),
+            depth_of(near),
         );
     }
 }

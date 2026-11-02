@@ -28,7 +28,10 @@
 //! Scissor rectangles are the exception to "a draw is independent": wgpu has
 //! no reset call, so a rectangle set by one draw stays set for every draw
 //! after it in the pass. A scene therefore orders its clipped draws last —
-//! or sets [`DrawEntry::scissor`] on every draw. The stencil reference is the
+//! or sets [`DrawEntry::scissor`] on every draw. In a composite,
+//! [`DrawOrder::After`] is that last stretch: nothing outside the trailing
+//! tier follows the clipped draws, so their rectangle cannot leak into one.
+//! The stencil reference is the
 //! same kind of pass state, but it is set on every draw (from
 //! [`DrawEntry::stencil_reference`]), so it never leaks from one draw to the
 //! next. Both are per-[`Scene`] state: [`Scene::record`] starts from the pass's
@@ -40,6 +43,14 @@
 //! whatever region the pass already holds, which is the whole target only if
 //! the caller put it there; the frame driver in `unlit3d` does that for every
 //! scene that states none, so one scene's letterbox never crops the next one's.
+//!
+//! [`Scene::record`] lists a single scene's draws in the order they are
+//! given. Recording several scenes as one composite —
+//! [`Scene::record_composited`] — orders them by [`DrawOrder`] instead:
+//! the sequenced draws of every scene first, then the depth-sorted ones of
+//! every scene pooled together back-to-front, then the trailing ones. A
+//! scene that states no order keeps its place: [`DrawOrder::Before`] is
+//! the default, and only draws that join the sorted pool are reordered.
 
 use arrayvec::ArrayVec;
 use core::ops::Range;
@@ -244,6 +255,35 @@ impl DrawRange {
     }
 }
 
+/// Where a draw sits in the composite of a pass's scenes.
+///
+/// [`Scene::record`] runs a scene's draws in the order they are listed and
+/// reads none of this. [`Scene::record_composited`] groups the draws of all
+/// of its scenes: the [sequenced](DrawOrder::Before) ones first in scene
+/// order, then the [sorted](DrawOrder::Sorted) ones of every scene together,
+/// ordered back-to-front by their depth, then the
+/// [trailing](DrawOrder::After) ones in scene order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrawOrder {
+    /// Draw in sequence, ahead of the sorted pool. The default: opaque
+    /// geometry and anything whose listed order is its own business stays
+    /// exactly where its scene put it.
+    Before,
+    /// Join the pass's depth-sorted pool at `depth`, measured along the
+    /// camera's view axis as [`Camera::view_depth`](crate::globals::Camera::view_depth)
+    /// reports it: positive into the screen, so the farthest draw sorts
+    /// first. The pool holds the sorted draws of every scene, which is what
+    /// lets blended geometry composite by depth instead of by which scene
+    /// recorded first. A depth of `NaN` sorts first, ahead of every
+    /// finite one.
+    Sorted(f32),
+    /// Draw in sequence, behind the sorted pool: UI and overlays that sit
+    /// above the sorted draws whatever their depth. Clipped draws belong
+    /// here too, where nothing unclipped follows them — see
+    /// [`DrawEntry::scissor`].
+    After,
+}
+
 /// One draw: the pipeline and every resource it binds, followed by what to
 /// draw.
 ///
@@ -275,13 +315,20 @@ pub struct DrawEntry {
     /// `None` means "leave whatever the pass already has", **not** "cover the
     /// whole target": wgpu's scissor is pass state with no reset call, so
     /// once a draw sets one it stays set for every later draw in the pass —
-    /// ordering a clipped draw last is the caller's job.
+    /// ordering a clipped draw last is the caller's job, which in a composite
+    /// is what [`DrawOrder::After`] is for.
     pub scissor: Option<ScissorRect>,
     /// The stencil reference value the draw tests against.
     ///
     /// Set on every draw (defaulting to `0`, the pass's own default), so a
     /// draw that does not name one resets a value an earlier draw left behind.
     pub stencil_reference: u32,
+    /// Where the draw sits in the composite of a pass's scenes.
+    ///
+    /// [`Scene::record`] ignores it. [`Scene::record_composited`] groups
+    /// its scenes' draws by it; the default, [`DrawOrder::Before`], keeps
+    /// the draw where its scene listed it.
+    pub order: DrawOrder,
     /// What to draw.
     pub range: DrawRange,
 }
@@ -298,6 +345,7 @@ impl DrawEntry {
             index_buffer: None,
             scissor: None,
             stencil_reference: 0,
+            order: DrawOrder::Before,
             range,
         }
     }
@@ -338,6 +386,12 @@ impl DrawEntry {
         self.index_buffer = Some((buffer.clone(), 0..buffer.size(), format));
         self
     }
+
+    /// Place the draw in the composite of a pass's scenes; see [`DrawOrder`].
+    pub fn with_order(mut self, order: DrawOrder) -> Self {
+        self.order = order;
+        self
+    }
 }
 
 /// A frame's worth of draws.
@@ -349,7 +403,8 @@ impl DrawEntry {
 /// bind groups, minimizes state changes without changing what is drawn. A
 /// caller is also free to order the draws for opaque-then-transparent
 /// compositing, which is a correctness requirement rather than a performance
-/// one.
+/// one; across scenes, [`DrawOrder`] and [`Scene::record_composited`]
+/// take that job over.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
     /// The draws to run, in order.
@@ -393,34 +448,157 @@ impl Scene {
             state.set_viewport(pass, viewport);
         }
         for draw in &self.draws {
-            if state.pipeline != Some(&draw.pipeline) {
-                pass.set_pipeline(&draw.pipeline);
-                state.pipeline = Some(&draw.pipeline);
-            }
-            for (index, bind_group) in &draw.bind_groups {
-                state.set_bind_group(pass, *index, bind_group);
-            }
-            for (slot, buffer, range) in &draw.vertex_buffers {
-                state.set_vertex_buffer(pass, *slot, buffer, range.clone());
-            }
-            if let Some((buffer, range, format)) = &draw.index_buffer {
-                state.set_index_buffer(pass, buffer, range.clone(), *format);
-            }
-            if let Some(scissor) = &draw.scissor {
-                state.set_scissor(pass, *scissor);
-            }
-            state.set_stencil_reference(pass, draw.stencil_reference);
+            record_draw(pass, &mut state, draw);
+        }
+    }
 
-            match &draw.range {
-                DrawRange::Vertices {
-                    vertices,
-                    instances,
-                } => pass.draw(vertices.clone(), instances.clone()),
-                DrawRange::Indexed {
-                    indices,
-                    base_vertex,
-                    instances,
-                } => pass.draw_indexed(indices.clone(), *base_vertex, instances.clone()),
+    /// Record the draws of several scenes into `pass` as one composite,
+    /// drawing into `fallback` where a scene states no viewport of its own.
+    ///
+    /// The scenes' draws are grouped by their [`DrawOrder`] rather than kept
+    /// in scene order: the sequenced ones of every scene first, then the
+    /// depth-sorted ones of every scene pooled together back-to-front, then
+    /// the trailing ones. The pool spanning scenes is what lets blended
+    /// geometry from one source composite by depth against another's, instead
+    /// of by which scene recorded first. A scene whose draws state no order
+    /// keeps its place, so a caller that never tags a draw sees the frame
+    /// [`Scene::record`] would have given.
+    ///
+    /// Every draw draws into the region its own scene resolves to — the
+    /// scene's [`Scene::viewport`] or `fallback` — so the pool interleaving
+    /// scenes never moves a draw out of its scene's letterbox; the
+    /// deduplicated `set_*` recording keeps the repeated regions from
+    /// repeating the calls.
+    pub fn record_composited(
+        pass: &mut wgpu::RenderPass<'_>,
+        scenes: &[&Scene],
+        fallback: Option<ViewportRect>,
+    ) {
+        let mut state = PassState::default();
+        record_composited_into(pass, &mut state, scenes, fallback);
+    }
+}
+
+/// Records one draw: the state it changes, then the draw call itself.
+///
+/// The body of [`Scene::record`]'s loop, split out so the composite recorder
+/// runs the same state-reuse rules over an interleaving of several scenes'
+/// draws.
+fn record_draw<'a, P: RenderPassInterface<'a>>(
+    pass: &mut P,
+    state: &mut PassState<'a>,
+    draw: &'a DrawEntry,
+) {
+    if state.pipeline != Some(&draw.pipeline) {
+        pass.set_pipeline(&draw.pipeline);
+        state.pipeline = Some(&draw.pipeline);
+    }
+    for (index, bind_group) in &draw.bind_groups {
+        state.set_bind_group(pass, *index, bind_group);
+    }
+    for (slot, buffer, range) in &draw.vertex_buffers {
+        state.set_vertex_buffer(pass, *slot, buffer, range.clone());
+    }
+    if let Some((buffer, range, format)) = &draw.index_buffer {
+        state.set_index_buffer(pass, buffer, range.clone(), *format);
+    }
+    if let Some(scissor) = &draw.scissor {
+        state.set_scissor(pass, *scissor);
+    }
+    state.set_stencil_reference(pass, draw.stencil_reference);
+
+    match &draw.range {
+        DrawRange::Vertices {
+            vertices,
+            instances,
+        } => pass.draw(vertices.clone(), instances.clone()),
+        DrawRange::Indexed {
+            indices,
+            base_vertex,
+            instances,
+        } => pass.draw_indexed(indices.clone(), *base_vertex, instances.clone()),
+    }
+}
+
+/// A depth-sorted draw waiting for the pool to be complete.
+///
+/// The pool interleaves scenes, so the draw carries the region its own scene
+/// resolves to rather than relying on the pass holding it.
+struct SortedDraw<'a> {
+    draw: &'a DrawEntry,
+    depth: f32,
+    viewport: Option<ViewportRect>,
+}
+
+/// The composite recorder behind [`Scene::record_composited`], generic over
+/// the pass so tests can drive it with a mock.
+///
+/// Three linear passes over the scenes, and a sort over only the pool: the
+/// sequenced and trailing draws are emitted in scene order without being
+/// compared, so an untagged scene's batching survives the composite, and a
+/// frame whose draws all state no order never sorts at all.
+fn record_composited_into<'a, P: RenderPassInterface<'a>>(
+    pass: &mut P,
+    state: &mut PassState<'a>,
+    scenes: &[&'a Scene],
+    fallback: Option<ViewportRect>,
+) {
+    // The sequenced draws first, in scene order: opaque geometry keeps the
+    // order its scene listed, which is the order its batching is arranged
+    // for.
+    for scene in scenes {
+        let viewport = scene.resolved_viewport(fallback);
+        for draw in &scene.draws {
+            match draw.order {
+                DrawOrder::Before => {
+                    if let Some(viewport) = viewport {
+                        state.set_viewport(pass, viewport);
+                    }
+                    record_draw(pass, state, draw);
+                }
+                DrawOrder::Sorted(_) | DrawOrder::After => {}
+            }
+        }
+    }
+
+    // The depth-sorted pool: the sorted draws of every scene, ordered
+    // back-to-front. Farthest first is the order translucent colours layer
+    // in; the sort is stable, so draws that tie on depth keep the order
+    // their scenes listed them in.
+    let mut pool: Vec<SortedDraw<'_>> = Vec::new();
+    for scene in scenes {
+        for draw in &scene.draws {
+            if let DrawOrder::Sorted(depth) = draw.order {
+                pool.push(SortedDraw {
+                    draw,
+                    depth,
+                    viewport: scene.resolved_viewport(fallback),
+                });
+            }
+        }
+    }
+    pool.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+    for sorted in &pool {
+        if let Some(viewport) = sorted.viewport {
+            state.set_viewport(pass, viewport);
+        }
+        record_draw(pass, state, sorted.draw);
+    }
+
+    // The trailing draws last, in scene order: UI and overlays sit above the
+    // sorted pool whatever their depth, and a clipped draw recorded here is
+    // followed by nothing its rectangle could leak into.
+    for scene in scenes {
+        let viewport = scene.resolved_viewport(fallback);
+        for draw in &scene.draws {
+            match draw.order {
+                DrawOrder::After => {
+                    if let Some(viewport) = viewport {
+                        state.set_viewport(pass, viewport);
+                    }
+                    record_draw(pass, state, draw);
+                }
+                DrawOrder::Before | DrawOrder::Sorted(_) => {}
             }
         }
     }
@@ -459,6 +637,12 @@ trait RenderPassInterface<'a> {
     fn set_viewport_rect(&mut self, viewport: ViewportRect);
     /// Set the stencil reference.
     fn set_stencil_reference(&mut self, reference: u32);
+    /// Bind the pipeline the draws rasterize with.
+    fn set_pipeline(&mut self, pipeline: &'a wgpu::RenderPipeline);
+    /// Draw a non-indexed range of vertices.
+    fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>);
+    /// Draw an indexed range of vertices.
+    fn draw_indexed(&mut self, indices: Range<u32>, base_vertex: i32, instances: Range<u32>);
 }
 
 impl<'a, 'p> RenderPassInterface<'a> for wgpu::RenderPass<'p> {
@@ -503,6 +687,18 @@ impl<'a, 'p> RenderPassInterface<'a> for wgpu::RenderPass<'p> {
 
     fn set_stencil_reference(&mut self, reference: u32) {
         wgpu::RenderPass::set_stencil_reference(self, reference);
+    }
+
+    fn set_pipeline(&mut self, pipeline: &'a wgpu::RenderPipeline) {
+        wgpu::RenderPass::set_pipeline(self, pipeline);
+    }
+
+    fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>) {
+        wgpu::RenderPass::draw(self, vertices, instances);
+    }
+
+    fn draw_indexed(&mut self, indices: Range<u32>, base_vertex: i32, instances: Range<u32>) {
+        wgpu::RenderPass::draw_indexed(self, indices, base_vertex, instances);
     }
 }
 
@@ -908,6 +1104,8 @@ fn fs_main() -> @location(0) vec4<f32> {
         scissors: Vec<ScissorRect>,
         viewports: Vec<ViewportRect>,
         stencil_references: Vec<u32>,
+        draws: Vec<(Range<u32>, Range<u32>)>,
+        indexed_draws: Vec<(Range<u32>, i32, Range<u32>)>,
     }
 
     impl<'a> RenderPassInterface<'a> for MockPass {
@@ -938,6 +1136,16 @@ fn fs_main() -> @location(0) vec4<f32> {
 
         fn set_stencil_reference(&mut self, reference: u32) {
             self.stencil_references.push(reference);
+        }
+
+        fn set_pipeline(&mut self, _pipeline: &'a wgpu::RenderPipeline) {}
+
+        fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>) {
+            self.draws.push((vertices, instances));
+        }
+
+        fn draw_indexed(&mut self, indices: Range<u32>, base_vertex: i32, instances: Range<u32>) {
+            self.indexed_draws.push((indices, base_vertex, instances));
         }
     }
 
@@ -1055,5 +1263,170 @@ fn fs_main() -> @location(0) vec4<f32> {
         // accepts, otherwise the recording asserts would fire on valid scenes.
         assert!(MAX_BIND_GROUPS >= wgpu::Limits::default().max_bind_groups as usize);
         assert!(MAX_VERTEX_BUFFERS >= wgpu::Limits::default().max_vertex_buffers as usize);
+    }
+
+    /// The composite draws the sequenced draws of every scene first, then the
+    /// depth-sorted ones of every scene pooled together back-to-front, then
+    /// the trailing ones — which is what lets a blended stroke from one scene
+    /// sort against a blended pane from another instead of always painting
+    /// over it.
+    #[test]
+    fn a_composite_orders_before_sorted_and_after() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+        let draw = |range: DrawRange| DrawEntry::new(&pipeline, range);
+
+        // Meshes: the opaque run, then a z-sorted pane far away and one near.
+        let meshes = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(0..1)),
+                draw(DrawRange::vertices(0..4).with_instances(1..2))
+                    .with_order(DrawOrder::Sorted(7.0)),
+                draw(DrawRange::vertices(0..4).with_instances(2..3))
+                    .with_order(DrawOrder::Sorted(2.0)),
+            ],
+            ..Scene::default()
+        };
+        // Lines: an opaque stroke, then a blended one between the panes.
+        let lines = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(3..4)),
+                draw(DrawRange::vertices(0..4).with_instances(4..5))
+                    .with_order(DrawOrder::Sorted(4.0)),
+            ],
+            ..Scene::default()
+        };
+        // UI: a trailing widget.
+        let ui = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(5..6))
+                    .with_order(DrawOrder::After),
+            ],
+            ..Scene::default()
+        };
+
+        let mut pass = MockPass::default();
+        record_composited_into(&mut pass, &mut PassState::default(), &[&meshes, &lines, &ui], None);
+
+        // Opaque meshes, opaque line, then panes and the stroke farthest
+        // first, then the widget.
+        assert_eq!(
+            pass.draws,
+            vec![
+                (0..4, 0..1),
+                (0..4, 3..4),
+                (0..4, 1..2),
+                (0..4, 4..5),
+                (0..4, 2..3),
+                (0..4, 5..6),
+            ]
+        );
+    }
+
+    /// The sort is stable: sorted draws that tie on depth keep the order
+    /// their scenes were listed in, and the sequenced and trailing tiers keep
+    /// scene order around the pool.
+    #[test]
+    fn a_composite_keeps_the_order_of_equal_draws() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+        let draw = |range: DrawRange| DrawEntry::new(&pipeline, range);
+
+        let meshes = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(0..1))
+                    .with_order(DrawOrder::Sorted(3.0)),
+                draw(DrawRange::vertices(0..4).with_instances(1..2)),
+            ],
+            ..Scene::default()
+        };
+        let lines = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(2..3))
+                    .with_order(DrawOrder::Sorted(3.0)),
+                draw(DrawRange::vertices(0..4).with_instances(3..4))
+                    .with_order(DrawOrder::After),
+            ],
+            ..Scene::default()
+        };
+
+        let mut pass = MockPass::default();
+        record_composited_into(&mut pass, &mut PassState::default(), &[&meshes, &lines], None);
+
+        assert_eq!(
+            pass.draws,
+            vec![(0..4, 1..2), (0..4, 0..1), (0..4, 2..3), (0..4, 3..4)]
+        );
+    }
+
+    /// A scene that states no order keeps its place: with every draw
+    /// sequenced, the composite is the draws in scene order, and no depth is
+    /// ever compared.
+    #[test]
+    fn a_composite_without_sorted_draws_keeps_scene_order() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+        let draw = |range: DrawRange| DrawEntry::new(&pipeline, range);
+
+        // Listed back to front on purpose: nothing here joins the pool, so
+        // nothing may be reordered.
+        let lines = Scene {
+            draws: vec![draw(DrawRange::vertices(0..4).with_instances(0..1))],
+            ..Scene::default()
+        };
+        let meshes = Scene {
+            draws: vec![draw(DrawRange::vertices(0..4).with_instances(1..2))],
+            ..Scene::default()
+        };
+
+        let mut pass = MockPass::default();
+        record_composited_into(&mut pass, &mut PassState::default(), &[&lines, &meshes], None);
+
+        assert_eq!(pass.draws, vec![(0..4, 0..1), (0..4, 1..2)]);
+    }
+
+    /// Every draw draws into the region its own scene resolves to, so the
+    /// pool interleaving scenes never moves a draw out of its scene's
+    /// letterbox; identical regions collapse through the usual dedup.
+    #[test]
+    fn a_composite_draws_into_each_scenes_own_region() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+        let draw = |range: DrawRange| DrawEntry::new(&pipeline, range);
+
+        let letter = ViewportRect::new(320.0, 180.0).at(0.0, 20.0);
+        let whole = ViewportRect::new(800.0, 600.0);
+        let meshes = Scene {
+            viewport: Some(letter),
+            draws: vec![draw(DrawRange::vertices(0..4).with_instances(0..1))],
+        };
+        let lines = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(1..2))
+                    .with_order(DrawOrder::Sorted(3.0)),
+            ],
+            ..Scene::default()
+        };
+        let ui = Scene {
+            draws: vec![
+                draw(DrawRange::vertices(0..4).with_instances(2..3))
+                    .with_order(DrawOrder::After),
+            ],
+            ..Scene::default()
+        };
+
+        let mut pass = MockPass::default();
+        record_composited_into(
+            &mut pass,
+            &mut PassState::default(),
+            &[&meshes, &lines, &ui],
+            Some(whole),
+        );
+
+        assert_eq!(pass.draws.len(), 3);
+        // The mesh scene states its own region; the line and UI scenes state
+        // none, so they draw into the fallback — stated once, the second
+        // being a repeat the pass already holds.
+        assert_eq!(pass.viewports, vec![letter, whole]);
     }
 }

@@ -100,7 +100,7 @@ use crate::pipeline::{
     SpecializedLitPipeline,
 };
 use crate::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureExt, TextureView};
-use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
+use crate::scene::{DrawEntry, DrawOrder, DrawRange, Scene, ScissorRect};
 use crate::specialize::SurfaceKey;
 use crate::staging::StagingBuffer;
 use crate::util::Hashed;
@@ -826,7 +826,11 @@ impl EguiIntegration {
             // already name its vertices pool-globally, so the draw needs no
             // base vertex: one range addresses the position, the UV and the
             // color together.
+            // The trailing tier of the composite: the UI sits above the
+            // depth-sorted pool whatever its depth, and a clipped draw here
+            // is followed by nothing its rectangle could leak into.
             let entry = DrawEntry::new(pipeline, DrawRange::indexed(draw.indices.clone()))
+                .with_order(DrawOrder::After)
                 .with_bind_group(GLOBAL_GROUP, global)
                 .with_bind_group(MATERIAL_GROUP, material)
                 .with_vertex_buffer(INSTANCE_SLOT, &self.instance)

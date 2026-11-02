@@ -44,8 +44,15 @@
 //! writes keeps the depth it covers, and one that does not write hides nothing
 //! behind it.
 //!
-//! Strokes that leave the depth alone are recorded farthest first, so a
-//! frame's translucent strokes read in the order their colours layer in.
+//! A stroke whose policy writes the depth draws in the sequenced tier of the
+//! pass's composite, batched with the strokes that share it: the depth test
+//! decides their overlap, so either order would read the same, and the
+//! sequenced tier is where the batching their instances share is preserved. A
+//! stroke whose policy leaves the depth alone joins the pass's depth-sorted
+//! pool — one draw each, keyed on the depth of the stroke's mid-point along
+//! the camera's view axis — where it sorts against the blended meshes and the
+//! strokes of every other source, farthest first. See
+//! [DrawOrder::Sorted](unlit_wgpu::scene::DrawOrder::Sorted).
 
 use glam::Vec3;
 use unlit_ecs::Scope;
@@ -55,7 +62,7 @@ use unlit_wgpu::line_shader::{LineOptions, LineVariant};
 use unlit_wgpu::pipeline::{
     GLOBAL_GROUP, GlobalBindings, global_bind_group_layout, supports_storage_buffers,
 };
-use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
+use unlit_wgpu::scene::{DrawEntry, DrawOrder, DrawRange, Scene};
 use unlit_wgpu::specialize::{SurfaceKey, Variants};
 use zerocopy::IntoBytes;
 
@@ -339,12 +346,12 @@ impl LineSource {
     /// into.
     ///
     /// A run of strokes wearing equal options is one draw; a different policy
-    /// opens a new one, because one draw is one pipeline. Within a group whose
-    /// depth-stencil policy leaves the depth alone the strokes are sorted
-    /// farthest first, which is the order their colours layer in; a group that
-    /// writes the depth keeps its entity order, because the depth decides its
+    /// opens a new one, because one draw is one pipeline. A group that writes
+    /// the depth keeps its entity order, because the depth decides its
     /// overlap and the order only picks which stroke owns a pixel they all
-    /// cover.
+    /// cover; a group that leaves the depth alone keeps its discovery order
+    /// too, because the pass's composite sorts its draws against every other
+    /// source's, and this source need not guess.
     fn collect(&mut self, scope: &Scope<'_>, camera: &crate::components::Camera) {
         self.groups.clear();
         for (line, transform, visibility) in scope
@@ -382,10 +389,7 @@ impl LineSource {
 
         self.records.clear();
         self.draws.clear();
-        for (index, (options, strokes)) in self.groups.iter_mut().enumerate() {
-            if !options.depth_stencil.depth_write_enabled {
-                strokes.sort_by(|(a_depth, _), (b_depth, _)| b_depth.total_cmp(a_depth));
-            }
+        for (index, (_, strokes)) in self.groups.iter_mut().enumerate() {
             let start = self.records.len() as u32;
             self.records
                 .extend(strokes.iter().map(|(_, segment)| *segment));
@@ -493,7 +497,7 @@ impl FrameSource for LineSource {
         // reuses what the first built. The groups outlive the draw loop, so
         // the pipelines are collected into a vec the draws push from.
         let groups = &self.groups;
-        let draws: Vec<(wgpu::RenderPipeline, u32, u32)> = self
+        let draws: Vec<(wgpu::RenderPipeline, u32, u32, usize)> = self
             .draws
             .iter()
             .map(|draw| {
@@ -501,7 +505,7 @@ impl FrameSource for LineSource {
                 let options = groups[draw.group].0.clone();
                 let ordinal = gpu.variants.specialize(LineVariant { surface, options });
                 let pipeline = gpu.variants.get(ordinal).pipeline.clone();
-                (pipeline, draw.start, draw.count)
+                (pipeline, draw.start, draw.count, draw.group)
             })
             .collect();
         let bind_group = graph
@@ -516,15 +520,42 @@ impl FrameSource for LineSource {
         // placed in pixels of that same rectangle, so the draw is confined to it
         // the way a mesh draw is.
         scene.viewport = info.viewport;
-        for (pipeline, start, count) in draws {
-            scene.draws.push(
-                DrawEntry::new(
-                    &pipeline,
-                    DrawRange::vertices(0..QUAD_VERTICES).with_instances(start..start + count),
-                )
-                .with_bind_group(GLOBAL_GROUP, bind_group)
-                .with_vertex_buffer(SEGMENT_SLOT, target),
-            );
+        for (pipeline, start, count, group) in draws {
+            let (options, strokes) = &groups[group];
+            if options.depth_stencil.depth_write_enabled {
+                // The policy writes the depth, so the depth test decides the
+                // group's overlap and its draw batches in the sequenced tier,
+                // where the strokes that share it stay one draw.
+                scene.draws.push(
+                    DrawEntry::new(
+                        &pipeline,
+                        DrawRange::vertices(0..QUAD_VERTICES)
+                            .with_instances(start..start + count),
+                    )
+                    .with_bind_group(GLOBAL_GROUP, bind_group)
+                    .with_vertex_buffer(SEGMENT_SLOT, target),
+                );
+            } else {
+                // One draw per stroke: the composite keys each on the depth
+                // the stroke was collected with, so it lands in the pass's
+                // pool wherever the blended geometry of every other source
+                // sorts. A stroke costs a draw of its own, the same price a
+                // z-sorted mesh pane pays; the quads stay instanced and the
+                // segment instances stay one buffer.
+                for (offset, (depth, _)) in strokes.iter().enumerate() {
+                    let base = start + offset as u32;
+                    scene.draws.push(
+                        DrawEntry::new(
+                            &pipeline,
+                            DrawRange::vertices(0..QUAD_VERTICES)
+                                .with_instances(base..base + 1),
+                        )
+                        .with_bind_group(GLOBAL_GROUP, bind_group)
+                        .with_vertex_buffer(SEGMENT_SLOT, target)
+                        .with_order(DrawOrder::Sorted(*depth)),
+                    );
+                }
+            }
         }
     }
 

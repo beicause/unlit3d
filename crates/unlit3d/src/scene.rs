@@ -17,7 +17,9 @@ use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
 
 use unlit_wgpu::pipeline::{GLOBAL_GROUP, MATERIAL_GROUP, MESH_GROUP};
-use unlit_wgpu::scene::{DrawEntry, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding};
+use unlit_wgpu::scene::{
+    DrawEntry, DrawOrder, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding,
+};
 
 use crate::bounds::FrustumPlanes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, ZSortedDrawing};
@@ -426,10 +428,11 @@ pub(crate) struct SceneFrame<'a> {
 /// registered families, so nothing is specialized or registered for a mesh the
 /// camera cannot see.
 ///
-/// The ordering is the whole point of this pass: opaque entities first,
+/// The ordering is the partition the composite needs: opaque entities first,
 /// grouped by pipeline and then by material so a draw never re-binds state a
-/// neighbour already set; z-sorted entities after them, sorted back-to-front
-/// by view-axis depth so blending is order-independent.
+/// neighbour already set; z-sorted entities after them, in resolve order,
+/// because the pass's depth-sorted pool orders them by the depth each draw
+/// carries, and a z-sorted entry never merges into a run.
 pub(crate) fn collect_and_sort_visible(
     frame: SceneFrame<'_>,
     scope: Scope<'_>,
@@ -468,24 +471,21 @@ pub(crate) fn collect_and_sort_visible(
 
     // Sort: not z-sorted before z-sorted, then by pipeline, then by the key that
     // matters for that kind. Opaque draws are keyed by material so neighbours
-    // share a bind group; z-sorted ones by scope-axis depth so they are
-    // composited back-to-front.
+    // share a bind group; z-sorted ones keep their resolve order, because the
+    // depth their draw carries is the composite's business, not this sort's.
     profiling::scope!("scene.sort");
-    // Opaque and z-sorted entries are ordered by different keys, so each pair
-    // is compared by the kind it belongs to rather than through one chain: a
-    // z-sorted pair's order is its blend order and only depth decides it, while
-    // a pipeline id decides nothing about which of two blended draws lies
-    // deeper. Chaining the pipeline in first would settle every z-sorted pair
-    // that resolved to different variants before the depth ever ran.
+    // The partition is what the sort decides: a pipeline id and a material key
+    // order the opaque run so neighbours share state, and a z-sorted entry
+    // goes after them as a draw that will join the pass's depth-sorted pool.
+    // Depth compares nothing here — ordering the pool is
+    // Scene::record_composited's job, across every source, and comparing it
+    // per source would only to throw the result away.
     visible.sort_unstable_by(|a, b| match (a.z_sorted, b.z_sorted) {
         (false, false) => a
             .pipeline_id
             .cmp(&b.pipeline_id)
             .then_with(|| a.sort_key.cmp(&b.sort_key)),
-        (true, true) => {
-            // Back-to-front: the deepest entity is drawn first.
-            b.depth.partial_cmp(&a.depth).unwrap_or(Ordering::Equal)
-        }
+        (true, true) => Ordering::Equal,
         (false, true) => Ordering::Less,
         (true, false) => Ordering::Greater,
     });
@@ -641,6 +641,12 @@ pub(crate) fn assemble_scene(
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);
+        // A z-sorted run is always the one entry it starts from — z-sorted
+        // entries never merge — so the first entry's depth keys the whole
+        // draw into the pass's sorted pool.
+        if entry.z_sorted {
+            draw = draw.with_order(DrawOrder::Sorted(entry.depth));
+        }
         if let Some(global) = &pipeline.global {
             draw = draw.with_bind_group(GLOBAL_GROUP, global);
         }

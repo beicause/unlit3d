@@ -359,12 +359,20 @@ impl Renderer {
                     .map_or_else(|_| RenderLoadOps::default(), |mut load| *load.get());
                 let mut render_pass =
                     attachments.begin_pass(&mut encoder, load.color, load.depth, load.stencil);
+                // The scenes composite as one draw list: the sequenced
+                // draws of every source, then the depth-sorted ones pooled
+                // across sources back-to-front, then the trailing ones. That
+                // pool spanning sources is what lets a blended stroke sort
+                // against a blended pane by depth instead of by which source
+                // recorded first; a source that tags no draw keeps its place.
+                let mut scenes: Vec<&Scene> = Vec::with_capacity(self.sources.entities().len());
                 for index in 0..self.sources.entities().len() {
                     let entity = self.sources.entities()[index];
                     if let Some(scene) = self.scene_slot(pass_entity, entity) {
-                        scene.record(&mut render_pass, Some(whole));
+                        scenes.push(scene);
                     }
                 }
+                Scene::record_composited(&mut render_pass, &scenes, Some(whole));
                 // The scissor is pass state too, and unlike the viewport it has
                 // a survivor: the multisample resolve that ends this pass is a
                 // blit on the GL backend, and a blit there is clipped by the
