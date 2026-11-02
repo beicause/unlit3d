@@ -322,11 +322,11 @@ impl LitGltf {
     ///
     /// The key carries only what a caller picks: the texture filtering the
     /// material's base-color texture needs, the luminance expansion that
-    /// texture's format calls for, whether a `BLEND` material blends and
-    /// whether a `MASK` one cuts. Everything geometric — which vertex
-    /// channels the primitive carries, whether it samples its base-color
-    /// texture, whether it skins or morphs — is a property of the draw, so
-    /// [`Self::insert_mesh`] uploads the streams the primitive's own
+    /// texture's format calls for, whether a `BLEND` material blends without
+    /// writing depth and whether a `MASK` one cuts. Everything geometric —
+    /// which vertex channels the primitive carries, whether it samples its
+    /// base-color texture, whether it skins or morphs — is a property of the
+    /// draw, so [`Self::insert_mesh`] uploads the streams the primitive's own
     /// attributes declare and the variant a draw resolves derives the rest
     /// from the mesh it draws. A `doubleSided` material turns back-face
     /// culling off, so its geometry is drawn from either side; everything
@@ -360,9 +360,17 @@ impl LitGltf {
             options.base_color = self.image_luminance(image);
         }
         // glTF base colors and textures are straight (non-premultiplied)
-        // alpha, which is exactly what `ALPHA_BLENDING` composites.
+        // alpha, which is exactly what `ALPHA_BLENDING` composites. A blended
+        // fragment covers a surface only partly, so its depth is no
+        // measurement of where that surface is: writing it would let a
+        // fragment discard the ones the same surface draws behind it, which is
+        // the one overlap the back-to-front sort of `ZSortedDrawing` cannot
+        // reorder away.
         if material.alpha_mode() == gltf::material::AlphaMode::Blend {
             options.color_target.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+            if let Some(depth) = options.depth_stencil.as_mut() {
+                depth.depth_write_enabled = Some(false);
+            }
         }
         // A `MASK` material is not a translucent one: its fragments are either
         // drawn whole or discarded, so it neither blends nor needs the
@@ -1041,7 +1049,9 @@ impl LitGltf {
     /// base-color texture also carries the matching [`GpuMaterial`]. A blended
     /// primitive ([`gltf::material::AlphaMode::Blend`]) also carries
     /// [`ZSortedDrawing`], so it is drawn after the opaque geometry and
-    /// composited back-to-front. A skinned primitive (one whose mesh carries a
+    /// composited back-to-front, and its pipeline writes no depth: each of its
+    /// fragments covers a surface only partly, and the ones behind it are
+    /// still to be drawn. A skinned primitive (one whose mesh carries a
     /// joint stream) carries a [`SkinBinding`] to the node's [`SkinPose`], which is
     /// spawned on an entity of its own so several meshes can share it — see
     /// [`Self::skin_pose`]. Children are not spawned; use

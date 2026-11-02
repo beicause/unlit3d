@@ -499,7 +499,8 @@ impl InstanceContext<'_> {
   `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
   primitive 还会带上 `ZSortedDrawing` 标记，于是渲染器在绘制完不透明几何之后按由远及近
-  的顺序混合它。`alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
+  的顺序混合它，且其管线不写深度，使它留给后续片元混合的像素仍可见。
+  `alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
   `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `LitOptions::alpha_cutoff` 被置位，
   生成的实体带上 `lit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
 - 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：

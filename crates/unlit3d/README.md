@@ -740,13 +740,14 @@ What it does is patch the world you already render:
   the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
   material is `alphaMode: BLEND` is also marked
   [`ZSortedDrawing`](components::ZSortedDrawing), so the renderer composites it
-  back-to-front after the opaque geometry. A `alphaMode: MASK` material instead
-  draws binary coverage: the fragment shader discards every fragment whose alpha
-  falls below the material's `alphaCutoff` (0.5 when the document leaves it
-  out), so the pipeline's `LitOptions::alpha_cutoff` is set, the spawned entity
-  carries an [`InstanceCutoff`](lit::InstanceCutoff) whose value travels
-  in the per-instance stream, and the primitive needs neither blending nor a
-  sort.
+  back-to-front after the opaque geometry, and its pipeline writes no depth, so
+  fragments it leaves behind for later ones to composite over stay visible. An
+  `alphaMode: MASK` material instead draws binary coverage: the fragment shader
+  discards every fragment whose alpha falls below the material's `alphaCutoff`
+  (0.5 when the document leaves it out), so the pipeline's
+  `LitOptions::alpha_cutoff` is set, the spawned entity carries an
+  [`InstanceCutoff`](lit::InstanceCutoff) whose value travels in the
+  per-instance stream, and the primitive needs neither blending nor a sort.
 - A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its
   joint stream and drawn skinned: `spawn_node`/`spawn_default_scene` create a
   [`SkinPose`](components::SkinPose) entity for the node's skin and put a

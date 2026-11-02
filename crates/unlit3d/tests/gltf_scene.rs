@@ -844,6 +844,67 @@ async fn a_blended_material_composites_over_the_frame() {
     );
 }
 
+/// Two coplanar blended quads composite over each other only if the first one
+/// leaves no depth behind: a second fragment at the same depth fails a
+/// `Greater` comparison, so a writing pipeline shows one quad where the
+/// surface should show both layers.
+async fn a_blended_material_writes_no_depth() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let gltf = LitGltf::from_bytes(&quad_document(&QuadDoc {
+        translation: [0.0, 0.0, 0.0],
+        textured: false,
+        blend: true,
+        mask: None,
+        double_sided: false,
+    }))
+    .expect("the embedded document parses");
+
+    // The key turns blending on and depth writes off together: a blended
+    // fragment covers its surface only partly, so the depth it would write is
+    // no measurement of where that surface is.
+    let key = gpu.with_mesh_source(&world, |source, world| {
+        gltf.pipeline_key(&source.device(world), 0, 0)
+    });
+    assert!(
+        key.options.color_target.blend.is_some(),
+        "an alphaMode BLEND material blends"
+    );
+    assert_eq!(
+        key.options
+            .depth_stencil
+            .as_ref()
+            .and_then(|depth| depth.depth_write_enabled),
+        Some(false),
+        "a blended material writes no depth"
+    );
+
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    spawn_scene(&gpu, &mut world, &gltf, &resources);
+    gpu.spawn(&mut world, bundle![camera()]);
+    let single = gpu.bind_offscreen_target(&world, "test::gltf_blend_single");
+    gpu.render(&world);
+    let one = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &single);
+
+    // A second draw of the same surface lands on exactly the depth the first
+    // one left, so it either composites or is discarded there.
+    spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let doubled = gpu.bind_offscreen_target(&world, "test::gltf_blend_doubled");
+    gpu.render(&world);
+    let two = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &doubled);
+
+    // The quad fills the frame, so one texel of it says what the whole surface
+    // does: half-opaque white over black once, three quarters of it twice.
+    let centre = |px: &[u8]| px.as_chunks::<4>().0[((HEIGHT / 2) * WIDTH + WIDTH / 2) as usize];
+    let (one, two) = (centre(&one), centre(&two));
+    assert!(
+        two[0] > one[0] + 16,
+        "the second blended quad composites over the first: {one:?} then {two:?}"
+    );
+}
+
 /// A material with `alphaMode: MASK` draws binary coverage: every fragment
 /// whose alpha falls below the cutoff is discarded, so the quad disappears
 /// whole when the cutoff clears its alpha and covers the frame when it does
@@ -986,6 +1047,7 @@ gpu_tests! {
     node_hierarchy_translates_the_quad,
     untextured_material_draws_flat,
     a_blended_material_composites_over_the_frame,
+    a_blended_material_writes_no_depth,
     a_masked_material_discards_fragments_below_its_cutoff,
     a_skinned_quad_follows_its_joint,
     an_animation_moves_the_drawn_mesh,
