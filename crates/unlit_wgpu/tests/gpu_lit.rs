@@ -380,15 +380,17 @@ struct SceneFixture {
 /// variant samples a base-color texture — create its material bind group.
 ///
 /// The variant's surface is rewritten for the test's render target: the color
-/// format and sample count come from here, while the depth attachment
-/// follows the variant's depth policy: a policy that tests depth is built for
-/// a target that has one, and a depth-less target for a pipeline the caller
-/// cleared the policy of.
+/// format and sample count come from here, while the depth attachment is the
+/// caller surface's word — a depth-less surface stays depth-less, which is
+/// what a color-only target needs from the pipelines bound into it.
 fn fixture(ctx: &Ctx, variant: &LitVariant, sample_count: u32) -> SceneFixture {
     let mut variant = variant.clone();
     variant.surface = SurfaceKey {
         color_format: COLOR_FORMAT,
-        depth_stencil_format: Some(default_depth_stencil_format(&ctx.device)),
+        // The caller's surface states the depth attachment, and a depth-less
+        // one stays depth-less: that is exactly what a color-only target
+        // needs from the pipelines bound into it.
+        depth_stencil_format: variant.surface.depth_stencil_format,
         sample_count,
     };
     let pipeline = SpecializedPipeline::create(&ctx.device, variant.clone());
@@ -1131,14 +1133,12 @@ async fn a_color_only_target_draws_a_cube() {
         depth_stencil_format: None,
         sample_count: 4,
     };
-    let mut fixture_variant = variant.clone();
-    fixture_variant.surface.depth_stencil_format = None;
     assert!(
-        !fixture(&ctx, &fixture_variant, 4).has_depth,
+        !fixture(&ctx, &variant, 4).has_depth,
         "so the fixture's pass declares no depth attachment"
     );
 
-    let fixture = fixture(&ctx, &fixture_variant, 4);
+    let fixture = fixture(&ctx, &variant, 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0; 4])]);
 
     // The cube reached the frame: some pixel is brighter than the clear color.

@@ -2535,7 +2535,10 @@ mod tests {
                 .unwrap()
                 .depth
         };
-        assert!(depth_of(far) > depth_of(middle), "{far:?} against {middle:?}");
+        assert!(
+            depth_of(far) > depth_of(middle),
+            "{far:?} against {middle:?}"
+        );
         assert!(
             depth_of(middle) > depth_of(near),
             "{middle:?} against {near:?}"

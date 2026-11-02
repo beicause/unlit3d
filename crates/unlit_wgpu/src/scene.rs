@@ -1299,14 +1299,18 @@ fn fs_main() -> @location(0) vec4<f32> {
         // UI: a trailing widget.
         let ui = Scene {
             draws: vec![
-                draw(DrawRange::vertices(0..4).with_instances(5..6))
-                    .with_order(DrawOrder::After),
+                draw(DrawRange::vertices(0..4).with_instances(5..6)).with_order(DrawOrder::After),
             ],
             ..Scene::default()
         };
 
         let mut pass = MockPass::default();
-        record_composited_into(&mut pass, &mut PassState::default(), &[&meshes, &lines, &ui], None);
+        record_composited_into(
+            &mut pass,
+            &mut PassState::default(),
+            &[&meshes, &lines, &ui],
+            None,
+        );
 
         // Opaque meshes, opaque line, then panes and the stroke farthest
         // first, then the widget.
@@ -1344,14 +1348,18 @@ fn fs_main() -> @location(0) vec4<f32> {
             draws: vec![
                 draw(DrawRange::vertices(0..4).with_instances(2..3))
                     .with_order(DrawOrder::Sorted(3.0)),
-                draw(DrawRange::vertices(0..4).with_instances(3..4))
-                    .with_order(DrawOrder::After),
+                draw(DrawRange::vertices(0..4).with_instances(3..4)).with_order(DrawOrder::After),
             ],
             ..Scene::default()
         };
 
         let mut pass = MockPass::default();
-        record_composited_into(&mut pass, &mut PassState::default(), &[&meshes, &lines], None);
+        record_composited_into(
+            &mut pass,
+            &mut PassState::default(),
+            &[&meshes, &lines],
+            None,
+        );
 
         assert_eq!(
             pass.draws,
@@ -1380,7 +1388,12 @@ fn fs_main() -> @location(0) vec4<f32> {
         };
 
         let mut pass = MockPass::default();
-        record_composited_into(&mut pass, &mut PassState::default(), &[&lines, &meshes], None);
+        record_composited_into(
+            &mut pass,
+            &mut PassState::default(),
+            &[&lines, &meshes],
+            None,
+        );
 
         assert_eq!(pass.draws, vec![(0..4, 0..1), (0..4, 1..2)]);
     }
@@ -1409,8 +1422,7 @@ fn fs_main() -> @location(0) vec4<f32> {
         };
         let ui = Scene {
             draws: vec![
-                draw(DrawRange::vertices(0..4).with_instances(2..3))
-                    .with_order(DrawOrder::After),
+                draw(DrawRange::vertices(0..4).with_instances(2..3)).with_order(DrawOrder::After),
             ],
             ..Scene::default()
         };

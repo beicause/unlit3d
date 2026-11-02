@@ -529,8 +529,7 @@ impl FrameSource for LineSource {
                 scene.draws.push(
                     DrawEntry::new(
                         &pipeline,
-                        DrawRange::vertices(0..QUAD_VERTICES)
-                            .with_instances(start..start + count),
+                        DrawRange::vertices(0..QUAD_VERTICES).with_instances(start..start + count),
                     )
                     .with_bind_group(GLOBAL_GROUP, bind_group)
                     .with_vertex_buffer(SEGMENT_SLOT, target),
@@ -547,8 +546,7 @@ impl FrameSource for LineSource {
                     scene.draws.push(
                         DrawEntry::new(
                             &pipeline,
-                            DrawRange::vertices(0..QUAD_VERTICES)
-                                .with_instances(base..base + 1),
+                            DrawRange::vertices(0..QUAD_VERTICES).with_instances(base..base + 1),
                         )
                         .with_bind_group(GLOBAL_GROUP, bind_group)
                         .with_vertex_buffer(SEGMENT_SLOT, target)
