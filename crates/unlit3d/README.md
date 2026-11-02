@@ -915,7 +915,7 @@ let ctx = spawn_context(
 );
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_lit_family(&world.root_scope());
-let key = LitPipelineKey::new(LitOptions::standard(&mesh_source.device(&world.root_scope())));
+let key = LitPipelineKey::new(LitOptions::standard());
 let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 
 // 2. Spawn the frame's pass and mount the mesh source under it. A pass is a

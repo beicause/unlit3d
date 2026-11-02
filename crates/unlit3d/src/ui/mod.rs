@@ -263,7 +263,7 @@ impl UiSource {
         // A UI drawn into an sRGB target encodes its own output in gamma space,
         // so the fragment converts to linear; the same call the winit path
         // makes for its swap chain.
-        let variant = ui_variant(device, surface.color_format.has_srgb_suffix(), surface);
+        let variant = ui_variant(surface.color_format.has_srgb_suffix(), surface);
         let pipeline = SpecializedPipeline::create(device, variant);
         // The UI binds no array of its own: its group is the frame's three
         // uniforms alone, so the recipe reads them out of the registry and

@@ -218,18 +218,17 @@ fn build(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    let device = source.device(&world.root_scope());
 
     // The default options draw unlit; these bodies are lit, so the flag is the
     // one thing that differs.
-    let mut lit = super::default_options(&device);
+    let mut lit = super::default_options();
     lit.unlit = false;
     let body_key = LitPipelineKey::new(lit);
     // The shell is a second variant of the same family: the one that spreads
     // each vertex along its normal and culls the faces the body draws. It tests
     // depth but writes none, which is what keeps the band visible whatever order
     // the two draws land in.
-    let shell_key = LitPipelineKey::new(LitOptions::inverted_hull(&device));
+    let shell_key = LitPipelineKey::new(LitOptions::inverted_hull());
 
     // The camera hangs in the shared subtree. Two sources draw this frame — the
     // meshes and the strokes — and a source reads only its own subtree, so a

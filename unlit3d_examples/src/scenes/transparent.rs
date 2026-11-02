@@ -131,7 +131,6 @@ fn build(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    let device = source.device(&world.root_scope());
 
     // Two variants of the same unlit pipeline: the opaque one every other
     // scene draws with, and a translucent one that blends straight-alpha
@@ -143,9 +142,9 @@ fn build(
     // still occlude them.
     // Both variants read the instance tint: the backdrop is tinted through it,
     // and every pane's tint is its own.
-    let opaque_key = LitPipelineKey::new(super::default_options(&device));
-    let mut translucent = super::default_options(&device);
-    translucent.color_target.blend = Some(wgpu::BlendState {
+    let opaque_key = LitPipelineKey::new(super::default_options());
+    let mut translucent = super::default_options();
+    translucent.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::SrcAlpha,
             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
@@ -160,12 +159,10 @@ fn build(
     // A pane is seen from the front, so culling its back face keeps it to one
     // blended layer; drawing both faces of the thin slab would blend it twice.
     translucent.primitive.cull_mode = Some(wgpu::Face::Back);
-    if let Some(depth) = translucent.depth_stencil.as_mut() {
-        // Depth *testing* stays on, so an opaque cube in front still occludes a
-        // pane; writes are off because a blended pane must not hide the pane
-        // behind it. The panes are composited among themselves by draw order.
-        depth.depth_write_enabled = Some(false);
-    }
+    // Depth *testing* stays on, so an opaque cube in front still occludes a
+    // pane; writes are off because a blended pane must not hide the pane
+    // behind it. The panes are composited among themselves by draw order.
+    translucent.depth_stencil.depth_write_enabled = false;
     // The pane mesh carries positions and indices only: no UV, no color. The
     // draw derives exactly those channels back off the mesh, and each pane's
     // tint is its own instance colour, so one mesh serves all of them.

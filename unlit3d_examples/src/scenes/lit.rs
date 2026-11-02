@@ -183,9 +183,8 @@ fn build(
     // the variant's lighting flag set, so the mesh and material allocation
     // below is the unlit pipeline's own.
     source.register_lit_family(&world.root_scope());
-    let device = source.device(&world.root_scope());
     // The default options draw unlit; this scene is the one that lights.
-    let mut options = super::default_options(&device);
+    let mut options = super::default_options();
     options.unlit = false;
     let key = LitPipelineKey::new(options.clone());
     // The wall's own key: the relief rides in the vertex stage, and a shader

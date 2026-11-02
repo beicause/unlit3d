@@ -13,11 +13,8 @@ use crate::mesh::{
     SecondaryStreamWriter,
 };
 #[cfg(feature = "lit")]
-use crate::render_attachments::default_depth_stencil_format;
 #[cfg(feature = "lit")]
-use crate::specialize::{
-    PipelineDescriptor, PipelineVariant, SurfaceKey, SurfaceTarget, VertexBufferLayoutDesc,
-};
+use crate::specialize::{PipelineDescriptor, PipelineVariant, SurfaceKey, VertexBufferLayoutDesc};
 #[cfg(feature = "lit")]
 use crate::util::Hashed;
 #[cfg(feature = "lit")]
@@ -416,12 +413,12 @@ impl core::fmt::Debug for LitShader {
 /// Everything a draw resolves is absent: the vertex channels, whether the draw
 /// samples a material, whether its mesh morphs, the render target and the
 /// device's array path are facts a family folds into an [`LitVariant`] when
-/// it resolves a draw, not choices a caller can make. What is left is what a
-/// caller actually picks.
+/// it resolves a draw, not choices a caller can make. The target owns the
+/// color format, the sample count and whether there is a depth attachment at
+/// all; what is left is what a caller actually picks.
 ///
 /// [`LitOptions::standard`] is the usual starting point: back-face culling,
-/// a filtering base-color texture binding and a four-sample sRGB target with a
-/// depth attachment.
+/// a filtering base-color texture binding and reverse-z depth.
 #[cfg(feature = "lit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LitOptions {
@@ -512,62 +509,80 @@ pub struct LitOptions {
     /// field is a caller's concern only for a pipeline a mesh does not
     /// describe.
     pub primitive: wgpu::PrimitiveState,
-    /// The pipeline's depth-stencil state, or `None` for a pass with no depth
-    /// attachment.
+    /// How the pipeline tests and writes the depth attachment, for a target
+    /// that has one.
     ///
-    /// Its format is the device's default depth-stencil format
-    /// ([`crate::render_attachments::default_depth_stencil_format`]) when built
-    /// with [`Self::standard`]. [`Self::standard`] is the renderer's reverse-z
-    /// convention: depth is cleared to the far plane, so nearer geometry
-    /// carries the greater value.
+    /// A target without a depth attachment runs the pipeline without a
+    /// depth-stencil state at all, whatever this field says, because `wgpu`
+    /// rejects a pipeline that declares one against a pass that has none. The
+    /// format is the attachment's own, which the options cannot know: it is
+    /// the target's word, and the variant carries the target.
     ///
-    /// `wgpu` requires this to agree with the render pass: a pass with a depth
-    /// attachment needs a state naming that attachment's format, and a pass
-    /// without one needs `None`. [`SurfaceTarget`] therefore follows the
-    /// target rather than leaving a stale format behind, so a pipeline always
-    /// matches the pass it is recorded into.
-    pub depth_stencil: Option<wgpu::DepthStencilState>,
-    /// The color target the pipeline writes: its format, blend state and
-    /// write mask.
-    ///
-    /// `blend` of `None` writes the fragment output unblended.
-    pub color_target: wgpu::ColorTargetState,
-    /// The pipeline multisampling state: the sample count it renders with,
-    /// plus the sample mask and alpha-to-coverage settings.
-    ///
-    /// A count of `1` disables multisampling. The state must match the
-    /// render pass attachments.
-    pub multisample: wgpu::MultisampleState,
+    /// [`Self::standard`] states the renderer's reverse-z convention: depth
+    /// is cleared to the far plane, so nearer geometry carries the greater
+    /// value.
+    pub depth_stencil: DepthStencilPolicy,
+    /// The blend state the fragment output composites with, or `None` to
+    /// write it unblended.
+    pub blend: Option<wgpu::BlendState>,
+    /// Which color channels the pipeline writes to the target.
+    pub write_mask: wgpu::ColorWrites,
+}
+
+/// The depth-test policy of a lit pipeline, without the attachment's format.
+///
+/// The format belongs to the target a pipeline is specialized for
+/// ([`SurfaceKey::depth_stencil_format`]), not to the policy: one policy
+/// serves every target, and the variant's descriptor fills the format in when
+/// it builds the pipeline. The options could not carry it and stay a
+/// policy — a pipeline built for one attachment's format cannot bind against a
+/// pass recording into another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DepthStencilPolicy {
+    /// Whether the pipeline writes the depth of the fragments it draws, or
+    /// leaves the attachment's records to the draws that wrote them.
+    pub depth_write_enabled: bool,
+    /// The comparison a fragment's depth passes against the attachment's
+    /// record with.
+    pub depth_compare: wgpu::CompareFunction,
+}
+
+impl Default for DepthStencilPolicy {
+    /// The renderer's reverse-z convention: depth is cleared to the far plane,
+    /// so nearer geometry carries the greater value, and writes its own.
+    fn default() -> Self {
+        Self {
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Greater,
+        }
+    }
+}
+
+impl DepthStencilPolicy {
+    /// The wgpu state this policy names, recording into a depth attachment of
+    /// `format`.
+    fn state(self, format: wgpu::TextureFormat) -> wgpu::DepthStencilState {
+        wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(self.depth_write_enabled),
+            depth_compare: Some(self.depth_compare),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }
+    }
 }
 
 #[cfg(feature = "lit")]
 impl LitOptions {
     /// The usual starting point: the full compressed mesh variant — positions,
     /// UVs, vertex colors, a base-color texture and per-instance transforms —
-    /// with the device's default depth-stencil format.
+    /// with reverse-z depth.
     ///
-    /// The depth-stencil format is [`default_depth_stencil_format`]'s choice
-    /// for `device`, so the pipeline's depth-stencil state matches the render
-    /// target's depth attachment on that device.
-    ///
-    /// Back faces are culled: the geometry this variant is for is closed
-    /// meshes wound counter-clockwise, whose insides are never meant to show.
-    pub fn standard(device: &wgpu::Device) -> Self {
-        let mut options = Self::standard_shape();
-        if let Some(depth_stencil) = &mut options.depth_stencil {
-            depth_stencil.format = default_depth_stencil_format(device);
-        }
-        options
-    }
-
-    /// The standard variant's device-independent fields: the policy, primitive
-    /// state, color target and multisample state, with a placeholder
-    /// depth-stencil format that [`Self::standard`] replaces with the device's
-    /// default.
-    ///
-    /// Available crate-wide so tests and builders that have no device can
-    /// construct the standard configuration without one.
-    pub(crate) fn standard_shape() -> Self {
+    /// The policy names no attachment format: the target the variant is
+    /// specialized for does. Back faces are culled, because the geometry this
+    /// variant is for is closed meshes wound counter-clockwise, whose insides
+    /// are never meant to show.
+    pub fn standard() -> Self {
         Self {
             shader: None,
             unlit: false,
@@ -580,22 +595,9 @@ impl LitOptions {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            color_target: wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            },
-            multisample: wgpu::MultisampleState {
-                count: 4,
-                ..Default::default()
-            },
+            depth_stencil: DepthStencilPolicy::default(),
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
         }
     }
 
@@ -633,7 +635,7 @@ impl LitOptions {
     /// mesh and no second pass: the two draws sort against each other by depth
     /// like any others, and the shell's unwritten depth is what keeps the
     /// order between them stable.
-    pub fn inverted_hull(device: &wgpu::Device) -> Self {
+    pub fn inverted_hull() -> Self {
         Self {
             unlit: true,
             expanded: true,
@@ -641,14 +643,11 @@ impl LitOptions {
                 cull_mode: Some(wgpu::Face::Front),
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: default_depth_stencil_format(device),
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            ..Self::standard(device)
+            depth_stencil: DepthStencilPolicy {
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Greater,
+            },
+            ..Self::standard()
         }
     }
 
@@ -860,8 +859,8 @@ impl LitVariant {
         assert!(
             !reads_an_array || texel_arrays || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
-             (its `max_storage_buffers_per_shader_stage` is 0, as WebGL2's is): start from \
-             `LitOptions::standard`, which picks the device's array path"
+             (its `max_storage_buffers_per_shader_stage` is 0, as WebGL2's is): compose \
+             the variant with `texel_arrays` set, the way the built-in family does"
         );
     }
 }
@@ -1074,12 +1073,19 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
 
         // The caller's policy is the base; the target and the mesh's strip
         // index format are applied here, because the variant carries them
-        // rather than the caller. The rewrite starts from a plain clone: the
-        // variant's word describes the policy it was keyed on, and the target
-        // is applied after hashing rather than into it.
-        let mut options = (*self.options).clone();
-        options.set_surface(self.surface);
-        options.primitive.strip_index_format = self.strip_index_format;
+        // rather than the caller. The policy is read field by field rather
+        // than rewritten in place: the options are keyed on, and the target is
+        // applied after hashing rather than into it.
+        let options = &*self.options;
+        let depth_stencil = self
+            .surface
+            .depth_stencil_format
+            .map(|format| options.depth_stencil.state(format));
+        let color_target = wgpu::ColorTargetState {
+            format: self.surface.color_format,
+            blend: options.blend,
+            write_mask: options.write_mask,
+        };
 
         let vertex_buffers = self.vertex_buffer_layouts();
         let vertex_buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = vertex_buffers
@@ -1095,14 +1101,21 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
                 compilation_options: Default::default(),
                 buffers: &vertex_buffers,
             },
-            primitive: options.primitive,
-            depth_stencil: options.depth_stencil.clone(),
-            multisample: options.multisample,
+            primitive: {
+                let mut primitive = options.primitive;
+                primitive.strip_index_format = self.strip_index_format;
+                primitive
+            },
+            depth_stencil,
+            multisample: wgpu::MultisampleState {
+                count: self.surface.sample_count,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some(FS_MAIN),
                 compilation_options: Default::default(),
-                targets: &[Some(options.color_target.clone())],
+                targets: &[Some(color_target)],
             }),
             multiview_mask: None,
             cache: None,
@@ -1551,59 +1564,6 @@ pub fn supports_storage_buffers(device: &wgpu::Device) -> bool {
     limits.max_storage_buffers_per_shader_stage > 0 && limits.max_storage_buffer_binding_size > 0
 }
 
-#[cfg(feature = "lit")]
-impl SurfaceTarget for LitOptions {
-    /// Rewrites exactly the three fields the target reaches: the color format,
-    /// the sample count and the depth-stencil format. The shader variant,
-    /// primitive state, blend state and write mask stay the caller's.
-    ///
-    /// [`LitOptions::srgb_to_linear_output`] is deliberately left alone: it
-    /// describes the fragment's input encoding, not the target format.
-    ///
-    /// The depth-stencil state follows the target. `wgpu` compares it against
-    /// the pass's attachment format when a pipeline is bound and rejects a
-    /// mismatch, so a target without a depth attachment must yield a pipeline
-    /// without a depth state rather than one still naming the base options'
-    /// format. A target that has one keeps the base state — the reverse-z
-    /// comparison, the write mask — and only takes the attachment's format.
-    fn set_surface(&mut self, surface: SurfaceKey) {
-        self.color_target.format = surface.color_format;
-        match surface.depth_stencil_format {
-            Some(format) => {
-                self.depth_stencil
-                    .get_or_insert_with(default_depth_stencil_state)
-                    .format = format;
-            }
-            None => self.depth_stencil = None,
-        }
-        self.multisample.count = surface.sample_count;
-    }
-}
-
-#[cfg(feature = "lit")]
-impl SurfaceTarget for LitVariant {
-    /// The variant's policy is hashed, so the rewrite goes through
-    /// [`Hashed::update`] rather than a mutable borrow of the options: the
-    /// stored word follows the changed fields, and the variant stays its own
-    /// valid cache key.
-    fn set_surface(&mut self, surface: SurfaceKey) {
-        self.options.update(|options| options.set_surface(surface));
-    }
-}
-
-/// The depth-stencil state a target with a depth attachment starts from: the
-/// reverse-z convention, with the format filled in from the attachment.
-#[cfg(feature = "lit")]
-fn default_depth_stencil_state() -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Depth24PlusStencil8,
-        depth_write_enabled: Some(true),
-        depth_compare: Some(wgpu::CompareFunction::Greater),
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
-    }
-}
-
 #[cfg(all(test, feature = "lit"))]
 mod tests {
     use super::*;
@@ -1680,7 +1640,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             "let marker_vertex = marker_module() * 0.25; world = world + vec3<f32>(0.0, marker_vertex, 0.0);",
             "let marker_fragment = 0.25; color = vec4<f32>(marker_fragment, color.g, color.b, color.a);",
         );
-        let mut options = LitOptions::standard_shape();
+        let mut options = LitOptions::standard();
         options.shader = Some(shader);
         let candidate = variant(
             options,
@@ -1723,7 +1683,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn an_empty_snippet_leaves_the_built_in_stage_alone() {
         let built_in = variant(
-            LitOptions::standard_shape(),
+            LitOptions::standard(),
             channels(
                 Some(ChannelEncoding::UncompressedPosition),
                 false,
@@ -1732,7 +1692,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             false,
             false,
         );
-        let mut options = LitOptions::standard_shape();
+        let mut options = LitOptions::standard();
         options.shader = Some(LitShader::new("empty", "", "", ""));
         let with_snippets = variant(
             options,
@@ -1864,7 +1824,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                 continue;
                             }
                             let base = variant(
-                                LitOptions::standard_shape(),
+                                LitOptions::standard(),
                                 channels(*position, joints, *secondary),
                                 base_color_texture,
                                 morph,
@@ -1908,7 +1868,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn srgb_output_flag_switches_the_conversion() {
         let composed = |srgb_to_linear_output: bool| {
-            let mut options = LitOptions::standard_shape();
+            let mut options = LitOptions::standard();
             options.srgb_to_linear_output = srgb_to_linear_output;
             compose(
                 &variant(options, LitVertexChannels::empty(), false, false),
@@ -1939,7 +1899,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn luminance_layouts_expand_a_sampled_texel() {
         let composed = |base_color: BaseColorChannels| {
-            let mut options = LitOptions::standard_shape();
+            let mut options = LitOptions::standard();
             options.base_color = base_color;
             compose(
                 &variant(
@@ -1989,7 +1949,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn alpha_cutoff_flag_discards_a_fragment_below_the_cutoff() {
         let composed = |alpha_cutoff: bool| {
-            let mut options = LitOptions::standard_shape();
+            let mut options = LitOptions::standard();
             options.alpha_cutoff = alpha_cutoff;
             compose(
                 &variant(
@@ -2020,7 +1980,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let cut = composed(true);
         let layouts = variant(
             {
-                let mut options = LitOptions::standard_shape();
+                let mut options = LitOptions::standard();
                 options.alpha_cutoff = true;
                 options
             },
@@ -2064,7 +2024,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     a sampled base-color texture"
     )]
     fn a_luminance_layout_without_a_texture_is_rejected() {
-        let mut options = LitOptions::standard_shape();
+        let mut options = LitOptions::standard();
         options.base_color = BaseColorChannels::Luminance;
         let _ = compose(
             &variant(
@@ -2081,84 +2041,22 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
     }
 
-    #[test]
-    fn set_surface_rewrites_only_the_target() {
-        let surface = SurfaceKey {
-            color_format: wgpu::TextureFormat::Bgra8Unorm,
-            depth_stencil_format: Some(wgpu::TextureFormat::Depth24Plus),
-            sample_count: 1,
-        };
-        let mut options = LitOptions::standard_shape();
-        let srgb_to_linear_output = options.srgb_to_linear_output;
-        let base_color = options.base_color;
-        let alpha_cutoff = options.alpha_cutoff;
-        let primitive = options.primitive;
-        let blend = options.color_target.blend;
-
-        options.set_surface(surface);
-
-        assert_eq!(options.color_target.format, surface.color_format);
-        assert_eq!(
-            options
-                .depth_stencil
-                .expect("a depth attachment keeps a state")
-                .format,
-            surface.depth_stencil_format.unwrap()
-        );
-        assert_eq!(options.multisample.count, surface.sample_count);
-
-        assert_eq!(options.srgb_to_linear_output, srgb_to_linear_output);
-        assert_eq!(options.base_color, base_color);
-        assert_eq!(options.alpha_cutoff, alpha_cutoff);
-        assert_eq!(options.primitive, primitive);
-        assert_eq!(options.color_target.blend, blend);
-    }
-
     /// A target with no depth attachment yields a pipeline with no depth state,
     /// so `wgpu`'s compatibility check against the pass cannot fail: a pass with
     /// no depth attachment rejects any pipeline that declares one, regardless of
-    /// what that state compares or writes.
+    /// what that state compares or writes. The policy survives untouched: a
+    /// target that has an attachment runs it against that attachment's format.
     #[test]
-    fn a_target_without_a_depth_attachment_clears_the_base() {
-        let mut options = LitOptions::standard_shape();
-        assert!(
-            options.depth_stencil.is_some(),
-            "the base options start with a depth state"
-        );
-
-        options.set_surface(SurfaceKey {
+    fn a_depth_less_surface_drops_the_state_and_a_deep_one_restores_it() {
+        let surface = |depth: Option<wgpu::TextureFormat>| SurfaceKey {
             color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            depth_stencil_format: None,
+            depth_stencil_format: depth,
             sample_count: 1,
-        });
+        };
+        let policy = LitOptions::standard().depth_stencil;
 
-        assert!(
-            options.depth_stencil.is_none(),
-            "a target without depth needs a pipeline without depth"
-        );
-    }
-
-    /// A target that gains a depth attachment after the state was dropped gets
-    /// the reverse-z convention back, so specialization is not one-way.
-    #[test]
-    fn a_target_with_a_depth_attachment_restores_the_state() {
-        let mut options = LitOptions::standard_shape();
-        options.set_surface(SurfaceKey {
-            color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            depth_stencil_format: None,
-            sample_count: 1,
-        });
-        assert!(options.depth_stencil.is_none());
-
-        options.set_surface(SurfaceKey {
-            color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            depth_stencil_format: Some(wgpu::TextureFormat::Depth32Float),
-            sample_count: 1,
-        });
-
-        let state = options
-            .depth_stencil
-            .expect("the attachment brings one back");
+        let with_depth = surface(Some(wgpu::TextureFormat::Depth32Float));
+        let state = policy.state(with_depth.depth_stencil_format.expect("the test's premise"));
         assert_eq!(state.format, wgpu::TextureFormat::Depth32Float);
         assert_eq!(state.depth_write_enabled, Some(true));
         assert_eq!(state.depth_compare, Some(wgpu::CompareFunction::Greater));
@@ -2176,7 +2074,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         };
         let make = |surface: SurfaceKey| {
             let mut candidate = variant(
-                LitOptions::standard(&device),
+                LitOptions::standard(),
                 LitVertexChannels::empty(),
                 false,
                 false,
@@ -2490,7 +2388,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// deformation without a position, and a luminance layout without a texel.
     #[test]
     fn contradictory_variants_are_rejected() {
-        let shape = LitOptions::standard_shape;
+        let shape = LitOptions::standard;
         let compressed = Some(ChannelEncoding::CompressedPosition);
         let mut luminance_without_a_texture = shape();
         luminance_without_a_texture.base_color = BaseColorChannels::Luminance;
@@ -2531,7 +2429,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn vertex_strides_follow_the_attribute_formats() {
         let layouts = variant(
-            LitOptions::standard_shape(),
+            LitOptions::standard(),
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
@@ -2567,7 +2465,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn uncompressed_channels_widen_their_slots() {
         let candidate = variant(
-            LitOptions::standard_shape(),
+            LitOptions::standard(),
             channels(
                 Some(ChannelEncoding::UncompressedPosition),
                 false,
@@ -2601,7 +2499,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn planar_channels_narrow_their_slots() {
         let candidate = variant(
-            LitOptions::standard_shape(),
+            LitOptions::standard(),
             channels(
                 Some(ChannelEncoding::PlanarPosition),
                 false,
@@ -2624,7 +2522,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn secondary_slot_follows_its_channels() {
         let stride = |secondary: SecondaryFlags| {
             variant(
-                LitOptions::standard_shape(),
+                LitOptions::standard(),
                 channels(None, false, secondary),
                 false,
                 false,
@@ -2671,7 +2569,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn position_slot_follows_its_channels() {
         let position = |position: Option<ChannelEncoding>, joints: bool| {
             variant(
-                LitOptions::standard_shape(),
+                LitOptions::standard(),
                 channels(position, joints, SecondaryFlags::empty()),
                 false,
                 false,
@@ -2713,7 +2611,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         use core::mem::{offset_of, size_of};
 
         let layouts = variant(
-            LitOptions::standard_shape(),
+            LitOptions::standard(),
             channels(
                 Some(ChannelEncoding::CompressedPosition),
                 false,
@@ -2808,7 +2706,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn instance_layout_declares_the_cutoff_and_the_hull_width_only_when_read() {
         let locations = |alpha_cutoff: bool, expanded: bool| {
-            let mut options = LitOptions::standard_shape();
+            let mut options = LitOptions::standard();
             options.alpha_cutoff = alpha_cutoff;
             options.expanded = expanded;
             variant(
@@ -2869,7 +2767,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn expanded_flag_pushes_the_vertex_along_its_normal() {
         let composed = |expanded: bool| {
-            let mut options = LitOptions::standard_shape();
+            let mut options = LitOptions::standard();
             options.expanded = expanded;
             compose(
                 &variant(
@@ -2913,7 +2811,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     #[should_panic(expected = "`EXPANDED` requires a normal channel")]
     fn an_expanding_variant_without_normals_is_rejected() {
-        let mut options = LitOptions::standard_shape();
+        let mut options = LitOptions::standard();
         options.expanded = true;
         let _ = compose(
             &variant(

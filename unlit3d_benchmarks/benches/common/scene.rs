@@ -13,7 +13,7 @@
 use glam::{Quat, Vec3};
 use unlit_ecs::bundle;
 use unlit_wgpu::capabilities::DeviceCapabilities;
-use unlit_wgpu::pipeline::{BaseColorChannels, LitOptions};
+use unlit_wgpu::pipeline::{BaseColorChannels, DepthStencilPolicy, LitOptions};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -76,16 +76,12 @@ impl Frame {
             alpha_cutoff: false,
             texture_filtering: true,
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            color_target: wgpu::ColorTargetState {
-                format: SURFACE.color_format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
+            depth_stencil: DepthStencilPolicy {
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
             },
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                ..Default::default()
-            },
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
             // The frame states no lights, so a benchmark measures the path a
             // light-free scene draws with.
             unlit: true,

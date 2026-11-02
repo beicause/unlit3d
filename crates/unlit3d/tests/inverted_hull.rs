@@ -94,8 +94,7 @@ fn hull(ctx: &Ctx, width: f32) -> Hull {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, ctx);
     let key = gpu.key.clone();
-    let shell_key =
-        LitPipelineKey::new(unlit_wgpu::pipeline::LitOptions::inverted_hull(&ctx.device));
+    let shell_key = LitPipelineKey::new(unlit_wgpu::pipeline::LitOptions::inverted_hull());
 
     let (positions, normals, indices) = sphere(RADIUS, SLICES, STACKS);
     let mesh = gpu.with_mesh_source(&world, |source, scope| {

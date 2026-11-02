@@ -159,8 +159,8 @@ pub static SCENE: SceneDef = SceneDef {
 /// strip alternates the winding of the triangles it composes, so a back-face
 /// test would drop every other one and the snapshot could no longer show the
 /// topology whole. Pinning culling is the opaque scenes' job.
-fn options_for(device: &wgpu::Device, topology: wgpu::PrimitiveTopology) -> LitOptions {
-    let mut options = default_options(device);
+fn options_for(topology: wgpu::PrimitiveTopology) -> LitOptions {
+    let mut options = default_options();
     options.primitive.topology = topology;
     options.primitive.cull_mode = None;
     options
@@ -212,7 +212,6 @@ fn build(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    let device = source.device(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
@@ -224,7 +223,7 @@ fn build(
     // width the specializer reads off the mesh.
     let keys: Vec<LitPipelineKey> = TOPOLOGIES
         .iter()
-        .map(|&topology| LitPipelineKey::new(options_for(&device, topology)))
+        .map(|&topology| LitPipelineKey::new(options_for(topology)))
         .collect();
     let indices = index_buffer();
 

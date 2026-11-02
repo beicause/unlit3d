@@ -33,7 +33,7 @@ pub mod transparent;
 pub mod ui_only;
 
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
-use unlit_wgpu::pipeline::LitOptions;
+use unlit_wgpu::pipeline::{DepthStencilPolicy, LitOptions};
 use unlit_wgpu::scene::ViewportRect;
 use unlit3d::prelude::*;
 
@@ -546,33 +546,19 @@ pub fn aim_camera(
 /// uploads, and which of them a draw reads follows the mesh it draws. The tint
 /// rides the same per-instance record as the transform, so a draw that reads
 /// instances reads the tint too.
-pub fn default_options(device: &wgpu::Device) -> LitOptions {
-    use unlit_wgpu::render_attachments::default_depth_stencil_format;
+pub fn default_options() -> LitOptions {
     LitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
         },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: default_depth_stencil_format(device),
-            depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Greater),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        color_target: wgpu::ColorTargetState {
-            format: TEST_FORMAT,
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-        },
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            ..Default::default()
-        },
+        depth_stencil: DepthStencilPolicy::default(),
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
         // These scenes state no lights, so their variants draw their base
         // colour unchanged.
         unlit: true,
-        ..LitOptions::standard(device)
+        ..LitOptions::standard()
     }
 }
 

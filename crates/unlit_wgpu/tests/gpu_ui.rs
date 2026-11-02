@@ -188,7 +188,6 @@ fn render_ui_with(
 /// The UI variant the tests build, for the test's render target.
 fn ui_variant_for_target(device: &wgpu::Device) -> LitVariant {
     ui_variant(
-        device,
         true,
         SurfaceKey {
             color_format: COLOR_FORMAT,

@@ -83,7 +83,7 @@ impl TestGpu {
         // carries the tint as well as the transform: the ECS tests tint their
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
-        let key = LitPipelineKey::new(default_options(&ctx.device));
+        let key = LitPipelineKey::new(default_options());
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
@@ -508,33 +508,16 @@ impl TestGpu {
 /// The options are pure policy: they say nothing about the channels a mesh
 /// carries. Those follow the slices `allocate_deformed_cube_mesh` uploads, so a
 /// deformed test and a plain one share these options.
-pub fn default_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::LitOptions {
-    use unlit_wgpu::render_attachments::default_depth_stencil_format;
+pub fn default_options() -> unlit_wgpu::pipeline::LitOptions {
     unlit_wgpu::pipeline::LitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
         },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: default_depth_stencil_format(device),
-            depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Greater),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        color_target: wgpu::ColorTargetState {
-            format: COLOR_FORMAT,
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-        },
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            ..Default::default()
-        },
         // These tests state no lights, so their variants draw their base
         // colour unchanged.
         unlit: true,
-        ..unlit_wgpu::pipeline::LitOptions::standard(device)
+        ..unlit_wgpu::pipeline::LitOptions::standard()
     }
 }
 

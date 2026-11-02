@@ -163,12 +163,14 @@ impl Example {
         //    caller's policy, the vertex channels the geometry actually has,
         //    whether a material and morph targets are bound, and the target
         //    the pipeline renders into. Equal variants share one compiled
-        //    pipeline, so the variant doubles as the cache key.
-        let mut options = LitOptions::standard(device);
+        //    pipeline, so the variant doubles as the cache key. The target is
+        //    the caller's word: the color format, the sample count and the
+        //    depth attachment are facts about it, not fields of the policy.
+        let mut options = LitOptions::standard();
         let surface = SurfaceKey {
-            color_format: options.color_target.format,
-            depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
-            sample_count: options.multisample.count,
+            color_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            depth_stencil_format: Some(default_depth_stencil_format(device)),
+            sample_count: 4,
         };
         // Unlit: the fragment returns its base color without reading the
         // frame's light arrays, which is what keeps this example's global

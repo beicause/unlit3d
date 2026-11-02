@@ -343,7 +343,7 @@ impl LitGltf {
         // nothing: the base colour it imports is what the file says.
         let mut options = LitOptions {
             unlit: true,
-            ..LitOptions::standard(device)
+            ..LitOptions::standard()
         };
         // The texture the material samples decides whether the base-color
         // binding is a filtering one: the pipeline and the material bind group
@@ -367,10 +367,8 @@ impl LitGltf {
         // the one overlap the back-to-front sort of `ZSortedDrawing` cannot
         // reorder away.
         if material.alpha_mode() == gltf::material::AlphaMode::Blend {
-            options.color_target.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
-            if let Some(depth) = options.depth_stencil.as_mut() {
-                depth.depth_write_enabled = Some(false);
-            }
+            options.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+            options.depth_stencil.depth_write_enabled = false;
         }
         // A `MASK` material is not a translucent one: its fragments are either
         // drawn whole or discarded, so it neither blends nor needs the
@@ -499,7 +497,7 @@ impl LitGltf {
         // texture; build the bind group against exactly that variant. Its
         // layout is the filtering one only when the image can be filtered, and
         // the sampler has to be non-filtering in step with it.
-        let key = textured_key(&source.device(world), image.filtering);
+        let key = textured_key(image.filtering);
         let descriptor = sampler_descriptor(&info.texture().sampler());
         let descriptor = if image.filtering {
             descriptor
@@ -1102,7 +1100,7 @@ impl LitGltf {
                 let cutoff = alpha_cutoff(&primitive.material());
                 let material = samples_base_color_texture(&primitive)
                     .then(|| self.primitive_material(primitive, &resources.materials));
-                let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
+                let z_sorted = mesh_handle.key.options.blend.is_some();
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
                     let pose = *pose.get_or_insert_with(|| {
@@ -1482,11 +1480,11 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 /// [`LitGltf::pipeline_key`] derives to. The per-vertex channels a draw adds
 /// do not enter the material group, and wgpu deduplicates identical layout
 /// descriptors, so the group fits the pipeline whatever else its key reads.
-fn textured_key(device: &wgpu::Device, filtering: bool) -> LitPipelineKey {
+fn textured_key(filtering: bool) -> LitPipelineKey {
     LitPipelineKey::new(LitOptions {
         unlit: true,
         texture_filtering: filtering,
-        ..LitOptions::standard(device)
+        ..LitOptions::standard()
     })
 }
 

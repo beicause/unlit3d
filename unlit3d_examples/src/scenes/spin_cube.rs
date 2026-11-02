@@ -59,7 +59,7 @@ fn build(
     source.register_lit_family(&world.root_scope());
     let key = LitPipelineKey::new(LitOptions {
         unlit: true,
-        ..LitOptions::standard(&source.device(&world.root_scope()))
+        ..LitOptions::standard()
     });
     let source_entity = world
         .scope_mut(pass)

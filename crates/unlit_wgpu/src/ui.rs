@@ -20,7 +20,7 @@
 //! // The caller owns the globals: a camera uniform (written every frame with
 //! // `screen_view`), a frame-globals uniform, the view `screen_viewport`
 //! // derives from the same points, and the bind group binding all three.
-//! let variant = ui_variant(device, /* the target encodes sRGB: */ true, surface);
+//! let variant = ui_variant(/* the target encodes sRGB: */ true, surface);
 //! let pipeline = SpecializedPipeline::create(device, variant);
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");
@@ -204,12 +204,8 @@ pub fn screen_viewport(viewport_points: [f32; 2]) -> View {
 /// morph target, and a base-color texture sampled through a material group.
 /// What changes with the target is the surface the variant carries, so this is
 /// the only place a UI variant is built.
-pub fn ui_variant(
-    device: &wgpu::Device,
-    srgb_to_linear_output: bool,
-    surface: SurfaceKey,
-) -> LitVariant {
-    let mut options = LitOptions::standard(device);
+pub fn ui_variant(srgb_to_linear_output: bool, surface: SurfaceKey) -> LitVariant {
+    let mut options = LitOptions::standard();
     apply_ui_settings(&mut options, srgb_to_linear_output);
     LitVariant {
         options: Hashed::new(options),
@@ -255,7 +251,7 @@ fn apply_ui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
     options.primitive.cull_mode = None;
     // egui tessellates premultiplied colors, so the source's RGB is added to
     // the destination scaled by the alpha it leaves behind.
-    options.color_target.blend = Some(wgpu::BlendState {
+    options.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
@@ -269,12 +265,10 @@ fn apply_ui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
     });
     // The UI overlays whatever the pass holds, so it neither tests nor writes
     // depth. Whether the target has a depth attachment at all is decided by
-    // the surface the variant carries; a state left here is the overlaid one,
-    // and a target without depth drops it.
-    if let Some(depth_stencil) = &mut options.depth_stencil {
-        depth_stencil.depth_write_enabled = Some(false);
-        depth_stencil.depth_compare = Some(wgpu::CompareFunction::Always);
-    }
+    // the surface the variant carries; the policy only says what a target
+    // with one would run.
+    options.depth_stencil.depth_write_enabled = false;
+    options.depth_stencil.depth_compare = wgpu::CompareFunction::Always;
 }
 
 /// How much geometry a frame holds: the two numbers the packing and the draw
@@ -1181,7 +1175,7 @@ mod tests {
     /// assert on matters, so the depth-stencil format is the
     /// device-independent placeholder.
     fn ui_options_for_tests(srgb_to_linear_output: bool) -> LitOptions {
-        let mut options = LitOptions::standard_shape();
+        let mut options = LitOptions::standard();
         apply_ui_settings(&mut options, srgb_to_linear_output);
         options
     }
@@ -1227,19 +1221,16 @@ mod tests {
         // draw binds the default record.
         assert!(variant.vertex_buffer_layouts()[INSTANCE_SLOT as usize].is_some());
         let options = &variant.options;
-        // Overlaid rather than depth-tested. The base options carry a depth
-        // state, so the UI's overlaid state is the one left behind.
-        let depth_stencil = options
-            .depth_stencil
-            .as_ref()
-            .expect("the base options carry a depth state");
-        assert_eq!(depth_stencil.depth_write_enabled, Some(false));
+        // Overlaid rather than depth-tested: the policy says what a target
+        // with an attachment would run, and the surface says whether it has
+        // one.
+        assert!(!options.depth_stencil.depth_write_enabled);
         assert_eq!(
-            depth_stencil.depth_compare,
-            Some(wgpu::CompareFunction::Always)
+            options.depth_stencil.depth_compare,
+            wgpu::CompareFunction::Always
         );
         // egui's colors premultiply their own alpha.
-        let blend = options.color_target.blend.expect("the UI variant blends");
+        let blend = options.blend.expect("the UI variant blends");
         assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
         assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
     }

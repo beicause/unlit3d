@@ -594,13 +594,12 @@ pub fn create_mesh(
     // request unread.
     let cutoff = args.cutoff.is_some();
     let (key, mesh) = with_mesh_source(world, source, |source, scope| {
-        let device = source.device(scope);
         let mut options = if hull {
-            LitOptions::inverted_hull(&device)
+            LitOptions::inverted_hull()
         } else {
             LitOptions {
                 unlit: true,
-                ..LitOptions::standard(&device)
+                ..LitOptions::standard()
             }
         };
         options.alpha_cutoff = cutoff;

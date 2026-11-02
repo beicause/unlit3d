@@ -54,7 +54,7 @@ fn floor(ctx: &Ctx) -> Floor {
     let mut source = MeshSource::new(&world.root_scope(), gpu.context);
     source.register_lit_family(&world.root_scope());
     let source = gpu.spawn_source(&mut world, source);
-    let mut options = default_options(&ctx.device);
+    let mut options = default_options();
     options.unlit = false;
     let key = LitPipelineKey::new(options);
 

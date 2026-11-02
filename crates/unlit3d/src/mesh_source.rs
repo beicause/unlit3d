@@ -1698,7 +1698,7 @@ mod tests {
         );
         let mut source = MeshSource::new(&world.root_scope(), ctx);
         source.register_lit_family(&world.root_scope());
-        let key = LitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+        let key = LitPipelineKey::new(unlit_options());
         let target = bind_test_target(&world.root_scope(), ctx);
         Harness {
             world,
@@ -1773,28 +1773,26 @@ mod tests {
     }
 
     /// The standard policy with lighting off: these tests state no lights.
-    fn unlit_options(device: &wgpu::Device) -> LitOptions {
+    fn unlit_options() -> LitOptions {
         LitOptions {
             unlit: true,
-            ..LitOptions::standard(device)
+            ..LitOptions::standard()
         }
     }
 
     /// A second policy that differs from the standard one in a field the
     /// pipeline is specialized on, so it resolves to its own variant.
-    fn alternative_options(device: &wgpu::Device) -> LitOptions {
+    fn alternative_options() -> LitOptions {
         LitOptions {
             srgb_to_linear_output: true,
-            ..unlit_options(device)
+            ..unlit_options()
         }
     }
 
     /// A triangle mesh with one morph target, for the tests that need the
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
-        let key = LitPipelineKey::new(unlit_options(
-            &harness.source.device(&harness.world.root_scope()),
-        ));
+        let key = LitPipelineKey::new(unlit_options());
         // One target displacing all three vertices by the same amount, packed
         // vertex-major: three components per vertex.
         let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
@@ -1969,7 +1967,7 @@ mod tests {
     #[test]
     fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
         let mut h = harness();
-        let key = LitPipelineKey::new(unlit_options(&h.source.device(&h.world.root_scope())));
+        let key = LitPipelineKey::new(unlit_options());
 
         // The mesh packs the channels the caller passed, not the ones the key
         // used to declare: the options are pure policy now.
@@ -2366,7 +2364,7 @@ mod tests {
     #[test]
     fn a_non_indexed_mesh_holds_no_index_allocation() {
         let mut h = harness();
-        let key = LitPipelineKey::new(unlit_options(&h.source.device(&h.world.root_scope())));
+        let key = LitPipelineKey::new(unlit_options());
         let mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
@@ -2668,8 +2666,7 @@ mod tests {
         let mut h = harness();
         // A second key whose specialized options differ, so it resolves to its
         // own concrete pipeline.
-        let alternative_key =
-            LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
+        let alternative_key = LitPipelineKey::new(alternative_options());
 
         // Warm both variants, first key first, so their pipeline ids follow
         // the order they were resolved in.
@@ -3052,7 +3049,7 @@ mod tests {
         let mut h = harness();
         // A variant that binds no material group, so the frame needs no
         // material to be a complete draw.
-        let key = LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
+        let key = LitPipelineKey::new(alternative_options());
         let mesh = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &key.options,
@@ -3123,7 +3120,7 @@ mod tests {
     #[test]
     fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let mut h = harness();
-        let key = LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
+        let key = LitPipelineKey::new(alternative_options());
         // Both meshes are indexed and share the pool's index buffer, so what
         // tells their draws apart is the slice each one names.
         let first = h.source.allocate_lit_mesh(
@@ -3530,8 +3527,7 @@ mod tests {
         let plain = h.tri_mesh();
         // A different policy specializes to a different variant, hence a
         // different RenderPipelineId.
-        let other_key =
-            LitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
+        let other_key = LitPipelineKey::new(alternative_options());
         let other = h.source.allocate_lit_mesh(
             &h.world.root_scope(),
             &other_key.options,

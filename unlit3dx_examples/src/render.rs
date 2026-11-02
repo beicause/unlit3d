@@ -83,10 +83,10 @@ pub struct RenderEntity(pub Entity);
 /// registry either way.
 pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey)> {
     let mut sources = world.root_scope().query::<(&Source, Entity)>();
-    let (source, entity) = sources
+    let entity = sources
         .iter()
-        .find(|(source, _)| source.as_ref::<MeshSource>().is_some())?;
-    let mesh_source = source.as_ref::<MeshSource>()?;
+        .find(|(source, _)| source.as_ref::<MeshSource>().is_some())
+        .map(|(_, entity)| entity)?;
     let key = world
         .root_scope()
         .query::<&LitPipelineKey>()
@@ -96,7 +96,7 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey
         .unwrap_or_else(|| {
             LitPipelineKey::new(LitOptions {
                 unlit: true,
-                ..LitOptions::standard(&mesh_source.device(&world.root_scope()))
+                ..LitOptions::standard()
             })
         });
     Some((RenderEntity(entity), key))

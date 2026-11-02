@@ -800,7 +800,7 @@ async fn a_blended_material_composites_over_the_frame() {
         gltf.pipeline_key(&source.device(world), 0, 0)
     });
     assert!(
-        key.options.color_target.blend.is_some(),
+        key.options.blend.is_some(),
         "an alphaMode BLEND material blends"
     );
 
@@ -868,15 +868,11 @@ async fn a_blended_material_writes_no_depth() {
         gltf.pipeline_key(&source.device(world), 0, 0)
     });
     assert!(
-        key.options.color_target.blend.is_some(),
+        key.options.blend.is_some(),
         "an alphaMode BLEND material blends"
     );
-    assert_eq!(
-        key.options
-            .depth_stencil
-            .as_ref()
-            .and_then(|depth| depth.depth_write_enabled),
-        Some(false),
+    assert!(
+        !key.options.depth_stencil.depth_write_enabled,
         "a blended material writes no depth"
     );
 
@@ -935,7 +931,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             "an alphaMode MASK material cuts its fragments off"
         );
         assert!(
-            key.options.color_target.blend.is_none(),
+            key.options.blend.is_none(),
             "a cut-off material does not blend"
         );
 

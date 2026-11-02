@@ -106,8 +106,7 @@ fn build_clusters(
         far: CLUSTER_FAR,
         ..ClusterConfig::DEFAULT
     };
-    let device = source.device(&world.root_scope());
-    let mut options = super::default_options(&device);
+    let mut options = super::default_options();
     options.unlit = false;
     options.shader = Some(LitShader::new("lit::cluster_grid", "", "", cluster_grid()));
     let key = LitPipelineKey::new(options);
