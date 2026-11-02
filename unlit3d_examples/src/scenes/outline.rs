@@ -7,12 +7,25 @@
 //! a thinner one.
 //!
 //! Beside them, screen-space strokes draw what a silhouette cannot: the orbit
-//! the bodies stand on, and the ticks along it. A stroke is a width in physical
-//! pixels, so it keeps its own width across the whole ring — the near side and
-//! the far side alike — where the band narrows with distance.
+//! the bodies stand on, the ticks along it, and a pair of armillary rings
+//! circling the largest body. A stroke is a width in physical pixels, so it
+//! keeps its own width across the whole ring — the near side and the far side
+//! alike — where the band narrows with distance.
+//!
+//! The strokes come in both of the source's ink behaviours. The ticks are
+//! opaque: they cover what they draw over and write the depth that hides the
+//! strokes behind them. The orbit and the armillary rings are washes, blended
+//! over the frame instead of covering it, so a ring shows the body it passes
+//! in front of and two crossing rings deepen where they share a pixel. The
+//! rings circle a body whose far side they pass behind, so the same frame
+//! holds a wash in front of a body and one hidden by it.
 //!
 //! The two are in one scene because the picture is the argument: a frame
-//! holding either alone would leave the other's promise unpinned.
+//! holding either alone would leave the other's promise unpinned. The scene
+//! is declared twice — once for a single-sampled target and once for a
+//! multisampled one — because an opaque stroke's antialiasing follows the
+//! target's sample count: single-sampled it cuts at half coverage, and
+//! multisampled it carries that coverage in its alpha for the blend to place.
 //!
 //! The bodies carry vertex normals because the shell is pushed along them; a
 //! mesh without normals cannot be spread at all. One body in the frame carries
@@ -39,14 +52,24 @@ const HULL_WIDTH: f32 = 0.055;
 /// The colour the band is drawn in.
 const INK: glam::Vec4 = glam::Vec4::new(0.01, 0.01, 0.04, 1.0);
 
-/// The same ink as a stroke carries it: the bytes the segment stream holds,
-/// which the fragment writes into a linear target before it is encoded.
+/// The snapshot the single-sampled capture freezes its frame under.
+const SNAPSHOT: &str = "outline.webp";
+
+/// The snapshot the multisampled capture freezes its frame under.
+const MSAA_SNAPSHOT: &str = "outline_msaa.webp";
+
+/// The ink the opaque ticks carry: the bytes the segment stream holds, which
+/// the fragment writes into a linear target before it is encoded.
 ///
 /// The band's colour reaches the shader as a float and is quantized to bytes on
 /// the way in, so the stroke states the quantized bytes rather than the floats
 /// again: two colours that look alike in the source would otherwise differ by
 /// a few counts on screen and the scene would show two inks.
 const INK_STROKE: [u8; 4] = [3, 3, 10, 255];
+
+/// [`INK_STROKE`] washed by [`WASH_ALPHA`]: the blended orbit's ink, the same
+/// colour at the alpha a wash blends with.
+const INK_WASH: [u8; 4] = [3, 3, 10, 102];
 
 /// The paper the whole scene is drawn on.
 const PAPER: wgpu::Color = wgpu::Color {
@@ -86,6 +109,31 @@ const ORBIT_HALF_WIDTH: f32 = 1.75;
 const TICKS: u32 = 24;
 const TICK_HEIGHT: f32 = 0.22;
 const TICK_HALF_WIDTH: f32 = 1.25;
+
+/// The alpha the blended inks are washed to.
+///
+/// Light enough that what a ring passes in front of reads through it, deep
+/// enough that two rings crossing share a pixel of clearly deeper ink.
+const WASH_ALPHA: f32 = 0.4;
+
+/// The armillary rings circling the largest body: each is drawn around an
+/// axis the frame tilts differently, so the two cross twice and each passes
+/// in front of the body it circles on one side and behind it on the other.
+///
+/// The colour is a saturated ink washed to [`WASH_ALPHA`]; the rings are drawn
+/// wider than the orbit so their crossings read at a glance.
+const ARMILLARY: [(glam::Vec3, [u8; 3]); 2] = [
+    (glam::Vec3::new(0.0, 0.9, 1.0), [36, 96, 220]),
+    (glam::Vec3::new(0.9, 0.3, 0.6), [210, 60, 60]),
+];
+const ARMILLARY_RADIUS: f32 = 0.98;
+const ARMILLARY_SEGMENTS: u32 = 96;
+const ARMILLARY_HALF_WIDTH: f32 = 2.5;
+
+/// The point both armillary rings are centred on: the largest body's centre,
+/// so each ring hugs it — outside the band [`HULL_WIDTH`] draws, inside the
+/// orbit that encloses the whole group.
+const ARMILLARY_CENTRE: glam::Vec3 = glam::Vec3::new(0.0, 0.92, -0.2);
 
 /// How finely the smooth spheres are split — fine enough that a baked normal is
 /// what the gradient follows rather than the facets.
@@ -190,7 +238,8 @@ impl Bundle for Outlined {
     }
 }
 
-/// The scene: outlined bodies standing on an orbit drawn with strokes.
+/// The scene: outlined bodies standing on an orbit drawn with strokes, on a
+/// single-sampled target.
 pub static SCENE: SceneDef = SceneDef {
     id: "outline",
     title: "Inked outlines",
@@ -207,8 +256,56 @@ pub static SCENE: SceneDef = SceneDef {
     build,
 };
 
-/// Build the scene's world content.
+/// The same scene on a multisampled target.
+///
+/// The world is the one [`SCENE`] builds — the difference is the sample count
+/// the capture binds, which is the one thing that changes how an opaque stroke
+/// is antialiased: single-sampled it cuts at half its coverage, and
+/// multisampled it carries that coverage in its alpha for the blend to place.
+pub static MSAA_SCENE: SceneDef = SceneDef {
+    id: "outline_msaa",
+    title: "Inked outlines, multisampled",
+    description: "the outline scene on a four-sample target",
+    size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
+    clear: Some(PAPER),
+    frames: 1,
+    step_seconds: None,
+    samples: 4,
+    depth: true,
+    ui: false,
+    reproducible_ui: false,
+    build: build_msaa,
+};
+
+/// Build the single-sampled scene's world content.
 fn build(
+    world: &mut World,
+    context: RenderContext,
+    pass: Entity,
+    ui: Option<Entity>,
+    size: (u32, u32),
+    options: SceneOptions,
+) -> SceneControl {
+    built(SNAPSHOT, world, context, pass, ui, size, options)
+}
+
+/// Build the multisampled scene's world content: the same world, frozen under
+/// the other snapshot's name.
+fn build_msaa(
+    world: &mut World,
+    context: RenderContext,
+    pass: Entity,
+    ui: Option<Entity>,
+    size: (u32, u32),
+    options: SceneOptions,
+) -> SceneControl {
+    built(MSAA_SNAPSHOT, world, context, pass, ui, size, options)
+}
+
+/// The core both builds share; `snapshot` is the name frame 0 freezes under.
+fn built(
+    snapshot: &'static str,
     world: &mut World,
     context: RenderContext,
     pass: Entity,
@@ -332,12 +429,18 @@ fn build(
     // the source collects the Line components its scope sees every frame, so
     // the ring is edited the way the bodies are. The entities go under the
     // source's own, because a source draws its subtree and the shared one.
+    //
+    // The orbit and the armillary rings are washes — blended over the frame
+    // and hidden by what stands in front of them — and the ticks are opaque,
+    // so one source draws both of the source's ink behaviours.
     let lines = world
         .scope_mut(pass)
         .expect("the pass is alive")
         .spawn(bundle![Source::new(LineSource::new())]);
-    for segment in orbit() {
-        super::spawn_in(world, lines, bundle![Line::from(segment)]);
+    let mut strokes = orbit();
+    strokes.extend(armillary());
+    for stroke in strokes {
+        super::spawn_in(world, lines, bundle![stroke]);
     }
 
     SceneControl {
@@ -353,7 +456,7 @@ fn build(
                 frame_size,
             );
         }),
-        snapshot: Box::new(|frame| (frame == 0).then(|| "outline.webp".to_owned())),
+        snapshot: Box::new(move |frame| (frame == 0).then(|| snapshot.to_owned())),
     }
 }
 
@@ -402,11 +505,13 @@ fn sphere(slices: u32, stacks: u32) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) 
     (positions, normals, indices)
 }
 
-/// The orbit and its ticks, as the segments the stroke source draws.
+/// The orbit and its ticks, as the strokes the line source draws.
 ///
 /// The ring is closed by repeating its first station last, and every tick is
-/// its own segment, so no two of them are joined by a stroke.
-fn orbit() -> Vec<LineSegment> {
+/// its own segment, so no two of them are joined by a stroke. The ring is a
+/// wash — blended over the frame, its ink carrying [`WASH_ALPHA`] — and the
+/// ticks are opaque, so one orbit holds both of the source's ink behaviours.
+fn orbit() -> Vec<Line> {
     let mut segments = Vec::with_capacity(ORBIT_SEGMENTS as usize + TICKS as usize);
     let station = |step: u32| {
         let angle = core::f32::consts::TAU * step as f32 / ORBIT_SEGMENTS as f32;
@@ -417,11 +522,11 @@ fn orbit() -> Vec<LineSegment> {
         )
     };
     for step in 0..ORBIT_SEGMENTS {
-        segments.push(
+        segments.push(Line::blended(
             LineSegment::new(station(step).to_array(), station(step + 1).to_array())
-                .with_color(INK_STROKE)
+                .with_color(INK_WASH)
                 .with_half_width(ORBIT_HALF_WIDTH),
-        );
+        ));
     }
     // The ticks stand on the ring, spaced round it rather than at one per
     // segment: they are the marks the ring is read against, and one at every
@@ -430,11 +535,43 @@ fn orbit() -> Vec<LineSegment> {
         let step = tick * ORBIT_SEGMENTS / TICKS;
         let foot = station(step);
         let head = foot + glam::Vec3::Y * TICK_HEIGHT;
-        segments.push(
+        segments.push(Line::opaque(
             LineSegment::new(foot.to_array(), head.to_array())
                 .with_color(INK_STROKE)
                 .with_half_width(TICK_HALF_WIDTH),
-        );
+        ));
     }
     segments
+}
+
+/// The armillary rings, as the segments the stroke source draws.
+///
+/// Each ring circles the largest body around its own tilted axis: the axis is
+/// the ring's normal, and the frame it is drawn in is the pair of directions
+/// `glam` reports orthogonal to it. Two different tilts make the rings cross
+/// twice, and circling a body puts each ring in front of it on one half and
+/// behind it on the other — the picture a wash needs, of depth acting on a
+/// stroke that covers nothing.
+fn armillary() -> impl Iterator<Item = Line> {
+    ARMILLARY.iter().flat_map(|(axis, ink)| {
+        let (u, v) = axis.any_orthonormal_pair();
+        let station = move |step: u32| {
+            let angle = core::f32::consts::TAU * step as f32 / ARMILLARY_SEGMENTS as f32;
+            ARMILLARY_CENTRE
+                + u * (ARMILLARY_RADIUS * angle.cos())
+                + v * (ARMILLARY_RADIUS * angle.sin())
+        };
+        (0..ARMILLARY_SEGMENTS).map(move |step| {
+            Line::blended(
+                LineSegment::new(station(step).to_array(), station(step + 1).to_array())
+                    .with_color(wash(*ink))
+                    .with_half_width(ARMILLARY_HALF_WIDTH),
+            )
+        })
+    })
+}
+
+/// The ink a wash carries: `rgb` washed to [`WASH_ALPHA`].
+fn wash(rgb: [u8; 3]) -> [u8; 4] {
+    [rgb[0], rgb[1], rgb[2], (WASH_ALPHA * 255.0) as u8]
 }

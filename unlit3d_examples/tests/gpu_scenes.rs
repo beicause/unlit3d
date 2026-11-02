@@ -477,17 +477,35 @@ async fn lit_clusters_matches_its_snapshot() {
 /// The scene that draws outlines by both of the ways this library draws them.
 ///
 /// A body is one mesh drawn twice — lit, and again spread along its normals
-/// with its faces culled — while its orbit and ticks are screen-space strokes.
-/// So the frame fails if the expanding variant stops spreading, if it stops
-/// culling the faces the body draws, if the band stops being a width in world
-/// units, or if a stroke stops being a width in pixels. It is also the one
-/// capture that mixes the two source kinds in one pass: a camera the strokes
-/// could not reach would leave the orbit out of it.
+/// with its faces culled — while its orbit, ticks and armillary rings are
+/// screen-space strokes. So the frame fails if the expanding variant stops
+/// spreading, if it stops culling the faces the body draws, if the band stops
+/// being a width in world units, or if a stroke stops being a width in pixels.
+/// It is also the one capture that mixes the two source kinds in one pass: a
+/// camera the strokes could not reach would leave the orbit out of it.
 async fn outline_matches_its_snapshot() {
     compare_scene(
         &scenes::outline::SCENE,
         OUTLINE_TOLERANCE,
         &snapshots!["outline.webp"],
+    )
+    .await;
+}
+
+/// The same picture on a multisampled target.
+///
+/// The strokes come in both ink behaviours — washes blended over the frame,
+/// and the opaque ticks that cover and write depth — and the opaque ones are
+/// the reason this capture exists beside the single-sampled one: an opaque
+/// stroke's antialiasing follows the target's sample count, cutting at half
+/// coverage on one and carrying its edge in the alpha on the other. A frame
+/// that lost either path would still match its own snapshot and fail this one,
+/// or the other way round.
+async fn outline_matches_its_multisampled_snapshot() {
+    compare_scene(
+        &scenes::outline::MSAA_SCENE,
+        OUTLINE_TOLERANCE,
+        &snapshots!["outline_msaa.webp"],
     )
     .await;
 }
@@ -601,6 +619,7 @@ gpu_tests! {
     lit_matches_its_snapshot,
     lit_clusters_matches_its_snapshot,
     outline_matches_its_snapshot,
+    outline_matches_its_multisampled_snapshot,
     mesh_topologies_matches_its_snapshot,
     custom_pipeline_matches_its_snapshots,
     custom_pipeline_animates_between_frames,

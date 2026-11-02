@@ -164,6 +164,7 @@ pub static SCENES: &[&SceneDef] = &[
     &transparent::SCENE,
     &custom_pipeline::SCENE,
     &outline::SCENE,
+    &outline::MSAA_SCENE,
 ];
 
 /// The scene whose id is `id`, if any.

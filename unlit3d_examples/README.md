@@ -36,6 +36,7 @@ Scenes:
   transparent            translucent panes composited back to front over opaque cubes
   custom_pipeline        a caller-registered sky family and particle family
   outline                inverted-hull bands beside screen-space strokes
+  outline_msaa           the outline scene on a four-sample target
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
@@ -68,12 +69,22 @@ one picture argue for both. Three bodies wear an inverted-hull band — each is 
 mesh drawn twice from one buffer, lit and then spread along its own normals with
 its front faces culled — so the band is a width in world units and the bodies
 standing further back wear a thinner one. Beside them a `LineSource` draws the
-orbit and its ticks as screen-space strokes, a width in physical pixels, so the
-ring keeps one weight from the near side to the far side. One frame holds both
-because neither alone shows what the other is for. Two of the five bodies carry
-no vertex normals at all and are lit through the screen-space derivative
-fallback, so the one frame covers both normal paths — the baked one the band
-needs and the derived one a mesh without a normal channel falls back to.
+orbit, its ticks and a pair of armillary rings as screen-space strokes, a width
+in physical pixels, so the rings keep one weight from the near side to the far
+side. The ticks are opaque, the rings and the orbit are washes blended over the
+frame, so a ring shows the body it passes in front of, two crossings deepen
+where they share a pixel, and a body hides the ring half behind it. One frame
+holds all of it because neither kind alone shows what the other is for. Two of
+the five bodies carry no vertex normals at all and are lit through the
+screen-space derivative fallback, so the one frame covers both normal paths —
+the baked one the band needs and the derived one a mesh without a normal channel
+falls back to.
+
+The scene is declared twice: `outline` captures it on a single-sampled target,
+`outline_msaa` on a four-sample one. The difference is only how an opaque stroke
+is antialiased — cut at half its coverage on the single-sampled target, its edge
+carried in the alpha on the multisampled one — so a frame that lost either path
+still matches its own snapshot and fails the other.
 
 Every scene is built with the same public `unlit3d` API any caller would use —
 nothing in the example reaches into the crates' internals.
