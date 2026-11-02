@@ -23,34 +23,40 @@
 //! meshes and lines together puts the camera in
 //! [World::shared](unlit_ecs::World::shared) rather than beside one of them.
 //!
+//! # Policy
+//!
+//! What a stroke does to the frame is the caller's
+//! [LineOptions](unlit_wgpu::line_shader::LineOptions): the entry shader and
+//! the snippets spliced into it, the hard-edge cut, the depth-stencil policy,
+//! the blend and the write mask. [Line] carries one; two strokes with the same
+//! options draw together, and two with different options draw as separate
+//! draws, each specialized on its own policy and the target. The common
+//! strokes state themselves through [Line::opaque] and [Line::blended], and
+//! [From<LineSegment>] is a blended one.
+//!
 //! # Depth
 //!
-//! A stroke either blends over the frame or covers it, and
-//! [Line::alpha_blend] is the caller's word for which. A blended stroke tests
-//! against the depth the pass already holds and writes none of its own, so a
-//! mesh in front of it hides it and it hides nothing behind it. An opaque one
-//! writes its depth, so a stroke drawn earlier in the same frame can hide
-//! whatever a later one would put behind it. Both test against what the meshes
-//! wrote, which is why the source records after the mesh source either way: a
-//! mesh recorded after a stroke would paint over it wherever the two overlap.
-//! See [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE).
+//! Every stroke tests against the depth the pass already holds, which is why
+//! the source records after the mesh source: a mesh recorded after a stroke
+//! would paint over it wherever the two overlap. See
+//! [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE). What a
+//! stroke writes is its own policy's word: one whose depth-stencil policy
+//! writes keeps the depth it covers, and one that does not write hides nothing
+//! behind it.
 //!
-//! Blended strokes are recorded farthest first, so a frame's translucent
-//! strokes read in the order their colours layer in.
+//! Strokes that leave the depth alone are recorded farthest first, so a
+//! frame's translucent strokes read in the order their colours layer in.
 
 use glam::Vec3;
 use unlit_ecs::Scope;
 use unlit_wgpu::globals::Camera;
 use unlit_wgpu::instance_stream::{InstanceBuffer, InstanceStreamDesc};
+use unlit_wgpu::line_shader::{LineOptions, LineVariant};
 use unlit_wgpu::pipeline::{
     GLOBAL_GROUP, GlobalBindings, global_bind_group_layout, supports_storage_buffers,
 };
-use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
-use unlit_wgpu::specialize::{
-    FragmentStateDesc, PipelineDescriptor, PipelineVariant, RenderPipelineDesc, SurfaceKey,
-    SurfaceTarget, Variants, VertexAttributes, VertexBufferLayoutDesc, VertexStateDesc,
-};
+use unlit_wgpu::specialize::{SurfaceKey, Variants};
 use zerocopy::IntoBytes;
 
 use crate::components::{InstanceVisibility, Transform, frame_camera};
@@ -59,12 +65,6 @@ use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 
-/// The WESL module holding the line pipeline vertex and fragment stages.
-const SHADER_MODULE: &str = "line";
-/// The entry point of the vertex stage.
-const VERTEX_ENTRY: &str = "vs_main";
-/// The entry point of the fragment stage.
-const FRAGMENT_ENTRY: &str = "fs_main";
 /// The vertex-buffer slot the instance stream binds at.
 ///
 /// A line has no per-vertex buffer at all: the six corners of a segment quad
@@ -157,48 +157,61 @@ const _: () = assert!(
     "a segment record has to be a whole number of copy-alignment units long"
 );
 
-/// A stroke an entity wears: one [LineSegment] and how it lands on the frame.
+// The shader reads the record through the sum of the attribute sizes, so a
+// record that grew a field without the layout declaring it would feed the
+// pipeline a stride too short for its own tail.
+const _: () = assert!(
+    core::mem::size_of::<LineSegment>() as u64 == unlit_wgpu::line_shader::SEGMENT_STRIDE,
+    "a segment record matches the layout the line pipeline reads it through"
+);
+
+/// A stroke an entity wears: one [LineSegment] and the policy it lands with.
 ///
-/// A segment is the geometry; this component adds the one decision the
-/// geometry cannot carry - whether the stroke blends over what the frame
-/// already holds or covers it as an opaque colour - because [LineSegment] is
-/// the GPU's byte record and a GPU record has no room for a CPU's booleans.
+/// A segment is the geometry; this component adds what the geometry cannot
+/// carry - the [LineOptions] the stroke draws with - because [LineSegment] is
+/// the GPU's byte record and a GPU record has no room for a CPU's policy.
+///
+/// The reflection is a proxy over the segment alone: the options are GPU
+/// policy, not a value a JSON bridge reads or writes, and a stroke decoded
+/// from JSON comes back wearing the default options.
 ///
 /// An entity without a [Transform](crate::components::Transform) draws its
 /// segment where the segment's own points put it; one with a transform has both
 /// ends placed by it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::LineProxy)
+)]
 pub struct Line {
     /// The segment to draw.
     pub segment: LineSegment,
-    /// Whether the stroke blends over the frame where it covers it only
-    /// partially, rather than covering it.
-    ///
-    /// A blended stroke tests depth and writes none, so a mesh in front of it
-    /// hides it and it hides nothing behind it. An opaque one writes its depth,
-    /// which is what lets two strokes in one frame hide each other. A stroke's
-    /// colour alpha is its coverage either way; the flag decides what the
-    /// fragment's output does with it, not what it means.
-    pub alpha_blend: bool,
+    /// How the stroke draws: the entry shader and its snippets, the hard-edge
+    /// cut, the depth-stencil policy, the blend and the write mask. See
+    /// [LineOptions](unlit_wgpu::line_shader::LineOptions).
+    #[cfg_attr(feature = "reflect", facet(skip))]
+    pub options: LineOptions,
 }
 
 impl Line {
-    /// The segment as an opaque stroke.
+    /// The segment as a stroke that covers the frame: no blend, the depth
+    /// written, the edge cut at half coverage.
     #[must_use]
-    pub const fn opaque(segment: LineSegment) -> Self {
+    pub fn opaque(segment: LineSegment) -> Self {
         Self {
             segment,
-            alpha_blend: false,
+            options: LineOptions::opaque(),
         }
     }
 
-    /// The segment as a blended stroke.
+    /// The segment as a stroke blended over the frame, testing depth without
+    /// writing it.
     #[must_use]
-    pub const fn blended(segment: LineSegment) -> Self {
+    pub fn blended(segment: LineSegment) -> Self {
         Self {
             segment,
-            alpha_blend: true,
+            options: LineOptions::blended(),
         }
     }
 }
@@ -216,71 +229,6 @@ impl From<LineSegment> for Line {
         Self::blended(segment)
     }
 }
-
-/// The pipeline variant a line draw resolves to.
-///
-/// The target decides the surface, and the stroke decides the rest: a blended
-/// stroke builds its colour up over the frame, an opaque one covers it and
-/// writes its depth.
-///
-/// The antialiasing of an opaque stroke follows from the target's sample count.
-/// A stroke's own edge lies a pixel inside the quad that carries it, where no
-/// multisampler reaches, so the multisampler itself cannot draw the edge; a
-/// single-sampled opaque stroke therefore cuts at half its coverage instead,
-/// and a multisampled one carries the edge's coverage in its alpha and lets the
-/// blend place it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct LineVariant {
-    /// The target the stroke is drawn into.
-    surface: SurfaceKey,
-    /// Whether the stroke blends over the frame.
-    alpha_blend: bool,
-}
-
-impl LineVariant {
-    /// The conditional-compilation flags the variant's shader module composes
-    /// with.
-    ///
-    /// The cut is an opaque stroke's decision, and only where no blending will
-    /// place the edge anyway: a multisampled target's opaque stroke rides its
-    /// blend, as does every blended stroke.
-    fn features(&self) -> [(&'static str, bool); 1] {
-        [(
-            "HARD_EDGE",
-            !self.alpha_blend && self.surface.sample_count == 1,
-        )]
-    }
-
-    /// The blend the variant's colour target composes with, 'None' writing the
-    /// stroke's colour whole.
-    fn blend(&self) -> Option<wgpu::BlendState> {
-        if self.alpha_blend || self.surface.sample_count > 1 {
-            Some(wgpu::BlendState::ALPHA_BLENDING)
-        } else {
-            None
-        }
-    }
-}
-
-impl PipelineVariant<wgpu::RenderPipeline> for LineVariant {
-    type Descriptor = Self;
-
-    fn descriptor(&self, _device: &wgpu::Device) -> Self {
-        *self
-    }
-}
-
-impl PipelineDescriptor<wgpu::RenderPipeline> for LineVariant {
-    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
-        let layout = global_bind_group_layout(
-            device,
-            GlobalBindings::default(),
-            !supports_storage_buffers(device),
-        );
-        pipeline(device, &layout, *self)
-    }
-}
-
 /// The GPU state one target specialization needs.
 struct Gpu {
     /// The pipelines, specialized on the strokes each frame collects.
@@ -317,6 +265,25 @@ pub struct LineSource {
     /// frames, and reusing the allocation is the point of a source that owns
     /// its stream.
     records: Vec<LineSegment>,
+    /// The draws collected this frame, one per run of equal options: where
+    /// its instances start in [records](Self::records), how many run, and the
+    /// group whose options it specializes on.
+    ///
+    /// A scratch too, for the same reason the records are.
+    draws: Vec<Draw>,
+    /// The groups collected this frame, reused across frames so a steady
+    /// frame allocates only for the strokes themselves.
+    groups: Vec<(LineOptions, Vec<(f32, LineSegment)>)>,
+}
+
+/// One draw this frame records: a run of instances wearing equal options.
+struct Draw {
+    /// The first instance the draw takes.
+    start: u32,
+    /// How many instances the draw takes.
+    count: u32,
+    /// The group whose options the draw specializes on.
+    group: usize,
 }
 
 impl LineSource {
@@ -325,6 +292,8 @@ impl LineSource {
         Self {
             gpus: Vec::new(),
             records: Vec::new(),
+            draws: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
@@ -365,6 +334,68 @@ impl LineSource {
         ));
         self.gpus.len() - 1
     }
+
+    /// The strokes this frame's scope sees, packed as the draws they group
+    /// into.
+    ///
+    /// A run of strokes wearing equal options is one draw; a different policy
+    /// opens a new one, because one draw is one pipeline. Within a group whose
+    /// depth-stencil policy leaves the depth alone the strokes are sorted
+    /// farthest first, which is the order their colours layer in; a group that
+    /// writes the depth keeps its entity order, because the depth decides its
+    /// overlap and the order only picks which stroke owns a pixel they all
+    /// cover.
+    fn collect(&mut self, scope: &Scope<'_>, camera: &crate::components::Camera) {
+        self.groups.clear();
+        for (line, transform, visibility) in scope
+            .query::<(&Line, Option<&Transform>, Option<&InstanceVisibility>)>()
+            .iter()
+        {
+            if visibility.is_some_and(|visibility| !visibility.visible) {
+                continue;
+            }
+            let mut segment = line.segment;
+            if let Some(transform) = transform {
+                let world_from_local = transform.compute_matrix();
+                segment.a = world_from_local
+                    .transform_point3(Vec3::from(segment.a))
+                    .to_array();
+                segment.b = world_from_local
+                    .transform_point3(Vec3::from(segment.b))
+                    .to_array();
+            }
+
+            // The mid-point is where the eye reads a stroke's colour from, and
+            // the depth a positive view axis gives is what the sort keys on.
+            let middle = Vec3::from(segment.a).lerp(Vec3::from(segment.b), 0.5);
+            let depth = camera.view_depth(middle);
+
+            match self.groups.last_mut() {
+                Some((options, strokes)) if *options == line.options => {
+                    strokes.push((depth, segment));
+                }
+                _ => self
+                    .groups
+                    .push((line.options.clone(), vec![(depth, segment)])),
+            }
+        }
+
+        self.records.clear();
+        self.draws.clear();
+        for (index, (options, strokes)) in self.groups.iter_mut().enumerate() {
+            if !options.depth_stencil.depth_write_enabled {
+                strokes.sort_by(|(a_depth, _), (b_depth, _)| b_depth.total_cmp(a_depth));
+            }
+            let start = self.records.len() as u32;
+            self.records
+                .extend(strokes.iter().map(|(_, segment)| *segment));
+            self.draws.push(Draw {
+                start,
+                count: strokes.len() as u32,
+                group: index,
+            });
+        }
+    }
 }
 
 impl Default for LineSource {
@@ -393,44 +424,7 @@ impl FrameSource for LineSource {
             return;
         };
 
-        // Collect the strokes the scope sees. The opaque ones keep their entity
-        // order - depth writes decide their overlap, so the draw order only
-        // picks which one owns a pixel they all cover, and any of them would
-        // own it, being the colour the caller asked for. The blended ones are
-        // re-ordered farthest first, which is the order their colours layer in.
-        self.records.clear();
-        let mut blended: Vec<(f32, LineSegment)> = Vec::new();
-        for (line, transform, visibility) in scope
-            .query::<(&Line, Option<&Transform>, Option<&InstanceVisibility>)>()
-            .iter()
-        {
-            if visibility.is_some_and(|visibility| !visibility.visible) {
-                continue;
-            }
-            let mut segment = line.segment;
-            if let Some(transform) = transform {
-                let world_from_local = transform.compute_matrix();
-                segment.a = world_from_local
-                    .transform_point3(Vec3::from(segment.a))
-                    .to_array();
-                segment.b = world_from_local
-                    .transform_point3(Vec3::from(segment.b))
-                    .to_array();
-            }
-            if line.alpha_blend {
-                // The mid-point is where the eye reads a stroke's colour from,
-                // and the depth a positive view axis gives is what the sort
-                // keys on.
-                let middle = Vec3::from(segment.a).lerp(Vec3::from(segment.b), 0.5);
-                blended.push((camera.view_depth(middle), segment));
-            } else {
-                self.records.push(segment);
-            }
-        }
-        blended.sort_by(|(a_depth, _), (b_depth, _)| b_depth.total_cmp(a_depth));
-        let opaque_count = self.records.len();
-        self.records
-            .extend(blended.into_iter().map(|(_, segment)| segment));
+        self.collect(scope, &camera);
         if self.records.is_empty() {
             return;
         }
@@ -494,21 +488,22 @@ impl FrameSource for LineSource {
         let graph = graph_holder.get();
         let gpu = &mut self.gpus[index].1;
 
-        // Each bucket specializes only when it drew something this frame: a
-        // frame of opaque strokes alone never builds the blended pipeline. A
-        // second frame reuses what the first built.
-        let opaque = (opaque_count > 0).then(|| {
-            gpu.variants.specialize(LineVariant {
-                surface: info.surface,
-                alpha_blend: false,
+        // A draw specializes only when it drew something this frame: a frame
+        // of one policy alone never builds another's pipeline. A second frame
+        // reuses what the first built. The groups outlive the draw loop, so
+        // the pipelines are collected into a vec the draws push from.
+        let groups = &self.groups;
+        let draws: Vec<(wgpu::RenderPipeline, u32, u32)> = self
+            .draws
+            .iter()
+            .map(|draw| {
+                let surface = info.surface;
+                let options = groups[draw.group].0.clone();
+                let ordinal = gpu.variants.specialize(LineVariant { surface, options });
+                let pipeline = gpu.variants.get(ordinal).pipeline.clone();
+                (pipeline, draw.start, draw.count)
             })
-        });
-        let blended = (self.records.len() > opaque_count).then(|| {
-            gpu.variants.specialize(LineVariant {
-                surface: info.surface,
-                alpha_blend: true,
-            })
-        });
+            .collect();
         let bind_group = graph
             .get(&bind_group)
             .expect("the bind group is registered in the graph");
@@ -521,22 +516,11 @@ impl FrameSource for LineSource {
         // placed in pixels of that same rectangle, so the draw is confined to it
         // the way a mesh draw is.
         scene.viewport = info.viewport;
-        if let Some(ordinal) = opaque {
+        for (pipeline, start, count) in draws {
             scene.draws.push(
                 DrawEntry::new(
-                    &gpu.variants.get(ordinal).pipeline,
-                    DrawRange::vertices(0..QUAD_VERTICES).with_instances(0..opaque_count as u32),
-                )
-                .with_bind_group(GLOBAL_GROUP, bind_group)
-                .with_vertex_buffer(SEGMENT_SLOT, target),
-            );
-        }
-        if let Some(ordinal) = blended {
-            scene.draws.push(
-                DrawEntry::new(
-                    &gpu.variants.get(ordinal).pipeline,
-                    DrawRange::vertices(0..QUAD_VERTICES)
-                        .with_instances(opaque_count as u32..self.records.len() as u32),
+                    &pipeline,
+                    DrawRange::vertices(0..QUAD_VERTICES).with_instances(start..start + count),
                 )
                 .with_bind_group(GLOBAL_GROUP, bind_group)
                 .with_vertex_buffer(SEGMENT_SLOT, target),
@@ -549,95 +533,6 @@ impl FrameSource for LineSource {
     }
 }
 
-/// The instance-step layout a line pipeline reads its segments through.
-fn segment_layout() -> VertexBufferLayoutDesc {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-        0 => Float32x3,
-        1 => Float32x3,
-        2 => Unorm8x4,
-        3 => Unorm8x4,
-        4 => Float32x2,
-        5 => Uint32,
-    ];
-    VertexBufferLayoutDesc {
-        // The stride is the record whole size rather than the sum of the
-        // declared formats, so a field the shader stops reading does not shift
-        // the ones after it.
-        array_stride: core::mem::size_of::<LineSegment>() as u64,
-        step_mode: wgpu::VertexStepMode::Instance,
-        attributes: VertexAttributes::from_slice(&ATTRIBUTES),
-    }
-}
-
-/// The pipeline a line variant draws with.
-fn pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    variant: LineVariant,
-) -> wgpu::RenderPipeline {
-    let module = crate::builtin::shader_module(
-        device,
-        SHADER_MODULE,
-        "unlit3d::line::shader",
-        &variant.features(),
-    );
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("unlit3d::line::pipeline_layout"),
-        bind_group_layouts: &[Some(layout)],
-        immediate_size: 0,
-    });
-    let mut descriptor = RenderPipelineDesc {
-        label: Some("unlit3d::line".to_owned()),
-        layout: Some(pipeline_layout),
-        vertex: VertexStateDesc {
-            module: module.clone(),
-            entry_point: Some(VERTEX_ENTRY.to_owned()),
-            compilation_options: Default::default(),
-            buffers: vec![Some(segment_layout())],
-        },
-        // A line is a flat quad seen from whichever side the camera is on, and
-        // its winding depends on which way the segment happens to run, so
-        // neither face is culled.
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            ..Default::default()
-        },
-        // A stroke tests against the depth the pass holds. A blended one leaves
-        // it alone, so two strokes crossing blend rather than hide each other;
-        // an opaque one writes its own, so strokes cover each other the way
-        // meshes do. The format and the presence of the state are settled by
-        // set_surface, which drops it for a target that has no depth at all.
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: default_depth_stencil_format(device),
-            depth_write_enabled: Some(!variant.alpha_blend),
-            depth_compare: Some(wgpu::CompareFunction::Greater),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(FragmentStateDesc {
-            module,
-            entry_point: Some(FRAGMENT_ENTRY.to_owned()),
-            compilation_options: Default::default(),
-            targets: vec![Some(wgpu::ColorTargetState {
-                format: variant.surface.color_format,
-                // None keeps the stroke's own colour whole, which is what
-                // makes it opaque on a single-sampled target, where the cut at
-                // half coverage draws its edge. Everywhere else a stroke's
-                // coverage rides its alpha into the blend.
-                blend: variant.blend(),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    };
-    descriptor.set_surface(variant.surface);
-    descriptor.create(device)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,7 +541,7 @@ mod tests {
     /// whose fields are reordered cannot silently feed the shader another.
     #[test]
     fn the_segment_layout_matches_the_struct() {
-        let layout = segment_layout();
+        let layout = unlit_wgpu::line_shader::segment_layout();
         assert_eq!(
             layout.array_stride,
             core::mem::size_of::<LineSegment>() as u64
@@ -680,40 +575,53 @@ mod tests {
         );
     }
 
-    /// The flags and the blend the variant settles on: the opaque cut is a
-    /// single-sampled target's decision, and a blended stroke never takes it.
+    /// The two named policies a stroke states itself as: a covering one cuts
+    /// its edge and keeps the depth, a blending one veils it and leaves the
+    /// depth alone. Both test the depth the pass holds either way.
     #[test]
-    fn the_opaque_cut_is_a_single_sampled_choice() {
-        let surface = |sample_count: u32| SurfaceKey {
-            color_format: wgpu::TextureFormat::Bgra8UnormSrgb,
-            depth_stencil_format: None,
-            sample_count,
-        };
-        let opaque = LineVariant {
-            surface: surface(1),
-            alpha_blend: false,
-        };
-        assert_eq!(opaque.features(), [("HARD_EDGE", true)]);
-        assert_eq!(opaque.blend(), None);
-
-        // A multisampled target's opaque stroke cannot cut: its edge lies
-        // inside the quad, where no multisampler reaches, so it rides the
-        // blend like a blended stroke does.
-        let opaque_multisampled = LineVariant {
-            surface: surface(4),
-            alpha_blend: false,
-        };
-        assert_eq!(opaque_multisampled.features(), [("HARD_EDGE", false)]);
+    fn the_named_policies_state_their_depth_and_edge() {
+        let opaque = Line::opaque(LineSegment::new([0.0; 3], [1.0; 3]));
+        assert!(opaque.options.hard_edge);
+        assert!(opaque.options.depth_stencil.depth_write_enabled);
+        assert_eq!(opaque.options.blend, None);
         assert_eq!(
-            opaque_multisampled.blend(),
-            Some(wgpu::BlendState::ALPHA_BLENDING)
+            opaque.options.depth_stencil.depth_compare,
+            wgpu::CompareFunction::Greater
         );
 
-        let blended = LineVariant {
-            surface: surface(1),
-            alpha_blend: true,
+        let blended = Line::blended(LineSegment::new([0.0; 3], [1.0; 3]));
+        assert!(!blended.options.hard_edge);
+        assert!(!blended.options.depth_stencil.depth_write_enabled);
+        assert_eq!(
+            blended.options.blend,
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        );
+    }
+
+    /// The variant a draw resolves carries the caller's policy whole: the
+    /// surface is the target's word, and everything else is the options'. A
+    /// variant is what a draw specializes on, so two policies that differ
+    /// anywhere in their options resolve to two pipelines.
+    #[test]
+    fn a_variant_carries_the_target_and_the_policy() {
+        let surface = SurfaceKey {
+            color_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            depth_stencil_format: None,
+            sample_count: 4,
         };
-        assert_eq!(blended.features(), [("HARD_EDGE", false)]);
-        assert_eq!(blended.blend(), Some(wgpu::BlendState::ALPHA_BLENDING));
+        let variant = LineVariant {
+            surface,
+            options: LineOptions::opaque(),
+        };
+        assert_eq!(variant.surface, surface);
+        assert_eq!(variant.options, LineOptions::opaque());
+
+        let mut soft = LineOptions::opaque();
+        soft.hard_edge = false;
+        soft.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+        assert_ne!(
+            variant.options, soft,
+            "two policies that differ draw differently"
+        );
     }
 }

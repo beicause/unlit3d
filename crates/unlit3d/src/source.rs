@@ -50,9 +50,10 @@ impl FrameSourceOrder {
     ///
     /// A line tests against the depth the meshes wrote, so it belongs after
     /// them in the same pass: recording it with the meshes would let a mesh
-    /// drawn later paint over a line in front of it. A blended stroke writes
-    /// no depth of its own; an opaque one writes its, which is between its own
-    /// kind alone.
+    /// drawn later paint over a line in front of it. Whether a stroke also
+    /// writes depth is its own [`LineOptions`](unlit_wgpu::line_shader::LineOptions)'s
+    /// word, and the strokes that leave the depth alone are recorded farthest
+    /// first.
     pub const LINE: Self = Self(50);
     /// A source that composes over the meshes, such as the UI.
     pub const UI: Self = Self(100);

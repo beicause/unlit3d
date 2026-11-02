@@ -18,9 +18,20 @@
 // instead: an antialiased edge on a target with no multisampling is a veil of
 // partial pixels, and an opaque stroke has no colour to veil the background
 // with, so it cuts cleanly at the pixel it covers and writes its depth there.
+// A multisampled target sets the feature aside rather than jags the edge: its
+// alpha-to-coverage mask spreads the same coverage, so the variant only sets
+// `HARD_EDGE` on a single-sampled one.
+//
+// A caller's own shader code rides in at three hook marks, each a comment
+// naming the place it sits: one at module scope, one at the end of the vertex
+// stage and one at the end of the fragment stage, where the output colour is
+// still a `var color` the snippet rewrites in place. See
+// `unlit_wgpu::line_shader::LineShader`.
 
 import package::camera as camera_uniform;
 import package::view;
+
+// unlit_wgpu::hook module
 
 @group(0) @binding(0) var<uniform> camera: camera_uniform::Camera;
 // The pass's viewport. A stroke's width is a pixel count, so this is the one
@@ -211,6 +222,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     out.half_width = half_width;
     out.caps = input.caps;
     out.color = mix(input.color_a, input.color_b, at);
+    // unlit_wgpu::hook vertex
     return out;
 }
 
@@ -247,6 +259,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (half_width < 0.5) {
         coverage = coverage * clamp(half_width * 2.0, 0.0, 1.0);
     }
+    var color = vec4<f32>(in.color.rgb, in.color.a * coverage);
+    // unlit_wgpu::hook fragment
     @if(HARD_EDGE) {
         // An opaque stroke on a target with no multisampling: a partial pixel
         // would blend the stroke's own colour over the background as if it
@@ -254,7 +268,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (coverage < 0.5) {
             discard;
         }
-        return vec4<f32>(in.color.rgb, in.color.a);
+        return vec4<f32>(color.rgb, in.color.a);
     }
-    return vec4<f32>(in.color.rgb, in.color.a * coverage);
+    return color;
 }

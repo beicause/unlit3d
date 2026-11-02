@@ -221,6 +221,35 @@ impl TryFrom<GpuRenderPipelineProxy> for GpuRenderPipeline {
     }
 }
 
+/// A [Line] as the segment it draws, without its drawing options.
+///
+/// The options are GPU policy the JSON bridge neither reads nor writes, so
+/// the proxy is the segment alone: encoding hands over the geometry, and a
+/// decoded stroke comes back with the source's default options. A caller
+/// that wants a particular policy states it when it spawns the entity.
+///
+/// [Line]: crate::line::Line
+#[derive(Facet)]
+#[facet(transparent)]
+pub struct LineProxy(#[facet(default)] pub crate::line::LineSegment);
+
+impl From<&crate::line::Line> for LineProxy {
+    fn from(line: &crate::line::Line) -> Self {
+        Self(line.segment)
+    }
+}
+
+impl TryFrom<LineProxy> for crate::line::Line {
+    type Error = String;
+
+    fn try_from(proxy: LineProxy) -> Result<Self, Self::Error> {
+        Ok(crate::line::Line {
+            segment: proxy.0,
+            options: Default::default(),
+        })
+    }
+}
+
 /// A world's input as a reader sees it: how the devices are, and this tick's
 /// events.
 ///

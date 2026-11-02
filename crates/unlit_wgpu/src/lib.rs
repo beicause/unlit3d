@@ -22,6 +22,7 @@ mod dag;
 pub mod globals;
 pub mod instance_stream;
 pub mod light;
+pub mod line_shader;
 pub mod mesh;
 pub mod offset_allocator;
 pub mod pipeline;

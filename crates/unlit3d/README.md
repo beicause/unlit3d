@@ -512,21 +512,32 @@ different questions:
 - [`LineSource`](line::LineSource) draws **strokes**: a stroke is an entity
   wearing a [`Line`](line::Line) component — a segment record with its two
   endpoints in world space, a colour at each end, a half width and whether
-  either end is rounded, plus the one choice the record cannot carry: whether
-  the stroke blends over the frame or covers it as an opaque colour. Each
-  segment becomes one instance; the vertex stage expands it into a screen-space
-  quadrilateral of the width it carries, and the fragment stage covers it with a
-  capsule's distance field, so the edge is smooth whatever the width. The width
-  is in **physical pixels**, which is the whole point: a stroke near the camera
-  and the same stroke far away are the same weight, where a width in world
-  units narrows with distance. The source is an ordinary
-  [`FrameSource`](source::FrameSource) — a world's strokes are the `Line`
-  entities its scope sees this frame — and it declares
+  either end is rounded, plus the drawing policy the record cannot carry:
+  the [`LineOptions`](unlit_wgpu::line_shader::LineOptions) name the entry
+  shader and the snippets spliced into it, the hard-edge cut, the
+  depth-stencil policy, the blend and the write mask. [`Line::opaque`](line::Line::opaque)
+  and [`Line::blended`](line::Line::blended) state the two common policies,
+  and strokes wearing equal options draw together while different options
+  draw as separate draws. Each segment becomes one instance; the vertex stage
+  expands it into a screen-space quadrilateral of the width it carries, and
+  the fragment stage covers it with a capsule's distance field, so the edge is
+  smooth whatever the width. The opaque policy instead cuts that edge at half
+  its coverage — a stroke that covers the frame has no colour to veil the
+  background with — and the cut yields where the target antialiases on its
+  own: a multisampled target spreads the same coverage as the
+  alpha-to-coverage sample mask, which keeps the edge smooth there. The width
+  is in **physical pixels**, which is the
+  whole point: a stroke near the camera and the same stroke far away are the
+  same weight, where a width in world units narrows with distance. The source
+  is an ordinary [`FrameSource`](source::FrameSource) — a world's strokes are
+  the `Line` entities its scope sees this frame — and it declares
   [`FrameSourceOrder::LINE`](source::FrameSourceOrder::LINE), after the mesh
-  source: both kinds test the depth the meshes wrote, so the bodies must
-  already be in the depth buffer for a stroke behind one to be hidden. A
-  blended stroke writes no depth of its own, and an opaque one writes its,
-  which is what lets strokes hide each other.
+  source: every stroke tests the depth the meshes wrote, so the bodies must
+  already be in the depth buffer for a stroke behind one to be hidden. Whether
+  a stroke also writes depth is its own policy's word — the default blending
+  stroke writes none, and the default opaque one writes its, which is what
+  lets strokes hide each other — and the strokes that leave the depth alone
+  are recorded farthest first, so their colours layer in that order.
 - The inverted hull, [`LitOptions::inverted_hull`](unlit_wgpu::pipeline::LitOptions::inverted_hull),
   draws a **band** around a body: the same mesh drawn a second time, spread
   along its own normals with its front faces culled. The width is in **world

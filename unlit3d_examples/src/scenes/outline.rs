@@ -25,7 +25,8 @@
 //! is declared twice — once for a single-sampled target and once for a
 //! multisampled one — because an opaque stroke's antialiasing follows the
 //! target's sample count: single-sampled it cuts at half coverage, and
-//! multisampled it carries that coverage in its alpha for the blend to place.
+//! multisampled the cut yields to alpha-to-coverage, which spreads that same
+//! coverage over the samples and keeps the edge smooth.
 //!
 //! The bodies carry vertex normals because the shell is pushed along them; a
 //! mesh without normals cannot be spread at all. One body in the frame carries
@@ -261,7 +262,8 @@ pub static SCENE: SceneDef = SceneDef {
 /// The world is the one [`SCENE`] builds — the difference is the sample count
 /// the capture binds, which is the one thing that changes how an opaque stroke
 /// is antialiased: single-sampled it cuts at half its coverage, and
-/// multisampled it carries that coverage in its alpha for the blend to place.
+/// multisampled the cut yields to alpha-to-coverage, which spreads that same
+/// coverage over the samples and keeps the edge smooth.
 pub static MSAA_SCENE: SceneDef = SceneDef {
     id: "outline_msaa",
     title: "Inked outlines, multisampled",
