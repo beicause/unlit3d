@@ -202,11 +202,18 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     // plane kept is a visible end, so a cut end draws no cap.
     let cap_a = select(0.0, 1.0, round_a && clipped.t0 <= 0.0);
     let cap_b = select(0.0, 1.0, round_b && clipped.t1 >= 1.0);
-    let reach_a = cap_a * half_width_a + AA_RADIUS;
-    let reach_b = cap_b * half_width_b + AA_RADIUS;
+    // A segment whose ends project to the same pixel draws as a disc of its
+    // own width: a dot states one width twice, and the discs a near-plane
+    // cut sweeps all land on the one pixel, so the widest visible end
+    // states the whole shape. The width, not a cap, then sets the reach —
+    // there is no axis left for a cap to measure along.
+    let dot = span <= POINT_SPAN;
+    let width = select(half_width, max(half_width_a, half_width_b), dot);
+    let reach_a = select(cap_a * half_width_a, width, dot) + AA_RADIUS;
+    let reach_b = select(cap_b * half_width_b, width, dot) + AA_RADIUS;
 
     let centre = mix(start - direction * reach_a, end + direction * reach_b, station);
-    let offset = centre + normal * side * (half_width + AA_RADIUS);
+    let offset = centre + normal * side * (width + AA_RADIUS);
     let ndc = vec2<f32>(
         offset.x / size.x * 2.0 - 1.0,
         1.0 - offset.y / size.y * 2.0,
@@ -225,7 +232,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     out.offset = offset - start;
     out.direction = direction;
     out.span = span;
-    out.half_width = half_width;
+    out.half_width = width;
     out.caps = input.caps;
     out.color = mix(input.color_a, input.color_b, at);
     // unlit_wgpu::hook vertex
@@ -272,9 +279,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         // The ends project to the same pixel, so there is no along
         // direction to bound them with: the stroke draws as a dot of the
-        // width the fragment stands on. A stroke running along the view
-        // axis is left in this shape by the near-plane cut that keeps it
-        // out of the eye.
+        // width the stage stated for it — a dot's own, or the widest end
+        // a near-plane cut leaves in sight.
         d = length(in.offset) - half_width;
     }
 

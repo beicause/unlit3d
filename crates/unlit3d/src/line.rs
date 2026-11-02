@@ -118,7 +118,9 @@ pub struct LineSegment {
     /// A round end reaches half a width past its station and draws as a disc; a
     /// flat one stops at it. The two ends are separate because a stroke's outer
     /// ends are round while its inner joints are flat, which is what keeps a
-    /// translucent stroke from darkening where two segments meet.
+    /// translucent stroke from darkening where two segments meet. A segment
+    /// whose ends project to the same pixel draws as a disc of its own width
+    /// whatever these say: the caps shape an end the segment then has none of.
     pub caps: u32,
 }
 

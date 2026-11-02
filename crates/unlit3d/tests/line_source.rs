@@ -392,6 +392,42 @@ async fn a_stroke_the_near_plane_cuts_keeps_its_width() {
     );
 }
 
+/// A segment whose ends coincide draws as a disc of its own width, whichever
+/// caps its ends state.
+///
+/// A flat-capped stroke that degenerates is the case at risk: the flat cap
+/// has no axis left to stop at, so the disc it leaves is the measure, and a
+/// quad that reached only the antialiasing margin past the axis would clip
+/// it to a sliver.
+async fn a_dot_draws_as_a_disc_whatever_caps_state() {
+    let ctx = Ctx::headless().await;
+
+    let mut heights = Vec::new();
+    for caps in [0, LineSegment::ROUND_A, LineSegment::ROUND_A | LineSegment::ROUND_B] {
+        // The dot stands at the frame's centre, where the whole disc shows;
+        // the edge-reaching placement `along_x` gives a stroke is for
+        // measuring along its length, which a dot has none of.
+        let mut segment = LineSegment::new([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+            .with_color(INK)
+            .with_half_width(HALF_WIDTH);
+        segment.caps = caps;
+        let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
+        gpu.render(&world);
+        let frame = read_frame(&ctx, &target);
+        let (first, last) = drawn_rows(&frame)
+            .expect("a degenerate stroke still draws its disc");
+        heights.push((caps, last - first + 1));
+    }
+
+    for (caps, height) in &heights {
+        assert!(
+            height.abs_diff((2.0 * HALF_WIDTH) as u32) <= 1,
+            "the caps {caps} dot covered {height} rows, expected about {}",
+            (2.0 * HALF_WIDTH) as u32,
+        );
+    }
+}
+
 /// An opaque stroke cut at half coverage leaves no fringe: a pixel is either
 /// stroke or background.
 ///
@@ -509,6 +545,7 @@ gpu_tests! {
     a_stroke_keeps_its_pixel_width_at_any_distance,
     a_wider_stroke_covers_more_pixels,
     a_round_cap_reaches_past_its_station_and_a_flat_one_does_not,
+    a_dot_draws_as_a_disc_whatever_caps_state,
     a_tapering_stroke_is_narrower_at_its_narrow_end,
     a_stroke_the_near_plane_cuts_keeps_its_width,
     a_stroke_behind_a_body_is_hidden_by_it,
