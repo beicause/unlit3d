@@ -509,9 +509,14 @@ impl FrameSource for LineSource {
         scene.viewport = info.viewport;
         for (options, start, end) in &self.groups {
             let (start, end) = (*start, *end);
+            // The hint is folded where it would change nothing, so two
+            // spellings of one policy share the one pipeline.
             let ordinal = gpu.variants.specialize(LineVariant {
                 surface: info.surface,
-                options: options.clone(),
+                options: LineOptions {
+                    a2c_hint: options.a2c_hint && info.surface.sample_count > 1,
+                    ..options.clone()
+                },
             });
             let pipeline = &gpu.variants.get(ordinal).pipeline;
             if options.depth_stencil.depth_write_enabled {
@@ -652,8 +657,9 @@ mod tests {
             "two policies that differ draw differently"
         );
 
-        // The A2C hint is part of the policy: flipping it alone resolves to
-        // another pipeline, because it rewires the multisample state.
+        // The A2C hint is part of the policy: on a multisampled target
+        // flipping it alone rewires the multisample state, and the source
+        // folds it to `false` where the target leaves it nothing to rewire.
         let mut hinted = LineOptions::blended();
         hinted.a2c_hint = true;
         assert_ne!(

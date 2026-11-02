@@ -382,6 +382,10 @@ impl LineOptions {
 /// names among them — are two variants, because a pipeline built for one
 /// draws differently than one built for the other.
 ///
+/// A difference that would change nothing is folded instead: on a
+/// single-sampled target the antialiasing hint says nothing, so two
+/// options that differ only in it share the one variant.
+///
 /// One difference the target does reach is the antialiasing: on a
 /// multisampled target the variant drops the hard-edge cut, and it turns the
 /// fragment's alpha into the alpha-to-coverage sample mask when the options
