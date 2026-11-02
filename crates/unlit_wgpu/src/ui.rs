@@ -279,19 +279,20 @@ struct GeometryCounts {
     indices: usize,
 }
 
-/// Count the vertices and indices every tessellated primitive in `primitives`
-/// contributes.
-fn measure(primitives: &[(Source, &egui::ClippedPrimitive)]) -> GeometryCounts {
+/// Count the vertices and indices every tessellated primitive in
+/// `primitives` contributes.
+fn measure<'a>(
+    primitives: impl IntoIterator<Item = (Source, &'a egui::ClippedPrimitive)>,
+) -> GeometryCounts {
     let mut counts = GeometryCounts {
         vertices: 0,
         indices: 0,
     };
-    for mesh in primitives
-        .iter()
-        .filter_map(|(_, primitive)| mesh_of(primitive))
-    {
-        counts.vertices += mesh.vertices.len();
-        counts.indices += mesh.indices.len();
+    for (_, primitive) in primitives {
+        if let Some(mesh) = mesh_of(primitive) {
+            counts.vertices += mesh.vertices.len();
+            counts.indices += mesh.indices.len();
+        }
     }
     counts
 }
@@ -306,8 +307,8 @@ fn measure(primitives: &[(Source, &egui::ClippedPrimitive)]) -> GeometryCounts {
 ///
 /// `counts` must be what [`measure`] returned for `primitives`: it is both how
 /// much is written and where the two vertex streams meet.
-fn pack_geometry(
-    primitives: &[(Source, &egui::ClippedPrimitive)],
+fn pack_geometry<'a>(
+    primitives: impl IntoIterator<Item = (Source, &'a egui::ClippedPrimitive)>,
     screen: ScreenDescriptor,
     texture_options: &HashMap<TextureKey, egui::TextureOptions>,
     counts: GeometryCounts,
@@ -378,7 +379,7 @@ fn pack_geometry(
         index_cursor += mesh.indices.len();
 
         let texture = TextureKey {
-            source: *source,
+            source,
             id: mesh.texture_id,
         };
         draws.push(UiDraw {
@@ -684,24 +685,30 @@ impl EguiIntegration {
             frame.textures.clear();
         }
 
-        let mut primitives: Vec<(Source, &egui::ClippedPrimitive)> = Vec::new();
-        for frame in sources.iter() {
-            primitives.extend(
-                frame
-                    .primitives
-                    .iter()
-                    .map(|primitive| (frame.source, primitive)),
-            );
-        }
+        // The primitives of every source, flattened in place: the sources
+        // keep their own tessellation and this walks it without collecting a
+        // list of borrows first.
+        let primitives = sources.iter().flat_map(|frame| {
+            frame
+                .primitives
+                .iter()
+                .map(move |primitive| (frame.source, primitive))
+        });
 
-        let counts = measure(&primitives);
+        let counts = measure(primitives);
         if counts.vertices == 0 {
             self.draws.clear();
             return;
         }
         self.reserve(graph, counts);
         self.frame_vertices = counts.vertices;
-        self.upload_geometry(encoder, &primitives, screen, counts);
+        let primitives = sources.iter().flat_map(|frame| {
+            frame
+                .primitives
+                .iter()
+                .map(move |primitive| (frame.source, primitive))
+        });
+        self.upload_geometry(encoder, primitives, screen, counts);
 
         // Build every material the frame needs here, while the graph is still
         // mutably available: `scene` only reads it, so a material that does
@@ -750,10 +757,10 @@ impl EguiIntegration {
     ///
     /// The primary and secondary streams go into two regions of the one buffer:
     /// wgpu binds one stride per slot, and the two streams differ.
-    fn upload_geometry(
+    fn upload_geometry<'a>(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        primitives: &[(Source, &egui::ClippedPrimitive)],
+        primitives: impl IntoIterator<Item = (Source, &'a egui::ClippedPrimitive)>,
         screen: ScreenDescriptor,
         counts: GeometryCounts,
     ) {
@@ -1406,9 +1413,9 @@ mod tests {
         let mut indices = Vec::new();
         let mut draws = Vec::new();
         let tagged = local(&primitives);
-        let counts = measure(&tagged);
+        let counts = measure(tagged.iter().copied());
         pack_geometry(
-            &tagged,
+            tagged.iter().copied(),
             test_screen(),
             &HashMap::new(),
             counts,
@@ -1473,9 +1480,9 @@ mod tests {
         let mut indices = Vec::new();
         let mut draws = Vec::new();
         let tagged = local(&primitives);
-        let counts = measure(&tagged);
+        let counts = measure(tagged.iter().copied());
         pack_geometry(
-            &tagged,
+            tagged.iter().copied(),
             test_screen(),
             &HashMap::new(),
             counts,
@@ -1518,9 +1525,9 @@ mod tests {
         let mut indices = Vec::new();
         let mut draws = Vec::new();
         let big_tagged = local(&big);
-        let big_counts = measure(&big_tagged);
+        let big_counts = measure(big_tagged.iter().copied());
         pack_geometry(
-            &big_tagged,
+            big_tagged.iter().copied(),
             test_screen(),
             &HashMap::new(),
             big_counts,
@@ -1534,9 +1541,9 @@ mod tests {
         // A later, smaller frame keeps both allocations rather than taking new
         // ones; a fresh `Vec` per frame would have exactly its own length.
         let small_tagged = local(&small);
-        let small_counts = measure(&small_tagged);
+        let small_counts = measure(small_tagged.iter().copied());
         pack_geometry(
-            &small_tagged,
+            small_tagged.iter().copied(),
             test_screen(),
             &HashMap::new(),
             small_counts,

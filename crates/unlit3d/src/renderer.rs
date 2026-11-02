@@ -316,6 +316,10 @@ impl Renderer {
             self.pass_warnings.check(self.passes.ambiguous());
         }
 
+        // One scratch per frame: every pass composites from this buffer and
+        // clears it once recorded, so a steady frame reallocates nothing
+        // however many passes it runs.
+        let mut scenes: Vec<&Scene> = Vec::new();
         for index in 0..self.passes.entities().len() {
             let pass_entity = self.passes.entities()[index];
             let root = world.root_scope();
@@ -365,14 +369,23 @@ impl Renderer {
                 // pool spanning sources is what lets a blended stroke sort
                 // against a blended pane by depth instead of by which source
                 // recorded first; a source that tags no draw keeps its place.
-                let mut scenes: Vec<&Scene> = Vec::with_capacity(self.sources.entities().len());
                 for index in 0..self.sources.entities().len() {
                     let entity = self.sources.entities()[index];
-                    if let Some(scene) = self.scene_slot(pass_entity, entity) {
-                        scenes.push(scene);
+                    // Field access, not `scene_slot`: the buffer holds the
+                    // scenes across the loop, and borrowing the whole `self`
+                    // for them would collide with the next pass's source
+                    // resolution.
+                    if let Some(slot) = self.scenes.get(&(pass_entity, entity)) {
+                        if slot.used {
+                            scenes.push(&slot.scene);
+                        }
                     }
                 }
                 Scene::record_composited(&mut render_pass, &scenes, Some(whole));
+                // Clearing here drops the borrows the buffer holds, so the
+                // next pass's source resolution can take the renderer
+                // mutably again; the allocation itself stays for reuse.
+                scenes.clear();
                 // The scissor is pass state too, and unlike the viewport it has
                 // a survivor: the multisample resolve that ends this pass is a
                 // blit on the GL backend, and a blit there is clipped by the
@@ -406,14 +419,6 @@ impl Renderer {
         slot.used = true;
         slot.scene.draws.clear();
         &mut slot.scene
-    }
-
-    /// The scene `source` built for `pass` this frame, if it built one.
-    fn scene_slot(&self, pass: Entity, source: Entity) -> Option<&Scene> {
-        self.scenes
-            .get(&(pass, source))
-            .filter(|slot| slot.used)
-            .map(|slot| &slot.scene)
     }
 
     /// Collect the sources the passes reach this frame, and report the ones

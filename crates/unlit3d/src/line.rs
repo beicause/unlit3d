@@ -252,6 +252,14 @@ struct Gpu {
     groups: UniformGroups,
     /// The instance stream the segments are uploaded into, allocated on the
     /// first non-empty frame.
+    ///
+    /// The stream holds one frame's collection at a time: a source recorded
+    /// into a second pass uploads the same records again, overwriting bytes
+    /// the first pass's draws still name. That is safe because a source's
+    /// records come from its own scope, not from the pass — two uploads
+    /// carry the same bytes — but a per-pass record would break it, and the
+    /// repeat upload is spent work. See
+    /// [InstanceBuffer::upload](unlit_wgpu::instance_stream::InstanceBuffer::upload).
     segments: InstanceBuffer,
 }
 
@@ -275,25 +283,22 @@ pub struct LineSource {
     /// frames, and reusing the allocation is the point of a source that owns
     /// its stream.
     records: Vec<LineSegment>,
-    /// The draws collected this frame, one per run of equal options: where
-    /// its instances start in [records](Self::records), how many run, and the
-    /// group whose options it specializes on.
+    /// The depth each record in [records](Self::records) was collected
+    /// with, at the same index.
     ///
-    /// A scratch too, for the same reason the records are.
-    draws: Vec<Draw>,
-    /// The groups collected this frame, reused across frames so a steady
-    /// frame allocates only for the strokes themselves.
-    groups: Vec<(LineOptions, Vec<(f32, LineSegment)>)>,
-}
-
-/// One draw this frame records: a run of instances wearing equal options.
-struct Draw {
-    /// The first instance the draw takes.
-    start: u32,
-    /// How many instances the draw takes.
-    count: u32,
-    /// The group whose options the draw specializes on.
-    group: usize,
+    /// A scratch too, for the same reason the records are: the depths are
+    /// only read when a group's draws are pushed, but keeping them beside
+    /// the records lets a blended stroke's draw key on its own depth without
+    /// a second pass over the collected strokes.
+    depths: Vec<f32>,
+    /// The groups collected this frame, parallel to the runs they describe:
+    /// the options they wear and the half-open record range they cover.
+    ///
+    /// A scratch too, for the same reason the records are. The ranges are
+    /// what the draws read — the options carry no strokes of their own — so
+    /// a steady frame reuses every allocation: the records, the depths, the
+    /// ranges and the options' own slots all survive from frame to frame.
+    groups: Vec<(LineOptions, u32, u32)>,
 }
 
 impl LineSource {
@@ -302,7 +307,7 @@ impl LineSource {
         Self {
             gpus: Vec::new(),
             records: Vec::new(),
-            draws: Vec::new(),
+            depths: Vec::new(),
             groups: Vec::new(),
         }
     }
@@ -345,17 +350,19 @@ impl LineSource {
         self.gpus.len() - 1
     }
 
-    /// The strokes this frame's scope sees, packed as the draws they group
-    /// into.
+    /// The strokes this frame's scope sees, packed into the records, the
+    /// depths and the group ranges the draws read.
     ///
-    /// A run of strokes wearing equal options is one draw; a different policy
-    /// opens a new one, because one draw is one pipeline. A group that writes
-    /// the depth keeps its entity order, because the depth decides its
-    /// overlap and the order only picks which stroke owns a pixel they all
-    /// cover; a group that leaves the depth alone keeps its discovery order
-    /// too, because the pass's composite sorts its draws against every other
-    /// source's, and this source need not guess.
+    /// A run of strokes wearing equal options is one group; a different
+    /// policy opens a new one, because one pipeline wears one policy. A group
+    /// that writes the depth keeps its entity order, because the depth
+    /// decides its overlap and the order only picks which stroke owns a pixel
+    /// they all cover; a group that leaves the depth alone keeps its
+    /// discovery order too, because the pass's composite sorts its draws
+    /// against every other source's, and this source need not guess.
     fn collect(&mut self, scope: &Scope<'_>, camera: &crate::components::Camera) {
+        self.records.clear();
+        self.depths.clear();
         self.groups.clear();
         for (line, transform, visibility) in scope
             .query::<(&Line, Option<&Transform>, Option<&InstanceVisibility>)>()
@@ -381,26 +388,14 @@ impl LineSource {
             let depth = camera.view_depth(middle);
 
             match self.groups.last_mut() {
-                Some((options, strokes)) if *options == line.options => {
-                    strokes.push((depth, segment));
+                Some((options, _, end)) if *options == line.options => *end += 1,
+                _ => {
+                    let start = self.records.len() as u32;
+                    self.groups.push((line.options.clone(), start, start + 1));
                 }
-                _ => self
-                    .groups
-                    .push((line.options.clone(), vec![(depth, segment)])),
             }
-        }
-
-        self.records.clear();
-        self.draws.clear();
-        for (index, (_, strokes)) in self.groups.iter_mut().enumerate() {
-            let start = self.records.len() as u32;
-            self.records
-                .extend(strokes.iter().map(|(_, segment)| *segment));
-            self.draws.push(Draw {
-                start,
-                count: strokes.len() as u32,
-                group: index,
-            });
+            self.records.push(segment);
+            self.depths.push(depth);
         }
     }
 }
@@ -497,20 +492,7 @@ impl FrameSource for LineSource {
 
         // A draw specializes only when it drew something this frame: a frame
         // of one policy alone never builds another's pipeline. A second frame
-        // reuses what the first built. The groups outlive the draw loop, so
-        // the pipelines are collected into a vec the draws push from.
-        let groups = &self.groups;
-        let draws: Vec<(wgpu::RenderPipeline, u32, u32, usize)> = self
-            .draws
-            .iter()
-            .map(|draw| {
-                let surface = info.surface;
-                let options = groups[draw.group].0.clone();
-                let ordinal = gpu.variants.specialize(LineVariant { surface, options });
-                let pipeline = gpu.variants.get(ordinal).pipeline.clone();
-                (pipeline, draw.start, draw.count, draw.group)
-            })
-            .collect();
+        // reuses what the first built.
         let bind_group = graph
             .get(&bind_group)
             .expect("the bind group is registered in the graph");
@@ -523,16 +505,21 @@ impl FrameSource for LineSource {
         // placed in pixels of that same rectangle, so the draw is confined to it
         // the way a mesh draw is.
         scene.viewport = info.viewport;
-        for (pipeline, start, count, group) in draws {
-            let (options, strokes) = &groups[group];
+        for (options, start, end) in &self.groups {
+            let (start, end) = (*start, *end);
+            let ordinal = gpu.variants.specialize(LineVariant {
+                surface: info.surface,
+                options: options.clone(),
+            });
+            let pipeline = &gpu.variants.get(ordinal).pipeline;
             if options.depth_stencil.depth_write_enabled {
                 // The policy writes the depth, so the depth test decides the
                 // group's overlap and its draw batches in the sequenced tier,
                 // where the strokes that share it stay one draw.
                 scene.draws.push(
                     DrawEntry::new(
-                        &pipeline,
-                        DrawRange::vertices(0..QUAD_VERTICES).with_instances(start..start + count),
+                        pipeline,
+                        DrawRange::vertices(0..QUAD_VERTICES).with_instances(start..end),
                     )
                     .with_bind_group(GLOBAL_GROUP, bind_group)
                     .with_vertex_buffer(SEGMENT_SLOT, target),
@@ -544,11 +531,12 @@ impl FrameSource for LineSource {
                 // sorts. A stroke costs a draw of its own, the same price a
                 // z-sorted mesh pane pays; the quads stay instanced and the
                 // segment instances stay one buffer.
-                for (offset, (depth, _)) in strokes.iter().enumerate() {
+                for (offset, depth) in self.depths[start as usize..end as usize].iter().enumerate()
+                {
                     let base = start + offset as u32;
                     scene.draws.push(
                         DrawEntry::new(
-                            &pipeline,
+                            pipeline,
                             DrawRange::vertices(0..QUAD_VERTICES).with_instances(base..base + 1),
                         )
                         .with_bind_group(GLOBAL_GROUP, bind_group)
@@ -620,6 +608,9 @@ mod tests {
             opaque.options.depth_stencil.depth_compare,
             wgpu::CompareFunction::Greater
         );
+        // A covering stroke's alpha is honest coverage, so the hint rides
+        // along where the samples can use it.
+        assert!(opaque.options.a2c_hint);
 
         let blended = Line::blended(LineSegment::new([0.0; 3], [1.0; 3]));
         assert!(!blended.options.hard_edge);
@@ -628,6 +619,9 @@ mod tests {
             blended.options.blend,
             Some(wgpu::BlendState::ALPHA_BLENDING)
         );
+        // A veiled stroke's alpha is light, not coverage: squaring it on a
+        // multisampled target would thin it, so the hint stays off.
+        assert!(!blended.options.a2c_hint);
     }
 
     /// The variant a draw resolves carries the caller's policy whole: the
@@ -654,6 +648,16 @@ mod tests {
         assert_ne!(
             variant.options, soft,
             "two policies that differ draw differently"
+        );
+
+        // The A2C hint is part of the policy: flipping it alone resolves to
+        // another pipeline, because it rewires the multisample state.
+        let mut hinted = LineOptions::blended();
+        hinted.a2c_hint = true;
+        assert_ne!(
+            LineOptions::blended(),
+            hinted,
+            "the hint participates in the variant's identity"
         );
     }
 }
