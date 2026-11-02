@@ -565,7 +565,10 @@ for draw in scene.draws {
 录制过程会追踪 pass 状态——管线、绑定组、顶点缓冲、索引缓冲、scissor 与模板参考
 值——并跳过目标已绑定的 `set_*`，因此当场景的条目排列得让相邻绘制状态相同时，每段
 状态只需一次切换而不是每条绘制一次。这个排列是更高层的职责，不属于本 crate：
-`Scene` 只按给定顺序录制。
+[`Scene::record`](scene::Scene::record) 只按给定顺序录制；
+[`Scene::record_composited`](scene::Scene::record_composited) 再进一步——把多个场景
+合成进一个 pass，按每条绘制的 [`DrawOrder`](scene::DrawOrder) 排序：按场景顺序先录
+顺次绘制，再合并所有场景的深度排序池从远到近，最后是压尾绘制。
 
 ### 管线特化：一个变体、一份蓝图、一条缓存的管线
 

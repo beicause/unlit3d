@@ -52,8 +52,10 @@ impl FrameSourceOrder {
     /// them in the same pass: recording it with the meshes would let a mesh
     /// drawn later paint over a line in front of it. Whether a stroke also
     /// writes depth is its own [`LineOptions`](unlit_wgpu::line_shader::LineOptions)'s
-    /// word, and the strokes that leave the depth alone are recorded farthest
-    /// first.
+    /// word: one that writes draws in the sequenced tier of the pass's
+    /// composite, and one that leaves the depth alone joins the depth-sorted
+    /// pool, sorting against every source's blended draws. See
+    /// [`DrawOrder`](unlit_wgpu::scene::DrawOrder).
     pub const LINE: Self = Self(50);
     /// A source that composes over the meshes, such as the UI.
     pub const UI: Self = Self(100);

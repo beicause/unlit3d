@@ -642,7 +642,12 @@ Recording tracks the pass state — pipeline, bind groups, vertex buffers, index
 buffer, scissor and stencil reference — and skips a `set_*` whose target is
 already bound, so a scene whose entries are ordered to keep neighbouring draws
 alike costs one state change per run rather than one per draw. That ordering is
-the higher layer's job, not this crate's: `Scene` records what it is given.
+the higher layer's job, not this crate's: [`Scene::record`](scene::Scene::record)
+records what it is given, and [`Scene::record_composited`](scene::Scene::record_composited)
+is the one step further it offers — compositing several scenes into one pass
+ordered by each draw's [`DrawOrder`](scene::DrawOrder): sequenced draws first
+in scene order, then every scene's depth-sorted pool together, farthest first,
+then the trailing draws.
 
 ### Pipeline specialization: a variant, a blueprint, a cached pipeline
 

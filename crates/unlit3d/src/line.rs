@@ -4,7 +4,8 @@
 //! A line is not a mesh: the width a caller asks for is in pixels and a mesh
 //! vertex is in world space, so the two ends of a segment have to be projected
 //! before the quad covering them can be built. A
-//! [LineSource](crate::line::LineSource) therefore collects the [Line]s of its
+//! [LineSource](crate::line::LineSource) therefore collects the
+//! [Line](crate::line::Line)s of its
 //! scope into a per-frame instance stream and lets the vertex stage derive each
 //! quad from the vertex index; nothing is expanded on the CPU and no vertex
 //! buffer describes a segment corner.
@@ -28,11 +29,13 @@
 //! What a stroke does to the frame is the caller's
 //! [LineOptions](unlit_wgpu::line_shader::LineOptions): the entry shader and
 //! the snippets spliced into it, the hard-edge cut, the depth-stencil policy,
-//! the blend and the write mask. [Line] carries one; two strokes with the same
+//! the blend and the write mask. [Line](crate::line::Line) carries one; two
+//! strokes with the same
 //! options draw together, and two with different options draw as separate
 //! draws, each specialized on its own policy and the target. The common
-//! strokes state themselves through [Line::opaque] and [Line::blended], and
-//! [From<LineSegment>] is a blended one.
+//! strokes state themselves through [Line::opaque](crate::line::Line::opaque)
+//! and [Line::blended](crate::line::Line::blended), and `From<LineSegment>`
+//! is a blended one.
 //!
 //! # Depth
 //!
@@ -182,7 +185,7 @@ const _: () = assert!(
 /// policy, not a value a JSON bridge reads or writes, and a stroke decoded
 /// from JSON comes back wearing the default options.
 ///
-/// An entity without a [Transform](crate::components::Transform) draws its
+/// An entity without a [Transform] draws its
 /// segment where the segment's own points put it; one with a transform has both
 /// ends placed by it.
 #[derive(Clone, Debug, PartialEq)]
@@ -196,7 +199,7 @@ pub struct Line {
     pub segment: LineSegment,
     /// How the stroke draws: the entry shader and its snippets, the hard-edge
     /// cut, the depth-stencil policy, the blend and the write mask. See
-    /// [LineOptions](unlit_wgpu::line_shader::LineOptions).
+    /// [LineOptions].
     #[cfg_attr(feature = "reflect", facet(skip))]
     pub options: LineOptions,
 }

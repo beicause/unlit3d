@@ -270,8 +270,8 @@ pub enum DrawOrder {
     /// exactly where its scene put it.
     Before,
     /// Join the pass's depth-sorted pool at `depth`, measured along the
-    /// camera's view axis as [`Camera::view_depth`](crate::globals::Camera::view_depth)
-    /// reports it: positive into the screen, so the farthest draw sorts
+    /// camera's view axis — `Camera::view_depth` in `unlit3d` reports the
+    /// same quantity: positive into the screen, so the farthest draw sorts
     /// first. The pool holds the sorted draws of every scene, which is what
     /// lets blended geometry composite by depth instead of by which scene
     /// recorded first. A depth of `NaN` sorts first, ahead of every

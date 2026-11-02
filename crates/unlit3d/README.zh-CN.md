@@ -95,7 +95,7 @@ world root                              根 scope 看得见所有实体
 │   │   ├── Camera
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
-│   ├── Source(LineSource)                    笔画，画在已经画好的网格之上
+│   ├── Source(LineSource)                    笔画；混合的与网格按深度合成
 │   └── Source(UiSource)
 │       └── UiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
@@ -187,9 +187,13 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 源的顺序必须是源显式携带的序号，不能借用实体在原型内的行序：实体的行序不保证稳定，
 移除组件时会被打乱。
 
-`Scene` 内部已有的顺序语义（非 z-sorted 在前、再按管线与材质或视线轴深度）不变；源之间的
+单个场景之内，源产出的顺序（它的可见条目、它的实例 run）不变。源之间的
 顺序不是被 pass 级状态逼出来的硬约束——`Scene` 已携带必要的 pass 状态信息，在录制时
-都会重设 pass 状态——而是「UI 要合成在 3D 之上」等类似语义的需要。
+都会重设 pass 状态——但「UI 要合成在 3D 之上」等类似语义不再只靠它：
+[`Scene::record_composited`](unlit_wgpu::scene::Scene::record_composited) 把各源的
+场景合成每 pass 一份绘制清单——按场景顺序先录顺次绘制，再合并所有场景的深度排序池，
+最后是压尾绘制——由各源以
+[`DrawOrder`](unlit_wgpu::scene::DrawOrder) 标注。
 
 </details>
 
@@ -223,7 +227,8 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 
 带 `ZSortedDrawing` 的实体会在不透明实体之后绘制，并按「网格包围盒中心沿相机视线轴的
 深度」由远及近排序——见 `Camera::view_depth`——因此枢轴点偏离几何体的网格仍按它实际
-绘制的几何体排序，而不是按实体原点。
+绘制的几何体排序，而不是按实体原点。这一顺序是 pass 的合成，不是源的：该条目加入
+所有源共同贡献的深度排序池，与混合网格、深度排序笔画一起分层。
 
 每个 source 通过**它自己 scope 内**第一个 **active** 的 `Camera` 绘制——`Camera::active` 为
 `false` 的实体会被跳过。因为 scope 就是该 source 自己的子树，一个世界可以持有多个
@@ -267,7 +272,7 @@ z-sorted 绘制排序与透视相机完全一致。
 
 ## 自动实例化
 
-条目先被排序，使相邻者共用管线与绑定组；随后，绘制状态完全相等的连续条目——同管线、
+同一档位之内，条目先被排序，使相邻者共用管线与绑定组；随后，绘制状态完全相等的连续条目——同管线、
 同绑定组、同缓冲与几何段——折叠为一次实例化 draw，实例范围按可见顺序覆盖整段。录制
 一次 draw 要花一条命令和一次状态重绑，所以与前一实体共用网格的实体几乎是免费的。
 
@@ -284,7 +289,9 @@ z-sorted 绘制排序与透视相机完全一致。
 条目永远不合并，彼此之间不合并，与任何其他条目也不合并：它们按从后到前的顺序混合，
 绘制顺序**就是**结果，合并后的 draw 会改为按记录顺序光栅化各实例。它们的顺序来自每个
 网格包围盒中心沿相机视线轴的深度，因此跟随网格实际绘制的几何体，而不是它的枢轴点或到
-眼睛的直线距离。
+眼睛的直线距离。源不再自行排序：条目携带
+[`DrawOrder::Sorted`](unlit_wgpu::scene::DrawOrder::Sorted)，由 pass 的合成把所有源
+共同贡献的池从远到近排序，混合网格与不同源的深度排序笔画在此汇成一份列表。
 
 </details>
 
@@ -357,7 +364,7 @@ z-sorted 绘制排序与透视相机完全一致。
   `FrameSourceOrder::LINE`，排在 mesh source 之后：每种笔画都测试网格写下的深度，所以
   本体必须已经进了深度缓冲，身后的笔画才会被挡住。是否也写深度由笔画自己的策略说了算——
   默认的混合笔画不写，默认的不透明笔画写，笔画之间因此能互相遮挡——而不动深度的笔画
-  会被排成从远到近，颜色按这个顺序层叠。
+  把它的中点深度交给 pass 的合成，与所有源的混合绘制一起从远到近排序，颜色按这个顺序层叠。
 - 翻转外壳 `LitOptions::inverted_hull` 画本体周围的**带子**：同一份 mesh 再画一遍，
   沿自身法线外扩并剔除正面。宽度以**世界单位**计、来自实例，因此随距离变细。它是
   lit 家族的一个变体而不是自己的 source，所以两次绘制共享网格缓冲、落在同一个 pass 里；
@@ -506,8 +513,8 @@ impl InstanceContext<'_> {
   的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
   `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
-  primitive 还会带上 `ZSortedDrawing` 标记，于是渲染器在绘制完不透明几何之后按由远及近
-  的顺序混合它，且其管线不写深度，使它留给后续片元混合的像素仍可见。
+  primitive 还会带上 `ZSortedDrawing` 标记，于是 pass 的合成把它与各源的混合绘制一起
+  按由远及近的顺序混在顺次绘制之后，且其管线不写深度，使它留给后续片元混合的像素仍可见。
   `alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
   `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `LitOptions::alpha_cutoff` 被置位，
   生成的实体带上 `lit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。

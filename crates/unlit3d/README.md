@@ -128,7 +128,7 @@ world root                              the root scope sees every entity
 │   │   ├── Camera
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
-│   ├── Source(LineSource)                    strokes, over the meshes already drawn
+│   ├── Source(LineSource)                    strokes; blended ones composite with the meshes by depth
 │   └── Source(UiSource)
 │       └── UiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
@@ -273,11 +273,16 @@ about, and a source's order has to be an index the source carries explicitly: it
 cannot borrow an entity's row order within the archetype, because that row order
 is not guaranteed stable and is disturbed when components are removed.
 
-The ordering semantics a [`Scene`](unlit_wgpu::scene::Scene) already has
-internally (non-z-sorted first, then by pipeline and by material or view-axis depth) are
-unchanged; the ordering among sources is not a hard constraint forced by
-pass-level state — a scene carries the pass state it needs and resets it while
-recording — but a need of semantics like "UI composites over 3D".
+Within a scene, the ordering a source produces (its visible entries, its
+instance runs) is unchanged. The ordering among sources is not a hard
+constraint forced by pass-level state — a scene carries the pass state it
+needs and resets it while recording — but semantics like "UI composites over
+3D" no longer rest on it alone:
+[`Scene::record_composited`](unlit_wgpu::scene::Scene::record_composited)
+composites the sources' scenes into one draw list per pass — sequenced draws
+first in scene order, then every scene's depth-sorted pool together, then the
+trailing draws — as each source tags them with
+[`DrawOrder`](unlit_wgpu::scene::DrawOrder).
 
 </details>
 
@@ -331,7 +336,9 @@ opaque ones and ordered back-to-front by the depth of its mesh's bounds centre
 along the camera's view axis — see
 [`Camera::view_depth`](components::Camera::view_depth) — so a mesh whose pivot
 is offset from its geometry still sorts by what it draws rather than by its
-origin.
+origin. The order is the pass's composite, not the source's: the entry joins
+the depth-sorted pool every source contributes to, so it layers against
+blended meshes and depth-sorted strokes alike.
 
 A source is drawn through the first **active** [`Camera`](components::Camera) in
 its own scope — an entity whose
@@ -402,7 +409,7 @@ A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
 
 ## Automatic instancing
 
-Entries are sorted so that neighbours share a pipeline and bind groups, then each
+Within a tier the entries are sorted so that neighbours share a pipeline and bind groups, then each
 run of neighbours whose draw state is exactly equal — pipeline, bind groups,
 buffers and geometry segment — collapses into one instanced draw whose instance
 range covers the whole run in visible order. Recording costs a command and a
@@ -427,7 +434,12 @@ other or with anything else: they are blended back-to-front, so the order they
 are drawn in *is* the result, and a merged draw would rasterize its instances in
 record order instead. Their order comes from the depth of each mesh's bounds
 centre along the camera's view axis, so it follows the geometry a mesh actually
-draws rather than its pivot or its straight-line distance to the eye.
+draws rather than its pivot or its straight-line distance to the eye. The
+source no longer sorts them itself: its entries carry
+[`DrawOrder::Sorted`](unlit_wgpu::scene::DrawOrder::Sorted), and the pass's
+composite orders the pool every source contributes to, farthest first, where
+blended meshes and depth-sorted strokes from different sources meet as one
+list.
 
 </details>
 
@@ -536,8 +548,9 @@ different questions:
   already be in the depth buffer for a stroke behind one to be hidden. Whether
   a stroke also writes depth is its own policy's word — the default blending
   stroke writes none, and the default opaque one writes its, which is what
-  lets strokes hide each other — and the strokes that leave the depth alone
-  are recorded farthest first, so their colours layer in that order.
+  lets strokes hide each other — and a stroke that leaves the depth alone
+  carries its mid-point depth to the pass's composite, where it sorts against
+  every source's blended draws farthest first, colours layering in that order.
 - The inverted hull, [`LitOptions::inverted_hull`](unlit_wgpu::pipeline::LitOptions::inverted_hull),
   draws a **band** around a body: the same mesh drawn a second time, spread
   along its own normals with its front faces culled. The width is in **world
@@ -755,8 +768,9 @@ What it does is patch the world you already render:
   material's base-color factor, and — when the mesh reads a base-color texture —
   the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
   material is `alphaMode: BLEND` is also marked
-  [`ZSortedDrawing`](components::ZSortedDrawing), so the renderer composites it
-  back-to-front after the opaque geometry, and its pipeline writes no depth, so
+  [`ZSortedDrawing`](components::ZSortedDrawing), so the pass's composite blends
+  it back-to-front together with every source's blended draws, after the
+  sequenced geometry, and its pipeline writes no depth, so
   fragments it leaves behind for later ones to composite over stay visible. An
   `alphaMode: MASK` material instead draws binary coverage: the fragment shader
   discards every fragment whose alpha falls below the material's `alphaCutoff`
