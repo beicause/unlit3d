@@ -274,8 +274,9 @@ pub enum DrawOrder {
     /// same quantity: positive into the screen, so the farthest draw sorts
     /// first. The pool holds the sorted draws of every scene, which is what
     /// lets blended geometry composite by depth instead of by which scene
-    /// recorded first. A depth of `NaN` sorts first, ahead of every
-    /// finite one.
+    /// recorded first. A `NaN` depth is ordered by [`f32::total_cmp`],
+    /// which places it relative to the finite depths by the sign bit its
+    /// payload carries; the order is total, so it cannot poison the sort.
     Sorted(f32),
     /// Draw in sequence, behind the sorted pool: UI and overlays that sit
     /// above the sorted draws whatever their depth. Clipped draws belong
