@@ -136,7 +136,7 @@ use unlit_wgpu::pipeline::{
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
 use unlit_wgpu::render_attachments::{
-    color_clear, create_render_target, depth_clear, stencil_clear,
+    color_clear, create_render_target, default_depth_stencil_format, depth_clear, stencil_clear,
 };
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use zerocopy::IntoBytes;
@@ -344,7 +344,7 @@ impl Example {
         // per pass.
         let attachments = create_render_target(
             &self.device,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
             width,
             height,
             4,
