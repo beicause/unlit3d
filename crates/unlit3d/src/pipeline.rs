@@ -264,7 +264,12 @@ impl GlobalResources {
                 resources.bind_group(device, graph, &layout, bindings, uniforms)
             }
         };
-        GlobalRecipe::from_build(build, Inputs::Frame { arrays: Some(self.clone()) })
+        GlobalRecipe::from_build(
+            build,
+            Inputs::Frame {
+                arrays: Some(self.clone()),
+            },
+        )
     }
 }
 

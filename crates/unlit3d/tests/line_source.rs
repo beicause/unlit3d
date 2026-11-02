@@ -403,7 +403,11 @@ async fn a_dot_draws_as_a_disc_whatever_caps_state() {
     let ctx = Ctx::headless().await;
 
     let mut heights = Vec::new();
-    for caps in [0, LineSegment::ROUND_A, LineSegment::ROUND_A | LineSegment::ROUND_B] {
+    for caps in [
+        0,
+        LineSegment::ROUND_A,
+        LineSegment::ROUND_A | LineSegment::ROUND_B,
+    ] {
         // The dot stands at the frame's centre, where the whole disc shows;
         // the edge-reaching placement `along_x` gives a stroke is for
         // measuring along its length, which a dot has none of.
@@ -414,8 +418,7 @@ async fn a_dot_draws_as_a_disc_whatever_caps_state() {
         let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
         let frame = read_frame(&ctx, &target);
-        let (first, last) = drawn_rows(&frame)
-            .expect("a degenerate stroke still draws its disc");
+        let (first, last) = drawn_rows(&frame).expect("a degenerate stroke still draws its disc");
         heights.push((caps, last - first + 1));
     }
 
