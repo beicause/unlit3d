@@ -31,26 +31,23 @@
 //! [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE).
 
 use unlit_ecs::Scope;
-use unlit_wgpu::globals::{Camera, Globals, View};
+use unlit_wgpu::globals::Camera;
 use unlit_wgpu::instance_stream::{InstanceBuffer, InstanceStreamDesc};
 use unlit_wgpu::pipeline::{
-    CAMERA_BINDING, FRAME_BINDING, GLOBAL_GROUP, GlobalBindings, VIEW_BINDING,
-    global_bind_group_layout, supports_storage_buffers,
+    GLOBAL_GROUP, GlobalBindings, global_bind_group_layout, supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
-use unlit_wgpu::resources::ResHandle;
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
     FragmentStateDesc, PipelineDescriptor, RenderPipelineDesc, SurfaceKey, SurfaceTarget,
     VertexAttributes, VertexBufferLayoutDesc, VertexStateDesc,
 };
-use unlit_wgpu::staging::StagingBuffer;
 use zerocopy::IntoBytes;
 
-use crate::builtin::uniform_buffer;
 use crate::components::frame_camera;
-use crate::frame::FrameClock;
+use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
 use crate::pass::PassInfo;
+use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 
 /// The WESL module holding the line pipeline vertex and fragment stages.
@@ -146,7 +143,7 @@ impl LineSegment {
 // units, so a record that straddled one would leave a tail of stale bytes
 // behind every upload.
 const _: () = assert!(
-    core::mem::size_of::<LineSegment>() % wgpu::COPY_BUFFER_ALIGNMENT as usize == 0,
+    core::mem::size_of::<LineSegment>().is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize),
     "a segment record has to be a whole number of copy-alignment units long"
 );
 
@@ -172,24 +169,15 @@ pub struct LineSource {
 struct Gpu {
     /// The pipeline, specialized on the target.
     pipeline: wgpu::RenderPipeline,
-    /// The camera uniform, written every frame rather than replaced, so the
-    /// group binding it never has to be rebuilt.
-    camera: wgpu::Buffer,
-    /// The frame globals the shared global group layout declares. The shader
-    /// reads no clock, but every group carries the slot.
-    globals: wgpu::Buffer,
-    /// The view uniform: the viewport this pass covers, which is what turns the
-    /// stroke's pixel widths into clip space.
-    view: wgpu::Buffer,
-    /// The group binding the three uniforms, registered in the frame resource
-    /// graph.
-    bind_group: ResHandle<wgpu::BindGroup>,
+    /// How the global group is built. The camera, the globals and the view are
+    /// the frame's records, so one pipeline drawn into two viewports draws with
+    /// a group per viewport.
+    recipe: GlobalRecipe,
+    /// The groups built from `recipe` so far, one per [crate::global_uniforms::UniformsKey].
+    groups: UniformGroups,
     /// The instance stream the segments are uploaded into, allocated on the
     /// first non-empty frame.
     segments: InstanceBuffer,
-    /// The staging buffer the two uniforms are rewritten through, so a steady
-    /// frame allocates nothing and the copies join the frame's own encoder.
-    staging: StagingBuffer,
 }
 
 impl LineSource {
@@ -216,62 +204,24 @@ impl LineSource {
             !supports_storage_buffers(device),
         );
         let pipeline = pipeline(device, &layout, surface);
-        let camera = uniform_buffer(
-            device,
-            "unlit3d::line::camera",
-            <Camera as const_shader_layout::ShaderLayout>::SIZE.get(),
-        );
-        let globals = uniform_buffer(
-            device,
-            "unlit3d::line::globals",
-            <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
-        );
-        let view = uniform_buffer(
-            device,
-            "unlit3d::line::view",
-            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
-        );
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("unlit3d::line::globals"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: CAMERA_BINDING,
-                    resource: camera.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: FRAME_BINDING,
-                    resource: globals.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: VIEW_BINDING,
-                    resource: view.as_entire_binding(),
-                },
-            ],
+        let recipe = GlobalRecipe::new(move |device: &wgpu::Device, graph, uniforms| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("unlit3d::line::globals"),
+                layout: &layout,
+                entries: &uniform_entries(graph, uniforms),
+            })
         });
-        let mut graph_holder = ctx.graph(scope);
-        let graph = graph_holder.get();
-        let camera_id = graph.insert(camera.clone(), None);
-        let globals_id = graph.insert(globals.clone(), None);
-        let view_id = graph.insert(view.clone(), None);
-        let bind_group = graph.insert(group, None);
-        graph.add_dependency(&bind_group, &camera_id);
-        graph.add_dependency(&bind_group, &globals_id);
-        graph.add_dependency(&bind_group, &view_id);
         self.gpus.push((
             surface,
             Gpu {
                 pipeline,
-                camera,
-                globals,
-                view,
-                bind_group,
+                recipe,
+                groups: UniformGroups::new(),
                 segments: InstanceBuffer::new(InstanceStreamDesc {
                     slot: SEGMENT_SLOT,
                     array_stride: core::mem::size_of::<LineSegment>() as u32,
                     label: Some("unlit3d::line::segments"),
                 }),
-                staging: StagingBuffer::new(),
             },
         ));
         self.gpus.len() - 1
@@ -313,45 +263,52 @@ impl FrameSource for LineSource {
             .map_or((info.width as f32, info.height as f32), |viewport| {
                 (viewport.width, viewport.height)
             });
+        let (camera_entity, camera) = camera;
 
-        let camera = Camera::new(
+        // The camera and the view are the frame's records: two passes through
+        // one camera, or into one viewport, read the same two buffers, and the
+        // frame globals -- which this shader does not read -- are the
+        // renderer's to advance.
+        let record = Camera::new(
             camera.view_from_world,
             camera.clip_from_view,
             camera.position(),
         );
-        let view = View::new(width, height);
-        // The shader measures in pixels and reads no clock, but the frame
-        // globals share the group every pipeline in the frame binds, so the
-        // slot is filled from the frame's own clock: a stroke that later wants
-        // to animate along time reads the same numbers a mesh does, and the
-        // clock belongs to the frame rather than to this source, whose build
-        // may run once per pass.
-        let mut globals = Globals::default();
-        if let Ok(mut clock_row) = scope.query_one::<&FrameClock>(ctx.clock) {
-            let clock = clock_row.get();
-            globals.time = clock.time;
-            globals.delta_time = clock.delta_time;
-            globals.frame_count = clock.index;
-        }
 
-        {
-            let mut device_row = scope
+        let bind_group = {
+            let device = scope
                 .query_one::<&wgpu::Device>(ctx.device)
-                .expect("the context device resource exists");
-            let device = device_row.get();
+                .expect("the context device resource exists")
+                .get()
+                .clone();
+            let uniforms = {
+                let mut graph_holder = ctx.graph(scope);
+                let mut uniforms_holder = ctx.uniforms(scope);
+                uniforms_holder.get().uniforms(
+                    &device,
+                    graph_holder.get(),
+                    encoder,
+                    CameraKey::Entity(camera_entity),
+                    &record,
+                    ViewKey::new(width, height),
+                )
+            };
             let gpu = &mut self.gpus[index].1;
-            // Every upload of the frame is recorded into the frame's own
-            // encoder and passes through the one staging buffer, so none of
-            // them costs a submission of its own.
-            gpu.staging
-                .write(device, encoder, &gpu.camera, 0, camera.as_bytes());
-            gpu.staging
-                .write(device, encoder, &gpu.globals, 0, globals.as_bytes());
-            gpu.staging
-                .write(device, encoder, &gpu.view, 0, view.as_bytes());
+            let recipe = gpu.recipe.clone();
+            let mut graph_holder = ctx.graph(scope);
+            let graph = graph_holder.get();
+            let group = gpu
+                .groups
+                .group(graph, uniforms.key(), uniforms.frame, |graph| {
+                    recipe.insert(&device, graph, &uniforms)
+                });
+            gpu.groups.prune(uniforms.frame);
+            // The segments ride the frame's own encoder, so a stroke costs no
+            // submission of its own.
             gpu.segments
-                .upload(device, encoder, self.segments.as_bytes());
-        }
+                .upload(&device, encoder, self.segments.as_bytes());
+            group
+        };
 
         // Drop the scope so the graph maintains before the group is read back
         // out: a group a first frame made has to be visible to its own draw.
@@ -360,7 +317,7 @@ impl FrameSource for LineSource {
         let graph = graph_holder.get();
         let gpu = &self.gpus[index].1;
         let bind_group = graph
-            .get(&gpu.bind_group)
+            .get(&bind_group)
             .expect("the bind group is registered in the graph");
         let target = gpu
             .segments

@@ -60,7 +60,7 @@
 //! graph.add_dependency(&group_id, &globals_id);
 //! graph.add_dependency(&group_id, &view_id);
 //!
-//! let mut ui = EguiIntegration::new(device, group_id, pipeline);
+//! let mut ui = EguiIntegration::new(device, pipeline);
 //! let mut input = egui::RawInput::default();
 //! input.screen_rect = Some(egui::Rect::from_min_size(
 //!     egui::Pos2::ZERO,
@@ -80,7 +80,7 @@
 //!     pixels_per_point: 1.0,
 //! };
 //! ui.update(&mut graph, queue, &mut encoder, ctx, output, screen);
-//! let scene = ui.scene(&graph);
+//! let scene = ui.scene(&graph, &graph.get(&group_id).expect("the group exists"));
 //! # }
 //! # fn uniform_buffer(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
 //! #     device.create_buffer(&wgpu::BufferDescriptor {
@@ -442,9 +442,6 @@ pub struct EguiIntegration {
     /// Kept to build the resources a frame turns out to need.
     device: wgpu::Device,
     pipeline: SpecializedLitPipeline,
-    /// Graph node of the caller's global bind group: camera and frame
-    /// globals, written by the caller.
-    global_group: ResHandle<wgpu::BindGroup>,
     /// Graph nodes of every allocated texture slot, keyed by origin and id.
     textures: HashMap<TextureKey, TextureSlot>,
     /// The sampling options egui last stated for each texture.
@@ -587,25 +584,24 @@ impl EguiIntegration {
     ///
     /// `pipeline` is the built-in lit pipeline the UI draws with, configured
     /// for the target the pass renders into — its color format, sample count
-    /// and blend state. The caller builds it (and the global bind group from
-    /// its layout) up front, so the UI does not compile a pipeline of its own.
+    /// and blend state. The caller builds it up front, so the UI does not
+    /// compile a pipeline of its own.
     ///
-    /// The global bind group — the camera and frame-globals uniforms — is
-    /// the caller's, as is everything else the UI overlays: the integration
-    /// owns only egui's textures and the geometry they are drawn with.
-    /// Sharing the caller's graph — usually the one kept alongside the
+    /// The global bind group — the camera, the frame globals and the view —
+    /// is the caller's, and it is handed to [`Self::scene`] rather than kept
+    /// here: the frame owns the uniforms and builds one group per camera and
+    /// viewport its draws name, so a source can draw the same UI through two
+    /// cameras without owning either group. Everything else the UI overlays is
+    /// the caller's too: the integration owns only egui's textures and the
+    /// geometry they are drawn with. Sharing the caller's graph — usually the
+    /// one kept alongside the
     /// [`crate::render_attachments::RenderAttachments`] — means those
     /// resources live in the same ledger as the rest of the frame's, with the
     /// same dependency tracking.
-    pub fn new(
-        device: &wgpu::Device,
-        global_group: ResHandle<wgpu::BindGroup>,
-        pipeline: SpecializedLitPipeline,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, pipeline: SpecializedLitPipeline) -> Self {
         Self {
             device: device.clone(),
             pipeline,
-            global_group,
             textures: HashMap::new(),
             texture_options: HashMap::new(),
             samplers: Vec::new(),
@@ -624,17 +620,6 @@ impl EguiIntegration {
             packed_vertices: Vec::new(),
             packed_indices: Vec::new(),
         }
-    }
-
-    /// The bind group behind a graph node that is known to be one.
-    fn bind_group<'a>(
-        &self,
-        graph: &'a ResourceGraph,
-        id: &ResHandle<wgpu::BindGroup>,
-    ) -> &'a wgpu::BindGroup {
-        graph
-            .get(id)
-            .expect("the node is a bind group the UI created")
     }
 
     /// Apply `output`'s texture updates and upload its tessellated shapes,
@@ -813,7 +798,11 @@ impl EguiIntegration {
     /// The materials the frame needs were built by [`Self::update`], so this
     /// only reads the graph — a scene can therefore be taken while the graph is
     /// shared with whatever else the frame is drawing.
-    pub fn scene(&self, graph: &ResourceGraph) -> Scene {
+    ///
+    /// `global` is the caller's global bind group for the camera, the frame
+    /// globals and the view this frame draws through; the UI binds it at
+    /// [`GLOBAL_GROUP`] for every draw.
+    pub fn scene(&self, graph: &ResourceGraph, global: &wgpu::BindGroup) -> Scene {
         if self.vertices.is_none() || self.indices.is_none() || self.draws.is_empty() {
             return Scene::new();
         }
@@ -831,7 +820,6 @@ impl EguiIntegration {
         let positions_size = (self.frame_vertices * POSITION_STRIDE) as u64;
         let secondary_size = (self.frame_vertices * SECONDARY_STRIDE) as u64;
         let pipeline = &self.pipeline.pipeline;
-        let global = self.bind_group(graph, &self.global_group);
         for draw in &self.draws {
             // Each draw carries its own scissor rectangle, so consecutive
             // draws sharing one are what the recorder's deduplication is for.

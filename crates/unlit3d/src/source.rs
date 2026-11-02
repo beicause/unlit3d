@@ -31,6 +31,7 @@ use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 
 use crate::frame::FrameClock;
+use crate::global_uniforms::GlobalUniforms;
 use crate::order::OrderKey;
 use crate::pass::PassInfo;
 
@@ -101,6 +102,14 @@ pub struct RenderContext {
     /// be built once per pass, and a clock every source counted for itself
     /// would run faster on a frame with more passes.
     pub clock: Entity,
+    /// The frame's [`GlobalUniforms`], as a resource entity.
+    ///
+    /// The camera, globals and view records every draw binds belong to the
+    /// frame: two sources drawn through one camera read the same bytes, and a
+    /// source built once per pass reads one record per pass. Keeping them here
+    /// rather than in each source is what makes that one upload instead of
+    /// one per build.
+    pub uniforms: Entity,
 }
 
 impl RenderContext {
@@ -134,9 +143,23 @@ impl RenderContext {
     pub fn maintain_scope<'w>(self, scope: Scope<'w>) -> MaintainScope<'w> {
         MaintainScope { scope, ctx: self }
     }
-}
 
-impl RenderContext {
+    /// The frame's [`GlobalUniforms`], borrowed from `scope`.
+    ///
+    /// A source asks it for the camera and view records of the pass it is
+    /// building, and the group it binds them through comes from the same
+    /// place. The renderer advances the frame globals before any source
+    /// builds, so the record is already the frame's when a source reads it.
+    ///
+    /// # Panics
+    ///
+    /// If the context's uniforms resource is gone.
+    pub fn uniforms<'w>(self, scope: &'w Scope<'w>) -> QueryOne<'w, &'w mut GlobalUniforms> {
+        scope
+            .query_one::<&mut GlobalUniforms>(self.uniforms)
+            .expect("the context's global uniforms exist")
+    }
+
     /// The context the world holds, found from any one of its addresses.
     ///
     /// The resource entities all carry the whole [`RenderContext`], so a
@@ -434,7 +457,12 @@ pub fn spawn_context(
         graph,
         capabilities: world.reserve_entity("device_capabilities"),
         clock: world.reserve_entity("frame_clock"),
+        uniforms: world.reserve_entity("global_uniforms"),
     };
+    // The frame's uniform registry is built against the graph it registers
+    // its buffers in, so the graph is taken before either is spawned.
+    let mut graph_component = graph_component;
+    let uniforms = GlobalUniforms::new(&device, &mut graph_component);
     // Every one of these belongs to the shared subtree: a source reads the GPU
     // state from its own scope, and no scope may remove what every other scope
     // depends on.
@@ -451,6 +479,7 @@ pub fn spawn_context(
         context,
     );
     spawn_row(&mut shared_view, graph, graph_component, context);
+    spawn_row(&mut shared_view, context.uniforms, uniforms, context);
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
     shared_view.spawn_named("open_urls", bundle![OpenUrls::default()]);
@@ -1440,6 +1469,7 @@ mod release_tests {
     fn dropping_a_source_releases_the_nodes_it_owns() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
+        let base = graph_len(&world, ctx);
         let entity = world
             .root_scope_mut()
             .spawn(bundle![Source::new(OwningSource {
@@ -1449,7 +1479,7 @@ mod release_tests {
         build_once(&mut world, entity, ctx);
         assert_eq!(
             graph_len(&world, ctx),
-            1,
+            base + 1,
             "the source registered exactly the node it owns"
         );
 
@@ -1459,14 +1489,14 @@ mod release_tests {
         // the graph resolves it until something maintains.
         assert_eq!(
             graph_len(&world, ctx),
-            1,
+            base + 1,
             "dropping an id does not itself remove the node"
         );
 
         maintain(&mut world, ctx);
         assert_eq!(
             graph_len(&world, ctx),
-            0,
+            base,
             "maintain collected the node nothing refers to"
         );
     }
@@ -1477,6 +1507,7 @@ mod release_tests {
     fn removing_a_source_that_owns_nothing_still_removes_it() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
+        let base = graph_len(&world, ctx);
         let entity = world
             .root_scope_mut()
             .spawn(bundle![Source::new(OwningSource {
@@ -1487,7 +1518,7 @@ mod release_tests {
         world.root_scope_mut().despawn(entity).unwrap();
         assert!(!world.root_scope().contains(entity));
         maintain(&mut world, ctx);
-        assert_eq!(graph_len(&world, ctx), 0);
+        assert_eq!(graph_len(&world, ctx), base);
     }
 
     /// Two sources leaving in the same frame give up their ids, and the frame's
@@ -1499,6 +1530,7 @@ mod release_tests {
     fn one_maintain_drops_the_nodes_every_source_gave_up() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
+        let base = graph_len(&world, ctx);
         let mut entities = Vec::new();
         for _ in 0..2 {
             entities.push(
@@ -1514,7 +1546,11 @@ mod release_tests {
         for &entity in &entities {
             build_once(&mut world, entity, ctx);
         }
-        assert_eq!(graph_len(&world, ctx), 2, "each source registered a node");
+        assert_eq!(
+            graph_len(&world, ctx),
+            base + 2,
+            "each source registered a node"
+        );
 
         for &entity in &entities {
             world.root_scope_mut().despawn(entity).unwrap();
@@ -1524,7 +1560,7 @@ mod release_tests {
         // still there until the frame maintains.
         assert_eq!(
             graph_len(&world, ctx),
-            2,
+            base + 2,
             "dropping an id does not itself remove the node"
         );
 
@@ -1532,7 +1568,7 @@ mod release_tests {
         maintain(&mut world, ctx);
         assert_eq!(
             graph_len(&world, ctx),
-            0,
+            base,
             "the single maintain collected every unreferenced node"
         );
     }
@@ -1544,6 +1580,7 @@ mod release_tests {
     fn a_build_that_returns_early_still_maintains() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
+        let base = graph_len(&world, ctx);
         let entity = world
             .root_scope_mut()
             .spawn(bundle![Source::new(EarlyReturnSource {
@@ -1553,7 +1590,11 @@ mod release_tests {
 
         // The first build registers the node the source owns.
         build_once(&mut world, entity, ctx);
-        assert_eq!(graph_len(&world, ctx), 1, "the source registered a node");
+        assert_eq!(
+            graph_len(&world, ctx),
+            base + 1,
+            "the source registered a node"
+        );
 
         // The second build gives it up and returns at once. Nothing calls
         // `maintain`: the scope's drop is the pass, and it collects the node
@@ -1561,7 +1602,7 @@ mod release_tests {
         build_once(&mut world, entity, ctx);
         assert_eq!(
             graph_len(&world, ctx),
-            0,
+            base,
             "the early return maintained the graph"
         );
     }

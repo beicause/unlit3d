@@ -31,39 +31,33 @@
 //! ]);
 //! ```
 //!
-//! The UI draws with the same built-in lit pipeline as everything else, but
-//! through its own camera uniform: one pass carries one camera value, so the UI
-//! cannot borrow the 3D camera's. The source therefore owns a camera, a
-//! frame-globals and a view buffer of its own, plus the bind group binding them:
-//! its camera maps points onto clip space and its view states the point size as
-//! the region that projection covers.
+//! The UI draws with the same built-in lit pipeline as everything else and
+//! binds the frame's uniforms rather than records of its own: it synthesises a
+//! camera that maps its points onto clip space and states the point size as the
+//! view its pass covers, and asks the frame's registry for those records. The
+//! registry keys a camera by what it was derived from, so a screen that was not
+//! resized reuses the record, the buffer and the bind group of the frame before
+//! it.
 
 use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
-use unlit_wgpu::globals::{Camera, Globals, View};
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedLitPipeline, VIEW_BINDING};
-use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
-use unlit_wgpu::staging::StagingBuffer;
-use unlit_wgpu::ui::{
-    EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, screen_viewport, ui_variant,
-};
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, ui_variant};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
 use web_time::Instant;
-use zerocopy::IntoBytes;
 
 pub use crate::source::{OpenUrl, OpenUrls};
 
+use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
 use crate::input::InputEvents;
-use crate::relay::Snapshot;
-
-use crate::builtin::uniform_buffer;
 use crate::pass::PassInfo;
+use crate::pipeline::{GlobalRecipe, uniform_entries};
+use crate::relay::Snapshot;
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 /// egui, re-exported because a [`UiPanel`] is written against its types.
 ///
@@ -125,22 +119,19 @@ impl UiPanel {
 /// the integration holds the pipeline specialized for that target and the
 /// texture atlases uploaded for it.
 struct Gpu {
-    /// The camera uniform `screen_view` is written into.
-    camera: wgpu::Buffer,
-    /// The frame-globals uniform.
-    globals: wgpu::Buffer,
-    /// The view uniform `screen_viewport` is written into: egui's points are
-    /// the pixels a pixel-measuring shader would divide by, so the pass's
-    /// viewport is the point size.
-    view: wgpu::Buffer,
-    /// The staging buffer the uniforms are rewritten through, so a steady
-    /// frame allocates nothing and the copies join the frame's own encoder.
-    staging: StagingBuffer,
-    /// Uploads egui's textures and geometry and records its draws.
+    /// How the global bind group is built for the pipeline this target is
+    /// specialized for.
+    recipe: GlobalRecipe,
+    /// The global bind groups the integration's draws are recorded with, one
+    /// per [`UniformsKey`] the frame draws the target through.
     ///
-    /// It holds the bind group binding the two uniforms, which is what keeps
-    /// them alive: the group depends on them, and dropping the whole [`Gpu`]
-    /// gives up the group with it.
+    /// The UI has no camera entity: it synthesises a [`Camera`] mapping its
+    /// points onto clip space and states the point size as the [`View`] its
+    /// pass covers, so the frame's uniform registry holds those records rather
+    /// than the source. A target that grows or shrinks asks for another key,
+    /// and the groups of the keys it no longer draws are pruned each frame.
+    groups: UniformGroups,
+    /// Uploads egui's textures and geometry and records its draws.
     integration: EguiIntegration,
 }
 
@@ -166,14 +157,13 @@ struct Target {
 ///
 /// Nothing is built until the first frame: the source's pipeline is
 /// specialized on the frame's target, which is only known in
-/// [`FrameSource::build_scene`]. The uniforms, pipeline and bind group are
-/// built then, and rebuilt when the target's [`SurfaceKey`] changes.
+/// [`FrameSource::build_scene`]. The pipeline and its bind groups are built
+/// then, and rebuilt when the target's [`SurfaceKey`] changes.
 ///
-/// The UI has its own camera and globals uniforms rather than reusing the 3D
-/// ones: a single render pass can carry only one camera value, and the UI's
-/// projection maps logical points onto clip space while the 3D camera maps
-/// world space. Both buffers are owned by this source and registered in the
-/// frame's resource graph.
+/// The UI binds uniforms of the frame's own registry: its projection maps
+/// logical points onto clip space rather than world space, so it names a camera
+/// of its own — the screen mapping — and a view of its own, and the frame keeps
+/// one record and one buffer per distinct pair rather than one per source.
 pub struct UiSource {
     /// egui's state — fonts, memory, style — kept across frames.
     ctx: egui::Context,
@@ -266,12 +256,7 @@ impl UiSource {
     /// rather than rebuilt when the key changes: alternating passes would
     /// otherwise specialize the pipeline, and drop the material table with it,
     /// twice per frame.
-    fn target_index(
-        &mut self,
-        device: &wgpu::Device,
-        graph: &mut ResourceGraph,
-        surface: SurfaceKey,
-    ) -> usize {
+    fn target_index(&mut self, device: &wgpu::Device, surface: SurfaceKey) -> usize {
         if let Some(index) = self.targets.iter().position(|target| target.key == surface) {
             return index;
         }
@@ -280,39 +265,23 @@ impl UiSource {
         // makes for its swap chain.
         let variant = ui_variant(device, surface.color_format.has_srgb_suffix(), surface);
         let pipeline = SpecializedPipeline::create(device, variant);
-        let camera = uniform_buffer(
-            device,
-            "unlit3d::ui::camera",
-            <Camera as const_shader_layout::ShaderLayout>::SIZE.get(),
-        );
-        let globals = uniform_buffer(
-            device,
-            "unlit3d::ui::globals",
-            <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
-        );
-        let view = uniform_buffer(
-            device,
-            "unlit3d::ui::view",
-            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
-        );
-        let camera_id = graph.insert(camera.clone(), None);
-        let globals_id = graph.insert(globals.clone(), None);
-        let view_id = graph.insert(view.clone(), None);
-        // The uniforms are written into every frame rather than replaced, so
-        // the group has nothing to rebuild from.
-        let group = global_group(device, &pipeline, &camera, &globals, &view);
-        let group_id = graph.insert(group, None);
-        graph.add_dependency(&group_id, &camera_id);
-        graph.add_dependency(&group_id, &globals_id);
-        graph.add_dependency(&group_id, &view_id);
+        // The UI binds no array of its own: its group is the frame's three
+        // uniforms alone, so the recipe reads them out of the registry and
+        // nothing else.
+        let layout = pipeline.descriptor().bind_group_layouts(device).global;
+        let recipe = GlobalRecipe::new(move |device: &wgpu::Device, graph, uniforms| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("unlit3d::ui::globals"),
+                layout: &layout,
+                entries: &uniform_entries(graph, uniforms),
+            })
+        });
         self.targets.push(Target {
             key: surface,
             gpu: Gpu {
-                camera,
-                globals,
-                view,
-                staging: StagingBuffer::new(),
-                integration: EguiIntegration::new(device, group_id, pipeline),
+                recipe,
+                groups: UniformGroups::new(),
+                integration: EguiIntegration::new(device, pipeline),
             },
         });
         self.targets.len() - 1
@@ -406,9 +375,7 @@ impl FrameSource for UiSource {
         // so its layout is built against the same target this one draws at.
         self.screen.publish(target_screen);
 
-        let mut graph_holder = ctx.graph(scope);
-        let graph = graph_holder.get();
-        let index = self.target_index(&device, graph, target.surface);
+        let index = self.target_index(&device, target.surface);
 
         // The events reached egui's own types while the world's `InputEvents`
         // were read, and they stay in the world afterwards: the UI reads them,
@@ -472,6 +439,40 @@ impl FrameSource for UiSource {
         let own_textures = core::mem::take(&mut output.textures_delta);
         // What a frame contributes in geometry when its slice is left empty.
         const NO_PRIMITIVES: [egui::ClippedPrimitive; 0] = [];
+        // The UI draws through a mapping of its own rather than through a
+        // camera entity: `screen_view` maps egui's points onto clip space and
+        // the pass's view is the same point size, so the frame's registry keys
+        // both by the screen size. The frame globals are the frame's own — the
+        // UI reads no clock — and were advanced before any source built.
+        let points = screen.size_in_points();
+        let mut graph_holder = ctx.graph(scope);
+        let uniforms = {
+            let mut uniforms_holder = ctx.uniforms(scope);
+            uniforms_holder.get().uniforms(
+                &device,
+                graph_holder.get(),
+                encoder,
+                CameraKey::screen(points[0], points[1]),
+                &screen_view(points),
+                ViewKey::new(points[0], points[1]),
+            )
+        };
+        // The group binding those records, built the first time this target
+        // draws through them. A record that does not change reuses its group
+        // from frame to frame; a screen that was resized names another key.
+        let global = {
+            let recipe = self.targets[index].gpu.recipe.clone();
+            let groups = &mut self.targets[index].gpu.groups;
+            let group = groups.group(
+                graph_holder.get(),
+                uniforms.key(),
+                uniforms.frame,
+                |graph| recipe.insert(&device, graph, &uniforms),
+            );
+            groups.prune(uniforms.frame);
+            group
+        };
+
         let gpu = &mut self.targets[index].gpu;
         self.frames.with_frames(|slots| {
             let mut sources = Vec::with_capacity(slots.len() + 1);
@@ -503,36 +504,10 @@ impl FrameSource for UiSource {
                 });
             }
             gpu.integration
-                .update_with(graph, &queue, encoder, &mut sources, screen);
+                .update_with(graph_holder.get(), &queue, encoder, &mut sources, screen);
             // The deltas were applied and cleared; a frame's geometry stayed
             // where it was, so the slot still holds what it will draw again.
         });
-
-        // The UI's own camera: `screen_view` maps egui's points onto clip
-        // space, `screen_viewport` states the point size as the view it draws
-        // through, and its frame globals stay at their defaults — nothing the
-        // UI draws reads the frame clock.
-        gpu.staging.write(
-            &device,
-            encoder,
-            &gpu.camera,
-            0,
-            screen_view(screen.size_in_points()).as_bytes(),
-        );
-        gpu.staging.write(
-            &device,
-            encoder,
-            &gpu.globals,
-            0,
-            Globals::default().as_bytes(),
-        );
-        gpu.staging.write(
-            &device,
-            encoder,
-            &gpu.view,
-            0,
-            screen_viewport(screen.size_in_points()).as_bytes(),
-        );
 
         // The frame's one rebuild pass: the textures the integration just
         // uploaded marked their readers dirty, and the scene assembled below
@@ -543,7 +518,8 @@ impl FrameSource for UiSource {
         let mut graph_holder = ctx.graph(scope);
         let graph = graph_holder.get();
 
-        let mut ui_scene = gpu.integration.scene(graph);
+        let bind_group = graph.get(&global).expect("the group exists");
+        let mut ui_scene = gpu.integration.scene(graph, bind_group);
         scene.draws.append(&mut ui_scene.draws);
     }
 
@@ -589,37 +565,6 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
         let slot = slot.get();
         slot.replace(urls.drain(..))
     });
-}
-
-/// The UI's global bind group: its camera, frame-globals and view uniforms.
-///
-/// Built from the pipeline's own global layout, so the group and the pipeline
-/// it feeds are always specialized for the same target.
-fn global_group(
-    device: &wgpu::Device,
-    pipeline: &SpecializedLitPipeline,
-    camera: &wgpu::Buffer,
-    globals: &wgpu::Buffer,
-    view: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("unlit3d::ui::globals"),
-        layout: &pipeline.descriptor().bind_group_layouts(device).global,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: CAMERA_BINDING,
-                resource: camera.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: FRAME_BINDING,
-                resource: globals.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: VIEW_BINDING,
-                resource: view.as_entire_binding(),
-            },
-        ],
-    })
 }
 
 /// A frame of UI that was laid out somewhere other than the world drawing it.
@@ -882,7 +827,7 @@ mod tests {
             &mut world,
             device,
             queue,
-            ResourceGraph::new(),
+            unlit_wgpu::resources::ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
         (world, ctx)

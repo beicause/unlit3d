@@ -20,7 +20,7 @@ use std::rc::Rc;
 use unlit_ecs::{Scope, TypeIdHashMap};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
-use unlit_wgpu::globals::{Camera as CameraUniform, Globals, View};
+use unlit_wgpu::globals::Camera as CameraUniform;
 use unlit_wgpu::light::{
     CELL_WORDS, ClusterConfig, ClusterUniform, DirectionalGpu, LightClusters, LightGpu,
     LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight,
@@ -37,7 +37,7 @@ use zerocopy::IntoBytes;
 
 use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts, frame_camera};
 use crate::culling::VisibleMesh;
-use crate::frame::FrameClock;
+use crate::global_uniforms::{CameraKey, FrameUniforms, UniformGroups, ViewKey};
 use crate::mesh::MeshDesc;
 use crate::pass::PassInfo;
 use crate::pipeline::{
@@ -64,12 +64,9 @@ fn grown_capacity(current: u32, needed: u32) -> u32 {
 ///
 /// A free function rather than a method: the family that resolves the key
 /// holds the source mutably, so the closure it registers through can only
-/// borrow the disjoint fields this needs — the pipeline list, the resource
-/// graph and the ids of the source's global buffers.
+/// borrow the disjoint fields this needs.
 fn register_concrete(
     pipelines: &mut Vec<RegisteredPipeline>,
-    graph: &mut ResourceGraph,
-    buffers: GlobalResources,
     desc: RegisteredRenderPipeline,
 ) -> RenderPipelineId {
     // The material and mesh layouts describe a pipeline's binding interface,
@@ -80,17 +77,12 @@ fn register_concrete(
         pipeline, global, ..
     } = desc;
 
-    // A globally bound pipeline reads the source's own frame buffers, so it
-    // depends on all of them: a rebuild of any marks the group dirty. The
-    // group is rebuilt through the pipeline's own recipe, so a custom pipeline
-    // keeps control of what its layout binds.
-    let global = global.map(|rebuild| {
-        // The first build is eager: a node has to hold a resource of the kind
-        // its typed id names, and only the rebuilds that follow are deferred.
-        let bind_group: wgpu::BindGroup = rebuild.build(graph);
-        let id = graph.insert(bind_group, Some(rebuild));
-        buffers.declare_dependencies(graph, &id);
-        RegisteredGlobal { id }
+    // The recipe is kept rather than run: its global bind group binds the
+    // frame's camera and view buffers, which are only known once a draw names
+    // them, so the groups are built when the frame is assembled.
+    let global = global.map(|recipe| RegisteredGlobal {
+        recipe,
+        groups: UniformGroups::new(),
     });
 
     pipelines.push(RegisteredPipeline { pipeline, global });
@@ -122,13 +114,6 @@ pub struct MeshSource {
     /// holding a borrow of them between calls.
     pub(crate) context: RenderContext,
 
-    /// Resource id of the camera uniform buffer.
-    camera_buf: ResHandle<wgpu::Buffer>,
-    /// Resource id of the frame-globals uniform buffer.
-    globals_buf: ResHandle<wgpu::Buffer>,
-    /// Resource id of the view uniform buffer: the viewport this source's
-    /// draw covers.
-    view_buf: ResHandle<wgpu::Buffer>,
     /// The mesh-metadata array, held in whichever resource the device reads.
     metadata_array: Array,
     /// Resource id of the mesh-metadata array.
@@ -199,8 +184,7 @@ pub struct MeshSource {
     /// [build](FrameSource::build_scene) uploads the array then, so the upload
     /// always lands in the same encoder as the draws that read it.
     morph_deltas_dirty: bool,
-    /// Per-frame globals (advanced once per built scene).
-    globals: Globals,
+
     /// Metadata entries, one per live uploaded mesh.
     metadata: Vec<MeshMetadata>,
     /// Metadata slots whose mesh was removed and whose index is free to hand
@@ -224,9 +208,9 @@ pub struct MeshSource {
     /// Reused staging buffers, one per buffer uploaded to every frame, so a
     /// steady frame reaches the GPU without a per-frame allocation or
     /// submission.
-    camera_staging: StagingBuffer,
-    globals_staging: StagingBuffer,
-    view_staging: StagingBuffer,
+    ///
+    /// The camera, globals and view uniforms are not among them: the frame's
+    /// [GlobalUniforms](crate::global_uniforms::GlobalUniforms) stages those.
 
     /// The pool every mesh uploaded through
     /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps its indices in, as one large
@@ -298,16 +282,11 @@ impl MeshSource {
     ///
     /// # Panics
     ///
-    /// If `ctx` does not name the world's device, queue and resource graph.
+    /// If `ctx` does not name the world's device and resource graph.
     pub fn new(world: &Scope<'_>, ctx: RenderContext) -> Self {
         let device = world
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context names the world's device")
-            .get()
-            .clone();
-        let queue = world
-            .query_one::<&wgpu::Queue>(ctx.queue)
-            .expect("the context names the world's queue")
             .get()
             .clone();
         let mut resource_graph_row = world
@@ -315,40 +294,6 @@ impl MeshSource {
             .expect("the context names the world's resource graph");
 
         let graph = resource_graph_row.get();
-
-        // Camera uniform buffer.
-        let camera_buf = graph.insert(
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::camera"),
-                size: size_of::<CameraUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            None,
-        );
-
-        // Globals uniform buffer.
-        let globals = Globals::default();
-        let globals_buf = graph.insert(
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::globals"),
-                size: size_of::<Globals>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            None,
-        );
-
-        // View uniform buffer.
-        let view_buf = graph.insert(
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::view"),
-                size: size_of::<View>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            None,
-        );
 
         // The arrays the frame's shaders read, each in whichever resource the
         // device can read: a storage buffer where it has them, a texture where
@@ -447,23 +392,6 @@ impl MeshSource {
             None,
         );
 
-        // Initial upload of the camera, the globals and the view.
-        queue.write_buffer(
-            graph.get(&camera_buf).expect("just inserted"),
-            0,
-            CameraUniform::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
-        );
-        queue.write_buffer(
-            graph.get(&globals_buf).expect("just inserted"),
-            0,
-            globals.as_bytes(),
-        );
-        queue.write_buffer(
-            graph.get(&view_buf).expect("just inserted"),
-            0,
-            View::new(1.0, 1.0).as_bytes(),
-        );
-
         // The pools the built-in meshes upload into. Each is one buffer in the
         // graph that many meshes read through, so the node is strong — the
         // source owns it, no mesh does — and starts out the size of the first
@@ -484,9 +412,6 @@ impl MeshSource {
 
         Self {
             context: ctx,
-            camera_buf,
-            globals_buf,
-            view_buf,
             metadata_array,
             metadata_buf,
             joints_array,
@@ -515,15 +440,11 @@ impl MeshSource {
             cluster_staging: StagingBuffer::new(),
             lighting_staging: StagingBuffer::new(),
             morph_deltas_dirty: false,
-            globals,
             metadata: Vec::new(),
             free_metadata: Vec::new(),
             metadata_dirty: false,
             packed_joints: Vec::new(),
             packed_morph_weights: Vec::new(),
-            camera_staging: StagingBuffer::new(),
-            globals_staging: StagingBuffer::new(),
-            view_staging: StagingBuffer::new(),
             index_pool,
             index_pool_id,
             vertex_pool,
@@ -1119,13 +1040,11 @@ impl MeshSource {
     }
     // -- internal helpers ------------------------------------------------------
 
-    /// The ids of the source's global buffers, as a factory and a rebuild
-    /// recipe see them.
+    /// The ids of the source's global arrays, as a factory and a rebuild
+    /// recipe see them. The camera, the globals and the view are not among
+    /// them: the frame holds those.
     fn global_resources(&self) -> GlobalResources {
         GlobalResources {
-            camera: self.camera_buf.clone(),
-            globals: self.globals_buf.clone(),
-            view: self.view_buf.clone(),
             metadata: self.metadata_buf.clone(),
             joints: self.joints_buf.clone(),
             morph_weights: self.morph_weights_buf.clone(),
@@ -1178,57 +1097,6 @@ impl MeshSource {
     /// states that point without a call at each of its returns.
     pub fn maintain(&mut self, world: &Scope<'_>) {
         self.context.graph(world).get().maintain();
-    }
-
-    /// Upload the camera uniform, staging the bytes through the frame's
-    /// encoder.
-    fn upload_camera(
-        &mut self,
-        world: &Scope<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-        camera: &CameraUniform,
-    ) {
-        let buffer = self
-            .context
-            .graph(world)
-            .get()
-            .get(&self.camera_buf)
-            .expect("camera buffer exists")
-            .clone();
-        self.camera_staging
-            .write(&self.device(world), encoder, &buffer, 0, camera.as_bytes());
-    }
-
-    /// Upload the view uniform, staging the bytes through the frame's encoder.
-    fn upload_view(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder, view: &View) {
-        let buffer = self
-            .context
-            .graph(world)
-            .get()
-            .get(&self.view_buf)
-            .expect("view buffer exists")
-            .clone();
-        self.view_staging
-            .write(&self.device(world), encoder, &buffer, 0, view.as_bytes());
-    }
-
-    /// Upload the frame-globals uniform, staging the bytes through the frame's
-    /// encoder.
-    fn upload_globals(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
-        let buffer = self
-            .context
-            .graph(world)
-            .get()
-            .get(&self.globals_buf)
-            .expect("globals buffer exists")
-            .clone();
-        self.globals_staging.write(
-            &self.device(world),
-            encoder,
-            &buffer,
-            0,
-            self.globals.as_bytes(),
-        );
     }
 
     /// Pack and upload every family's per-instance data for this frame.
@@ -1385,19 +1253,15 @@ impl MeshSource {
         let resources = self.global_resources();
         let device = self.device(world);
 
-        // Split the borrows: the families mutate the pipeline list and the
-        // resource graph through the register closure, while the caches are
-        // disjoint fields.
+        // Split the borrows: the families push into the pipeline list through
+        // the register closure, while the caches are disjoint fields.
         let (families, meshes, visible) = (
             &mut self.families,
             &mut self.visible_meshes_cache,
             &mut self.visible_cache,
         );
-        let (pipelines, buffers) = (&mut self.pipelines, resources.clone());
-        let ctx = self.context;
-        let mut graph_holder = ctx.graph(world);
-        let graph = graph_holder.get();
-        let mut register = |desc| register_concrete(pipelines, graph, buffers.clone(), desc);
+        let pipelines = &mut self.pipelines;
+        let mut register = |desc| register_concrete(pipelines, desc);
 
         collect_and_sort_visible(
             SceneFrame {
@@ -1426,7 +1290,7 @@ impl MeshSource {
     /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
     /// expensive part — reading the mesh component and cloning its buffers out
     /// of the graph — happens once per distinct key instead of once per entity.
-    fn assemble_frame(&mut self, world: &Scope<'_>, scene: &mut Scene) {
+    fn assemble_frame(&mut self, world: &Scope<'_>, scene: &mut Scene, uniforms: &FrameUniforms) {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
@@ -1491,18 +1355,36 @@ impl MeshSource {
         // same way [`MeshSource::pipelines`] is. A pipeline that binds no
         // global group carries `None`. The list is reused between frames, so a
         // steady scene allocates nothing.
+        //
+        // The group binds the camera and view buffers themselves, so it is the
+        // frame's group for the pair this draw names: a pipeline drawn through
+        // another camera, or into another viewport, gets a second group built
+        // from the same recipe.
         let mut pipeline_handles = std::mem::take(&mut self.pipeline_handle_cache);
         pipeline_handles.clear();
         {
+            profiling::scope!("mesh_source.assemble.globals");
+            let key = uniforms.key();
+            let frame = uniforms.frame;
             let mut graph_holder = self.context.graph(world);
             let graph = graph_holder.get();
-            pipeline_handles.extend(self.pipelines.iter().map(|registered| {
+            let device = self.device(world);
+            pipeline_handles.extend(self.pipelines.iter_mut().map(|registered| {
+                let global = registered.global.as_mut().map(|global| {
+                    let recipe = global.recipe.clone();
+                    let group = global.groups.group(graph, key, frame, |graph| {
+                        recipe.insert(&device, graph, uniforms)
+                    });
+                    // A pair this pipeline no longer draws -- a camera that is
+                    // gone, a viewport no pass uses -- gives its group back, so
+                    // a world that changes cameras holds one group rather than
+                    // one per camera it ever had.
+                    global.groups.prune(frame);
+                    graph.get(&group).expect("global group exists").clone()
+                });
                 RenderPipelineHandles {
                     pipeline: registered.pipeline.clone(),
-                    global: registered
-                        .global
-                        .as_ref()
-                        .map(|global| graph.get(&global.id).expect("global group exists").clone()),
+                    global,
                 }
             }));
         }
@@ -1584,19 +1466,13 @@ impl FrameSource for MeshSource {
         // attachments.
         let surface = info.surface;
 
-        // Update global uniforms. The clock belongs to the frame, not to this
-        // source: a source may be built once per pass, and time must not run
-        // faster because a frame has more passes.
-        {
-            profiling::scope!("mesh_source.uniforms.upload");
-            if let Ok(mut clock_row) = world.query_one::<&FrameClock>(ctx.clock) {
-                let clock = *clock_row.get();
-                self.globals.time = clock.time;
-                self.globals.delta_time = clock.delta_time;
-                self.globals.frame_count = clock.index;
-            }
-            self.upload_globals(world, encoder);
-
+        // The camera and view records the frame's registry holds for this draw.
+        // The frame globals are the renderer's to advance; a source that wrote
+        // them would write them once per build, and a frame with more than one
+        // pass would stage them twice before either pass records.
+        let (camera_entity, camera) = camera;
+        let uniforms = {
+            profiling::scope!("mesh_source.uniforms");
             // The viewport the pass draws through, or the whole attachment
             // when it draws through all of it: either way it is the region a
             // shader measuring in pixels has to divide by.
@@ -1605,18 +1481,22 @@ impl FrameSource for MeshSource {
                 .map_or((info.width as f32, info.height as f32), |viewport| {
                     (viewport.width, viewport.height)
                 });
-            let view = View::new(viewport_width, viewport_height);
-            self.upload_camera(
-                world,
-                encoder,
-                &CameraUniform::new(
-                    camera.view_from_world,
-                    camera.clip_from_view,
-                    camera.position(),
-                ),
+            let record = CameraUniform::new(
+                camera.view_from_world,
+                camera.clip_from_view,
+                camera.position(),
             );
-            self.upload_view(world, encoder, &view);
-        }
+            let mut graph_holder = ctx.graph(world);
+            let mut uniforms_holder = ctx.uniforms(world);
+            uniforms_holder.get().uniforms(
+                &self.device(world),
+                graph_holder.get(),
+                encoder,
+                CameraKey::Entity(camera_entity),
+                &record,
+                ViewKey::new(viewport_width, viewport_height),
+            )
+        };
 
         // A rebuild has to happen before the global groups are read, and the
         // metadata upload above may have replaced the buffer one of them binds.
@@ -1667,7 +1547,7 @@ impl FrameSource for MeshSource {
 
         {
             profiling::scope!("mesh_source.assemble");
-            self.assemble_frame(world, scene);
+            self.assemble_frame(world, scene, &uniforms);
         }
     }
 
@@ -1989,7 +1869,7 @@ mod tests {
             active: true,
         },]);
 
-        let camera = frame_camera(&world.root_scope()).expect("a camera is active");
+        let (_entity, camera) = frame_camera(&world.root_scope()).expect("a camera is active");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
         assert!(camera.active);
 
@@ -2017,7 +1897,8 @@ mod tests {
         // A second scene, with no camera of its own.
         let sibling = world.root_scope_mut().spawn(bundle![Transform::default()]);
 
-        let camera = frame_camera(&world.scope(scene).unwrap()).expect("the scene has a camera");
+        let (_entity, camera) =
+            frame_camera(&world.scope(scene).unwrap()).expect("the scene has a camera");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
 
         // A sibling's camera is out of reach in both directions, which is what
@@ -2134,8 +2015,11 @@ mod tests {
         );
     }
 
+    /// One pipeline drawn through several cameras needs one group per camera,
+    /// and one camera drawn by several pipelines needs one per pipeline: each
+    /// group binds its own layout and the frame's records together.
     #[test]
-    fn every_registered_pipeline_gets_its_own_global_group() {
+    fn a_global_group_is_keyed_by_the_pipeline_and_the_uniforms() {
         let mut h = harness();
         let mesh = h.tri_mesh();
         let a = h.target.surface;
@@ -2150,26 +2034,66 @@ mod tests {
         assert_eq!(h.source.pipelines.len(), 2);
 
         let ctx = h.source.context();
-        let ids: Vec<_> = h
-            .source
-            .pipelines
-            .iter()
-            .map(|registered| {
-                registered
-                    .global
-                    .as_ref()
-                    .expect("has a global group")
-                    .id
-                    .clone()
-            })
-            .collect();
-        for (index, id) in ids.iter().enumerate() {
+        let device = h.source.device(&h.world.root_scope());
+        let mut encoder = h.encoder();
+        let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
+        let camera_entity = h
+            .world
+            .root_scope_mut()
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
+        let root = h.world.root_scope();
+        let uniforms = {
+            let mut graph_holder = ctx.graph(&root);
+            let mut uniforms_holder = ctx.uniforms(&root);
+            uniforms_holder.get().uniforms(
+                &device,
+                graph_holder.get(),
+                &mut encoder,
+                CameraKey::Entity(camera_entity),
+                &CameraUniform::new(
+                    camera.view_from_world,
+                    camera.clip_from_view,
+                    camera.position(),
+                ),
+                ViewKey::new(TEST_SIZE as f32, TEST_SIZE as f32),
+            )
+        };
+
+        // Each pipeline builds its own group for the same records, and asking
+        // the same pipeline for the same records twice costs a lookup: the
+        // second call hands back the group the first one registered.
+        let mut ids = Vec::new();
+        let loops = h.source.pipelines.len();
+        for index in 0..loops {
+            let recipe = h.source.pipelines[index]
+                .global
+                .as_ref()
+                .expect("has a recipe")
+                .recipe
+                .clone();
+            let mut graph_holder = ctx.graph(&root);
+            let graph = graph_holder.get();
+            let groups = &mut h.source.pipelines[index]
+                .global
+                .as_mut()
+                .expect("has a recipe")
+                .groups;
+            let first = groups.group(graph, uniforms.key(), uniforms.frame, |graph| {
+                recipe.insert(&device, graph, &uniforms)
+            });
+            let again = groups.group(graph, uniforms.key(), uniforms.frame, |graph| {
+                recipe.insert(&device, graph, &uniforms)
+            });
+            assert_eq!(first, again, "a repeated key reuses its group");
             assert!(
-                ctx.graph(&h.world.root_scope()).get().get(id).is_some(),
-                "pipeline {index}'s global group is in the graph"
+                graph.get(&first).is_some(),
+                "pipeline {index}'s group is in the graph"
             );
-            // No two pipelines share one: each binds its own layout.
-            assert!(!ids[..index].contains(id));
+            assert!(
+                !ids.contains(&first),
+                "no two pipelines share a group: each binds its own layout"
+            );
+            ids.push(first);
         }
     }
 
@@ -3533,14 +3457,16 @@ mod tests {
         let before = ctx.graph(&h.world.root_scope()).get().len();
         // Read the ids out before the source goes: once it is dropped there is
         // no `h.source` left to name them.
-        let camera_buf = h.source.camera_buf.clone();
+        let metadata_buf = h.source.metadata_buf.clone();
         let index_pool_id = h.source.index_pool_id.clone();
 
-        // The camera/globals/metadata buffers, the index pool and the global
-        // bind group are the source's own; the mesh's parts hang off its root.
+        // The metadata buffer, the instance and index pools and the global
+        // groups are the source's own; the mesh's parts hang off its root.
         // Despawning the drawn entity and giving the local handle up leaves the
         // mesh root unheld, and dropping the source gives up everything it
-        // registered itself.
+        // registered itself. The camera and view records are the frame's, kept
+        // by the world's registry, so they are no part of what the source
+        // registered.
         h.world.root_scope_mut().despawn(drawn).unwrap();
         drop(mesh);
         drop(h.source);
@@ -3558,9 +3484,9 @@ mod tests {
         assert!(
             ctx.graph(&h.world.root_scope())
                 .get()
-                .get(&camera_buf)
+                .get(&metadata_buf)
                 .is_some(),
-            "a held id keeps the source's camera buffer alive"
+            "a held id keeps the source's metadata buffer alive"
         );
         assert!(
             ctx.graph(&h.world.root_scope())
@@ -3571,7 +3497,7 @@ mod tests {
         );
 
         // Giving those ids up is what lets the graph collect them.
-        drop(camera_buf);
+        drop(metadata_buf);
         drop(index_pool_id);
         ctx.graph(&h.world.root_scope()).get().maintain();
         assert!(

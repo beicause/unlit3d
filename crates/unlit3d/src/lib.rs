@@ -10,6 +10,9 @@ mod builtin;
 pub mod components;
 pub mod culling;
 pub mod frame;
+/// The frame's shared uniform records: one camera, one globals and one view
+/// buffer per distinct record, uploaded once however many draws read them.
+pub mod global_uniforms;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 pub mod input;
@@ -73,6 +76,7 @@ pub mod prelude {
         frame::{
             FrameBehaviour, FrameBehaviourOrder, FrameClock, FrameSkip, OnFrame, dispatch_frame,
         },
+        global_uniforms::{CameraKey, FrameUniforms, GlobalUniforms, UniformGroups, ViewKey},
         input::{
             ImeEvent, ImeKind, InputEvent, InputEvents, InputFeed, InputState, InputWriter, Key,
             KeyEvent, Modifiers, MouseButton, MouseButtons, MouseEvent, OnIme, OnInput, OnKey,

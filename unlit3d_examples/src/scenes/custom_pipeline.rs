@@ -8,12 +8,13 @@
 //! * a **sky** family whose shader reconstructs a view ray from the frame's
 //!   camera, samples a procedurally generated cube map, and blends a gradient
 //!   and a sun from a uniform block the example writes every frame. Its only
-//!   bind group is the caller's own, declared and rebuilt through the same
-//!   rebuild recipe a built-in family uses;
+//!   bind group is the caller's own: the family names its three inputs when it
+//!   makes the recipe, so the group is rebuilt when one of them is replaced and
+//!   never because a draw moved to another camera;
 //! * a **particle** family whose per-instance stream comes from an ordinary
 //!   world component, and whose vertex stage animates the sprite from a clock
-//!   the example advances. It keeps the renderer's shared global group for the
-//!   camera and adds its own uniform block at the material group.
+//!   the example advances. It takes the frame-bound recipe for the camera, as a
+//!   built-in family does, and adds its own uniform block at the material group.
 //!
 //! Neither family declares a single mesh vertex attribute: the sky's three
 //! vertices and each particle's six come from the vertex index, so the meshes
@@ -31,11 +32,11 @@ use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_FORMAT, TEST_SIZE, camera_looking_at,
 };
 use unlit_wgpu::pipeline::{GlobalBindings, global_bind_group_layout, supports_storage_buffers};
-use unlit_wgpu::resources::{ResHandle, Resource, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, SurfaceKey, SurfaceTarget,
 };
-use unlit3d::pipeline::DrawContext;
+use unlit3d::pipeline::{DrawContext, GlobalRecipe};
 use unlit3d::prelude::*;
 use zerocopy::IntoBytes;
 
@@ -539,12 +540,12 @@ impl PipelineVariant<wgpu::RenderPipeline> for SkyVariant {
 
 /// The sky family's factory.
 ///
-/// The family owns its whole group 0, so the factory's job is to hand the
-/// renderer the recipe that builds it — the same rebuild the built-in lit
-/// family returns, over a group whose entries the example chose.
+/// The family owns its whole group 0: its shader reads a uniform block, a cube
+/// map and a sampler the example keeps, and nothing of the frame's. The recipe
+/// it hands the renderer therefore declares exactly those three as its inputs
+/// ([GlobalRecipe::own]), so the group is rebuilt when the example replaces one
+/// of them and never because a draw moved to another camera.
 struct SkyFactory {
-    /// The device the group is created on.
-    device: wgpu::Device,
     /// The layout the group must match.
     layout: wgpu::BindGroupLayout,
     /// The uniform block the group binds.
@@ -561,43 +562,46 @@ impl RenderPipelineFactory<RenderPipelineDesc> for SkyFactory {
         _context: &FamilyContext<'_>,
         value: &SpecializedPipeline<wgpu::RenderPipeline, RenderPipelineDesc>,
     ) -> RegisteredRenderPipeline {
-        let device = self.device.clone();
         let layout = self.layout.clone();
         let uniforms = self.uniforms.clone();
         let view = self.view.clone();
         let sampler = self.sampler.clone();
-        let rebuild = Rebuild::new(move |graph| {
-            let uniforms = graph
-                .get(&uniforms)
-                .expect("the sky's uniform buffer is in the graph");
-            let view = graph
-                .get(&view)
-                .expect("the sky's cube view is in the graph");
-            let sampler = graph
-                .get(&sampler)
-                .expect("the sky's sampler is in the graph");
-            Resource::BindGroup(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("unlit3d_examples::custom_pipeline::sky"),
-                layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniforms.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(view.view()),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ],
-            }))
-        });
+        let inputs = vec![uniforms.clone().erase(), view.clone().erase()];
+        let mut inputs = inputs;
+        inputs.push(sampler.clone().erase());
+        let build =
+            move |device: &wgpu::Device, graph: &ResourceGraph, _uniforms: &FrameUniforms| {
+                let uniforms = graph
+                    .get(&uniforms)
+                    .expect("the sky's uniform buffer is in the graph");
+                let view = graph
+                    .get(&view)
+                    .expect("the sky's cube view is in the graph");
+                let sampler = graph
+                    .get(&sampler)
+                    .expect("the sky's sampler is in the graph");
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("unlit3d_examples::custom_pipeline::sky"),
+                    layout: &layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: uniforms.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(view.view()),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                })
+            };
         RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
-            global: Some(rebuild),
+            global: Some(GlobalRecipe::own(build, inputs)),
         }
     }
 }
@@ -681,10 +685,10 @@ impl RenderPipelineFactory<RenderPipelineDesc> for ParticleFactory {
     ) -> RegisteredRenderPipeline {
         let bindings = GlobalBindings::default();
         let layout = context.resources.layout(context.device, bindings);
-        let rebuild = context.resources.rebuild(context.device, layout, bindings);
+        let global = context.resources.recipe(layout, bindings);
         RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
-            global: Some(rebuild),
+            global: Some(global),
         }
     }
 }
@@ -1116,7 +1120,6 @@ fn build(
     source.register_family::<SkyKey, _, _>(
         &world.root_scope(),
         SkyFactory {
-            device: device.clone(),
             layout: sky_layout.clone(),
             uniforms: sky_uniforms,
             view: sky_view,

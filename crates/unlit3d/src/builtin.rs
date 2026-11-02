@@ -1,10 +1,11 @@
 //! The plumbing the crate's built-in frame sources share.
 //!
 //! Every built-in source compiles a module of the `unlit_wgpu` WESL package for
-//! a target it only learns about at draw time, and rewrites the camera and
-//! frame-globals uniforms through the frame's own encoder. Both are the same
-//! calls whichever source makes them, so they live here instead of once per
-//! source.
+//! a target it only learns about at draw time. That is the same call whichever
+//! source makes it, so it lives here instead of once per source.
+//!
+//! The uniforms a draw binds are not a source's: the frame keeps them in one
+//! registry, so no built-in source creates or rewrites one.
 
 /// Compile one module of the built-in WESL package into a shader module.
 ///
@@ -36,17 +37,6 @@ pub(crate) fn compose(module: &str) -> Result<String, wesl::Error> {
     wesl::Compiler::new_with_resolver(options, resolver)
         .compile_module(&main_path)
         .map(|result| result.syntax.to_string())
-}
-
-/// A uniform buffer of `size` bytes, rewritten through a source's staging
-/// buffer every frame.
-pub(crate) fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 #[cfg(test)]

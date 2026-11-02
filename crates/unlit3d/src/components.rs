@@ -94,12 +94,16 @@ pub struct Camera {
 /// cameras may live — a caller switches between them by toggling
 /// [`Camera::active`] rather than by respawning. `None` means the scope has no
 /// active camera, and the source draws nothing.
-pub(crate) fn frame_camera(scope: &unlit_ecs::Scope<'_>) -> Option<Camera> {
+///
+/// The entity comes back with the camera because the frame keys the camera's
+/// uniform by it: two passes through one camera share one upload, and the
+/// camera's own update is what decides when it has to be re-uploaded.
+pub(crate) fn frame_camera(scope: &unlit_ecs::Scope<'_>) -> Option<(Entity, Camera)> {
     scope
         .query::<(Entity, &Camera)>()
         .iter()
         .find(|(_, camera)| camera.active)
-        .map(|(_, camera)| camera.clone())
+        .map(|(entity, camera)| (entity, camera.clone()))
 }
 
 impl Camera {

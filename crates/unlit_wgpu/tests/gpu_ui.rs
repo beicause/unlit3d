@@ -116,7 +116,7 @@ fn render_ui_with(
     graph.add_dependency(&global_group_id, &camera_id);
     graph.add_dependency(&global_group_id, &globals_id);
     graph.add_dependency(&global_group_id, &view_id);
-    let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
+    let mut ui = EguiIntegration::new(&ctx.device, pipeline);
     let egui_ctx = egui::Context::default();
     // egui positions its vertices in points, and the projection maps points
     // onto clip space, so the viewport the projection needs is the point size
@@ -161,7 +161,8 @@ fn render_ui_with(
     let ft = create_render_target(&ctx.device, COLOR_FORMAT, width, height, SAMPLES);
     let context = ft.attachments;
     let target = ft.color;
-    let scene = ui.scene(&graph);
+    let global = graph.get(&global_group_id).expect("the group exists");
+    let scene = ui.scene(&graph, global);
     {
         let mut pass = context.begin_pass(
             &mut encoder,
@@ -467,7 +468,7 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
     graph.add_dependency(&global_group_id, &camera_id);
     graph.add_dependency(&global_group_id, &globals_id);
     graph.add_dependency(&global_group_id, &view_id);
-    let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
+    let mut ui = EguiIntegration::new(&ctx.device, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
     let mut encoder = ctx
@@ -546,7 +547,7 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     graph.add_dependency(&global_group_id, &camera_id);
     graph.add_dependency(&global_group_id, &globals_id);
     graph.add_dependency(&global_group_id, &view_id);
-    let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
+    let mut ui = EguiIntegration::new(&ctx.device, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
     let mut encoder = ctx

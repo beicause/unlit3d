@@ -6,9 +6,9 @@
 //! [GpuRenderPipeline](crate::components::GpuRenderPipeline).
 //!
 //! A [RegisteredRenderPipeline] is everything the renderer needs to draw with a
-//! wgpu render pipeline: the pipeline itself and -- for a pipeline that reads
-//! the source's own camera, globals or metadata buffers -- a way to rebuild
-//! its global bind group when those buffers change. Nothing here is specific
+//! wgpu render pipeline: the pipeline itself and, for a pipeline that binds a
+//! group of its own, a [GlobalRecipe] for that group -- built from the frame's
+//! uniforms, from the source's own arrays, or from both. Nothing here is specific
 //! to the built-in lit shader: its family is registered through the
 //! same [register_family](crate::mesh_source::MeshSource::register_family) a
 //! caller's own family uses, and supplies its own factory like anyone else.
@@ -42,6 +42,8 @@
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
 
+use std::sync::Arc;
+
 use arrayvec::ArrayVec;
 use glam::Affine3A;
 use unlit_ecs::{Entity, Scope};
@@ -57,20 +59,25 @@ use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::texel_array::ArrayHandle;
 
 use crate::components::{GpuMaterial, GpuMesh, MorphBinding, MorphWeights, SkinBinding, SkinPose};
+use crate::global_uniforms::{FrameUniforms, UniformGroups};
 
 pub use unlit_wgpu::resources::Rebuild;
 
 /// The ids of the source's global arrays and buffers.
 ///
-/// These are the resources every pipeline can rely on the renderer keeping up
-/// to date: the camera uniform, the frame globals, the mesh-metadata array, and
-/// the frame's joint-matrix and morph-weight arrays.
+/// These are the resources every pipeline can rely on the source keeping up to
+/// date: the mesh-metadata array, and the frame's joint-matrix, morph-weight,
+/// morph-delta and light arrays.
 ///
-/// A factory hands these ids to the [Rebuild] it returns, and the recipe reads
-/// the current resource out of the graph each time it runs. That indirection is
-/// what makes rebinding lazy: when the source replaces a buffer, its readers
-/// only find out at the next maintain, and a [Rebuild] that reads the id never
-/// holds a stale buffer handle.
+/// A factory hands these ids to the [GlobalRecipe] it returns, and the recipe
+/// reads the current resource out of the graph each time it runs. That
+/// indirection is what makes rebinding lazy: when the source replaces a buffer,
+/// its readers only find out at the next maintain, and a recipe that reads the
+/// id never holds a stale buffer handle.
+///
+/// The camera, the frame globals and the view are not in this struct: they
+/// belong to the frame rather than to a source, and reach a draw as
+/// [FrameUniforms].
 ///
 /// The arrays are [`ArrayHandle`]s rather than buffers because which resource
 /// holds them follows from the device: a device with storage buffers holds each
@@ -79,12 +86,6 @@ pub use unlit_wgpu::resources::Rebuild;
 /// has to know which it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalResources {
-    /// The camera uniform buffer.
-    pub camera: ResHandle<wgpu::Buffer>,
-    /// The frame-globals uniform buffer.
-    pub globals: ResHandle<wgpu::Buffer>,
-    /// The view uniform buffer: the viewport this draw's pass covers.
-    pub view: ResHandle<wgpu::Buffer>,
     /// The mesh-metadata array.
     pub metadata: ResHandle<ArrayHandle>,
     /// The frame's joint matrices: every visible skinned instance's joints,
@@ -113,19 +114,18 @@ pub struct GlobalResources {
 
 impl GlobalResources {
     /// Declare that the group behind `group` was built from every one of these
-    /// resources, so replacing any of them marks it dirty.
+    /// arrays, so replacing any of them marks it dirty.
     ///
     /// A global bind group reads all of them, so it depends on all of them.
-    /// They are added one at a time because the uniforms and the arrays are
-    /// different kinds.
+    /// They are added one at a time because the arrays are different kinds.
+    /// The camera, the frame globals and the view are declared by whoever
+    /// registers the group -- [GlobalRecipe::insert] does it -- because they
+    /// reach the group as [FrameUniforms] rather than through this struct.
     pub(crate) fn declare_dependencies(
         &self,
         graph: &mut ResourceGraph,
         group: &ResHandle<wgpu::BindGroup>,
     ) {
-        graph.add_dependency(group, &self.camera);
-        graph.add_dependency(group, &self.globals);
-        graph.add_dependency(group, &self.view);
         graph.add_dependency(group, &self.metadata);
         graph.add_dependency(group, &self.joints);
         graph.add_dependency(group, &self.morph_weights);
@@ -142,12 +142,16 @@ impl GlobalResources {
     /// The camera, the frame globals and the view are always present; the arrays
     /// only when `bindings` names them. The array path is the device's, so it is
     /// read here. A caller's own pipeline builds its layout here and its group
-    /// through [`Self::rebuild`], exactly as the built-in lit family does.
+    /// through [`Self::recipe`], exactly as the built-in lit family does.
     pub fn layout(&self, device: &wgpu::Device, bindings: GlobalBindings) -> wgpu::BindGroupLayout {
         global_bind_group_layout(device, bindings, !supports_storage_buffers(device))
     }
 
     /// Assemble the global bind group for `layout` from the current graph.
+    ///
+    /// `uniforms` names the camera, globals and view records the group binds,
+    /// which the frame owns; `self` names the arrays it binds, which the
+    /// source owns.
     ///
     /// # Panics
     ///
@@ -158,27 +162,13 @@ impl GlobalResources {
         graph: &ResourceGraph,
         layout: &wgpu::BindGroupLayout,
         bindings: GlobalBindings,
+        uniforms: &FrameUniforms,
     ) -> wgpu::BindGroup {
-        let camera = graph.get(&self.camera).expect("camera buffer exists");
-        let globals = graph.get(&self.globals).expect("globals buffer exists");
-        let view = graph.get(&self.view).expect("view buffer exists");
-
         // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
         // whenever a global buffer is replaced, and the optional entries depend
         // on the pipeline, so the group is assembled rather than truncated.
         let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 12>::new();
-        entries.push(wgpu::BindGroupEntry {
-            binding: CAMERA_BINDING,
-            resource: camera.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: FRAME_BINDING,
-            resource: globals.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: VIEW_BINDING,
-            resource: view.as_entire_binding(),
-        });
+        entries.extend(uniform_entries(graph, uniforms));
         if bindings.metadata {
             entries.push(wgpu::BindGroupEntry {
                 binding: MESH_METADATA_BINDING,
@@ -260,24 +250,196 @@ impl GlobalResources {
         })
     }
 
-    /// A recipe that rebuilds the global bind group for `layout` whenever one
-    /// of these resources is replaced.
+    /// A recipe that builds the global bind group for `layout`, for whichever
+    /// [FrameUniforms] the draw names.
     ///
     /// The recipe reads each resource out of the graph by id, so a source that
-    /// grows or replaces a buffer gets the group rebuilt at the next maintain
-    /// without the caller doing anything. This is what a pipeline factory
-    /// returns for a pipeline that reads the frame's shared inputs.
-    pub fn rebuild(
+    /// grows or replaces a buffer gets a group made of the new resource without
+    /// the caller doing anything. This is what a pipeline factory returns for a
+    /// pipeline that reads the frame's shared inputs.
+    pub fn recipe(&self, layout: wgpu::BindGroupLayout, bindings: GlobalBindings) -> GlobalRecipe {
+        let build = {
+            let resources = self.clone();
+            move |device: &wgpu::Device, graph: &ResourceGraph, uniforms: &FrameUniforms| {
+                resources.bind_group(device, graph, &layout, bindings, uniforms)
+            }
+        };
+        GlobalRecipe {
+            build: Arc::new(build),
+            inputs: Inputs::Frame {
+                arrays: Some(self.clone()),
+            },
+        }
+    }
+}
+
+/// The three uniform entries every global bind group starts with: the camera
+/// the draw is made through, the frame globals, and the pass's view.
+///
+/// They come first because both [GlobalResources::bind_group] and the frame's
+/// own recipes name the same three, and a group's entries have to be in
+/// binding order. A source with no arrays of its own -- the line source, the
+/// UI -- builds its group from these alone.
+pub(crate) fn uniform_entries<'a>(
+    graph: &'a ResourceGraph,
+    uniforms: &FrameUniforms,
+) -> [wgpu::BindGroupEntry<'a>; 3] {
+    let camera = graph.get(&uniforms.camera).expect("camera buffer exists");
+    let globals = graph.get(&uniforms.globals).expect("globals buffer exists");
+    let view = graph.get(&uniforms.view).expect("view buffer exists");
+    [
+        wgpu::BindGroupEntry {
+            binding: CAMERA_BINDING,
+            resource: camera.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: FRAME_BINDING,
+            resource: globals.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: VIEW_BINDING,
+            resource: view.as_entire_binding(),
+        },
+    ]
+}
+
+/// Assembles one group's `wgpu::BindGroup` from the graph and the draw's
+/// uniforms.
+///
+/// A recipe keeps this rather than closing over buffers, because the buffers a
+/// frame names are the frame's to hand out.
+type Build = dyn Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup;
+
+/// How to build a global bind group for one camera and one viewport.
+///
+/// The frame owns the camera, the globals and the view records, and it keeps
+/// one buffer per draw-visible camera and viewport rather than one per source.
+/// A recipe therefore takes the [FrameUniforms] of the draw being assembled
+/// instead of closing over buffers, and the renderer caches one group per
+/// (pipeline, [UniformsKey](crate::global_uniforms::UniformsKey)).
+#[derive(Clone)]
+pub struct GlobalRecipe {
+    /// How to build one group.
+    build: Arc<Build>,
+    /// What the groups are built from, so registering one declares the edges
+    /// that decide when it is rebuilt.
+    inputs: Inputs,
+}
+
+/// What the groups a [GlobalRecipe] makes are built from.
+///
+/// This decides the dependency edges [GlobalRecipe::insert] declares, and
+/// nothing else: how a group is assembled is the recipe's own build closure.
+/// The two kinds are not a detail of the built-in shader. Whose resources a
+/// group binds is the caller's decision, and it is what makes a family able to
+/// own its group 0 outright.
+#[derive(Clone)]
+enum Inputs {
+    /// The camera, the globals and the view of the draw being assembled,
+    /// which the frame owns; and, for a recipe made by
+    /// [GlobalResources::recipe], the source's own arrays too.
+    Frame {
+        /// The source's arrays, when the recipe names them.
+        arrays: Option<GlobalResources>,
+    },
+    /// The caller's own resources, named when the recipe is made. The groups
+    /// bind nothing of the frame's, so they are rebuilt when one of these is
+    /// replaced and never because a draw moved to another camera.
+    Own(Vec<ResHandle<Resource>>),
+}
+
+impl GlobalRecipe {
+    /// A recipe that runs `build` for every group it makes, over a group that
+    /// binds the frame's camera, globals and view.
+    ///
+    /// A caller registering a group built from it declares the group's own
+    /// dependencies itself, and the three frame uniforms are declared for it;
+    /// [GlobalResources::recipe] is the shortcut for the built-in shape.
+    /// [Self::own] is the recipe for a group that binds nothing of the frame's.
+    pub fn new(
+        build: impl Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup + 'static,
+    ) -> Self {
+        Self {
+            build: Arc::new(build),
+            inputs: Inputs::Frame { arrays: None },
+        }
+    }
+
+    /// A recipe for a group that binds none of the frame's uniforms, built
+    /// from `inputs` — the caller's own resources.
+    ///
+    /// A source owns its group 0 outright when its shader reads its own inputs
+    /// rather than the frame's, and a group it makes that way must not depend
+    /// on the camera it was drawn through: it would be rebuilt on every camera
+    /// change for resources it never reads, and it would keep the frame's
+    /// records alive with nothing reading them. Registering the group through
+    /// [Self::insert] declares `inputs` and nothing else.
+    ///
+    /// `build` is still handed the draw's [FrameUniforms], so a shader that
+    /// reads one of them for its own purposes -- a ray direction derived from
+    /// the camera, say -- can; naming it in `inputs` is then what declares it.
+    pub fn own(
+        build: impl Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup + 'static,
+        inputs: impl IntoIterator<Item = ResHandle<Resource>>,
+    ) -> Self {
+        Self {
+            build: Arc::new(build),
+            inputs: Inputs::Own(inputs.into_iter().collect()),
+        }
+    }
+
+    /// Build the bind group for `uniforms`.
+    pub fn build(
         &self,
         device: &wgpu::Device,
-        layout: wgpu::BindGroupLayout,
-        bindings: GlobalBindings,
-    ) -> Rebuild {
-        let resources = self.clone();
+        graph: &ResourceGraph,
+        uniforms: &FrameUniforms,
+    ) -> wgpu::BindGroup {
+        (self.build)(device, graph, uniforms)
+    }
+
+    /// Build the group for `uniforms` and register it in `graph`, together with
+    /// the dependencies its bytes come from: whatever the recipe's inputs say
+    /// they are.
+    ///
+    /// The recipe is kept with the node, so the group is rebuilt when a buffer
+    /// it reads is replaced -- a grown array, say. A camera or view buffer
+    /// itself is never replaced, but it is declared for a frame-bound group
+    /// all the same: the group then holds the records it binds for as long as
+    /// the graph holds the group.
+    pub fn insert(
+        &self,
+        device: &wgpu::Device,
+        graph: &mut ResourceGraph,
+        uniforms: &FrameUniforms,
+    ) -> ResHandle<wgpu::BindGroup> {
+        let group = self.build(device, graph, uniforms);
+        let recipe = self.clone();
         let device = device.clone();
-        Rebuild::new(move |graph| {
-            Resource::BindGroup(resources.bind_group(&device, graph, &layout, bindings))
-        })
+        let bound = uniforms.clone();
+        let rebuild =
+            Rebuild::new(move |graph| Resource::BindGroup(recipe.build(&device, graph, &bound)));
+        let id = graph.insert(group, Some(rebuild));
+        match &self.inputs {
+            Inputs::Frame { arrays } => {
+                uniforms.declare_dependencies(graph, &id);
+                if let Some(arrays) = arrays {
+                    arrays.declare_dependencies(graph, &id);
+                }
+            }
+            Inputs::Own(inputs) => {
+                for input in inputs {
+                    graph.add_dependency(&id, input);
+                }
+            }
+        }
+        id
+    }
+}
+
+impl core::fmt::Debug for GlobalRecipe {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("GlobalRecipe")
     }
 }
 
@@ -290,13 +452,13 @@ pub struct RegisteredRenderPipeline {
     /// The compiled render pipeline.
     pub pipeline: wgpu::RenderPipeline,
 
-    /// How to rebuild the bind group bound at
-    /// [GLOBAL_GROUP](unlit_wgpu::pipeline::GLOBAL_GROUP) when the source's
-    /// buffers change.
+    /// How to build the bind group bound at
+    /// [GLOBAL_GROUP](unlit_wgpu::pipeline::GLOBAL_GROUP), for whichever camera
+    /// and viewport a draw names.
     ///
     /// None for a pipeline that binds nothing at that index -- a shader
     /// with no uniform or storage inputs, say.
-    pub global: Option<Rebuild>,
+    pub global: Option<GlobalRecipe>,
 }
 
 impl core::fmt::Debug for RegisteredRenderPipeline {
@@ -308,18 +470,24 @@ impl core::fmt::Debug for RegisteredRenderPipeline {
     }
 }
 
-/// The resource id a registered pipeline's global group lives under.
-#[derive(Clone)]
+/// The global bind groups a registered pipeline draws with.
+///
+/// A group binds the camera and view buffers themselves, so one pipeline drawn
+/// through two cameras or into two viewports needs one group per pair. They
+/// are built lazily, the first time the frame draws the pair, and kept for as
+/// long as the frame keeps drawing it.
 pub(crate) struct RegisteredGlobal {
-    /// The id in the source's resource graph.
-    pub(crate) id: ResHandle<wgpu::BindGroup>,
+    /// How the groups are built.
+    pub(crate) recipe: GlobalRecipe,
+    /// The groups built so far, keyed by the camera and view they bind.
+    pub(crate) groups: UniformGroups,
 }
 
 /// What a [RenderPipelineFactory] may read from the source.
 pub struct FamilyContext<'a> {
     /// The device the pipeline is compiled on.
     pub device: &'a wgpu::Device,
-    /// The ids of the source's global buffers, for a pipeline that binds them.
+    /// The ids of the source's global arrays, for a pipeline that binds them.
     pub resources: GlobalResources,
 }
 
@@ -610,4 +778,148 @@ pub trait RenderPipelineFactory<D> {
         context: &FamilyContext<'_>,
         value: &SpecializedPipeline<wgpu::RenderPipeline, D>,
     ) -> RegisteredRenderPipeline;
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::size_of;
+
+    use unlit_wgpu::globals::{Camera, Globals, View};
+    use unlit_wgpu::resources::ResId;
+
+    use super::*;
+
+    /// A noop device: its buffers and bind groups are records rather than GPU
+    /// memory, which is all a graph edge needs.
+    fn device() -> wgpu::Device {
+        wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0
+    }
+
+    /// A uniform buffer of `T`'s size, registered in `graph`.
+    fn uniform_buffer<T>(
+        device: &wgpu::Device,
+        graph: &mut ResourceGraph,
+    ) -> ResHandle<wgpu::Buffer> {
+        graph.insert(
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("test::uniform"),
+                size: size_of::<T>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            None,
+        )
+    }
+
+    /// The frame's three records, as a frame hands them to a source.
+    fn frame_uniforms(device: &wgpu::Device, graph: &mut ResourceGraph) -> FrameUniforms {
+        FrameUniforms {
+            camera: uniform_buffer::<Camera>(device, graph),
+            globals: uniform_buffer::<Globals>(device, graph),
+            view: uniform_buffer::<View>(device, graph),
+            frame: 1,
+        }
+    }
+
+    /// A recipe that builds an empty group, which is enough to watch what it
+    /// declares.
+    fn empty_recipe(device: &wgpu::Device) -> GlobalRecipe {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("test::global"),
+            entries: &[],
+        });
+        GlobalRecipe::new(move |device: &wgpu::Device, _graph, _uniforms| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("test::global"),
+                layout: &layout,
+                entries: &[],
+            })
+        })
+    }
+
+    /// The ids `group` was declared to depend on.
+    fn dependencies(graph: &ResourceGraph, group: &ResHandle<wgpu::BindGroup>) -> Vec<ResId> {
+        graph.dependencies(group).map(|id| id.id()).collect()
+    }
+
+    #[test]
+    fn a_frame_bound_recipe_declares_the_records_its_group_binds() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let uniforms = frame_uniforms(&device, &mut graph);
+        let recipe = empty_recipe(&device);
+        let group = recipe.insert(&device, &mut graph, &uniforms);
+
+        let declared = dependencies(&graph, &group);
+        for record in [&uniforms.camera, &uniforms.globals, &uniforms.view] {
+            assert!(
+                declared.contains(&record.id()),
+                "the group binds {record:?}, so it is rebuilt when it is replaced"
+            );
+        }
+        assert_eq!(
+            declared.len(),
+            3,
+            "the frame's three records and nothing else"
+        );
+    }
+
+    #[test]
+    fn an_own_recipe_declares_its_inputs_and_not_the_frame() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let uniforms = frame_uniforms(&device, &mut graph);
+        let first = graph.insert(Resource::Virtual, None);
+        let second = graph.insert(Resource::Virtual, None);
+        let inputs = vec![first.clone().erase(), second.clone().erase()];
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("test::own"),
+            entries: &[],
+        });
+        let recipe = GlobalRecipe::own(
+            move |device: &wgpu::Device, _graph, _uniforms| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("test::own"),
+                    layout: &layout,
+                    entries: &[],
+                })
+            },
+            inputs,
+        );
+        let group = recipe.insert(&device, &mut graph, &uniforms);
+
+        let declared = dependencies(&graph, &group);
+        assert!(declared.contains(&first.id()) && declared.contains(&second.id()));
+        assert_eq!(declared.len(), 2);
+        for record in [&uniforms.camera, &uniforms.globals, &uniforms.view] {
+            assert!(
+                !declared.contains(&record.id()),
+                "a group that binds none of the frame's records does not depend on {record:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_own_recipe_registers_nothing_of_the_graph_it_was_not_given() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let uniforms = frame_uniforms(&device, &mut graph);
+        let before = graph.len();
+        let recipe = GlobalRecipe::own(
+            move |device: &wgpu::Device, _graph, _uniforms| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("test::own"),
+                    layout: &device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("test::own"),
+                        entries: &[],
+                    }),
+                    entries: &[],
+                })
+            },
+            core::iter::empty::<ResHandle>(),
+        );
+        let group = recipe.insert(&device, &mut graph, &uniforms);
+        assert_eq!(graph.len(), before + 1, "only the group itself was added");
+        assert!(dependencies(&graph, &group).is_empty());
+    }
 }

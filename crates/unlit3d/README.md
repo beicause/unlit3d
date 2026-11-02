@@ -386,7 +386,7 @@ A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
 - Once the family has compiled a pipeline,
   [`RenderPipelineFactory`](pipeline::RenderPipelineFactory) turns it into the
   [`RegisteredRenderPipeline`](pipeline::RegisteredRenderPipeline) the renderer
-  registers — the compiled pipeline and the global group's rebuild recipe. It and
+  registers — the compiled pipeline and the recipe for its global group. It and
   `unlit_wgpu`'s
   [`RenderPipelineDesc`](unlit_wgpu::specialize::RenderPipelineDesc) are an
   **output/input** pair, with one compilation between them.
@@ -688,10 +688,24 @@ builders rather than reimplementing the layout:
 [`GlobalResources::layout`](pipeline::GlobalResources::layout) builds the
 [`wgpu::BindGroupLayout`] from a
 [`GlobalBindings`](unlit_wgpu::pipeline::GlobalBindings) description, and
-[`GlobalResources::rebuild`](pipeline::GlobalResources::rebuild) returns the
-[`Rebuild`](pipeline::Rebuild) recipe the renderer registers, so the group is
+[`GlobalResources::recipe`](pipeline::GlobalResources::recipe) returns the
+[`GlobalRecipe`](pipeline::GlobalRecipe) the renderer registers, so the group is
 rebuilt whenever the arrays behind it change. The built-in lit family is a
 caller of these same functions.
+
+The camera, the globals and the view are not the source's to keep: the frame
+uploads one record per draw-visible camera and viewport, and a recipe is handed
+the [`FrameUniforms`](global_uniforms::FrameUniforms) of the draw being
+assembled rather than closing over buffers. The renderer then caches one group
+per (pipeline, camera, view), so a source drawn through two cameras binds the
+group matching the draw instead of the one its buffers last held.
+
+A family whose shader reads none of the frame's uniforms owns its group 0
+outright: [`GlobalRecipe::own`](pipeline::GlobalRecipe::own) names the caller's
+own resources as the group's inputs, so the group is rebuilt when one of them is
+replaced and never because a draw moved to another camera. That is how the
+custom-pipeline example draws a procedural sky without inheriting the frame's
+camera.
 
 ## Loading glTF documents
 

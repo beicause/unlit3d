@@ -256,7 +256,7 @@ z-sorted 绘制排序与透视相机完全一致。
   布局与索引格式特化，自定义家族可以是任何东西。
 - 蓝图**延迟求值**：只在缓存未命中、真正要编译时才向 key 索取变体。
 - 家族编译出管线后，由 `RenderPipelineFactory` 把它转成渲染器要注册的
-  `RegisteredRenderPipeline`——已编译管线与全局组的重建配方。它与 `unlit_wgpu` 的
+  `RegisteredRenderPipeline`——已编译管线与它全局组的配方。它与 `unlit_wgpu` 的
   `RenderPipelineDesc` 是一对**输出/输入**，两者之间隔着一次编译。
 
 `unlit3d` 只处理渲染管线，故其管线类型一律显式带 `Render` 字样（`GpuRenderPipeline`、
@@ -462,9 +462,19 @@ impl InstanceContext<'_> {
 
 想要相机、帧 globals、视图或姿势与元数据数组的自定义管线，通过公开构造函数绑定
 它们，而无需自己重造布局：`GlobalResources::layout` 从 `GlobalBindings` 描述构造
-`wgpu::BindGroupLayout`，`GlobalResources::rebuild` 返回渲染器注册的
-`Rebuild` 配方，因此数组变化时该组会被重建。内置的 `LitFactory` 调用的正是
+`wgpu::BindGroupLayout`，`GlobalResources::recipe` 返回渲染器注册的
+`GlobalRecipe` 配方，因此数组变化时该组会被重建。内置的 `LitFactory` 调用的正是
 同一批函数。
+
+相机、globals 与视图不归 source 所有：帧为每个可见相机与视口各上传一份记录，配方
+拿到的是正在组装的那次绘制的 `FrameUniforms`，而不是闭包捕获的 buffer。渲染器因此
+按（管线、相机、视图）缓存一个组，同一个 source 经两台相机绘制时，各自绑定与那次绘制
+匹配的组，而不是它自己的 buffer 上一次持有的那个。
+
+着色器完全不读帧 uniform 的家族，可以彻底拥有自己的 group 0：
+`GlobalRecipe::own` 把调用方自己的资源声明为这个组的输入，于是该组只在其中之一被
+替换时重建，绝不会因为某次绘制换了相机而重建。自定义管线示例就是靠它画出一片不继承
+帧相机的程序化天空。
 
 ## 加载 glTF 文档
 

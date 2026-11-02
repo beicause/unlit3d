@@ -291,10 +291,10 @@ impl RenderPipelineFactory<LitVariant> for LitFactory {
             lights: !variant.options.unlit,
         };
         let layout = context.resources.layout(context.device, bindings);
-        let rebuild = context.resources.rebuild(context.device, layout, bindings);
+        let recipe = context.resources.recipe(layout, bindings);
         RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
-            global: Some(rebuild),
+            global: Some(recipe),
         }
     }
 }
