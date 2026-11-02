@@ -123,10 +123,12 @@ struct Gpu {
     /// specialized for.
     recipe: GlobalRecipe,
     /// The global bind groups the integration's draws are recorded with, one
-    /// per [`UniformsKey`] the frame draws the target through.
+    /// per [`UniformsKey`](crate::global_uniforms::UniformsKey) the frame
+    /// draws the target through.
     ///
-    /// The UI has no camera entity: it synthesises a [`Camera`] mapping its
-    /// points onto clip space and states the point size as the [`View`] its
+    /// The UI has no camera entity: it synthesises a
+    /// [`Camera`](unlit_wgpu::globals::Camera) mapping its points onto clip
+    /// space and states the point size as the [`View`](unlit_wgpu::globals::View) its
     /// pass covers, so the frame's uniform registry holds those records rather
     /// than the source. A target that grows or shrinks asks for another key,
     /// and the groups of the keys it no longer draws are pruned each frame.

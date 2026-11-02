@@ -169,7 +169,7 @@ struct Slot<T> {
     staging: StagingBuffer,
     /// What the buffer holds. `None` until the first upload, which leaves the
     /// zeroes the device hands out -- the same bytes as the record's
-    /// [Default](Default) for all three records.
+    /// [`Default`] for all three records.
     uploaded: Option<T>,
     /// Whether the frame being built asked for this slot.
     used: bool,
