@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use crate::common::{sphere, stored};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, ReadHalf, WriteHalf};
 use unlit_ecs::bundle;
@@ -22,6 +23,34 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const SIZE: (u32, u32) = (960, 720);
 /// The offscreen target's multisample count.
 const SAMPLES: u32 = 4;
+
+/// The clear colour the world is framed against. It is written as a linear
+/// colour and stored sRGB-encoded, the way every colour on this target is.
+const CLEAR: [f32; 4] = [0.1, 0.2, 0.3, 1.0];
+
+/// The hull scene's body colour, in the linear space instance colours are in.
+const BODY: [f32; 4] = [0.0, 0.7, 0.0, 1.0];
+
+/// The band's colour: far from the body and from the clear colour, so the
+/// nearest of the three names any pixel the frame holds.
+const INK: [f32; 4] = [0.7, 0.0, 0.0, 1.0];
+
+/// The body's radius, in world units.
+const BODY_RADIUS: f32 = 0.6;
+/// A radius past the body and its shell, so a mesh cut away leaves nothing.
+const CUT_RADIUS: f32 = 0.9;
+
+/// How far the shell spreads along the normals: wide enough that the band is
+/// tens of pixels across.
+const SPREAD: f32 = 0.15;
+
+/// A cutoff no instance's alpha clears, so a variant that reads it draws
+/// nothing at all.
+const CUT_EVERYTHING: f32 = 1.5;
+
+/// How many quads the body is split into around its axis and pole to pole.
+const SLICES: u32 = 24;
+const STACKS: u32 = 12;
 
 /// Build an empty offscreen world: a render context, a pass, a renderer, a mesh
 /// source, an input state, a default camera, and a colour target both as a
@@ -319,6 +348,65 @@ fn pixel(image: &image::RgbaImage, x: u32, y: u32) -> [u8; 4] {
     image.get_pixel(x, y).0
 }
 
+/// Render one frame and read the offscreen target back as pixels.
+async fn screenshot(server: &mut Server) -> image::RgbaImage {
+    // A screenshot answers with an image content block, not structured
+    // content, so read the raw result rather than the tool helper's value.
+    let shot = server
+        .request(
+            "tools/call",
+            json!({ "name": "read_screenshot", "arguments": {} }),
+        )
+        .await;
+    let image = image::load_from_memory(&image_bytes(&shot))
+        .expect("the screenshot is a WebP")
+        .to_rgba8();
+    assert_eq!(
+        image.dimensions(),
+        SIZE,
+        "the screenshot is the target size"
+    );
+    image
+}
+
+/// Which of the hull scene's three colours a pixel holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Colour {
+    /// The clear colour: nothing was drawn here.
+    Clear,
+    /// The body: the mesh drawn as itself.
+    Body,
+    /// The band: the shell, spread past the body's silhouette.
+    Band,
+}
+
+/// The colour of one pixel, named by the nearest of the scene's three.
+///
+/// All three are flat and far apart, so the nearest one names a pixel even
+/// where a rasterizer's rounding moved it a little.
+fn colour(image: &image::RgbaImage, x: u32, y: u32) -> Colour {
+    let pixel = pixel(image, x, y);
+    let distance_to = |reference: [u8; 3]| {
+        pixel[..3]
+            .iter()
+            .zip(reference)
+            .map(|(&drawn, want)| i32::from(drawn).abs_diff(i32::from(want)))
+            .sum::<u32>()
+    };
+    let (clear, body, band) = (
+        distance_to(stored(CLEAR.into())),
+        distance_to(stored(BODY.into())),
+        distance_to(stored(INK.into())),
+    );
+    if clear <= body && clear <= band {
+        Colour::Clear
+    } else if body <= band {
+        Colour::Body
+    } else {
+        Colour::Band
+    }
+}
+
 /// A fresh directory under the system temp directory for a save tool to write
 /// into, named for the test that uses it.
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -409,7 +497,7 @@ pub fn run() {
                 json!({
                     "entity": load_ops,
                     "component": "RenderLoadOps",
-                    "value": { "color": { "clear": [0.1, 0.2, 0.3, 1.0] } },
+                    "value": { "color": { "clear": CLEAR } },
                 }),
             )
             .await;
@@ -475,7 +563,7 @@ pub fn run() {
 
         // A red triangle, so the centre of the frame is the mesh and the rest
         // is the clear colour.
-        server
+        let triangle = server
             .tool(
                 "create_mesh",
                 json!({
@@ -488,27 +576,95 @@ pub fn run() {
                 }),
             )
             .await;
-
-        // A screenshot answers with an image content block, not structured
-        // content, so read the raw result rather than the tool helper's value.
-        let shot = server
-            .request(
-                "tools/call",
-                json!({ "name": "read_screenshot", "arguments": {} }),
-            )
-            .await;
-        let image = image::load_from_memory(&image_bytes(&shot))
-            .expect("the screenshot is a WebP")
-            .to_rgba8();
-        assert_eq!(
-            image.dimensions(),
-            SIZE,
-            "the screenshot is the target size"
-        );
+        let image = screenshot(&mut server).await;
         let centre = pixel(&image, SIZE.0 / 2, SIZE.1 / 2);
         assert!(
             centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
             "the centre should be the red mesh, got {centre:?}"
+        );
+        server
+            .tool("remove_mesh", json!({ "entity": triangle["entity"] }))
+            .await;
+
+        // The hull width selects the inverted-hull variant: the same mesh asked
+        // for twice, once as itself and once as a shell spread along its
+        // normals with its front faces culled. What the pair draws is a band
+        // around the body, so the frame holds all three of the scene's colours
+        // and the band is what sits between the body and the clear colour.
+        let (positions, normals, indices) = sphere(BODY_RADIUS, SLICES, STACKS);
+        server
+            .tool(
+                "create_mesh",
+                json!({
+                    "positions": positions,
+                    "normals": normals,
+                    "indices": indices,
+                    "color": INK,
+                    "hull_width": SPREAD,
+                }),
+            )
+            .await;
+        server
+            .tool(
+                "create_mesh",
+                json!({
+                    "positions": positions,
+                    "normals": normals,
+                    "indices": indices,
+                    "color": BODY,
+                }),
+            )
+            .await;
+        let scene = screenshot(&mut server).await;
+        let middle = SIZE.1 / 2;
+        let row: Vec<Colour> = (0..SIZE.0).map(|x| colour(&scene, x, middle)).collect();
+        assert_eq!(
+            row[(SIZE.0 / 2) as usize],
+            Colour::Body,
+            "the centre of the frame should be the body"
+        );
+        let body: Vec<usize> = (0..row.len()).filter(|&x| row[x] == Colour::Body).collect();
+        let band: Vec<usize> = (0..row.len()).filter(|&x| row[x] == Colour::Band).collect();
+        assert!(!body.is_empty(), "the body should be drawn");
+        assert!(
+            !band.is_empty(),
+            "the shell should be drawn beside the body"
+        );
+        assert!(
+            *band.first().unwrap() < *body.first().unwrap()
+                && *band.last().unwrap() > *body.last().unwrap(),
+            "the band sits outside the body on both sides: body {body:?} band {band:?}"
+        );
+        let drawn: Vec<usize> = (0..row.len())
+            .filter(|&x| row[x] != Colour::Clear)
+            .collect();
+        let (first, last) = (drawn[0], *drawn.last().unwrap());
+        assert!(
+            row[first..=last].iter().all(|c| *c != Colour::Clear),
+            "the band and the body meet without a gap"
+        );
+
+        // A cutoff is a switch of its own: the base colour's alpha is below it,
+        // so a variant that reads the cutoff discards every fragment. The mesh
+        // here is wider than the body and its shell, so a variant that ignores
+        // the cutoff covers the whole pair rather than leaving it alone.
+        let (positions, normals, indices) = sphere(CUT_RADIUS, SLICES, STACKS);
+        server
+            .tool(
+                "create_mesh",
+                json!({
+                    "positions": positions,
+                    "normals": normals,
+                    "indices": indices,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                    "cutoff": CUT_EVERYTHING,
+                }),
+            )
+            .await;
+        let cut = screenshot(&mut server).await;
+        assert!(
+            cut == scene,
+            "a mesh cut away by its cutoff should leave the frame untouched"
         );
 
         // The save tools answer with the path they wrote instead of the image,

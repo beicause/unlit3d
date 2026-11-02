@@ -57,6 +57,23 @@ fn drawn_rows(frame: &Frame) -> Option<(u32, u32)> {
     first.zip(last)
 }
 
+/// The rows of `column` that hold a drawn pixel, counted.
+fn column_height(frame: &Frame, column: u32) -> Option<u32> {
+    let covered = (0..frame.height)
+        .filter(|&y| drawn(frame.pixel_u8(column, y)))
+        .count();
+    (covered > 0).then_some(covered as u32)
+}
+
+/// The frame `target` was rendered into, read back from the GPU.
+fn read_frame(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
+    Frame {
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, target),
+        width: WIDTH,
+        height: HEIGHT,
+    }
+}
+
 /// A world holding one segment and a camera looking down -Z at it.
 ///
 /// The camera sits at `eye`, so the same segment drawn from further away has
@@ -101,11 +118,7 @@ async fn a_stroke_keeps_its_pixel_width_at_any_distance() {
     for eye in [EYE, EYE * 2.0] {
         let (world, gpu, target) = segment_world(&ctx, eye, along_x());
         gpu.render(&world);
-        let frame = Frame {
-            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
-            width: WIDTH,
-            height: HEIGHT,
-        };
+        let frame = read_frame(&ctx, &target);
         let (first, last) = drawn_rows(&frame).expect("the stroke is drawn");
         heights.push((eye.z, last - first + 1));
     }
@@ -135,11 +148,7 @@ async fn a_wider_stroke_covers_more_pixels() {
         let segment = along_x().with_half_width(half_width);
         let (world, gpu, target) = segment_world(&ctx, EYE, segment);
         gpu.render(&world);
-        let frame = Frame {
-            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
-            width: WIDTH,
-            height: HEIGHT,
-        };
+        let frame = read_frame(&ctx, &target);
         let (first, last) = drawn_rows(&frame).expect("the stroke is drawn");
         covered.push((half_width, last - first + 1));
     }
@@ -177,11 +186,7 @@ async fn a_round_cap_reaches_past_its_station_and_a_flat_one_does_not() {
         segment.caps = caps;
         let (world, gpu, target) = segment_world(&ctx, EYE, segment);
         gpu.render(&world);
-        let frame = Frame {
-            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
-            width: WIDTH,
-            height: HEIGHT,
-        };
+        let frame = read_frame(&ctx, &target);
         let (first, last) =
             columns(&frame).unwrap_or_else(|| panic!("the {label} stroke is drawn"));
         widths.push((label, last - first + 1));
@@ -264,11 +269,7 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source::occlusion");
     gpu.render(&world);
-    let frame = Frame {
-        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
-        width: WIDTH,
-        height: HEIGHT,
-    };
+    let frame = read_frame(&ctx, &target);
 
     // The stroke's row: the one the cube does not cover at the frame's edge.
     let edge = (0..frame.height)
@@ -292,9 +293,113 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
     );
 }
 
+/// A stroke drawn at two widths is narrower at its narrow end, and narrows
+/// the whole way along.
+///
+/// Each end of a segment carries its own half width and the width is
+/// interpolated between them, so one segment drawn at one width and then at two
+/// is enough to say that the second number is read at all — and that it is read
+/// along the segment rather than at one end only.
+async fn a_tapering_stroke_is_narrower_at_its_narrow_end() {
+    let ctx = Ctx::headless().await;
+
+    // A segment well inside the frame at both ends, so each end measures the
+    // width it states rather than the edge of the target.
+    let half = 3.0;
+    let mut profiles = Vec::new();
+    for (ends, label) in [
+        ([HALF_WIDTH; 2], "one width"),
+        ([3.0 * HALF_WIDTH, HALF_WIDTH / 2.0], "tapered"),
+    ] {
+        let mut segment = LineSegment::new([-half, 0.0, 0.0], [half, 0.0, 0.0]).with_color(INK);
+        segment.half_width = ends;
+        let (world, gpu, target) = segment_world(&ctx, EYE, segment);
+        gpu.render(&world);
+        let frame = read_frame(&ctx, &target);
+
+        let (first, last) = columns(&frame).expect("the stroke is drawn");
+        // Three columns in from each end: the outermost columns carry the
+        // antialiasing fringe, which is a fraction of a pixel narrower.
+        let heights: Vec<u32> = (first + 3..=last - 3)
+            .filter_map(|column| column_height(&frame, column))
+            .collect();
+        assert!(
+            heights.len() > WIDTH as usize / 2,
+            "the {label} stroke should reach across the frame, but covered {} columns",
+            heights.len()
+        );
+        profiles.push((label, heights));
+    }
+
+    let expected = (2.0 * HALF_WIDTH) as u32;
+    let (one_label, one) = &profiles[0];
+    let strays = one
+        .iter()
+        .filter(|height| height.abs_diff(expected) > 1)
+        .count();
+    assert_eq!(
+        strays, 0,
+        "a {one_label} stroke should be {expected} rows tall along its whole length, but {} columns disagree: {one:?}",
+        strays
+    );
+
+    // The wide end is the `a` one, which lies at the left of the frame.
+    let (taper_label, taper) = &profiles[1];
+    let (wide, narrow) = (taper[0], taper[taper.len() - 1]);
+    assert!(
+        wide > 3 * narrow,
+        "the {taper_label} stroke should be far wider at its wide end, {wide} rows then {narrow}"
+    );
+    assert!(
+        taper.windows(2).all(|pair| pair[0] >= pair[1]),
+        "the {taper_label} stroke should narrow along its whole length, but it reads {taper:?}"
+    );
+}
+
+/// A stroke that tapers to a point behind the eye is cut at the near plane and
+/// still drawn where it shows.
+///
+/// An infinite projection has no screen position for a point level with the eye,
+/// so the near plane cut is what keeps a segment reaching past the camera from
+/// sweeping across the target. The fragment then has to read the width of the
+/// point it covers: the quad starts at the cut, where the taper has already
+/// widened past the point the caller stated there, and a fragment that reads
+/// the caller's numbers by a station measured on the shortened quad reads the
+/// pointed end and draws nothing at all.
+async fn a_stroke_the_near_plane_cuts_keeps_its_width() {
+    let ctx = Ctx::headless().await;
+
+    // The segment lies along the view axis and passes through the eye: the `a`
+    // end is behind the camera and tapers to a point, the cut lands at the
+    // frame's centre, and the `b` end is four units in front of the camera with
+    // the full width.
+    let mut segment = LineSegment::new([0.0, 0.0, 8.0], [0.0, 0.0, -4.0]).with_color(INK);
+    segment.half_width = [0.0, HALF_WIDTH];
+    let (world, gpu, target) = segment_world(&ctx, EYE, segment);
+    gpu.render(&world);
+    let frame = read_frame(&ctx, &target);
+
+    // A segment drawn along the view axis adds no height of its own, so the
+    // rows it covers are the widening its width adds around that line.
+    let rows: Vec<u32> = (0..frame.height)
+        .filter(|&y| (0..frame.width).any(|x| drawn(frame.pixel_u8(x, y))))
+        .collect();
+    let height = rows
+        .last()
+        .zip(rows.first())
+        .map_or(0, |(last, first)| last - first + 1);
+    let expected = 2.0 * HALF_WIDTH;
+    assert!(
+        height.abs_diff(expected as u32) <= 1,
+        "the cut stroke should show about {expected} rows across, but covered {height}"
+    );
+}
+
 gpu_tests! {
     a_stroke_keeps_its_pixel_width_at_any_distance,
     a_wider_stroke_covers_more_pixels,
     a_round_cap_reaches_past_its_station_and_a_flat_one_does_not,
+    a_tapering_stroke_is_narrower_at_its_narrow_end,
+    a_stroke_the_near_plane_cuts_keeps_its_width,
     a_stroke_behind_a_body_is_hidden_by_it,
 }

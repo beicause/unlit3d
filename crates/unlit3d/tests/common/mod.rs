@@ -541,6 +541,10 @@ pub fn default_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::LitOption
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
 pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
 
+/// A mesh as an expanding lit variant takes it: positions, normals and
+/// indices, with no UVs or vertex colors.
+pub type NormaledMesh = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>);
+
 /// A rig of `joint_count` joints, all at rest, returned as joint matrices.
 ///
 /// The identity pose deforms nothing: a vertex's weights sum to one, so the
@@ -651,6 +655,65 @@ pub fn cube() -> RawMesh {
     // than carrying a float copy through the fixture.
     let colors = unlit_wgpu::mesh::quantize_colors(&colors).collect();
     (positions, uvs, colors, indices)
+}
+
+/// A sphere whose vertex normals point away from its centre, returned as
+/// `(positions, normals, indices)`.
+///
+/// Spreading along those normals makes a larger sphere, which is what an
+/// inverted hull shows as a band outside the silhouette. A mesh without
+/// normals could not be spread at all — the pipeline rejects an expanding
+/// variant without them.
+pub fn sphere(radius: f32, slices: u32, stacks: u32) -> NormaledMesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    let row = slices + 1;
+    for stack in 0..=stacks {
+        let polar = core::f32::consts::PI * stack as f32 / stacks as f32;
+        for slice in 0..=slices {
+            let azimuth = core::f32::consts::TAU * slice as f32 / slices as f32;
+            let normal = glam::Vec3::new(
+                polar.sin() * azimuth.cos(),
+                polar.cos(),
+                polar.sin() * azimuth.sin(),
+            );
+            normals.push(normal.to_array());
+            positions.push((normal * radius).to_array());
+        }
+    }
+    for stack in 0..stacks {
+        for slice in 0..slices {
+            let corner = stack * row + slice;
+            // Wound counter-clockwise seen from outside, so the faces a body
+            // draws are the ones an expanding variant culls.
+            indices.extend_from_slice(&[
+                corner,
+                corner + row + 1,
+                corner + row,
+                corner,
+                corner + 1,
+                corner + row + 1,
+            ]);
+        }
+    }
+    (positions, normals, indices)
+}
+
+/// A linear colour as an sRGB target stores it.
+///
+/// A shader writes linear values and the target encodes them on write, so the
+/// bytes a readback returns are the encoding, not the values themselves.
+pub fn stored(colour: glam::Vec4) -> [u8; 3] {
+    let encode = |linear: f32| {
+        let encoded = if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    };
+    [encode(colour.x), encode(colour.y), encode(colour.z)]
 }
 
 /// Camera looking at the origin from (0, 1.2, 3.2).

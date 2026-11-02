@@ -31,20 +31,13 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// A `wgpu::Color` is linear, and the target encodes it on write, so the byte
 /// readback returns is the sRGB encoding rather than the linear value.
 fn clear_rgb() -> [u8; 3] {
-    let encode = |linear: f64| {
-        let linear = linear.clamp(0.0, 1.0);
-        let srgb = if linear <= 0.0031308 {
-            linear * 12.92
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        };
-        (srgb * 255.0).round() as u8
-    };
-    [
-        encode(CLEAR_COLOR.r),
-        encode(CLEAR_COLOR.g),
-        encode(CLEAR_COLOR.b),
-    ]
+    let colour = CLEAR_COLOR;
+    stored(glam::Vec4::new(
+        colour.r as f32,
+        colour.g as f32,
+        colour.b as f32,
+        1.0,
+    ))
 }
 
 /// A panel's own colour, opaque.

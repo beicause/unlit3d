@@ -484,10 +484,10 @@ which `SpecializedLitPipeline` composes with the
 camera and the [`View`](globals::View) the lit shader declares but never reads,
 because a stroke's width is a pixel count rather than a world distance, so
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
-`LineSource` composes it against the package and binds one group. That one entry
-shader covers every lit variant: the differences are WESL conditional-compilation
-flags, so each composed variant holds one code path and declares only the bindings
-and attributes it uses.
+`LineSource` composes it against the package and binds one group. The `lit` entry
+shader in turn covers every lit variant: the differences are WESL
+conditional-compilation flags, so each composed variant holds one code path and
+declares only the bindings and attributes it uses.
 
 A caller who wants their own shader has two ways to it. The closest is
 [`LitOptions::shader`](pipeline::LitOptions::shader): an

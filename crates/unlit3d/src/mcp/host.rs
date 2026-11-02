@@ -588,9 +588,14 @@ pub fn create_mesh(
     if hull && args.normals.is_none() {
         return Err("a hull needs `normals` to spread along".to_string());
     }
+    // The cutoff is an instance attribute only a variant compiled for it reads,
+    // so asking for one is what selects that variant: a source that spawned the
+    // component without the flag would draw every fragment and leave the
+    // request unread.
+    let cutoff = args.cutoff.is_some();
     let (key, mesh) = with_mesh_source(world, source, |source, scope| {
         let device = source.device(scope);
-        let options = if hull {
+        let mut options = if hull {
             LitOptions::inverted_hull(&device)
         } else {
             LitOptions {
@@ -598,6 +603,7 @@ pub fn create_mesh(
                 ..LitOptions::standard(&device)
             }
         };
+        options.alpha_cutoff = cutoff;
         let key = LitPipelineKey::new(options);
         let mesh = source.allocate_lit_mesh(scope, &key.options, desc);
         (key, mesh)

@@ -16,9 +16,6 @@ use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
-/// A mesh as the lit pipeline takes it: positions, normals and indices.
-type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>);
-
 /// The camera looks at the body from here.
 ///
 /// It sits on the body's axis, so the silhouette it sees is the body's own
@@ -46,47 +43,6 @@ const SPREAD: f32 = 0.1;
 /// that follows it.
 const WIDE_SPREAD: f32 = 0.2;
 
-/// A body: a sphere whose vertex normals point away from its centre.
-///
-/// Spreading along those normals makes a larger sphere, which is what puts the
-/// band outside the silhouette. A mesh without normals could not be spread at
-/// all — the pipeline rejects an expanding variant without them.
-fn sphere(radius: f32, slices: u32, stacks: u32) -> RawMesh {
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut indices = Vec::new();
-    let row = slices + 1;
-    for stack in 0..=stacks {
-        let polar = core::f32::consts::PI * stack as f32 / stacks as f32;
-        for slice in 0..=slices {
-            let azimuth = core::f32::consts::TAU * slice as f32 / slices as f32;
-            let normal = glam::Vec3::new(
-                polar.sin() * azimuth.cos(),
-                polar.cos(),
-                polar.sin() * azimuth.sin(),
-            );
-            normals.push(normal.to_array());
-            positions.push((normal * radius).to_array());
-        }
-    }
-    for stack in 0..stacks {
-        for slice in 0..slices {
-            let corner = stack * row + slice;
-            // Wound counter-clockwise seen from outside, so the faces the body
-            // draws are the ones the shell culls.
-            indices.extend_from_slice(&[
-                corner,
-                corner + row,
-                corner + row + 1,
-                corner,
-                corner + row + 1,
-                corner + 1,
-            ]);
-        }
-    }
-    (positions, normals, indices)
-}
-
 /// What a pixel of the frame is, as far as these tests care.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mark {
@@ -96,21 +52,6 @@ enum Mark {
     Ink,
     /// The body's colour.
     Body,
-}
-
-/// The sRGB encode the target applies to the linear colour a shader writes.
-fn encode(linear: f32) -> u8 {
-    let encoded = if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    };
-    (encoded * 255.0).round() as u8
-}
-
-/// A colour as the frame stores it.
-fn stored(color: glam::Vec4) -> [u8; 3] {
-    [encode(color.x), encode(color.y), encode(color.z)]
 }
 
 /// Classify one pixel by which of the two colours it is nearer to.

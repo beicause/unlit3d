@@ -74,13 +74,19 @@ struct VertexOutput {
     /// The segment's length in pixels; zero for a segment that collapses to a
     /// point, which draws as a dot.
     @location(2) @interpolate(flat) span: f32,
-    /// Half width at each end, in pixels.
-    @location(3) @interpolate(flat) half_width_a: f32,
-    @location(4) @interpolate(flat) half_width_b: f32,
+    /// Half the line's width here, in pixels.
+    ///
+    /// Interpolated from the two ends of the quad rather than re-derived by the
+    /// fragment from its own station: the quad may begin where the near plane
+    /// cut the segment, and a station measured on it is the caller's parameter
+    /// only when nothing was cut. The two ends of the quad carry the widths of
+    /// the caller's stations they were built at, so what the fragment reads is
+    /// the width of the point it covers.
+    @location(3) half_width: f32,
     /// The end shapes, as `VertexInput::caps`.
-    @location(5) @interpolate(flat) caps: u32,
+    @location(4) @interpolate(flat) caps: u32,
     /// The colour, interpolated along the segment.
-    @location(6) color: vec4<f32>,
+    @location(5) color: vec4<f32>,
 };
 
 /// A segment after clipping, and whether any of it survived.
@@ -91,11 +97,10 @@ struct Clipped {
     /// from the `a` end (zero) to the `b` end (one).
     ///
     /// The width and the colour are stated at the caller's ends, while the
-    /// geometry runs between the kept ends: the fragment measures its own
-    /// pixel against the quad, which the near plane shortened. Remapping these
-    /// back into the caller's parameter is what keeps the two in step after a
-    /// cut, so the colour a fragment reads is the colour at the point it
-    /// covers.
+    /// geometry runs between the kept ends. Remapping these back into the
+    /// caller's parameter is what keeps the two in step after a cut: a quad
+    /// corner at `station` carries the width and the colour of the point it
+    /// covers, so a taper is neither narrowed nor widened by a cut.
     t0: f32,
     t1: f32,
     visible: bool,
@@ -198,8 +203,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     out.offset = offset - start;
     out.direction = direction;
     out.span = span;
-    out.half_width_a = half_width_a;
-    out.half_width_b = half_width_b;
+    out.half_width = half_width;
     out.caps = input.caps;
     out.color = mix(input.color_a, input.color_b, at);
     return out;
@@ -211,8 +215,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let along = dot(in.offset, direction);
     // Distance from the infinite line the segment lies on.
     let perpendicular = abs(in.offset.x * direction.y - in.offset.y * direction.x);
-    let station = clamp(along, 0.0, in.span) / max(in.span, 1.0e-4);
-    let half_width = mix(in.half_width_a, in.half_width_b, station);
+    let half_width = in.half_width;
 
     // Past an end the shape of the end decides how the distance is measured: a
     // round one measures to the end point, so the cap is a disc, and a flat one
