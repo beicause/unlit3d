@@ -27,19 +27,26 @@ use std::sync::Arc;
 pub const CAMERA_BINDING: u32 = 0;
 /// Binding slot of the frame-globals uniform in the global bind group.
 pub const FRAME_BINDING: u32 = 1;
+/// Binding slot of the pass's view uniform in the global bind group.
+///
+/// It carries the region of the target the pass draws through, which is what a
+/// shader measuring in pixels divides by. The camera and this differ in who
+/// owns them: a camera is the frame's, a view is the pass's, so one camera drawn
+/// through two viewports is two views.
+pub const VIEW_BINDING: u32 = 2;
 /// Binding slot of the mesh-metadata storage buffer in the global bind group.
-pub const MESH_METADATA_BINDING: u32 = 2;
+pub const MESH_METADATA_BINDING: u32 = 3;
 /// Binding slot of the frame's joint matrices in the global bind group.
 ///
 /// The array holds the pose of every visible instance, so it is per-frame data
 /// the source packs rather than anything a mesh owns; an instance's own slice
 /// starts at [`crate::mesh::MeshInstance::joints_base`].
-pub const JOINTS_BINDING: u32 = 3;
+pub const JOINTS_BINDING: u32 = 4;
 /// Binding slot of the frame's morph weights in the global bind group.
 ///
 /// Like the joint matrices this is one array for the whole frame, and an
 /// instance's own slice starts at [`crate::mesh::MeshInstance::morph_base`].
-pub const MORPH_WEIGHTS_BINDING: u32 = 4;
+pub const MORPH_WEIGHTS_BINDING: u32 = 5;
 /// Binding slot of the frame's morph position displacements in the global bind
 /// group.
 ///
@@ -47,32 +54,32 @@ pub const MORPH_WEIGHTS_BINDING: u32 = 4;
 /// the whole frame and the mesh names its slice through the `morph_deltas_offset`
 /// of its [`MeshMetadata`](crate::mesh::MeshMetadata) entry. Pooling them here
 /// rather than in a per-mesh buffer is what lets a draw bind no mesh group.
-pub const MORPH_DELTAS_BINDING: u32 = 5;
+pub const MORPH_DELTAS_BINDING: u32 = 6;
 /// Binding slot of the frame's lights in the global bind group.
 ///
 /// One record per light, in view space, packed by the source every frame. The
 /// fragment stage reads it, so it is not visible to a vertex stage.
-pub const LIGHTS_BINDING: u32 = 6;
+pub const LIGHTS_BINDING: u32 = 7;
 /// Binding slot of the frame's cluster cells in the global bind group.
 ///
 /// Each cell's record lists the lights assigned to it; see
 /// [`crate::light::CELL_WORDS`].
-pub const LIGHT_CELLS_BINDING: u32 = 7;
+pub const LIGHT_CELLS_BINDING: u32 = 8;
 /// Binding slot of the frame's polygon-light vertices in the global bind group.
 ///
 /// A light whose shape has corners names its slice through its record's
 /// `kind.y` and `kind.z`.
-pub const LIGHT_VERTICES_BINDING: u32 = 8;
+pub const LIGHT_VERTICES_BINDING: u32 = 9;
 /// Binding slot of the cluster uniform in the global bind group.
 ///
 /// The cluster grid's shape and depth mapping: what a fragment needs to find the
 /// cell it is in.
-pub const CLUSTER_BINDING: u32 = 9;
+pub const CLUSTER_BINDING: u32 = 10;
 /// Binding slot of the frame-wide lighting uniform in the global bind group.
 ///
 /// The ambient term and the frame's directional lights, which reach every
 /// fragment: what a fragment needs to light itself before it asks the grid.
-pub const LIGHTING_BINDING: u32 = 10;
+pub const LIGHTING_BINDING: u32 = 11;
 /// Bind-group index of the global group.
 pub const GLOBAL_GROUP: u32 = 0;
 /// Bind-group index of the material group.
@@ -1293,7 +1300,7 @@ impl std::error::Error for ComposeError {}
 
 /// Which of a source's global buffers a pipeline reads.
 ///
-/// The camera and frame-globals uniforms are always bound; the three arrays are
+/// The camera, frame-globals and view uniforms are always bound; the arrays are
 /// optional and a pipeline declares only the ones it reads. A caller's own
 /// pipeline passes the same description to `global_bind_group_layout` as the
 /// built-in lit variants do, so binding the frame's shared inputs is not a
@@ -1347,11 +1354,11 @@ pub fn array_entry(
 
 /// Build the global bind-group layout a pipeline with `bindings` declares.
 ///
-/// The camera and frame-globals uniforms are always present; the arrays are
-/// present exactly when `bindings` names them. The array path is the device's
-/// answer rather than the pipeline's, so `texel_arrays` is passed in: a device
-/// with storage buffers binds each array as one, a device without them — WebGL2
-/// — binds the same bytes as a texture.
+/// The camera, frame-globals and view uniforms are always present; the arrays
+/// are present exactly when `bindings` names them. The array path is the
+/// device's answer rather than the pipeline's, so `texel_arrays` is passed in: a
+/// device with storage buffers binds each array as one, a device without them —
+/// WebGL2 — binds the same bytes as a texture.
 ///
 /// The built-in lit variants build their global layout here, so a caller's own
 /// pipeline declares the same group by the same rules.
@@ -1360,7 +1367,7 @@ pub fn global_bind_group_layout(
     bindings: GlobalBindings,
     texel_arrays: bool,
 ) -> wgpu::BindGroupLayout {
-    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 11>::new();
+    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 12>::new();
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: CAMERA_BINDING,
         // The near plane and the eye position are view values a fragment stage
@@ -1371,7 +1378,7 @@ pub fn global_bind_group_layout(
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
             min_binding_size: Some(
-                <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
+                <crate::globals::Camera as const_shader_layout::ShaderLayout>::SIZE,
             ),
         },
         count: None,
@@ -1384,6 +1391,22 @@ pub fn global_bind_group_layout(
             has_dynamic_offset: false,
             min_binding_size: Some(
                 <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
+            ),
+        },
+        count: None,
+    });
+    // The pass's view. Every pipeline declares it beside the camera and the
+    // frame clock, because the group is the frame's shared one and the viewport
+    // belongs to it as much as the other two: a pipeline that never measures in
+    // pixels simply does not name the binding in its shader.
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: VIEW_BINDING,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: Some(
+                <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
             ),
         },
         count: None,
@@ -1592,12 +1615,12 @@ mod tests {
     #[test]
     fn a_caller_composes_against_the_built_in_package() {
         let source = "\
+import unlit_wgpu::camera::Camera;
 import unlit_wgpu::mesh_compression;
 import unlit_wgpu::mesh_metadata::MeshMetadata;
-import unlit_wgpu::view::View;
 
-@group(0) @binding(0) var<uniform> camera: View;
-@group(0) @binding(2) var<storage, read> mesh_meta: array<MeshMetadata>;
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(3) var<storage, read> mesh_meta: array<MeshMetadata>;
 
 @vertex
 fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {

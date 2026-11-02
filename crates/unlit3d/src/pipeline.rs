@@ -49,8 +49,8 @@ use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, CLUSTER_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING,
     LIGHT_CELLS_BINDING, LIGHT_VERTICES_BINDING, LIGHTING_BINDING, LIGHTS_BINDING,
-    MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
-    supports_storage_buffers,
+    MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, VIEW_BINDING,
+    global_bind_group_layout, supports_storage_buffers,
 };
 use unlit_wgpu::resources::{ResHandle, Resource, ResourceGraph};
 use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
@@ -83,6 +83,8 @@ pub struct GlobalResources {
     pub camera: ResHandle<wgpu::Buffer>,
     /// The frame-globals uniform buffer.
     pub globals: ResHandle<wgpu::Buffer>,
+    /// The view uniform buffer: the viewport this draw's pass covers.
+    pub view: ResHandle<wgpu::Buffer>,
     /// The mesh-metadata array.
     pub metadata: ResHandle<ArrayHandle>,
     /// The frame's joint matrices: every visible skinned instance's joints,
@@ -123,6 +125,7 @@ impl GlobalResources {
     ) {
         graph.add_dependency(group, &self.camera);
         graph.add_dependency(group, &self.globals);
+        graph.add_dependency(group, &self.view);
         graph.add_dependency(group, &self.metadata);
         graph.add_dependency(group, &self.joints);
         graph.add_dependency(group, &self.morph_weights);
@@ -136,9 +139,9 @@ impl GlobalResources {
 
     /// The layout of the global bind group a pipeline with `bindings` declares.
     ///
-    /// The camera and frame globals are always present; the arrays only when
-    /// `bindings` names them. The array path is the device's, so it is read
-    /// here. A caller's own pipeline builds its layout here and its group
+    /// The camera, the frame globals and the view are always present; the arrays
+    /// only when `bindings` names them. The array path is the device's, so it is
+    /// read here. A caller's own pipeline builds its layout here and its group
     /// through [`Self::rebuild`], exactly as the built-in lit family does.
     pub fn layout(&self, device: &wgpu::Device, bindings: GlobalBindings) -> wgpu::BindGroupLayout {
         global_bind_group_layout(device, bindings, !supports_storage_buffers(device))
@@ -158,11 +161,12 @@ impl GlobalResources {
     ) -> wgpu::BindGroup {
         let camera = graph.get(&self.camera).expect("camera buffer exists");
         let globals = graph.get(&self.globals).expect("globals buffer exists");
+        let view = graph.get(&self.view).expect("view buffer exists");
 
         // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
         // whenever a global buffer is replaced, and the optional entries depend
         // on the pipeline, so the group is assembled rather than truncated.
-        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 11>::new();
+        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 12>::new();
         entries.push(wgpu::BindGroupEntry {
             binding: CAMERA_BINDING,
             resource: camera.as_entire_binding(),
@@ -170,6 +174,10 @@ impl GlobalResources {
         entries.push(wgpu::BindGroupEntry {
             binding: FRAME_BINDING,
             resource: globals.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: VIEW_BINDING,
+            resource: view.as_entire_binding(),
         });
         if bindings.metadata {
             entries.push(wgpu::BindGroupEntry {

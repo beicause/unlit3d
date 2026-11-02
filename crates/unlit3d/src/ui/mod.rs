@@ -33,20 +33,24 @@
 //!
 //! The UI draws with the same built-in lit pipeline as everything else, but
 //! through its own camera uniform: one pass carries one camera value, so the UI
-//! cannot borrow the 3D camera's. The source therefore owns a camera and a
-//! frame-globals buffer of its own, plus the bind group binding them.
+//! cannot borrow the 3D camera's. The source therefore owns a camera, a
+//! frame-globals and a view buffer of its own, plus the bind group binding them:
+//! its camera maps points onto clip space and its view states the point size as
+//! the region that projection covers.
 
 use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
-use unlit_wgpu::globals::{Globals, View};
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedLitPipeline};
+use unlit_wgpu::globals::{Camera, Globals, View};
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedLitPipeline, VIEW_BINDING};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
 use unlit_wgpu::staging::StagingBuffer;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, ui_variant};
+use unlit_wgpu::ui::{
+    EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, screen_viewport, ui_variant,
+};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
@@ -125,7 +129,11 @@ struct Gpu {
     camera: wgpu::Buffer,
     /// The frame-globals uniform.
     globals: wgpu::Buffer,
-    /// The staging buffer the two uniforms are rewritten through, so a steady
+    /// The view uniform `screen_viewport` is written into: egui's points are
+    /// the pixels a pixel-measuring shader would divide by, so the pass's
+    /// viewport is the point size.
+    view: wgpu::Buffer,
+    /// The staging buffer the uniforms are rewritten through, so a steady
     /// frame allocates nothing and the copies join the frame's own encoder.
     staging: StagingBuffer,
     /// Uploads egui's textures and geometry and records its draws.
@@ -275,26 +283,34 @@ impl UiSource {
         let camera = uniform_buffer(
             device,
             "unlit3d::ui::camera",
-            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
+            <Camera as const_shader_layout::ShaderLayout>::SIZE.get(),
         );
         let globals = uniform_buffer(
             device,
             "unlit3d::ui::globals",
             <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
         );
+        let view = uniform_buffer(
+            device,
+            "unlit3d::ui::view",
+            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
+        );
         let camera_id = graph.insert(camera.clone(), None);
         let globals_id = graph.insert(globals.clone(), None);
-        // The two uniforms are written into every frame rather than replaced,
-        // so the group has nothing to rebuild from.
-        let group = global_group(device, &pipeline, &camera, &globals);
+        let view_id = graph.insert(view.clone(), None);
+        // The uniforms are written into every frame rather than replaced, so
+        // the group has nothing to rebuild from.
+        let group = global_group(device, &pipeline, &camera, &globals, &view);
         let group_id = graph.insert(group, None);
         graph.add_dependency(&group_id, &camera_id);
         graph.add_dependency(&group_id, &globals_id);
+        graph.add_dependency(&group_id, &view_id);
         self.targets.push(Target {
             key: surface,
             gpu: Gpu {
                 camera,
                 globals,
+                view,
                 staging: StagingBuffer::new(),
                 integration: EguiIntegration::new(device, group_id, pipeline),
             },
@@ -493,8 +509,9 @@ impl FrameSource for UiSource {
         });
 
         // The UI's own camera: `screen_view` maps egui's points onto clip
-        // space, and its frame globals stay at their defaults — nothing the UI
-        // draws reads the frame clock.
+        // space, `screen_viewport` states the point size as the view it draws
+        // through, and its frame globals stay at their defaults — nothing the
+        // UI draws reads the frame clock.
         gpu.staging.write(
             &device,
             encoder,
@@ -508,6 +525,13 @@ impl FrameSource for UiSource {
             &gpu.globals,
             0,
             Globals::default().as_bytes(),
+        );
+        gpu.staging.write(
+            &device,
+            encoder,
+            &gpu.view,
+            0,
+            screen_viewport(screen.size_in_points()).as_bytes(),
         );
 
         // The frame's one rebuild pass: the textures the integration just
@@ -567,7 +591,7 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
     });
 }
 
-/// The UI's global bind group: its camera and frame-globals uniforms.
+/// The UI's global bind group: its camera, frame-globals and view uniforms.
 ///
 /// Built from the pipeline's own global layout, so the group and the pipeline
 /// it feeds are always specialized for the same target.
@@ -576,6 +600,7 @@ fn global_group(
     pipeline: &SpecializedLitPipeline,
     camera: &wgpu::Buffer,
     globals: &wgpu::Buffer,
+    view: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("unlit3d::ui::globals"),
@@ -588,6 +613,10 @@ fn global_group(
             wgpu::BindGroupEntry {
                 binding: FRAME_BINDING,
                 resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: VIEW_BINDING,
+                resource: view.as_entire_binding(),
             },
         ],
     })

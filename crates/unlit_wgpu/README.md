@@ -60,12 +60,15 @@ checks that combination separately.
   one upload reaches the GPU.
 - [`staging`] — host-visible staging buffers reused across frames instead of a
   fresh `queue.write_buffer` allocation per upload.
-- [`globals`] — the two uniforms every pipeline binds: [`View`](globals::View),
-  the clip-from-world and view-from-world matrices, the eye position and the
-  size of the viewport the draw is fitted to in physical pixels (a shader
-  turning a length into pixels divides by it, and it is the viewport's own size
-  rather than the target's, so a letterboxed pass measures what it draws into);
-  and [`Globals`](globals::Globals), the frame's time, delta and index.
+- [`globals`] — the three uniforms every pipeline binds:
+  [`Camera`](globals::Camera), the clip-from-world and view-from-world matrices
+  and the eye position; [`Globals`](globals::Globals), the frame's time, delta
+  and index; and [`View`](globals::View), the size of the viewport the pass
+  draws through in physical pixels (a shader turning a length into pixels
+  divides by it, and it is the viewport's own size rather than the target's, so
+  a letterboxed pass measures what it draws into). Who owns each value is what
+  separates them: the camera and the frame globals are the frame's, the view is
+  the pass's, so one camera drawn through two viewports is two views.
 - [`instance_stream`] — a per-instance vertex buffer that grows as needed and
   uploads its records through the staging pool. A caller's own pipeline uses one
   per family, so per-instance state needs no privilege from the built-in shader.
@@ -119,7 +122,7 @@ mesh compression, every bind group and the draw.
 ```rust
 # #[cfg(feature = "lit")]
 # {
-use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_indices, compress_positions,
@@ -128,6 +131,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
     SECONDARY_SLOT, SpecializedLitPipeline, LitOptions, LitVariant, LitVertexChannels,
+    VIEW_BINDING,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -255,13 +259,15 @@ impl Example {
         let instance_count = instances.len() as u32;
         let instances = upload(instances.as_bytes(), vertex, "instances");
 
-        // 4. The global group: camera, frame clock, and the per-mesh decode
-        //    parameters. The layouts carry each struct's shader size, so wgpu
-        //    validates the bindings when the bind group is created.
-        let camera = View::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+        // 4. The global group: camera, frame clock, view and the per-mesh
+        //    decode parameters. The layouts carry each struct's shader size, so
+        //    wgpu validates the bindings when the bind group is created.
+        let camera = Camera::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
         let globals = Globals::default();
+        let view = View::new(256.0, 192.0);
         let camera = upload(camera.as_bytes(), wgpu::BufferUsages::UNIFORM, "camera");
         let globals = upload(globals.as_bytes(), wgpu::BufferUsages::UNIFORM, "globals");
+        let view = upload(view.as_bytes(), wgpu::BufferUsages::UNIFORM, "view");
         let metadata_buffer = upload(
             metadata.as_bytes(),
             wgpu::BufferUsages::STORAGE,
@@ -278,6 +284,10 @@ impl Example {
                 wgpu::BindGroupEntry {
                     binding: FRAME_BINDING,
                     resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: VIEW_BINDING,
+                    resource: view.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: MESH_METADATA_BINDING,
@@ -465,13 +475,14 @@ The doc comments of `mesh`, `array_pool`, `buffer_pool`, `offset_allocator`,
 
 The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
-caller binds (`globals`, `view`, `mesh_metadata`, the `mesh_compression`
+caller binds (`camera`, `globals`, `view`, `mesh_metadata`, the `mesh_compression`
 decode functions and — under `lit` — the light records, the cluster uniform and
 the polygon form factor); the `lit` feature adds the built-in entry shader,
 which `SpecializedLitPipeline` composes with the
 [`LitVariant`](pipeline::LitVariant) a draw resolves. The package also carries
-`line`, the entry shader a screen-space stroke is drawn with; it reads the same
-[`View`](globals::View) the lit shader does and nothing else, so
+`line`, the entry shader a screen-space stroke is drawn with; it reads the
+camera and the [`View`](globals::View) the lit shader declares but never reads,
+because a stroke's width is a pixel count rather than a world distance, so
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
 `LineSource` composes it against the package and binds one group. That one entry
 shader covers every lit variant: the differences are WESL conditional-compilation
@@ -851,7 +862,7 @@ straddles a row, so growing the array never splits one.
 <details>
 <summary>Why not <code>queue.write_buffer</code>, and why not <code>StagingBelt</code></summary>
 
-Data that changes every frame — the camera and globals uniform, per-instance
+Data that changes every frame — the camera, globals and view uniforms, per-instance
 data, mesh metadata — is uploaded through staging buffers reused across frames
 rather than by calling `queue.write_buffer` each time:
 

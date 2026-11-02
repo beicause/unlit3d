@@ -5,14 +5,16 @@
 //! shows up as a wrong frame rather than as a passing unit test.
 
 use crate::common::*;
-use unlit_wgpu::globals::Globals;
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, LitVariant, SpecializedLitPipeline};
+use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::pipeline::{
+    CAMERA_BINDING, FRAME_BINDING, LitVariant, SpecializedLitPipeline, VIEW_BINDING,
+};
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, screen_viewport, ui_variant};
 use unlit_wgpu_test_util::{gpu_tests, snapshot};
 
 /// The UI's logical layout, in points. The physical target scales with the
@@ -93,24 +95,27 @@ fn render_ui_with(
         ],
         pixels_per_point,
     };
-    // The caller owns the globals: camera and frame buffers, registered in
-    // the shared ledger, and the bind group binding them.
-    let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
+    // The caller owns the globals: camera, frame and view buffers, registered
+    // in the shared ledger, and the bind group binding them.
+    let camera = uniform_buffer(&ctx.device, "ui::camera", camera_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
+    let view = uniform_buffer(&ctx.device, "ui::view", view_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
+    let view_id = graph.insert(view.clone(), None);
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
     let ui_opts = ui_variant_for_target(&ctx.device);
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id = graph.insert(
-        global_group(&ctx.device, &pipeline, &camera, &globals),
+        global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
     );
     graph.add_dependency(&global_group_id, &camera_id);
     graph.add_dependency(&global_group_id, &globals_id);
+    graph.add_dependency(&global_group_id, &view_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     // egui positions its vertices in points, and the projection maps points
@@ -138,6 +143,8 @@ fn render_ui_with(
     use zerocopy::IntoBytes;
     ctx.queue
         .write_buffer(&camera, 0, screen_view(viewport).as_bytes());
+    ctx.queue
+        .write_buffer(&view, 0, screen_viewport(viewport).as_bytes());
     ctx.queue
         .write_buffer(&globals, 0, Globals::default().as_bytes());
     let output = egui_ctx.run_ui(input(viewport, pixels_per_point), &mut contents);
@@ -200,8 +207,13 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
 }
 
 /// Shader size of the camera uniform, straight from its layout.
+fn camera_size() -> u64 {
+    <unlit_wgpu::globals::Camera as const_shader_layout::ShaderLayout>::SIZE.get()
+}
+
+/// Shader size of the per-pass view uniform.
 fn view_size() -> u64 {
-    <unlit_wgpu::globals::View as const_shader_layout::ShaderLayout>::SIZE.get()
+    <View as const_shader_layout::ShaderLayout>::SIZE.get()
 }
 
 /// Shader size of the frame-globals uniform.
@@ -209,7 +221,7 @@ fn globals_size() -> u64 {
     <Globals as const_shader_layout::ShaderLayout>::SIZE.get()
 }
 
-/// The UI's global bind group: camera and frame-globals uniforms.
+/// The UI's global bind group: camera, frame-globals and view uniforms.
 ///
 /// The layout is the built-in UI pipeline's global layout, so the bind group
 /// is created from the shared pipeline ahead of the UI that draws with it.
@@ -218,6 +230,7 @@ fn global_group(
     pipeline: &SpecializedLitPipeline,
     camera: &wgpu::Buffer,
     globals: &wgpu::Buffer,
+    view: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("ui::globals"),
@@ -230,6 +243,10 @@ fn global_group(
             wgpu::BindGroupEntry {
                 binding: FRAME_BINDING,
                 resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: VIEW_BINDING,
+                resource: view.as_entire_binding(),
             },
         ],
     })
@@ -434,19 +451,22 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
         size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
     };
-    let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
+    let camera = uniform_buffer(&ctx.device, "ui::camera", camera_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
+    let view = uniform_buffer(&ctx.device, "ui::view", view_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
+    let view_id = graph.insert(view.clone(), None);
     let ui_opts = ui_variant_for_target(&ctx.device);
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id = graph.insert(
-        global_group(&ctx.device, &pipeline, &camera, &globals),
+        global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
     );
     graph.add_dependency(&global_group_id, &camera_id);
     graph.add_dependency(&global_group_id, &globals_id);
+    graph.add_dependency(&global_group_id, &view_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
@@ -502,7 +522,7 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
 
 /// Releasing the integration must hand back every node it registered: the
 /// geometry buffers, each texture's view and material, and its samplers. Only
-/// the nodes the test registered itself — the two uniforms and the bind group
+/// the nodes the test registered itself — the three uniforms and the bind group
 /// binding them — are left in the graph afterwards.
 async fn releasing_the_integration_returns_its_graph_nodes() {
     let ctx = Ctx::headless().await;
@@ -510,19 +530,22 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
         size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
     };
-    let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
+    let camera = uniform_buffer(&ctx.device, "ui::camera", camera_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
+    let view = uniform_buffer(&ctx.device, "ui::view", view_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
+    let view_id = graph.insert(view.clone(), None);
     let ui_opts = ui_variant_for_target(&ctx.device);
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id = graph.insert(
-        global_group(&ctx.device, &pipeline, &camera, &globals),
+        global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
     );
     graph.add_dependency(&global_group_id, &camera_id);
     graph.add_dependency(&global_group_id, &globals_id);
+    graph.add_dependency(&global_group_id, &view_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
@@ -551,8 +574,8 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
 
     let before = graph.len();
     assert!(
-        before > 3,
-        "the frame above must have registered more than the three \
+        before > 4,
+        "the frame above must have registered more than the four \
          caller-owned nodes; got {before}"
     );
 
@@ -563,9 +586,9 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
 
     assert_eq!(
         graph.len(),
-        3,
-        "only the caller's camera, globals and bind group remain; \
-         the integration leaked {before} - 3 nodes"
+        4,
+        "only the caller's camera, globals, view and bind group remain; \
+         the integration leaked {before} - 4 nodes"
     );
 }
 

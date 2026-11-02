@@ -3,9 +3,10 @@
 // One segment is one instance: the vertex stage derives the quad that covers
 // it from `@builtin(vertex_index)`, so the stream carries segments rather than
 // vertices and a caller never expands a segment on the CPU. Both ends are
-// projected and measured in pixels against `View::viewport_size`, which is what
-// makes the width a pixel count rather than a world distance: a stroke keeps
-// its thickness at any distance from the camera and across any viewport size.
+// projected and measured in pixels against `view::View::viewport_size`, which
+// is what makes the width a pixel count rather than a world distance: a stroke
+// keeps its thickness at any distance from the camera and across any viewport
+// size.
 //
 // The fragment measures the distance from its own pixel to the segment's centre
 // line and turns it into coverage, so a line is antialiased without the
@@ -13,9 +14,13 @@
 // own half width and their own end shape, which is how a stroke tapers and how
 // a hand-drawn line gets round ends.
 
+import package::camera as camera_uniform;
 import package::view;
 
-@group(0) @binding(0) var<uniform> camera: view::View;
+@group(0) @binding(0) var<uniform> camera: camera_uniform::Camera;
+// The pass's viewport. A stroke's width is a pixel count, so this is the one
+// uniform besides the camera that the vertex stage reads.
+@group(0) @binding(2) var<uniform> viewport: view::View;
 
 /// How far past the half width the quad reaches, in pixels.
 ///
@@ -125,9 +130,9 @@ fn clip_near(a: vec4<f32>, b: vec4<f32>) -> Clipped {
 ///
 /// WebGPU's clip space has `y` up and its pixel space has `y` down, so the
 /// vertical axis flips here.
-fn pixel_of(clip: vec4<f32>, viewport: vec2<f32>) -> vec2<f32> {
+fn pixel_of(clip: vec4<f32>, size: vec2<f32>) -> vec2<f32> {
     let ndc = clip.xy / clip.w;
-    return vec2<f32>((ndc.x * 0.5 + 0.5) * viewport.x, (0.5 - ndc.y * 0.5) * viewport.y);
+    return vec2<f32>((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
 }
 
 @vertex
@@ -141,9 +146,9 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
         camera.clip_from_world * vec4<f32>(input.b, 1.0),
     );
 
-    let viewport = max(camera.viewport_size, vec2<f32>(1.0, 1.0));
-    let start = pixel_of(clipped.a, viewport);
-    let end = pixel_of(clipped.b, viewport);
+    let size = max(viewport.viewport_size, vec2<f32>(1.0, 1.0));
+    let start = pixel_of(clipped.a, size);
+    let end = pixel_of(clipped.b, size);
     let delta = end - start;
     let span = length(delta);
     // A segment whose ends coincide has no direction of its own; one is named
@@ -176,8 +181,8 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     let centre = mix(start - direction * reach_a, end + direction * reach_b, station);
     let offset = centre + normal * side * (half_width + AA_RADIUS);
     let ndc = vec2<f32>(
-        offset.x / viewport.x * 2.0 - 1.0,
-        1.0 - offset.y / viewport.y * 2.0,
+        offset.x / size.x * 2.0 - 1.0,
+        1.0 - offset.y / size.y * 2.0,
     );
     // Depth is mixed rather than divided: the quad is emitted with `w` of one
     // so its varyings stay affine in pixel space, which leaves the depth

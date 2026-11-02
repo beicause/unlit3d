@@ -682,9 +682,9 @@ facility rather than lit-specific state.
 
 ### The frame's shared inputs
 
-A custom pipeline that wants the camera, the globals, or the metadata,
-joint-matrix and morph-weight arrays binds them through public builders rather
-than reimplementing the layout:
+A custom pipeline that wants the camera, the frame globals, the view or the
+metadata, joint-matrix and morph-weight arrays binds them through public
+builders rather than reimplementing the layout:
 [`GlobalResources::layout`](pipeline::GlobalResources::layout) builds the
 [`wgpu::BindGroupLayout`] from a
 [`GlobalBindings`](unlit_wgpu::pipeline::GlobalBindings) description, and

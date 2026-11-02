@@ -460,8 +460,8 @@ impl InstanceContext<'_> {
 
 ### 本帧的共享输入
 
-想要相机、globals 或姿势与元数据数组的自定义管线，通过公开构造函数绑定它们，而无需
-自己重造布局：`GlobalResources::layout` 从 `GlobalBindings` 描述构造
+想要相机、帧 globals、视图或姿势与元数据数组的自定义管线，通过公开构造函数绑定
+它们，而无需自己重造布局：`GlobalResources::layout` 从 `GlobalBindings` 描述构造
 `wgpu::BindGroupLayout`，`GlobalResources::rebuild` 返回渲染器注册的
 `Rebuild` 配方，因此数组变化时该组会被重建。内置的 `LitFactory` 调用的正是
 同一批函数。

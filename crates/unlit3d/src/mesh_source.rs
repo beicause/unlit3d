@@ -20,7 +20,7 @@ use std::rc::Rc;
 use unlit_ecs::{Scope, TypeIdHashMap};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
-use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::globals::{Camera as CameraUniform, Globals, View};
 use unlit_wgpu::light::{
     CELL_WORDS, ClusterConfig, ClusterUniform, DirectionalGpu, LightClusters, LightGpu,
     LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight,
@@ -126,6 +126,9 @@ pub struct MeshSource {
     camera_buf: ResHandle<wgpu::Buffer>,
     /// Resource id of the frame-globals uniform buffer.
     globals_buf: ResHandle<wgpu::Buffer>,
+    /// Resource id of the view uniform buffer: the viewport this source's
+    /// draw covers.
+    view_buf: ResHandle<wgpu::Buffer>,
     /// The mesh-metadata array, held in whichever resource the device reads.
     metadata_array: Array,
     /// Resource id of the mesh-metadata array.
@@ -223,6 +226,7 @@ pub struct MeshSource {
     /// submission.
     camera_staging: StagingBuffer,
     globals_staging: StagingBuffer,
+    view_staging: StagingBuffer,
 
     /// The pool every mesh uploaded through
     /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps its indices in, as one large
@@ -316,7 +320,7 @@ impl MeshSource {
         let camera_buf = graph.insert(
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::camera"),
-                size: size_of::<View>() as u64,
+                size: size_of::<CameraUniform>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -329,6 +333,17 @@ impl MeshSource {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::globals"),
                 size: size_of::<Globals>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            None,
+        );
+
+        // View uniform buffer.
+        let view_buf = graph.insert(
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::view"),
+                size: size_of::<View>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -432,16 +447,21 @@ impl MeshSource {
             None,
         );
 
-        // Initial upload of camera and globals.
+        // Initial upload of the camera, the globals and the view.
         queue.write_buffer(
             graph.get(&camera_buf).expect("just inserted"),
             0,
-            View::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
+            CameraUniform::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
         );
         queue.write_buffer(
             graph.get(&globals_buf).expect("just inserted"),
             0,
             globals.as_bytes(),
+        );
+        queue.write_buffer(
+            graph.get(&view_buf).expect("just inserted"),
+            0,
+            View::new(1.0, 1.0).as_bytes(),
         );
 
         // The pools the built-in meshes upload into. Each is one buffer in the
@@ -466,6 +486,7 @@ impl MeshSource {
             context: ctx,
             camera_buf,
             globals_buf,
+            view_buf,
             metadata_array,
             metadata_buf,
             joints_array,
@@ -502,6 +523,7 @@ impl MeshSource {
             packed_morph_weights: Vec::new(),
             camera_staging: StagingBuffer::new(),
             globals_staging: StagingBuffer::new(),
+            view_staging: StagingBuffer::new(),
             index_pool,
             index_pool_id,
             vertex_pool,
@@ -1103,6 +1125,7 @@ impl MeshSource {
         GlobalResources {
             camera: self.camera_buf.clone(),
             globals: self.globals_buf.clone(),
+            view: self.view_buf.clone(),
             metadata: self.metadata_buf.clone(),
             joints: self.joints_buf.clone(),
             morph_weights: self.morph_weights_buf.clone(),
@@ -1163,7 +1186,7 @@ impl MeshSource {
         &mut self,
         world: &Scope<'_>,
         encoder: &mut wgpu::CommandEncoder,
-        view: &View,
+        camera: &CameraUniform,
     ) {
         let buffer = self
             .context
@@ -1173,6 +1196,19 @@ impl MeshSource {
             .expect("camera buffer exists")
             .clone();
         self.camera_staging
+            .write(&self.device(world), encoder, &buffer, 0, camera.as_bytes());
+    }
+
+    /// Upload the view uniform, staging the bytes through the frame's encoder.
+    fn upload_view(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder, view: &View) {
+        let buffer = self
+            .context
+            .graph(world)
+            .get()
+            .get(&self.view_buf)
+            .expect("view buffer exists")
+            .clone();
+        self.view_staging
             .write(&self.device(world), encoder, &buffer, 0, view.as_bytes());
     }
 
@@ -1569,13 +1605,17 @@ impl FrameSource for MeshSource {
                 .map_or((info.width as f32, info.height as f32), |viewport| {
                     (viewport.width, viewport.height)
                 });
-            let view = View::new(
-                camera.view_from_world,
-                camera.clip_from_view,
-                camera.position(),
-            )
-            .with_viewport_size(viewport_width, viewport_height);
-            self.upload_camera(world, encoder, &view);
+            let view = View::new(viewport_width, viewport_height);
+            self.upload_camera(
+                world,
+                encoder,
+                &CameraUniform::new(
+                    camera.view_from_world,
+                    camera.clip_from_view,
+                    camera.position(),
+                ),
+            );
+            self.upload_view(world, encoder, &view);
         }
 
         // A rebuild has to happen before the global groups are read, and the

@@ -43,10 +43,12 @@
   先写入多个切片，再一次性上传到 GPU。
 - `staging` —— 跨帧复用的 host 可见 staging 缓冲，而不是每次上传都让
   `queue.write_buffer` 新分配一个。
-- `globals` —— 每条管线都绑定的两个 uniform：`View`，即 clip-from-world 与
-  view-from-world 矩阵、眼点位置，以及绘制所适配的视口在物理像素下的尺寸（着色器
-  要把长度换算成像素就除以它；它是视口自身的尺寸而非渲染目标的尺寸，因此被加了黑边的
-  pass 量的是它实际画进去的那块）；以及 `Globals`，即本帧的时刻、增量与帧序号。
+- `globals` —— 每条管线都绑定的三个 uniform：`Camera`，即 clip-from-world 与
+  view-from-world 矩阵以及眼点位置；`Globals`，即本帧的时刻、增量与帧序号；以及
+  `View`，即该 pass 所画视口在物理像素下的尺寸（着色器要把长度换算成像素就除以它；
+  它是视口自身的尺寸而非渲染目标的尺寸，因此被加了黑边的 pass 量的是它实际画进去的
+  那块）。三者的归属正是它们分开的理由：相机与帧 globals 属于帧，视图属于 pass，
+  同一台相机画进两个形状不同的视口就是两个视图。
 - `instance_stream` —— 按需增长、经 staging 池上传记录的逐实例顶点缓冲。调用者
   自己的管线每个家族用一个，因此逐实例状态无需内置着色器给出任何特权。
 - `texel_array` —— 定长元素的平坦数组，既可以绑定为一个 storage buffer，也可以在
@@ -88,7 +90,7 @@
 ```rust
 # #[cfg(feature = "lit")]
 # {
-use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_indices, compress_positions,
@@ -97,6 +99,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
     SECONDARY_SLOT, SpecializedLitPipeline, LitOptions, LitVariant, LitVertexChannels,
+    VIEW_BINDING,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -224,13 +227,15 @@ impl Example {
         let instance_count = instances.len() as u32;
         let instances = upload(instances.as_bytes(), vertex, "instances");
 
-        // 4. The global group: camera, frame clock, and the per-mesh decode
-        //    parameters. The layouts carry each struct's shader size, so wgpu
-        //    validates the bindings when the bind group is created.
-        let camera = View::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+        // 4. The global group: camera, frame clock, view and the per-mesh
+        //    decode parameters. The layouts carry each struct's shader size, so
+        //    wgpu validates the bindings when the bind group is created.
+        let camera = Camera::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
         let globals = Globals::default();
+        let view = View::new(256.0, 192.0);
         let camera = upload(camera.as_bytes(), wgpu::BufferUsages::UNIFORM, "camera");
         let globals = upload(globals.as_bytes(), wgpu::BufferUsages::UNIFORM, "globals");
+        let view = upload(view.as_bytes(), wgpu::BufferUsages::UNIFORM, "view");
         let metadata_buffer = upload(
             metadata.as_bytes(),
             wgpu::BufferUsages::STORAGE,
@@ -247,6 +252,10 @@ impl Example {
                 wgpu::BindGroupEntry {
                     binding: FRAME_BINDING,
                     resource: globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: VIEW_BINDING,
+                    resource: view.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: MESH_METADATA_BINDING,
@@ -433,14 +442,14 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 ## 着色器
 
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
-调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata`、`mesh_compression`
+调用者所绑定 Rust 类型的模块（`camera`、`globals`、`view`、`mesh_metadata`、`mesh_compression`
 解码函数，以及 `lit` 下的光源记录、聚类 uniform 与多边形形状因子）；`lit` feature
 额外加入内置入口着色器，由 `pipeline::SpecializedLitPipeline` 把它与一次绘制解析出的
 `pipeline::LitVariant` 组合起来。这一份入口着色器覆盖所有 lit 变体：
 差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
-绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读的正是
-lit 着色器所读的那个 `View`，此外什么都不读，于是 `unlit3d` 的 `LineSource` 拿它对着
-这个包组合，并只绑定一个组。
+绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读相机与
+`View`，后者 lit 着色器声明却从不读取，因为笔画的宽度是像素数而非世界距离，于是
+`unlit3d` 的 `LineSource` 拿它对着这个包组合，并只绑定一个组。
 
 若要编写自己的着色器，有两条路。最近的一条是
 `pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段顶层、一段顶点、
@@ -681,7 +690,7 @@ limits，于是永远不会向没有 storage buffer 的设备索要一个会被�
 <details>
 <summary>为什么不用 <code>queue.write_buffer</code>，也不用 <code>StagingBelt</code></summary>
 
-逐帧变化的数据——相机与 globals uniform、逐实例数据、mesh 元数据——通过跨帧复用的
+逐帧变化的数据——相机、globals 与视图 uniform、逐实例数据、mesh 元数据——通过跨帧复用的
 staging buffer 上传，而不是逐次调用 `queue.write_buffer`：
 
 - `queue.write_buffer` 每次调用都新分配一个临时 staging buffer，并自行提交一次 copy，

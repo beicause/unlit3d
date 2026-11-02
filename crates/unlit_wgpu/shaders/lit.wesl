@@ -62,18 +62,22 @@
 // binds the instance stream, because the family always has an instance buffer
 // to bind — a draw with no instance state of its own binds the identity record.
 //
-//   group 0  binding 0  camera        `view::View` uniform
+//   group 0  binding 0  camera        `camera::Camera` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
-//   group 0  binding 2  mesh_meta     `array<MeshMetadata>` decode parameters
+//   group 0  binding 2  view          `view::View` uniform — the pass's
+//                      viewport. Bound for every pipeline, read only by a
+//                      measurement in pixels; this shader measures in world
+//                      units and does not declare it.
+//   group 0  binding 3  mesh_meta     `array<MeshMetadata>` decode parameters
 //                      and addressing            [compressed channel | morph]
-//   group 0  binding 3  joint_matrices `array<mat4x4<f32>>`  [VERTEX_JOINTS]
-//   group 0  binding 4  morph_weights `array<f32>`           [MORPH_POSITIONS]
-//   group 0  binding 5  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
-//   group 0  binding 6  lights        `array<LightGpu>`      [LIT]
-//   group 0  binding 7  light_cells   `array<u32>`            [LIT]
-//   group 0  binding 8  light_vertices `array<vec4<f32>>`     [LIT]
-//   group 0  binding 9  cluster       `light::ClusterUniform` [LIT]
-//   group 0  binding 10 lighting      `light::LightingUniform` [LIT]
+//   group 0  binding 4  joint_matrices `array<mat4x4<f32>>`  [VERTEX_JOINTS]
+//   group 0  binding 5  morph_weights `array<f32>`           [MORPH_POSITIONS]
+//   group 0  binding 6  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
+//   group 0  binding 7  lights        `array<LightGpu>`      [LIT]
+//   group 0  binding 8  light_cells   `array<u32>`            [LIT]
+//   group 0  binding 9  light_vertices `array<vec4<f32>>`     [LIT]
+//   group 0  binding 10 cluster       `light::ClusterUniform` [LIT]
+//   group 0  binding 11 lighting      `light::LightingUniform` [LIT]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
 //
@@ -129,18 +133,18 @@
 // not know which of the two it is running on.
 
 import package::array_access;
+import package::camera as camera_uniform;
 import package::globals;
 import package::light;
 import package::mesh_compression;
 import package::mesh_metadata;
 import package::polygon;
-import package::view;
 
-@group(0) @binding(0) var<uniform> camera: view::View;
+@group(0) @binding(0) var<uniform> camera: camera_uniform::Camera;
 @group(0) @binding(1) var<uniform> frame: globals::Globals;
 
-@if(LIT) @group(0) @binding(9) var<uniform> cluster: light::ClusterUniform;
-@if(LIT) @group(0) @binding(10) var<uniform> lighting: light::LightingUniform;
+@if(LIT) @group(0) @binding(10) var<uniform> cluster: light::ClusterUniform;
+@if(LIT) @group(0) @binding(11) var<uniform> lighting: light::LightingUniform;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;

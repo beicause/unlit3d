@@ -31,11 +31,11 @@
 //! [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE).
 
 use unlit_ecs::Scope;
-use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::instance_stream::{InstanceBuffer, InstanceStreamDesc};
 use unlit_wgpu::pipeline::{
-    CAMERA_BINDING, FRAME_BINDING, GLOBAL_GROUP, GlobalBindings, global_bind_group_layout,
-    supports_storage_buffers,
+    CAMERA_BINDING, FRAME_BINDING, GLOBAL_GROUP, GlobalBindings, VIEW_BINDING,
+    global_bind_group_layout, supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::resources::ResHandle;
@@ -175,9 +175,14 @@ struct Gpu {
     /// The camera uniform, written every frame rather than replaced, so the
     /// group binding it never has to be rebuilt.
     camera: wgpu::Buffer,
-    /// The frame globals the shared global group layout declares.
+    /// The frame globals the shared global group layout declares. The shader
+    /// reads no clock, but every group carries the slot.
     globals: wgpu::Buffer,
-    /// The group binding both uniforms, registered in the frame resource graph.
+    /// The view uniform: the viewport this pass covers, which is what turns the
+    /// stroke's pixel widths into clip space.
+    view: wgpu::Buffer,
+    /// The group binding the three uniforms, registered in the frame resource
+    /// graph.
     bind_group: ResHandle<wgpu::BindGroup>,
     /// The instance stream the segments are uploaded into, allocated on the
     /// first non-empty frame.
@@ -214,12 +219,17 @@ impl LineSource {
         let camera = uniform_buffer(
             device,
             "unlit3d::line::camera",
-            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
+            <Camera as const_shader_layout::ShaderLayout>::SIZE.get(),
         );
         let globals = uniform_buffer(
             device,
             "unlit3d::line::globals",
             <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
+        );
+        let view = uniform_buffer(
+            device,
+            "unlit3d::line::view",
+            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::line::globals"),
@@ -233,21 +243,28 @@ impl LineSource {
                     binding: FRAME_BINDING,
                     resource: globals.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: VIEW_BINDING,
+                    resource: view.as_entire_binding(),
+                },
             ],
         });
         let mut graph_holder = ctx.graph(scope);
         let graph = graph_holder.get();
         let camera_id = graph.insert(camera.clone(), None);
         let globals_id = graph.insert(globals.clone(), None);
+        let view_id = graph.insert(view.clone(), None);
         let bind_group = graph.insert(group, None);
         graph.add_dependency(&bind_group, &camera_id);
         graph.add_dependency(&bind_group, &globals_id);
+        graph.add_dependency(&bind_group, &view_id);
         self.gpus.push((
             surface,
             Gpu {
                 pipeline,
                 camera,
                 globals,
+                view,
                 bind_group,
                 segments: InstanceBuffer::new(InstanceStreamDesc {
                     slot: SEGMENT_SLOT,
@@ -297,18 +314,18 @@ impl FrameSource for LineSource {
                 (viewport.width, viewport.height)
             });
 
-        let view = View::new(
+        let camera = Camera::new(
             camera.view_from_world,
             camera.clip_from_view,
             camera.position(),
-        )
-        .with_viewport_size(width, height);
-        // The shader measures in pixels and reads the camera alone, but the
-        // frame globals share the group every pipeline in the frame binds, so
-        // the slot is filled from the frame's own clock: a stroke that later
-        // wants to animate along time reads the same numbers a mesh does, and
-        // the clock belongs to the frame rather than to this source, whose
-        // build may run once per pass.
+        );
+        let view = View::new(width, height);
+        // The shader measures in pixels and reads no clock, but the frame
+        // globals share the group every pipeline in the frame binds, so the
+        // slot is filled from the frame's own clock: a stroke that later wants
+        // to animate along time reads the same numbers a mesh does, and the
+        // clock belongs to the frame rather than to this source, whose build
+        // may run once per pass.
         let mut globals = Globals::default();
         if let Ok(mut clock_row) = scope.query_one::<&FrameClock>(ctx.clock) {
             let clock = clock_row.get();
@@ -327,9 +344,11 @@ impl FrameSource for LineSource {
             // encoder and passes through the one staging buffer, so none of
             // them costs a submission of its own.
             gpu.staging
-                .write(device, encoder, &gpu.camera, 0, view.as_bytes());
+                .write(device, encoder, &gpu.camera, 0, camera.as_bytes());
             gpu.staging
                 .write(device, encoder, &gpu.globals, 0, globals.as_bytes());
+            gpu.staging
+                .write(device, encoder, &gpu.view, 0, view.as_bytes());
             gpu.segments
                 .upload(device, encoder, self.segments.as_bytes());
         }

@@ -1,13 +1,19 @@
 //! Uniforms the built-in pipelines bind.
 //!
-//! [`View`] and [`Globals`] are frame-wide and are mirrored by the
-//! `view.wesl` / `globals.wesl` modules of the built-in WESL package. Both are
-//! bound as `var<uniform>`.
+//! Three records, each advanced by whoever owns the value it carries:
+//! `Camera` by the camera a pass draws through, `Globals` by the renderer once a
+//! frame, and `View` by the pass that states the viewport. They are mirrored by
+//! the `camera.wesl`, `globals.wesl` and `view.wesl` modules of the built-in WESL
+//! package, and all three are bound as `var<uniform>`.
 
-/// Camera state for one view.
+/// Camera state: the transforms a pass draws through, and the eye they imply.
 ///
-/// Mirrors `view.wesl::View`; the layout is checked at compile time against
+/// Mirrors `camera.wesl::Camera`; the layout is checked at compile time against
 /// the WGSL uniform address-space rules.
+///
+/// A pass binds this for the camera it draws through, so two passes through two
+/// cameras bind two records. What the pass frames — its viewport, and the pixel
+/// scale that follows from it — is [`View`] rather than part of this record.
 #[repr(C)]
 #[derive(
     Clone,
@@ -20,7 +26,7 @@
     zerocopy_derive::KnownLayout,
     const_shader_layout::ShaderLayoutCompat,
 )]
-pub struct View {
+pub struct Camera {
     /// World -> clip matrix (`projection * view`).
     ///
     /// The one matrix a vertex stage needs; it is stored rather than left for
@@ -34,27 +40,10 @@ pub struct View {
     pub view_from_world: glam::Mat4,
     /// World-space eye position; `w` is padding by convention (write `1.0`).
     pub camera_position: glam::Vec4,
-    /// The region of the target this view's clip space is stretched across, in
-    /// physical pixels.
-    ///
-    /// A shader that measures in pixels — a constant-width line, a pixel-sized
-    /// billboard, a screen-space projection — needs this to turn a pixel count
-    /// into clip space: one pixel is `2 / viewport_size` on each axis. It is
-    /// the viewport rather than the attachment's size because a letterboxed
-    /// view stretches its clip space across the smaller rectangle, so a width
-    /// measured against the attachment would shrink along with the picture.
-    ///
-    /// Zero for a caller that never set it, which no pixel measurement can
-    /// divide by; such a caller does not read it.
-    pub viewport_size: glam::Vec2,
-    /// Explicit tail padding: the WGSL struct size rounds up to its mat4
-    /// alignment, and a record with implicit padding could not be written out
-    /// as bytes.
-    pub pad0: glam::Vec2,
 }
 
-impl View {
-    /// Build a view from a camera's view and projection transforms and its
+impl Camera {
+    /// Build a camera from its view and projection transforms and its
     /// world-space eye position.
     ///
     /// The combined world-to-clip matrix is derived here, so a caller only
@@ -68,12 +57,10 @@ impl View {
             clip_from_world: clip_from_view * view_from_world,
             view_from_world,
             camera_position: camera_position.extend(1.0),
-            viewport_size: glam::Vec2::ZERO,
-            pad0: glam::Vec2::ZERO,
         }
     }
 
-    /// Build a view from a world-to-clip matrix alone.
+    /// Build a camera from a world-to-clip matrix alone.
     ///
     /// For a caller whose matrix is synthesised and has no separate view and
     /// projection — the UI's screen-space mapping is one — the view matrix is
@@ -84,20 +71,56 @@ impl View {
             clip_from_world,
             view_from_world: glam::Mat4::IDENTITY,
             camera_position: camera_position.extend(1.0),
-            viewport_size: glam::Vec2::ZERO,
-            pad0: glam::Vec2::ZERO,
         }
     }
+}
 
-    /// Same view with its viewport region set to `width` x `height` pixels.
+/// What one pass frames: the region of the target its clip space covers.
+///
+/// Mirrors `view.wesl::View`.
+///
+/// This is the pass's value rather than the camera's: the same camera drawn into
+/// two differently shaped rectangles is two views, and the passes of one frame
+/// may frame differently. A shader that measures in pixels — a constant-width
+/// line, a pixel-sized billboard, a screen-space projection — needs it to turn
+/// a pixel count into clip space.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+    const_shader_layout::ShaderLayoutCompat,
+)]
+pub struct View {
+    /// The region of the target this view's clip space is stretched across, in
+    /// physical pixels.
     ///
-    /// This is the size a shader measuring in pixels reads; a builder rather
-    /// than a parameter of the constructors because a view whose pixels are
-    /// never measured leaves it zero.
-    #[must_use]
-    pub fn with_viewport_size(mut self, width: f32, height: f32) -> Self {
-        self.viewport_size = glam::Vec2::new(width, height);
-        self
+    /// One pixel is `2 / viewport_size` on each axis. It is the viewport rather
+    /// than the attachment's size because a letterboxed view stretches its clip
+    /// space across the smaller rectangle, so a width measured against the
+    /// attachment would shrink along with the picture.
+    ///
+    /// Zero for a caller that never set it, which no pixel measurement can
+    /// divide by; such a caller does not read it.
+    pub viewport_size: glam::Vec2,
+    /// Explicit tail padding: the WGSL struct size rounds up to 16 bytes, and a
+    /// record with implicit padding could not be written out as bytes.
+    pub pad0: glam::Vec2,
+}
+
+impl View {
+    /// The view of a pass drawing through a `width` x `height` viewport, in
+    /// physical pixels.
+    pub fn new(width: f32, height: f32) -> Self {
+        Self {
+            viewport_size: glam::Vec2::new(width, height),
+            pad0: glam::Vec2::ZERO,
+        }
     }
 }
 

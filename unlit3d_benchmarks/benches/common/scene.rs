@@ -89,6 +89,9 @@ impl Frame {
             // The frame states no lights, so a benchmark measures the path a
             // light-free scene draws with.
             unlit: true,
+            // No inverted hull: the benchmark measures the plain lit path, and
+            // a second pipeline would only double the setup.
+            expanded: false,
         });
         source.register_lit_family(&world.root_scope());
         let mesh = source.allocate_lit_mesh(

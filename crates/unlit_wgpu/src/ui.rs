@@ -8,19 +8,23 @@
 //!
 //! ```rust
 //! # use unlit_wgpu::globals::Globals;
-//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING};
+//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, VIEW_BINDING};
 //! # use unlit_wgpu::resources::ResourceGraph;
 //! # use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
-//! # use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
+//! # use unlit_wgpu::ui::{
+//! #     EguiIntegration, ScreenDescriptor, screen_view, screen_viewport, ui_variant,
+//! # };
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
 //! #          surface: SurfaceKey) {
 //! // The caller owns the globals: a camera uniform (written every frame with
-//! // `screen_view`), a frame-globals uniform, and the bind group binding both.
+//! // `screen_view`), a frame-globals uniform, the view `screen_viewport`
+//! // derives from the same points, and the bind group binding all three.
 //! let variant = ui_variant(device, /* the target encodes sRGB: */ true, surface);
 //! let pipeline = SpecializedPipeline::create(device, variant);
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");
+//! let view = uniform_buffer(device, "ui::view");
 //! let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
 //!     label: Some("ui::globals"),
 //!     layout: &pipeline.descriptor().bind_group_layouts(device).global,
@@ -33,16 +37,28 @@
 //!             binding: FRAME_BINDING,
 //!             resource: globals.as_entire_binding(),
 //!         },
+//!         wgpu::BindGroupEntry {
+//!             binding: VIEW_BINDING,
+//!             resource: view.as_entire_binding(),
+//!         },
 //!     ],
 //! });
+//!
+//! // The camera and the view are written every frame; the UI reads no clock,
+//! // so its frame globals stay at their default.
+//! queue.write_buffer(&camera, 0, screen_view([256.0, 192.0]).as_bytes());
+//! queue.write_buffer(&view, 0, screen_viewport([256.0, 192.0]).as_bytes());
+//! queue.write_buffer(&globals, 0, Globals::default().as_bytes());
 //!
 //! // The UI's per-texture resources join the caller's ledger.
 //! let mut graph = ResourceGraph::new();
 //! let camera_id = graph.insert(camera, None);
 //! let globals_id = graph.insert(globals, None);
+//! let view_id = graph.insert(view, None);
 //! let group_id = graph.insert(global_group, None);
 //! graph.add_dependency(&group_id, &camera_id);
 //! graph.add_dependency(&group_id, &globals_id);
+//! graph.add_dependency(&group_id, &view_id);
 //!
 //! let mut ui = EguiIntegration::new(device, group_id, pipeline);
 //! let mut input = egui::RawInput::default();
@@ -76,7 +92,7 @@
 //! # }
 //! ```
 
-use crate::globals::View;
+use crate::globals::{Camera, View};
 use crate::mesh::{ChannelEncoding, MeshInstance, PositionStreamChannels, SecondaryFlags};
 use crate::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, INSTANCE_SLOT,
@@ -143,10 +159,10 @@ impl ScreenDescriptor {
 /// density never enters: the target's format already encodes its pixels.
 ///
 /// The caller writes this into their camera uniform, since the camera buffer
-/// is theirs.
-pub fn screen_view(viewport_points: [f32; 2]) -> View {
+/// is theirs; [`screen_viewport`] is the view to bind beside it.
+pub fn screen_view(viewport_points: [f32; 2]) -> Camera {
     let [width, height] = viewport_points;
-    View::from_clip_from_world(
+    Camera::from_clip_from_world(
         glam::Mat4::from_cols_array(&[
             2.0 / width,
             0.0,
@@ -167,9 +183,14 @@ pub fn screen_view(viewport_points: [f32; 2]) -> View {
         ]),
         glam::Vec3::ZERO,
     )
-    // The clipping is in points, so the size a shader measures against is the
-    // point size too: that is what keeps the two in one unit.
-    .with_viewport_size(width, height)
+}
+
+/// The view to bind beside [`screen_view`].
+///
+/// The clipping is in points, so the size a shader measures against is the point
+/// size too: that is what keeps the two in one unit.
+pub fn screen_viewport(viewport_points: [f32; 2]) -> View {
+    View::new(viewport_points[0], viewport_points[1])
 }
 
 /// The pipeline variant a UI is drawn with.
@@ -1247,15 +1268,17 @@ mod tests {
     /// flipped: egui's origin is the top left, clip space's the bottom left.
     #[test]
     fn screen_view_maps_the_viewport_corners() {
-        let view = screen_view([256.0, 192.0]);
+        let camera = screen_view([256.0, 192.0]);
         for (point, expected) in [([0.0, 0.0], [-1.0, 1.0]), ([256.0, 192.0], [1.0, -1.0])] {
-            let clip = view.clip_from_world * glam::Vec4::new(point[0], point[1], 0.0, 1.0);
+            let clip = camera.clip_from_world * glam::Vec4::new(point[0], point[1], 0.0, 1.0);
             let got = [clip.x / clip.w, clip.y / clip.w];
             assert!(
                 (got[0] - expected[0]).abs() < 1e-5 && (got[1] - expected[1]).abs() < 1e-5,
                 "point {point:?} projected to {got:?}, expected {expected:?}"
             );
         }
+        // The viewport the same points describe is the view bound beside it.
+        assert_eq!(screen_viewport([256.0, 192.0]), View::new(256.0, 192.0));
     }
 
     /// A clip rectangle reaching off the target is clamped rather than wrapping

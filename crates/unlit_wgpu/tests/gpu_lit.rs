@@ -7,7 +7,7 @@
 //! with the SSIMULACRA2 perceptual metric.
 
 use crate::common::*;
-use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_indices, compress_positions, quantize_colors,
@@ -16,7 +16,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, LitOptions, LitShader, LitVariant, LitVertexChannels,
     MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT, SECONDARY_SLOT, SpecializedLitPipeline,
-    supports_storage_buffers,
+    VIEW_BINDING, supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
@@ -234,7 +234,7 @@ fn upload_buffer(ctx: &Ctx, label: &str, bytes: &[u8], usage: wgpu::BufferUsages
 /// front, with reverse-z (the built-in pipeline compares with `Greater`).
 ///
 /// Uses the WebGPU clip convention (Z in `[0, 1]`, Y-up).
-fn camera(aspect: f32) -> View {
+fn camera(aspect: f32) -> Camera {
     let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
         60f32.to_radians(),
         aspect,
@@ -243,7 +243,7 @@ fn camera(aspect: f32) -> View {
     let eye = glam::Vec3::new(0.0, 1.2, 3.2);
     let view =
         glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::new(0.0, 0.2, 0.0), glam::Vec3::Y);
-    View::new(view, projection, eye)
+    Camera::new(view, projection, eye)
 }
 
 /// A CPU-side mesh: positions, UVs, vertex colors, normals and `u32` indices.
@@ -475,19 +475,28 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     let (context, target) =
         render_target_with_depth(ctx, fixture.multisample.count, fixture.has_depth);
 
-    // Global group: camera, frame globals and the mesh-metadata array.
-    let view = camera(WIDTH as f32 / HEIGHT as f32);
+    // Global group: camera, frame globals, the view and the mesh-metadata
+    // array. The lit shader measures in world units, so the view is bound but
+    // never read; it still has to be uploaded, since the layout declares it.
+    let camera = camera(WIDTH as f32 / HEIGHT as f32);
     let globals = Globals::default();
+    let view = View::new(WIDTH as f32, HEIGHT as f32);
     let camera_buffer = upload_buffer(
         ctx,
         "test::camera",
-        view.as_bytes(),
+        camera.as_bytes(),
         wgpu::BufferUsages::UNIFORM,
     );
     let globals_buffer = upload_buffer(
         ctx,
         "test::globals",
         globals.as_bytes(),
+        wgpu::BufferUsages::UNIFORM,
+    );
+    let view_buffer = upload_buffer(
+        ctx,
+        "test::view",
+        view.as_bytes(),
         wgpu::BufferUsages::UNIFORM,
     );
     // The metadata bindings (and the mesh group that indexes them) exist only
@@ -510,6 +519,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     let mut global_entries = vec![
         bg_entry(CAMERA_BINDING, camera_buffer.as_entire_binding()),
         bg_entry(FRAME_BINDING, globals_buffer.as_entire_binding()),
+        bg_entry(VIEW_BINDING, view_buffer.as_entire_binding()),
     ];
     let metadata_handle = metadata_array.handle();
     if metadata {

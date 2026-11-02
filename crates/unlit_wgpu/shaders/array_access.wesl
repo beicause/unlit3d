@@ -38,7 +38,7 @@ import package::mesh_metadata;
 // struct carries both the decode parameters and the addressing, so a morph
 // reads it even when every channel is uncompressed.
 @if(!TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
-@group(0) @binding(2) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
+@group(0) @binding(3) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
 
 /// This frame's joint matrices, indexed by the joint pair in the position
 /// stream. Each one is a joint's animated transform times its inverse bind
@@ -48,14 +48,14 @@ import package::mesh_metadata;
 /// its own joints from its pose base; that is what lets two instances of one
 /// mesh deform differently.
 @if(!TEXEL_ARRAY && VERTEX_JOINTS)
-@group(0) @binding(3) var<storage, read> joint_matrices: array<mat4x4<f32>>;
+@group(0) @binding(4) var<storage, read> joint_matrices: array<mat4x4<f32>>;
 
 /// This frame's morph weights, one per target of every morphed instance.
 ///
 /// Like the joint matrices this is per-instance data in one frame-wide array,
 /// and an instance reads its own weights from its pose base.
 @if(!TEXEL_ARRAY && MORPH_POSITIONS)
-@group(0) @binding(4) var<storage, read> morph_weights: array<f32>;
+@group(0) @binding(5) var<storage, read> morph_weights: array<f32>;
 
 /// Every morph target's per-vertex position displacement, flat and tightly
 /// packed: for each vertex, `mesh_metadata::MeshMetadata::morph_count` targets
@@ -67,7 +67,7 @@ import package::mesh_metadata;
 /// them here rather than in a per-mesh buffer is what leaves the mesh group
 /// with nothing to bind.
 @if(!TEXEL_ARRAY && MORPH_POSITIONS)
-@group(0) @binding(5) var<storage, read> morph_deltas: array<f32>;
+@group(0) @binding(6) var<storage, read> morph_deltas: array<f32>;
 
 /// This frame's lights, indexed by the numbers the cluster cells hold.
 ///
@@ -75,7 +75,7 @@ import package::mesh_metadata;
 /// records only name indices: one shape per record is what lets a cell mix a
 /// point light with a spot and a quad.
 @if(!TEXEL_ARRAY && LIT)
-@group(0) @binding(6) var<storage, read> lights: array<light::LightGpu>;
+@group(0) @binding(7) var<storage, read> lights: array<light::LightGpu>;
 
 /// The frame's cluster cells, each a fixed-size record of its own.
 ///
@@ -84,7 +84,7 @@ import package::mesh_metadata;
 /// rest are unused. Fixed-size records mean a fragment reads one span and knows
 /// the whole cell, with no second array to find its end.
 @if(!TEXEL_ARRAY && LIT)
-@group(0) @binding(7) var<storage, read> light_cells: array<u32>;
+@group(0) @binding(8) var<storage, read> light_cells: array<u32>;
 
 /// The polygon vertices of the frame's quad lights, as one `vec4<f32>` each.
 ///
@@ -92,31 +92,31 @@ import package::mesh_metadata;
 /// a light owns varies while every record is the same size; a record names its
 /// slice with `kind.y` and `kind.z`.
 @if(!TEXEL_ARRAY && LIT)
-@group(0) @binding(8) var<storage, read> light_vertices: array<vec4<f32>>;
+@group(0) @binding(9) var<storage, read> light_vertices: array<vec4<f32>>;
 
 // The same arrays as textures. Each keeps its binding number and group, so the
 // two paths declare the same interface and a variant differs only in which
 // resource type it binds.
 @if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
-@group(0) @binding(2) var mesh_meta_tex: texture_2d<f32>;
+@group(0) @binding(3) var mesh_meta_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && VERTEX_JOINTS)
-@group(0) @binding(3) var joint_matrices_tex: texture_2d<f32>;
+@group(0) @binding(4) var joint_matrices_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && MORPH_POSITIONS)
-@group(0) @binding(4) var morph_weights_tex: texture_2d<f32>;
+@group(0) @binding(5) var morph_weights_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && MORPH_POSITIONS)
-@group(0) @binding(5) var morph_deltas_tex: texture_2d<f32>;
+@group(0) @binding(6) var morph_deltas_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && LIT)
-@group(0) @binding(6) var lights_tex: texture_2d<f32>;
+@group(0) @binding(7) var lights_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && LIT)
-@group(0) @binding(7) var light_cells_tex: texture_2d<f32>;
+@group(0) @binding(8) var light_cells_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && LIT)
-@group(0) @binding(8) var light_vertices_tex: texture_2d<f32>;
+@group(0) @binding(9) var light_vertices_tex: texture_2d<f32>;
 
 /// The texel holding element `index`'s first lane.
 ///
