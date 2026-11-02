@@ -547,59 +547,48 @@ fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPane
     read(ctx, &target)
 }
 
-/// A pixel above the band, where only the cube can be.
-const CUBE_PIXEL: (u32, u32) = (128, 60);
 /// A pixel inside the band that the cube also covers.
 const OVERLAP_PIXEL: (u32, u32) = (128, 144);
 /// A pixel inside the band that the cube does not cover.
 const PANEL_PIXEL: (u32, u32) = (16, 144);
 
-/// Record order follows the declared `FrameSourceOrder`, not the spawn order.
+/// The UI paints over the mesh whatever the source record order is.
 ///
-/// The panel is opaque so each order leaves one colour on top: with the UI
-/// last the panel's colour survives the overlap, and with the UI first the
-/// cube's does. Nothing but the record order differs between the two frames.
-async fn mesh_and_ui_respects_source_order() {
+/// Every UI draw carries `DrawOrder::After`, so the pass composite tiers the
+/// UI behind the sequenced geometry regardless of where `FrameSourceOrder`
+/// puts the `UiSource`: the record order only shapes the sequence tier, and
+/// the mesh is its only member here, so both frames come out identical.
+async fn ui_draws_over_the_mesh_in_any_source_order() {
     /// An opaque panel, so the topmost draw decides the overlap pixel.
     const OPAQUE_BLUE: egui::Color32 = egui::Color32::from_rgb(0, 0, 255);
 
     let ctx = Ctx::headless().await;
     let mut ui_last = World::new();
-    let ui_on_top = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE));
+    let frame_ui_last = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE));
 
     let mut ui_first = World::new();
-    let mesh_on_top = mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE));
+    let frame_ui_first = mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE));
 
-    // The overlap lies over the cube, so whichever source records last wins.
-    let overlap_ui_on_top = ui_on_top.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
-    let overlap_mesh_on_top = mesh_on_top.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
-
+    // The overlap lies over the cube, and the panel wins it either way: the
+    // composite tiers its draws behind the sequenced mesh.
+    let overlap = frame_ui_last.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
     assert!(
-        near(overlap_ui_on_top, OPAQUE_BLUE, 8),
-        "recorded last, the panel's colour must win the overlap, got {overlap_ui_on_top:?}"
-    );
-    assert!(
-        !near(overlap_mesh_on_top, OPAQUE_BLUE, 8),
-        "recorded first, the panel must lose the overlap to the cube, got {overlap_mesh_on_top:?}"
-    );
-    assert_ne!(
-        overlap_ui_on_top, overlap_mesh_on_top,
-        "the record order must change what the overlap looks like"
+        near(overlap, OPAQUE_BLUE, 8),
+        "the panel is tiered last, so its colour must win the overlap, got {overlap:?}"
     );
 
-    // The cube is unchanged where no panel covers it: only the overlap depends
-    // on the order. Comparing the same pixel across the two frames is what
-    // makes this independent of the mesh's per-vertex colours.
+    // The record order only reshuffles the sequence tier, and the mesh is the
+    // only sequenced source here, so the composited frames are identical.
     assert_eq!(
-        ui_on_top.pixel_u8(CUBE_PIXEL.0, CUBE_PIXEL.1),
-        mesh_on_top.pixel_u8(CUBE_PIXEL.0, CUBE_PIXEL.1),
-        "the order does not change the cube where no panel covers it"
+        frame_ui_last.rgba, frame_ui_first.rgba,
+        "the record order must not change the composited frame"
     );
-    // And the panel away from the cube is drawn either way.
-    assert_eq!(
-        ui_on_top.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1),
-        mesh_on_top.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1),
-        "the panel is drawn the same where nothing overlaps it"
+
+    // And the panel away from the cube is drawn, not scissored away.
+    let panel = frame_ui_last.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1);
+    assert!(
+        near(panel, OPAQUE_BLUE, 8),
+        "the panel is drawn where nothing overlaps it, got {panel:?}"
     );
 }
 
@@ -928,7 +917,7 @@ gpu_tests! {
     ui_only_clears_to_load_ops,
     ui_only_multisampled_and_srgb,
     ui_only_at_high_pixel_density,
-    mesh_and_ui_respects_source_order,
+    ui_draws_over_the_mesh_in_any_source_order,
     ui_does_not_clip_the_mesh,
     a_clipped_panel_does_not_clip_the_resolve,
     mesh_and_ui_survive_a_second_frame,
