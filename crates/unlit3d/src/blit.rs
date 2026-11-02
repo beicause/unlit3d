@@ -8,16 +8,16 @@
 //! The view is the source's own input, so a world decides what to hand it and
 //! may swap it between frames through its [`view`](BlitSource::view) field. It lives in the
 //! frame's [`ResourceGraph`], and the bind group is a node there that a
-//! replace of the view rebuilds; the pipeline stays the source's own,
-//! specialized on the pass's target like any other source's, so the same
-//! source presents into a swap chain or into another offscreen target.
+//! replace of the view rebuilds; the pipeline is specialized on the pass's
+//! target through the generic variant cache, like any other source's, so the
+//! same source presents into a swap chain or into another offscreen target.
 
 use unlit_ecs::Scope;
 use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
-    FragmentStateDesc, PipelineDescriptor, RenderPipelineDesc, SurfaceKey, SurfaceTarget,
-    VertexStateDesc,
+    FragmentStateDesc, PipelineDescriptor, PipelineVariant, RenderPipelineDesc, SurfaceKey,
+    SurfaceTarget, Variants, VertexStateDesc,
 };
 
 use crate::pass::PassInfo;
@@ -48,23 +48,25 @@ pub struct BlitSource {
     /// Assigning a different handle makes the next frame rebuild the bind
     /// group; the pipeline and the sampler stay.
     pub view: ResHandle<TextureView>,
-    /// The GPU state, one entry per target the source has been asked to draw
-    /// into.
+    /// The pipelines, specialized on the target each pass draws into.
     ///
     /// A source may be recorded by several passes, and the passes of one frame
     /// need not share a specialization key — a multisampled offscreen pass and
-    /// a single-sampled swap chain differ in sample count. Keying by the key
-    /// keeps each pass's pipeline and bind group rather than rebuilding them
-    /// as the passes alternate. Entries are kept for the world's life: the key
-    /// changes with a target's format or sample count, not with its size.
-    gpus: Vec<(SurfaceKey, Gpu)>,
+    /// a single-sampled swap chain differ in sample count. Specializing keeps
+    /// each pass's pipeline rather than rebuilding as the passes alternate.
+    pipelines: Option<Variants<wgpu::RenderPipeline, BlitVariant>>,
+    /// The sampler, the layout and the bind group, built on the first frame.
+    ///
+    /// None of these depends on the target: the layout declares a texture and
+    /// a sampler, the group binds the view and that sampler, and a blit writes
+    /// every sample it covers. One of each serves every pass; only the
+    /// pipeline varies with the target.
+    core: Option<Core>,
 }
 
-/// The built pipeline and the graph node its bind group lives in.
-struct Gpu {
-    /// The pipeline the blit records.
-    pipeline: wgpu::RenderPipeline,
-    /// The layout its bind group is built against.
+/// The target-independent GPU state a blit reads its view through.
+struct Core {
+    /// The layout the bind group is built against.
     layout: wgpu::BindGroupLayout,
     /// The sampler the view is read with, in the frame's graph.
     sampler: ResHandle<wgpu::Sampler>,
@@ -72,6 +74,31 @@ struct Gpu {
     view: ResHandle<TextureView>,
     /// The graph node binding the view and its sampler.
     bind_group: ResHandle<wgpu::BindGroup>,
+}
+
+/// The pipeline variant a blit resolves to.
+///
+/// The target is the whole variant: a blit blends nothing, tests no depth and
+/// writes every sample it covers, so the format, the sample count and the
+/// presence of depth are the only things a pass can change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BlitVariant {
+    /// The target the blit is drawn into.
+    surface: SurfaceKey,
+}
+
+impl PipelineVariant<wgpu::RenderPipeline> for BlitVariant {
+    type Descriptor = Self;
+
+    fn descriptor(&self, _device: &wgpu::Device) -> Self {
+        *self
+    }
+}
+
+impl PipelineDescriptor<wgpu::RenderPipeline> for BlitVariant {
+    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+        pipeline(device, self.surface)
+    }
 }
 
 impl BlitSource {
@@ -83,19 +110,19 @@ impl BlitSource {
     pub fn new(view: ResHandle<TextureView>) -> Self {
         Self {
             view,
-            gpus: Vec::new(),
+            pipelines: None,
+            core: None,
         }
     }
 
-    /// Build the pipeline, the sampler and the bind group for `surface`.
-    fn build_gpu(&self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) -> Gpu {
+    /// Build the sampler, the layout and the bind group, on the first frame.
+    fn build_core(&self, scope: &Scope<'_>, ctx: RenderContext) -> Core {
         let mut device_row = scope
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context's device resource exists");
         let device = wgpu::Device::clone(device_row.get());
         let sampler = ctx.graph(scope).get().insert(sampler(&device), None);
         let layout = bind_group_layout(&device);
-        let pipeline = pipeline(&device, &layout, surface);
         let bind_group = allocate_bind_group(
             scope,
             ctx,
@@ -104,8 +131,7 @@ impl BlitSource {
             sampler.clone(),
             self.view.clone(),
         );
-        Gpu {
-            pipeline,
+        Core {
             layout,
             sampler,
             view: self.view.clone(),
@@ -177,37 +203,38 @@ impl FrameSource for BlitSource {
         // whatever this frame does.
         let maintain = ctx.maintain_scope(*scope);
 
-        // The pass's target picks the entry, and only the entry: the passes of
-        // one frame need not share a key, and rebuilding as they alternate
-        // would compile a pipeline per pass per frame.
-        let index = self.gpus.iter().position(|(key, _)| *key == info.surface);
-        let index = match index {
-            Some(index) => index,
-            None => {
-                let gpu = self.build_gpu(scope, ctx, info.surface);
-                self.gpus.push((info.surface, gpu));
-                self.gpus.len() - 1
-            }
-        };
+        // The sampler, the layout and the group serve every pass; they are
+        // built once and rebuilt only when the view changes.
+        if self.core.is_none() {
+            self.core = Some(self.build_core(scope, ctx));
+        }
+        let device = scope
+            .query_one::<&wgpu::Device>(ctx.device)
+            .expect("the context's device resource exists")
+            .get()
+            .clone();
 
-        // The same target, a different view: the layout, the pipeline and the
-        // sampler stay, and the view's new id gets its own group.
-        if self.gpus[index].1.view != self.view {
-            let gpu = &mut self.gpus[index].1;
-            let mut device_row = scope
-                .query_one::<&wgpu::Device>(ctx.device)
-                .expect("the context's device resource exists");
+        // The pass's target picks the pipeline, and only the pipeline: the
+        // passes of one frame need not share a key, and specializing keeps
+        // each pass's pipeline rather than rebuilding as they alternate.
+        let pipelines = self.pipelines.get_or_insert_with(|| Variants::new(&device));
+        let ordinal = pipelines.specialize(BlitVariant {
+            surface: info.surface,
+        });
 
-            let device = device_row.get();
-            gpu.bind_group = allocate_bind_group(
+        // The same target, a different view: the layout and the sampler stay,
+        // and the view's new id gets its own group.
+        let core = self.core.as_mut().expect("the core is built above");
+        if core.view != self.view {
+            core.bind_group = allocate_bind_group(
                 scope,
                 ctx,
-                device,
-                &gpu.layout,
-                gpu.sampler.clone(),
+                &device,
+                &core.layout,
+                core.sampler.clone(),
                 self.view.clone(),
             );
-            gpu.view = self.view.clone();
+            core.view = self.view.clone();
         }
 
         // Drop the scope so the graph maintains before the group is read back
@@ -215,12 +242,13 @@ impl FrameSource for BlitSource {
         drop(maintain);
         let mut graph_holder = ctx.graph(scope);
         let graph = graph_holder.get();
-        let gpu = &self.gpus[index].1;
+        let pipeline = &pipelines.get(ordinal).pipeline;
+        let core = self.core.as_ref().expect("the core is built above");
         let bind_group = graph
-            .get(&gpu.bind_group)
+            .get(&core.bind_group)
             .expect("the bind group is registered in the graph");
         scene.draws.push(
-            DrawEntry::new(&gpu.pipeline, DrawRange::vertices(0..3)).with_bind_group(0, bind_group),
+            DrawEntry::new(pipeline, DrawRange::vertices(0..3)).with_bind_group(0, bind_group),
         );
     }
 
@@ -294,18 +322,17 @@ fn bind_group_recipe(
 /// The vertex and the fragment come from two shader modules: the fullscreen
 /// vertex keeps its own name only while it is the main module of its compile,
 /// so the blit pairs that module with the fragment's across two modules, which
-/// wgpu allows.
-fn pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    surface: SurfaceKey,
-) -> wgpu::RenderPipeline {
+/// wgpu allows. The layout is built here rather than shared, because a
+/// variant's descriptor owns its whole pipeline and wgpu deduplicates
+/// identical layouts on its side.
+fn pipeline(device: &wgpu::Device, surface: SurfaceKey) -> wgpu::RenderPipeline {
     let vertex = crate::builtin::shader_module(device, VERTEX_MODULE, "unlit3d::blit::vertex", &[]);
     let fragment =
         crate::builtin::shader_module(device, FRAGMENT_MODULE, "unlit3d::blit::fragment", &[]);
+    let layout = bind_group_layout(device);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::blit::pipeline_layout"),
-        bind_group_layouts: &[Some(layout)],
+        bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
 
