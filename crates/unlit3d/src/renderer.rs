@@ -375,10 +375,10 @@ impl Renderer {
                     // scenes across the loop, and borrowing the whole `self`
                     // for them would collide with the next pass's source
                     // resolution.
-                    if let Some(slot) = self.scenes.get(&(pass_entity, entity)) {
-                        if slot.used {
-                            scenes.push(&slot.scene);
-                        }
+                    if let Some(slot) = self.scenes.get(&(pass_entity, entity))
+                        && slot.used
+                    {
+                        scenes.push(&slot.scene);
                     }
                 }
                 Scene::record_composited(&mut render_pass, &scenes, Some(whole));

@@ -264,12 +264,7 @@ impl GlobalResources {
                 resources.bind_group(device, graph, &layout, bindings, uniforms)
             }
         };
-        GlobalRecipe {
-            build: Arc::new(build),
-            inputs: Inputs::Frame {
-                arrays: Some(self.clone()),
-            },
-        }
+        GlobalRecipe::from_build(build, Inputs::Frame { arrays: Some(self.clone()) })
     }
 }
 
@@ -349,6 +344,16 @@ enum Inputs {
 }
 
 impl GlobalRecipe {
+    fn from_build(
+        build: impl Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup + 'static,
+        inputs: Inputs,
+    ) -> Self {
+        Self {
+            build: Arc::new(build),
+            inputs,
+        }
+    }
+
     /// A recipe that runs `build` for every group it makes, over a group that
     /// binds the frame's camera, globals and view.
     ///
@@ -359,10 +364,7 @@ impl GlobalRecipe {
     pub fn new(
         build: impl Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup + 'static,
     ) -> Self {
-        Self {
-            build: Arc::new(build),
-            inputs: Inputs::Frame { arrays: None },
-        }
+        Self::from_build(build, Inputs::Frame { arrays: None })
     }
 
     /// A recipe for a group that binds none of the frame's uniforms, built
@@ -382,10 +384,7 @@ impl GlobalRecipe {
         build: impl Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup + 'static,
         inputs: impl IntoIterator<Item = ResHandle<Resource>>,
     ) -> Self {
-        Self {
-            build: Arc::new(build),
-            inputs: Inputs::Own(inputs.into_iter().collect()),
-        }
+        Self::from_build(build, Inputs::Own(inputs.into_iter().collect()))
     }
 
     /// Build the bind group for `uniforms`.

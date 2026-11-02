@@ -595,9 +595,9 @@ fn wash(rgb: [u8; 3]) -> [u8; 4] {
 
 /// The three cap strokes standing left of the orbit, where nothing else
 /// draws: flat-cut, round at the head end, and a dot — both ends rounded,
-/// the ends coincident.
-
-/// The frame freezes them so a change in how a stroke ends cannot land
+/// the ends coincident. The frame freezes them so a change in how a stroke
+/// ends cannot land unreviewed: the caps are a shader decision the rings
+/// and the ticks never exercise, closed rings having no ends at all.
 /// unreviewed: the caps are a shader decision the rings and the ticks never
 /// exercise, closed rings having no ends at all.
 fn caps_strokes() -> [Line; 3] {
