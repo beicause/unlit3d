@@ -20,6 +20,12 @@
 //! rings circle a body whose far side they pass behind, so the same frame
 //! holds a wash in front of a body and one hidden by it.
 //!
+//! Three short opaque strokes stand left of the orbit to pin the ways a
+//! stroke ends: flat-cut, round at one end, and a dot with both ends
+//! rounded. The rings are closed and the ticks are hidden among their
+//! neighbours, so without them no picture exercised the caps a stroke's
+//! fragment shader draws its ends with.
+//!
 //! The two are in one scene because the picture is the argument: a frame
 //! holding either alone would leave the other's promise unpinned. The scene
 //! is declared twice — once for a single-sampled target and once for a
@@ -135,6 +141,14 @@ const ARMILLARY_HALF_WIDTH: f32 = 2.5;
 /// so each ring hugs it — outside the band [`HULL_WIDTH`] draws, inside the
 /// orbit that encloses the whole group.
 const ARMILLARY_CENTRE: glam::Vec3 = glam::Vec3::new(0.0, 0.92, -0.2);
+
+/// The half width the cap strokes wear, wide enough for the ends to read.
+const CAPS_HALF_WIDTH: f32 = 3.5;
+
+/// The ink the cap strokes wear: dark enough to read against the paper and
+/// against the orbit they stand beside, opaque so the coverage is the
+/// shader's own.
+const CAPS_INK: [u8; 4] = [40, 36, 32, 255];
 
 /// How finely the smooth spheres are split — fine enough that a baked normal is
 /// what the gradient follows rather than the facets.
@@ -441,6 +455,7 @@ fn built(
         .spawn(bundle![Source::new(LineSource::new())]);
     let mut strokes = orbit();
     strokes.extend(armillary());
+    strokes.extend(caps_strokes());
     for stroke in strokes {
         super::spawn_in(world, lines, bundle![stroke]);
     }
@@ -576,4 +591,43 @@ fn armillary() -> impl Iterator<Item = Line> {
 /// The ink a wash carries: `rgb` washed to [`WASH_ALPHA`].
 fn wash(rgb: [u8; 3]) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], (WASH_ALPHA * 255.0) as u8]
+}
+
+/// The three cap strokes standing left of the orbit, where nothing else
+/// draws: flat-cut, round at the head end, and a dot — both ends rounded,
+/// the ends coincident.
+
+/// The frame freezes them so a change in how a stroke ends cannot land
+/// unreviewed: the caps are a shader decision the rings and the ticks never
+/// exercise, closed rings having no ends at all.
+fn caps_strokes() -> [Line; 3] {
+    // Flat: neither end rounded, the record's default.
+    let flat = stroke(
+        glam::Vec3::new(-2.15, 0.30, 0.0),
+        glam::Vec3::new(-2.15, 1.05, 0.0),
+        0,
+    );
+    // Round at the head end only.
+    let round_head = stroke(
+        glam::Vec3::new(-1.75, 0.30, 0.0),
+        glam::Vec3::new(-1.75, 1.05, 0.0),
+        LineSegment::ROUND_B,
+    );
+    // A dot: both ends rounded and the ends coincident.
+    let dot = stroke(
+        glam::Vec3::new(-1.35, 0.30, 0.0),
+        glam::Vec3::new(-1.35, 0.30, 0.0),
+        LineSegment::ROUND_A | LineSegment::ROUND_B,
+    );
+    [flat, round_head, dot]
+}
+
+/// One opaque vertical cap stroke from `foot` up to `head`, with `caps` as
+/// the record's end flags.
+fn stroke(foot: glam::Vec3, head: glam::Vec3, caps: u32) -> Line {
+    let mut segment = LineSegment::new(foot.to_array(), head.to_array())
+        .with_color(CAPS_INK)
+        .with_half_width(CAPS_HALF_WIDTH);
+    segment.caps = caps;
+    Line::opaque(segment)
 }
