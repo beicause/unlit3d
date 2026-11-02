@@ -484,7 +484,10 @@ which `SpecializedLitPipeline` composes with the
 camera and the [`View`](globals::View) the lit shader declares but never reads,
 because a stroke's width is a pixel count rather than a world distance, so
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
-`LineSource` composes it against the package and binds one group. The `lit` entry
+`LineSource` composes it against the package and binds one group, specializing it
+per stroke kind: an opaque stroke on a single-sampled target cuts at half its
+coverage, a blended one rides its alpha, and the difference is a WESL
+conditional-compilation flag like the lit ones. The `lit` entry
 shader in turn covers every lit variant: the differences are WESL
 conditional-compilation flags, so each composed variant holds one code path and
 declares only the bindings and attributes it uses.

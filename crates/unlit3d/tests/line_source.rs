@@ -74,21 +74,16 @@ fn read_frame(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
     }
 }
 
-/// A world holding one segment and a camera looking down -Z at it.
+/// A world holding one stroke and a camera looking down -Z at it.
 ///
 /// The camera sits at `eye`, so the same segment drawn from further away has
 /// to cover fewer pixels — unless its width is in pixels, which is the point.
-fn segment_world(
-    ctx: &Ctx,
-    eye: glam::Vec3,
-    segment: LineSegment,
-) -> (World, TestGpu, wgpu::Texture) {
+fn segment_world(ctx: &Ctx, eye: glam::Vec3, stroke: Line) -> (World, TestGpu, wgpu::Texture) {
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
 
-    let mut source = LineSource::new();
-    source.segments.push(segment);
-    let source_entity = gpu.spawn_source(&mut world, source);
+    let source_entity = gpu.spawn_source(&mut world, LineSource::new());
+    gpu.spawn_in(&mut world, source_entity, bundle![stroke]);
 
     let camera = camera_looking_at(eye, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
     gpu.spawn_in(&mut world, source_entity, bundle![camera]);
@@ -116,7 +111,7 @@ async fn a_stroke_keeps_its_pixel_width_at_any_distance() {
 
     let mut heights = Vec::new();
     for eye in [EYE, EYE * 2.0] {
-        let (world, gpu, target) = segment_world(&ctx, eye, along_x());
+        let (world, gpu, target) = segment_world(&ctx, eye, Line::from(along_x()));
         gpu.render(&world);
         let frame = read_frame(&ctx, &target);
         let (first, last) = drawn_rows(&frame).expect("the stroke is drawn");
@@ -146,7 +141,7 @@ async fn a_wider_stroke_covers_more_pixels() {
     let mut covered = Vec::new();
     for half_width in [2.0, 6.0] {
         let segment = along_x().with_half_width(half_width);
-        let (world, gpu, target) = segment_world(&ctx, EYE, segment);
+        let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
         let frame = read_frame(&ctx, &target);
         let (first, last) = drawn_rows(&frame).expect("the stroke is drawn");
@@ -184,7 +179,7 @@ async fn a_round_cap_reaches_past_its_station_and_a_flat_one_does_not() {
             .with_color(INK)
             .with_half_width(HALF_WIDTH);
         segment.caps = caps;
-        let (world, gpu, target) = segment_world(&ctx, EYE, segment);
+        let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
         let frame = read_frame(&ctx, &target);
         let (first, last) =
@@ -249,13 +244,16 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
 
     // The stroke runs along X behind the cube's front face, so the cube stands
     // in front of its middle and leaves its two ends in the open.
-    let mut lines = LineSource::new();
-    lines.segments.push(
-        LineSegment::new([-LENGTH, 0.0, -0.5], [LENGTH, 0.0, -0.5])
-            .with_color(STROKE)
-            .with_half_width(HALF_WIDTH),
+    let lines_entity = gpu.spawn_source(&mut world, LineSource::new());
+    gpu.spawn_in(
+        &mut world,
+        lines_entity,
+        bundle![Line::from(
+            LineSegment::new([-LENGTH, 0.0, -0.5], [LENGTH, 0.0, -0.5])
+                .with_color(STROKE)
+                .with_half_width(HALF_WIDTH)
+        )],
     );
-    let lines_entity = gpu.spawn_source(&mut world, lines);
 
     // Two sources draw this frame and a source only sees its own subtree, so the
     // camera goes in the shared subtree both of them read.
@@ -265,7 +263,6 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
         .expect("the shared subtree is its own scope")
         .spawn(bundle![camera]);
     gpu.spawn(&mut world, bundle![mesh, GpuRenderPipeline::new(key)]);
-    let _ = lines_entity;
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source::occlusion");
     gpu.render(&world);
@@ -313,7 +310,7 @@ async fn a_tapering_stroke_is_narrower_at_its_narrow_end() {
     ] {
         let mut segment = LineSegment::new([-half, 0.0, 0.0], [half, 0.0, 0.0]).with_color(INK);
         segment.half_width = ends;
-        let (world, gpu, target) = segment_world(&ctx, EYE, segment);
+        let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
         let frame = read_frame(&ctx, &target);
 
@@ -375,7 +372,7 @@ async fn a_stroke_the_near_plane_cuts_keeps_its_width() {
     // the full width.
     let mut segment = LineSegment::new([0.0, 0.0, 8.0], [0.0, 0.0, -4.0]).with_color(INK);
     segment.half_width = [0.0, HALF_WIDTH];
-    let (world, gpu, target) = segment_world(&ctx, EYE, segment);
+    let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
     gpu.render(&world);
     let frame = read_frame(&ctx, &target);
 
@@ -395,6 +392,119 @@ async fn a_stroke_the_near_plane_cuts_keeps_its_width() {
     );
 }
 
+/// An opaque stroke cut at half coverage leaves no fringe: a pixel is either
+/// stroke or background.
+///
+/// The cut is what lets an opaque stroke sit on a target that does not blend,
+/// and it is also a promise about the pixels it does draw — none of them is a
+/// fraction of the stroke's colour, because the fragment either discards or
+/// writes its colour whole. A blended stroke of the same shape, drawn beside
+/// it, keeps its fringe: the same geometry resolves the two paths differently.
+async fn an_opaque_stroke_cuts_sharp_at_half_coverage() {
+    let ctx = Ctx::headless().await;
+
+    // A tapering stroke: its edge runs diagonally, so its edge pixels sit at
+    // every coverage in between, where a pixel-aligned band would land its
+    // edge on whole pixels and say nothing about the cut.
+    let mut shape = LineSegment::new([-LENGTH, 0.0, 0.0], [LENGTH, 0.0, 0.0]).with_color(INK);
+    shape.half_width = [HALF_WIDTH, HALF_WIDTH / 2.0];
+    let stroke = Line::opaque(shape);
+    let blended = Line::blended(stroke.segment);
+    for (stroke, label, sharp) in [(stroke, "opaque", true), (blended, "blended", false)] {
+        let (world, gpu, target) = segment_world(&ctx, EYE, stroke);
+        gpu.render(&world);
+        let frame = read_frame(&ctx, &target);
+
+        // Every pixel the stroke reaches is its own colour or a part-way
+        // shade of the background; the last kind is what an antialiased edge
+        // leaves behind, and the cut exists to leave none of it.
+        let mut fringe = 0usize;
+        for y in 0..frame.height {
+            for x in 0..frame.width {
+                let pixel = frame.pixel_u8(x, y);
+                if drawn(pixel) && pixel != INK {
+                    fringe += 1;
+                }
+            }
+        }
+        if sharp {
+            assert_eq!(
+                fringe, 0,
+                "the {label} stroke should own every pixel it covers"
+            );
+        } else {
+            assert!(
+                fringe > 0,
+                "the {label} stroke should shade its edge pixels part-way"
+            );
+        }
+    }
+}
+
+/// A blended stroke passing behind an opaque one is hidden where the opaque
+/// one stands.
+///
+/// The two strokes cross in one frame: the opaque one is drawn first, writes
+/// its depth, and the blended one — which tests depth and writes none — loses
+/// the crossing to it. That is the hiding a stroke order alone cannot give,
+/// and the reason a source draws its opaque strokes with depth writes on.
+async fn a_blended_stroke_passing_behind_an_opaque_one_is_hidden_by_it() {
+    let ctx = Ctx::headless().await;
+
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let source_entity = gpu.spawn_source(&mut world, LineSource::new());
+
+    // The opaque stroke stands along X through the origin; the blended one
+    // runs down Y one unit behind it, so the two cross at the frame's centre
+    // — where the opaque stroke's depth is what decides — and the blended one
+    // still shows everywhere the opaque one does not reach.
+    gpu.spawn_in(
+        &mut world,
+        source_entity,
+        bundle![Line::opaque(
+            LineSegment::new([-LENGTH, 0.0, 0.0], [LENGTH, 0.0, 0.0])
+                .with_color(INK)
+                .with_half_width(HALF_WIDTH)
+        )],
+    );
+    gpu.spawn_in(
+        &mut world,
+        source_entity,
+        bundle![Line::blended(
+            LineSegment::new([0.0, -LENGTH, -1.0], [0.0, LENGTH, -1.0])
+                .with_color(STROKE)
+                .with_half_width(HALF_WIDTH)
+        )],
+    );
+    let camera = camera_looking_at(EYE, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
+    gpu.spawn_in(&mut world, source_entity, bundle![camera]);
+
+    let target = gpu.bind_offscreen_target(&world, "test::line_source::opaque_hides");
+    gpu.render(&world);
+    let frame = read_frame(&ctx, &target);
+
+    // The crossing sits at the frame's centre, where the blended stroke
+    // passed behind the opaque one: the pixel there is the opaque stroke's
+    // colour, not the blended stroke's red.
+    let centre = frame.pixel_u8(frame.width / 2, frame.height / 2);
+    assert!(
+        !is_stroke(centre),
+        "the blended stroke should lose the crossing to the opaque one, but the centre pixel is {centre:?}"
+    );
+    assert_eq!(
+        centre, INK,
+        "the crossing should hold the opaque stroke's own colour"
+    );
+    // The blended stroke still shows away from the crossing: it was hidden
+    // where the opaque stroke stands, not everywhere.
+    let near_edge = frame.pixel_u8(frame.width / 2, 2);
+    assert!(
+        is_stroke(near_edge),
+        "the blended stroke should still show past the opaque one's reach, but the pixel near the top edge is {near_edge:?}"
+    );
+}
+
 gpu_tests! {
     a_stroke_keeps_its_pixel_width_at_any_distance,
     a_wider_stroke_covers_more_pixels,
@@ -402,4 +512,6 @@ gpu_tests! {
     a_tapering_stroke_is_narrower_at_its_narrow_end,
     a_stroke_the_near_plane_cuts_keeps_its_width,
     a_stroke_behind_a_body_is_hidden_by_it,
+    an_opaque_stroke_cuts_sharp_at_half_coverage,
+    a_blended_stroke_passing_behind_an_opaque_one_is_hidden_by_it,
 }

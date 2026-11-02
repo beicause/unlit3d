@@ -3,9 +3,10 @@
 //!
 //! A line is not a mesh: the width a caller asks for is in pixels and a mesh
 //! vertex is in world space, so the two ends of a segment have to be projected
-//! before the quad covering them can be built. A [LineSource](crate::line::LineSource) therefore keeps
-//! its segments in a per-frame instance stream and lets the vertex stage derive
-//! each quad from the vertex index; nothing is expanded on the CPU and no vertex
+//! before the quad covering them can be built. A
+//! [LineSource](crate::line::LineSource) therefore collects the [Line]s of its
+//! scope into a per-frame instance stream and lets the vertex stage derive each
+//! quad from the vertex index; nothing is expanded on the CPU and no vertex
 //! buffer describes a segment corner.
 //!
 //! The fragment measures the distance from its own pixel to the segment and
@@ -15,21 +16,29 @@
 //!
 //! # Framing
 //!
-//! The source frames its segments through the first active [Camera](crate::components::Camera) its scope
-//! sees, the rule [MeshSource](crate::mesh_source::MeshSource) follows too. A
-//! source sees its own subtree plus the world shared subtree, so a world that
-//! draws meshes and lines together puts the camera in
+//! The source frames the segments it finds through the first active
+//! [Camera](crate::components::Camera) its scope sees, the rule
+//! [MeshSource](crate::mesh_source::MeshSource) follows for meshes. A source
+//! sees its own subtree plus the world shared subtree, so a world that draws
+//! meshes and lines together puts the camera in
 //! [World::shared](unlit_ecs::World::shared) rather than beside one of them.
 //!
 //! # Depth
 //!
-//! Segments test against the depth the pass already holds and write none of
-//! their own, so a stroke is hidden by a mesh in front of it and hides nothing
-//! behind it. Writing no depth is also why the source records after the meshes:
-//! a mesh recorded after a stroke would paint over it wherever the two overlap,
-//! since the stroke left no depth to stop it. See
-//! [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE).
+//! A stroke either blends over the frame or covers it, and
+//! [Line::alpha_blend] is the caller's word for which. A blended stroke tests
+//! against the depth the pass already holds and writes none of its own, so a
+//! mesh in front of it hides it and it hides nothing behind it. An opaque one
+//! writes its depth, so a stroke drawn earlier in the same frame can hide
+//! whatever a later one would put behind it. Both test against what the meshes
+//! wrote, which is why the source records after the mesh source either way: a
+//! mesh recorded after a stroke would paint over it wherever the two overlap.
+//! See [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE).
+//!
+//! Blended strokes are recorded farthest first, so a frame's translucent
+//! strokes read in the order their colours layer in.
 
+use glam::Vec3;
 use unlit_ecs::Scope;
 use unlit_wgpu::globals::Camera;
 use unlit_wgpu::instance_stream::{InstanceBuffer, InstanceStreamDesc};
@@ -39,12 +48,12 @@ use unlit_wgpu::pipeline::{
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
-    FragmentStateDesc, PipelineDescriptor, RenderPipelineDesc, SurfaceKey, SurfaceTarget,
-    VertexAttributes, VertexBufferLayoutDesc, VertexStateDesc,
+    FragmentStateDesc, PipelineDescriptor, PipelineVariant, RenderPipelineDesc, SurfaceKey,
+    SurfaceTarget, Variants, VertexAttributes, VertexBufferLayoutDesc, VertexStateDesc,
 };
 use zerocopy::IntoBytes;
 
-use crate::components::frame_camera;
+use crate::components::{InstanceVisibility, Transform, frame_camera};
 use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
 use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
@@ -78,6 +87,7 @@ const QUAD_VERTICES: u32 = 6;
 #[derive(
     Clone, Copy, Debug, PartialEq, zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes,
 )]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct LineSegment {
     /// Where the segment starts, in world space.
     pub a: [f32; 3],
@@ -120,7 +130,7 @@ impl LineSegment {
         }
     }
 
-    /// The same segment with both ends in `color`.
+    /// The same segment with both ends in 'color'.
     ///
     /// The common case by far: a stroke that does not fade sets one colour for
     /// the whole segment instead of assigning the two ends separately.
@@ -131,7 +141,7 @@ impl LineSegment {
         self
     }
 
-    /// The same segment with both ends `half_width` pixels wide.
+    /// The same segment with both ends 'half_width' pixels wide.
     #[must_use]
     pub const fn with_half_width(mut self, half_width: f32) -> Self {
         self.half_width = [half_width; 2];
@@ -147,64 +157,193 @@ const _: () = assert!(
     "a segment record has to be a whole number of copy-alignment units long"
 );
 
-/// A frame source drawing [LineSegment]s.
+/// A stroke an entity wears: one [LineSegment] and how it lands on the frame.
 ///
-/// The segments belong to the caller: they are re-uploaded whole on every frame
-/// the source is asked to draw, so a caller fills the vector, draws, and empties
-/// it again for the next frame. Colour, width and end shape are per segment, so
-/// a frame of strokes that differ in all three is still one draw.
-pub struct LineSource {
-    /// The segments to draw, in world space.
-    pub segments: Vec<LineSegment>,
-    /// The per-target GPU state.
+/// A segment is the geometry; this component adds the one decision the
+/// geometry cannot carry - whether the stroke blends over what the frame
+/// already holds or covers it as an opaque colour - because [LineSegment] is
+/// the GPU's byte record and a GPU record has no room for a CPU's booleans.
+///
+/// An entity without a [Transform](crate::components::Transform) draws its
+/// segment where the segment's own points put it; one with a transform has both
+/// ends placed by it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct Line {
+    /// The segment to draw.
+    pub segment: LineSegment,
+    /// Whether the stroke blends over the frame where it covers it only
+    /// partially, rather than covering it.
     ///
-    /// A source is recorded once per pass reaching it, and the passes of a frame
-    /// need not share a specialization key — a multisampled offscreen pass and a
-    /// single-sampled swap chain differ in sample count — so the pipelines are
-    /// kept per key instead of being rebuilt as the passes alternate.
-    gpus: Vec<(SurfaceKey, Gpu)>,
+    /// A blended stroke tests depth and writes none, so a mesh in front of it
+    /// hides it and it hides nothing behind it. An opaque one writes its depth,
+    /// which is what lets two strokes in one frame hide each other. A stroke's
+    /// colour alpha is its coverage either way; the flag decides what the
+    /// fragment's output does with it, not what it means.
+    pub alpha_blend: bool,
+}
+
+impl Line {
+    /// The segment as an opaque stroke.
+    #[must_use]
+    pub const fn opaque(segment: LineSegment) -> Self {
+        Self {
+            segment,
+            alpha_blend: false,
+        }
+    }
+
+    /// The segment as a blended stroke.
+    #[must_use]
+    pub const fn blended(segment: LineSegment) -> Self {
+        Self {
+            segment,
+            alpha_blend: true,
+        }
+    }
+}
+
+impl Default for Line {
+    /// A white one-pixel stroke, blending, because a stroke that draws over
+    /// whatever is already there is the common one.
+    fn default() -> Self {
+        Self::blended(LineSegment::new([0.0; 3], [0.0; 3]))
+    }
+}
+
+impl From<LineSegment> for Line {
+    fn from(segment: LineSegment) -> Self {
+        Self::blended(segment)
+    }
+}
+
+/// The pipeline variant a line draw resolves to.
+///
+/// The target decides the surface, and the stroke decides the rest: a blended
+/// stroke builds its colour up over the frame, an opaque one covers it and
+/// writes its depth.
+///
+/// The antialiasing of an opaque stroke follows from the target's sample count.
+/// A stroke's own edge lies a pixel inside the quad that carries it, where no
+/// multisampler reaches, so the multisampler itself cannot draw the edge; a
+/// single-sampled opaque stroke therefore cuts at half its coverage instead,
+/// and a multisampled one carries the edge's coverage in its alpha and lets the
+/// blend place it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct LineVariant {
+    /// The target the stroke is drawn into.
+    surface: SurfaceKey,
+    /// Whether the stroke blends over the frame.
+    alpha_blend: bool,
+}
+
+impl LineVariant {
+    /// The conditional-compilation flags the variant's shader module composes
+    /// with.
+    ///
+    /// The cut is an opaque stroke's decision, and only where no blending will
+    /// place the edge anyway: a multisampled target's opaque stroke rides its
+    /// blend, as does every blended stroke.
+    fn features(&self) -> [(&'static str, bool); 1] {
+        [(
+            "HARD_EDGE",
+            !self.alpha_blend && self.surface.sample_count == 1,
+        )]
+    }
+
+    /// The blend the variant's colour target composes with, 'None' writing the
+    /// stroke's colour whole.
+    fn blend(&self) -> Option<wgpu::BlendState> {
+        if self.alpha_blend || self.surface.sample_count > 1 {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        } else {
+            None
+        }
+    }
+}
+
+impl PipelineVariant<wgpu::RenderPipeline> for LineVariant {
+    type Descriptor = Self;
+
+    fn descriptor(&self, _device: &wgpu::Device) -> Self {
+        *self
+    }
+}
+
+impl PipelineDescriptor<wgpu::RenderPipeline> for LineVariant {
+    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+        let layout = global_bind_group_layout(
+            device,
+            GlobalBindings::default(),
+            !supports_storage_buffers(device),
+        );
+        pipeline(device, &layout, *self)
+    }
 }
 
 /// The GPU state one target specialization needs.
 struct Gpu {
-    /// The pipeline, specialized on the target.
-    pipeline: wgpu::RenderPipeline,
+    /// The pipelines, specialized on the strokes each frame collects.
+    variants: Variants<wgpu::RenderPipeline, LineVariant>,
     /// How the global group is built. The camera, the globals and the view are
     /// the frame's records, so one pipeline drawn into two viewports draws with
     /// a group per viewport.
     recipe: GlobalRecipe,
-    /// The groups built from `recipe` so far, one per [crate::global_uniforms::UniformsKey].
+    /// The groups built from the recipe so far, one per
+    /// [crate::global_uniforms::UniformsKey].
     groups: UniformGroups,
     /// The instance stream the segments are uploaded into, allocated on the
     /// first non-empty frame.
     segments: InstanceBuffer,
 }
 
+/// A frame source drawing the [Line]s of its scope.
+///
+/// The strokes belong to the entities: the source collects the [Line]s its
+/// scope sees every frame it is asked to draw, so a caller adds, moves or
+/// removes strokes by spawning entities and moving their components, the same
+/// way meshes work.
+pub struct LineSource {
+    /// The per-target GPU state.
+    ///
+    /// A source is recorded once per pass reaching it, and the passes of a frame
+    /// need not share a specialization key - a multisampled offscreen pass and a
+    /// single-sampled swap chain differ in sample count - so the pipelines are
+    /// kept per key instead of being rebuilt as the passes alternate.
+    gpus: Vec<(SurfaceKey, Gpu)>,
+    /// The records collected this frame, packed for the instance stream.
+    ///
+    /// A scratch rather than a field the caller fills: a source draws many
+    /// frames, and reusing the allocation is the point of a source that owns
+    /// its stream.
+    records: Vec<LineSegment>,
+}
+
 impl LineSource {
-    /// A source with no segments.
+    /// A source with no strokes.
     pub fn new() -> Self {
         Self {
-            segments: Vec::new(),
             gpus: Vec::new(),
+            records: Vec::new(),
         }
     }
 
-    /// The entry for `surface`, building it on first use.
+    /// The entry for 'surface', building it on first use.
     fn target(&mut self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) -> usize {
         if let Some(index) = self.gpus.iter().position(|(key, _)| *key == surface) {
             return index;
         }
-        let mut device_row = scope
+        let device = scope
             .query_one::<&wgpu::Device>(ctx.device)
-            .expect("the context device resource exists");
-        let device = device_row.get();
-        let layout = global_bind_group_layout(
-            device,
-            GlobalBindings::default(),
-            !supports_storage_buffers(device),
-        );
-        let pipeline = pipeline(device, &layout, surface);
+            .expect("the context device resource exists")
+            .get()
+            .clone();
         let recipe = GlobalRecipe::new(move |device: &wgpu::Device, graph, uniforms| {
+            let layout = global_bind_group_layout(
+                device,
+                GlobalBindings::default(),
+                !supports_storage_buffers(device),
+            );
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("unlit3d::line::globals"),
                 layout: &layout,
@@ -214,7 +353,7 @@ impl LineSource {
         self.gpus.push((
             surface,
             Gpu {
-                pipeline,
+                variants: Variants::new(&device),
                 recipe,
                 groups: UniformGroups::new(),
                 segments: InstanceBuffer::new(InstanceStreamDesc {
@@ -250,10 +389,49 @@ impl FrameSource for LineSource {
 
         // A scope with no active camera draws nothing, exactly as a mesh source
         // with none does.
-        let Some(camera) = frame_camera(scope) else {
+        let Some((camera_entity, camera)) = frame_camera(scope) else {
             return;
         };
-        if self.segments.is_empty() {
+
+        // Collect the strokes the scope sees. The opaque ones keep their entity
+        // order - depth writes decide their overlap, so the draw order only
+        // picks which one owns a pixel they all cover, and any of them would
+        // own it, being the colour the caller asked for. The blended ones are
+        // re-ordered farthest first, which is the order their colours layer in.
+        self.records.clear();
+        let mut blended: Vec<(f32, LineSegment)> = Vec::new();
+        for (line, transform, visibility) in scope
+            .query::<(&Line, Option<&Transform>, Option<&InstanceVisibility>)>()
+            .iter()
+        {
+            if visibility.is_some_and(|visibility| !visibility.visible) {
+                continue;
+            }
+            let mut segment = line.segment;
+            if let Some(transform) = transform {
+                let world_from_local = transform.compute_matrix();
+                segment.a = world_from_local
+                    .transform_point3(Vec3::from(segment.a))
+                    .to_array();
+                segment.b = world_from_local
+                    .transform_point3(Vec3::from(segment.b))
+                    .to_array();
+            }
+            if line.alpha_blend {
+                // The mid-point is where the eye reads a stroke's colour from,
+                // and the depth a positive view axis gives is what the sort
+                // keys on.
+                let middle = Vec3::from(segment.a).lerp(Vec3::from(segment.b), 0.5);
+                blended.push((camera.view_depth(middle), segment));
+            } else {
+                self.records.push(segment);
+            }
+        }
+        blended.sort_by(|(a_depth, _), (b_depth, _)| b_depth.total_cmp(a_depth));
+        let opaque_count = self.records.len();
+        self.records
+            .extend(blended.into_iter().map(|(_, segment)| segment));
+        if self.records.is_empty() {
             return;
         }
 
@@ -263,7 +441,6 @@ impl FrameSource for LineSource {
             .map_or((info.width as f32, info.height as f32), |viewport| {
                 (viewport.width, viewport.height)
             });
-        let (camera_entity, camera) = camera;
 
         // The camera and the view are the frame's records: two passes through
         // one camera, or into one viewport, read the same two buffers, and the
@@ -306,7 +483,7 @@ impl FrameSource for LineSource {
             // The segments ride the frame's own encoder, so a stroke costs no
             // submission of its own.
             gpu.segments
-                .upload(&device, encoder, self.segments.as_bytes());
+                .upload(&device, encoder, self.records.as_bytes());
             group
         };
 
@@ -315,7 +492,23 @@ impl FrameSource for LineSource {
         drop(maintain);
         let mut graph_holder = ctx.graph(scope);
         let graph = graph_holder.get();
-        let gpu = &self.gpus[index].1;
+        let gpu = &mut self.gpus[index].1;
+
+        // Each bucket specializes only when it drew something this frame: a
+        // frame of opaque strokes alone never builds the blended pipeline. A
+        // second frame reuses what the first built.
+        let opaque = (opaque_count > 0).then(|| {
+            gpu.variants.specialize(LineVariant {
+                surface: info.surface,
+                alpha_blend: false,
+            })
+        });
+        let blended = (self.records.len() > opaque_count).then(|| {
+            gpu.variants.specialize(LineVariant {
+                surface: info.surface,
+                alpha_blend: true,
+            })
+        });
         let bind_group = graph
             .get(&bind_group)
             .expect("the bind group is registered in the graph");
@@ -328,14 +521,27 @@ impl FrameSource for LineSource {
         // placed in pixels of that same rectangle, so the draw is confined to it
         // the way a mesh draw is.
         scene.viewport = info.viewport;
-        scene.draws.push(
-            DrawEntry::new(
-                &gpu.pipeline,
-                DrawRange::vertices(0..QUAD_VERTICES).with_instances(0..self.segments.len() as u32),
-            )
-            .with_bind_group(GLOBAL_GROUP, bind_group)
-            .with_vertex_buffer(SEGMENT_SLOT, target),
-        );
+        if let Some(ordinal) = opaque {
+            scene.draws.push(
+                DrawEntry::new(
+                    &gpu.variants.get(ordinal).pipeline,
+                    DrawRange::vertices(0..QUAD_VERTICES).with_instances(0..opaque_count as u32),
+                )
+                .with_bind_group(GLOBAL_GROUP, bind_group)
+                .with_vertex_buffer(SEGMENT_SLOT, target),
+            );
+        }
+        if let Some(ordinal) = blended {
+            scene.draws.push(
+                DrawEntry::new(
+                    &gpu.variants.get(ordinal).pipeline,
+                    DrawRange::vertices(0..QUAD_VERTICES)
+                        .with_instances(opaque_count as u32..self.records.len() as u32),
+                )
+                .with_bind_group(GLOBAL_GROUP, bind_group)
+                .with_vertex_buffer(SEGMENT_SLOT, target),
+            );
+        }
     }
 
     fn order(&self) -> FrameSourceOrder {
@@ -363,13 +569,18 @@ fn segment_layout() -> VertexBufferLayoutDesc {
     }
 }
 
-/// The pipeline a line source draws with, specialized on `surface`.
+/// The pipeline a line variant draws with.
 fn pipeline(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    surface: SurfaceKey,
+    variant: LineVariant,
 ) -> wgpu::RenderPipeline {
-    let module = crate::builtin::shader_module(device, SHADER_MODULE, "unlit3d::line::shader");
+    let module = crate::builtin::shader_module(
+        device,
+        SHADER_MODULE,
+        "unlit3d::line::shader",
+        &variant.features(),
+    );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::line::pipeline_layout"),
         bind_group_layouts: &[Some(layout)],
@@ -393,33 +604,37 @@ fn pipeline(
             cull_mode: None,
             ..Default::default()
         },
-        // A stroke is coverage over whatever is already there: it tests against
-        // the depth the pass holds and leaves it alone, so two strokes crossing
-        // blend rather than hide each other. The format and the presence of
-        // the state are settled by `set_surface`, which drops it for a target
-        // that has no depth at all.
+        // A stroke tests against the depth the pass holds. A blended one leaves
+        // it alone, so two strokes crossing blend rather than hide each other;
+        // an opaque one writes its own, so strokes cover each other the way
+        // meshes do. The format and the presence of the state are settled by
+        // set_surface, which drops it for a target that has no depth at all.
         depth_stencil: Some(wgpu::DepthStencilState {
             format: default_depth_stencil_format(device),
-            depth_write_enabled: Some(false),
+            depth_write_enabled: Some(!variant.alpha_blend),
             depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: Default::default(),
+        multisample: wgpu::MultisampleState::default(),
         fragment: Some(FragmentStateDesc {
             module,
             entry_point: Some(FRAGMENT_ENTRY.to_owned()),
             compilation_options: Default::default(),
             targets: vec![Some(wgpu::ColorTargetState {
-                format: surface.color_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                format: variant.surface.color_format,
+                // None keeps the stroke's own colour whole, which is what
+                // makes it opaque on a single-sampled target, where the cut at
+                // half coverage draws its edge. Everywhere else a stroke's
+                // coverage rides its alpha into the blend.
+                blend: variant.blend(),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
         multiview_mask: None,
         cache: None,
     };
-    descriptor.set_surface(surface);
+    descriptor.set_surface(variant.surface);
     descriptor.create(device)
 }
 
@@ -465,12 +680,40 @@ mod tests {
         );
     }
 
-    /// A new source draws nothing and holds no target: the state a frame fills
-    /// is the caller's, and an empty list is what a frame with no strokes has.
+    /// The flags and the blend the variant settles on: the opaque cut is a
+    /// single-sampled target's decision, and a blended stroke never takes it.
     #[test]
-    fn a_new_source_draws_nothing() {
-        let source = LineSource::new();
-        assert!(source.gpus.is_empty());
-        assert!(source.segments.is_empty());
+    fn the_opaque_cut_is_a_single_sampled_choice() {
+        let surface = |sample_count: u32| SurfaceKey {
+            color_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            depth_stencil_format: None,
+            sample_count,
+        };
+        let opaque = LineVariant {
+            surface: surface(1),
+            alpha_blend: false,
+        };
+        assert_eq!(opaque.features(), [("HARD_EDGE", true)]);
+        assert_eq!(opaque.blend(), None);
+
+        // A multisampled target's opaque stroke cannot cut: its edge lies
+        // inside the quad, where no multisampler reaches, so it rides the
+        // blend like a blended stroke does.
+        let opaque_multisampled = LineVariant {
+            surface: surface(4),
+            alpha_blend: false,
+        };
+        assert_eq!(opaque_multisampled.features(), [("HARD_EDGE", false)]);
+        assert_eq!(
+            opaque_multisampled.blend(),
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        );
+
+        let blended = LineVariant {
+            surface: surface(1),
+            alpha_blend: true,
+        };
+        assert_eq!(blended.features(), [("HARD_EDGE", false)]);
+        assert_eq!(blended.blend(), Some(wgpu::BlendState::ALPHA_BLENDING));
     }
 }

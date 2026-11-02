@@ -449,7 +449,7 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
 绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读相机与
 `View`，后者 lit 着色器声明却从不读取，因为笔画的宽度是像素数而非世界距离，于是
-`unlit3d` 的 `LineSource` 拿它对着这个包组合，并只绑定一个组。
+`unlit3d` 的 `LineSource` 拿它对着这个包组合，并只绑定一个组，再按笔画种类特化它：单采样目标上的不透明笔画在半覆盖处切割，混合笔画走自己的 alpha,差别只是一个和 lit 那些同类的 WESL 条件编译开关。
 
 若要编写自己的着色器，有两条路。最近的一条是
 `pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段顶层、一段顶点、

@@ -329,14 +329,17 @@ fn build(
         ),
     );
 
-    // The strokes are their own source: a line source holds a slice of segments
-    // the frame uploads, which is a different lifetime from a mesh's.
-    let mut lines = LineSource::new();
-    lines.segments = orbit();
-    world
+    // The strokes are their own source, and each one belongs to its entity:
+    // the source collects the Line components its scope sees every frame, so
+    // the ring is edited the way the bodies are. The entities go under the
+    // source's own, because a source draws its subtree and the shared one.
+    let lines = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(lines)]);
+        .spawn(bundle![Source::new(LineSource::new())]);
+    for segment in orbit() {
+        super::spawn_in(world, lines, bundle![Line::from(segment)]);
+    }
 
     SceneControl {
         // A single frame: nothing moves, so only the camera's aspect is

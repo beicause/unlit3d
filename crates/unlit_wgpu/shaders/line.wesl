@@ -13,6 +13,11 @@
 // post-processing pass a rasterized edge would need. The two ends carry their
 // own half width and their own end shape, which is how a stroke tapers and how
 // a hand-drawn line gets round ends.
+//
+// With the `HARD_EDGE` feature set the coverage is applied as a threshold
+// instead: an antialiased edge on a target with no multisampling is a veil of
+// partial pixels, and an opaque stroke has no colour to veil the background
+// with, so it cuts cleanly at the pixel it covers and writes its depth there.
 
 import package::camera as camera_uniform;
 import package::view;
@@ -241,6 +246,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // between covered and missed as it crosses the pixel grid.
     if (half_width < 0.5) {
         coverage = coverage * clamp(half_width * 2.0, 0.0, 1.0);
+    }
+    @if(HARD_EDGE) {
+        // An opaque stroke on a target with no multisampling: a partial pixel
+        // would blend the stroke's own colour over the background as if it
+        // were translucent, so the stroke cuts at the pixel it covers instead.
+        if (coverage < 0.5) {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, in.color.a);
     }
     return vec4<f32>(in.color.rgb, in.color.a * coverage);
 }

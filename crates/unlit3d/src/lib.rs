@@ -84,7 +84,7 @@ pub mod prelude {
             PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit, dispatch_input,
             distribute_input, refresh_input, subscribe_input,
         },
-        line::{LineSegment, LineSource},
+        line::{Line, LineSegment, LineSource},
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,
         pass::{FramePass, FramePassOrder, Pass, PassInfo},

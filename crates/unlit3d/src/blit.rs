@@ -300,9 +300,9 @@ fn pipeline(
     layout: &wgpu::BindGroupLayout,
     surface: SurfaceKey,
 ) -> wgpu::RenderPipeline {
-    let vertex = crate::builtin::shader_module(device, VERTEX_MODULE, "unlit3d::blit::vertex");
+    let vertex = crate::builtin::shader_module(device, VERTEX_MODULE, "unlit3d::blit::vertex", &[]);
     let fragment =
-        crate::builtin::shader_module(device, FRAGMENT_MODULE, "unlit3d::blit::fragment");
+        crate::builtin::shader_module(device, FRAGMENT_MODULE, "unlit3d::blit::fragment", &[]);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::blit::pipeline_layout"),
         bind_group_layouts: &[Some(layout)],
