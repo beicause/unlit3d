@@ -45,6 +45,12 @@ import package::view;
 /// quad is never rasterized and therefore never covered.
 const AA_RADIUS: f32 = 1.0;
 
+/// The pixel length below which a segment's ends project to the same pixel.
+///
+/// Such a segment has no direction of its own and draws as a dot. Both
+/// stages read the same threshold so they classify it the same way.
+const POINT_SPAN: f32 = 1.0e-6;
+
 /// The six corners of the quad, as (station, side).
 ///
 /// `station` runs from the `a` end (zero) to the `b` end (one), `side` runs
@@ -177,7 +183,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutpu
     let direction = select(
         vec2<f32>(1.0, 0.0),
         delta / max(span, 1.0e-6),
-        span > 1.0e-6,
+        span > POINT_SPAN,
     );
     let normal = vec2<f32>(-direction.y, direction.x);
 
@@ -234,26 +240,47 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let perpendicular = abs(in.offset.x * direction.y - in.offset.y * direction.x);
     let half_width = in.half_width;
 
-    // Past an end the shape of the end decides how the distance is measured: a
-    // round one measures to the end point, so the cap is a disc, and a flat one
-    // measures to the corner the segment cuts at, so the line simply stops.
-    var distance = perpendicular;
-    if (along < 0.0) {
-        let round_a = (in.caps & 1u) != 0u;
-        distance = select(length(vec2<f32>(-along, perpendicular)), length(in.offset), round_a);
-    } else if (along > in.span) {
-        let round_b = (in.caps & 2u) != 0u;
-        let overshoot = along - in.span;
-        distance = select(
-            length(vec2<f32>(overshoot, perpendicular)),
-            length(in.offset - direction * in.span),
-            round_b,
-        );
+    // The stroke is a signed distance field: `d` is zero at its edge,
+    // negative inside it, and the coverage ramps over the one pixel either
+    // side of the edge. The body is a band half a width either side of the
+    // axis.
+    var d = perpendicular - half_width;
+    if (in.span > POINT_SPAN) {
+        // Past an end the shape of the end decides what the edge is: a
+        // round one keeps the disc the body's band rolls into, and a flat
+        // one keeps the band but stops it at the station, which is the box
+        // the band and the end face bound. A pixel past both the face and
+        // the band measures to the corner they cut, so the end face and the
+        // side edge join smoothly.
+        if (along < 0.0) {
+            let round_a = (in.caps & 1u) != 0u;
+            let q = vec2<f32>(-along, perpendicular - half_width);
+            d = select(
+                length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0),
+                length(in.offset) - half_width,
+                round_a,
+            );
+        } else if (along > in.span) {
+            let round_b = (in.caps & 2u) != 0u;
+            let q = vec2<f32>(along - in.span, perpendicular - half_width);
+            d = select(
+                length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0),
+                length(in.offset - direction * in.span) - half_width,
+                round_b,
+            );
+        }
+    } else {
+        // The ends project to the same pixel, so there is no along
+        // direction to bound them with: the stroke draws as a dot of the
+        // width the fragment stands on. A stroke running along the view
+        // axis is left in this shape by the near-plane cut that keeps it
+        // out of the eye.
+        d = length(in.offset) - half_width;
     }
 
     // One pixel of coverage either side of the edge: a line is analytic rather
     // than rasterized, so its own alpha is what antialiases it.
-    var coverage = clamp(half_width + 0.5 - distance, 0.0, 1.0);
+    var coverage = clamp(0.5 - d, 0.0, 1.0);
     // A line thinner than a pixel keeps its energy rather than flickering
     // between covered and missed as it crosses the pixel grid.
     if (half_width < 0.5) {

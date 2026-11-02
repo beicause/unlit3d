@@ -266,9 +266,10 @@ pub struct LineOptions {
     /// layouts, the instance record and the entry-point names stay the
     /// variant's. See [`LineShader`].
     ///
-    /// This field does not take part in equality or hashing beyond the
-    /// snippets' own: two options whose shaders differ only in name build
-    /// two pipelines, which is the observable difference.
+    /// The shader takes part in equality and hashing whole, label included:
+    /// two options whose shaders differ at all — a name among the
+    /// differences — build two pipelines, which is the observable
+    /// difference.
     pub shader: Option<LineShader>,
     /// Whether the fragment stage cuts a pixel whose coverage falls below
     /// one half instead of blending its partial colour.
@@ -277,10 +278,10 @@ pub struct LineOptions {
     /// the frame, as an opaque one does, has no colour to veil the background
     /// with, so it cuts cleanly at the pixel it covers instead. The cut is a
     /// whole-pixel decision, so it works at any sample count — but on a
-    /// multisampled target it yields to the target's own antialiasing:
-    /// alpha-to-coverage turns the same coverage into the sample mask, which
-    /// smooths the edge the cut would jag, so the cut only applies to a
-    /// single-sampled one. See [LineVariant].
+    /// multisampled target the pipeline drops the cut and leaves the edge to
+    /// the samples: state [a2c_hint](Self::a2c_hint) to have the alpha turned
+    /// into the sample mask, which smooths the edge the cut would jag. See
+    /// [LineVariant].
     pub hard_edge: bool,
     /// How the pipeline tests and writes the depth attachment, for a target
     /// that has one.
@@ -306,6 +307,18 @@ pub struct LineOptions {
     pub blend: Option<wgpu::BlendState>,
     /// Which color channels the pipeline writes to the target.
     pub write_mask: wgpu::ColorWrites,
+    /// Whether the fragment's alpha states coverage, on a multisampled
+    /// target.
+    ///
+    /// Alpha-to-coverage turns the fragment's alpha into the sample mask, so
+    /// an antialiased edge lands as partially covered samples instead of a
+    /// blend. That is only honest when the alpha *is* coverage: a wash whose
+    /// alpha is transparency, blended over the frame, would have its
+    /// contribution squared — masked to a fraction of the samples and then
+    /// blended by the same fraction again — so the hint defaults to off and a
+    /// stroke states it when its alpha means coverage. Nothing happens on a
+    /// single-sampled target, where there are no samples to spread over.
+    pub a2c_hint: bool,
 }
 
 impl Default for LineOptions {
@@ -320,6 +333,7 @@ impl Default for LineOptions {
             },
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
             write_mask: wgpu::ColorWrites::ALL,
+            a2c_hint: false,
         }
     }
 }
@@ -341,6 +355,7 @@ impl LineOptions {
             },
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
+            a2c_hint: true,
         }
     }
 
@@ -355,6 +370,7 @@ impl LineOptions {
             },
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
             write_mask: wgpu::ColorWrites::ALL,
+            a2c_hint: false,
         }
     }
 }
@@ -366,10 +382,11 @@ impl LineOptions {
 /// names among them — are two variants, because a pipeline built for one
 /// draws differently than one built for the other.
 ///
-/// One difference the target does reach is the hard-edge cut: on a
-/// multisampled target the variant turns the fragment's coverage into the
-/// alpha-to-coverage sample mask, which antialiases the edge the cut would
-/// jag, so an options' hard-edge word holds only on a single-sampled one.
+/// One difference the target does reach is the antialiasing: on a
+/// multisampled target the variant drops the hard-edge cut, and it turns the
+/// fragment's alpha into the alpha-to-coverage sample mask when the options
+/// hint that the alpha states coverage, so an options' hard-edge word holds
+/// only on a single-sampled one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LineVariant {
     /// The target the stroke is drawn into.
@@ -381,10 +398,10 @@ pub struct LineVariant {
 impl LineVariant {
     /// The conditional-compilation flags the variant's shader module composes
     /// with. The hard-edge cut is the one flag a line variant carries, and it
-    /// yields where the target antialiases on its own: on a multisampled
-    /// target the alpha-to-coverage mask spreads the same coverage the cut
-    /// would threshold, so the stroke keeps its smooth edge and the options'
-    /// hard-edge word is left to a single-sampled one.
+    /// holds only where no samples antialias in its place: a multisampled
+    /// target leaves the edge to its samples — smoothed by
+    /// alpha-to-coverage when the options hint at it — so the cut is left to
+    /// a single-sampled one.
     fn features(&self) -> [(&'static str, bool); 1] {
         [(
             "HARD_EDGE",
@@ -500,12 +517,12 @@ fn pipeline(device: &wgpu::Device, variant: &LineVariant) -> wgpu::RenderPipelin
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-        // Alpha-to-coverage needs no feature gate of its own; it only means
-        // anything on a multisampled target, where it turns the fragment's
-        // coverage colour into the sample mask.
+        // Alpha-to-coverage needs no feature gate of its own; it means
+        // anything only on a multisampled target, and only where the options
+        // state that the alpha is coverage rather than transparency.
         multisample: wgpu::MultisampleState {
             count: variant.surface.sample_count,
-            alpha_to_coverage_enabled: variant.surface.sample_count > 1,
+            alpha_to_coverage_enabled: variant.options.a2c_hint && variant.surface.sample_count > 1,
             ..Default::default()
         },
         fragment: Some(crate::specialize::FragmentStateDesc {
