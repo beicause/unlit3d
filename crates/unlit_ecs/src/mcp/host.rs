@@ -13,6 +13,7 @@
 //! [ToolSource](crate::mcp::ToolSource) and keeps its tool bodies next to the
 //! types they read; this module carries only the contract every tool shares.
 
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -214,15 +215,44 @@ impl McpCommand {
     /// expected to answer it with [`answer_worlds`](Self::answer_worlds)
     /// after checking [`wants_worlds`](Self::wants_worlds).
     ///
+    /// A job that panics is caught and answered as an error: a world usually
+    /// shares its thread with others — the host's own, or sibling sub-worlds —
+    /// and an unwind out of a job would kill them all with it. The world the
+    /// job died in may still be inconsistent; the error says so.
+    ///
     /// The send is best-effort: a tool call that has already been cancelled has
     /// no receiver left, and the result is simply dropped.
     pub fn dispatch(self, world: &mut World) {
         let result = match self.request {
-            Request::Job(job) => job(world),
+            Request::Job(job) => catch_job(world, job),
             Request::Worlds => Err("the host did not answer list_worlds".to_owned()),
         };
         let _ = self.reply.send_blocking(result);
     }
+}
+
+/// Run one tool job, catching a panic into an error reply.
+///
+/// The world outlives the unwind only as a memory: what a job that panicked
+/// mid-way left behind is not promised to be consistent, so the error says the
+/// world may need a restart rather than pretending the tool merely failed.
+fn catch_job(world: &mut World, job: Job) -> Result<Output, String> {
+    match std::panic::catch_unwind(AssertUnwindSafe(move || job(world))) {
+        Ok(result) => result,
+        Err(payload) => Err(format!(
+            "the tool panicked and the world it ran in may be inconsistent: {}",
+            panic_message(payload)
+        )),
+    }
+}
+
+/// The message a panic payload carries, with a fallback for foreign payloads.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "an opaque panic payload".to_owned())
 }
 
 /// Serialise a value through the reflection it derives.
@@ -371,6 +401,34 @@ mod tests {
             panic!("a job answers with JSON");
         };
         assert_eq!(value, serde_json::json!(1));
+    }
+
+    #[test]
+    fn a_panicking_job_answers_an_error_and_the_thread_survives() {
+        let (command, receiver) = McpCommand::new(|_| {
+            panic!("a tool blew up");
+        });
+        let mut world = World::new();
+        command.dispatch(&mut world);
+        let answer = receiver.recv_blocking().unwrap();
+        let Err(message) = answer else {
+            panic!("a panicking job answers with an error");
+        };
+        assert_eq!(
+            message,
+            "the tool panicked and the world it ran in may be inconsistent: a tool blew up"
+        );
+
+        // The same thread answers the next command: the unwind stopped at the
+        // command's edge instead of killing the world's owner.
+        let (command, receiver) =
+            McpCommand::new(|world| Ok(Output::Json(serde_json::json!(world.root_scope().len()))));
+        command.dispatch(&mut world);
+        let answer = receiver.recv_blocking().unwrap().unwrap();
+        let Output::Json(value) = answer else {
+            panic!("a job answers with JSON");
+        };
+        assert_eq!(value, serde_json::json!(0));
     }
 
     #[test]

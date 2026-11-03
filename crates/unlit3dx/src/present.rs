@@ -110,15 +110,22 @@ impl Presenter {
 
     /// Draw the frame's result into the swap chain and present it.
     ///
-    /// The rendering pass binds the swap chain's image for this frame, so
-    /// the pass that draws into the surface takes the frame's view just
-    /// before the renderer walks the passes in order.
+    /// The presenting pass parks first and takes the frame's view only
+    /// after the swap chain image has been acquired. Between the two, and
+    /// after the image has been presented and destroyed, the pass states
+    /// no attachment — so a frame rendered by anything other than this
+    /// loop, an MCP tool's screenshot of the scene, skips the pass rather
+    /// than recording into a dead swap-chain image.
     fn present(&mut self, host: &World) {
         let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
             return;
         };
         let presenting = self.presenting();
         let world = nested.get();
+        let _ = world
+            .root_scope()
+            .query_one::<&mut FramePass>(presenting)
+            .map(|mut pass| pass.get().park());
         let _ = world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
@@ -147,6 +154,13 @@ impl Presenter {
                 let queue = queue_row.get();
                 swap_frame.present(queue);
             });
+        // Present destroys the frame's image, so the pass parks here rather
+        // than holding a dead view until the next frame's own park: a frame
+        // rendered between two presents must not record into the swap chain.
+        let _ = world
+            .root_scope()
+            .query_one::<&mut FramePass>(presenting)
+            .map(|mut pass| pass.get().park());
     }
 
     /// Match the surface, the attachments and the offscreen target to a
