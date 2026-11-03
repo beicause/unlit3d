@@ -1614,6 +1614,15 @@ fn present_frame(app: Entity) -> OnFrame {
             .query_one::<&mut AttachmentsSlot>(app)
             .expect("the app entity carries its attachments slot");
         let attachments = attachments.get().0.as_ref();
+        // The presenting pass parks first and takes the frame's view only
+        // after the swap chain image has been acquired. Between the two the
+        // pass states no attachment — so a frame rendered by anything other
+        // than this loop, an MCP tool's screenshot of the scene, skips the
+        // pass rather than recording into a dead swap-chain image.
+        let _ = nested_world
+            .root_scope()
+            .query_one::<&mut FramePass>(presenting)
+            .map(|mut pass| pass.get().park());
         nested_world
             .root_scope()
             .query_one::<&mut Renderer>(renderer)
@@ -1630,6 +1639,14 @@ fn present_frame(app: Entity) -> OnFrame {
                                 .set_attachments(attachments, frame.color_view().clone());
                         })
                         .expect("the presenting pass exists");
+                } else {
+                    // The attachments are gone, so the acquired frame has
+                    // nothing drawn with: the pass stays parked and the
+                    // frame is presented empty rather than stale.
+                    let _ = nested_world
+                        .root_scope()
+                        .query_one::<&mut FramePass>(presenting)
+                        .map(|mut pass| pass.get().park());
                 }
                 // The region the content is drawn into belongs to the scene's
                 // own pass, which a resize re-letterboxes: the pass that
@@ -1649,6 +1666,13 @@ fn present_frame(app: Entity) -> OnFrame {
                 frame.present(queue.get());
             })
             .expect("the renderer is a resource entity");
+        // Present destroys the frame's image, so the pass parks here rather
+        // than holding a dead view until the next frame's own park: a frame
+        // rendered between two presents must not record into the swap chain.
+        let _ = nested_world
+            .root_scope()
+            .query_one::<&mut FramePass>(presenting)
+            .map(|mut pass| pass.get().park());
         let _ = world
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)

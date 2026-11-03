@@ -684,13 +684,11 @@ pub fn remove_mesh(
 pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
     let entity = renderer_entity(world, renderer)?;
     let world_ref: &World = &*world;
-    let scope = world_ref.root_scope();
-    let _ = scope
+    world_ref
+        .root_scope()
         .query_one::<&mut Renderer>(entity)
-        .map(|mut renderer| {
-            let renderer = renderer.get();
-            renderer.render(world_ref)
-        });
+        .map(|mut renderer| renderer.get().render(world_ref))
+        .map_err(|error| format!("entity {entity:?} carries no renderer: {error}"))?;
     Ok(Value::Null)
 }
 

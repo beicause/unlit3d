@@ -116,6 +116,10 @@ impl FramePass {
     /// changes every frame, while the pass it states it with stays the same
     /// entity. `color_view` must be in the frame's resource graph, like the
     /// attachments' own views.
+    ///
+    /// A stated attachment spans only the render that consumes it: a pass
+    /// keeps its views between frames, so a loop that loses its target parks
+    /// the pass rather than leaving the last swap-chain view in place.
     pub fn set_attachments(
         &mut self,
         attachments: &FrameAttachments,
