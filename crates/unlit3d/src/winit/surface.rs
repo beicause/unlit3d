@@ -7,7 +7,9 @@
 //! color image registered in the frame's resource graph, and hands it back from
 //! [`WindowSurface::acquire`]. The depth and multisample attachments belong to
 //! the caller — see [`FrameAttachments`](crate::attachments::FrameAttachments)
-//! — so a frame loop is acquire, attach, render, present.
+//! — so a frame loop is park, acquire, attach, render, present, park: a
+//! stated attachment spans only the render that consumes it, and presenting
+//! the frame destroys the swap-chain view the pass stated.
 //!
 //! The caller creates the `wgpu::Surface` itself, because the adapter has to
 //! be requested with it as the compatible surface. That request is async —
@@ -58,8 +60,9 @@
 //! # }
 //! ```
 //!
-//! and the frame loop then only has to attach the swap chain image to the pass
-//! that draws into it, render and present:
+//! and the frame loop then only has to park the pass that draws into the swap
+//! chain around the frame, attaching its image only for the render between
+//! the two parks:
 //!
 //! ```rust
 //! # use unlit3d::attachments::FrameAttachments;
@@ -74,6 +77,14 @@
 //! #     attachments: &FrameAttachments,
 //! # ) {
 //! let root = world.root_scope();
+//! // The presenting pass parks first and takes the frame's view only after
+//! // the swap chain image has been acquired, then parks again once the
+//! // frame is presented: a frame rendered by anything other than this loop
+//! // — a screenshot tool's render, say — skips the pass rather than
+//! // recording into a dead swap-chain image.
+//! let _ = root
+//!     .query_one::<&mut FramePass>(pass)
+//!     .map(|mut pass| pass.get().park());
 //! let Some(frame) = root
 //!     .query_one::<&mut Renderer>(renderer_entity)
 //!     .ok()
@@ -92,6 +103,12 @@
 //!     .map(|mut r| r.get().render(world))
 //!     .unwrap();
 //! frame.present(queue);
+//! // Present destroyed the frame's image, so the pass parks here rather
+//! // than holding a dead view until the next frame's own park: a frame
+//! // rendered between two presents must not record into the swap chain.
+//! let _ = root
+//!     .query_one::<&mut FramePass>(pass)
+//!     .map(|mut pass| pass.get().park());
 //! # }
 //! ```
 
