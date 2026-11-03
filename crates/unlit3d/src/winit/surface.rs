@@ -7,7 +7,7 @@
 //! color image registered in the frame's resource graph, and hands it back from
 //! [`WindowSurface::acquire_for`], which parks the pass that states the frame's
 //! attachments around the acquire. The depth and multisample attachments belong
-//! to the caller — see [`FrameAttachments`](crate::attachments::FrameAttachments)
+//! to the caller — see [`FrameAttachments`]
 //! — and a stated attachment spans only the render that consumes it: the frame
 //! loop below states and gives up the attachments through the two methods, and
 //! presenting the frame destroys the swap-chain view the pass stated.
@@ -142,7 +142,7 @@ fn context_graph<'w>(
 /// [`Self::acquire_for`] hands a frame to a pass — parking the pass around
 /// the acquire and stating the frame's color view with the pass's own depth
 /// and multisample attachments, see
-/// [`FrameAttachments`](crate::attachments::FrameAttachments) — and
+/// [`FrameAttachments`] — and
 /// [`Frame::present_and_park`] presents the frame and parks the pass again.
 /// [`Self::resize`] keeps the surface in step with the window.
 ///

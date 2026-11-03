@@ -122,9 +122,9 @@ impl Presenter {
         };
         let presenting = self.presenting();
         let world = nested.get();
-        let Some(swap_frame) = self
-            .surface
-            .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
+        let Some(swap_frame) =
+            self.surface
+                .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
         else {
             return;
         };
