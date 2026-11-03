@@ -103,6 +103,13 @@ impl UiPanelHost {
         }
     }
 
+    /// The context the panels in this world are built in, for setting its
+    /// style or fonts up before the first frame is laid out.
+    #[must_use]
+    pub fn context(&self) -> &egui::Context {
+        &self.ctx
+    }
+
     /// Lay out this tick's frame and send it to the drawing world, if it could
     /// differ from the one that world holds.
     ///
