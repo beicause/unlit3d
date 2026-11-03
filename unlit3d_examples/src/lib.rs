@@ -1615,64 +1615,35 @@ fn present_frame(app: Entity) -> OnFrame {
             .expect("the app entity carries its attachments slot");
         let attachments = attachments.get().0.as_ref();
         // The presenting pass parks first and takes the frame's view only
-        // after the swap chain image has been acquired. Between the two the
-        // pass states no attachment — so a frame rendered by anything other
-        // than this loop, an MCP tool's screenshot of the scene, skips the
-        // pass rather than recording into a dead swap-chain image.
-        let _ = nested_world
-            .root_scope()
-            .query_one::<&mut FramePass>(presenting)
-            .map(|mut pass| pass.get().park());
-        nested_world
-            .root_scope()
-            .query_one::<&mut Renderer>(renderer)
-            .map(|mut renderer| {
-                let Some(frame) = surface.acquire(nested_world, &mut *renderer.get()) else {
-                    return;
-                };
-                if let Some(attachments) = attachments {
-                    nested_world
-                        .root_scope()
-                        .query_one::<&mut FramePass>(presenting)
-                        .map(|mut pass| {
-                            pass.get()
-                                .set_attachments(attachments, frame.color_view().clone());
-                        })
-                        .expect("the presenting pass exists");
-                } else {
-                    // The attachments are gone, so the acquired frame has
-                    // nothing drawn with: the pass stays parked and the
-                    // frame is presented empty rather than stale.
-                    let _ = nested_world
-                        .root_scope()
-                        .query_one::<&mut FramePass>(presenting)
-                        .map(|mut pass| pass.get().park());
-                }
-                // The region the content is drawn into belongs to the scene's
-                // own pass, which a resize re-letterboxes: the pass that
-                // presents an offscreen frame covers the whole target and keeps
-                // its own. Restating it here keeps the scene's state and the
-                // pass's in step whatever changed the window.
-                nested_world
-                    .root_scope()
-                    .query_one::<&mut FramePass>(scene_pass)
-                    .map(|mut pass| pass.get().viewport = viewport)
-                    .expect("the scene's own pass exists");
-                renderer.get().render(nested_world);
-                let mut queue = nested_world
-                    .root_scope()
-                    .query_one::<&wgpu::Queue>(renderer.get().context().queue)
-                    .expect("the queue resource");
-                frame.present(queue.get());
-            })
-            .expect("the renderer is a resource entity");
-        // Present destroys the frame's image, so the pass parks here rather
-        // than holding a dead view until the next frame's own park: a frame
-        // rendered between two presents must not record into the swap chain.
-        let _ = nested_world
-            .root_scope()
-            .query_one::<&mut FramePass>(presenting)
-            .map(|mut pass| pass.get().park());
+        // after the swap chain image has been acquired. Between the two, and
+        // after the frame has been presented and destroyed, the pass states
+        // no attachment — so a frame rendered by anything other than this
+        // loop, an MCP tool's screenshot of the scene, skips the pass rather
+        // than recording into a dead swap-chain image. When the attachments
+        // are gone — the surface is being torn down — the pass stays parked
+        // and the frame is presented empty rather than stale.
+        if let Some(frame) = surface.acquire_for(nested_world, renderer, presenting, attachments) {
+            // The region the content is drawn into belongs to the scene's
+            // own pass, which a resize re-letterboxes: the pass that
+            // presents an offscreen frame covers the whole target and keeps
+            // its own. Restating it here keeps the scene's state and the
+            // pass's in step whatever changed the window.
+            nested_world
+                .root_scope()
+                .query_one::<&mut FramePass>(scene_pass)
+                .map(|mut pass| pass.get().viewport = viewport)
+                .expect("the scene's own pass exists");
+            let mut renderer_row = nested_world
+                .root_scope()
+                .query_one::<&mut Renderer>(renderer)
+                .expect("the renderer is a resource entity");
+            renderer_row.get().render(nested_world);
+            let mut queue = nested_world
+                .root_scope()
+                .query_one::<&wgpu::Queue>(renderer_row.get().context().queue)
+                .expect("the queue resource");
+            frame.present_and_park(nested_world, queue.get(), presenting);
+        }
         let _ = world
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)

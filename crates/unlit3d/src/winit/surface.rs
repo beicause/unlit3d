@@ -5,11 +5,12 @@
 //! attachments the frame draws with have to match the window's size.
 //! [`WindowSurface`] owns the surface and its configuration, keeps the frame's
 //! color image registered in the frame's resource graph, and hands it back from
-//! [`WindowSurface::acquire`]. The depth and multisample attachments belong to
-//! the caller — see [`FrameAttachments`](crate::attachments::FrameAttachments)
-//! — so a frame loop is park, acquire, attach, render, present, park: a
-//! stated attachment spans only the render that consumes it, and presenting
-//! the frame destroys the swap-chain view the pass stated.
+//! [`WindowSurface::acquire_for`], which parks the pass that states the frame's
+//! attachments around the acquire. The depth and multisample attachments belong
+//! to the caller — see [`FrameAttachments`](crate::attachments::FrameAttachments)
+//! — and a stated attachment spans only the render that consumes it: the frame
+//! loop below states and gives up the attachments through the two methods, and
+//! presenting the frame destroys the swap-chain view the pass stated.
 //!
 //! The caller creates the `wgpu::Surface` itself, because the adapter has to
 //! be requested with it as the compatible surface. That request is async —
@@ -60,9 +61,10 @@
 //! # }
 //! ```
 //!
-//! and the frame loop then only has to park the pass that draws into the swap
-//! chain around the frame, attaching its image only for the render between
-//! the two parks:
+//! and the frame loop then only has to acquire and present through the pass:
+//! [`WindowSurface::acquire_for`] parks the pass and attaches the acquired
+//! image for its render, and [`Frame::present_and_park`] presents the frame
+//! and parks the pass again:
 //!
 //! ```rust
 //! # use unlit3d::attachments::FrameAttachments;
@@ -77,46 +79,31 @@
 //! #     attachments: &FrameAttachments,
 //! # ) {
 //! let root = world.root_scope();
-//! // The presenting pass parks first and takes the frame's view only after
-//! // the swap chain image has been acquired, then parks again once the
-//! // frame is presented: a frame rendered by anything other than this loop
-//! // — a screenshot tool's render, say — skips the pass rather than
-//! // recording into a dead swap-chain image.
-//! let _ = root
-//!     .query_one::<&mut FramePass>(pass)
-//!     .map(|mut pass| pass.get().park());
-//! let Some(frame) = root
-//!     .query_one::<&mut Renderer>(renderer_entity)
-//!     .ok()
-//!     .and_then(|mut r| window_surface.acquire(world, r.get()))
-//! else {
+//! let Some(frame) = window_surface.acquire_for(
+//!     world,
+//!     renderer_entity,
+//!     pass,
+//!     Some(attachments),
+//! ) else {
+//!     // The pass stays parked: nothing records into a swap-chain image
+//!     // that is gone or was never acquired.
 //!     return;
 //! };
-//! root
-//!     .query_one::<&mut FramePass>(pass)
-//!     .map(|mut pass| {
-//!         pass.get().set_attachments(attachments, frame.color_view().clone());
-//!     })
+//! // The region the content is drawn into belongs to the caller.
+//! root.query_one::<&mut Renderer>(renderer_entity)
+//!     .map(|mut renderer| renderer.get().render(world))
 //!     .unwrap();
-//! root
-//!     .query_one::<&mut Renderer>(renderer_entity)
-//!     .map(|mut r| r.get().render(world))
-//!     .unwrap();
-//! frame.present(queue);
-//! // Present destroyed the frame's image, so the pass parks here rather
-//! // than holding a dead view until the next frame's own park: a frame
-//! // rendered between two presents must not record into the swap chain.
-//! let _ = root
-//!     .query_one::<&mut FramePass>(pass)
-//!     .map(|mut pass| pass.get().park());
+//! frame.present_and_park(world, queue, pass);
 //! # }
 //! ```
 
 use std::sync::Arc;
 
-use unlit_ecs::{QueryOne, World};
+use unlit_ecs::{Entity, QueryOne, World};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
+use crate::attachments::FrameAttachments;
+use crate::pass::FramePass;
 use crate::renderer::Renderer;
 
 /// The device the frame's context was created with, cloned out of `world`.
@@ -152,9 +139,11 @@ fn context_graph<'w>(
 ///
 /// The surface is configured for the window's current size and keeps the
 /// frame's color image registered in the frame's resource graph.
-/// [`Self::acquire`] hands back the frame's color view for the caller to bind
-/// with its own depth and multisample attachments — see
+/// [`Self::acquire_for`] hands a frame to a pass — parking the pass around
+/// the acquire and stating the frame's color view with the pass's own depth
+/// and multisample attachments, see
 /// [`FrameAttachments`](crate::attachments::FrameAttachments) — and
+/// [`Frame::present_and_park`] presents the frame and parks the pass again.
 /// [`Self::resize`] keeps the surface in step with the window.
 ///
 /// A platform can invalidate the render surface while the app is not in the
@@ -288,6 +277,9 @@ impl WindowSurface {
     /// history of swap-chain images. The caller binds the returned frame's
     /// color view as its render target, together with whatever depth and
     /// multisample attachments it draws with.
+    ///
+    /// A frame loop usually wants [`Self::acquire_for`], which parks the
+    /// stating pass around this call and states the frame's attachments on it.
     pub fn acquire(&mut self, world: &World, renderer: &mut Renderer) -> Option<Frame> {
         let device = context_device(world, renderer);
         let surface_texture = match self.surface.get_current_texture() {
@@ -330,6 +322,59 @@ impl WindowSurface {
         })
     }
 
+    /// Acquire the next frame for a pass and state the frame's attachments on
+    /// it.
+    ///
+    /// This is a frame loop's whole acquire step: the pass is parked, the
+    /// next frame is acquired through its renderer, and the pass takes the
+    /// frame's color view along with `attachments` when they are given.
+    /// Without attachments the pass stays parked and the frame comes back
+    /// with nothing stated on it — a loop that lost its attachments presents
+    /// it empty rather than stale. A `None` — the window is occluded or
+    /// minimized, or the swap chain had to be reconfigured — leaves the pass
+    /// parked, so a frame rendered while the loop is between presents skips
+    /// the pass rather than recording into a swap-chain image that is gone.
+    ///
+    /// Pair the frame with [`Frame::present_and_park`], which presents it
+    /// and parks the pass again.
+    ///
+    /// # Panics
+    ///
+    /// If `renderer` does not name a [`Renderer`], or — with
+    /// `attachments` — if `pass` does not name a [`FramePass`].
+    pub fn acquire_for(
+        &mut self,
+        world: &World,
+        renderer: Entity,
+        pass: Entity,
+        attachments: Option<&FrameAttachments>,
+    ) -> Option<Frame> {
+        let _ = world
+            .root_scope()
+            .query_one::<&mut FramePass>(pass)
+            .map(|mut pass| pass.get().park());
+        let mut renderer_row = world
+            .root_scope()
+            .query_one::<&mut Renderer>(renderer)
+            .expect("the renderer exists");
+        let Some(frame) = self.acquire(world, &mut *renderer_row.get()) else {
+            // The acquire failed, so the pass stays parked: nothing records
+            // into a swap-chain image that is gone or was never acquired.
+            return None;
+        };
+        if let Some(attachments) = attachments {
+            world
+                .root_scope()
+                .query_one::<&mut FramePass>(pass)
+                .map(|mut pass| {
+                    pass.get()
+                        .set_attachments(attachments, frame.color_view().clone());
+                })
+                .expect("the presenting pass exists");
+        }
+        Some(frame)
+    }
+
     /// Rebuild the surface from the window after the swap chain was lost.
     ///
     /// A surface that cannot be rebuilt — the window is gone — leaves the
@@ -365,6 +410,20 @@ impl Frame {
     /// Present the frame.
     pub fn present(self, queue: &wgpu::Queue) {
         queue.present(self.surface_texture);
+    }
+
+    /// Present the frame and park the pass that drew into it.
+    ///
+    /// Presenting destroys the frame's swap-chain image, so the pass parks
+    /// here rather than holding a dead view until its next own park: a frame
+    /// rendered in between — a screenshot tool's render, say — skips the
+    /// pass rather than recording into the dead image.
+    pub fn present_and_park(self, world: &World, queue: &wgpu::Queue, pass: Entity) {
+        self.present(queue);
+        let _ = world
+            .root_scope()
+            .query_one::<&mut FramePass>(pass)
+            .map(|mut pass| pass.get().park());
     }
 }
 

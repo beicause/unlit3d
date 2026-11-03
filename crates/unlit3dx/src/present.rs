@@ -122,45 +122,22 @@ impl Presenter {
         };
         let presenting = self.presenting();
         let world = nested.get();
-        let _ = world
-            .root_scope()
-            .query_one::<&mut FramePass>(presenting)
-            .map(|mut pass| pass.get().park());
-        let _ = world
+        let Some(swap_frame) = self
+            .surface
+            .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
+        else {
+            return;
+        };
+        let mut renderer_row = world
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| {
-                let Some(swap_frame) = self.surface.acquire(world, &mut *renderer.get()) else {
-                    return;
-                };
-                let _ = world
-                    .root_scope()
-                    .query_one::<&mut FramePass>(presenting)
-                    .map(|mut pass| {
-                        let pass = pass.get();
-                        {
-                            pass.set_attachments(
-                                &self.attachments,
-                                swap_frame.color_view().clone(),
-                            );
-                        }
-                    });
-                renderer.get().render(world);
-                let mut queue_row = world
-                    .root_scope()
-                    .query_one::<&wgpu::Queue>(renderer.get().context().queue)
-                    .expect("the render world carries its queue resource");
-
-                let queue = queue_row.get();
-                swap_frame.present(queue);
-            });
-        // Present destroys the frame's image, so the pass parks here rather
-        // than holding a dead view until the next frame's own park: a frame
-        // rendered between two presents must not record into the swap chain.
-        let _ = world
+            .expect("the render world carries its renderer");
+        renderer_row.get().render(world);
+        let mut queue_row = world
             .root_scope()
-            .query_one::<&mut FramePass>(presenting)
-            .map(|mut pass| pass.get().park());
+            .query_one::<&wgpu::Queue>(renderer_row.get().context().queue)
+            .expect("the render world carries its queue resource");
+        swap_frame.present_and_park(world, queue_row.get(), presenting);
     }
 
     /// Match the surface, the attachments and the offscreen target to a
