@@ -1,8 +1,8 @@
-//! The native half of the harness: `libtest-mimic` over the registry.
+//! The native half of the harness: `libtest-mimic` over the catalog.
 //!
 //! Natively a test runs in the process that reports it, which is what
 //! `cargo nextest` drives. The runner is `libtest-mimic` rather than libtest's
-//! generated harness because the registry, not a set of `#[test]` items, is
+//! generated harness because the catalog, not a set of `#[test]` items, is
 //! what a browser can also offer — so one source file feeds both runners and a
 //! test keeps a single name in both.
 //!

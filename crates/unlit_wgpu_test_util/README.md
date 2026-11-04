@@ -42,7 +42,7 @@ gpu_tests! {
 ```
 
 `gpu_tests!` lists the tests in the file and gives each one the body beside its
-name: it expands to `all_tests()`, that file's share of the registry. A crate
+name: it expands to `all_tests()`, that file's share of the catalog. A crate
 has one test target for its whole suite — the files are modules of it — and the
 root joins those shares and emits the `main` that runs them:
 
@@ -64,9 +64,9 @@ against the expectation and reports through the same channel as a pass.
 A test that only the host can run carries `#[host_only]` in the list instead of
 a target `cfg` around a second call to `gpu_tests!`. The wasm suite lists trials
 from the host build but runs them in a browser, so a host-only test is compiled
-out of the wasm registry and the proxy drops its trial: both sides then list the
+out of the wasm catalog and the proxy drops its trial: both sides then list the
 same names, and one list stays the whole truth about what the file declares.
-Such a file goes through the registry like any other rather than putting the
+Such a file goes through the catalog like any other rather than putting the
 whole file behind a target `cfg`, so the target still compiles a wasm module —
 the one `wasm-bindgen` is run on — with the export `gpu_test_main!` adds.
 

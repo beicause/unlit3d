@@ -36,7 +36,10 @@ use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, SurfaceKey, SurfaceTarget,
 };
-use unlit3d::pipeline::{DrawContext, GlobalRecipe};
+use unlit3d::pipeline::{
+    DrawContext, FamilyContext, GlobalRecipe, InstanceContext, InstanceData, InstanceStreamDesc,
+    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
+};
 use unlit3d::prelude::*;
 use zerocopy::IntoBytes;
 

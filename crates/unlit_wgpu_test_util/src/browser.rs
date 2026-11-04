@@ -1,13 +1,13 @@
 //! The browser half of the harness.
 //!
-//! A page asks for one test by name; this module finds it in the registry and
+//! A page asks for one test by name; this module finds it in the catalog and
 //! drives it. The verdict travels back through `sessionStorage`, because a
 //! wasm export cannot return a value to a page that has already moved on.
 //!
 //! A panic here is not a failure the runner can catch: wasm has no unwinding,
 //! so a panic traps the instance and the page dies with it. The panic hook
 //! therefore runs *before* the trap and is the only place the verdict can be
-//! decided — which is why a test's expected message is read from the registry
+//! decided — which is why a test's expected message is read from the catalog
 //! rather than from a `#[should_panic]` attribute no one would see.
 
 use wasm_bindgen::prelude::*;

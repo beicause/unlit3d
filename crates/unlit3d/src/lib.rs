@@ -87,10 +87,6 @@ pub mod prelude {
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,
         pass::{FramePass, FramePassOrder, Pass, PassInfo},
-        pipeline::{
-            FamilyContext, GlobalResources, InstanceContext, InstanceData, InstanceStreamDesc,
-            Rebuild, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
-        },
         relay::{Snapshot, SnapshotReader, Stream, StreamReader},
         renderer::Renderer,
         source::{

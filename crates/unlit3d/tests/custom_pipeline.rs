@@ -12,7 +12,9 @@ use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, VertexLayout,
 };
 use unlit_wgpu_test_util::gpu_tests;
-use unlit3d::pipeline::{DrawContext, FamilyContext, RenderPipelineFactory};
+use unlit3d::pipeline::{
+    DrawContext, FamilyContext, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
+};
 use unlit3d::prelude::*;
 
 /// An interleaved `position + colour` vertex, matching `VERTEX` in the WGSL

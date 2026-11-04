@@ -1,7 +1,7 @@
-//! The registry that lets one test body run under `libtest-mimic` natively and
+//! The catalog that lets one test body run under `libtest-mimic` natively and
 //! in a browser through wasm.
 //!
-//! [`gpu_tests!`](crate::gpu_tests) collects a file's tests into the registry
+//! [`gpu_tests!`](crate::gpu_tests) collects a file's tests into the catalog
 //! the harness runs, and [`gpu_test_main!`](crate::gpu_test_main) supplies the
 //! `main` that drives it. One source file serves both runners, because a body
 //! is an ordinary `async fn` and both runners reach it through the same
@@ -15,7 +15,7 @@
 use core::future::Future;
 use core::pin::Pin;
 
-/// A test's future, boxed so bodies of different types share one registry.
+/// A test's future, boxed so bodies of different types share one catalog.
 pub type TestBody = Pin<Box<dyn Future<Output = ()>>>;
 
 /// Builds one test's future. Called once per run.
@@ -50,7 +50,7 @@ pub struct TestEntry {
     pub host_only: bool,
 }
 
-/// Declares a file's GPU tests, and the registry the harness runs them from.
+/// Declares a file's GPU tests, and the catalog the harness runs them from.
 ///
 /// The bodies are ordinary `async fn`s declared in the file; this macro lists
 /// them so the harness can reach them by name. A name that has no body, or one
@@ -147,7 +147,7 @@ macro_rules! gpu_tests {
     ($($rest:tt)*) => { $crate::gpu_tests!(@acc [] $($rest)*); };
 }
 
-/// Provides the entry point a test binary drives its registry through.
+/// Provides the entry point a test binary drives its catalog through.
 ///
 /// `$tests` is an expression evaluating to `Vec<TestEntry>`. The same file
 /// therefore serves both runners: natively this is the test binary's `main`,
@@ -183,7 +183,7 @@ macro_rules! gpu_test_main {
         }
 
         // A test target is a binary on every target, so wasm needs a `main`
-        // too. The registry is reached through the export above instead.
+        // too. The catalog is reached through the export above instead.
         #[cfg(target_arch = "wasm32")]
         fn main() {
             let _ = $tests;

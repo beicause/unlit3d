@@ -12,12 +12,12 @@ pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 /// Recording is what the harness's backend reports; see [`init_logging`].
 pub use log;
 
-// The registry a test file declares its tests in, and the two runners that
+// The catalog a test file declares its tests in, and the two runners that
 // drive it: `native` under `cargo nextest`, `browser` in a wasm build. A test
 // file names only the macros, so which runner is in play is not its concern.
-mod registry;
+mod test_catalog;
 
-pub use registry::{TestBody, TestEntry, TestFn};
+pub use test_catalog::{TestBody, TestEntry, TestFn};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;

@@ -16,7 +16,10 @@ use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, VertexLayout,
 };
 use unlit_wgpu_test_util::gpu_tests;
-use unlit3d::pipeline::DrawContext;
+use unlit3d::pipeline::{
+    DrawContext, FamilyContext, InstanceContext, InstanceData, InstanceStreamDesc,
+    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
+};
 use unlit3d::prelude::*;
 use zerocopy::IntoBytes;
 
