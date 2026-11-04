@@ -17,7 +17,65 @@ use unlit_ecs::mcp::{
 use unlit_ecs::{Entity, World, bundle};
 use unlit3d::winit::builtin::ExitRequest;
 
-use crate::record::{RecordingFormat, RecordingHandle, start_recording};
+use crate::record::{RecordingError, RecordingFormat, RecordingHandle, start_recording};
+
+/// Why a recording tool could not answer its request.
+///
+/// The MCP transport carries errors as strings, so this type lives only
+/// inside the world-side tools; the tool boundary renders it for the client.
+#[derive(Debug)]
+enum ToolError {
+    /// The host world carries no exit request.
+    NoExitRequest,
+    /// A recording is already running on this world.
+    AlreadyRecording,
+    /// No recording is running on this world.
+    NoRecording,
+    /// The recording captured no audio fill.
+    EmptyRecording,
+    /// The format or the encoder refused the recording.
+    Recording(RecordingError),
+    /// The report could not be serialized into JSON.
+    Serialize(serde_json::Error),
+    /// The file could not be written to the host\'s directory.
+    Write(String),
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoExitRequest => write!(f, "the host has no exit request"),
+            Self::AlreadyRecording => {
+                write!(f, "a recording is already in progress on this world")
+            }
+            Self::NoRecording => {
+                write!(f, "no recording is in progress on this world")
+            }
+            Self::EmptyRecording => write!(f, "the recording captured no fill"),
+            Self::Recording(error) => error.fmt(f),
+            Self::Serialize(error) => error.fmt(f),
+            Self::Write(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<RecordingError> for ToolError {
+    fn from(error: RecordingError) -> Self {
+        Self::Recording(error)
+    }
+}
+
+impl From<serde_json::Error> for ToolError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Serialize(error)
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        Self::Write(message)
+    }
+}
 
 /// How long a recording lasts when its caller names no limit.
 const DEFAULT_RECORDING_SECONDS: f32 = 60.0;
@@ -67,7 +125,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
 /// Start recording the mix of the audio world the arguments name.
 async fn start_audio_recording(commands: CommandSender, args: StartRecording) -> ToolResult {
     command(&commands, args.world, move |world| {
-        start(world, args.duration_seconds)
+        start(world, args.duration_seconds).map_err(|error| error.to_string())
     })
     .await
 }
@@ -75,7 +133,7 @@ async fn start_audio_recording(commands: CommandSender, args: StartRecording) ->
 /// Finish a recording and write its file.
 async fn stop_audio_recording(commands: CommandSender, args: StopRecording) -> ToolResult {
     command(&commands, args.world, move |world| {
-        stop(world, &args.directory, args.file_name.as_deref())
+        stop(world, &args.directory, args.file_name.as_deref()).map_err(|error| error.to_string())
     })
     .await
 }
@@ -83,7 +141,7 @@ async fn stop_audio_recording(commands: CommandSender, args: StopRecording) -> T
 /// Finish a recording and return its sound without touching the filesystem.
 async fn read_audio_recording(commands: CommandSender, args: ReadRecording) -> ToolResult {
     run(&commands, args.world, move |world| {
-        read(world, args.format.as_deref())
+        read(world, args.format.as_deref()).map_err(|error| error.to_string())
     })
     .await
 }
@@ -91,31 +149,42 @@ async fn read_audio_recording(commands: CommandSender, args: ReadRecording) -> T
 /// Ask a windowed or headless host to exit normally.
 async fn request_host_exit(commands: CommandSender, args: WorldArg) -> ToolResult {
     command(&commands, args.world, |world| {
-        let mut found = false;
-        for request in world.root_scope().query::<&mut ExitRequest>().iter() {
-            request.0 = true;
-            found = true;
-        }
-        if !found {
-            return Err("the host has no exit request".to_owned());
-        }
-        Ok(serde_json::json!({ "requested": true }))
+        request_exit(world).map_err(|error| error.to_string())
     })
     .await
 }
 
 /// Discard the recording in progress.
 async fn cancel_audio_recording(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, cancel).await
+    command(&commands, args.world, |world| {
+        cancel(world).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 /// Report what the recording in progress has captured.
 async fn audio_recording_status(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, status).await
+    command(&commands, args.world, |world| {
+        status(world).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+/// Ask the host to exit, unless it carries no request component.
+fn request_exit(world: &mut World) -> Result<Value, ToolError> {
+    let mut found = false;
+    for request in world.root_scope().query::<&mut ExitRequest>().iter() {
+        request.0 = true;
+        found = true;
+    }
+    if !found {
+        return Err(ToolError::NoExitRequest);
+    }
+    Ok(serde_json::json!({ "requested": true }))
 }
 
 /// Start a recording, unless one is already running.
-fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, String> {
+fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, ToolError> {
     if world
         .root_scope()
         .query::<&ActiveRecording>()
@@ -123,7 +192,7 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
         .next()
         .is_some()
     {
-        return Err("a recording is already in progress on this world".to_owned());
+        return Err(ToolError::AlreadyRecording);
     }
     let seconds = duration_seconds.unwrap_or(DEFAULT_RECORDING_SECONDS);
     let handle = start_recording(world, seconds);
@@ -133,11 +202,11 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
     world
         .root_scope_mut()
         .spawn(bundle![ActiveRecording(handle)]);
-    serde_json::to_value(report).map_err(|error| error.to_string())
+    serde_json::to_value(report).map_err(ToolError::from)
 }
 
 /// Stop the recording, write its samples and report the file.
-fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<Value, String> {
+fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<Value, ToolError> {
     // The name is settled before the recording is taken: an extension the
     // server cannot write is a mistake to report while the mix is still in the
     // world, not after it has been despawned.
@@ -145,12 +214,10 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
     let format = RecordingFormat::of(&name)?;
     let handle = take(world)?;
     let Some(audio) = handle.stop(world) else {
-        return Err(
-            "the recording captured no fill; check that the world has sources to play".to_owned(),
-        );
+        return Err(ToolError::EmptyRecording);
     };
     let bytes = format.encode(audio.format, &audio.samples)?;
-    let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes)?;
+    let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes).map_err(ToolError::from)?;
     let report = Recorded {
         path: saved.path,
         size: saved.size,
@@ -159,11 +226,11 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
         sample_rate: audio.format.sample_rate,
         channels: audio.format.channels,
     };
-    serde_json::to_value(report).map_err(|error| error.to_string())
+    serde_json::to_value(report).map_err(ToolError::from)
 }
 
 /// Stop the recording and answer with its sound in memory.
-fn read(world: &mut World, format: Option<&str>) -> Result<Output, String> {
+fn read(world: &mut World, format: Option<&str>) -> Result<Output, ToolError> {
     use base64::Engine as _;
 
     let format = match format {
@@ -172,7 +239,7 @@ fn read(world: &mut World, format: Option<&str>) -> Result<Output, String> {
     };
     let handle = take(world)?;
     let Some(audio) = handle.stop(world) else {
-        return Err("the recording captured no fill".to_owned());
+        return Err(ToolError::EmptyRecording);
     };
     let bytes = format.encode(audio.format, &audio.samples)?;
     Ok(Output::Audio(EncodedAudio {
@@ -189,13 +256,13 @@ fn read(world: &mut World, format: Option<&str>) -> Result<Output, String> {
 }
 
 /// Stop the recording and throw its samples away.
-fn cancel(world: &mut World) -> Result<Value, String> {
+fn cancel(world: &mut World) -> Result<Value, ToolError> {
     take(world)?.cancel(world);
     Ok(serde_json::json!({ "cancelled": true }))
 }
 
 /// Report how far the recording in progress has come.
-fn status(world: &mut World) -> Result<Value, String> {
+fn status(world: &mut World) -> Result<Value, ToolError> {
     let mut active_recording_rows = world.root_scope().query::<&ActiveRecording>();
 
     let Some(recording) = active_recording_rows
@@ -214,18 +281,18 @@ fn status(world: &mut World) -> Result<Value, String> {
         seconds: recording.seconds(),
         full: recording.is_full(),
     };
-    serde_json::to_value(report).map_err(|error| error.to_string())
+    serde_json::to_value(report).map_err(ToolError::from)
 }
 
 /// Take the recording in progress out of the world.
-fn take(world: &mut World) -> Result<RecordingHandle, String> {
+fn take(world: &mut World) -> Result<RecordingHandle, ToolError> {
     let entity = world
         .root_scope()
         .query::<(&ActiveRecording, Entity)>()
         .iter()
         .next()
         .map(|(_active_recording, entity)| entity)
-        .ok_or_else(|| "no recording is in progress on this world".to_owned())?;
+        .ok_or(ToolError::NoRecording)?;
     let handle = {
         let mut recording = world
             .root_scope()
@@ -404,7 +471,8 @@ mod tests {
             std::env::temp_dir().join(format!("unlit3dx-mcp-{}-refused", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         let refused = stop(&mut world, &directory.to_string_lossy(), Some("take.mp3"))
-            .expect_err("an extension the server cannot write is refused");
+            .expect_err("an extension the server cannot write is refused")
+            .to_string();
         assert!(refused.contains("mp3"), "{refused}");
         assert_eq!(
             status(&mut world).expect("the recording is still there")["frames"],
@@ -453,7 +521,9 @@ mod tests {
     fn a_second_recording_is_refused_until_the_first_ends() {
         let (mut world, _) = audio_world(0.0);
         start(&mut world, None).expect("the first recording starts");
-        let refused = start(&mut world, None).expect_err("the second is refused");
+        let refused = start(&mut world, None)
+            .expect_err("the second is refused")
+            .to_string();
         assert!(refused.contains("already in progress"), "{refused}");
         cancel(&mut world).expect("the recording is cancelled");
         start(&mut world, None).expect("a fresh recording starts");
@@ -463,7 +533,9 @@ mod tests {
     fn a_cancelled_or_finished_recording_reports_nothing() {
         let (mut world, _) = audio_world(0.0);
         assert!(status(&mut world).expect("no recording is fine")["recording"] == false);
-        let missing = cancel(&mut world).expect_err("there is nothing to cancel");
+        let missing = cancel(&mut world)
+            .expect_err("there is nothing to cancel")
+            .to_string();
         assert!(missing.contains("no recording"), "{missing}");
     }
 
@@ -474,7 +546,8 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("unlit3dx-mcp-empty-{}", std::process::id()));
         let failed = stop(&mut world, &directory.to_string_lossy(), None)
-            .expect_err("a recording with no fill cannot be written");
+            .expect_err("a recording with no fill cannot be written")
+            .to_string();
         assert!(failed.contains("captured no fill"), "{failed}");
     }
 }

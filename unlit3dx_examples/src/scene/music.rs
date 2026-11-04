@@ -5,7 +5,8 @@
 
 use std::sync::Arc;
 
-use unlit3dx::prelude::{MidiEvent, MidiEventKind, MidiFile, midi_file};
+use unlit3dx::prelude::{MidiEvent, MidiEventKind, midi_file};
+use unlit3dx::synth::MidiFile;
 
 /// The General MIDI music box, as a zero-based program number: a bell
 /// like plucked timbre that stays smooth where a piano turns brash.
@@ -169,7 +170,7 @@ pub fn bgm_midi() -> Arc<MidiFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unlit3dx::prelude::MidiMessage;
+    use unlit3dx::synth::MidiMessage;
 
     /// Count a file's key presses and releases: every sounding key must be
     /// let go again, or a looping track leaves a chord hanging forever.

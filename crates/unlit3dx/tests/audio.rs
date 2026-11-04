@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use unlit_ecs::{Entity, World, bundle};
 use unlit3dx::prelude::*;
+use unlit3dx::synth::{MidiFile, MidiFileLoopType, MidiMessage};
 
 /// Waits until `probe` answers `true`, giving up after five seconds.
 fn wait_for(probe: impl Fn() -> bool) -> bool {
@@ -478,7 +479,8 @@ fn load_midi_file_with_loop_type_marks_the_loop() {
     let at = marked.get_times()[start];
     assert!((at - 0.5).abs() < 1e-6, "the marker landed at {at} seconds");
 
-    let plain = load_midi_file(&bytes).expect("the bytes are a midi file");
+    let plain = load_midi_file_with_loop_type(&bytes, MidiFileLoopType::LoopPoint(0))
+        .expect("the bytes are a midi file");
     assert!(
         !plain
             .get_messages()

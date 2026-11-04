@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use unlit_ecs::World;
@@ -10,7 +10,6 @@ use web_time::Instant;
 
 use crate::channel::{Snapshot, SnapshotReader};
 use crate::executor::LocalTasks;
-use crate::sync;
 
 /// How long a dropped thread waits for its tick to notice the stop before it
 /// is left detached instead of blocking the dropper.
@@ -28,7 +27,10 @@ pub(crate) struct Stop {
 impl Stop {
     /// Request a stop and wake whoever is waiting on one.
     fn request(&self) {
-        let mut requested = sync::lock(&self.requested);
+        let mut requested = self
+            .requested
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         *requested = true;
         drop(requested);
         self.signal.notify_all();
@@ -36,7 +38,10 @@ impl Stop {
 
     /// Whether a stop has been requested.
     fn requested(&self) -> bool {
-        *sync::lock(&self.requested)
+        *self
+            .requested
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -77,7 +82,10 @@ impl ThreadControl {
     /// Seconds since the previous tick, measured once per turn.
     pub(crate) fn elapsed_seconds(&self) -> f32 {
         let now = Instant::now();
-        let mut last = sync::lock(&self.last_tick);
+        let mut last = self
+            .last_tick
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let elapsed = last.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
         *last = Some(now);
         elapsed
@@ -92,7 +100,11 @@ impl ThreadControl {
         if !self.self_driven {
             return;
         }
-        let requested = sync::lock(&self.stop.requested);
+        let requested = self
+            .stop
+            .requested
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if *requested {
             return;
         }

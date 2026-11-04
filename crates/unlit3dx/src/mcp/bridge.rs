@@ -5,15 +5,14 @@
 //! event-loop behaviour, so a world — which is not sendable — is only
 //! ever touched on its own thread.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
 use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
 
-use crate::sync;
-use crate::world::{WorldName, WorldSender, drain_stepped_world};
+use crate::world::{WorldName, WorldSender, drain_all_stepped_worlds};
 
 /// The commands the transport thread has posted for the host to run.
 ///
@@ -86,15 +85,7 @@ fn drain(world: &World) {
 pub fn pump_mcp(world: &mut World) -> Result<(), EntityAccessError> {
     drain(world);
     world.apply()?;
-    let stepped: Vec<Entity> = world
-        .root_scope()
-        .query::<(&WorldSender, Entity)>()
-        .iter()
-        .map(|(_sender, entity)| entity)
-        .collect();
-    for entity in stepped {
-        drain_stepped_world(world, entity);
-    }
+    drain_all_stepped_worlds(world);
     Ok(())
 }
 
@@ -203,12 +194,19 @@ impl Command for RunInWorld {
         let pending = Arc::new(Mutex::new(Some(command)));
         let job_slot = Arc::clone(&pending);
         let job = Box::new(move |world: &mut World| {
-            if let Some(command) = sync::lock(&job_slot).take() {
+            if let Some(command) = job_slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
                 command.dispatch(world);
             }
         });
         if let Err(error) = sender.send(job)
-            && let Some(command) = sync::lock(&pending).take()
+            && let Some(command) = pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
         {
             command.fail(format!(
                 "the world on {entity:?} refused the command: {error}"

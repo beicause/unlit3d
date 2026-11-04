@@ -300,8 +300,8 @@ The bridges:
   releases the notes that pass left sounding instead of letting them ring into
   the next one, and only those: a sequence keeps the notes it pressed and
   releases them by name, never with a channel-wide all-notes-off that would cut
-  another sequence's music. Files come from `load_midi_file` (an SMF
-  file, with the loop convention named by `load_midi_file_with_loop_type`) or
+  another sequence's music. Files come from `load_midi_file_with_loop_type` (an SMF
+  file, with the loop convention the caller names) or
   `midi_file` (timed `MidiEventKind`s, sorted here so a caller's list need not
   be). A file's loop markers set the loop point; a passage a file never marked
   can still repeat by writing `loop_point` by hand. The demo's

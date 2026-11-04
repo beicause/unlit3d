@@ -63,7 +63,6 @@ pub mod request;
 // through it rather than carrying an encoder of its own.
 #[cfg(feature = "audio")]
 pub mod record;
-mod sync;
 #[cfg(feature = "synth")]
 pub mod synth;
 /// World threads and their pacing.
@@ -108,8 +107,7 @@ pub mod prelude {
     pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]
     pub use crate::synth::{
-        MidiEvent, MidiEventKind, MidiFile, MidiFileLoopType, MidiMessage, MidiSequencer,
-        SoundFont, SynthVoice, Synthesizer, VoiceError, load_midi_file,
+        MidiEvent, MidiEventKind, MidiSequencer, SynthVoice, VoiceError,
         load_midi_file_with_loop_type, load_soundfont, midi_file, midi_job,
     };
     pub use crate::{

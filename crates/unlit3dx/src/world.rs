@@ -412,6 +412,24 @@ pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
     publish_collected(world);
 }
 
+/// Drain the queued jobs of every world the host steps.
+///
+/// This walks the proxies directly, so a caller that must answer a
+/// command before its next frame does not need to gather entities into
+/// a separate buffer first.
+pub fn drain_all_stepped_worlds(host: &World) {
+    let mut proxies = host.root_scope().query::<&mut WorldProxy>();
+    for proxy in proxies.iter() {
+        let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+            continue;
+        };
+        if stepped.status.is_finished() || stepped.control.stop_requested() {
+            continue;
+        }
+        run_queued_jobs(stepped);
+    }
+}
+
 /// Run every job queued for a stepped world, without ticking it.
 ///
 /// This is the first half of [`step_stepped_world`]: a host that must answer a
@@ -631,6 +649,59 @@ mod tests {
         assert_eq!(count(&host), Some(1));
         step_stepped_world(&host, handle.entity, FRAME_SECONDS);
         assert_eq!(count(&host), Some(2));
+    }
+
+    /// Draining every stepped world in one pass must not hold a shared
+    /// claim on the proxy that the drain itself needs to write.
+    #[test]
+    fn draining_all_stepped_worlds_does_not_conflict_with_its_own_query() {
+        let mut host = World::new();
+        let first = spawn_stepped_world_with_init(
+            &mut host,
+            "first",
+            8,
+            |world: &mut World| {
+                world.root_scope_mut().spawn(bundle![Count(0)]);
+            },
+            |_, _, (), _| true,
+        );
+        let second = spawn_stepped_world_with_init(
+            &mut host,
+            "second",
+            8,
+            |world: &mut World| {
+                world.root_scope_mut().spawn(bundle![Count(0)]);
+            },
+            |_, _, (), _| true,
+        );
+        for handle in [&first, &second] {
+            handle
+                .sender
+                .send(Box::new(|world: &mut World| {
+                    world
+                        .root_scope()
+                        .query::<&mut Count>()
+                        .iter()
+                        .next()
+                        .expect("the counter")
+                        .0 += 1;
+                }))
+                .expect("the world accepts jobs");
+        }
+        // The single query inside the drain must not trip the borrow ledger.
+        drain_all_stepped_worlds(&host);
+        for handle in [&first, &second] {
+            let count = with_stepped_world(&host, handle.entity, |world| {
+                world
+                    .root_scope()
+                    .query::<&Count>()
+                    .iter()
+                    .next()
+                    .expect("the counter")
+                    .0
+            });
+            assert_eq!(count, Some(1), "the queued job ran");
+        }
     }
 
     /// A stepped world's tick can end the world.

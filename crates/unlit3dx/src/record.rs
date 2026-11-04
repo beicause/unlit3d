@@ -16,12 +16,72 @@
 //! written in the [`RecordingFormat`] its caller names: a RIFF/WAVE file of
 //! the samples themselves, or the same samples in a lossless FLAC stream.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use unlit_ecs::{Entity, World, bundle};
 
 use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill};
-use crate::sync::lock;
+
+/// Why a recording, or the format it is written in, was refused.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RecordingError {
+    /// The name names a format the recorder cannot write.
+    UnsupportedFormat(String),
+    /// The file name carries no extension to pick a format from.
+    MissingExtension(String),
+    /// The encoder's configuration failed verification.
+    Verify(flacenc::error::VerifyError),
+    /// The samples could not be encoded into a FLAC stream.
+    Encode(flacenc::error::EncodeError),
+    /// The FLAC stream could not be written into its byte sink.
+    Write(flacenc::error::OutputError<flacenc::bitsink::ByteSink>),
+}
+
+impl std::fmt::Display for RecordingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedFormat(name) => {
+                write!(f, "cannot write a {name:?} recording; use .flac or .wav")
+            }
+            Self::MissingExtension(file_name) => {
+                write!(f, "the file name {file_name:?} has no extension")
+            }
+            Self::Verify(error) => write!(f, "the encoder configuration is invalid: {error}"),
+            Self::Encode(error) => write!(f, "the samples could not be encoded: {error}"),
+            Self::Write(error) => write!(f, "the FLAC stream could not be written: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RecordingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Verify(error) => Some(error),
+            Self::Encode(error) => Some(error),
+            Self::Write(error) => Some(error),
+            Self::UnsupportedFormat(_) | Self::MissingExtension(_) => None,
+        }
+    }
+}
+
+impl From<flacenc::error::VerifyError> for RecordingError {
+    fn from(error: flacenc::error::VerifyError) -> Self {
+        Self::Verify(error)
+    }
+}
+
+impl From<flacenc::error::EncodeError> for RecordingError {
+    fn from(error: flacenc::error::EncodeError) -> Self {
+        Self::Encode(error)
+    }
+}
+
+impl From<flacenc::error::OutputError<flacenc::bitsink::ByteSink>> for RecordingError {
+    fn from(error: flacenc::error::OutputError<flacenc::bitsink::ByteSink>) -> Self {
+        Self::Write(error)
+    }
+}
 
 /// A recording in progress on a world.
 ///
@@ -92,7 +152,7 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let entity = world.root_scope_mut().spawn(bundle![OnAudioFill::new(
         AudioFillOrder(i32::MAX),
         move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
-            let mut state = lock(&recorder);
+            let mut state = recorder.lock().unwrap_or_else(PoisonError::into_inner);
             if state.format.is_none() {
                 let format = AudioFormat {
                     sample_rate: chunk.sample_rate,
@@ -165,7 +225,7 @@ pub(crate) fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
 /// the stream decodes back to the same samples the WAV would hold. It is the
 /// smaller of the two answers — a mix takes a third of the WAV's bytes —
 /// which is why it is the format a caller gets when it names none.
-pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>, String> {
+pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>, RecordingError> {
     use flacenc::component::BitRepr;
     use flacenc::error::Verify;
 
@@ -178,15 +238,14 @@ pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>
     let block_size = config.block_size;
     let verified = config
         .into_verified()
-        .map_err(|(_, error)| error.to_string())?;
+        .map_err(|(_, error)| RecordingError::Verify(error))?;
     let source = flacenc::source::MemSource::from_samples(
         &quantized,
         channels,
         BITS_PER_SAMPLE,
         format.sample_rate.max(1) as usize,
     );
-    let mut stream = flacenc::encode_with_fixed_block_size(&verified, source, block_size)
-        .map_err(|error| error.to_string())?;
+    let mut stream = flacenc::encode_with_fixed_block_size(&verified, source, block_size)?;
     // The trailing frame holds whatever samples the mix's length leaves over,
     // and the encoder lets that drag the stream's declared minimum block size
     // down. The reference encoder declares one block size for the whole
@@ -194,10 +253,9 @@ pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>
     // the two apart, so say the same thing here.
     stream
         .stream_info_mut()
-        .set_block_sizes(block_size, block_size)
-        .map_err(|error| error.to_string())?;
+        .set_block_sizes(block_size, block_size)?;
     let mut sink = flacenc::bitsink::ByteSink::new();
-    stream.write(&mut sink).map_err(|error| error.to_string())?;
+    stream.write(&mut sink)?;
     Ok(sink.into_inner())
 }
 
@@ -224,20 +282,27 @@ impl RecordingFormat {
 
     /// The format `name` names, which is an extension or a tool argument and
     /// so is matched without regard to case.
-    pub fn from_name(name: &str) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` names a format the recorder cannot write.
+    pub fn from_name(name: &str) -> Result<Self, RecordingError> {
         match name.to_ascii_lowercase().as_str() {
             "wav" | "wave" => Ok(Self::Wav),
             "flac" => Ok(Self::Flac),
-            other => Err(format!(
-                "cannot write a {other:?} recording; use .flac or .wav"
-            )),
+            other => Err(RecordingError::UnsupportedFormat(other.to_owned())),
         }
     }
 
     /// The format the extension of `file_name` names.
-    pub fn of(file_name: &str) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `file_name` has no extension, or when the
+    /// extension names a format the recorder cannot write.
+    pub fn of(file_name: &str) -> Result<Self, RecordingError> {
         unlit_ecs::naming::extension_of(file_name).map_or_else(
-            || Err(format!("the file name {file_name:?} has no extension")),
+            || Err(RecordingError::MissingExtension(file_name.to_owned())),
             Self::from_name,
         )
     }
@@ -253,7 +318,11 @@ impl RecordingFormat {
     }
 
     /// Encode interleaved samples in this format.
-    pub fn encode(self, format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>, String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the FLAC encoder rejects the samples.
+    pub fn encode(self, format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>, RecordingError> {
         match self {
             Self::Wav => Ok(write_wav(format, samples)),
             Self::Flac => write_flac(format, samples),
@@ -273,13 +342,16 @@ impl RecordingHandle {
     )]
     #[must_use]
     pub(crate) fn format(&self) -> Option<AudioFormat> {
-        lock(&self.state).format
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .format
     }
 
     /// How many frames the recording has captured.
     #[must_use]
     pub fn frame_count(&self) -> usize {
-        let state = lock(&self.state);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let channels = state
             .format
             .map_or(1, |format| usize::from(format.channels).max(1));
@@ -289,7 +361,7 @@ impl RecordingHandle {
     /// How many seconds of audio the recording has captured.
     #[must_use]
     pub fn seconds(&self) -> f64 {
-        let state = lock(&self.state);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match state.format {
             Some(format) => {
                 let channels = usize::from(format.channels).max(1);
@@ -305,7 +377,7 @@ impl RecordingHandle {
     /// known until the format is.
     #[must_use]
     pub fn is_full(&self) -> bool {
-        let state = lock(&self.state);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.format.is_some() && state.samples.len() >= state.max_samples
     }
 
@@ -316,7 +388,7 @@ impl RecordingHandle {
     #[must_use]
     pub fn stop(self, world: &mut World) -> Option<RecordedAudio> {
         world.root_scope_mut().despawn(self.entity).unwrap();
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let format = state.format?;
         Some(RecordedAudio {
             format,
@@ -453,13 +525,25 @@ mod tests {
 
     #[test]
     fn an_extension_or_name_names_the_recording_format() {
-        assert_eq!(RecordingFormat::of("take.flac"), Ok(RecordingFormat::Flac));
-        assert_eq!(RecordingFormat::of("take.wav"), Ok(RecordingFormat::Wav));
-        assert_eq!(RecordingFormat::of("TAKE.FLAC"), Ok(RecordingFormat::Flac));
-        assert_eq!(RecordingFormat::from_name("wave"), Ok(RecordingFormat::Wav));
         assert_eq!(
-            RecordingFormat::from_name("flac"),
-            Ok(RecordingFormat::Flac)
+            RecordingFormat::of("take.flac").unwrap(),
+            RecordingFormat::Flac
+        );
+        assert_eq!(
+            RecordingFormat::of("take.wav").unwrap(),
+            RecordingFormat::Wav
+        );
+        assert_eq!(
+            RecordingFormat::of("TAKE.FLAC").unwrap(),
+            RecordingFormat::Flac
+        );
+        assert_eq!(
+            RecordingFormat::from_name("wave").unwrap(),
+            RecordingFormat::Wav
+        );
+        assert_eq!(
+            RecordingFormat::from_name("flac").unwrap(),
+            RecordingFormat::Flac
         );
         assert!(RecordingFormat::of("take").is_err());
         assert!(RecordingFormat::of("take.mp3").is_err());

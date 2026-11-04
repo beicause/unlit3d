@@ -38,7 +38,68 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 use crate::gpu::Gpu;
+
 use crate::host::drain_sub_world;
+
+/// Why the presentation path could not be built.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PresenterError {
+    /// The host world carries no window to present to.
+    NoWindow,
+    /// The window surface could not be built from the display handle.
+    Surface(wgpu::CreateSurfaceError),
+    /// The render sub-world is not reachable from the host.
+    NoRenderWorld(unlit_ecs::EntityAccessError),
+    /// The render sub-world carries no renderer at the named entity.
+    NoRenderer(unlit_ecs::EntityAccessError),
+    /// The offscreen target could not be bound to the scene pass.
+    OffscreenTarget(unlit_ecs::EntityAccessError),
+    /// The swap chain surface could not be opened.
+    WindowSurface(unlit_ecs::EntityAccessError),
+}
+
+impl std::fmt::Display for PresenterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoWindow => write!(f, "the scene setup found no window"),
+            Self::Surface(error) => {
+                write!(f, "failed to build the presentation surface: {error}")
+            }
+            Self::NoRenderWorld(error) => {
+                write!(f, "the scene setup found no render world: {error}")
+            }
+            Self::NoRenderer(error) => {
+                write!(f, "the scene setup found no renderer: {error}")
+            }
+            Self::OffscreenTarget(error) => {
+                write!(f, "failed to bind the offscreen target: {error}")
+            }
+            Self::WindowSurface(error) => {
+                write!(f, "failed to open the window surface: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PresenterError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Surface(error) => Some(error),
+            Self::NoRenderWorld(error)
+            | Self::NoRenderer(error)
+            | Self::OffscreenTarget(error)
+            | Self::WindowSurface(error) => Some(error),
+            Self::NoWindow => None,
+        }
+    }
+}
+
+impl From<wgpu::CreateSurfaceError> for PresenterError {
+    fn from(error: wgpu::CreateSurfaceError) -> Self {
+        Self::Surface(error)
+    }
+}
 
 /// The color format the offscreen target uses; the blit converts into the
 /// surface's own format.
@@ -316,6 +377,11 @@ fn open_surface(
 /// the scene's copies that target over the swap chain; without it the
 /// scene's pass draws straight into the swap chain — one pass and one copy
 /// fewer, which is what a plain window wants.
+///
+/// # Errors
+///
+/// Returns an error when the host has no window, the surface cannot be
+/// built, or the render sub-world, its renderer or its targets are gone.
 pub fn setup_presenter(
     world: &mut World,
     render: Entity,
@@ -324,12 +390,9 @@ pub fn setup_presenter(
     gpu: &Gpu,
     fallback_size: (u32, u32),
     offscreen: bool,
-) -> Result<(), String> {
-    let window = window(world).ok_or("the scene setup found no window")?;
-    let surface = gpu
-        .instance
-        .create_surface(window.clone())
-        .map_err(|error| format!("failed to build the presentation surface: {error}"))?;
+) -> Result<(), PresenterError> {
+    let window = window(world).ok_or(PresenterError::NoWindow)?;
+    let surface = gpu.instance.create_surface(window.clone())?;
     let raw_size = window.inner_size();
     let size = if raw_size.width == 0 || raw_size.height == 0 {
         fallback_size
@@ -341,19 +404,19 @@ pub fn setup_presenter(
         let mut nested = world
             .root_scope()
             .query_one::<&mut World>(render)
-            .map_err(|_| "the scene setup found no render world")?;
+            .map_err(PresenterError::NoRenderWorld)?;
         let context = nested
             .get()
             .root_scope()
             .query_one::<&Renderer>(renderer)
-            .map_err(|_| "the scene setup found no renderer")
+            .map_err(PresenterError::NoRenderer)
             .map(|mut renderer| renderer.get().context())?;
         // The offscreen path keeps the scene away from the swap chain: the
         // scene's pass draws into a target of its own, and a pass added
         // after it copies that target over the surface.
         if offscreen {
             let target = bind_offscreen(nested.get(), context, scene_pass, &gpu.device, size)
-                .map_err(|_| "failed to bind the offscreen target: the resource graph was gone")?;
+                .map_err(PresenterError::OffscreenTarget)?;
             let blit_pass = nested
                 .get()
                 .root_scope_mut()
@@ -367,7 +430,7 @@ pub fn setup_presenter(
             // [`Presenter::present`], which is the only place that knows it.
             let (surface, attachments) =
                 open_surface(nested.get(), renderer, gpu, window, surface, 1, false)
-                    .map_err(|_| "failed to open the window surface: the renderer was gone")?;
+                    .map_err(PresenterError::WindowSurface)?;
             (
                 Some(Blit {
                     pass: blit_pass,
@@ -386,7 +449,7 @@ pub fn setup_presenter(
                 FRAME_SAMPLES,
                 true,
             )
-            .map_err(|_| "failed to open the window surface: the renderer was gone")?;
+            .map_err(PresenterError::WindowSurface)?;
             (None, surface, attachments)
         }
     };
