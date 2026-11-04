@@ -7,8 +7,10 @@
 并且跑在 WebGPU 与 WebGL2 基线上。内置管线用 Lambert 漫反射光照为场景着色。
 
 本 crate 是分层的：下面这些模块是调用者搭建任意管线所用的通用设施，而内置 lit
-管线——以及用它的 egui 后端——由 feature 添加。通用模块完全不知道内置管线的存在：
-它使用与调用者自建管线完全相同的绑定槽位约定、顶点压缩与资源追踪。
+管线只是它们的普通使用者。通用模块完全不知道内置管线的存在：它使用与调用者自建
+管线完全相同的绑定槽位约定、顶点压缩与资源追踪。WESL 组合——包括把调用者片段拼进
+入口着色器标记位置——是 `compose` 里的公开设施，而非内置管线私有的步骤；egui
+后端是本 crate 唯一可选的部分。
 
 本 crate 处于**极早期开发阶段**；API 会自由变动。它不依赖 ECS 层；构建在其上的
 与 ECS 集成的 API 是
@@ -18,13 +20,12 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `lit` | 是 | `pipeline::SpecializedLitPipeline`、`pipeline::LitOptions`、`pipeline::LitVariant`，以及它们所组合的 WESL 模块 |
-| `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端。隐含 `lit` |
+| `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端 |
 
-使用 `--no-default-features` 时，本 crate 保留其通用设施——资源图、网格压缩、偏移
-分配器与缓冲池、staging、readback、`Scene`、`RenderAttachments`、变体缓存，以及
-镜像调用者所绑定类型的那些 WESL 模块——并去掉一切与内置管线相关的东西，包括用于组合着色器
-的 WESL 编译器。CI 会单独检查这一组合。
+WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色器始终可用：它们是
+调用者自建管线所组合的通用设施，而不是藏在 feature 后面的特权内置管线。使用
+`--no-default-features` 时，本 crate 保留除 egui 后端之外的一切，CI 会单独检查
+这一组合。
 
 ## 内容概览
 
@@ -74,7 +75,7 @@
   间隔划分。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、
   `GlobalBindings` 描述以及每条管线绑定本帧共享输入所用的全局绑定组布局构造函数；
-  在 `lit` feature 下还包含内置 lit 管线。
+  以及内置 lit 管线，它通过 `compose` 组合入口着色器。
 - `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
   而不必遍历值本身；当每帧 key 的成员较大时，这让 key 保持廉价。哈希来自
   `foldhash` 的定种子哈希器——hashbrown 自身的映射正是构建在这一族之上的。
@@ -88,8 +89,6 @@
 部分。下面是一次完整的走查：设备创建、网格压缩、每一个绑定组与绘制。
 
 ```rust
-# #[cfg(feature = "lit")]
-# {
 use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
@@ -435,7 +434,6 @@ impl Example {
 let example = Example::new(&device, &queue);
 example.draw(256, 192);
 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-# }
 ```
 
 `mesh`、`array_pool`、`buffer_pool`、`offset_allocator`、`staging` 与
@@ -445,8 +443,9 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
 调用者所绑定 Rust 类型的模块（`camera`、`globals`、`view`、`mesh_metadata`、`mesh_compression`
-解码函数，以及 `lit` 下的光源记录、聚类 uniform 与多边形形状因子）；`lit` feature
-额外加入内置入口着色器，由 `pipeline::SpecializedLitPipeline` 把它与一次绘制解析出的
+解码函数、光源记录、聚类 uniform 与多边形形状因子），以及内置的 `lit` 入口着色器。
+`compose` 用变体的条件编译开关对着这个包解析入口着色器，并把调用者片段拼进它的
+标记位置；`pipeline::SpecializedLitPipeline` 借此把 `lit` 与一次绘制解析出的
 `pipeline::LitVariant` 组合起来。这一份入口着色器覆盖所有 lit 变体：
 差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
 绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读相机与
@@ -455,7 +454,7 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 [`LineOptions`](line_shader::LineOptions) 特化它——入口着色器与拼进三个标记位置的
 调用者片段、硬边切割、深度模板策略、混合与写入掩码；切割只是一个和 lit 那些同类的
 WESL 条件编译开关，且在多采样目标上会让位于 alpha-to-coverage——它把切割会锯齿化的
-边缘重新平滑，所以变体只在单采样目标上设置它，选项、变体与拼接都收在 [`line_shader`](line_shader) 模块里。
+边缘重新平滑，所以变体只在单采样目标上设置它；选项与变体收在 [`line_shader`](line_shader) 模块里，拼接由 `compose` 完成。
 
 若要编写自己的着色器，有两条路。最近的一条是
 `pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段顶层、一段顶点、
@@ -728,7 +727,7 @@ cargo xtask test     # 整个工作区：nextest 加 doctest
 cargo nextest run -p unlit_wgpu --all-features   # 只跑本 crate
 ```
 
-集成测试是一个二进制，它要求 `lit` 与 `egui`。不带后者跑并不会报错：Cargo 会把整个
+集成测试是一个二进制，它要求 `egui`。不带该 feature 跑并不会报错：Cargo 会把整个
 target 跳过，于是 suite 悄无声息地不在这一趟里，只有单元测试报告结果。
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用

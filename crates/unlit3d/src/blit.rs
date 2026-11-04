@@ -326,9 +326,13 @@ fn bind_group_recipe(
 /// variant's descriptor owns its whole pipeline and wgpu deduplicates
 /// identical layouts on its side.
 fn pipeline(device: &wgpu::Device, surface: SurfaceKey) -> wgpu::RenderPipeline {
-    let vertex = crate::builtin::shader_module(device, VERTEX_MODULE, "unlit3d::blit::vertex", &[]);
+    let vertex_wgsl = unlit_wgpu::compose::compose(VERTEX_MODULE, &[], None)
+        .unwrap_or_else(|error| panic!("the blit vertex shader compiles: {error}"));
+    let vertex = unlit_wgpu::util::shader_module(device, &vertex_wgsl, "unlit3d::blit::vertex");
+    let fragment_wgsl = unlit_wgpu::compose::compose(FRAGMENT_MODULE, &[], None)
+        .unwrap_or_else(|error| panic!("the blit fragment shader compiles: {error}"));
     let fragment =
-        crate::builtin::shader_module(device, FRAGMENT_MODULE, "unlit3d::blit::fragment", &[]);
+        unlit_wgpu::util::shader_module(device, &fragment_wgsl, "unlit3d::blit::fragment");
     let layout = bind_group_layout(device);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::blit::pipeline_layout"),

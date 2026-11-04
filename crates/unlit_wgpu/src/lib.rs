@@ -2,9 +2,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(unsafe_code)]
 
-// The WESL shader package is generated at build time from `shaders/*.wesl`;
-// the `unlit` feature decides whether the built-in entry shader is one of the
-// modules it bundles.
+// The WESL shader package is generated at build time from `shaders/*.wesl`.
+// Every module it bundles is part of the core, including the built-in entry
+// shaders a caller composes with [`compose`].
 wesl_core::wesl_pkg!(
     #[doc = "The WESL modules of the built-in shader package."]
     #[expect(
@@ -18,6 +18,7 @@ wesl_core::wesl_pkg!(
 pub mod array_pool;
 pub mod buffer_pool;
 pub mod capabilities;
+pub mod compose;
 mod dag;
 pub mod globals;
 pub mod instance_stream;

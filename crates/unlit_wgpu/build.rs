@@ -6,34 +6,22 @@
 //! `wesl::wesl_pkg!`, so runtime shader composition can import the built-in
 //! modules (`import unlit_wgpu::mesh_compression;`).
 //!
-//! The `lit` module belongs to the built-in pipeline, so it is bundled only
-//! when that feature is on; everything else the package carries mirrors the
+//! Every module the package carries is part of the core: the built-in entry
+//! shaders (`lit`, `line`, `blit`, …) sit alongside the modules that mirror the
 //! Rust types a caller binds (the camera and frame globals, the mesh decode
-//! parameters) and is part of the core.
+//! parameters). A caller's own pipeline composes any of them the same way the
+//! built-in pipelines do.
 
 fn main() {
     println!("cargo:rerun-if-changed=shaders");
-    // The feature set selects which modules the package holds, so a change to
-    // it has to be seen as a change to the inputs.
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LIT");
 
-    let mut package = wesl::PackageBuilder::new("unlit_wgpu")
+    let package = wesl::PackageBuilder::new("unlit_wgpu")
         .scan_root("shaders")
         .expect("failed to scan WESL files")
         .validate()
         .unwrap_or_else(|error| panic!("WESL validation failed: {error}"));
 
-    if std::env::var_os("CARGO_FEATURE_LIT").is_none() {
-        package
-            .root
-            .submodules
-            .retain(|module| module.name != BUILT_IN_MODULE);
-    }
-
     package
         .build_artifact()
         .expect("failed to build the WESL package artifact");
 }
-
-/// Name of the WESL module holding the built-in shader.
-const BUILT_IN_MODULE: &str = "lit";

@@ -9,11 +9,13 @@ on WebGPU as well as on the WebGL2 baseline. A built-in pipeline shades the
 scene with Lambert diffuse lighting.
 
 The crate is layered: the modules below are general facilities a caller builds
-any pipeline on top of, and the built-in lit pipeline — and the egui backend
-that draws with it — are added by features. Nothing in the general modules knows
-about the built-in pipeline: it uses the same binding and slot conventions, the
-same vertex compression and the same resource tracking a caller's own pipeline
-would.
+any pipeline on top of, and the built-in lit pipeline is an ordinary user of
+them. Nothing in the general modules knows about the built-in pipeline: it uses
+the same binding and slot conventions, the same vertex compression and the same
+resource tracking a caller's own pipeline would. WESL composition, including the
+splice of a caller's snippets into an entry shader's hook marks, is a public
+facility in [`compose`] rather than a private step of the built-in pipeline; the
+egui backend is the only optional part of the crate.
 
 It is at an **early stage of development**; APIs change freely. It has no
 dependency on the ECS layer; the ECS-integrated API built on it is
@@ -23,15 +25,13 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `lit` | yes | [`pipeline`] — `SpecializedLitPipeline`, `LitOptions`, `LitVariant`, and the WESL module they compose |
-| `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws. Implies `lit` |
+| `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws |
 
-With `--no-default-features` the crate keeps its general facilities — the
-resource graph, mesh compression, the offset allocator and buffer pools,
-staging, readback, `Scene`, `RenderAttachments`, the variant cache, and the
-WESL modules mirroring the types a caller binds — and drops everything specific to the
-built-in pipeline, including the WESL compiler it composes shaders with. CI
-checks that combination separately.
+The WESL package, the [`compose`] facilities and the built-in `lit` and `line`
+entry shaders are always available: they are general facilities a caller's own
+pipeline composes against, not a privileged built-in pipeline behind a feature.
+With `--no-default-features` the crate keeps everything but the egui backend,
+and CI checks that combination separately.
 
 ## What is in the box
 
@@ -103,7 +103,7 @@ checks that combination separately.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, the `GlobalBindings` description and the global
   bind-group layout builder every pipeline binds the frame's shared inputs
-  through, plus the built-in lit pipeline under the `lit` feature.
+  through, plus the built-in lit pipeline.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front: hashing it writes the stored word instead of walking the value, which
   keeps a per-frame key cheap when its members are large. The hash comes from
@@ -120,8 +120,6 @@ is what runs in the frame loop. The walkthrough below is complete: device setup,
 mesh compression, every bind group and the draw.
 
 ```rust
-# #[cfg(feature = "lit")]
-# {
 use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
@@ -467,7 +465,6 @@ impl Example {
 let example = Example::new(&device, &queue);
 example.draw(256, 192);
 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-# }
 ```
 
 The doc comments of `mesh`, `array_pool`, `buffer_pool`, `offset_allocator`,
@@ -478,10 +475,11 @@ The doc comments of `mesh`, `array_pool`, `buffer_pool`, `offset_allocator`,
 The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
 caller binds (`camera`, `globals`, `view`, `mesh_metadata`, the `mesh_compression`
-decode functions and — under `lit` — the light records, the cluster uniform and
-the polygon form factor); the `lit` feature adds the built-in entry shader,
-which `SpecializedLitPipeline` composes with the
-[`LitVariant`](pipeline::LitVariant) a draw resolves. The package also carries
+decode functions, the light records, the cluster uniform and the polygon form
+factor), and the built-in `lit` entry shader. [`compose`] resolves it against the
+package with a variant's conditional-compilation flags and splices caller
+snippets into its hook marks; `SpecializedLitPipeline` uses it to compose `lit`
+with the [`LitVariant`](pipeline::LitVariant) a draw resolves. The package also carries
 `line`, the entry shader a screen-space stroke is drawn with; it reads the
 camera and the [`View`](globals::View) the lit shader declares but never reads,
 because a stroke's width is a pixel count rather than a world distance, so
@@ -493,8 +491,8 @@ policy, the blend and the write mask; the cut is a WESL
 conditional-compilation flag like the lit ones, and on a multisampled target
 it yields to alpha-to-coverage, which antialiases the edge the cut would jag,
 so the variant sets it on a single-sampled one alone; [`line_shader`](line_shader)
-holds the options, the variant and the splice. The `lit` entry
-shader in turn covers every lit variant: the differences are WESL
+holds the options and the variant; [`compose`] performs the splice. The `lit`
+entry shader in turn covers every lit variant: the differences are WESL
 conditional-compilation flags, so each composed variant holds one code path and
 declares only the bindings and attributes it uses.
 
@@ -917,8 +915,8 @@ cargo xtask test     # the whole workspace, through nextest plus the doctests
 cargo nextest run -p unlit_wgpu --all-features   # just this crate
 ```
 
-The integration tests are one binary, and it requires `lit` and `egui`. A run
-without the latter does not fail: Cargo skips the target whole, so the suite
+The integration tests are one binary, and it requires `egui`. A run without
+that feature does not fail: Cargo skips the target whole, so the suite
 leaves the run silently and only the unit tests report.
 
 The GPU integration tests render meshes into offscreen textures, read them back

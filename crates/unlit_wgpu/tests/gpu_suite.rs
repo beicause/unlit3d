@@ -4,9 +4,9 @@
 //! target of its own, so each paid for a link of the whole GPU stack. Here they
 //! are modules of a single target, sharing one compilation of [common].
 //!
-//! The manifest states the features this binary needs (`lit`, `egui`) rather
-//! than the modules repeating `#[cfg(feature = ...)]`: a target whose required
-//! features are off is skipped whole.
+//! The manifest states the feature this binary needs (`egui`) rather than the
+//! modules repeating `#[cfg(feature = ...)]`: a target whose required feature is
+//! off is skipped whole.
 
 mod common;
 

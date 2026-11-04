@@ -17,14 +17,13 @@ exclude = ["/assets", "/tests"]
 autotests = false
 
 # One binary for the whole integration suite: both files link the same GPU stack,
-# so a link per file would repeat that work. The lit pipeline and the egui
-# backend are both required, which is why the binary is skipped whole when the
-# latter is off.
+# so a link per file would repeat that work. The egui backend is required, which
+# is why the binary is skipped whole when that feature is off.
 [[test]]
 harness = false
 name = "unlit_wgpu"
 path = "tests/gpu_suite.rs"
-required-features = ["egui", "lit"]
+required-features = ["egui"]
 
 [dependencies]
 arrayvec.workspace = true
@@ -37,7 +36,7 @@ glam.workspace = true
 hashbrown.workspace = true
 ringbuf.workspace = true
 smallvec.workspace = true
-wesl = { workspace = true, optional = true }
+wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
 zerocopy.workspace = true
@@ -59,21 +58,10 @@ wesl = { version = "0.5.0", default-features = false, features = ["package"] }
 wasm-bindgen.workspace = true
 
 [features]
-default = ["lit"]
 ## An [egui](https://egui.rs) backend that draws tessellated egui output as
 ## ordinary screen-space draws. It draws with a built-in lit pipeline in its
-## unlit mode, so it implies `lit`.
-egui = ["dep:egui", "lit"]
-## The built-in lit pipeline: the shader variants it composes from the WESL
-## package, its options, and its bind-group and vertex-buffer layouts.
-##
-## It is built on the core the same way a caller's own pipeline would be: it
-## uses the binding and slot conventions, the vertex compression and the
-## resource tracking the crate exposes to everyone, and composes the `lit`
-## module of the crate's WESL package with `wesl`. Without it the crate keeps
-## those general facilities and drops everything specific to the built-in
-## pipeline -- including the WESL compiler it composes shaders with.
-lit = ["dep:wesl"]
+## unlit mode.
+egui = ["dep:egui"]
 ## Reflection: derive [facet](https://docs.rs/facet) for the resource graph's
 ## information structures, so a bridge can serialise them as they are. Off by
 ## default because it is only the bridge that needs it; the renderer never

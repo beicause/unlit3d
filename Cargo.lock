@@ -4595,7 +4595,6 @@ dependencies = [
  "unlit_wgpu_test_util",
  "wasm-bindgen",
  "web-time",
- "wesl",
  "wgpu",
  "winit",
  "zerocopy",

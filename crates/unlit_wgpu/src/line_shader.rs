@@ -37,13 +37,6 @@ use std::sync::Arc;
 
 use crate::specialize::{PipelineDescriptor, SurfaceTarget};
 
-/// The WESL declarations spliced in at module scope.
-pub const MODULE_HOOK: &str = "// unlit_wgpu::hook module";
-/// The WESL statements spliced into the vertex stage, before its return.
-pub const VERTEX_HOOK: &str = "// unlit_wgpu::hook vertex";
-/// The WESL statements spliced into the fragment stage, before its cut.
-pub const FRAGMENT_HOOK: &str = "// unlit_wgpu::hook fragment";
-
 /// A caller's own shader code, spliced into the built-in `line.wesl`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LineShader {
@@ -191,59 +184,6 @@ mod tests {
         };
         assert_eq!(variant.features(), [("HARD_EDGE", false)]);
     }
-}
-
-/// The source of the built-in entry shader, exactly as the package bundles it.
-///
-/// It is the file `shaders/line.wesl` itself, so it carries the hook marks a
-/// snippet is spliced at.
-fn built_in_entry_source() -> &'static str {
-    crate::shader::line::MODULE.source
-}
-
-/// `source` with each hook mark replaced by the snippet belonging to it.
-///
-/// The splice happens on WESL, before anything is parsed or compiled, so a
-/// snippet takes part in the same conditional compilation as the code around
-/// it and a diagnostic inside one points at the line it was written on.
-///
-/// # Panics
-///
-/// If the built-in source does not carry all three marks. They are checked
-/// rather than trusted because a mark is a bare comment: losing one while
-/// editing the shader would otherwise silently drop every snippet aimed at it.
-pub(crate) fn splice(source: &str, shader: &LineShader) -> String {
-    let spliced = splice_at(source, MODULE_HOOK, shader.module());
-    let spliced = splice_at(&spliced, VERTEX_HOOK, shader.vertex());
-    let spliced = splice_at(&spliced, FRAGMENT_HOOK, shader.fragment());
-    assert!(
-        !spliced.contains(MODULE_HOOK)
-            && !spliced.contains(VERTEX_HOOK)
-            && !spliced.contains(FRAGMENT_HOOK),
-        "the built-in line entry shader carries all three hook marks"
-    );
-    spliced
-}
-
-/// `source` with the line carrying the first `mark` replaced by `snippet`.
-///
-/// The whole line goes, indentation included, so the snippet stands where the
-/// mark stood and an empty snippet leaves a blank line rather than an indented
-/// tail. A missing mark leaves the source untouched; [`splice`] is what
-/// rejects one.
-fn splice_at(source: &str, mark: &str, snippet: &str) -> String {
-    let Some(at) = source.find(mark) else {
-        return source.to_owned();
-    };
-    let line_start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
-    let line_end = source[at..]
-        .find('\n')
-        .map_or(source.len(), |newline| at + newline);
-    let mut spliced = String::with_capacity(source.len() + snippet.len());
-    spliced.push_str(&source[..line_start]);
-    spliced.push_str(snippet);
-    spliced.push_str(&source[line_end..]);
-    spliced
 }
 
 /// The policy a caller decides about a built-in line pipeline.
@@ -428,50 +368,6 @@ impl crate::specialize::PipelineDescriptor<wgpu::RenderPipeline> for LineVariant
     }
 }
 
-/// Compose the variant's entry shader into one WGSL module.
-///
-/// The main module is the built-in `line.wesl`, with the options' snippets
-/// spliced into it at its hook marks. It is composed as the package's own
-/// `line` module, so a snippet that names `package::view` or
-/// `unlit_wgpu::view` reaches the modules the shader around it imports, and
-/// sees the variant's flags.
-fn compose(variant: &LineVariant) -> Result<String, wesl::Error> {
-    let main_path = wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
-        vec!["line".to_owned()],
-    );
-    let mut compile_options = wesl::CompileOptions::default();
-    for (name, enabled) in variant.features() {
-        compile_options.features.set(name, enabled);
-    }
-    compile_options.keep_main = true;
-
-    let mut packages = wesl::resolver::PackageResolver::new();
-    packages.add_package(&crate::shader::PACKAGE);
-
-    let composed = match &variant.options.shader {
-        None => {
-            wesl::Compiler::new_with_resolver(compile_options, packages).compile_module(&main_path)
-        }
-        Some(shader) => {
-            // The spliced source replaces the package's own `line` module,
-            // and nothing else: mounted at that one path, it keeps the
-            // imports the package resolves and the module name it is
-            // reported under.
-            let mut modules = wesl::resolver::VirtualResolver::new();
-            modules.add_module(
-                wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, Vec::new()),
-                splice(built_in_entry_source(), shader).into(),
-            );
-            let mut resolver = wesl::resolver::Router::new();
-            resolver.mount_resolver(main_path.clone(), modules);
-            resolver.mount_fallback_resolver(packages);
-            wesl::Compiler::new_with_resolver(compile_options, resolver).compile_module(&main_path)
-        }
-    };
-    composed.map(|result| result.syntax.to_string())
-}
-
 /// The pipeline a line variant draws with.
 fn pipeline(device: &wgpu::Device, variant: &LineVariant) -> wgpu::RenderPipeline {
     let label = variant
@@ -479,7 +375,17 @@ fn pipeline(device: &wgpu::Device, variant: &LineVariant) -> wgpu::RenderPipelin
         .shader
         .as_ref()
         .map_or("unlit_wgpu::line", |shader| shader.label());
-    let wgsl = compose(variant).unwrap_or_else(|error| panic!("{label}: {error}"));
+    let features = variant.features();
+    let replacement = variant.options.shader.as_ref().map(|shader| {
+        crate::compose::splice(
+            crate::shader::line::MODULE.source,
+            shader.module(),
+            shader.vertex(),
+            shader.fragment(),
+        )
+    });
+    let wgsl = crate::compose::compose("line", &features, replacement.as_deref())
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
     let module = crate::util::shader_module(device, &wgsl, label);
     let layout = crate::pipeline::global_bind_group_layout(
         device,

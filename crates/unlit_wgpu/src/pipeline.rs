@@ -7,17 +7,12 @@
 //! creating meshes. Each variant contains exactly the bindings and attributes
 //! the selected channels need, so nothing unused reaches the GPU.
 
-#[cfg(feature = "lit")]
 use crate::mesh::{
     ChannelEncoding, PositionStreamChannels, PositionStreamWriter, SecondaryFlags,
     SecondaryStreamWriter,
 };
-#[cfg(feature = "lit")]
-#[cfg(feature = "lit")]
 use crate::specialize::{PipelineDescriptor, PipelineVariant, SurfaceKey, VertexBufferLayoutDesc};
-#[cfg(feature = "lit")]
 use crate::util::Hashed;
-#[cfg(feature = "lit")]
 use std::sync::Arc;
 
 /// Binding slot of the camera uniform in the global bind group.
@@ -164,19 +159,15 @@ pub mod location {
 }
 
 /// Entry point name of the built-in shader's vertex stage.
-#[cfg(feature = "lit")]
 pub const VS_MAIN: &str = "vs_main";
 /// Entry point name of the built-in shader's fragment stage.
-#[cfg(feature = "lit")]
 pub const FS_MAIN: &str = "fs_main";
 /// Label of the built-in entry shader: its shader module's label, and the name
 /// a composition error is reported under.
-#[cfg(feature = "lit")]
 const BUILT_IN_SHADER_LABEL: &str = "unlit_wgpu::lit";
 
 /// Name of the WESL module the built-in entry shader is composed from: the file
 /// `shaders/lit.wesl` of this crate's package.
-#[cfg(feature = "lit")]
 const BUILT_IN_MODULE: &str = "lit";
 
 /// The per-vertex channels the built-in shader variant reads.
@@ -191,7 +182,6 @@ const BUILT_IN_MODULE: &str = "lit";
 /// The two halves are [`crate::mesh`]'s own channel types, so the attributes a
 /// pipeline declares and the bytes a packed mesh writes come from one
 /// description and cannot drift apart.
-#[cfg(feature = "lit")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LitVertexChannels {
     /// The position stream: whether it carries a position at all — and in
@@ -206,7 +196,6 @@ pub struct LitVertexChannels {
     pub secondary: SecondaryFlags,
 }
 
-#[cfg(feature = "lit")]
 impl LitVertexChannels {
     /// The channels of a layout that carries none: no position, no joints, and
     /// an empty secondary stream.
@@ -288,7 +277,6 @@ impl LitVertexChannels {
 }
 
 /// How a sampled base-color texel expands into the fragment's color.
-#[cfg(feature = "lit")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BaseColorChannels {
     /// The texel is a color in all four channels.
@@ -343,7 +331,6 @@ pub enum BaseColorChannels {
 ///
 /// The label names the shader: it is the shader module's label, and a
 /// composition error is reported under it.
-#[cfg(feature = "lit")]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LitShader {
     label: Arc<str>,
@@ -352,7 +339,6 @@ pub struct LitShader {
     fragment: Arc<str>,
 }
 
-#[cfg(feature = "lit")]
 impl LitShader {
     /// A shader named `label` whose `module`, `vertex` and `fragment` snippets
     /// are spliced into the built-in entry shader.
@@ -394,7 +380,6 @@ impl LitShader {
     }
 }
 
-#[cfg(feature = "lit")]
 impl core::fmt::Debug for LitShader {
     /// Prints the label and each snippet's length rather than the snippets
     /// themselves, so an [`LitOptions`] dump stays readable.
@@ -419,7 +404,6 @@ impl core::fmt::Debug for LitShader {
 ///
 /// [`LitOptions::standard`] is the usual starting point: back-face culling,
 /// a filtering base-color texture binding and reverse-z depth.
-#[cfg(feature = "lit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LitOptions {
     /// The entry shader this policy draws with, or `None` for the built-in
@@ -572,7 +556,6 @@ impl DepthStencilPolicy {
     }
 }
 
-#[cfg(feature = "lit")]
 impl LitOptions {
     /// The usual starting point: the full compressed mesh variant — positions,
     /// UVs, vertex colors, a base-color texture and per-instance transforms —
@@ -697,7 +680,6 @@ impl LitOptions {
 /// draws that agree on all of it share one compiled pipeline; because the
 /// variant is the complete description of the blueprint, the cache key is
 /// canonical by construction.
-#[cfg(feature = "lit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LitVariant {
     /// The caller's policy, with its hash computed once. The variant is the
@@ -718,7 +700,6 @@ pub struct LitVariant {
     pub strip_index_format: Option<wgpu::IndexFormat>,
 }
 
-#[cfg(feature = "lit")]
 impl LitVariant {
     /// The WESL `@if` features the variant asks for, paired with their state.
     ///
@@ -865,7 +846,6 @@ impl LitVariant {
     }
 }
 
-#[cfg(feature = "lit")]
 impl LitVariant {
     /// Build the bind-group layouts this variant declares, without compiling
     /// the pipeline.
@@ -1033,7 +1013,6 @@ impl LitVariant {
     }
 }
 
-#[cfg(feature = "lit")]
 impl PipelineVariant<wgpu::RenderPipeline> for LitVariant {
     type Descriptor = Self;
 
@@ -1042,7 +1021,6 @@ impl PipelineVariant<wgpu::RenderPipeline> for LitVariant {
     }
 }
 
-#[cfg(feature = "lit")]
 impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
     /// Compose this variant's entry shader and build the pipeline, so a variant
     /// compiles through the same [PipelineDescriptor] mechanism a caller's own
@@ -1056,7 +1034,8 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
             Some(shader) => shader.label(),
             None => BUILT_IN_SHADER_LABEL,
         };
-        let wgsl = compose(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"));
+        let wgsl =
+            compose_shader(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"));
         let module = crate::util::shader_module(device, &wgsl, label);
 
         let layouts = self.bind_group_layouts(device);
@@ -1123,87 +1102,6 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
     }
 }
 
-/// The module path a variant's entry shader is composed at.
-///
-/// The entry shader is always the built-in `lit` module of the crate's package:
-/// a caller's snippets are spliced into that module rather than replacing it,
-/// so the path does not depend on the options.
-#[cfg(feature = "lit")]
-fn entry_shader_path() -> wesl::syntax::ModulePath {
-    wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
-        vec![BUILT_IN_MODULE.to_owned()],
-    )
-}
-
-/// The comment the built-in entry shader marks its module-scope splice with.
-#[cfg(feature = "lit")]
-const MODULE_HOOK: &str = "// unlit_wgpu::hook module";
-
-/// The comment the built-in entry shader marks its vertex-stage splice with.
-#[cfg(feature = "lit")]
-const VERTEX_HOOK: &str = "// unlit_wgpu::hook vertex";
-
-/// The comment the built-in entry shader marks its fragment-stage splice with.
-#[cfg(feature = "lit")]
-const FRAGMENT_HOOK: &str = "// unlit_wgpu::hook fragment";
-
-/// The source of the built-in entry shader, exactly as the package bundles it.
-///
-/// It is the file `shaders/lit.wesl` itself, so it carries the hook marks a
-/// snippet is spliced at.
-#[cfg(feature = "lit")]
-fn built_in_entry_source() -> &'static str {
-    crate::shader::lit::MODULE.source
-}
-
-/// `source` with each hook mark replaced by the snippet belonging to it.
-///
-/// The splice happens on WESL, before anything is parsed or compiled, so a
-/// snippet takes part in the same conditional compilation as the code around it
-/// and a diagnostic inside one points at the line it was written on.
-///
-/// # Panics
-///
-/// If the built-in source does not carry all three marks. They are checked
-/// rather than trusted because a mark is a bare comment: losing one while
-/// editing the shader would otherwise silently drop every snippet aimed at it.
-#[cfg(feature = "lit")]
-fn splice(source: &str, shader: &LitShader) -> String {
-    let spliced = splice_at(source, MODULE_HOOK, shader.module());
-    let spliced = splice_at(&spliced, VERTEX_HOOK, shader.vertex());
-    let spliced = splice_at(&spliced, FRAGMENT_HOOK, shader.fragment());
-    assert!(
-        !spliced.contains(MODULE_HOOK)
-            && !spliced.contains(VERTEX_HOOK)
-            && !spliced.contains(FRAGMENT_HOOK),
-        "the built-in entry shader carries all three hook marks"
-    );
-    spliced
-}
-
-/// `source` with the line carrying the first `mark` replaced by `snippet`.
-///
-/// The whole line goes, indentation included, so the snippet stands where the
-/// mark stood and an empty snippet leaves a blank line rather than an indented
-/// tail. A missing mark leaves the source untouched; [`splice`] is what
-/// rejects one.
-#[cfg(feature = "lit")]
-fn splice_at(source: &str, mark: &str, snippet: &str) -> String {
-    let Some(at) = source.find(mark) else {
-        return source.to_owned();
-    };
-    let line_start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
-    let line_end = source[at..]
-        .find('\n')
-        .map_or(source.len(), |newline| at + newline);
-    let mut spliced = String::with_capacity(source.len() + snippet.len());
-    spliced.push_str(&source[..line_start]);
-    spliced.push_str(snippet);
-    spliced.push_str(&source[line_end..]);
-    spliced
-}
-
 /// Compose `variant`'s entry shader into one WGSL module.
 ///
 /// The main module is the built-in `lit.wesl`, with the options' snippets
@@ -1228,9 +1126,10 @@ fn splice_at(source: &str, mark: &str, snippet: &str) -> String {
 /// without being read. The per-instance fields cannot either: the instance
 /// stream is bound for every variant, so there is no state in which one is
 /// read without the stream that carries it.
-#[cfg(feature = "lit")]
-fn compose(variant: &LitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
-    let main_path = entry_shader_path();
+fn compose_shader(
+    variant: &LitVariant,
+    texel_arrays: bool,
+) -> Result<String, crate::compose::ComposeError> {
     assert!(
         !variant.base_color_texture || variant.channels.secondary.contains(SecondaryFlags::UV),
         "the base-color texture is sampled with the per-vertex UV, so sampling one requires a UV channel"
@@ -1252,64 +1151,17 @@ fn compose(variant: &LitVariant, texel_arrays: bool) -> Result<String, ComposeEr
         "an expanding variant pushes the vertex along its normal, so `EXPANDED` requires a normal channel"
     );
 
-    let mut compile_options = wesl::CompileOptions::default();
-    for (name, enabled) in variant.features(texel_arrays) {
-        compile_options.features.set(name, enabled);
-    }
-    compile_options.keep_main = true;
-
-    let mut packages = wesl::resolver::PackageResolver::new();
-    packages.add_package(&crate::shader::PACKAGE);
-
-    let composed = match &variant.options.shader {
-        None => {
-            wesl::Compiler::new_with_resolver(compile_options, packages).compile_module(&main_path)
-        }
-        Some(shader) => {
-            // The spliced source replaces the package's own `lit` module, and
-            // nothing else: mounted at that one path, it keeps the imports the
-            // package resolves -- `unlit_wgpu::` and the shader's own
-            // `package::` alike -- and the module name it is reported under.
-            //
-            // The router hands a mounted resolver the path below the mount
-            // point, so mounting at the entry path leaves the virtual module
-            // the empty path -- and leaves every sibling (`unlit_wgpu::light`
-            // and the rest) to the package that owns it.
-            let mut modules: wesl::resolver::VirtualResolver<'static> =
-                wesl::resolver::VirtualResolver::new();
-            modules.add_module(
-                wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, Vec::new()),
-                splice(built_in_entry_source(), shader).into(),
-            );
-            let mut resolver = wesl::resolver::Router::new();
-            resolver.mount_resolver(main_path.clone(), modules);
-            resolver.mount_fallback_resolver(packages);
-            wesl::Compiler::new_with_resolver(compile_options, resolver).compile_module(&main_path)
-        }
-    };
-    composed
-        .map(|result| result.syntax.to_string())
-        .map_err(ComposeError::Compile)
+    let features = variant.features(texel_arrays);
+    let replacement = variant.options.shader.as_ref().map(|shader| {
+        crate::compose::splice(
+            crate::shader::lit::MODULE.source,
+            shader.module(),
+            shader.vertex(),
+            shader.fragment(),
+        )
+    });
+    crate::compose::compose(BUILT_IN_MODULE, &features, replacement.as_deref())
 }
-/// Failure reasons reported by [`compose`].
-#[cfg(feature = "lit")]
-#[derive(Debug)]
-enum ComposeError {
-    /// The WESL compiler rejected the module.
-    Compile(wesl::Error),
-}
-
-#[cfg(feature = "lit")]
-impl core::fmt::Display for ComposeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Compile(error) => write!(f, "WESL compilation failed: {error}"),
-        }
-    }
-}
-
-#[cfg(feature = "lit")]
-impl std::error::Error for ComposeError {}
 
 /// Which of a source's global buffers a pipeline reads.
 ///
@@ -1523,7 +1375,6 @@ pub fn global_bind_group_layout(
 /// the material group only for a variant that samples a base-color texture. The
 /// mesh group is always `None` — the built-in variants bind nothing there — but
 /// stays in the structure because the index is a general extension point.
-#[cfg(feature = "lit")]
 #[derive(Clone, Debug)]
 pub struct LitBindGroupLayouts {
     /// Layout of the global bind group (index 0).
@@ -1545,7 +1396,6 @@ pub struct LitBindGroupLayouts {
 /// so the built-in shader compiles through the same cache a caller's own
 /// variant does, and the layouts it declares are derived from the variant
 /// rather than stored beside the pipeline.
-#[cfg(feature = "lit")]
 pub type SpecializedLitPipeline =
     crate::specialize::SpecializedPipeline<wgpu::RenderPipeline, LitVariant>;
 
@@ -1558,15 +1408,15 @@ pub type SpecializedLitPipeline =
 ///
 /// A device that can bind storage buffers reports a non-zero limit, so this is
 /// what decides between the built-in shader's buffer and texel array paths.
-#[cfg(feature = "lit")]
 pub fn supports_storage_buffers(device: &wgpu::Device) -> bool {
     let limits = device.limits();
     limits.max_storage_buffers_per_shader_stage > 0 && limits.max_storage_buffer_binding_size > 0
 }
 
-#[cfg(all(test, feature = "lit"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::{FRAGMENT_HOOK, MODULE_HOOK, VERTEX_HOOK};
     use crate::specialize::Variants;
 
     /// A caller composes their own entry shader against the built-in package
@@ -1653,7 +1503,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             false,
         );
 
-        let wgsl = compose(&candidate, false).expect("the caller's snippets compose");
+        let wgsl = compose_shader(&candidate, false).expect("the caller's snippets compose");
         // The built-in stages are still there: a snippet takes part in them
         // rather than standing in for them.
         assert!(wgsl.contains("fn vs_main"));
@@ -1706,8 +1556,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
 
         assert_eq!(
-            code_lines(&compose(&built_in, false).expect("the built-in shader composes")),
-            code_lines(&compose(&with_snippets, false).expect("empty snippets compose")),
+            code_lines(&compose_shader(&built_in, false).expect("the built-in shader composes")),
+            code_lines(&compose_shader(&with_snippets, false).expect("empty snippets compose")),
             "an empty snippet adds nothing to either stage"
         );
     }
@@ -1783,7 +1633,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// The instance stream is not a dimension: every built-in variant binds one,
     /// so a per-instance field never has to be declared separately. The array path
     /// is not one either: it is the device's answer and is passed to
-    /// [`compose`] rather than carried by the variant.
+    /// [`compose_shader`] rather than carried by the variant.
     fn all_variants() -> Vec<LitVariant> {
         // A position is absent — leaving the geometry a point at the instance
         // origin — or present in one of the three encodings.
@@ -1870,7 +1720,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |srgb_to_linear_output: bool| {
             let mut options = LitOptions::standard();
             options.srgb_to_linear_output = srgb_to_linear_output;
-            compose(
+            compose_shader(
                 &variant(options, LitVertexChannels::empty(), false, false),
                 false,
             )
@@ -1901,7 +1751,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |base_color: BaseColorChannels| {
             let mut options = LitOptions::standard();
             options.base_color = base_color;
-            compose(
+            compose_shader(
                 &variant(
                     options,
                     channels(
@@ -1951,7 +1801,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |alpha_cutoff: bool| {
             let mut options = LitOptions::standard();
             options.alpha_cutoff = alpha_cutoff;
-            compose(
+            compose_shader(
                 &variant(
                     options,
                     channels(
@@ -2026,7 +1876,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn a_luminance_layout_without_a_texture_is_rejected() {
         let mut options = LitOptions::standard();
         options.base_color = BaseColorChannels::Luminance;
-        let _ = compose(
+        let _ = compose_shader(
             &variant(
                 options,
                 channels(
@@ -2239,7 +2089,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 candidate.options.update(|options| options.unlit = unlit);
                 // The array path is the device's, so both are exercised here.
                 for texel_arrays in [false, true] {
-                    let wgsl = compose(&candidate, texel_arrays)
+                    let wgsl = compose_shader(&candidate, texel_arrays)
                         .unwrap_or_else(|error| panic!("variant {candidate:?} failed: {error}"));
                     assert!(wgsl.contains("fn vs_main"), "variant {candidate:?}");
                     assert!(wgsl.contains("fn fs_main"), "variant {candidate:?}");
@@ -2421,7 +2271,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 false,
             ),
         ] {
-            let result = std::panic::catch_unwind(|| compose(&candidate, false));
+            let result = std::panic::catch_unwind(|| compose_shader(&candidate, false));
             assert!(result.is_err(), "variant {candidate:?} must be rejected");
         }
     }
@@ -2769,7 +2619,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |expanded: bool| {
             let mut options = LitOptions::standard();
             options.expanded = expanded;
-            compose(
+            compose_shader(
                 &variant(
                     options,
                     channels(
@@ -2813,7 +2663,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn an_expanding_variant_without_normals_is_rejected() {
         let mut options = LitOptions::standard();
         options.expanded = true;
-        let _ = compose(
+        let _ = compose_shader(
             &variant(
                 options,
                 channels(
