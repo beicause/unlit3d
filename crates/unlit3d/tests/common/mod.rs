@@ -179,10 +179,7 @@ impl TestGpu {
 
     /// The frame's resource graph.
     pub fn graph<'w>(&self, world: &'w World) -> QueryOne<'w, &'w mut ResourceGraph> {
-        world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(self.context.graph)
-            .expect("the context's graph exists")
+        self.context.graph(&world.root_scope())
     }
 
     /// Register `texture` in the frame's graph together with a default view of
@@ -386,12 +383,10 @@ impl TestGpu {
         with_depth: bool,
     ) -> wgpu::Texture {
         use unlit_wgpu::render_attachments::create_color_target;
-        let device = world
-            .root_scope()
-            .query_one::<&wgpu::Device>(self.context.device)
-            .expect("the context's device")
-            .get()
-            .clone();
+        let device = self
+            .context
+            .device(&world.root_scope())
+            .expect("the context's device");
         let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
         let (_, color_view) = self.register_texture(world, color.clone());
         let attachments = FrameAttachments::new(
@@ -427,12 +422,10 @@ impl TestGpu {
         with_depth: bool,
     ) -> wgpu::Texture {
         use unlit_wgpu::render_attachments::create_color_target;
-        let device = world
-            .root_scope()
-            .query_one::<&wgpu::Device>(self.context.device)
-            .expect("the context's device")
-            .get()
-            .clone();
+        let device = self
+            .context
+            .device(&world.root_scope())
+            .expect("the context's device");
         let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
         let (_, color_view) = self.register_texture(world, color.clone());
         let attachments =

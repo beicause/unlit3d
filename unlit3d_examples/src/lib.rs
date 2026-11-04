@@ -225,10 +225,7 @@ pub fn bind_offscreen_target(
     // depends on it, so the pass holding the view keeps the texture alive —
     // and a screenshot can resolve the texture by handle and read it back.
     let color_view = {
-        let mut graph = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(context.graph)
-            .expect("the context's resource graph exists");
+        let mut graph = context.graph(&world.root_scope());
         let texture = graph.get().insert(color.clone(), None);
         let view = graph.get().insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
@@ -1638,11 +1635,11 @@ fn present_frame(app: Entity) -> OnFrame {
                 .query_one::<&mut Renderer>(renderer)
                 .expect("the renderer is a resource entity");
             renderer_row.get().render(nested_world);
-            let mut queue = nested_world
-                .root_scope()
-                .query_one::<&wgpu::Queue>(renderer_row.get().context().queue)
+            let context = renderer_row.get().context();
+            let queue = context
+                .queue(&nested_world.root_scope())
                 .expect("the queue resource");
-            frame.present_and_park(nested_world, queue.get(), presenting);
+            frame.present_and_park(nested_world, &queue, presenting);
         }
         let _ = world
             .root_scope()
@@ -1995,7 +1992,10 @@ impl Scene {
         {
             mount_selector(&mut world, ui, switch, def, panels.selector);
             mount_frame_rate(&mut world, ui, frame_rate);
-            mount_gpu_info(&mut world, ui, context.device, panels.gpu_info);
+            let device = context
+                .device(&world.root_scope())
+                .expect("the device resource");
+            mount_gpu_info(&mut world, ui, device, panels.gpu_info);
             // Every platform has a window the button can take fullscreen, so
             // it is drawn everywhere. A platform whose backend cannot — Android
             // already takes the whole screen for its activity — draws the
@@ -2602,14 +2602,13 @@ fn gpu_info_default_pos(ctx: &egui::Context) -> egui::Pos2 {
 ///
 /// The device is read here, once, where it is in hand; the panel then draws
 /// from the strings that read produced.
-fn mount_gpu_info(world: &mut World, ui: Entity, device: Entity, initial: Option<egui::Rect>) {
-    let info = {
-        let scope = world.scope(ui).expect("the UI source is alive");
-        let mut device = scope
-            .query_one::<&wgpu::Device>(device)
-            .expect("the device component exists");
-        GpuInfo::read(device.get())
-    };
+fn mount_gpu_info(
+    world: &mut World,
+    ui: Entity,
+    device: wgpu::Device,
+    initial: Option<egui::Rect>,
+) {
+    let info = GpuInfo::read(&device);
     world
         .scope_mut(ui)
         .expect("the UI source is alive")

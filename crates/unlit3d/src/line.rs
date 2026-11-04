@@ -319,11 +319,9 @@ impl LineSource {
         if let Some(index) = self.gpus.iter().position(|(key, _)| *key == surface) {
             return index;
         }
-        let device = scope
-            .query_one::<&wgpu::Device>(ctx.device)
-            .expect("the context device resource exists")
-            .get()
-            .clone();
+        let device = ctx
+            .device(scope)
+            .expect("the context device resource exists");
         let recipe = GlobalRecipe::new(move |device: &wgpu::Device, graph, uniforms| {
             let layout = global_bind_group_layout(
                 device,
@@ -451,11 +449,9 @@ impl FrameSource for LineSource {
         );
 
         let bind_group = {
-            let device = scope
-                .query_one::<&wgpu::Device>(ctx.device)
-                .expect("the context device resource exists")
-                .get()
-                .clone();
+            let device = ctx
+                .device(scope)
+                .expect("the context device resource exists");
             let uniforms = {
                 let mut graph_holder = ctx.graph(scope);
                 let mut uniforms_holder = ctx.uniforms(scope);

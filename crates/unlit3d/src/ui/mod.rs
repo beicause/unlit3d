@@ -315,16 +315,12 @@ impl FrameSource for UiSource {
         // for a pass that has attachments.
         let target = info;
 
-        let device = scope
-            .query_one::<&wgpu::Device>(ctx.device)
-            .expect("the context's device resource exists")
-            .get()
-            .clone();
-        let queue = scope
-            .query_one::<&wgpu::Queue>(ctx.queue)
-            .expect("the context's queue resource exists")
-            .get()
-            .clone();
+        let device = ctx
+            .device(scope)
+            .expect("the context's device resource exists");
+        let queue = ctx
+            .queue(scope)
+            .expect("the context's queue resource exists");
         let mut input_events_rows = scope.query::<&InputEvents>();
 
         // Input arrives as world resources: the world's own [`InputEvents`] is
@@ -837,11 +833,8 @@ mod tests {
 
     /// An encoder to record the frame's uploads into.
     fn encoder(world: &World, ctx: RenderContext) -> wgpu::CommandEncoder {
-        world
-            .root_scope()
-            .query_one::<&wgpu::Device>(ctx.device)
+        ctx.device(&world.root_scope())
             .expect("the context's device")
-            .get()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("test::encoder"),
             })

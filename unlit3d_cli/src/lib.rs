@@ -497,10 +497,7 @@ fn bind_target(
 ) -> wgpu::Texture {
     let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
     let color_view = {
-        let mut graph = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(context.graph)
-            .expect("the context's resource graph exists");
+        let mut graph = context.graph(&world.root_scope());
         let texture = graph.get().insert(color.clone(), None);
         let view = graph.get().insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),

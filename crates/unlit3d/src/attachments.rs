@@ -21,37 +21,11 @@
 //! exactly. `with_depth` decides whether one is allocated at all, and
 //! [`FrameAttachments::depth_view`] reports it.
 
-use unlit_ecs::{QueryOne, World};
+use unlit_ecs::World;
 use unlit_wgpu::render_attachments::{create_depth_target, create_msaa_target};
-use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 use crate::source::RenderContext;
-
-/// The device the frame's context was created with, cloned out of `world`.
-///
-/// # Panics
-///
-/// If the context's device resource is gone.
-fn context_device(world: &World, ctx: RenderContext) -> wgpu::Device {
-    world
-        .root_scope()
-        .query_one::<&wgpu::Device>(ctx.device)
-        .expect("the context's device resource exists")
-        .get()
-        .clone()
-}
-
-/// The frame's resource graph.
-///
-/// # Panics
-///
-/// If the context's graph resource is gone.
-fn context_graph<'w>(world: &'w World, ctx: RenderContext) -> QueryOne<'w, &'w mut ResourceGraph> {
-    world
-        .root_scope()
-        .query_one::<&mut ResourceGraph>(ctx.graph)
-        .expect("the context's resource graph exists")
-}
 
 /// The depth and multisample attachments a frame draws with, allocated and
 /// kept registered in the frame's resource graph.
@@ -93,8 +67,10 @@ impl FrameAttachments {
         sample_count: u32,
         with_depth: bool,
     ) -> Self {
-        let device = context_device(world, ctx);
-        let mut graph_holder = context_graph(world, ctx);
+        let device = ctx
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
+        let mut graph_holder = ctx.graph(&world.root_scope());
         let graph = graph_holder.get();
         let depth_view = with_depth.then(|| {
             let texture = create_depth_target(&device, size.0, size.1, sample_count);
@@ -131,8 +107,11 @@ impl FrameAttachments {
             return;
         }
         self.size = size;
-        let device = context_device(world, self.ctx);
-        let mut graph_holder = context_graph(world, self.ctx);
+        let device = self
+            .ctx
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
+        let mut graph_holder = self.ctx.graph(&world.root_scope());
         let graph = graph_holder.get();
         if let Some(id) = self.depth_view.as_ref() {
             let texture = create_depth_target(&device, size.0, size.1, self.sample_count);

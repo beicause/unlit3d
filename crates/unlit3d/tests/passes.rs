@@ -74,12 +74,10 @@ fn bind_target(
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
-    let device = world
-        .root_scope()
-        .query_one::<&wgpu::Device>(gpu.context.device)
-        .expect("the context's device")
-        .get()
-        .clone();
+    let device = gpu
+        .context
+        .device(&world.root_scope())
+        .expect("the context's device");
     let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
     let (_, color_view) = gpu.register_texture(world, color.clone());
     let attachments = FrameAttachments::new(

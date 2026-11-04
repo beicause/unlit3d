@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use unlit_ecs::bundle;
 use unlit_ecs::{Command, Entity, EntityAccessError, World};
 use unlit_wgpu::render_attachments::create_color_target;
-use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 use unlit3d::attachments::FrameAttachments;
 use unlit3d::blit::BlitSource;
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
@@ -164,9 +164,9 @@ impl Presenter {
             .root_scope()
             .query_one::<&mut Renderer>(self.renderer)?;
         renderer_row.get().render(world);
-        let queue = renderer_row.get().context().queue;
-        let mut queue_row = world.root_scope().query_one::<&wgpu::Queue>(queue)?;
-        swap_frame.present_and_park(world, queue_row.get(), presenting);
+        let context = renderer_row.get().context();
+        let queue = context.queue(&world.root_scope())?;
+        swap_frame.present_and_park(world, &queue, presenting);
         Ok(())
     }
 
@@ -252,9 +252,7 @@ pub fn bind_offscreen(
     // alive — and a screenshot can resolve the texture by handle and read
     // it back.
     let view = {
-        let mut graph = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(context.graph)?;
+        let mut graph = context.try_graph(&world.root_scope())?;
         let texture = graph.get().insert(color.clone(), None);
         let view = graph.get().insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),

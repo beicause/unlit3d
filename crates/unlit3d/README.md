@@ -1005,7 +1005,7 @@ world
 //    The frame's depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
-    world.root_scope().query_one::<&wgpu::Device>(ctx.device).unwrap().get(),
+    &ctx.device(&world.root_scope()).unwrap(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
     1280, 720,
 );

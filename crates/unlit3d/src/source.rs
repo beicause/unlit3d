@@ -13,10 +13,10 @@
 //! query drives every concrete source type: build all of them, then record
 //! their scenes in [`FrameSourceOrder`]. The GPU state a source needs — the device,
 //! the queue and the resource graph — lives in the world too, addressed by the
-//! [`RenderContext`] the sources are handed; that is what lets a source fetch
-//! the graph while the driver only holds a shared borrow of the world. What the
-//! pass draws into, and where in it the source belongs, reaches the source as
-//! [`PassInfo`].
+//! [`RenderContext`] the sources are handed; its accessors are what let a source
+//! fetch the graph while the driver only holds a shared borrow of the world. What
+//! the pass draws into, and where in it the source belongs, reaches the source
+//! as [`PassInfo`].
 //!
 //! [`Scene`]: unlit_wgpu::scene::Scene
 
@@ -73,9 +73,10 @@ impl OrderKey for FrameSourceOrder {
 /// The GPU state a frame is drawn with, as world addresses.
 ///
 /// It holds [`Entity`] handles rather than borrows, so it is `Copy` and never
-/// conflicts with a source's own borrow of the world. A source fetches what it
-/// needs from the components those entities carry:
-/// `world.root_scope().query_one::<&ResourceGraph>(ctx.graph)`.
+/// conflicts with a source's own borrow of the world. The handles stay inside
+/// the crate: callers reach the resources through the accessors below, such as
+/// [`RenderContext::graph`], [`RenderContext::device`] and
+/// [`RenderContext::uniforms`], which name the resource type for them.
 ///
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
@@ -87,12 +88,12 @@ impl OrderKey for FrameSourceOrder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderContext {
     /// The [`wgpu::Device`] the frame is drawn with, as a resource entity.
-    pub device: Entity,
+    pub(crate) device: Entity,
     /// The [`wgpu::Queue`] the frame is submitted to, as a resource entity.
-    pub queue: Entity,
+    pub(crate) queue: Entity,
     /// The [`ResourceGraph`] holding the frame's resources, as a resource
     /// entity.
-    pub graph: Entity,
+    pub(crate) graph: Entity,
     /// What the device can do beyond the WebGPU baseline, as a resource
     /// entity.
     ///
@@ -100,13 +101,13 @@ pub struct RenderContext {
     /// which is normally gone by the time frames are drawn — so it is captured
     /// once and carried here. See
     /// [`DeviceCapabilities`].
-    pub capabilities: Entity,
+    pub(crate) capabilities: Entity,
     /// The frame's [`FrameClock`], as a resource entity.
     ///
     /// The clock belongs to the world rather than to each source: a source may
     /// be built once per pass, and a clock every source counted for itself
     /// would run faster on a frame with more passes.
-    pub clock: Entity,
+    pub(crate) clock: Entity,
     /// The frame's [`GlobalUniforms`], as a resource entity.
     ///
     /// The camera, globals and view records every draw binds belong to the
@@ -114,10 +115,66 @@ pub struct RenderContext {
     /// source built once per pass reads one record per pass. Keeping them here
     /// rather than in each source is what makes that one upload instead of
     /// one per build.
-    pub uniforms: Entity,
+    pub(crate) uniforms: Entity,
 }
 
 impl RenderContext {
+    /// The frame's [`wgpu::Device`], cloned out of `scope`.
+    ///
+    /// # Errors
+    ///
+    /// If the context's device resource is gone.
+    pub fn device(self, scope: &Scope<'_>) -> Result<wgpu::Device, EntityAccessError> {
+        scope
+            .query_one::<&wgpu::Device>(self.device)
+            .map(|mut row| row.get().clone())
+    }
+
+    /// The frame's [`wgpu::Queue`], cloned out of `scope`.
+    ///
+    /// # Errors
+    ///
+    /// If the context's queue resource is gone.
+    pub fn queue(self, scope: &Scope<'_>) -> Result<wgpu::Queue, EntityAccessError> {
+        scope
+            .query_one::<&wgpu::Queue>(self.queue)
+            .map(|mut row| row.get().clone())
+    }
+
+    /// What the device can do beyond the WebGPU baseline.
+    ///
+    /// # Errors
+    ///
+    /// If the context's capabilities resource is gone.
+    pub fn capabilities(self, scope: &Scope<'_>) -> Result<DeviceCapabilities, EntityAccessError> {
+        scope
+            .query_one::<&DeviceCapabilities>(self.capabilities)
+            .map(|mut row| *row.get())
+    }
+
+    /// The frame's [`FrameClock`].
+    ///
+    /// # Errors
+    ///
+    /// If the context's clock resource is gone.
+    pub fn clock(self, scope: &Scope<'_>) -> Result<FrameClock, EntityAccessError> {
+        scope
+            .query_one::<&FrameClock>(self.clock)
+            .map(|mut row| *row.get())
+    }
+
+    /// The frame's [`ResourceGraph`], borrowed from `scope`.
+    ///
+    /// # Errors
+    ///
+    /// If the context's graph resource is gone.
+    pub fn try_graph<'w>(
+        self,
+        scope: &Scope<'w>,
+    ) -> Result<QueryOne<'w, &'w mut ResourceGraph>, EntityAccessError> {
+        scope.query_one::<&mut ResourceGraph>(self.graph)
+    }
+
     /// The frame's [`ResourceGraph`], borrowed from `scope`.
     ///
     /// A source builds the frame's resources through it: the graph is a
@@ -127,9 +184,8 @@ impl RenderContext {
     /// # Panics
     ///
     /// If the context's graph resource is gone.
-    pub fn graph<'w>(self, scope: &'w Scope<'w>) -> QueryOne<'w, &'w mut ResourceGraph> {
-        scope
-            .query_one::<&mut ResourceGraph>(self.graph)
+    pub fn graph<'w>(self, scope: &Scope<'w>) -> QueryOne<'w, &'w mut ResourceGraph> {
+        self.try_graph(scope)
             .expect("the context's resource graph exists")
     }
 
@@ -159,7 +215,7 @@ impl RenderContext {
     /// # Panics
     ///
     /// If the context's uniforms resource is gone.
-    pub fn uniforms<'w>(self, scope: &'w Scope<'w>) -> QueryOne<'w, &'w mut GlobalUniforms> {
+    pub fn uniforms<'w>(self, scope: &Scope<'w>) -> QueryOne<'w, &'w mut GlobalUniforms> {
         scope
             .query_one::<&mut GlobalUniforms>(self.uniforms)
             .expect("the context's global uniforms exist")

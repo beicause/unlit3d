@@ -99,41 +99,12 @@
 
 use std::sync::Arc;
 
-use unlit_ecs::{Entity, QueryOne, World};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 use crate::attachments::FrameAttachments;
 use crate::pass::FramePass;
 use crate::renderer::Renderer;
-
-/// The device the frame's context was created with, cloned out of `world`.
-///
-/// # Panics
-///
-/// If the context's device resource is gone.
-fn context_device(world: &World, renderer: &Renderer) -> wgpu::Device {
-    world
-        .root_scope()
-        .query_one::<&wgpu::Device>(renderer.context().device)
-        .expect("the context's device resource exists")
-        .get()
-        .clone()
-}
-
-/// The frame's resource graph.
-///
-/// # Panics
-///
-/// If the context's graph resource is gone.
-fn context_graph<'w>(
-    world: &'w World,
-    renderer: &Renderer,
-) -> QueryOne<'w, &'w mut unlit_wgpu::resources::ResourceGraph> {
-    world
-        .root_scope()
-        .query_one::<&mut unlit_wgpu::resources::ResourceGraph>(renderer.context().graph)
-        .expect("the context's resource graph exists")
-}
 
 /// A winit window's swap chain, presented through a [`Renderer`].
 ///
@@ -195,7 +166,10 @@ impl WindowSurface {
         let size = window.inner_size();
         let config = surface_config(&surface, adapter, size.width, size.height);
         let color_format = color_format(&config);
-        let device = context_device(world, renderer);
+        let device = renderer
+            .context()
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
         surface.configure(&device, &config);
 
         Self {
@@ -242,7 +216,10 @@ impl WindowSurface {
         }
         self.config.width = width;
         self.config.height = height;
-        let device = context_device(world, renderer);
+        let device = renderer
+            .context()
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
         self.surface.configure(&device, &self.config);
     }
 
@@ -263,7 +240,11 @@ impl WindowSurface {
         // collect the view, before anything can be left naming a swap chain
         // that is gone.
         drop(self);
-        context_graph(world, renderer).get().maintain();
+        renderer
+            .context()
+            .graph(&world.root_scope())
+            .get()
+            .maintain();
     }
 
     /// Acquire the next frame.
@@ -281,7 +262,10 @@ impl WindowSurface {
     /// A frame loop usually wants [`Self::acquire_for`], which parks the
     /// stating pass around this call and states the frame's attachments on it.
     pub fn acquire(&mut self, world: &World, renderer: &mut Renderer) -> Option<Frame> {
-        let device = context_device(world, renderer);
+        let device = renderer
+            .context()
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -304,18 +288,28 @@ impl WindowSurface {
         let view = color_view_resource(&surface_texture.texture, self.color_format);
         let color = match self.color_view.as_ref() {
             Some(id) => {
-                context_graph(world, renderer)
+                renderer
+                    .context()
+                    .graph(&world.root_scope())
                     .get()
                     .replace(id, view)
                     .expect("the color view is in the graph");
                 id.clone()
             }
-            None => context_graph(world, renderer).get().insert(view, None),
+            None => renderer
+                .context()
+                .graph(&world.root_scope())
+                .get()
+                .insert(view, None),
         };
         self.color_view = Some(color.clone());
         // Replacing the color view marked every reader dirty; drop the old
         // frame's view now rather than holding it until the next scene build.
-        context_graph(world, renderer).get().maintain();
+        renderer
+            .context()
+            .graph(&world.root_scope())
+            .get()
+            .maintain();
         Some(Frame {
             surface_texture,
             color_view: color,

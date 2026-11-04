@@ -27,7 +27,7 @@
 
 use unlit_ecs::{Bundle, DynamicBundle, World, bundle};
 use unlit_wgpu::render_attachments::RenderAttachments;
-use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureView};
+use unlit_wgpu::resources::{ResHandle, TextureView};
 use unlit_wgpu::scene::ViewportRect;
 use unlit_wgpu::specialize::SurfaceKey;
 
@@ -155,10 +155,7 @@ impl FramePass {
         world: &World,
         ctx: RenderContext,
     ) -> Option<RenderAttachments> {
-        let mut resource_graph_row = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(ctx.graph)
-            .expect("the context's resource graph exists");
+        let mut resource_graph_row = ctx.graph(&world.root_scope());
 
         let graph = resource_graph_row.get();
         let view = |handle: &Option<ResHandle<TextureView>>| {

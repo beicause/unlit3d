@@ -151,12 +151,9 @@ impl Frame {
     pub fn build(&mut self) -> usize {
         profiling::scope!("frame");
         let device = self
-            .world
-            .root_scope()
-            .query_one::<&wgpu::Device>(self.context.device)
-            .expect("the context's device")
-            .get()
-            .clone();
+            .context
+            .device(&self.world.root_scope())
+            .expect("the context's device");
         let mut encoder = device.create_command_encoder(&Default::default());
         // The driver clears the scene before every build and hands it back to
         // the source, which is what this harness stands in for.

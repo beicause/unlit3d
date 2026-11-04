@@ -121,25 +121,15 @@ fn with_mesh_source<R>(
 
 /// The device the context names, cloned out of the world.
 fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, String> {
-    world
-        .root_scope()
-        .query_one::<&wgpu::Device>(context.device)
-        .map(|mut device| {
-            let device = device.get();
-            device.clone()
-        })
+    context
+        .device(&world.root_scope())
         .map_err(|_| "the render context has no device".to_string())
 }
 
 /// The queue the context names, cloned out of the world.
 fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String> {
-    world
-        .root_scope()
-        .query_one::<&wgpu::Queue>(context.queue)
-        .map(|mut queue| {
-            let queue = queue.get();
-            queue.clone()
-        })
+    context
+        .queue(&world.root_scope())
         .map_err(|_| "the render context has no queue".to_string())
 }
 

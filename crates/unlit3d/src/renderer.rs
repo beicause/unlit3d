@@ -27,8 +27,6 @@ use unlit_wgpu::globals::Globals;
 use unlit_wgpu::scene::{Scene, ViewportRect};
 
 use crate::components::RenderLoadOps;
-use crate::frame::FrameClock;
-use crate::global_uniforms::GlobalUniforms;
 use crate::order::{OrderWarnings, Ordering};
 use crate::pass::{FramePass, FramePassOrder, PassInfo};
 use crate::source::{FrameSourceOrder, RenderContext, Source};
@@ -196,18 +194,14 @@ impl Renderer {
     pub fn render(&mut self, world: &World) {
         profiling::scope!("renderer.frame");
 
-        let device = world
-            .root_scope()
-            .query_one::<&wgpu::Device>(self.context.device)
-            .expect("the context's device resource exists")
-            .get()
-            .clone();
-        let queue = world
-            .root_scope()
-            .query_one::<&wgpu::Queue>(self.context.queue)
-            .expect("the context's queue resource exists")
-            .get()
-            .clone();
+        let device = self
+            .context
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
+        let queue = self
+            .context
+            .queue(&world.root_scope())
+            .expect("the context's queue resource exists");
 
         // One encoder carries the frame's staged uploads and its passes, so
         // whatever a source stages reaches the GPU in this frame's own
@@ -221,21 +215,14 @@ impl Renderer {
         // of a stepped frame would win.
         {
             profiling::scope!("renderer.frame.advance_globals");
-            let clock = world
-                .root_scope()
-                .query_one::<&FrameClock>(self.context.clock)
-                .map(|mut row| *row.get())
-                .unwrap_or_default();
+            let clock = self.context.clock(&world.root_scope()).unwrap_or_default();
             let globals = Globals {
                 time: clock.time,
                 delta_time: clock.delta_time,
                 frame_count: clock.index,
                 ..Globals::default()
             };
-            let mut row = world
-                .root_scope()
-                .query_one::<&mut GlobalUniforms>(self.context.uniforms)
-                .expect("the context's global uniforms exist");
+            let mut row = self.context.uniforms(&world.root_scope());
             let uniforms = row.get();
             uniforms.begin_frame();
             uniforms.advance_globals(&device, &mut encoder, &globals);
@@ -285,12 +272,7 @@ impl Renderer {
 
         // The frame's draws are over: a camera or a viewport that went
         // undrawn gives its slot back.
-        world
-            .root_scope()
-            .query_one::<&mut GlobalUniforms>(self.context.uniforms)
-            .expect("the context's global uniforms exist")
-            .get()
-            .end_frame();
+        self.context.uniforms(&world.root_scope()).get().end_frame();
 
         // A source the root reaches but no pass does draws nowhere, which
         // would otherwise be silent: it is in the tree, it is asked to build

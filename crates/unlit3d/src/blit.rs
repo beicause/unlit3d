@@ -117,10 +117,9 @@ impl BlitSource {
 
     /// Build the sampler, the layout and the bind group, on the first frame.
     fn build_core(&self, scope: &Scope<'_>, ctx: RenderContext) -> Core {
-        let mut device_row = scope
-            .query_one::<&wgpu::Device>(ctx.device)
+        let device = ctx
+            .device(scope)
             .expect("the context's device resource exists");
-        let device = wgpu::Device::clone(device_row.get());
         let sampler = ctx.graph(scope).get().insert(sampler(&device), None);
         let layout = bind_group_layout(&device);
         let bind_group = allocate_bind_group(
@@ -208,11 +207,9 @@ impl FrameSource for BlitSource {
         if self.core.is_none() {
             self.core = Some(self.build_core(scope, ctx));
         }
-        let device = scope
-            .query_one::<&wgpu::Device>(ctx.device)
-            .expect("the context's device resource exists")
-            .get()
-            .clone();
+        let device = ctx
+            .device(scope)
+            .expect("the context's device resource exists");
 
         // The pass's target picks the pipeline, and only the pipeline: the
         // passes of one frame need not share a key, and specializing keeps

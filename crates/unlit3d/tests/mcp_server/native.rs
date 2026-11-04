@@ -88,10 +88,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
 
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);
     let color_view = {
-        let mut resource_graph_row = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(context.graph)
-            .expect("spawn_context spawned the graph");
+        let mut resource_graph_row = context.graph(&world.root_scope());
 
         let graph = resource_graph_row.get();
         // The texture is registered in its own right so a screenshot can name

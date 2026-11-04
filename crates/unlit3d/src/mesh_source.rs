@@ -284,14 +284,10 @@ impl MeshSource {
     ///
     /// If `ctx` does not name the world's device and resource graph.
     pub fn new(world: &Scope<'_>, ctx: RenderContext) -> Self {
-        let device = world
-            .query_one::<&wgpu::Device>(ctx.device)
-            .expect("the context names the world's device")
-            .get()
-            .clone();
-        let mut resource_graph_row = world
-            .query_one::<&mut ResourceGraph>(ctx.graph)
-            .expect("the context names the world's resource graph");
+        let device = ctx
+            .device(world)
+            .expect("the context names the world's device");
+        let mut resource_graph_row = ctx.graph(world);
 
         let graph = resource_graph_row.get();
 
@@ -463,8 +459,8 @@ impl MeshSource {
     /// The world addresses this source draws through.
     ///
     /// Setup-time code that needs the resource graph reaches it with
-    /// `view.query_one::<&ResourceGraph>(source.context().graph)`, which is an
-    /// ordinary ECS access: the graph and the source live in different cells.
+    /// `source.context().graph(&view)`, which is an ordinary ECS access: the
+    /// graph and the source live in different cells.
     pub fn context(&self) -> RenderContext {
         self.context
     }
@@ -475,11 +471,9 @@ impl MeshSource {
     ///
     /// If the context's device resource is gone.
     pub fn device(&self, world: &Scope<'_>) -> wgpu::Device {
-        world
-            .query_one::<&wgpu::Device>(self.context.device)
+        self.context
+            .device(world)
             .expect("the context's device resource exists")
-            .get()
-            .clone()
     }
 
     /// The queue the frame is submitted to, cloned out of `world`.
@@ -488,11 +482,9 @@ impl MeshSource {
     ///
     /// If the context's queue resource is gone.
     pub fn queue(&self, world: &Scope<'_>) -> wgpu::Queue {
-        world
-            .query_one::<&wgpu::Queue>(self.context.queue)
+        self.context
+            .queue(world)
             .expect("the context's queue resource exists")
-            .get()
-            .clone()
     }
 
     /// What the device can do beyond the WebGPU baseline.
@@ -505,10 +497,9 @@ impl MeshSource {
     ///
     /// If the context's capabilities resource is gone.
     pub fn capabilities(&self, world: &Scope<'_>) -> DeviceCapabilities {
-        *world
-            .query_one::<&DeviceCapabilities>(self.context.capabilities)
+        self.context
+            .capabilities(world)
             .expect("the context's capabilities resource exists")
-            .get()
     }
 
     // -- pipeline registration -------------------------------------------------
@@ -1711,11 +1702,7 @@ mod tests {
     /// Register a color texture and a matching depth texture in the context's
     /// graph and describe them as the pass the tests drive the source with.
     fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> PassInfo {
-        let device = scope
-            .query_one::<&wgpu::Device>(ctx.device)
-            .expect("the context's device")
-            .get()
-            .clone();
+        let device = ctx.device(scope).expect("the context's device");
         let ft = create_render_target(
             &device,
             wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1723,9 +1710,7 @@ mod tests {
             TEST_SIZE,
             1,
         );
-        let mut resource_graph_row_2 = scope
-            .query_one::<&mut ResourceGraph>(ctx.graph)
-            .expect("the context's graph");
+        let mut resource_graph_row_2 = ctx.graph(scope);
 
         let graph = resource_graph_row_2.get();
         let color = graph.insert(
