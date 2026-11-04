@@ -23,52 +23,29 @@ use crate::record::{RecordingError, RecordingFormat, RecordingHandle, start_reco
 ///
 /// The MCP transport carries errors as strings, so this type lives only
 /// inside the world-side tools; the tool boundary renders it for the client.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum ToolError {
     /// The host world carries no exit request.
+    #[error("the host has no exit request")]
     NoExitRequest,
     /// A recording is already running on this world.
+    #[error("a recording is already in progress on this world")]
     AlreadyRecording,
     /// No recording is running on this world.
+    #[error("no recording is in progress on this world")]
     NoRecording,
     /// The recording captured no audio fill.
+    #[error("the recording captured no fill")]
     EmptyRecording,
     /// The format or the encoder refused the recording.
-    Recording(RecordingError),
+    #[error(transparent)]
+    Recording(#[from] RecordingError),
     /// The report could not be serialized into JSON.
-    Serialize(serde_json::Error),
+    #[error(transparent)]
+    Serialize(#[from] serde_json::Error),
     /// The file could not be written to the host\'s directory.
+    #[error("{0}")]
     Write(String),
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoExitRequest => write!(f, "the host has no exit request"),
-            Self::AlreadyRecording => {
-                write!(f, "a recording is already in progress on this world")
-            }
-            Self::NoRecording => {
-                write!(f, "no recording is in progress on this world")
-            }
-            Self::EmptyRecording => write!(f, "the recording captured no fill"),
-            Self::Recording(error) => error.fmt(f),
-            Self::Serialize(error) => error.fmt(f),
-            Self::Write(message) => f.write_str(message),
-        }
-    }
-}
-
-impl From<RecordingError> for ToolError {
-    fn from(error: RecordingError) -> Self {
-        Self::Recording(error)
-    }
-}
-
-impl From<serde_json::Error> for ToolError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Serialize(error)
-    }
 }
 
 impl From<String> for ToolError {

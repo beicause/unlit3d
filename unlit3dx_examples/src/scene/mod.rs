@@ -661,16 +661,19 @@ impl SceneStepper {
         // Gameplay runs once per host frame with its measured duration: its
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
-        step_stepped_world(host, worlds.gameplay.entity, delta_seconds as f32);
+        step_stepped_world(host, worlds.gameplay.entity, delta_seconds as f32)
+            .expect("the stepped world starts");
         let steps = fixed_steps(
             &mut self.physics_debt,
             delta_seconds as f32,
             self.physics_period,
         );
         for _ in 0..steps {
-            step_stepped_world(host, worlds.physics.entity, self.physics_period);
+            step_stepped_world(host, worlds.physics.entity, self.physics_period)
+                .expect("the stepped world starts");
         }
-        step_stepped_world(host, worlds.audio.entity, delta_seconds as f32);
+        step_stepped_world(host, worlds.audio.entity, delta_seconds as f32)
+            .expect("the stepped world starts");
     }
 
     /// The audio frames this frame's duration asks for, carrying the
@@ -774,7 +777,8 @@ mod tests {
         // input arriving, no frame is laid out at all.
         let mut settled = 0;
         for _ in 0..8 {
-            step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS);
+            step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS)
+                .expect("the stepped world starts");
             let now = runs.load(Ordering::Relaxed);
             if now == settled {
                 break;
@@ -790,7 +794,8 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS);
+        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS)
+            .expect("the stepped world starts");
 
         assert!(
             runs.load(Ordering::Relaxed) > settled,
@@ -839,7 +844,8 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS);
+        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS)
+            .expect("the stepped world starts");
 
         assert_eq!(
             pressed.load(Ordering::Relaxed),

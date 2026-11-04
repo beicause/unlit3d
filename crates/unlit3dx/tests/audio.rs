@@ -278,7 +278,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         })
         .expect("the audio world accepts a subscription");
     for _ in 0..10 {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS);
+        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     }
     assert!(
         opened.latest().is_none(),
@@ -290,7 +290,8 @@ fn a_stepped_world_opens_nothing_until_asked() {
         // No device to grant: the request keeps being retried and the
         // world stays open-less, which is the answer to look for here.
         for _ in 0..10 {
-            step_stepped_world(&host, world.entity, FRAME_SECONDS);
+            step_stepped_world(&host, world.entity, FRAME_SECONDS)
+                .expect("the stepped world starts");
         }
         assert!(
             opened.latest().is_none(),
@@ -298,7 +299,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         );
         return;
     }
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     assert!(
         wait_for(|| opened.latest().is_some()),
         "the request landed but the output never opened"
@@ -328,13 +329,13 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
                 .map(|_audio_output_open| ())
         })
         .expect("the audio world accepts a subscription");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     assert!(
         opened.latest().is_none(),
         "the world opened before being asked"
     );
     request_audio_output(&sender).expect("the audio world accepts a job");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     if !has_output_device() {
         return;
     }

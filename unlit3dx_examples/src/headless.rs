@@ -188,7 +188,7 @@ pub fn run(
                     AUDIO_CHANNELS as u16,
                 );
             });
-            assert!(filled.is_some(), "the audio world is a stepped world");
+            assert!(filled.is_ok(), "the audio world is a stepped world");
             output.audio.extend_from_slice(&samples_out);
         }
 

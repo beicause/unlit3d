@@ -163,8 +163,11 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
 - **`Stepped`** 让 world 留在它被生成的地方。`spawn_stepped_world_with_init` 把嵌套的
   `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
   迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。
-  某次步进让 world 走到终点后它被标记为已完成；`with_stepped_world` 把嵌套 `World`
-  借出来，供需要直接触达它的工作使用，例如从绘制 world 读回一帧。
+  它返回 `StepOutcome`（`Ran`、`Finished`、`Stopped` 或 `Panicked`），让调用方知道
+  这一趟做了什么；实体指向的并非 stepped world 时返回 `StepError`——步进一个
+  threaded world 会被明确拒绝，而不是静默地什么都不做。`with_stepped_world` 把嵌套
+  `World` 借出来，供需要直接触达它的工作使用，例如从绘制 world 读回一帧，并以同样
+  的错误取代 `None`。
 
 模式改变的是配速。`ThreadControl::wait_timeout` 会阻塞一条真实线程，而当 control
 并非自驱时立刻返回，于是同一个 tick 体服务两者：在 `Threaded` 下 `FixedClock` 等

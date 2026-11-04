@@ -451,7 +451,7 @@ mod tests {
         let command = command.with_world(WorldId::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
-        step_stepped_world(&host, stepped.entity, FRAME_SECONDS);
+        step_stepped_world(&host, stepped.entity, FRAME_SECONDS).expect("the stepped world starts");
 
         let answer = reply.recv_blocking().expect("the command was answered");
         let Ok(Output::Json(value)) = answer else {
@@ -472,7 +472,7 @@ mod tests {
             |_: &mut World| (),
             |_, _: &ThreadControl, (), _: f32| false,
         );
-        step_stepped_world(&host, stepped.entity, FRAME_SECONDS);
+        step_stepped_world(&host, stepped.entity, FRAME_SECONDS).expect("the stepped world starts");
         assert!(stepped.is_finished(), "the tick ended the world");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));

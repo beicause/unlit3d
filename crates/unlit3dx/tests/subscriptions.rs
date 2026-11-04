@@ -51,7 +51,7 @@ fn several_subscribers_each_get_their_own_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
 
     assert_eq!(one.latest().map(|value| *value), Some(1));
     assert_eq!(two.latest().map(|value| *value), Some(10));
@@ -63,7 +63,7 @@ fn several_subscribers_each_get_their_own_snapshot() {
 fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
 
     let reader = world
         .sender
@@ -83,7 +83,7 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
         "nothing was collected before it asked"
     );
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     assert_eq!(reader.latest().map(|value| *value), Some(0));
 }
 
@@ -103,18 +103,18 @@ fn dropping_the_reader_prunes_the_subscription() {
             Some(1u32)
         })
         .expect("the world accepts a subscription");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the collector ran once");
 
     drop(reader);
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
         "a dropped reader must stop its collector"
     );
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     let live =
         with_stepped_world(&host, world.entity, publish_collected).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
@@ -137,8 +137,8 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
-    step_stepped_world(&host, world.entity, FRAME_SECONDS);
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
 
     assert_eq!(reader.latest().map(|value| *value), Some(1));
 }

@@ -99,7 +99,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
     };
     let mut rested = false;
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS);
+        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
         rested = poses.latest().is_some_and(|poses| settled(&poses));
         if rested {
             break;
@@ -212,7 +212,7 @@ fn a_collector_sees_contacts_from_every_step() {
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS);
+        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
         while let Ok((one, two, _speed)) = contacts.try_recv() {
             for body in [one, two] {
                 if !landed.contains(&body) {

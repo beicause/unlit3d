@@ -197,9 +197,12 @@ tick body has to know which one it is under.
   component on the host entity, and
   `step_stepped_world` runs one iteration on the caller's thread: drain the
   queue, then tick, each under `catch_unwind` — the threaded loop's order.
-  A step that ticks past the end of its world marks it finished, and
-  `with_stepped_world` lends the nested `World` out for work that needs to
-  reach it directly, such as reading a frame back out of a drawing world.
+  It answers a `StepOutcome` (`Ran`, `Finished`, `Stopped` or `Panicked`)
+  so a caller can tell what the step did, and a `StepError` when the entity
+  names no stepped world — stepping a threaded world is refused rather than
+  silently doing nothing. `with_stepped_world` lends the nested `World` out
+  for work that needs to reach it directly, such as reading a frame back out
+  of a drawing world, and reports the same error instead of answering `None`.
 
 Pacing is what the mode changes. `ThreadControl::wait_timeout` blocks a real
 thread and returns at once when the control is not self-driven, so the same

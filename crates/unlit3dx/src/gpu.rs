@@ -112,39 +112,15 @@ async fn request_adapter(
 }
 
 /// Why a GPU request could not start the renderer.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum GpuRequestError {
     /// The window surface could not be built from the display handle.
-    Surface(wgpu::CreateSurfaceError),
+    #[error("failed to build the presentation surface: {0}")]
+    Surface(#[from] wgpu::CreateSurfaceError),
     /// The adapter or device request failed.
-    Request(Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl std::fmt::Display for GpuRequestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Surface(error) => {
-                write!(f, "failed to build the presentation surface: {error}")
-            }
-            Self::Request(error) => write!(f, "failed to request a GPU context: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for GpuRequestError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Surface(error) => Some(error),
-            Self::Request(error) => Some(error.as_ref()),
-        }
-    }
-}
-
-impl From<wgpu::CreateSurfaceError> for GpuRequestError {
-    fn from(error: wgpu::CreateSurfaceError) -> Self {
-        Self::Surface(error)
-    }
+    #[error("failed to request a GPU context: {0}")]
+    Request(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// The answer a GPU request settles on.

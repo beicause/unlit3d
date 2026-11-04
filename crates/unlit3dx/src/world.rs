@@ -11,7 +11,7 @@
 //! cannot publish twice.
 
 use async_channel::{Receiver, bounded};
-use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, World, bundle};
 
 use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
@@ -347,24 +347,58 @@ impl Bundle for WorldEntity {
     }
 }
 
+/// Why a stepped world could not be driven through the entity that names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum StepError {
+    /// The entity does not name a world proxy the host can reach.
+    #[error("cannot reach the world proxy: {0}")]
+    NoWorld(#[from] EntityAccessError),
+    /// The entity names a threaded world, which drives itself.
+    #[error("the world is threaded and drives itself")]
+    NotStepped,
+}
+
+/// What one turn of a stepped world did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StepOutcome {
+    /// The tick, or the queued jobs, ran and the world carries on.
+    Ran,
+    /// The tick ended the world.
+    Finished,
+    /// A stop request ended the world before it ticked.
+    Stopped,
+    /// A job or the tick panicked, and the world ended.
+    Panicked,
+}
+
 /// Drain a stepped world's jobs and run its tick once with `delta_seconds`.
 ///
-/// Does nothing when `entity` does not name a world the host steps, or when
-/// that world has already stopped. A tick that returns `false` stops the
-/// world; a panic, in a job or in the tick, is caught, logged and published
-/// as the world's state, and ends the world too.
+/// A tick that returns `false` stops the world; a panic, in a job or in the
+/// tick, is caught, logged and published as the world's state, and ends the
+/// world too. Both are reported through [StepOutcome] rather than left for the
+/// caller to guess.
 ///
 /// The step publishes what the world's subscriptions collected, the same as
 /// a threaded world's loop does, so a tick body never publishes by hand.
-pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
-    let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
-        return;
-    };
+///
+/// # Errors
+///
+/// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
+/// and [StepError::NotStepped] when it names a threaded world, which drives
+/// itself and must not be stepped from here.
+pub fn step_stepped_world(
+    host: &World,
+    entity: Entity,
+    delta_seconds: f32,
+) -> Result<StepOutcome, StepError> {
+    let mut proxy = host.root_scope().query_one::<&mut WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
-        return;
+        return Err(StepError::NotStepped);
     };
     if stepped.status.is_finished() {
-        return;
+        return Ok(StepOutcome::Finished);
     }
     if stepped.control.stop_requested() {
         // A stop is not a panic, so the world collects one last time: the
@@ -372,10 +406,10 @@ pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
         publish_collected(&stepped.world);
         stepped.status.finish();
         stepped.inbox.close();
-        return;
+        return Ok(StepOutcome::Stopped);
     }
     if !run_queued_jobs(&mut *stepped) {
-        return;
+        return Ok(StepOutcome::Panicked);
     }
     let SteppedWorld {
         world,
@@ -397,7 +431,7 @@ pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
             publish_collected(world);
             status.finish();
             inbox.close();
-            return;
+            return Ok(StepOutcome::Finished);
         }
         Err(payload) => {
             let message = panic_message(payload.as_ref());
@@ -406,10 +440,11 @@ pub fn step_stepped_world(host: &World, entity: Entity, delta_seconds: f32) {
             // A collector is arbitrary code: running one now would hand its
             // panic to the host, so the world stops collecting here.
             inbox.close();
-            return;
+            return Ok(StepOutcome::Panicked);
         }
     }
     publish_collected(world);
+    Ok(StepOutcome::Ran)
 }
 
 /// Drain the queued jobs of every world the host steps.
@@ -432,21 +467,29 @@ pub fn drain_all_stepped_worlds(host: &World) {
 
 /// Run every job queued for a stepped world, without ticking it.
 ///
-/// This is the first half of [`step_stepped_world`]: a host that must answer a
+/// This is the first half of [step_stepped_world]: a host that must answer a
 /// command before its next frame drains the queue with it instead of running a
-/// whole tick. Returns `false` when a job panicked, which ends the world the
-/// same way a panicking tick does.
-pub fn drain_stepped_world(host: &World, entity: Entity) -> bool {
-    let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
-        return true;
-    };
+/// whole tick.
+///
+/// # Errors
+///
+/// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
+/// and [StepError::NotStepped] when it names a threaded world.
+pub fn drain_stepped_world(host: &World, entity: Entity) -> Result<StepOutcome, StepError> {
+    let mut proxy = host.root_scope().query_one::<&mut WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
-        return true;
+        return Err(StepError::NotStepped);
     };
-    if stepped.status.is_finished() || stepped.control.stop_requested() {
-        return true;
+    if stepped.status.is_finished() {
+        return Ok(StepOutcome::Finished);
     }
-    run_queued_jobs(stepped)
+    if stepped.control.stop_requested() {
+        return Ok(StepOutcome::Stopped);
+    }
+    if !run_queued_jobs(stepped) {
+        return Ok(StepOutcome::Panicked);
+    }
+    Ok(StepOutcome::Ran)
 }
 
 /// Run the jobs a stepped world has queued, stopping at the first panic.
@@ -470,40 +513,47 @@ fn run_queued_jobs(stepped: &mut SteppedWorld) -> bool {
     }
 }
 
-/// Run `f` against a stepped world's world, if `entity` names one.
+/// Run `f` against a stepped world's world.
 ///
 /// A host that supplies its own buffers - an offline run filling an audio
 /// buffer frame by frame, say - reads the world through this instead of
 /// through the world's jobs.
+///
+/// # Errors
+///
+/// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
+/// and [StepError::NotStepped] when it names a threaded world.
 pub fn with_stepped_world<R>(
     host: &World,
     entity: Entity,
     f: impl FnOnce(&World) -> R,
-) -> Option<R> {
-    let mut proxy = host.root_scope().query_one::<&WorldProxy>(entity).ok()?;
+) -> Result<R, StepError> {
+    let mut proxy = host.root_scope().query_one::<&WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &proxy.get().kind else {
-        return None;
+        return Err(StepError::NotStepped);
     };
-    Some(f(&stepped.world))
+    Ok(f(&stepped.world))
 }
 
-/// Run `f` against a stepped world's world mutably, if `entity` names one.
+/// Run `f` against a stepped world's world mutably.
 ///
-/// The mutable twin of [`with_stepped_world`]: a caller that starts or stops a
+/// The mutable twin of [with_stepped_world]: a caller that starts or stops a
 /// recording on the world needs the world itself, not only its components.
+///
+/// # Errors
+///
+/// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
+/// and [StepError::NotStepped] when it names a threaded world.
 pub fn with_stepped_world_mut<R>(
     host: &World,
     entity: Entity,
     f: impl FnOnce(&mut World) -> R,
-) -> Option<R> {
-    let mut proxy = host
-        .root_scope()
-        .query_one::<&mut WorldProxy>(entity)
-        .ok()?;
+) -> Result<R, StepError> {
+    let mut proxy = host.root_scope().query_one::<&mut WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
-        return None;
+        return Err(StepError::NotStepped);
     };
-    Some(f(&mut stepped.world))
+    Ok(f(&mut stepped.world))
 }
 
 #[cfg(test)]
@@ -644,11 +694,17 @@ mod tests {
             })
         };
         // Nothing has run yet: the host has not stepped the world.
-        assert_eq!(count(&host), Some(0));
-        step_stepped_world(&host, handle.entity, FRAME_SECONDS);
-        assert_eq!(count(&host), Some(1));
-        step_stepped_world(&host, handle.entity, FRAME_SECONDS);
-        assert_eq!(count(&host), Some(2));
+        assert_eq!(count(&host), Ok(0));
+        assert_eq!(
+            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
+            Ok(StepOutcome::Ran)
+        );
+        assert_eq!(count(&host), Ok(1));
+        assert_eq!(
+            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
+            Ok(StepOutcome::Ran)
+        );
+        assert_eq!(count(&host), Ok(2));
     }
 
     /// Draining every stepped world in one pass must not hold a shared
@@ -700,7 +756,7 @@ mod tests {
                     .expect("the counter")
                     .0
             });
-            assert_eq!(count, Some(1), "the queued job ran");
+            assert_eq!(count, Ok(1), "the queued job ran");
         }
     }
 
@@ -715,16 +771,38 @@ mod tests {
             |_| (),
             |_, _: &ThreadControl, (), _: f32| false,
         );
-        step_stepped_world(&host, handle.entity, FRAME_SECONDS);
+        assert_eq!(
+            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
+            Ok(StepOutcome::Finished)
+        );
         assert!(handle.is_finished(), "a false tick ends a stepped world");
     }
 
-    /// Stepping an entity that is not a stepped world does nothing.
+    /// An entity that names no world proxy is refused, not silently skipped.
     #[test]
-    fn stepping_a_foreign_entity_does_nothing() {
+    fn stepping_a_foreign_entity_fails_readably() {
         let mut host = World::new();
         let plain = host.root_scope_mut().spawn(bundle![Count(0)]);
-        step_stepped_world(&host, plain, 0.0);
+        assert!(matches!(
+            step_stepped_world(&host, plain, 0.0),
+            Err(StepError::NoWorld(_))
+        ));
+    }
+
+    /// A world that drives itself on a thread is refused rather than
+    /// silently ignored, so a caller cannot mistake one mode for the other.
+    #[test]
+    fn stepping_a_threaded_world_is_refused() {
+        let mut host = World::new();
+        let handle = spawn_threaded_world(&mut host, "threaded", 8, |_, control, _| {
+            control.wait_timeout(Duration::from_millis(1));
+            true
+        });
+        assert_eq!(
+            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
+            Err(StepError::NotStepped)
+        );
+        handle.stop();
     }
 
     /// The counter the tests share with their worlds.

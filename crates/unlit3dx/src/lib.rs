@@ -122,9 +122,9 @@ pub mod prelude {
             FixedClock, MAX_CATCH_UP_STEPS, ThreadControl, WorldState, WorldThread, fixed_steps,
         },
         world::{
-            Stepped, Threaded, WorldName, WorldRunner, spawn_stepped_world_with_init,
-            spawn_threaded_world, spawn_threaded_world_with_init, step_stepped_world,
-            with_stepped_world, with_stepped_world_mut,
+            StepError, StepOutcome, Stepped, Threaded, WorldName, WorldRunner,
+            spawn_stepped_world_with_init, spawn_threaded_world, spawn_threaded_world_with_init,
+            step_stepped_world, with_stepped_world, with_stepped_world_mut,
         },
     };
 }

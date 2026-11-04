@@ -23,64 +23,24 @@ use unlit_ecs::{Entity, World, bundle};
 use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill};
 
 /// Why a recording, or the format it is written in, was refused.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RecordingError {
     /// The name names a format the recorder cannot write.
+    #[error("cannot write a {0:?} recording; use .flac or .wav")]
     UnsupportedFormat(String),
     /// The file name carries no extension to pick a format from.
+    #[error("the file name {0:?} has no extension")]
     MissingExtension(String),
     /// The encoder's configuration failed verification.
-    Verify(flacenc::error::VerifyError),
+    #[error("the encoder configuration is invalid: {0}")]
+    Verify(#[from] flacenc::error::VerifyError),
     /// The samples could not be encoded into a FLAC stream.
-    Encode(flacenc::error::EncodeError),
+    #[error("the samples could not be encoded: {0}")]
+    Encode(#[from] flacenc::error::EncodeError),
     /// The FLAC stream could not be written into its byte sink.
-    Write(flacenc::error::OutputError<flacenc::bitsink::ByteSink>),
-}
-
-impl std::fmt::Display for RecordingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedFormat(name) => {
-                write!(f, "cannot write a {name:?} recording; use .flac or .wav")
-            }
-            Self::MissingExtension(file_name) => {
-                write!(f, "the file name {file_name:?} has no extension")
-            }
-            Self::Verify(error) => write!(f, "the encoder configuration is invalid: {error}"),
-            Self::Encode(error) => write!(f, "the samples could not be encoded: {error}"),
-            Self::Write(error) => write!(f, "the FLAC stream could not be written: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for RecordingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Verify(error) => Some(error),
-            Self::Encode(error) => Some(error),
-            Self::Write(error) => Some(error),
-            Self::UnsupportedFormat(_) | Self::MissingExtension(_) => None,
-        }
-    }
-}
-
-impl From<flacenc::error::VerifyError> for RecordingError {
-    fn from(error: flacenc::error::VerifyError) -> Self {
-        Self::Verify(error)
-    }
-}
-
-impl From<flacenc::error::EncodeError> for RecordingError {
-    fn from(error: flacenc::error::EncodeError) -> Self {
-        Self::Encode(error)
-    }
-}
-
-impl From<flacenc::error::OutputError<flacenc::bitsink::ByteSink>> for RecordingError {
-    fn from(error: flacenc::error::OutputError<flacenc::bitsink::ByteSink>) -> Self {
-        Self::Write(error)
-    }
+    #[error("the FLAC stream could not be written: {0}")]
+    Write(#[from] flacenc::error::OutputError<flacenc::bitsink::ByteSink>),
 }
 
 /// A recording in progress on a world.

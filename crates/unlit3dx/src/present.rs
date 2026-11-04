@@ -41,64 +41,35 @@ use crate::gpu::Gpu;
 
 use crate::host::drain_sub_world;
 
-/// Why the presentation path could not be built.
-#[derive(Debug)]
+/// Why the presentation path could not be built, or a frame could not be
+/// presented.
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PresenterError {
     /// The host world carries no window to present to.
+    #[error("the scene setup found no window")]
     NoWindow,
     /// The window surface could not be built from the display handle.
-    Surface(wgpu::CreateSurfaceError),
+    #[error("failed to build the presentation surface: {0}")]
+    Surface(#[from] wgpu::CreateSurfaceError),
     /// The render sub-world is not reachable from the host.
+    #[error("the scene setup found no render world: {0}")]
     NoRenderWorld(unlit_ecs::EntityAccessError),
     /// The render sub-world carries no renderer at the named entity.
+    #[error("the scene setup found no renderer: {0}")]
     NoRenderer(unlit_ecs::EntityAccessError),
     /// The offscreen target could not be bound to the scene pass.
+    #[error("failed to bind the offscreen target: {0}")]
     OffscreenTarget(unlit_ecs::EntityAccessError),
     /// The swap chain surface could not be opened.
+    #[error("failed to open the window surface: {0}")]
     WindowSurface(unlit_ecs::EntityAccessError),
-}
-
-impl std::fmt::Display for PresenterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoWindow => write!(f, "the scene setup found no window"),
-            Self::Surface(error) => {
-                write!(f, "failed to build the presentation surface: {error}")
-            }
-            Self::NoRenderWorld(error) => {
-                write!(f, "the scene setup found no render world: {error}")
-            }
-            Self::NoRenderer(error) => {
-                write!(f, "the scene setup found no renderer: {error}")
-            }
-            Self::OffscreenTarget(error) => {
-                write!(f, "failed to bind the offscreen target: {error}")
-            }
-            Self::WindowSurface(error) => {
-                write!(f, "failed to open the window surface: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PresenterError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Surface(error) => Some(error),
-            Self::NoRenderWorld(error)
-            | Self::NoRenderer(error)
-            | Self::OffscreenTarget(error)
-            | Self::WindowSurface(error) => Some(error),
-            Self::NoWindow => None,
-        }
-    }
-}
-
-impl From<wgpu::CreateSurfaceError> for PresenterError {
-    fn from(error: wgpu::CreateSurfaceError) -> Self {
-        Self::Surface(error)
-    }
+    /// A resource the render world was expected to carry is gone at runtime.
+    #[error("the presentation path lost a render-world resource: {0}")]
+    MissingResource(#[from] unlit_ecs::EntityAccessError),
+    /// The offscreen path copying source is not a blit source.
+    #[error("the blit pass source is not a blit source")]
+    NotABlitSource,
 }
 
 /// The color format the offscreen target uses; the blit converts into the
@@ -177,9 +148,9 @@ impl Presenter {
     /// no attachment — so a frame rendered by anything other than this
     /// loop, an MCP tool's screenshot of the scene, skips the pass rather
     /// than recording into a dead swap-chain image.
-    fn present(&mut self, host: &World) {
+    fn present(&mut self, host: &World) -> Result<(), PresenterError> {
         let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
-            return;
+            return Ok(());
         };
         let presenting = self.presenting();
         let world = nested.get();
@@ -187,18 +158,16 @@ impl Presenter {
             self.surface
                 .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
         else {
-            return;
+            return Ok(());
         };
         let mut renderer_row = world
             .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)
-            .expect("the render world carries its renderer");
+            .query_one::<&mut Renderer>(self.renderer)?;
         renderer_row.get().render(world);
-        let mut queue_row = world
-            .root_scope()
-            .query_one::<&wgpu::Queue>(renderer_row.get().context().queue)
-            .expect("the render world carries its queue resource");
+        let queue = renderer_row.get().context().queue;
+        let mut queue_row = world.root_scope().query_one::<&wgpu::Queue>(queue)?;
         swap_frame.present_and_park(world, queue_row.get(), presenting);
+        Ok(())
     }
 
     /// Match the surface, the attachments and the offscreen target to a
@@ -209,9 +178,9 @@ impl Presenter {
     /// rebuilt for that size — its new view becomes the blit source's
     /// input, which makes the source rebuild its bind group on the next
     /// frame.
-    fn resize(&mut self, host: &World, size: (u32, u32)) {
+    fn resize(&mut self, host: &World, size: (u32, u32)) -> Result<(), PresenterError> {
         let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
-            return;
+            return Ok(());
         };
         let world = nested.get();
         let Some(size) = world
@@ -227,11 +196,11 @@ impl Presenter {
             .ok()
             .filter(|size| size.0 > 0 && size.1 > 0)
         else {
-            return;
+            return Ok(());
         };
         self.attachments.resize(world, size);
         let Some(blit) = self.blit.as_ref() else {
-            return;
+            return Ok(());
         };
         let Ok(context) = world
             .root_scope()
@@ -241,24 +210,17 @@ impl Presenter {
                 renderer.context()
             })
         else {
-            return;
+            return Ok(());
         };
-        let Ok(offscreen) = bind_offscreen(world, context, self.scene_pass, &self.gpu.device, size)
-        else {
-            return;
-        };
-        let _ = world
-            .root_scope()
-            .query_one::<&mut Source>(blit.source)
-            .map(|mut source| {
-                let source = source.get();
-                {
-                    source
-                        .as_mut::<BlitSource>()
-                        .expect("the blit pass's source is a blit")
-                        .view = offscreen.view;
-                }
-            });
+        let offscreen = bind_offscreen(world, context, self.scene_pass, &self.gpu.device, size)
+            .map_err(PresenterError::OffscreenTarget)?;
+        let mut source = world.root_scope().query_one::<&mut Source>(blit.source)?;
+        source
+            .get()
+            .as_mut::<BlitSource>()
+            .ok_or(PresenterError::NotABlitSource)?
+            .view = offscreen.view;
+        Ok(())
     }
 }
 
@@ -307,16 +269,8 @@ pub fn bind_offscreen(
     };
     let attachments =
         FrameAttachments::new(world, context, OFFSCREEN_FORMAT, size, FRAME_SAMPLES, true);
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| {
-            let pass = pass.get();
-            {
-                pass.set_attachments(&attachments, view.clone());
-            }
-        })
-        .expect("the bound pass exists");
+    let mut pass_row = world.root_scope().query_one::<&mut FramePass>(pass)?;
+    pass_row.get().set_attachments(&attachments, view.clone());
     Ok(OffscreenTarget {
         texture: color,
         view,
@@ -423,8 +377,7 @@ pub fn setup_presenter(
                 .spawn(Pass::new(BLIT_PASS_ORDER));
             let blit_source = nested
                 .get()
-                .scope_mut(blit_pass)
-                .expect("the blit pass is alive")
+                .scope_mut(blit_pass)?
                 .spawn(bundle![Source::new(BlitSource::new(target.view))]);
             // The presenting pass takes each frame's swap chain image in
             // [`Presenter::present`], which is the only place that knows it.
@@ -489,7 +442,7 @@ impl Command for DrawFrame {
         let delta_time = self
             .last
             .lock()
-            .expect("the frame clock is not poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replace(now)
             .map_or(0.0, |last| (now - last).as_secs_f32().min(0.1));
         let size = window(world)
@@ -550,7 +503,9 @@ pub fn draw_presented() -> OnFrame {
             LocalTasks::pump(&mut *nested.get());
             dispatch_frame(&mut *nested.get(), frame);
             drop(nested);
-            presenter.present(world);
+            if let Err(error) = presenter.present(world) {
+                log::error!("failed to present a frame: {error}");
+            }
         },
     )
 }
@@ -613,14 +568,12 @@ pub fn resize_presented() -> OnWindowEvent {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if let Some(presenter) = world
-            .root_scope()
-            .query::<(Entity, &mut Presenter)>()
-            .iter()
-            .next()
-            .map(|(_, p)| p)
-        {
-            presenter.resize(world, (size.width, size.height));
+        let mut rows = world.root_scope().query::<(Entity, &mut Presenter)>();
+        let Some((_, presenter)) = rows.iter().next() else {
+            return;
+        };
+        if let Err(error) = presenter.resize(world, (size.width, size.height)) {
+            log::error!("failed to resize the presentation path: {error}");
         }
     })
 }

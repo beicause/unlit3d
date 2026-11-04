@@ -69,7 +69,7 @@ impl Interactive {
                         AUDIO_CHANNELS as u16,
                     );
                 });
-                assert!(filled.is_some(), "the audio world is a stepped world");
+                assert!(filled.is_ok(), "the audio world is a stepped world");
             }
             let mut nested = host
                 .root_scope()
