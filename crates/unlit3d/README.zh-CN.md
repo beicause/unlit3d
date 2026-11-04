@@ -803,7 +803,8 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 那个 context 上的 `egui_wants_pointer_input` 与 `egui_wants_keyboard_input`
 就描述了这一帧的声明。调用方通过世界里的 `Source` 值拿到那个 context——
 `source.as_ref::<UiSource>()`——和取其它源的内部状态一样，游戏逻辑读它决定是否
-响应。按 egui 的语义，这个答案描述的是刚布局完的那一帧。不做任何自动拦截。
+响应。类型化访问返回 `Result`，源不是 `UiSource` 时错误会指出它实际持有的类型。
+按 egui 的语义，这个答案描述的是刚布局完的那一帧。不做任何自动拦截。
 
 </details>
 

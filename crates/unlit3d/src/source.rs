@@ -335,21 +335,41 @@ pub trait AnySource: Any + FrameSource {}
 
 impl<T: FrameSource> AnySource for T {}
 
+/// Why a typed access to a [`Source`] was refused.
+///
+/// A source is held behind an erased handle so one query drives every
+/// concrete type. Asking it for a type it does not hold is a mistake the
+/// caller can read back: both the type it actually holds and the one asked
+/// for are named, rather than collapsed into a silent `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+#[error("the source holds {actual}, not {requested}")]
+pub struct WrongSourceType {
+    /// The concrete type the source was built from.
+    pub actual: &'static str,
+    /// The concrete type the caller asked for.
+    pub requested: &'static str,
+}
+
 /// A frame source as an ECS component.
 ///
 /// The trait API is reachable directly (`source.order()`,
 /// `source.build_scene(..)`); typed access upcasts to `dyn Any` and
-/// downcasts, which is what [`Source::as_mut`] wraps.
+/// downcasts, which [`Source::as_mut`] and [`Source::as_ref`] wrap as a
+/// [`Result`] carrying [`WrongSourceType`].
 pub struct Source {
     source: Box<dyn AnySource>,
+    /// The concrete type `source` was built from, for a readable refusal.
+    type_name: &'static str,
     /// An explicit order that overrides the source's own.
     order: Option<FrameSourceOrder>,
 }
 
 impl Source {
     /// Wrap `source`, taking its order from [`FrameSource::order`].
-    pub fn new(source: impl FrameSource) -> Self {
+    pub fn new<S: FrameSource>(source: S) -> Self {
         Self {
+            type_name: core::any::type_name::<S>(),
             source: Box::new(source),
             order: None,
         }
@@ -375,16 +395,34 @@ impl Source {
         self.order = order;
     }
 
-    /// The source as its concrete type, or `None` for a different type.
-    pub fn as_mut<T: FrameSource>(&mut self) -> Option<&mut T> {
+    /// The source as its concrete type.
+    ///
+    /// # Errors
+    ///
+    /// Answers [`WrongSourceType`] when the source holds a different type,
+    /// naming both the type it holds and the one asked for.
+    pub fn as_mut<T: FrameSource>(&mut self) -> Result<&mut T, WrongSourceType> {
+        let actual = self.type_name;
         let erased: &mut dyn Any = &mut *self.source;
-        erased.downcast_mut::<T>()
+        erased.downcast_mut::<T>().ok_or(WrongSourceType {
+            actual,
+            requested: core::any::type_name::<T>(),
+        })
     }
 
-    /// The source as its concrete type, or `None` for a different type.
-    pub fn as_ref<T: FrameSource>(&self) -> Option<&T> {
+    /// The source as its concrete type.
+    ///
+    /// # Errors
+    ///
+    /// Answers [`WrongSourceType`] when the source holds a different type,
+    /// naming both the type it holds and the one asked for.
+    pub fn as_ref<T: FrameSource>(&self) -> Result<&T, WrongSourceType> {
+        let actual = self.type_name;
         let erased: &dyn Any = &*self.source;
-        erased.downcast_ref::<T>()
+        erased.downcast_ref::<T>().ok_or(WrongSourceType {
+            actual,
+            requested: core::any::type_name::<T>(),
+        })
     }
 
     /// Fill `scene` with this source's draws for the frame.
@@ -723,8 +761,8 @@ mod tests {
         );
     }
 
-    /// Typed access finds the concrete type and returns `None` for another,
-    /// rather than panicking.
+    /// Typed access finds the concrete type and names the mismatch for
+    /// another, rather than panicking.
     #[test]
     fn typed_access_downcasts_and_rejects_the_wrong_type() {
         struct OtherSource;
@@ -762,7 +800,7 @@ mod tests {
                 .query_one::<&mut Source>(recording)
                 .map(|mut s| {
                     let s = s.get();
-                    s.as_mut::<RecordingSource>().is_some()
+                    s.as_mut::<RecordingSource>().is_ok()
                 })
                 .unwrap()
         );
@@ -772,7 +810,7 @@ mod tests {
                 .query_one::<&mut Source>(recording)
                 .map(|mut s| {
                     let s = s.get();
-                    s.as_mut::<OtherSource>().is_none()
+                    s.as_mut::<OtherSource>().is_err()
                 })
                 .unwrap()
         );
@@ -782,7 +820,7 @@ mod tests {
                 .query_one::<&mut Source>(other)
                 .map(|mut s| {
                     let s = s.get();
-                    s.as_mut::<OtherSource>().is_some()
+                    s.as_mut::<OtherSource>().is_ok()
                 })
                 .unwrap()
         );
@@ -792,10 +830,16 @@ mod tests {
                 .query_one::<&mut Source>(other)
                 .map(|mut s| {
                     let s = s.get();
-                    s.as_ref::<RecordingSource>().is_none()
+                    s.as_ref::<RecordingSource>().is_err()
                 })
                 .unwrap()
         );
+
+        let scope = world.root_scope();
+        let mut row = scope.query_one::<&mut Source>(recording).unwrap();
+        let error = row.get().as_mut::<OtherSource>().err().unwrap();
+        assert!(error.actual.ends_with("RecordingSource"));
+        assert!(error.requested.ends_with("OtherSource"));
     }
 
     /// One query drives sources of different concrete types, which is what the

@@ -68,8 +68,8 @@ pub enum PresenterError {
     #[error("the presentation path lost a render-world resource: {0}")]
     MissingResource(#[from] unlit_ecs::EntityAccessError),
     /// The offscreen path copying source is not a blit source.
-    #[error("the blit pass source is not a blit source")]
-    NotABlitSource,
+    #[error("the blit pass source is not a blit source: {0}")]
+    NotABlitSource(#[from] unlit3d::source::WrongSourceType),
 }
 
 /// The color format the offscreen target uses; the blit converts into the
@@ -215,11 +215,7 @@ impl Presenter {
         let offscreen = bind_offscreen(world, context, self.scene_pass, &self.gpu.device, size)
             .map_err(PresenterError::OffscreenTarget)?;
         let mut source = world.root_scope().query_one::<&mut Source>(blit.source)?;
-        source
-            .get()
-            .as_mut::<BlitSource>()
-            .ok_or(PresenterError::NotABlitSource)?
-            .view = offscreen.view;
+        source.get().as_mut::<BlitSource>()?.view = offscreen.view;
         Ok(())
     }
 }

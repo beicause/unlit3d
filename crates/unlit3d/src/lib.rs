@@ -90,7 +90,7 @@ pub mod prelude {
         renderer::Renderer,
         source::{
             FrameSource, FrameSourceOrder, MaintainScope, OpenUrl, OpenUrls, RenderContext, Source,
-            drain_open_urls, spawn_context,
+            WrongSourceType, drain_open_urls, spawn_context,
         },
     };
     pub use unlit_ecs::prelude::*;

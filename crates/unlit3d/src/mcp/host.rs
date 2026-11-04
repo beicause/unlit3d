@@ -80,14 +80,14 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
         let is_mesh_source = world
             .root_scope()
             .query_one::<&Source>(entity)
-            .is_ok_and(|mut source| source.get().as_ref::<MeshSource>().is_some());
+            .is_ok_and(|mut source| source.get().as_ref::<MeshSource>().is_ok());
         return is_mesh_source
             .then_some(entity)
             .ok_or_else(|| format!("entity {entity:?} carries no mesh source"));
     }
     let mut found: Option<Entity> = None;
     for (source, entity) in world.root_scope().query::<(&Source, Entity)>().iter() {
-        if source.as_ref::<MeshSource>().is_some() {
+        if source.as_ref::<MeshSource>().is_ok() {
             if found.is_some() {
                 return Err("the world has more than one mesh source; pass `source`".to_string());
             }
@@ -115,7 +115,7 @@ fn with_mesh_source<R>(
     let mesh_source = source
         .get()
         .as_mut::<MeshSource>()
-        .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
+        .map_err(|error| error.to_string())?;
     Ok(f(mesh_source, &scope))
 }
 

@@ -268,7 +268,7 @@ fn build(
                     .any(|(_, source)| {
                         source
                             .as_ref::<UiSource>()
-                            .is_some_and(|ui| ui.context().egui_wants_pointer_input())
+                            .is_ok_and(|ui| ui.context().egui_wants_pointer_input())
                     });
             if over_ui {
                 let _ = world

@@ -85,7 +85,7 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey
     let mut sources = world.root_scope().query::<(&Source, Entity)>();
     let entity = sources
         .iter()
-        .find(|(source, _)| source.as_ref::<MeshSource>().is_some())
+        .find(|(source, _)| source.as_ref::<MeshSource>().is_ok())
         .map(|(_, entity)| entity)?;
     let key = world
         .root_scope()

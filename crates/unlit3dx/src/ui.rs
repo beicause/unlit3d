@@ -216,7 +216,7 @@ impl UiPanelHost {
 pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job {
     Box::new(move |world: &mut World| {
         for source in world.root_scope().query::<&mut Source>().iter() {
-            if let Some(ui) = source.as_mut::<UiSource>() {
+            if let Ok(ui) = source.as_mut::<UiSource>() {
                 ui.frames.publish(slot, frame);
                 return;
             }
@@ -298,7 +298,7 @@ mod tests {
 
         fn frames<R>(&mut self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
             for source in self.render.root_scope().query::<&mut Source>().iter() {
-                if let Some(ui) = source.as_mut::<UiSource>() {
+                if let Ok(ui) = source.as_mut::<UiSource>() {
                     return ui.frames.with_frames(f);
                 }
             }

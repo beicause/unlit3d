@@ -4589,6 +4589,7 @@ dependencies = [
  "log",
  "profiling",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
  "unlit_ecs",
  "unlit_wgpu",

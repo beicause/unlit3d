@@ -1139,7 +1139,8 @@ one the source republishes: after a frame is laid out, `egui_wants_pointer_input
 and `egui_wants_keyboard_input` on the source's context describe what the frame
 claimed. A caller reaches that context through the world's `Source` value —
 `source.as_ref::<UiSource>()` — the same way it reaches any other source's
-state, and game logic reads it to decide whether to respond. By egui's
+state, and game logic reads it to decide whether to respond. Typed access is a
+`Result`, so a source of another type names itself in the error. By egui's
 semantics the answer describes the frame just laid out. Nothing is
 intercepted automatically.
 
