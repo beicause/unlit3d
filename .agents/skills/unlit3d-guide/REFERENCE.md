@@ -150,6 +150,8 @@
 | 应答 | `Pending::new(state, timeout)`、`request(sender, key, make)`、`advance(&mut Vec<(K, Settled<T>)>)` | 一次请求一次应答；`Settled::Answered` / `Expired` |
 | 发布 | `publish_collected(world) -> usize` | 世界里收集到的快照/流在 tick 之后统一发布 |
 
+跨 world / 跨线程通信只用这张表里的机制：`World` 是 `!Send`，`Arc<Mutex<World>>` 编不过；自造 channel 或锁会绕过 job 的 tick 前 drain 与订阅的 tick 后发布。
+
 ## 展示路径（unlit3dx）
 
 | 项 | 签名 | 源 |

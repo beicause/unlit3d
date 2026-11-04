@@ -24,6 +24,24 @@ API 速查见同目录的 [REFERENCE.md](REFERENCE.md)；可跑的例子见本�
 5. **`Renderer::render(&world)` 是唯一的驱动点**。它只录帧、不推进世界；`Frame`（`delta_time` / `index` / `size`）由调用方构造，用 `dispatch_frame` 发给 `OnFrame` 行为组件。
 6. **资源句柄是组件**。`GpuMesh` / `GpuMaterial` 是带 `Rc` 的句柄，clone 就是拷贝句柄；想再画一份就 clone 出来再 spawn 一个实例实体，不要重新创建 GPU 资源。
 
+## 存储与通信约定
+
+两条底线，单 world 与多 world 都适用：**状态尽量进 ECS，跨线程/跨 world 通信只用内置机制**。
+
+**状态进 ECS：bundle 是对象，组件是数据。**
+
+- 一个「对象」= 数据组件 + 它的 tick（行为组件），一个 bundle 一次 spawn：加对象就是 spawn 实体，删对象就是 despawn。不要另立一份 `Vec<MyObject>` 或 `GameState` 大结构体再手动与 world 同步——实体就是对象，组件就是它的字段，query 就是遍历。
+- 组件是数据；行为放行为组件（`OnFrame` / `OnInput` / `OnAudioFill`）或由调用方驱动。unlit_ecs 没有 systems 也没有 resources：要全局可达的状态就 spawn 一个实体（放 `world.shared()`），caller 手里留一个 `Entity` 句柄。
+- 按数据归属拆组件，不做一个塞下一切的巨大组件，也不用一个大 enum 状态机统筹流程：一个实体的不同侧面各是一个组件；跨事件的标志用兄弟组件（回调里取不到自己这个组件类型），「这一帧跳过」就是一例。
+- scope 按「谁看得到」拆：pass / source 是 scope，UI source 与 mesh source 互相看不见，两边都要读写的状态放 `world.shared()`；实体的组件集合在 spawn 时固定，要换集合就 despawn 重 spawn，不要造一个 `Option<Everything>` 组件模拟可变结构。
+
+**跨线程 / 跨 world 通信：只用内置机制。**
+
+- `World` 是 `!Send`：`Arc<Mutex<World>>` 这条路编译器直接封死——锁不是「不推荐」，是「不可行」。多线程的正确形状是**一个关注点一个 world**，world 之间从不互调。
+- 全部协议就是**进去靠 job，回来靠订阅**：job 是唯一改变另一个世界的方式（不回答，有界队列不阻塞）；拿回数据只有三种形状——最新状态 `watch`、每个事件 `subscribe`、一次请求一次应答 `Pending`。发布由驱动方在 tick 之后统一做，tick 体自己不发布。
+- 锁要解决的问题内置机制已经解决：快照单槽是 `ArcSwapOption`，世界换入最新值，reader 读自己持有的副本，两边永不互锁。自造 mpsc channel、`Mutex`、共享 `Arc` 或回答式 job 只会绕过这些时机保证（tick 前 drain、tick 后发布、满队 `Full`、已停 `Closed`），还得自己面对竞争与死锁。
+- 多 world 的装配规则（世界只放配置、游戏内容一律走 job、一个 scene 一个 port）见下文「多 world（unlit3dx）」。
+
 ## 单 world 骨架（unlit3d）
 
 ```rust
@@ -183,6 +201,7 @@ world.apply().expect("the queue is drained");
 - 三种 runner 协议完全相同：`Threaded`（自带线程）、`Stepped`（宿主线程上 `step_stepped_world` 推）、子 world（`spawn_sub_world` + `drain_sub_world`，也在宿主线程）。同一份 tick 体在三种下都能跑。
 - 一条 job 是 `Box<dyn FnOnce(&mut World) + Send>`，**不回答**；有界队列，满了返回 `SendError::Full`、世界已停返回 `Closed`，永不阻塞。
 - 拿回数据三种形状：`watch`（最新状态，单槽无积压）、`subscribe`（每个事件，按序）、`Pending`（一次请求一次应答，超时给 `Expired` 而不是等死）。发布发生在世界跑完一次 tick 之后，tick 体自己不发布。
+- **跨线程/跨 world 通信只用这套内置机制，不要自己另造互斥锁或 channel**：`World` 是 `!Send`，`Arc<Mutex<World>>` 编不过；job 在 tick 前 drain、发布在 tick 后，自造通道没有这些时机保证。job 是唯一改变另一个世界的方式。
 - 世界装配只放配置（device/queue/tick 率/重力/缓冲大小），**游戏内容一律走 job**；setup 里出现「游戏里的某个东西」就说明写错了层。
 - 一个 scene 对每个它要说话的世界只留一个 port（`JobSender` + 订阅值），收在一个结构体里递下去。
 - 跨 world 的实体用 newtype 包一层（示例的 `RenderEntity(pub Entity)`）：每个 world 的实体编号都从 0 开始，裸 `Entity` 一定会混。
@@ -229,6 +248,7 @@ world.apply().expect("the queue is drained");
 22. job 不回答：要值用 `Pending`，要状态用 `watch`，要事件用 `subscribe`；`send` 的 `Full` / `Closed` 别 unwrap 掉。
 23. 对象 = 组件 + tick 一个 bundle；默认 band 无序，依赖就用带 order 的构造器显式声明。
 24. 要截图、快照或 MCP 就开 offscreen 展示路径，否则帧活不过 present。
+25. 跨线程/跨 world 通信只用 job + `watch` / `subscribe` / `Pending`，不自造互斥锁或 channel：`World` 是 `!Send`，锁这条路编不过；tick 前 drain、tick 后发布的时机保证只在内置机制里。
 
 ## 常见错误
 
@@ -247,6 +267,9 @@ world.apply().expect("the queue is drained");
 | 面板看不见 | `UiPanel` 不在 `UiSource` 子树里，或 UI source 挂在场景构建之后 |
 | 面板有 draw 但一个材质都没有 | 发布方比绘制方快，携带纹理增量的那一帧被下一帧顶掉了。`ExternalFrames::publish` 会把被顶掉帧的 `textures` 交给继任者；自己绕过它换帧就会丢图集 |
 | job 丢了 | `send` 的 `Full` / `Closed` 被忽略 |
+| 想把 `World` 装进 `Arc<Mutex<..>>` 或传去别的线程 | `World` 是 `!Send`，编不过；一个关注点一个 world，通信走 job + snapshot / stream |
+| 跨 world 数据时序怪、偶发竞争 | 自造 mpsc / 锁 / 回答式 job 绕过内置时机：job 在 tick 前 drain，发布在 tick 后，单槽快照本就免锁 |
+| 处处借用冲突、状态要手动到处同步 | 状态堆在一个巨大组件或大 enum 状态机里；按数据归属拆实体与组件，行为放行为组件，跨事件标志用兄弟组件 |
 | snapshot 一直是 None | 目标 world 还没跑完一次 tick（发布在 tick 之后），或 reader 已 drop（drop 即退订） |
 | 集成测试没跑 | 本仓库用 `cargo nextest run`；带 required-features 的套件要 `--all-features` 或点名 feature |
 
