@@ -506,11 +506,11 @@ impl InstanceData for LitInstance {
 
 /// Mesh allocation and family registration for the built-in lit pipeline.
 ///
-/// The methods are inherent work the source already does; the trait only
-/// gathers them next to the shader they serve. A caller's own family uses
-/// [`MeshSource::register_family`] and [`MeshSource::allocate_mesh`] the same
-/// way these use them.
-pub trait MeshSourceLitExt {
+/// These are ordinary inherent methods on [`MeshSource`]: a caller's own family
+/// uses [`MeshSource::register_family`] and [`MeshSource::allocate_mesh`] the
+/// same way these use them, and the module gathers them next to the shader
+/// they serve.
+impl MeshSource {
     /// Register the built-in lit shader as a family.
     ///
     /// The family specializes each entity's options on the frame's render
@@ -518,8 +518,8 @@ pub trait MeshSourceLitExt {
     /// one compiled pipeline, and a draw whose mesh layout implies different
     /// channels compiles its own. The options are the entity's: a mesh or
     /// material is built against the [LitOptions] it will be drawn with,
-    /// through [`MeshSourceLitExt::allocate_lit_mesh`] and
-    /// [`MeshSourceLitExt::allocate_lit_material`]. Those take the options
+    /// through [`MeshSource::allocate_lit_mesh`] and
+    /// [`MeshSource::allocate_lit_material`]. Those take the options
     /// rather than the key, so any pipeline whose variant reads the same
     /// channels can draw the mesh.
     ///
@@ -536,7 +536,10 @@ pub trait MeshSourceLitExt {
     /// # Panics
     ///
     /// If the lit family is already registered.
-    fn register_lit_family(&mut self, world: &Scope<'_>);
+    pub fn register_lit_family(&mut self, world: &Scope<'_>) {
+        self.register_family::<LitPipelineKey, _, _>(world, LitFactory, LitInstance);
+    }
+
     /// Upload raw mesh channels in the layout the built-in lit shader
     /// expects, and return a [GpuMesh] handle.
     ///
@@ -567,6 +570,7 @@ pub trait MeshSourceLitExt {
     /// channel with no slice is left out, and the mesh's vertex layout records
     /// exactly the channels that were packed, so the pipeline it is later
     /// drawn with reads back the same shape.
+    ///
     /// # Panics
     ///
     /// If the input slices are empty or of mismatched length (see the
@@ -574,41 +578,7 @@ pub trait MeshSourceLitExt {
     /// [`LitMeshDesc::joints`] and [`LitMeshDesc::weights`] is `Some`; or
     /// if [`LitMeshDesc::morph_deltas`] is present but does not hold three
     /// components per vertex and target.
-    fn allocate_lit_mesh(
-        &mut self,
-        world: &Scope<'_>,
-        options: &Hashed<LitOptions>,
-        desc: LitMeshDesc<'_>,
-    ) -> GpuMesh;
-    /// Allocate the lit material bind group from an existing base-colour
-    /// texture view and sampler, and return its [GpuMaterial] handle.
-    ///
-    /// Only the bind group is built. `view_id` and `sampler_id` name resources
-    /// the caller has already put in the graph, and they become the group
-    /// dependencies, so replacing either marks it dirty. Whether a draw
-    /// samples the texture is the draw own answer — it is what decides the
-    /// variant — so a caller that wants a material calls this, and one that
-    /// does not leaves it out.
-    ///
-    /// # Panics
-    ///
-    /// If `view_id` or `sampler_id` is not a texture view or sampler in the
-    /// graph.
-    fn allocate_lit_material(
-        &mut self,
-        world: &Scope<'_>,
-        options: &Hashed<LitOptions>,
-        view_id: ResHandle<TextureView>,
-        sampler_id: ResHandle<wgpu::Sampler>,
-    ) -> GpuMaterial;
-}
-
-impl MeshSourceLitExt for MeshSource {
-    fn register_lit_family(&mut self, world: &Scope<'_>) {
-        self.register_family::<LitPipelineKey, _, _>(world, LitFactory, LitInstance);
-    }
-
-    fn allocate_lit_mesh(
+    pub fn allocate_lit_mesh(
         &mut self,
         world: &Scope<'_>,
         options: &Hashed<LitOptions>,
@@ -954,7 +924,21 @@ impl MeshSourceLitExt for MeshSource {
         mesh
     }
 
-    fn allocate_lit_material(
+    /// Allocate the lit material bind group from an existing base-colour
+    /// texture view and sampler, and return its [GpuMaterial] handle.
+    ///
+    /// Only the bind group is built. `view_id` and `sampler_id` name resources
+    /// the caller has already put in the graph, and they become the group
+    /// dependencies, so replacing either marks it dirty. Whether a draw
+    /// samples the texture is the draw own answer — it is what decides the
+    /// variant — so a caller that wants a material calls this, and one that
+    /// does not leaves it out.
+    ///
+    /// # Panics
+    ///
+    /// If `view_id` or `sampler_id` is not a texture view or sampler in the
+    /// graph.
+    pub fn allocate_lit_material(
         &mut self,
         world: &Scope<'_>,
         options: &Hashed<LitOptions>,

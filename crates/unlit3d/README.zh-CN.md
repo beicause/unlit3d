@@ -212,7 +212,7 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 几个字节的包围盒而让每次遍历都把它们拖一遍。拆分的依据是读取频率而不是字段类别，所以新增
 字段应放在读取它的那一侧。
 
-`MeshSourceLitExt::register_lit_family` 注册内置的 lit 家族；`MeshSource::register_family`
+`MeshSource::register_lit_family` 注册内置的 lit 家族；`MeshSource::register_family`
 注册调用者自己的家族，这与内置家族走的是同一条路——连家族自己拥有并声明的逐实例
 顶点流也不例外（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)）。其他组件
 包括 `Transform`、`Camera`、`RenderLoadOps`、`lit::InstanceColor`、

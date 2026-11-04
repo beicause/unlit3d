@@ -271,7 +271,7 @@ pub struct MeshParts {
 /// A handle to a mesh stored in the source's GPU resource graph.
 ///
 /// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
-/// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh).
+/// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh).
 /// The mesh is ready to draw immediately, and it lives as long as some
 /// [`GpuMesh`] names it: dropping the last handle makes it collectable by the
 /// next `maintain`, after which the pool ranges it held are handed back with
@@ -505,7 +505,7 @@ impl core::fmt::Debug for GpuRenderPipeline {
 /// Created by
 /// [`MeshSource::allocate_material`](crate::mesh_source::MeshSource::allocate_material) for a
 /// caller's own layout, or by
-/// [`MeshSourceLitExt::allocate_lit_material`](crate::lit::MeshSourceLitExt::allocate_lit_material)
+/// [`MeshSource::allocate_lit_material`](crate::mesh_source::MeshSource::allocate_lit_material)
 /// for the built-in shader's base-color texture and sampler. The bind group
 /// lives as long as some handle names it; dropping the last one makes it
 /// collectable by the next `maintain`.

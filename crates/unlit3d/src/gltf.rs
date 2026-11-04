@@ -123,7 +123,7 @@ use crate::components::{
     GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, SkinPose,
     Transform, ZSortedDrawing,
 };
-use crate::lit::{InstanceColor, InstanceCutoff, LitMeshDesc, LitPipelineKey, MeshSourceLitExt};
+use crate::lit::{InstanceColor, InstanceCutoff, LitMeshDesc, LitPipelineKey};
 use crate::mesh::MorphDeltas;
 use crate::mesh_source::MeshSource;
 use gltf::animation::util::ReadOutputs;

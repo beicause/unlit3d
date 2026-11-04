@@ -309,7 +309,7 @@ used; a mesh carrying its buffers inline would drag them through every walk for
 the sake of a few bytes of bounds. The split is by read frequency, not by kind,
 so a new field belongs on the side that reads it.
 
-[`MeshSourceLitExt::register_lit_family`](lit::MeshSourceLitExt::register_lit_family)
+[`MeshSource::register_lit_family`](mesh_source::MeshSource::register_lit_family)
 registers the built-in lit family;
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family)
 registers a caller's own, which is the same route the built-in one takes — down

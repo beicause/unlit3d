@@ -30,8 +30,8 @@
 //! egui's own documentation asks an integration to report a touch point
 //! *both* as a touch and as the pointer: a touch is what a widget watching for
 //! a finger wants, while the pointer events are what makes tapping a button
-//! work at all. One touch therefore becomes several events, which is why the
-//! conversion returns a list rather than one event.
+//! work at all. One touch therefore becomes several events, which the
+//! conversion appends to the caller's buffer rather than returning one.
 
 use egui::TouchPhase as EguiTouchPhase;
 use egui::{Event as EguiEvent, MouseWheelUnit, Pos2, TouchDeviceId, TouchId};
@@ -42,35 +42,37 @@ use crate::input::{
     PointerAction, PointerEvent, PointerKind, TouchEvent, TouchPhase, WheelUnit,
 };
 
-/// Translate one crate event into the egui events it stands for.
+/// Translate one crate event into the egui events it stands for, appending
+/// them to `out`.
 ///
-/// Returns an empty list for an event egui has no counterpart for, so a caller
-/// can translate a whole frame without matching on the kind first. A pointer
+/// Appends nothing for an event egui has no counterpart for, so a caller can
+/// translate a whole frame without matching on the kind first. A pointer
 /// event that describes an action another event of the same frame already
 /// describes in more detail is likewise dropped — see the module docs for which
 /// source feeds egui's pointer per device. `pixels_per_point` converts the
 /// crate's physical pixels into the points egui lays out in; it must be
-/// positive.
-pub fn to_egui_event(event: &InputEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
+/// positive. Keeping the buffer with the caller means a frame — or a run of
+/// frames — reuses one allocation rather than allocating per event.
+pub fn to_egui_event(event: &InputEvent, pixels_per_point: f32, out: &mut Vec<EguiEvent>) {
     assert!(
         pixels_per_point > 0.0,
         "a pixel density must be positive to convert physical pixels into points"
     );
     match event {
-        InputEvent::Key(event) => key_events(*event),
-        InputEvent::Mouse(event) => mouse_events(event, pixels_per_point),
-        InputEvent::Pointer(event) => pointer_events(event, pixels_per_point),
-        InputEvent::Touch(event) => touch_events(*event, pixels_per_point),
-        InputEvent::Text(text) => vec![EguiEvent::Text(text.0.clone())],
-        InputEvent::Ime(event) => ime_events(event),
+        InputEvent::Key(event) => key_events(*event, out),
+        InputEvent::Mouse(event) => mouse_events(event, pixels_per_point, out),
+        InputEvent::Pointer(event) => pointer_events(event, pixels_per_point, out),
+        InputEvent::Touch(event) => touch_events(*event, pixels_per_point, out),
+        InputEvent::Text(text) => out.push(EguiEvent::Text(text.0.clone())),
+        InputEvent::Ime(event) => ime_events(event, out),
         InputEvent::ModifiersChanged(modifiers) => {
-            vec![EguiEvent::ModifiersChanged(to_modifiers(*modifiers))]
+            out.push(EguiEvent::ModifiersChanged(to_modifiers(*modifiers)));
         }
-        InputEvent::FocusChanged(focused) => vec![EguiEvent::WindowFocused(*focused)],
+        InputEvent::FocusChanged(focused) => out.push(EguiEvent::WindowFocused(*focused)),
         // egui learns the screen's size from the frame's target and its
         // density from the viewport, not from events, so these carry nothing
         // it needs.
-        InputEvent::Resized { .. } | InputEvent::ScaleFactorChanged { .. } => Vec::new(),
+        InputEvent::Resized { .. } | InputEvent::ScaleFactorChanged { .. } => {}
     }
 }
 
@@ -85,35 +87,33 @@ pub fn to_egui_events_into<'a>(
     pixels_per_point: f32,
     out: &mut Vec<EguiEvent>,
 ) {
-    out.extend(
-        events
-            .into_iter()
-            .flat_map(|event| to_egui_event(event, pixels_per_point)),
-    );
+    for event in events {
+        to_egui_event(event, pixels_per_point, out);
+    }
 }
 
 /// A key event. The crate carries the text a key produced as a separate
 /// [`TextEvent`](crate::input::TextEvent), so a key press becomes one egui event here and the text
 /// arrives on its own.
-fn key_events(event: KeyEvent) -> Vec<EguiEvent> {
+fn key_events(event: KeyEvent, out: &mut Vec<EguiEvent>) {
     // A key only the platform knows has no name in egui's closed key space, so
     // there is nothing to forward. Dropping the event is better than picking a
     // key egui does recognize, which would report a press the user never made.
     let Some(key) = to_key(event.key) else {
-        return Vec::new();
+        return;
     };
     // `egui` wants the logical key, which its shortcuts are written against,
     // and the physical key, which a game control addresses. The crate's `Key`
     // is a physical key, so it fills both: a key the crate names has the same
     // identity either way, and the crate does not track the layout-dependent
     // logical key at all.
-    vec![EguiEvent::Key {
+    out.push(EguiEvent::Key {
         key,
         physical_key: Some(key),
         pressed: event.pressed,
         repeat: event.repeat,
         modifiers: to_modifiers(event.modifiers),
-    }]
+    });
 }
 
 /// A mouse event.
@@ -122,10 +122,10 @@ fn key_events(event: KeyEvent) -> Vec<EguiEvent> {
 /// device-agnostic [`PointerEvent`] beside them: a [`MouseEvent::Button`] names
 /// the button egui needs, and a [`MouseEvent::Wheel`] names the unit, neither
 /// of which a pointer event carries.
-fn mouse_events(event: &MouseEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
+fn mouse_events(event: &MouseEvent, pixels_per_point: f32, out: &mut Vec<EguiEvent>) {
     match event {
         MouseEvent::Moved { position } => {
-            vec![EguiEvent::PointerMoved(to_pos(*position, pixels_per_point))]
+            out.push(EguiEvent::PointerMoved(to_pos(*position, pixels_per_point)));
         }
         MouseEvent::Button {
             position,
@@ -134,25 +134,25 @@ fn mouse_events(event: &MouseEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
             modifiers,
         } => {
             // egui names five buttons and nothing else, so a button beyond
-            // them cannot be reported. An empty list says so rather than
+            // them cannot be reported. Appending nothing says so rather than
             // mapping it onto one egui does know.
             let Some(button) = to_pointer_button(*button) else {
-                return Vec::new();
+                return;
             };
-            vec![EguiEvent::PointerButton {
+            out.push(EguiEvent::PointerButton {
                 pos: to_pos(*position, pixels_per_point),
                 button,
                 pressed: *pressed,
                 modifiers: to_modifiers(*modifiers),
-            }]
+            });
         }
-        MouseEvent::Left => vec![EguiEvent::PointerGone],
+        MouseEvent::Left => out.push(EguiEvent::PointerGone),
         MouseEvent::Wheel {
             delta,
             unit,
             phase,
             modifiers,
-        } => vec![EguiEvent::MouseWheel {
+        } => out.push(EguiEvent::MouseWheel {
             unit: to_wheel_unit(*unit),
             // egui's wheel delta is in points whichever unit it is measured
             // in, so a pixel delta is scaled like a position.
@@ -162,7 +162,7 @@ fn mouse_events(event: &MouseEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
             },
             phase: to_touch_phase(*phase),
             modifiers: to_modifiers(*modifiers),
-        }],
+        }),
     }
 }
 
@@ -175,38 +175,44 @@ fn mouse_events(event: &MouseEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
 /// [`MouseEvent`] or a [`TouchEvent`] carrying the same point action in more
 /// detail and egui is fed that instead. Forwarding the pointer too would report
 /// one physical move twice.
-fn pointer_events(event: &PointerEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
+fn pointer_events(event: &PointerEvent, pixels_per_point: f32, out: &mut Vec<EguiEvent>) {
     match event.action {
-        PointerAction::Zoom(delta) => return vec![EguiEvent::Zoom(delta)],
-        PointerAction::Rotate(delta) => return vec![EguiEvent::Rotate(delta)],
+        PointerAction::Zoom(delta) => {
+            out.push(EguiEvent::Zoom(delta));
+            return;
+        }
+        PointerAction::Rotate(delta) => {
+            out.push(EguiEvent::Rotate(delta));
+            return;
+        }
         PointerAction::Moved
         | PointerAction::Pressed
         | PointerAction::Released { .. }
         | PointerAction::Left => {}
     }
     let Some(position) = pointer_position(event, pixels_per_point) else {
-        return Vec::new();
+        return;
     };
     match event.action {
-        PointerAction::Moved => vec![EguiEvent::PointerMoved(position)],
-        PointerAction::Pressed => vec![EguiEvent::PointerButton {
+        PointerAction::Moved => out.push(EguiEvent::PointerMoved(position)),
+        PointerAction::Pressed => out.push(EguiEvent::PointerButton {
             pos: position,
             button: EguiPointerButton::Primary,
             pressed: true,
             modifiers: to_modifiers(event.modifiers),
-        }],
-        PointerAction::Released { .. } => vec![
-            EguiEvent::PointerButton {
+        }),
+        PointerAction::Released { .. } => {
+            out.push(EguiEvent::PointerButton {
                 pos: position,
                 button: EguiPointerButton::Primary,
                 pressed: false,
                 modifiers: to_modifiers(event.modifiers),
-            },
+            });
             // A pen that lifts or is cancelled is not hovering any more, so it
             // leaves the screen; the mouse's own `Left` covers the mouse.
-            EguiEvent::PointerGone,
-        ],
-        PointerAction::Left => vec![EguiEvent::PointerGone],
+            out.push(EguiEvent::PointerGone);
+        }
+        PointerAction::Left => out.push(EguiEvent::PointerGone),
         PointerAction::Zoom(_) | PointerAction::Rotate(_) => unreachable!("handled above"),
     }
 }
@@ -234,9 +240,9 @@ fn pointer_position(event: &PointerEvent, pixels_per_point: f32) -> Option<Pos2>
 
 /// A touch, reported as egui asks: the touch itself plus the pointer events
 /// that make a widget respond to it.
-fn touch_events(event: TouchEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
+fn touch_events(event: TouchEvent, pixels_per_point: f32, out: &mut Vec<EguiEvent>) {
     let pos = to_pos(event.position, pixels_per_point);
-    let mut events = vec![EguiEvent::Touch {
+    out.push(EguiEvent::Touch {
         // The crate numbers touches per device without naming the device, so
         // every touch belongs to one synthetic device.
         device_id: TouchDeviceId(0),
@@ -244,25 +250,25 @@ fn touch_events(event: TouchEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
         phase: to_touch_phase(event.phase),
         pos,
         force: event.force,
-    }];
+    });
 
     match event.phase {
         // A finger down is the pointer arriving and pressing its primary
         // button, which is what a tap on a widget is.
         TouchPhase::Started => {
-            events.push(EguiEvent::PointerMoved(pos));
-            events.push(EguiEvent::PointerButton {
+            out.push(EguiEvent::PointerMoved(pos));
+            out.push(EguiEvent::PointerButton {
                 pos,
                 button: EguiPointerButton::Primary,
                 pressed: true,
                 modifiers: Modifiers::default().into(),
             });
         }
-        TouchPhase::Moved => events.push(EguiEvent::PointerMoved(pos)),
+        TouchPhase::Moved => out.push(EguiEvent::PointerMoved(pos)),
         // Lifting ends the touch, and egui wants the release before the
         // pointer leaves the screen.
         TouchPhase::Ended | TouchPhase::Cancelled => {
-            events.push(EguiEvent::PointerButton {
+            out.push(EguiEvent::PointerButton {
                 pos,
                 button: EguiPointerButton::Primary,
                 pressed: false,
@@ -270,10 +276,9 @@ fn touch_events(event: TouchEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
             });
             // Nothing follows the last finger, so the pointer is gone. A
             // cancellation is not a hover, so it leaves the screen too.
-            events.push(EguiEvent::PointerGone);
+            out.push(EguiEvent::PointerGone);
         }
     }
-    events
 }
 
 /// An input-method event.
@@ -282,7 +287,7 @@ fn touch_events(event: TouchEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
 /// windowing library reports byte offsets, while egui counts characters. A
 /// preedit's active range is therefore re-measured in characters here, and a
 /// delete request is converted the other way.
-fn ime_events(event: &ImeEvent) -> Vec<EguiEvent> {
+fn ime_events(event: &ImeEvent, out: &mut Vec<EguiEvent>) {
     let inner = match &event.kind {
         ImeKind::Preedit { text, active_range } => EguiImeEvent::Preedit {
             text: text.clone(),
@@ -303,9 +308,9 @@ fn ime_events(event: &ImeEvent) -> Vec<EguiEvent> {
         }
         // egui deprecated both variants: it no longer tracks whether an input
         // method is on, so neither has a counterpart to forward.
-        ImeKind::Enabled | ImeKind::Disabled => return Vec::new(),
+        ImeKind::Enabled | ImeKind::Disabled => return,
     };
-    vec![EguiEvent::Ime(inner)]
+    out.push(EguiEvent::Ime(inner));
 }
 
 /// Re-express a byte range within `text` as the character range covering the
@@ -485,10 +490,18 @@ mod tests {
     use super::*;
     use crate::input::TextEvent;
 
+    /// One event's translation at a given density, collected into a fresh
+    /// buffer so a test can compare the whole list.
+    fn at(event: InputEvent, pixels_per_point: f32) -> Vec<EguiEvent> {
+        let mut events = Vec::new();
+        to_egui_event(&event, pixels_per_point, &mut events);
+        events
+    }
+
     /// One event's translation at a density of one, where points and pixels
     /// coincide.
     fn at_one(event: InputEvent) -> Vec<EguiEvent> {
-        to_egui_event(&event, 1.0)
+        at(event, 1.0)
     }
 
     fn key(key: Key, pressed: bool) -> InputEvent {
@@ -560,8 +573,8 @@ mod tests {
 
     #[test]
     fn a_mouse_position_is_converted_to_points() {
-        let events = to_egui_event(
-            &InputEvent::Mouse(MouseEvent::Moved {
+        let events = at(
+            InputEvent::Mouse(MouseEvent::Moved {
                 position: [40.0, 20.0],
             }),
             2.0,
@@ -575,8 +588,8 @@ mod tests {
 
     #[test]
     fn a_mouse_button_keeps_its_position_button_and_state() {
-        let events = to_egui_event(
-            &InputEvent::Mouse(MouseEvent::Button {
+        let events = at(
+            InputEvent::Mouse(MouseEvent::Button {
                 position: [10.0, 30.0],
                 button: MouseButton::Secondary,
                 pressed: true,
@@ -741,8 +754,8 @@ mod tests {
 
     #[test]
     fn a_wheel_pixel_delta_is_converted_to_points() {
-        let events = to_egui_event(
-            &InputEvent::Mouse(MouseEvent::Wheel {
+        let events = at(
+            InputEvent::Mouse(MouseEvent::Wheel {
                 delta: [8.0, -16.0],
                 unit: WheelUnit::Pixel,
                 phase: TouchPhase::Started,
@@ -1027,8 +1040,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be positive")]
     fn a_zero_density_is_rejected() {
-        let _ = to_egui_event(
-            &InputEvent::Mouse(MouseEvent::Moved {
+        let _ = at(
+            InputEvent::Mouse(MouseEvent::Moved {
                 position: [0.0, 0.0],
             }),
             0.0,

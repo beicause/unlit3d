@@ -24,7 +24,7 @@ use unlit3d::components::{
     Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceVisibility, Transform,
 };
 use unlit3d::culling::is_culled;
-use unlit3d::lit::{LitMeshDesc, LitPipelineKey, MeshSourceLitExt};
+use unlit3d::lit::{LitMeshDesc, LitPipelineKey};
 use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 

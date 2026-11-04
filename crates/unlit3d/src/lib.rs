@@ -59,7 +59,6 @@ pub mod prelude {
     };
     pub use crate::lit::{
         InstanceColor, InstanceCutoff, InstanceHullWidth, LitInstance, LitMeshDesc, LitPipelineKey,
-        MeshSourceLitExt,
     };
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};

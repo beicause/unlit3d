@@ -106,7 +106,7 @@ struct RegisteredPipeline {
 /// [`Scene`] the frame's draws are assembled into, and it fetches the device,
 /// the queue and the resource graph from the world through the
 /// [`RenderContext`] it was created with. Register the families it draws with
-/// — [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) for the built-in lit shader — and
+/// — [`MeshSource::register_lit_family`](crate::mesh_source::MeshSource::register_lit_family) for the built-in lit shader — and
 /// spawn it with [`Source::new`](crate::source::Source::new).
 pub struct MeshSource {
     /// The world addresses of the frame's GPU state, kept so every entry point
@@ -213,7 +213,7 @@ pub struct MeshSource {
     /// [GlobalUniforms](crate::global_uniforms::GlobalUniforms) stages those.
 
     /// The pool every mesh uploaded through
-    /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps its indices in, as one large
+    /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) keeps its indices in, as one large
     /// buffer shared by every indexed mesh.
     ///
     /// A mesh names it through [`MeshParts::index_buffer`], which is why the
@@ -223,7 +223,7 @@ pub struct MeshSource {
     /// The graph node of [`MeshSource::index_pool`]'s buffer.
     pub(crate) index_pool_id: ResHandle<wgpu::Buffer>,
     /// The pool every mesh uploaded through
-    /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps its vertices in: one large
+    /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) keeps its vertices in: one large
     /// buffer per vertex layout, so meshes that share a layout share a buffer,
     /// and one element allocation covers every stream of a mesh at the same
     /// element index.
@@ -276,7 +276,7 @@ impl MeshSource {
     /// into the context's resource graph. The source starts with no families:
     /// register the ones you draw with through
     /// [`MeshSource::register_family`] — for the built-in lit shader,
-    /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) does it for you. Registration
+    /// [`MeshSource::register_lit_family`](crate::mesh_source::MeshSource::register_lit_family) does it for you. Registration
     /// compiles nothing; a family's first concrete pipeline is built the first
     /// time an entity that uses it is drawn.
     ///
@@ -525,7 +525,7 @@ impl MeshSource {
     /// built lazily, the first time a draw resolves a variant, and are
     /// appended to the source pipeline list in resolution order.
     ///
-    /// [`MeshSourceLitExt::register_lit_family`](crate::lit::MeshSourceLitExt::register_lit_family) is the built-in lit family; a
+    /// [`MeshSource::register_lit_family`](crate::mesh_source::MeshSource::register_lit_family) is the built-in lit family; a
     /// caller registers their own by supplying the key whose
     /// [RenderPipelineKey::variant] resolves a draw into a variant, the
     /// [RenderPipelineFactory] that describes the compiled result, and the
@@ -568,7 +568,7 @@ impl MeshSource {
     /// The mesh's [`Aabb`](crate::bounds::Aabb) is recorded in the source's
     /// mesh-metadata array, which the next built scene uploads.
     ///
-    /// [`MeshSourceLitExt::allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) is the helper that builds the
+    /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) is the helper that builds the
     /// compressed layout the built-in lit shader expects.
     ///
     /// # Panics
@@ -838,7 +838,7 @@ impl MeshSource {
     /// root — makes them collectable, and the next
     /// [`Self::maintain`](MeshSource::maintain) frees the root, its bind group
     /// and the per-mesh uniform that only fed that bind group. A mesh uploaded
-    /// through [`allocate_lit_mesh`](crate::lit::MeshSourceLitExt::allocate_lit_mesh) keeps
+    /// through [`allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) keeps
     /// its vertices and indices in pools the source shares between meshes;
     /// those allocations are handed back here, and the pool buffers outlive the
     /// mesh. A mesh uploaded with [`allocate_mesh`](MeshSource::allocate_mesh)
@@ -1560,7 +1560,7 @@ impl FrameSource for MeshSource {
 mod tests {
     use super::*;
     use crate::components::{GpuRenderPipeline, InstanceVisibility, Transform, ZSortedDrawing};
-    use crate::lit::{LitMeshDesc, LitPipelineKey, MeshSourceLitExt};
+    use crate::lit::{LitMeshDesc, LitPipelineKey};
     use crate::mesh::MorphDeltas;
     use crate::pass::PassInfo;
     use crate::scene::DrawShape;
@@ -1814,7 +1814,7 @@ mod tests {
     }
 
     /// Register a 2D texture with `source` and return a view id and a sampler
-    /// id, ready for [`MeshSourceLitExt::allocate_lit_material`](crate::lit::MeshSourceLitExt::allocate_lit_material).
+    /// id, ready for [`MeshSource::allocate_lit_material`](crate::mesh_source::MeshSource::allocate_lit_material).
     fn test_material_resources(
         harness: &mut Harness,
     ) -> (ResHandle<TextureView>, ResHandle<wgpu::Sampler>) {
