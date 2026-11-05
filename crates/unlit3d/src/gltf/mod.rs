@@ -146,6 +146,8 @@ mod animation;
 mod image;
 mod material;
 mod scene;
+#[cfg(test)]
+mod tests;
 
 use self::animation::{interpolation_stride, sample_rotation, sample_vec3, sample_weights};
 use self::image::{align_up, encode_rows, image_format};
