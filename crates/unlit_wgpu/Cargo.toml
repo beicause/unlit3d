@@ -48,7 +48,7 @@ unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot
 wgpu = { workspace = true, features = ["noop"] }
 
 [build-dependencies]
-wesl = { version = "0.5.0", default-features = false, features = ["package"] }
+wesl = { version = "0.6.0", default-features = false, features = ["package"] }
 
 # The GPU tests drive the shared registry rather than libtest's generated
 # harness, so one file serves both `cargo nextest` and the browser's wasm

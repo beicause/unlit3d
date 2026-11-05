@@ -184,7 +184,7 @@ fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
         .find_map(|(_, source)| {
             let ui = source.as_ref::<UiSource>().ok()?;
             ui.context()
-                .memory(|memory| memory.area_rect(egui::Id::new(id)))
+                .memory(|memory| memory.area_rect(egui::Id::unique(id)))
         })
 }
 

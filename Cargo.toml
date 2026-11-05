@@ -23,7 +23,7 @@ arc-swap = { version = "1.9.2", default-features = false }
 argh = "0.1.19"
 arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
 # The FLAC decoder a test reads a stream back with, so an encoder is
 # checked against something other than itself.
@@ -35,7 +35,7 @@ const_shader_layout = { version = "0.5.1", default-features = false, features = 
 # ring buffer bridges the audio thread that fills it and the stream's
 # callback that drains it.
 cpal = { version = "0.18.2", default-features = false }
-egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts", "bytemuck"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 # Reflection: a component's own field list is its codec, so nothing declares
 # those fields twice. `facet` derives the reflection, `facet-json` turns it
@@ -84,7 +84,7 @@ rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "
 # The Model Context Protocol server. `server` provides the handler and the
 # stdio loop, `transport-io` is the stdio transport, and `macros` derives the
 # tool router from `#[tool]` methods.
-ringbuf = { version = "0.5.3", default-features = false, features = ["std"] }
+ringbuf = { version = "0.6.0", default-features = false, features = ["std"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["macros", "server", "transport-io"] }
 # The synthesizer the audio world renders notes through. The `sf3` feature
 # reads the compressed FluidR3 sound bank the example plays through.
@@ -110,7 +110,7 @@ web-time = { version = "1.1.0", default-features = false }
 # Opening a URL the UI asked for: one call covers the desktop, Android and the
 # browser, so the example keeps no platform branch of its own for it.
 webbrowser = "1.2.4"
-wesl = { version = "0.5.0", default-features = false }
+wesl = { version = "0.6.0", default-features = false }
 wesl-core = { version = "0.1.0", default-features = false }
 # The trunk branch, not a release: the renderer tracks wgpu's
 # unreleased API so a fix here lands there without waiting for a release.

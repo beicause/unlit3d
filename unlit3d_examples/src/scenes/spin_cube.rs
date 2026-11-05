@@ -153,7 +153,7 @@ fn build(
             // title's `Atoms` text, whose hash differs from a plain string
             // id, so other panels could not find this window's rect.
             egui::Window::new("unlit3d")
-                .id(egui::Id::new("unlit3d"))
+                .id(egui::Id::unique("unlit3d"))
                 .show(ui.ctx(), |ui| {
                     let frames = world
                         .query_one::<&FrameCount>(spin)

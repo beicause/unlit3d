@@ -2104,7 +2104,7 @@ impl Scene {
             .find_map(|(_, source)| {
                 let ui = source.as_ref::<UiSource>().ok()?;
                 ui.context()
-                    .memory(|memory| memory.area_rect(egui::Id::new(id)))
+                    .memory(|memory| memory.area_rect(egui::Id::unique(id)))
             })
     }
 
@@ -2239,7 +2239,7 @@ fn mount_selector(
             // The id is set explicitly: `Window::new` derives it from the title's
             // `Atoms` text, whose hash differs from a plain string id, so the
             // shell's read of the remembered rect would never match.
-            let id = egui::Id::new(SELECTOR_WINDOW);
+            let id = egui::Id::unique(SELECTOR_WINDOW);
             // The window belongs to the bottom-right corner. A fresh one is seeded
             // by that corner, so the corner stays put while the first layout
             // measures the content; a carried rectangle is seeded by its own
@@ -2457,7 +2457,7 @@ fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
 /// line, whatever the previous reading was — is a property of the widget tree,
 /// not of the world.
 fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
-    egui::Area::new(egui::Id::new(FRAME_RATE_AREA))
+    egui::Area::new(egui::Id::unique(FRAME_RATE_AREA))
         .anchor(egui::Align2::CENTER_TOP, [0.0, OVERLAY_MARGIN])
         .interactable(false)
         // The readout is an overlay, not a window: a scene panel dragged over
@@ -2741,7 +2741,7 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
     // much of the scene the panel covers while they are read is the reader's
     // to decide. It opens as wide as its facts need, and dragging it narrower
     // is what wraps them.
-    let id = egui::Id::new(GPU_INFO_AREA);
+    let id = egui::Id::unique(GPU_INFO_AREA);
     // The panel belongs to the bottom-left corner, so it is seeded and kept by
     // that corner: a fresh one opens there, a carried rectangle is seeded by its
     // own bottom-left and given its size, and `follow_screen_corner` moves it
@@ -2873,8 +2873,8 @@ fn mount_api_docs(world: &mut World, ui: Entity) {
 /// rectangle the previous pass remembered for it — which is what is compared
 /// here, so the decision is made about the very positions egui will use.
 fn overlay_button_top(ctx: &egui::Context, above: &str, id: &str) -> f32 {
-    let above = ctx.memory(|memory| memory.area_rect(egui::Id::new(above)));
-    let button = ctx.memory(|memory| memory.area_rect(egui::Id::new(id)));
+    let above = ctx.memory(|memory| memory.area_rect(egui::Id::unique(above)));
+    let button = ctx.memory(|memory| memory.area_rect(egui::Id::unique(id)));
     match (above, button) {
         // The area above stops clear of the button's column.
         (Some(above), Some(button)) if above.right() + OVERLAY_GAP < button.left() => {
@@ -2894,7 +2894,7 @@ fn overlay_button_top(ctx: &egui::Context, above: &str, id: &str) -> f32 {
 /// be tested apart. A free function rather than the body of a panel's closure
 /// so a test can drive it against a bare [`egui::Context`].
 fn corner_button(ui: &mut egui::Ui, id: &str, top: f32, label: egui::RichText) -> bool {
-    egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::unique(id))
         .anchor(egui::Align2::RIGHT_TOP, [-OVERLAY_MARGIN, top])
         // A corner button is an overlay, not a window: a scene panel dragged
         // over the corner must not cover it, so it sits in the layer above the
@@ -3142,7 +3142,7 @@ mod tests {
     fn area_rect(ctx: &egui::Context, id: &str) -> egui::Rect {
         ctx.memory(|memory| {
             memory
-                .area_rect(egui::Id::new(id))
+                .area_rect(egui::Id::unique(id))
                 .expect("the area was drawn")
         })
     }

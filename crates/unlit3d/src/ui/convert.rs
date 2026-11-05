@@ -161,6 +161,10 @@ fn mouse_events(event: &MouseEvent, pixels_per_point: f32, out: &mut Vec<EguiEve
                 WheelUnit::Line | WheelUnit::Page => egui::Vec2::new(delta[0], delta[1]),
             },
             phase: to_touch_phase(*phase),
+            // winit reports the delta and the phase but not what produced
+            // them, so egui is told the source is unknown rather than handed
+            // a guess that would change how a scroll area behaves.
+            source: egui::MouseWheelSource::Unknown,
             modifiers: to_modifiers(*modifiers),
         }),
     }
@@ -747,6 +751,7 @@ mod tests {
                 unit: MouseWheelUnit::Line,
                 delta: egui::Vec2::new(1.0, -3.0),
                 phase: EguiTouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
                 modifiers: egui::Modifiers::default(),
             }]
         );
@@ -769,6 +774,7 @@ mod tests {
                 unit: MouseWheelUnit::Point,
                 delta: egui::Vec2::new(4.0, -8.0),
                 phase: EguiTouchPhase::Start,
+                source: egui::MouseWheelSource::Unknown,
                 modifiers: egui::Modifiers::default(),
             }],
             "egui measures a point-unit delta in points, so a pixel delta is scaled"
