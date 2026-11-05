@@ -20,6 +20,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use unlit_ecs::bundle;
+use unlit_ecs::sync;
 use unlit_ecs::{Command, Entity, EntityAccessError, World};
 use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
@@ -433,10 +434,7 @@ struct DrawFrame {
 impl Command for DrawFrame {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let now = web_time::Instant::now();
-        let delta_time = self
-            .last
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let delta_time = sync::lock(&self.last)
             .replace(now)
             .map_or(0.0, |last| (now - last).as_secs_f32().min(0.1));
         let size = window(world)

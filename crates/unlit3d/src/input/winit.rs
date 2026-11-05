@@ -36,8 +36,9 @@
 //! key must not move with the layout. The text the key produced comes from
 //! `KeyEvent::text` instead, as a separate [`TextEvent`].
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
+use unlit_ecs::sync;
 use winit::event::{
     Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase, WindowEvent,
 };
@@ -337,14 +338,14 @@ impl WinitInput {
 
     /// Record the modifiers a later event is stamped with, and report them.
     fn set_modifiers(&self, modifiers: Modifiers) -> Modifiers {
-        let mut device = self.device.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut device = sync::lock(&self.device);
         device.modifiers = modifiers;
         modifiers
     }
 
     /// Record where the mouse is, and report the modifiers held.
     fn set_cursor(&self, cursor: Option<[f32; 2]>) -> Modifiers {
-        let mut device = self.device.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut device = sync::lock(&self.device);
         device.cursor = cursor;
         device.modifiers
     }
@@ -352,7 +353,7 @@ impl WinitInput {
     /// The cursor position and modifiers an event that carries neither is
     /// stamped with.
     fn stamp(&self) -> (Option<[f32; 2]>, Modifiers) {
-        let device = self.device.lock().unwrap_or_else(PoisonError::into_inner);
+        let device = sync::lock(&self.device);
         (device.cursor, device.modifiers)
     }
 

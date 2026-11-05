@@ -16,8 +16,9 @@
 //! written in the [`RecordingFormat`] its caller names: a RIFF/WAVE file of
 //! the samples themselves, or the same samples in a lossless FLAC stream.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
+use unlit_ecs::sync;
 use unlit_ecs::{Entity, World, bundle};
 
 use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill};
@@ -112,7 +113,7 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let entity = world.root_scope_mut().spawn(bundle![OnAudioFill::new(
         AudioFillOrder(i32::MAX),
         move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
-            let mut state = recorder.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = sync::lock(&recorder);
             if state.format.is_none() {
                 let format = AudioFormat {
                     sample_rate: chunk.sample_rate,
@@ -302,16 +303,13 @@ impl RecordingHandle {
     )]
     #[must_use]
     pub(crate) fn format(&self) -> Option<AudioFormat> {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .format
+        sync::lock(&self.state).format
     }
 
     /// How many frames the recording has captured.
     #[must_use]
     pub fn frame_count(&self) -> usize {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = sync::lock(&self.state);
         let channels = state
             .format
             .map_or(1, |format| usize::from(format.channels).max(1));
@@ -321,7 +319,7 @@ impl RecordingHandle {
     /// How many seconds of audio the recording has captured.
     #[must_use]
     pub fn seconds(&self) -> f64 {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = sync::lock(&self.state);
         match state.format {
             Some(format) => {
                 let channels = usize::from(format.channels).max(1);
@@ -337,7 +335,7 @@ impl RecordingHandle {
     /// known until the format is.
     #[must_use]
     pub fn is_full(&self) -> bool {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = sync::lock(&self.state);
         state.format.is_some() && state.samples.len() >= state.max_samples
     }
 
@@ -348,7 +346,7 @@ impl RecordingHandle {
     #[must_use]
     pub fn stop(self, world: &mut World) -> Option<RecordedAudio> {
         world.root_scope_mut().despawn(self.entity).unwrap();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = sync::lock(&self.state);
         let format = state.format?;
         Some(RecordedAudio {
             format,

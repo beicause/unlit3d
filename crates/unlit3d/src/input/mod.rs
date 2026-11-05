@@ -73,10 +73,11 @@
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
 
 use core::ops::Deref;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crate::relay::{Stream, StreamReader};
 use bitflags::bitflags;
+use unlit_ecs::sync;
 use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 
 use crate::behaviour::behaviour;
@@ -973,7 +974,7 @@ impl InputEvents {
     /// writer leaves the lock poisoned, and the value is still readable, so
     /// the poison is ignored rather than propagated.
     pub fn with_state<R>(&self, f: impl FnOnce(&InputState) -> R) -> R {
-        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        let state = sync::read(&self.state);
         f(&state)
     }
 
@@ -1000,7 +1001,7 @@ impl InputEvents {
     /// before anything reads the batch.
     pub fn refresh(&self) {
         self.events.pump();
-        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let mut state = sync::write(&self.state);
         self.events.with_batch(|batch| {
             for event in batch {
                 state.record(event);

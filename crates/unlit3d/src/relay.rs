@@ -29,10 +29,11 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwapOption;
 use async_channel::{Receiver, Sender, unbounded};
+use unlit_ecs::sync;
 
 /// The producing end of a [`Snapshot`]: keeps the newest value for however
 /// many readers are subscribed.
@@ -177,11 +178,7 @@ impl<T: Clone> Stream<T> {
     /// one to publish at a pace its readers keep up with.
     pub fn subscribe(&self) -> StreamReader<T> {
         let (sender, receiver) = unbounded();
-        self.inner
-            .senders
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(sender);
+        sync::lock(&self.inner.senders).push(sender);
         StreamReader {
             inner: Arc::new(ReaderInner {
                 queue: receiver,
@@ -200,11 +197,7 @@ impl<T: Clone> Stream<T> {
 
     /// Publish several values, in the order given.
     pub fn publish_all(&self, values: impl IntoIterator<Item = T>) -> usize {
-        let mut senders = self
-            .inner
-            .senders
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut senders = sync::lock(&self.inner.senders);
         senders.retain(|sender| !sender.is_closed());
         for value in values {
             for sender in senders.iter() {
@@ -221,11 +214,7 @@ impl<T: Clone> Stream<T> {
 
     /// Whether a reader is subscribed, pruning the ones that went away.
     pub fn has_readers(&self) -> bool {
-        let mut senders = self
-            .inner
-            .senders
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut senders = sync::lock(&self.inner.senders);
         senders.retain(|sender| !sender.is_closed());
         !senders.is_empty()
     }
@@ -273,11 +262,7 @@ impl<T> StreamReader<T> {
     /// Call it once per tick, before anything reads the batch. Calling it
     /// twice in one tick drops what the first call collected.
     pub fn pump(&self) {
-        let mut batch = self
-            .inner
-            .batch
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut batch = sync::lock(&self.inner.batch);
         batch.clear();
         while let Ok(value) = self.inner.queue.try_recv() {
             batch.push(value);
@@ -289,11 +274,7 @@ impl<T> StreamReader<T> {
     /// Reading does not consume: every reader in the world sees the same
     /// batch, so no one can take a value away from the next.
     pub fn with_batch<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
-        let batch = self
-            .inner
-            .batch
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let batch = sync::lock(&self.inner.batch);
         f(&batch)
     }
 

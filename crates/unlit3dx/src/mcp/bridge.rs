@@ -5,10 +5,11 @@
 //! event-loop behaviour, so a world — which is not sendable — is only
 //! ever touched on its own thread.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
+use unlit_ecs::sync;
 use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
 
@@ -194,19 +195,12 @@ impl Command for RunInWorld {
         let pending = Arc::new(Mutex::new(Some(command)));
         let job_slot = Arc::clone(&pending);
         let job = Box::new(move |world: &mut World| {
-            if let Some(command) = job_slot
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-            {
+            if let Some(command) = sync::lock(&job_slot).take() {
                 command.dispatch(world);
             }
         });
         if let Err(error) = sender.send(job)
-            && let Some(command) = pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
+            && let Some(command) = sync::lock(&pending).take()
         {
             command.fail(format!(
                 "the world on {entity:?} refused the command: {error}"

@@ -21,6 +21,9 @@ pub mod query;
 #[cfg(feature = "reflect")]
 pub mod reflect;
 mod scope;
+/// Lock helpers that ignore poisoning, so one panic cannot fail every later
+/// caller.
+pub mod sync;
 mod view;
 mod world;
 
