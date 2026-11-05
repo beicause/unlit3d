@@ -341,12 +341,12 @@ request:
 
 - **lint** — `typos`, `tombi lint --error-on-warnings` and `tombi format
   --check` over the TOML, and `cargo fmt --all -- --check`.
-- **build** (Linux) — clippy with and without the `lit` feature,
-  `cargo build --workspace --all-targets`, `cargo xtask test`, `cargo doc`
-  with `-D warnings`, and the workspace's snapshot comparisons twice: once at
-  the WebGPU baseline's limits, once with every offscreen device narrowed to
-  WebGL2's shape. Linux installs Mesa for `lavapipe`, since the runners have no
-  GPU.
+- **build** (Linux) — clippy with default features, with no features at all and
+  with every feature, `cargo build --workspace --all-targets`,
+  `cargo xtask test`, `cargo doc` with `-D warnings`, and the workspace's
+  snapshot comparisons twice: once at the WebGPU baseline's limits, once with
+  every offscreen device narrowed to WebGL2's shape. Linux installs Mesa for
+  `lavapipe`, since the runners have no GPU.
 - **check-wasm** — clippy for `wasm32-unknown-unknown` over the workspace and
   over the test binaries. It excludes `xtask`, a host-only task runner whose HTTP
   server does not compile for that target.

@@ -217,11 +217,11 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 
 - **lint** —— 对全部文件跑 `typos`；对 TOML 跑 `tombi lint --error-on-warnings` 与
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
-- **build**（Linux）—— 带与不带 `lit` feature 的 clippy、
-  `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
-  `cargo doc`，以及工作区的快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，
-  一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
-  以提供 `lavapipe`。
+- **build**（Linux）—— 带默认 features、完全不带 features 与带全部 features 的
+  clippy、`cargo build --workspace --all-targets`、`cargo xtask test`、带
+  `-D warnings` 的 `cargo doc`，以及工作区的快照比较——该比较跑两遍：一遍用 WebGPU
+  基线的 limits，一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux
+  会安装 Mesa 以提供 `lavapipe`。
 - **check-wasm** —— 为 `wasm32-unknown-unknown` 对工作区与测试二进制各跑一遍
   clippy。它排除 `xtask`：那是只在宿主机上运行的任务运行器，其 HTTP 服务器
   无法为该目标编译。

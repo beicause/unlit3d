@@ -43,7 +43,7 @@ directory, since that is where `typos.toml` and `tombi.toml` live. Neither
 ships with cargo: when one is missing the step says which tool, not how to
 install it — both are distributed outside cargo.
 
-Clippy runs three times, because each compiles a different set of code:
+Clippy runs four times, because each compiles a different set of code:
 
 1. The workspace with its default features — the combination the platform
    artifacts are built with. The integration suites that need an optional feature
@@ -54,7 +54,13 @@ Clippy runs three times, because each compiles a different set of code:
    is the pass that catches an optional feature a crate's own code no longer
    uses — visible to no other pass, because `--all-features` turns that feature
    on there too and a unit test counts as a use.
-3. The workspace with every feature, which the doc build and the full test run
+3. The library crates with no default features at all, which is the combination
+   that proves their general facilities compile and lint on their own. The crates
+   are named one by one rather than picked with `--workspace`: the application
+   crates depend on `unlit3d` and `unlit3dx` without `default-features = false`,
+   which turns the defaults back on and leaves the pass green without having
+   checked anything.
+4. The workspace with every feature, which the doc build and the full test run
    compile.
 
 ### `cargo xtask test`

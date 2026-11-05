@@ -158,10 +158,14 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
-      # Without `unlit` this crate compiles down to its general facilities,
-      # so the built-in pipeline stays something a caller could have written.
+      # Without any optional backend these crates compile down to their general
+      # facilities, so the built-in pipelines stay something a caller could have
+      # written. The crates are named one by one: `--workspace` also selects the
+      # application crates, and their dependency declarations re-enable the
+      # default features of `unlit3d` and `unlit3dx`, which would leave this
+      # check passing without checking anything.
       - name: Clippy (no features)
-        run: cargo clippy -p unlit_wgpu --no-default-features --all-targets -- -Dwarnings
+        run: cargo clippy -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx --no-default-features --all-targets -- -Dwarnings
 
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings

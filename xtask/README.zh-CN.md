@@ -38,7 +38,7 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 cargo 一起提供：缺了哪一个，该步骤会说明是哪个工具缺了，而不给安装命令——两者都在
 cargo 之外分发。
 
-clippy 跑三趟，因为每一趟编译的代码集合不同：
+clippy 跑四趟，因为每一趟编译的代码集合不同：
 
 1. 工作区加默认 features——平台产物构建时用的组合。需要可选功能的集成 suite 不参加
    这一趟——required features 不满足的 target 会被整体跳过——检查它们的是第 3 趟。
@@ -46,7 +46,10 @@ clippy 跑三趟，因为每一趟编译的代码集合不同：
    应用的 feature 统一，因此这一趟能抓出某个 crate 自身代码已不再使用的可选
    feature——别的趟都看不见它，因为 `--all-features` 会把该 feature 在那个包里
    也打开，而单元测试也算一次使用。
-3. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
+3. 库 crate 全部关闭默认 features，这一组合证明它们的通用设施能单独编译与 lint。
+   这些 crate 逐个点名而不用 `--workspace`：应用层的 crate 依赖 `unlit3d` 与
+   `unlit3dx` 时没有关闭默认 features，会把这些默认又打开，让这一趟什么都没查就变绿。
+4. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
 
 ### `cargo xtask test`
 

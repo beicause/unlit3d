@@ -18,7 +18,7 @@ use crate::step;
 /// — it should fail here rather than only in CI — while a doc comment it would
 /// rewrite is still rustfmt's to settle.
 ///
-/// Clippy runs three times, because each builds a different set of code:
+/// Clippy runs four times, because each builds a different set of code:
 ///
 /// 1. The workspace with its default features. This is the combination the
 ///    platform artifacts are built with, where every crate is compiled on its
@@ -34,7 +34,16 @@ use crate::step;
 ///    is the pass that catches it. Library targets are what the artifacts
 ///    ship; a unit test inside a library counts as a use, so leaving the test
 ///    targets out matters rather than being an omission.
-/// 3. The whole workspace with every feature, which is what the doc build and
+/// 3. The library crates with no default features at all. Their built-in
+///    backends are optional, so this is the combination that proves the general
+///    facilities stand on their own — and the one a false optional feature, whose
+///    dependants never really compiled without it, fails to compile. The crates
+///    are named one by one rather than picked with `--workspace`: the
+///    application crates — the CLI, the examples and the benchmarks — depend on
+///    `unlit3d` and `unlit3dx` without `default-features = false`, which turns
+///    the defaults back on and leaves the run green without having checked
+///    anything.
+/// 4. The whole workspace with every feature, which is what the doc build and
 ///    the full test run compile.
 ///
 /// Every run denies warnings, as CI does. Without it a warning here is a
@@ -84,6 +93,16 @@ pub fn run(release: bool) -> Result<(), String> {
         step::run(&mut one, &format!("clippy -p {package} (default features)"))?;
     }
 
+    let mut bare = Command::new("cargo");
+    bare.args(["clippy"]);
+    for package in BARE_PACKAGES {
+        bare.args(["-p", package]);
+    }
+    bare.args(["--no-default-features", "--all-targets"])
+        .args(profile)
+        .args(deny);
+    step::run(&mut bare, "clippy (no features)")?;
+
     let mut all = Command::new("cargo");
     all.args(["clippy", "--workspace", "--all-targets", "--all-features"])
         .args(profile)
@@ -115,6 +134,17 @@ pub fn run(release: bool) -> Result<(), String> {
 
     Ok(())
 }
+
+/// The crates the no-features clippy run names, one by one.
+///
+/// These are the library crates with optional backends: their general
+/// facilities have to compile and lint on their own, without the backends a
+/// caller may leave out. The application crates are left out on purpose —
+/// `unlit3d_cli` and the example crates depend on `unlit3d` with `gltf`,
+/// `mcp` or the default features turned on, so naming them here would turn
+/// those features back on for `unlit3d` and leave the run green without
+/// having checked anything. The same reason rules out `--workspace`.
+const BARE_PACKAGES: [&str; 4] = ["unlit_ecs", "unlit_wgpu", "unlit3d", "unlit3dx"];
 
 /// Fail, naming the tool, when `tool` is not usable.
 ///
