@@ -43,8 +43,8 @@ inventory = { workspace = true, optional = true }
 log.workspace = true
 profiling.workspace = true
 thiserror.workspace = true
-unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3" }
-unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3" }
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3", default-features = false }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
 web-time = { workspace = true, optional = true }
 wgpu.workspace = true
 winit = { workspace = true, optional = true }
@@ -53,7 +53,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
-unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }
+unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", default-features = false, features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
 
 # The GPU tests drive the shared registry rather than libtest's generated

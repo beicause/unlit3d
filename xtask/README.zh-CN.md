@@ -24,7 +24,7 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask check`
 
-先跑 `typos` 与 `tombi`，再在整个工作区上运行 clippy，然后跑文档构建，最后运行
+先跑 `typos` 与 `tombi`，再跑两趟 clippy，然后跑文档构建，最后运行
 `cargo fmt --all -- --check`。两个不需要编译器的工具排在最前，因此一处拼写错误或一张
 没排序的 feature 表只花一秒钟，而不是 clippy 那几分钟。clippy 紧随其后，因为它的诊断
 可能让代码树处于 `rustfmt` 会重写的状态，因此格式化拥有最后发言权；文档构建夹在两者
@@ -38,18 +38,15 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 cargo 一起提供：缺了哪一个，该步骤会说明是哪个工具缺了，而不给安装命令——两者都在
 cargo 之外分发。
 
-clippy 跑四趟，因为每一趟编译的代码集合不同：
+clippy 跑两趟，因为每一趟编译的代码集合不同：
 
-1. 工作区加默认 features——平台产物构建时用的组合。需要可选功能的集成 suite 不参加
-   这一趟——required features 不满足的 target 会被整体跳过——检查它们的是第 3 趟。
-2. 每个包各自单独、默认 features、只编库目标。点名一个包会去掉整个工作区构建时
-   应用的 feature 统一，因此这一趟能抓出某个 crate 自身代码已不再使用的可选
-   feature——别的趟都看不见它，因为 `--all-features` 会把该 feature 在那个包里
-   也打开，而单元测试也算一次使用。
-3. 库 crate 全部关闭默认 features，这一组合证明它们的通用设施能单独编译与 lint。
-   这些 crate 逐个点名而不用 `--workspace`：应用层的 crate 依赖 `unlit3d` 与
-   `unlit3dx` 时没有关闭默认 features，会把这些默认又打开，让这一趟什么都没查就变绿。
-4. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
+1. 库 crate 全部关闭默认 features，这一组合证明它们的通用设施能单独编译与 lint，
+   也正是那个假的可选 feature（依赖它的地方其实从没在没有它的情况下编过）编不过的
+   组合。这些 crate 逐个点名而不用 `--workspace`：`--no-default-features` 只作用
+   于命令点名的包，其余包的 features 来自抵达它的依赖边，feature 统一会把它们全应用
+   上去。应用层的 crate 每个都向 `unlit3d` 要 `ui` 与 `winit`，因此工作区范围的
+   那一趟会正好带着这一趟要排除的后端去编库。
+2. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
 
 ### `cargo xtask test`
 

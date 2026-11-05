@@ -160,10 +160,11 @@ jobs:
 
       # Without any optional backend these crates compile down to their general
       # facilities, so the built-in pipelines stay something a caller could have
-      # written. The crates are named one by one: `--workspace` also selects the
-      # application crates, and their dependency declarations re-enable the
-      # default features of `unlit3d` and `unlit3dx`, which would leave this
-      # check passing without checking anything.
+      # written. The crates are named one by one rather than picked with
+      # `--workspace`, because `--no-default-features` reaches only the packages
+      # the command names: for every other package the features come from the
+      # dependency edges that reach it, and every application crate asks
+      # `unlit3d` for `ui` and `winit`.
       - name: Clippy (no features)
         run: cargo clippy -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx --no-default-features --all-targets -- -Dwarnings
 
@@ -368,9 +369,9 @@ jobs:
       # - The four libraries under no features at all, which is what proves
       #   they compile down to their general facilities for this target too.
       #   They are named one by one for the reason the host job gives:
-      #   `--workspace` brings in the application crates, whose dependency
-      #   declarations re-enable the default features of `unlit3d` and
-      #   `unlit3dx`.
+      #   `--no-default-features` reaches only the packages named, and the
+      #   application crates ask `unlit3d` for `ui` and `winit` over their
+      #   dependency edges.
       # - The test binaries of the packages that can run in a browser, under
       #   `--all-features`, which is how the browser run builds them.
       #
@@ -458,10 +459,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Two passes, as on the host: every feature and no features at all. The
-      # second names the four libraries one by one, because `--workspace` would
-      # pull in the application crates and re-enable `unlit3d`'s and
-      # `unlit3dx`'s defaults, leaving the pass with nothing of its own to
-      # check.
+      # second names the four libraries one by one, because
+      # `--no-default-features` reaches only the packages named, and the
+      # application crates ask `unlit3d` for `ui` and `winit` over their
+      # dependency edges.
       - name: Clippy (Android target, all features)
         run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings
 

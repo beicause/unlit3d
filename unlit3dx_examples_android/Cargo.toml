@@ -21,7 +21,7 @@ name = "unlit3dx_examples"
 # wraps is behind the same `cfg` in the example, and so is the activity type it
 # takes. Every other target sees an empty crate rather than a dependency graph.
 [target.'cfg(target_os = "android")'.dependencies]
-unlit3dx_examples = { path = "../unlit3dx_examples", version = "0.1.0-dev.3" }
+unlit3dx_examples = { path = "../unlit3dx_examples", version = "0.1.0-dev.3", default-features = false }
 winit = { workspace = true, features = ["android-game-activity"] }
 
 [lints]

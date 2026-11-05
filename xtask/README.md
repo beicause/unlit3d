@@ -26,8 +26,8 @@ cargo xtask publish        # publish the workspace's crates to crates.io, in dep
 
 ### `cargo xtask check`
 
-Runs `typos` and `tombi`, then clippy over the workspace, then the doc build,
-then `cargo fmt --all -- --check`. The two tools that need no compiler go
+Runs `typos` and `tombi`, then clippy twice, then the doc build, then
+`cargo fmt --all -- --check`. The two tools that need no compiler go
 first, so a misspelling or an unsorted feature table costs a second rather than
 the minutes clippy takes. Clippy comes next because its diagnostics may leave
 the tree in a state `rustfmt` would rewrite, so formatting is the last word; the
@@ -43,24 +43,19 @@ directory, since that is where `typos.toml` and `tombi.toml` live. Neither
 ships with cargo: when one is missing the step says which tool, not how to
 install it — both are distributed outside cargo.
 
-Clippy runs four times, because each compiles a different set of code:
+Clippy runs twice, because each compiles a different set of code:
 
-1. The workspace with its default features — the combination the platform
-   artifacts are built with. The integration suites that need an optional feature
-   sit this pass out, because a target whose required features are off is skipped
-   whole; pass 3 is what checks them.
-2. Every package on its own, default features, library targets only. Naming a
-   package stops the feature unification a workspace-wide run applies, so this
-   is the pass that catches an optional feature a crate's own code no longer
-   uses — visible to no other pass, because `--all-features` turns that feature
-   on there too and a unit test counts as a use.
-3. The library crates with no default features at all, which is the combination
-   that proves their general facilities compile and lint on their own. The crates
-   are named one by one rather than picked with `--workspace`: the application
-   crates depend on `unlit3d` and `unlit3dx` without `default-features = false`,
-   which turns the defaults back on and leaves the pass green without having
-   checked anything.
-4. The workspace with every feature, which the doc build and the full test run
+1. The library crates with no default features at all, which is the combination
+   that proves their general facilities compile and lint on their own — and the
+   one a false optional feature, whose dependants never really compiled without
+   it, fails to compile. The crates are named one by one rather than picked with
+   `--workspace`, because `--no-default-features` reaches only the packages the
+   command names: for every other package the features come from the dependency
+   edges that reach it, and feature unification applies all of them. Every
+   application crate asks `unlit3d` for `ui` and `winit`, so a workspace-wide
+   run would compile the libraries with exactly the backends this pass exists to
+   leave out.
+2. The workspace with every feature, which the doc build and the full test run
    compile.
 
 ### `cargo xtask test`

@@ -6,8 +6,8 @@ use std::process::Command;
 
 use crate::step;
 
-/// Run the typo and TOML checks, clippy over every workspace target, the doc
-/// build, then the formatting check.
+/// Run the typo and TOML checks, clippy twice, the doc build, then the
+/// formatting check.
 ///
 /// The two checks that need no compiler go first, so a misspelling or an
 /// unsorted feature table costs a second rather than the minutes clippy takes.
@@ -18,33 +18,22 @@ use crate::step;
 /// — it should fail here rather than only in CI — while a doc comment it would
 /// rewrite is still rustfmt's to settle.
 ///
-/// Clippy runs four times, because each builds a different set of code:
+/// Clippy runs twice, because each compiles a different set of code: the
+/// library crates with no default features at all, and the whole workspace
+/// with every feature, which is what the doc build and the full test run
+/// compile.
 ///
-/// 1. The workspace with its default features. This is the combination the
-///    platform artifacts are built with, where every crate is compiled on its
-///    own: a package's default features hold unless that package is named
-///    directly, so an optional feature that is the only user of an item is
-///    *off* in the one crate that owns the item and *on* everywhere else, and
-///    the item reads as dead code. `--all-features` cannot see this: it turns
-///    the feature on in that crate too, and the workspace run as a whole
-///    unifies features across its members, so the item is used and the
-///    diagnostic never fires.
-/// 2. Every package on its own, default features, library targets only. Naming
-///    a package stops the unification that hid the combination above, so this
-///    is the pass that catches it. Library targets are what the artifacts
-///    ship; a unit test inside a library counts as a use, so leaving the test
-///    targets out matters rather than being an omission.
-/// 3. The library crates with no default features at all. Their built-in
-///    backends are optional, so this is the combination that proves the general
-///    facilities stand on their own — and the one a false optional feature, whose
-///    dependants never really compiled without it, fails to compile. The crates
-///    are named one by one rather than picked with `--workspace`: the
-///    application crates — the CLI, the examples and the benchmarks — depend on
-///    `unlit3d` and `unlit3dx` without `default-features = false`, which turns
-///    the defaults back on and leaves the run green without having checked
-///    anything.
-/// 4. The whole workspace with every feature, which is what the doc build and
-///    the full test run compile.
+/// The no-features pass is the one the test run cannot stand in for. Those
+/// crates' built-in backends are optional, so this is the combination that
+/// proves the general facilities stand on their own — and the one a false
+/// optional feature, whose dependants never really compiled without it, fails
+/// to compile. The crates are named one by one rather than picked with
+/// `--workspace`, because `--no-default-features` reaches only the packages
+/// the command names: for every other package the features come from the
+/// dependency edges that reach it, and feature unification applies all of
+/// them. Every application crate asks `unlit3d` for `ui` and `winit`, so a
+/// workspace-wide run would compile the libraries with exactly the backends
+/// this pass exists to leave out.
 ///
 /// Every run denies warnings, as CI does. Without it a warning here is a
 /// warning CI turns into an error, which is the same gap in a different guise.
@@ -77,21 +66,6 @@ pub fn run(release: bool) -> Result<(), String> {
 
     let profile: &[&str] = if release { &["--release"] } else { &[] };
     let deny: &[&str] = &["--", "-D", "warnings"];
-
-    let mut default = Command::new("cargo");
-    default
-        .args(["clippy", "--workspace", "--all-targets"])
-        .args(profile)
-        .args(deny);
-    step::run(&mut default, "clippy (default features)")?;
-
-    for package in libraried_packages()? {
-        let mut one = Command::new("cargo");
-        one.args(["clippy", "-p", &package, "--lib"])
-            .args(profile)
-            .args(deny);
-        step::run(&mut one, &format!("clippy -p {package} (default features)"))?;
-    }
 
     let mut bare = Command::new("cargo");
     bare.args(["clippy"]);
@@ -139,11 +113,12 @@ pub fn run(release: bool) -> Result<(), String> {
 ///
 /// These are the library crates with optional backends: their general
 /// facilities have to compile and lint on their own, without the backends a
-/// caller may leave out. The application crates are left out on purpose —
-/// `unlit3d_cli` and the example crates depend on `unlit3d` with `gltf`,
-/// `mcp` or the default features turned on, so naming them here would turn
-/// those features back on for `unlit3d` and leave the run green without
-/// having checked anything. The same reason rules out `--workspace`.
+/// caller may leave out. Naming them keeps the feature graph to the edges
+/// between the four, which ask for nothing, because the application crates
+/// are left out — each of them asks `unlit3d` for `ui` and `winit`, and
+/// feature unification would hand those to the libraries too. The same reason
+/// rules out `--workspace`: `--no-default-features` does not follow a
+/// dependency edge.
 const BARE_PACKAGES: [&str; 4] = ["unlit_ecs", "unlit_wgpu", "unlit3d", "unlit3dx"];
 
 /// Fail, naming the tool, when `tool` is not usable.
@@ -191,80 +166,4 @@ fn workspace_root() -> Result<PathBuf, String> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "`cargo locate-project` named a manifest with no directory".to_owned())
-}
-
-/// The workspace's own packages that have a library target, from
-/// `cargo metadata`.
-///
-/// Asked of cargo rather than read out of the root manifest: the members are
-/// globs (`crates/*`) the manifest does not expand, and a package added to a
-/// new location should be linted without anyone remembering to list it here.
-/// A package with no library — a binary or a benchmark crate — is left out
-/// because `--lib` is an error for it rather than an empty lint.
-fn libraried_packages() -> Result<Vec<String>, String> {
-    let mut metadata = Command::new("cargo");
-    metadata.args(["metadata", "--format-version", "1", "--no-deps"]);
-    let output = metadata
-        .output()
-        .map_err(|error| format!("running `cargo metadata`: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`cargo metadata` failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("parsing `cargo metadata`'s output: {error}"))?;
-    let packages = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "`cargo metadata` listed no packages".to_owned())?;
-
-    let mut names = Vec::with_capacity(packages.len());
-    for package in packages {
-        // A dependency is not this workspace's to lint, and only a workspace
-        // package has no source, which is what marks one: a registry or path
-        // dependency names where it came from.
-        if package
-            .get("source")
-            .is_some_and(|source| !source.is_null())
-        {
-            continue;
-        }
-        if !has_library_target(package) {
-            continue;
-        }
-        let name = package
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "a workspace package has no name".to_owned())?;
-        names.push(name.to_owned());
-    }
-    Ok(names)
-}
-
-/// Whether `package` builds a library `--lib` can name.
-///
-/// The kinds are cargo's own: a library is `lib`, or one of the crate types
-/// a `[lib]` section may instead ask for.
-fn has_library_target(package: &serde_json::Value) -> bool {
-    const LIBRARY_KINDS: [&str; 6] = ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
-
-    package
-        .get("targets")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|targets| {
-            targets.iter().any(|target| {
-                target
-                    .get("kind")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|kinds| {
-                        kinds.iter().any(|kind| {
-                            kind.as_str()
-                                .is_some_and(|kind| LIBRARY_KINDS.contains(&kind))
-                        })
-                    })
-            })
-        })
 }

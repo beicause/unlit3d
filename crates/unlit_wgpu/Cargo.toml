@@ -44,7 +44,7 @@ zerocopy-derive.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
-unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }
+unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", default-features = false, features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
 
 [build-dependencies]

@@ -39,9 +39,9 @@ pollster.workspace = true
 profiling = { workspace = true, default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"], optional = true }
-unlit_ecs = { path = "../crates/unlit_ecs" }
-unlit_wgpu = { path = "../crates/unlit_wgpu" }
-unlit3d = { path = "../crates/unlit3d" }
+unlit_ecs = { path = "../crates/unlit_ecs", default-features = false }
+unlit_wgpu = { path = "../crates/unlit_wgpu", default-features = false }
+unlit3d = { path = "../crates/unlit3d", default-features = false }
 wgpu = { workspace = true, features = ["noop"] }
 
 [features]

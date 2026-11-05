@@ -43,12 +43,12 @@ log.workspace = true
 # rather than a hand-written field list; see limit_rows.
 serde_json.workspace = true
 # The MCP command types the `--mcp` mode carries come from the ECS crate.
-unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", features = ["mcp"] }
-unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3" }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", features = ["gltf"] }
+unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", default-features = false, features = ["mcp"] }
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf", "ui", "winit"] }
 # The glTF documents the scenes embed. Their own crate because the bytes would
 # otherwise sit in this crate's metadata, copied for every crate that reads it.
-unlit3d_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.3" }
+unlit3d_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.3", default-features = false }
 web-time.workspace = true
 # A URL the UI asks to open is opened by this one call on every platform.
 webbrowser.workspace = true
@@ -69,7 +69,7 @@ zerocopy-derive.workspace = true
 # rather than a copy. Nothing in the library reaches the harness itself, so it is
 # a test dependency and not a dependency of the example.
 [dev-dependencies]
-unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"] }
+unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", default-features = false, features = ["snapshot"] }
 
 # The logger backend, which differs by platform even though there is only one
 # per target: `env_logger` writes to the terminal a command line runs in.
@@ -78,7 +78,7 @@ env_logger.workspace = true
 # `--mcp` serves the scene over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", features = ["gltf", "mcp"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf", "mcp", "ui", "winit"] }
 
 # The GPU context is requested asynchronously, so the setup future needs a
 # driver: a blocking executor natively, the browser's task queue on the web.
