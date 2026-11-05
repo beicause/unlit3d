@@ -44,6 +44,13 @@
 //! [`LitGltf::insert_meshes`] directly and build a [`GltfResources`] of its
 //! own.
 //!
+//! A document's collections are addressed by typed ids — [`ImageId`],
+//! [`MaterialId`], [`MeshId`], [`PrimitiveId`], [`NodeId`] and
+//! [`AnimationId`] — so a node index cannot be handed to an animation or a
+//! mesh by mistake. The `images()`, `materials()`, `meshes()`,
+//! `primitives()`, `nodes()` and `animations()` iterators yield the ids a
+//! document carries.
+//!
 //! Spawning entities never spawns a camera: the renderer draws with the first
 //! [`Camera`](crate::components::Camera) in the world, so one belongs to the
 //! caller.
@@ -119,6 +126,8 @@
 
 use std::path::Path;
 
+use core::mem::size_of;
+
 use crate::components::{
     GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, SkinPose,
     Transform, ZSortedDrawing,
@@ -136,6 +145,62 @@ use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
 /// out.
 const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
+
+/// The widest texel an upload format uses: four 32-bit float channels.
+const MAX_TEXEL_BYTES: usize = 4 * size_of::<f32>();
+
+/// An index into one of a glTF document's collections.
+///
+/// Each kind of thing a document holds has its own id type, so a node index
+/// cannot be passed where an animation or an image is expected. An id is a
+/// zero-based position; `LitGltf`'s iterator methods yield the ids a
+/// document actually carries.
+macro_rules! document_index {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(usize);
+
+        impl $name {
+            /// The id at a zero-based position in the document.
+            #[must_use]
+            pub const fn new(index: usize) -> Self {
+                Self(index)
+            }
+
+            /// The zero-based position in the document.
+            #[must_use]
+            pub const fn index(self) -> usize {
+                self.0
+            }
+        }
+    };
+}
+
+document_index!(
+    /// An index into a document's images.
+    ImageId
+);
+document_index!(
+    /// An index into a document's materials.
+    MaterialId
+);
+document_index!(
+    /// An index into a document's meshes.
+    MeshId
+);
+document_index!(
+    /// An index into one mesh's primitives.
+    PrimitiveId
+);
+document_index!(
+    /// An index into a document's nodes.
+    NodeId
+);
+document_index!(
+    /// An index into a document's animations.
+    AnimationId
+);
 
 /// A loaded glTF document, ready to be patched into another world.
 ///
@@ -176,8 +241,8 @@ pub struct LitGltf {
 /// handle makes the texture collectable by the next maintain.
 #[derive(Clone, Debug)]
 pub struct GltfImage {
-    /// The index of the image in the glTF document.
-    pub image: usize,
+    /// The image in the glTF document this handle came from.
+    pub image: ImageId,
     /// The uploaded texture holding the image's decoded pixels.
     pub texture: ResHandle<wgpu::Texture>,
     /// A default view of that texture, for callers that sample it directly.
@@ -200,8 +265,8 @@ pub struct GltfImage {
 /// are the caller's own handles.
 #[derive(Clone, Debug)]
 pub struct GltfMaterial {
-    /// The index of the material in the glTF document.
-    pub material: usize,
+    /// The material in the glTF document this handle came from.
+    pub material: MaterialId,
     /// The bind group that samples the base-color texture.
     pub bind_group: GpuMaterial,
     /// The texture view the bind group samples.
@@ -221,10 +286,10 @@ pub struct GltfMaterial {
 /// key, so the drawn variant always matches the uploaded vertex layout.
 #[derive(Clone, Debug)]
 pub struct GltfMesh {
-    /// The index of the mesh in the glTF document.
-    pub mesh_index: usize,
-    /// The index of the primitive inside that mesh.
-    pub primitive_index: usize,
+    /// The mesh in the glTF document this primitive came from.
+    pub mesh_index: MeshId,
+    /// The primitive inside that mesh.
+    pub primitive_index: PrimitiveId,
     /// The key the mesh was uploaded with.
     pub key: LitPipelineKey,
     /// The uploaded GPU mesh.
@@ -239,8 +304,8 @@ pub struct GltfMesh {
 /// this names.
 #[derive(Clone, Debug)]
 pub struct GltfNode {
-    /// The index of the node in the glTF document.
-    pub node: usize,
+    /// The node in the glTF document these entities draw.
+    pub node: NodeId,
     /// One entity per primitive of the node's mesh; empty for a node with no
     /// mesh.
     pub entities: Vec<Entity>,
@@ -255,11 +320,11 @@ pub struct GltfNode {
 ///
 /// Produced by [`LitGltf::insert_resources`], which uploads the whole
 /// document in one call, and taken by [`LitGltf::spawn_node`] and
-/// [`LitGltf::spawn_default_scene`] to draw it. Each vector is indexed by
-/// the document index it came from: `images[i]` is image `i`, `materials[m]`
-/// is material `m` — `None` when it names no base-color texture — and
-/// `meshes` holds every primitive of every mesh, document-mesh-major and then
-/// primitive-minor.
+/// [`LitGltf::spawn_default_scene`] to draw it. Each vector is in document
+/// order — `images[i]` came from image `i`, `materials[m]` from material
+/// `m` (`None` when it names no base-color texture), and `meshes` holds every
+/// primitive of every mesh, document-mesh-major and then primitive-minor —
+/// and every handle carries the typed id of the document item it came from.
 ///
 /// Holding the struct is what keeps the uploaded resources alive: dropping it
 /// lets the next [`MeshSource::maintain`] collect them.
@@ -318,6 +383,36 @@ impl LitGltf {
         }
     }
 
+    /// The ids of every image in the document, in document order.
+    pub fn images(&self) -> impl Iterator<Item = ImageId> {
+        (0..self.document.images().len()).map(ImageId::new)
+    }
+
+    /// The ids of every material in the document, in document order.
+    pub fn materials(&self) -> impl Iterator<Item = MaterialId> {
+        (0..self.document.materials().len()).map(MaterialId::new)
+    }
+
+    /// The ids of every mesh in the document, in document order.
+    pub fn meshes(&self) -> impl Iterator<Item = MeshId> {
+        (0..self.document.meshes().len()).map(MeshId::new)
+    }
+
+    /// The ids of every primitive of `mesh`, in document order.
+    pub fn primitives(&self, mesh: MeshId) -> impl Iterator<Item = PrimitiveId> {
+        (0..self.mesh(mesh.index()).primitives().count()).map(PrimitiveId::new)
+    }
+
+    /// The ids of every node in the document, in document order.
+    pub fn nodes(&self) -> impl Iterator<Item = NodeId> {
+        (0..self.document.nodes().len()).map(NodeId::new)
+    }
+
+    /// The ids of every animation in the document, in document order.
+    pub fn animations(&self) -> impl Iterator<Item = AnimationId> {
+        (0..self.document.animations().count()).map(AnimationId::new)
+    }
+
     /// The [`LitPipelineKey`] the primitive renders with.
     ///
     /// The key carries only what a caller picks: the texture filtering the
@@ -334,10 +429,10 @@ impl LitGltf {
     pub fn pipeline_key(
         &self,
         device: &wgpu::Device,
-        mesh: usize,
-        primitive: usize,
+        mesh: MeshId,
+        primitive: PrimitiveId,
     ) -> LitPipelineKey {
-        let primitive = self.primitive(mesh, primitive);
+        let primitive = self.primitive(mesh.index(), primitive.index());
         let material = primitive.material();
         // A glTF scene states no lights of its own, so its draws shade
         // nothing: the base colour it imports is what the file says.
@@ -401,9 +496,9 @@ impl LitGltf {
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
-        image: usize,
+        image: ImageId,
     ) -> GltfImage {
-        let data = &self.images[image];
+        let data = &self.images[image.index()];
         let device = source.device(world);
         let format = image_format(data, &device);
         let (width, height) = (data.width, data.height);
@@ -463,7 +558,7 @@ impl LitGltf {
     /// The returned vector is aligned with the document's image indices: the
     /// handle for image `i` sits at index `i`.
     pub fn insert_images(&self, source: &mut MeshSource, world: &Scope<'_>) -> Vec<GltfImage> {
-        (0..self.document.images().len())
+        self.images()
             .map(|image| self.insert_image(source, world, image))
             .collect()
     }
@@ -483,14 +578,14 @@ impl LitGltf {
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
-        material: usize,
+        material: MaterialId,
         images: &[GltfImage],
     ) -> Option<GltfMaterial> {
-        let data = self.material(material);
+        let data = self.material(material.index());
         let info = data.pbr_metallic_roughness().base_color_texture()?;
         let image = images
             .iter()
-            .find(|image| image.image == info.texture().source().index())
+            .find(|image| image.image == ImageId::new(info.texture().source().index()))
             .expect("the base-color texture's image must be inserted before the material");
 
         // A material group exists only for a variant that samples a base-color
@@ -553,7 +648,7 @@ impl LitGltf {
         world: &Scope<'_>,
         images: &[GltfImage],
     ) -> Vec<Option<GltfMaterial>> {
-        (0..self.document.materials().len())
+        self.materials()
             .map(|material| self.insert_material(source, world, material, images))
             .collect()
     }
@@ -578,11 +673,12 @@ impl LitGltf {
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
-        mesh: usize,
-        primitive: usize,
+        mesh: MeshId,
+        primitive: PrimitiveId,
     ) -> GltfMesh {
         let key = self.pipeline_key(&source.device(world), mesh, primitive);
-        let primitive = self.primitive(mesh, primitive);
+        let primitive_id = primitive;
+        let primitive = self.primitive(mesh.index(), primitive_id.index());
         let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 
         let positions: Vec<[f32; 3]> = reader
@@ -671,7 +767,7 @@ impl LitGltf {
 
         GltfMesh {
             mesh_index: mesh,
-            primitive_index: primitive.index(),
+            primitive_index: primitive_id,
             key,
             mesh: gpu_mesh,
         }
@@ -688,8 +784,8 @@ impl LitGltf {
             .map(|mesh| mesh.primitives().len())
             .sum();
         let mut meshes = Vec::with_capacity(count);
-        for mesh in 0..self.document.meshes().len() {
-            for primitive in 0..self.mesh(mesh).primitives().count() {
+        for mesh in self.meshes() {
+            for primitive in self.primitives(mesh) {
                 meshes.push(self.insert_mesh(source, world, mesh, primitive));
             }
         }
@@ -745,8 +841,8 @@ impl LitGltf {
     ///
     /// The returned pose has one matrix per joint of the skin, in the order the
     /// mesh's joint indices address them.
-    pub fn skin_pose(&self, node: usize) -> SkinPose {
-        self.skin_pose_with_matrices(node, &self.node_matrices)
+    pub fn skin_pose(&self, node: NodeId) -> SkinPose {
+        self.skin_pose_with_matrices(node.index(), &self.node_matrices)
     }
 
     /// The [`SkinPose`] a node's skin deforms by, evaluated against a given
@@ -787,8 +883,8 @@ impl LitGltf {
     ///
     /// `None` when the node names no skin, so a caller can walk a document
     /// without asking first.
-    pub fn skin_joint_count(&self, node: usize) -> Option<usize> {
-        Some(self.node(node).skin()?.joints().count())
+    pub fn skin_joint_count(&self, node: NodeId) -> Option<usize> {
+        Some(self.node(node.index()).skin()?.joints().count())
     }
 
     /// The morph weights a node's mesh starts at, one per target that
@@ -804,11 +900,11 @@ impl LitGltf {
     ///
     /// Returns an empty vector for a node whose mesh has no positional morph
     /// targets.
-    pub fn morph_weights(&self, node: usize) -> Vec<f32> {
-        let Some(mesh) = self.node(node).mesh() else {
+    pub fn morph_weights(&self, node: NodeId) -> Vec<f32> {
+        let Some(mesh) = self.node(node.index()).mesh() else {
             return Vec::new();
         };
-        let node_weights = self.node(node).weights();
+        let node_weights = self.node(node.index()).weights();
         let mut weights = node_weights
             .or_else(|| mesh.weights())
             .map(<[f32]>::to_vec)
@@ -834,8 +930,8 @@ impl LitGltf {
     /// # Panics
     ///
     /// If `animation` is out of bounds.
-    pub fn animation_name(&self, animation: usize) -> Option<&str> {
-        self.animation(animation).name()
+    pub fn animation_name(&self, animation: AnimationId) -> Option<&str> {
+        self.animation(animation.index()).name()
     }
 
     /// The duration of an animation in seconds: the latest input keyframe
@@ -844,8 +940,8 @@ impl LitGltf {
     /// # Panics
     ///
     /// If `animation` is out of bounds.
-    pub fn animation_duration(&self, animation: usize) -> f32 {
-        let animation = self.animation(animation);
+    pub fn animation_duration(&self, animation: AnimationId) -> f32 {
+        let animation = self.animation(animation.index());
         let mut duration: f32 = 0.0;
         for channel in animation.channels() {
             let reader = channel.reader(|buffer| Some(&self.buffers[buffer.index()]));
@@ -885,11 +981,11 @@ impl LitGltf {
     pub fn apply_animation(
         &self,
         world: &Scope<'_>,
-        animation: usize,
+        animation: AnimationId,
         time: f32,
         nodes: &[GltfNode],
     ) {
-        let animation = self.animation(animation);
+        let animation = self.animation(animation.index());
         let count = self.parents.len();
         let mut locals = self.locals.clone();
         let mut animated = vec![false; count];
@@ -941,7 +1037,7 @@ impl LitGltf {
                 }
                 (Property::MorphTargetWeights, ReadOutputs::MorphTargetWeights(outputs)) => {
                     let values: Vec<f32> = outputs.into_f32().collect();
-                    let targets = self.morph_weights(node).len();
+                    let targets = self.morph_weights(NodeId::new(node)).len();
                     let needed = times.len() * targets * interpolation_stride(interpolation);
                     if targets == 0 || values.len() < needed {
                         continue;
@@ -994,7 +1090,7 @@ impl LitGltf {
         }
 
         for handle in nodes {
-            let node = handle.node;
+            let node = handle.node.index();
             if dirty[node] {
                 let transform = decompose(matrices[node]);
                 for &entity in &handle.entities {
@@ -1063,12 +1159,12 @@ impl LitGltf {
     pub fn spawn_node(
         &self,
         world: &mut ScopeMut<'_>,
-        node: usize,
+        node: NodeId,
         resources: &GltfResources,
     ) -> GltfNode {
-        let index = node;
-        let transform = self.node_transforms[node].clone();
-        let node = self.node(node);
+        let index = node.index();
+        let transform = self.node_transforms[index].clone();
+        let node = self.node(index);
         let mut entities = Vec::new();
         // One pose entity per skinned node, shared by every primitive it
         // draws: the joints are the node's skin, and two primitives of one
@@ -1082,8 +1178,8 @@ impl LitGltf {
                     .meshes
                     .iter()
                     .find(|handle| {
-                        handle.mesh_index == mesh.index()
-                            && handle.primitive_index == primitive.index()
+                        handle.mesh_index == MeshId::new(mesh.index())
+                            && handle.primitive_index == PrimitiveId::new(primitive.index())
                     })
                     .expect("a document mesh must be inserted before the node that draws it");
                 // The base-color factor tints the instance whether or not the
@@ -1104,7 +1200,10 @@ impl LitGltf {
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
                     let pose = *pose.get_or_insert_with(|| {
-                        world.spawn_named("gltf skin pose", bundle![self.skin_pose(node.index())])
+                        world.spawn_named(
+                            "gltf skin pose",
+                            bundle![self.skin_pose(NodeId::new(node.index()))],
+                        )
                     });
                     SkinBinding { pose }
                 });
@@ -1114,7 +1213,7 @@ impl LitGltf {
                         world.spawn_named(
                             "gltf morph weights",
                             bundle![MorphWeights {
-                                weights: self.morph_weights(node.index())
+                                weights: self.morph_weights(NodeId::new(node.index()))
                             }],
                         )
                     });
@@ -1150,7 +1249,7 @@ impl LitGltf {
             }
         }
         GltfNode {
-            node: index,
+            node: NodeId::new(index),
             entities,
             pose,
             weights: morphs,
@@ -1180,10 +1279,17 @@ impl LitGltf {
             .default_scene()
             .expect("the glTF document declares a default scene");
         let mut nodes = Vec::new();
-        let mut stack: Vec<usize> = scene.nodes().map(|node| node.index()).collect();
+        let mut stack: Vec<NodeId> = scene
+            .nodes()
+            .map(|node| NodeId::new(node.index()))
+            .collect();
         while let Some(node) = stack.pop() {
             nodes.push(self.spawn_node(world, node, resources));
-            stack.extend(self.node(node).children().map(|child| child.index()));
+            stack.extend(
+                self.node(node.index())
+                    .children()
+                    .map(|child| NodeId::new(child.index())),
+            );
         }
         nodes
     }
@@ -1351,7 +1457,7 @@ fn encode_rows(data: &gltf::image::Data, format: wgpu::TextureFormat) -> Vec<u8>
         wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
     ) as usize;
     let mut rows = vec![0u8; bytes_per_row * height];
-    let mut scratch = [0u8; 16];
+    let mut scratch = [0u8; MAX_TEXEL_BYTES];
 
     for (y, out) in rows.chunks_exact_mut(bytes_per_row).enumerate() {
         for x in 0..width {
@@ -1409,7 +1515,7 @@ fn encode_texel<'a>(
     source: gltf::image::Format,
     format: wgpu::TextureFormat,
     pixel: &[u8],
-    scratch: &'a mut [u8; 16],
+    scratch: &'a mut [u8; MAX_TEXEL_BYTES],
 ) -> &'a [u8] {
     let channel = source_channel_bytes(source);
     let wanted = format_channels(format);
@@ -1432,12 +1538,12 @@ fn read_channel(format: gltf::image::Format, bytes: &[u8]) -> f32 {
         gltf::image::Format::R8
         | gltf::image::Format::R8G8
         | gltf::image::Format::R8G8B8
-        | gltf::image::Format::R8G8B8A8 => bytes[0] as f32 / 255.0,
+        | gltf::image::Format::R8G8B8A8 => f32::from(bytes[0]) / f32::from(u8::MAX),
         gltf::image::Format::R16
         | gltf::image::Format::R16G16
         | gltf::image::Format::R16G16B16
         | gltf::image::Format::R16G16B16A16 => {
-            u16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 65535.0
+            f32::from(u16::from_le_bytes([bytes[0], bytes[1]])) / f32::from(u16::MAX)
         }
         gltf::image::Format::R32G32B32FLOAT | gltf::image::Format::R32G32B32A32FLOAT => {
             f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
@@ -1446,7 +1552,12 @@ fn read_channel(format: gltf::image::Format, bytes: &[u8]) -> f32 {
 }
 
 /// Write one `0..=1` channel of `format`'s `slot` into `scratch`.
-fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: &mut [u8; 16]) {
+fn write_channel(
+    format: wgpu::TextureFormat,
+    slot: usize,
+    value: f32,
+    scratch: &mut [u8; MAX_TEXEL_BYTES],
+) {
     // `f32::clamp` leaves NaN alone, and a NaN texel would poison every sample
     // it reaches, so fold it to the bottom of the range instead.
     let clamped = if value.is_nan() {
@@ -1458,16 +1569,18 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
         wgpu::TextureFormat::R8Unorm
         | wgpu::TextureFormat::Rg8Unorm
         | wgpu::TextureFormat::Rgba8UnormSrgb => {
-            scratch[slot] = (clamped * 255.0).round() as u8;
+            scratch[slot] = (clamped * f32::from(u8::MAX)).round() as u8;
         }
         wgpu::TextureFormat::R16Float
         | wgpu::TextureFormat::Rg16Float
         | wgpu::TextureFormat::Rgba16Float => {
             let bits = half::f16::from_f32(clamped).to_bits();
-            scratch[slot * 2..][..2].copy_from_slice(&bits.to_le_bytes());
+            scratch[slot * size_of::<u16>()..][..size_of::<u16>()]
+                .copy_from_slice(&bits.to_le_bytes());
         }
         wgpu::TextureFormat::Rgba32Float => {
-            scratch[slot * 4..][..4].copy_from_slice(&clamped.to_le_bytes());
+            scratch[slot * size_of::<f32>()..][..size_of::<f32>()]
+                .copy_from_slice(&clamped.to_le_bytes());
         }
         _ => unreachable!("a glTF image uploads in one of the formats above"),
     }
@@ -1900,7 +2013,7 @@ mod tests {
     fn encode(format: wgpu::TextureFormat, data: &gltf::image::Data) -> Vec<u8> {
         let texel = texel_bytes(format) as usize;
         let mut out = Vec::new();
-        let mut scratch = [0u8; 16];
+        let mut scratch = [0u8; MAX_TEXEL_BYTES];
         out.extend_from_slice(encode_texel(
             data.format,
             format,
@@ -2261,7 +2374,7 @@ mod tests {
             LitGltf::from_bytes(&sided_document(false)).expect("the single-sided document parses");
         assert_eq!(
             single
-                .pipeline_key(&device, 0, 0)
+                .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
                 .options
                 .primitive
                 .cull_mode,
@@ -2272,7 +2385,7 @@ mod tests {
         let double = LitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
         assert_eq!(
             double
-                .pipeline_key(&device, 0, 0)
+                .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
                 .options
                 .primitive
                 .cull_mode,
@@ -2286,10 +2399,10 @@ mod tests {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let single = LitGltf::from_bytes(&sided_document(false))
             .expect("the single-sided document parses")
-            .pipeline_key(&device, 0, 0);
+            .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0));
         let double = LitGltf::from_bytes(&sided_document(true))
             .expect("the double-sided document parses")
-            .pipeline_key(&device, 0, 0);
+            .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0));
         assert_ne!(
             single, double,
             "the two sides must be separate variants so each keeps its own pipeline"
@@ -2328,7 +2441,7 @@ mod tests {
             .expect("the morphed document parses");
         let primitive = gltf.primitive(0, 0);
         assert_eq!(morph_target_count(&primitive), 0);
-        assert!(gltf.morph_weights(0).is_empty());
+        assert!(gltf.morph_weights(NodeId::new(0)).is_empty());
     }
 
     #[test]
@@ -2339,7 +2452,7 @@ mod tests {
             &[Some([0.0, 1.0, 0.0])],
         ))
         .expect("the morphed document parses");
-        assert_eq!(gltf.morph_weights(0), vec![0.75]);
+        assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.75]);
 
         let gltf = LitGltf::from_bytes(&morphed_document(
             Some(&[0.25]),
@@ -2347,7 +2460,7 @@ mod tests {
             &[Some([1.0, 0.0, 0.0])],
         ))
         .expect("the morphed document parses");
-        assert_eq!(gltf.morph_weights(0), vec![0.25]);
+        assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.25]);
     }
 
     #[test]
@@ -2361,7 +2474,7 @@ mod tests {
             &[Some([0.0, 1.0, 0.0]), Some([1.0, 0.0, 0.0])],
         ))
         .expect("the morphed document parses");
-        assert_eq!(gltf.morph_weights(0), vec![0.5, 0.0]);
+        assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.5, 0.0]);
 
         // And one that states more is truncated, for the same reason.
         let gltf = LitGltf::from_bytes(&morphed_document(
@@ -2370,14 +2483,14 @@ mod tests {
             &[Some([0.0, 1.0, 0.0])],
         ))
         .expect("the morphed document parses");
-        assert_eq!(gltf.morph_weights(0), vec![0.5]);
+        assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.5]);
     }
 
     #[test]
     fn a_mesh_without_targets_starts_undeformed() {
         let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[]))
             .expect("the morphed document parses");
-        assert!(gltf.morph_weights(0).is_empty());
+        assert!(gltf.morph_weights(NodeId::new(0)).is_empty());
         assert_eq!(morph_target_count(&gltf.primitive(0, 0)), 0);
     }
 
@@ -2389,7 +2502,7 @@ mod tests {
         // it is.
         let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
-        let pose = gltf.skin_pose(0);
+        let pose = gltf.skin_pose(NodeId::new(0));
         assert_eq!(pose.matrices.len(), 1, "the skin has one joint");
         assert!(
             pose.matrices[0].abs_diff_eq(glam::Mat4::IDENTITY, 1e-6),
@@ -2406,7 +2519,7 @@ mod tests {
         // matrix, not the identity.
         let gltf = LitGltf::from_bytes(&skinned_document([3.0, -2.0, 1.0]))
             .expect("the skinned document parses");
-        let pose = gltf.skin_pose(0);
+        let pose = gltf.skin_pose(NodeId::new(0));
         assert!(
             pose.matrices[0].abs_diff_eq(
                 glam::Mat4::from_translation(glam::Vec3::new(3.0, -2.0, 1.0)),
@@ -2433,9 +2546,9 @@ mod tests {
     fn a_node_without_a_skin_has_no_pose() {
         let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
-        assert_eq!(gltf.skin_joint_count(0), Some(1));
-        assert_eq!(gltf.skin_joint_count(1), None);
-        assert!(gltf.skin_pose(1).matrices.is_empty());
+        assert_eq!(gltf.skin_joint_count(NodeId::new(0)), Some(1));
+        assert_eq!(gltf.skin_joint_count(NodeId::new(1)), None);
+        assert!(gltf.skin_pose(NodeId::new(1)).matrices.is_empty());
     }
 
     #[test]
@@ -2896,8 +3009,8 @@ mod tests {
         ))
         .expect("the animated document parses");
         assert_eq!(gltf.animation_count(), 1);
-        assert_eq!(gltf.animation_name(0), Some("walk"));
-        assert!((gltf.animation_duration(0) - 4.0).abs() < 1e-6);
+        assert_eq!(gltf.animation_name(AnimationId::new(0)), Some("walk"));
+        assert!((gltf.animation_duration(AnimationId::new(0)) - 4.0).abs() < 1e-6);
     }
 
     #[test]
@@ -2922,19 +3035,19 @@ mod tests {
         let child = world.root_scope_mut().spawn(bundle![Transform::default()]);
         let nodes = [
             GltfNode {
-                node: 0,
+                node: NodeId::new(0),
                 entities: vec![parent],
                 pose: None,
                 weights: None,
             },
             GltfNode {
-                node: 1,
+                node: NodeId::new(1),
                 entities: vec![child],
                 pose: None,
                 weights: None,
             },
         ];
-        gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
         // The parent's own channel moves it...
         assert_eq!(
             world
@@ -2970,12 +3083,12 @@ mod tests {
         let mut world = World::new();
         let parent = world.root_scope_mut().spawn(bundle![Transform::default()]);
         let nodes = [GltfNode {
-            node: 0,
+            node: NodeId::new(0),
             entities: vec![parent],
             pose: None,
             weights: None,
         }];
-        gltf.apply_animation(&world.root_scope(), 0, 1.999, &nodes);
+        gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.999, &nodes);
         assert_eq!(
             world
                 .root_scope()
@@ -2998,12 +3111,12 @@ mod tests {
         let mesh = world.root_scope_mut().spawn(bundle![Transform::default()]);
         let pose = world.root_scope_mut().spawn(bundle![SkinPose::default()]);
         let nodes = [GltfNode {
-            node: 0,
+            node: NodeId::new(0),
             entities: vec![mesh],
             pose: Some(pose),
             weights: None,
         }];
-        gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
         let mut skin_pose_row = world
             .root_scope()
             .query_one::<&SkinPose>(pose)
@@ -3030,12 +3143,12 @@ mod tests {
             .root_scope_mut()
             .spawn(bundle![MorphWeights { weights: vec![0.0] }]);
         let nodes = [GltfNode {
-            node: 0,
+            node: NodeId::new(0),
             entities: vec![mesh],
             pose: None,
             weights: Some(weights),
         }];
-        gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
         let mut morph_weights_row = world
             .root_scope()
             .query_one::<&MorphWeights>(weights)

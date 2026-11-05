@@ -275,7 +275,12 @@ pub fn build_world(
         }
         if let Some(animation) = &document.animation {
             let index = animation_index(&gltf, animation)?;
-            gltf.apply_animation(&world.root_scope(), index, document.time, &nodes);
+            gltf.apply_animation(
+                &world.root_scope(),
+                unlit3d::gltf::AnimationId::new(index),
+                document.time,
+                &nodes,
+            );
         }
     }
 
@@ -580,7 +585,10 @@ fn animation_index(document: &LitGltf, reference: &AnimationRef) -> Result<usize
             }
         }
         AnimationRef::Name(name) => (0..document.animation_count())
-            .find(|&animation| document.animation_name(animation) == Some(name.as_str()))
+            .find(|&animation| {
+                document.animation_name(unlit3d::gltf::AnimationId::new(animation))
+                    == Some(name.as_str())
+            })
             .ok_or_else(|| {
                 Error::Animation(format!(
                     "the document has no animation named {name}; it has {}",
@@ -597,7 +605,7 @@ fn animation_list(document: &LitGltf) -> String {
         if animation > 0 {
             list.push_str(", ");
         }
-        match document.animation_name(animation) {
+        match document.animation_name(unlit3d::gltf::AnimationId::new(animation)) {
             Some(name) => list.push_str(name),
             None => list.push_str(&format!("#{animation}")),
         }

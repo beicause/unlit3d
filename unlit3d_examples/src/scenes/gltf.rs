@@ -161,8 +161,8 @@ fn build(
 
     let fox_animation = animation_index(&fox, FOX_ANIMATION);
     let morph_animation = animation_index(&morph, MORPH_ANIMATION);
-    let fox_duration = fox.animation_duration(fox_animation);
-    let morph_duration = morph.animation_duration(morph_animation);
+    let fox_duration = fox.animation_duration(unlit3d::gltf::AnimationId::new(fox_animation));
+    let morph_duration = morph.animation_duration(unlit3d::gltf::AnimationId::new(morph_animation));
 
     // In the window each clip plays at its own real duration and loops. A
     // snapshot capture instead walks a fixed six-step sequence, so a frame does
@@ -185,8 +185,18 @@ fn build(
             let scope = world
                 .scope(source_entity)
                 .expect("the source entity is alive");
-            fox.apply_animation(&scope, fox_animation, fox_time, &fox_nodes);
-            morph.apply_animation(&scope, morph_animation, morph_time, &morph_nodes);
+            fox.apply_animation(
+                &scope,
+                unlit3d::gltf::AnimationId::new(fox_animation),
+                fox_time,
+                &fox_nodes,
+            );
+            morph.apply_animation(
+                &scope,
+                unlit3d::gltf::AnimationId::new(morph_animation),
+                morph_time,
+                &morph_nodes,
+            );
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.
             super::aim_camera(
@@ -210,6 +220,8 @@ fn build(
 /// than by a position that a re-export could shuffle.
 fn animation_index(document: &LitGltf, name: &str) -> usize {
     (0..document.animation_count())
-        .find(|&animation| document.animation_name(animation) == Some(name))
+        .find(|&animation| {
+            document.animation_name(unlit3d::gltf::AnimationId::new(animation)) == Some(name)
+        })
         .unwrap_or_else(|| panic!("the document has an animation named `{name}`"))
 }

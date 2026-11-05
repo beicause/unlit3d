@@ -501,11 +501,16 @@ impl InstanceContext<'_> {
 
 它做的是修补你已经在渲染的那个世界：
 
+- 文档的集合用类型化 id 寻址——`ImageId`、`MaterialId`、`MeshId`、
+  `PrimitiveId`、`NodeId` 与 `AnimationId`——节点下标因此不会误传给动画或图像。
+  `images()`、`materials()`、`meshes()`、`primitives()`、`nodes()` 与
+  `animations()` 迭代器给出文档实际携带的 id。
 - `insert_resources` 一次上传整份文档，返回持有全部句柄的 `GltfResources`；
-  `spawn_node` / `spawn_default_scene` 接收的正是这个结构体。想一次只插入一类资源的调用方
+  `spawn_node` / `spawn_default_scene` 接收的正是这个结构体，每个句柄都带有它来自的
+  文档条目的类型化 id。想一次只插入一类资源的调用方
   ——比如让两份文档共用一个纹理——也可以改用 `insert_image` / `insert_material` /
   `insert_mesh` 上传单个图像、材质或网格，或用批量版本（`insert_images`、
-  `insert_materials`、`insert_meshes`）一次上传某一类全部资源（与文档自身的索引对齐），
+  `insert_materials`、`insert_meshes`）一次上传某一类全部资源（按文档顺序），
   再自行拼出 `GltfResources`。
 - 交出句柄只让其所指变得可回收：材质的绑定组与材质同寿，它采样的纹理视图也由材质
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。

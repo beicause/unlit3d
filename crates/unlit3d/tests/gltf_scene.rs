@@ -10,7 +10,7 @@
 use crate::common::*;
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
-use unlit3d::gltf::{GltfNode, GltfResources, LitGltf};
+use unlit3d::gltf::{AnimationId, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId};
 use unlit3d::prelude::*;
 
 /// The buffer: 4 positions (f32), 4 uvs (f32), 6 indices (u16), the PNG.
@@ -261,7 +261,7 @@ async fn a_morphed_quad_follows_its_weights() {
     let gltf = LitGltf::from_bytes(&morphed_document()).expect("the embedded document parses");
 
     assert_eq!(
-        gltf.morph_weights(0),
+        gltf.morph_weights(NodeId::new(0)),
         vec![0.0, 0.0],
         "the mesh's own weights are the starting pose"
     );
@@ -411,9 +411,9 @@ async fn an_animation_moves_the_drawn_mesh() {
         LitGltf::from_bytes(&animated_skinned_document()).expect("the embedded document parses");
 
     assert_eq!(gltf.animation_count(), 1, "the document carries one clip");
-    assert_eq!(gltf.animation_name(0), Some("walk"));
+    assert_eq!(gltf.animation_name(AnimationId::new(0)), Some("walk"));
     assert!(
-        (gltf.animation_duration(0) - 2.0).abs() < 1e-6,
+        (gltf.animation_duration(AnimationId::new(0)) - 2.0).abs() < 1e-6,
         "the clip ends at its last keyframe"
     );
 
@@ -424,7 +424,7 @@ async fn an_animation_moves_the_drawn_mesh() {
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
     let read = |gpu: &TestGpu, time: f32| {
-        gltf.apply_animation(&world.root_scope(), 0, time, &nodes);
+        gltf.apply_animation(&world.root_scope(), AnimationId::new(0), time, &nodes);
         gpu.render(&world);
         unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
     };
@@ -461,7 +461,11 @@ async fn a_skinned_quad_follows_its_joint() {
     // is exactly where the document put it.
     let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
         .expect("the embedded document parses");
-    assert_eq!(gltf.skin_joint_count(0), Some(1), "the skin has one joint");
+    assert_eq!(
+        gltf.skin_joint_count(NodeId::new(0)),
+        Some(1),
+        "the skin has one joint"
+    );
 
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
@@ -644,7 +648,7 @@ async fn a_double_sided_material_draws_back_faces() {
             let gltf = LitGltf::from_bytes(&reversed_document(double_sided))
                 .expect("the embedded document parses");
 
-            let key = gltf.pipeline_key(&ctx.device, 0, 0);
+            let key = gltf.pipeline_key(&ctx.device, MeshId::new(0), PrimitiveId::new(0));
             if double_sided {
                 assert_eq!(
                     key.options.primitive.cull_mode, None,
@@ -797,7 +801,7 @@ async fn a_blended_material_composites_over_the_frame() {
 
     // The primitive's key carries the blend state...
     let key = gpu.with_mesh_source(&world, |source, world| {
-        gltf.pipeline_key(&source.device(world), 0, 0)
+        gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
     });
     assert!(
         key.options.blend.is_some(),
@@ -865,7 +869,7 @@ async fn a_blended_material_writes_no_depth() {
     // fragment covers its surface only partly, so the depth it would write is
     // no measurement of where that surface is.
     let key = gpu.with_mesh_source(&world, |source, world| {
-        gltf.pipeline_key(&source.device(world), 0, 0)
+        gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
     });
     assert!(
         key.options.blend.is_some(),
@@ -924,7 +928,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         // uniform the material binds: the key only declares that fragments are
         // cut off, and `spawn_node` writes each instance's own value.
         let key = gpu.with_mesh_source(&world, |source, world| {
-            gltf.pipeline_key(&source.device(world), 0, 0)
+            gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
         });
         assert!(
             key.options.alpha_cutoff,

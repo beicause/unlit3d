@@ -748,14 +748,20 @@ a *record* of the model, not a GPU resource: it owns no `World` and no
 
 What it does is patch the world you already render:
 
+- A document's collections are addressed by typed ids — `ImageId`,
+  `MaterialId`, `MeshId`, `PrimitiveId`, `NodeId` and `AnimationId` —
+  so a node index cannot be handed to an animation or an image by mistake. The
+  `images()`, `materials()`, `meshes()`, `primitives()`, `nodes()` and
+  `animations()` iterators yield the ids a document carries.
 - `insert_resources` uploads the whole document in one call and returns a
   `gltf::GltfResources` holding every handle it made; that is the struct
-  `spawn_node` / `spawn_default_scene` take. A caller that wants one
+  `spawn_node` / `spawn_default_scene` take, and every handle carries the
+  typed id of the document item it came from. A caller that wants one
   kind of resource at a time — to share a texture between two documents, say —
   can instead call `insert_image` / `insert_material` / `insert_mesh` for a
   single image, material or mesh, or the batch versions (`insert_images`,
-  `insert_materials`, `insert_meshes`) for everything of one kind, aligned with
-  the document's own indices, and assemble a `GltfResources` of its own.
+  `insert_materials`, `insert_meshes`) for everything of one kind, in document
+  order, and assemble a `GltfResources` of its own.
 - Giving up a handle makes exactly what it names collectable: the material's
   bind group lives while the material does, and the texture view it samples is
   held by the material too, so dropping the material's handle is enough to
