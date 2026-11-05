@@ -117,16 +117,21 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
-      # The two builds `check-wasm` in `ci.yml` lints on a branch: the workspace
-      # under the default features and the test binaries under `--all-features`.
-      # A `main` run skips that job, so the target's lints have to be carried
-      # here, where the same two builds are made on the way to the browser. The
-      # host lints they are not are the `build` job's.
+      # The builds `check-wasm` in `ci.yml` lints on a branch: the workspace
+      # under the default features, the four libraries under no features at
+      # all, and the test binaries under `--all-features`. A `main` run skips
+      # that job, so the target's lints have to be carried here, where the same
+      # builds are made on the way to the browser. The host lints they are not
+      # are the `build` job's.
       - name: Clippy (wasm target)
         run: |
           cargo clippy --workspace --exclude xtask \
             --target wasm32-unknown-unknown \
             --bins --tests --benches --examples -- -D warnings
+          cargo clippy \
+            -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx \
+            --no-default-features --all-targets \
+            --target wasm32-unknown-unknown -- -D warnings
           cargo clippy \
             -p unlit_wgpu -p unlit3d -p unlit3d_examples -p unlit3dx_examples \
             --tests --all-features --target wasm32-unknown-unknown -- -D warnings
@@ -175,9 +180,9 @@ jobs:
   # `cfg(target_os = "android")` lints, which the host lint in `ci.yml` never
   # reaches: the entry point is behind that `cfg`, and so is everything only
   # the activity links. A `main` run skips that check, because this job runs the
-  # same `cargo ndk ... clippy` itself before it adds the APK around it — a
-  # cross-build of the shared libraries and then Gradle — which is the part with
-  # nothing left to tell a contributor that the check does not.
+  # same two `cargo ndk ... clippy` passes itself before it adds the APK around
+  # it — a cross-build of the shared libraries and then Gradle — which is the
+  # part with nothing left to tell a contributor that the check does not.
   build-android:
     name: Build android
     # A Gradle build downloads its own distribution and dependencies, and the
@@ -283,12 +288,20 @@ jobs:
       # Linting the target the APK ships is what covers that half, and it runs
       # before the cross-build because it is the same compilation: a lint error
       # here is a build error one step later, reported with a line.
-      - name: Clippy (Android target)
+      # Two passes, as on the host: every feature and no features at all. The
+      # second names the four libraries one by one, because `--workspace` would
+      # pull in the application crates and re-enable `unlit3d`'s and
+      # `unlit3dx`'s defaults, leaving the pass with nothing of its own to
+      # check.
+      - name: Clippy (Android target, all features)
         run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings
         env:
           # The soundfont was fetched above; requiring it here is what turns a
           # checkout that lost the asset from a silent stub into a failure.
           UNLIT3D_REQUIRE_SOUNDFONT: "1"
+
+      - name: Clippy (Android target, no features)
+        run: cargo ndk -t arm64-v8a -P 26 clippy -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx --no-default-features --all-targets -- -D warnings
 
       # One command for both halves: `cargo ndk` builds the example's shared
       # library into the APK's `jniLibs` directory, then the task runs the

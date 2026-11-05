@@ -342,27 +342,27 @@ request:
 - **lint** — `typos`, `tombi lint --error-on-warnings` and `tombi format
   --check` over the TOML, and `cargo fmt --all -- --check`.
 - **build** (Linux) — clippy with default features, with no features at all and
-  with every feature, `cargo build --workspace --all-targets`,
-  `cargo xtask test`, `cargo doc` with `-D warnings`, and the workspace's
-  snapshot comparisons twice: once at the WebGPU baseline's limits, once with
-  every offscreen device narrowed to WebGL2's shape. Linux installs Mesa for
-  `lavapipe`, since the runners have no GPU.
-- **check-wasm** — clippy for `wasm32-unknown-unknown` over the workspace and
-  over the test binaries. It excludes `xtask`, a host-only task runner whose HTTP
-  server does not compile for that target.
-- **check-android** — clippy for `aarch64-linux-android`, the only thing that
-  compiles the code behind `cfg(target_os = "android")`. The host clippy in
-  `build` never reaches it.
+  with every feature, `cargo xtask test`, `cargo doc` with `-D warnings`, and
+  the workspace's snapshot comparisons twice: once at the WebGPU baseline's
+  limits, once with every offscreen device narrowed to WebGL2's shape. Linux
+  installs Mesa for `lavapipe`, since the runners have no GPU.
+- **check-wasm** — clippy for `wasm32-unknown-unknown` over the workspace, over
+  the four libraries without their default features and over the test binaries.
+  It excludes `xtask`, a host-only task runner whose HTTP server does not
+  compile for that target.
+- **check-android** — clippy for `aarch64-linux-android` with every feature and with
+  none, which is the only thing that compiles the code behind
+  `cfg(target_os = "android")`. The host clippy in `build` never reaches it.
 
 `main` — every push to it, a merge queue run, and a manual run from it:
 
 - **build** runs on macOS and Windows as well as Linux.
-- **build-wasm** — the same two clippy passes over the `wasm32-unknown-unknown`
+- **build-wasm** — the same three clippy passes over the `wasm32-unknown-unknown`
   build, then every wasm test binary bindgen'd into a page driven through a real
   browser. Linting those builds here is why `check-wasm` does not run on `main`.
-- **build-android** — the `aarch64-linux-android` clippy, then the cross-build of
-  the shared libraries and Gradle around it for the APK. It runs that clippy
-  itself, so `check-android` does not run on `main` either.
+- **build-android** — both `aarch64-linux-android` clippy passes, then the
+  cross-build of the shared libraries and Gradle around it for the APK. It runs
+  those passes itself, so `check-android` does not run on `main` either.
 
 Each `check-*` job shares its cache with the job that does the same subject on
 `main` (`shared-key` on Swatinem/rust-cache), so what the light tier compiles is

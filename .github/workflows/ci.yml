@@ -79,14 +79,14 @@ jobs:
 
   build:
     name: Build ${{matrix.os}}
-    # Measured on the slowest runner, Windows, which spends about ten minutes
-    # building the workspace and five more on clippy: a cold cache there puts
-    # the whole job near twenty minutes before the tests even start, and the
-    # build, the tests and the doc build all still have to run. The install of
-    # nextest is the other thing that sets the ceiling: when the release lookup
-    # is rate-limited it falls back to a source build, which is several hundred
-    # crates and takes minutes of its own, so the timeout leaves room for that
-    # run rather than assuming the prebuilt binary is always there.
+    # Measured on the slowest runner, Windows, which spends about seven minutes
+    # on its three clippy passes: a cold cache there puts the whole job near
+    # fifteen minutes before the tests even start, and the tests and the doc
+    # build still have to run. The install of nextest is the other thing that
+    # sets the ceiling: when the release lookup is rate-limited it falls back to
+    # a source build, which is several hundred crates and takes minutes of its
+    # own, so the timeout leaves room for that run rather than assuming the
+    # prebuilt binary is always there.
     timeout-minutes: 35
     runs-on: ${{matrix.os}}
     # Every target this job builds is the runner's own host target, so one
@@ -98,9 +98,9 @@ jobs:
       fail-fast: false
       matrix:
         # The light tier takes the Linux leg alone. It is the one that runs the
-        # linting, the build, the whole test suite and the docs, it is the one
-        # every contributor can reproduce locally, and its cache is what makes
-        # a second push cheap. macOS and Windows prove portability instead:
+        # linting, the whole test suite and the docs, it is the one every
+        # contributor can reproduce locally, and its cache is what makes a
+        # second push cheap. macOS and Windows prove portability instead:
         # nothing in a change breaks them without the Linux leg failing first,
         # and the queue that consumes the result only needs them before a
         # release, which a merge to `main` is the last chance for.
@@ -167,12 +167,15 @@ jobs:
       - name: Clippy (no features)
         run: cargo clippy -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx --no-default-features --all-targets -- -Dwarnings
 
-      - name: Clippy (all features)
-        run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings
+      # The combination the platform binaries are built with. `--all-targets` is
+      # what covers the benchmarks, whose binaries no test run links, and the
+      # suite targets whose optional feature this combination leaves off.
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -Dwarnings
 
-      - name: Build ${{matrix.os}}
-        id: build
-        run: cargo build --workspace --all-targets
+      - name: Clippy (all features)
+        id: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings
 
       # `cargo xtask test` runs nextest over the unit and integration tests,
       # then `cargo test --doc` for the doctests nextest does not cover. The
@@ -234,14 +237,14 @@ jobs:
             target/snapshot-mismatches-webgl2
           if-no-files-found: ignore
 
-      # What the checks below need is a workspace that compiles, which is what
-      # `steps.build` records — not a green run of everything above them. A
-      # nextest that would not install is no reason to drop them, while a failed
-      # clippy or build is one: they would only fail again on the same code, so
-      # they wait on that step and on nothing else. `!cancelled()` keeps a
-      # cancelled run from starting them at all.
+      # What the doc build needs is a workspace that type-checks, which is what
+      # `steps.clippy` records — not a green run of everything above it. A
+      # nextest that would not install is no reason to drop it, while a failed
+      # clippy is: it would only fail again on the same code, so the doc build
+      # waits on that step and on nothing else. `!cancelled()` keeps a
+      # cancelled run from starting it at all.
       - name: Doc
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.clippy.outcome == 'success' }}
         run: cargo doc --workspace --no-deps --document-private-items --keep-going
         env:
           RUSTDOCFLAGS: -D warnings
@@ -315,7 +318,7 @@ jobs:
   check-wasm:
     name: Check wasm
     # Lints the workspace for the target, which is a smaller build than the host
-    # one, twice over — without a link and without a browser.
+    # one, in the same three passes — without a link and without a browser.
     if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -356,33 +359,44 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
-      # The two builds `cargo xtask test-wasm` makes, as a lint:
+      # The builds `cargo xtask test-wasm` makes, as a lint:
       #
       # - The workspace under the default features, which is what the browser
       #   example and the Android library ship. `xtask` is excluded because it
       #   is a host-only task runner whose HTTP server reaches `async-io` and so
       #   `errno`, neither of which builds for this target.
+      # - The four libraries under no features at all, which is what proves
+      #   they compile down to their general facilities for this target too.
+      #   They are named one by one for the reason the host job gives:
+      #   `--workspace` brings in the application crates, whose dependency
+      #   declarations re-enable the default features of `unlit3d` and
+      #   `unlit3dx`.
       # - The test binaries of the packages that can run in a browser, under
       #   `--all-features`, which is how the browser run builds them.
       #
-      # Both run under the default profile rather than `wasm-release`: nothing here
-      # is linked or run, so the optimization level only costs time, and the
-      # browser job still compiles the same sources with the profile it runs in.
+      # All three run under the default profile rather than `wasm-release`:
+      # nothing here is linked or run, so the optimization level only costs
+      # time, and the browser job still compiles the same sources with the
+      # profile it runs in.
       - name: Lint the wasm workspace
         run: |
           cargo clippy --workspace --exclude xtask \
             --target wasm32-unknown-unknown \
             --bins --tests --benches --examples -- -D warnings
           cargo clippy \
+            -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx \
+            --no-default-features --all-targets \
+            --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy \
             -p unlit_wgpu -p unlit3d -p unlit3d_examples -p unlit3dx_examples \
             --tests --all-features --target wasm32-unknown-unknown -- -D warnings
 
   check-android:
     name: Check android
-    # The cross-lint is one compilation of the workspace, with the NDK the
+    # The cross-lint is two compilations of the workspace, with the NDK the
     # runner image already carries. `build-android` in `ci-main.yml` runs the
-    # same `cargo ndk ... clippy` before it builds the APK, so `main` takes that
-    # job and skips this one.
+    # same two `cargo ndk ... clippy` passes before it builds the APK, so `main`
+    # takes that job and skips this one.
     if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -443,5 +457,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Clippy (Android target)
+      # Two passes, as on the host: every feature and no features at all. The
+      # second names the four libraries one by one, because `--workspace` would
+      # pull in the application crates and re-enable `unlit3d`'s and
+      # `unlit3dx`'s defaults, leaving the pass with nothing of its own to
+      # check.
+      - name: Clippy (Android target, all features)
         run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Clippy (Android target, no features)
+        run: cargo ndk -t arm64-v8a -P 26 clippy -p unlit_ecs -p unlit_wgpu -p unlit3d -p unlit3dx --no-default-features --all-targets -- -D warnings

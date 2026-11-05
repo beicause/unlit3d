@@ -218,24 +218,24 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 - **lint** —— 对全部文件跑 `typos`；对 TOML 跑 `tombi lint --error-on-warnings` 与
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
 - **build**（Linux）—— 带默认 features、完全不带 features 与带全部 features 的
-  clippy、`cargo build --workspace --all-targets`、`cargo xtask test`、带
-  `-D warnings` 的 `cargo doc`，以及工作区的快照比较——该比较跑两遍：一遍用 WebGPU
-  基线的 limits，一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux
-  会安装 Mesa 以提供 `lavapipe`。
-- **check-wasm** —— 为 `wasm32-unknown-unknown` 对工作区与测试二进制各跑一遍
-  clippy。它排除 `xtask`：那是只在宿主机上运行的任务运行器，其 HTTP 服务器
-  无法为该目标编译。
-- **check-android** —— 为 `aarch64-linux-android` 跑 clippy，这是唯一会编译
-  `cfg(target_os = "android")` 后面代码的检查；`build` 里的宿主 clippy 到不了那里。
+  clippy、`cargo xtask test`、带 `-D warnings` 的 `cargo doc`，以及工作区的
+  快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，一遍把所有离屏设备收窄到
+  WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa 以提供 `lavapipe`。
+- **check-wasm** —— 为 `wasm32-unknown-unknown` 对工作区、四个库（关闭默认
+  features）与测试二进制各跑一遍 clippy。它排除 `xtask`：那是只在宿主机上运行的
+  任务运行器，其 HTTP 服务器无法为该目标编译。
+- **check-android** —— 为 `aarch64-linux-android` 跑带全部 features 与完全不带
+  features 的两遍 clippy，这是唯一会编译 `cfg(target_os = "android")` 后面代码的
+  检查；`build` 里的宿主 clippy 到不了那里。
 
 `main` 上——每次推送到它、合并队列的一次运行，以及从它手动触发的运行，都是整份：
 
 - **build** 除 Linux 外还在 macOS 与 Windows 上跑。
-- **build-wasm** —— 对 `wasm32-unknown-unknown` 构建跑同样的两遍 clippy，然后把
-  每个 wasm 测试二进制 bindgen 成页面，在真实浏览器中驱动。既然这里已经 lint 了这两次
+- **build-wasm** —— 对 `wasm32-unknown-unknown` 构建跑同样的三遍 clippy，然后把
+  每个 wasm 测试二进制 bindgen 成页面，在真实浏览器中驱动。既然这里已经 lint 了这些
   构建，`main` 上就不必再跑 `check-wasm`。
-- **build-android** —— 先跑 `aarch64-linux-android` 的 clippy，再交叉构建动态库，并在
-  其外套上 Gradle 得到 APK。它自己就跑了那道 clippy，所以 `main` 上同样不必再跑
+- **build-android** —— 先跑 `aarch64-linux-android` 的两遍 clippy，再交叉构建动态库，
+  并在其外套上 Gradle 得到 APK。它自己就跑了这两遍，所以 `main` 上同样不必再跑
   `check-android`。
 
 两个 `check-*` 任务各自与 `main` 上做同一件事的任务共用一个缓存
