@@ -180,6 +180,11 @@ thread_local! {
 /// gain above one. Samples clamp to the unit range after the gain, so an
 /// overdriven mix distorts rather than wraps. A world carrying no gain
 /// passes its mix through unchanged.
+///
+/// A source runs before the gain is applied, so it sees the mix at the
+/// sources' own levels. One that mirrors the output — a recorder does —
+/// applies the gain itself rather than expecting the buffer it is handed to
+/// carry it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GlobalAudioGain(pub f32);
 
@@ -191,7 +196,8 @@ pub struct GlobalAudioGain(pub f32);
 /// Then the world's [`GlobalAudioGain`] — one when it carries none — scales
 /// the sum, which clamps to the unit range. This is the whole of the audio
 /// thread's per-chunk work, and a caller stepping a world inline calls it the
-/// same way.
+/// same way. The gain is the finished buffer's alone: every source ran before
+/// it, which is why a source that mirrors the output applies it itself.
 ///
 /// A source must not change the world's set of sources while it runs: it
 /// has a shared `&World`, so structural work goes through

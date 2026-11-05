@@ -95,9 +95,11 @@ impl RecordedAudio {
 ///
 /// The recorder runs after every other [`OnAudioFill`] source and keeps the mix after
 /// the world's [`GlobalAudioGain`] and the unit-range clamp, so the result is what
-/// the output stream receives. No call fills the world: whichever driver
-/// usually does (the audio thread, [`dispatch_audio_fill`] directly, a stepped world)
-/// keeps doing it, and the recording grows as it goes.
+/// the output stream receives. Because a source is handed the buffer before
+/// the dispatcher scales it, the recorder applies the gain itself; that is the
+/// one step it repeats rather than observes. No call fills the world: whichever
+/// driver usually does (the audio thread, [`dispatch_audio_fill`] directly, a
+/// stepped world) keeps doing it, and the recording grows as it goes.
 ///
 /// [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
 pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
@@ -391,6 +393,10 @@ mod tests {
         assert_eq!(handle.format(), None, "nothing fills it yet");
         let mut out = [0.0f32; 4];
         dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        assert_eq!(
+            out, [1.0f32; 4],
+            "the dispatcher scales the mix once, after every source ran"
+        );
         assert_eq!(handle.frame_count(), 4);
         assert!(!handle.is_full());
         assert_eq!(handle.format(), Some(format));
@@ -398,6 +404,27 @@ mod tests {
         assert_eq!(recorded.samples, vec![1.0; 4]);
         assert_eq!(recorded.frame_count(), 4);
         assert_eq!(recorded.seconds(), 0.5);
+    }
+
+    #[test]
+    fn a_recording_keeps_what_the_output_receives() {
+        // The recorder runs as a source, before the dispatcher scales the mix,
+        // so it applies the gain itself. This pins that second gain step to
+        // the dispatcher's own: a change to one without the other shows up
+        // here as samples that no longer match the buffer the stream sends.
+        let mut world = World::new();
+        constant_source(&mut world, 0.2);
+        world.root_scope_mut().spawn(bundle![GlobalAudioGain(3.0)]);
+        let format = AudioFormat {
+            sample_rate: 8,
+            channels: 1,
+        };
+        let handle = start_recording(&mut world, 1.0);
+        let mut out = [0.0f32; 4];
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        assert_eq!(out, [0.6f32; 4], "0.2 scaled by 3, below the clamp");
+        let recorded = handle.stop(&mut world).expect("the recording saw a fill");
+        assert_eq!(recorded.samples, out);
     }
 
     #[test]
