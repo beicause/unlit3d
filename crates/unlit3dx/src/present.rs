@@ -180,38 +180,26 @@ impl Presenter {
     /// input, which makes the source rebuild its bind group on the next
     /// frame.
     fn resize(&mut self, host: &World, size: (u32, u32)) -> Result<(), PresenterError> {
-        let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
-            return Ok(());
-        };
+        let mut nested = host.root_scope().query_one::<&World>(self.render)?;
         let world = nested.get();
-        let Some(size) = world
-            .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| {
-                let renderer = renderer.get();
-                {
-                    self.surface.resize(world, &mut *renderer, size.0, size.1);
-                    self.surface.size()
-                }
-            })
-            .ok()
-            .filter(|size| size.0 > 0 && size.1 > 0)
-        else {
-            return Ok(());
+        let size = {
+            let mut renderer = world
+                .root_scope()
+                .query_one::<&mut Renderer>(self.renderer)?;
+            self.surface
+                .resize(world, &mut *renderer.get(), size.0, size.1);
+            self.surface.size()
         };
+        if size.0 == 0 || size.1 == 0 {
+            return Ok(());
+        }
         self.attachments.resize(world, size);
         let Some(blit) = self.blit.as_ref() else {
             return Ok(());
         };
-        let Ok(context) = world
-            .root_scope()
-            .query_one::<&Renderer>(self.renderer)
-            .map(|mut renderer| {
-                let renderer = renderer.get();
-                renderer.context()
-            })
-        else {
-            return Ok(());
+        let context = {
+            let mut renderer = world.root_scope().query_one::<&Renderer>(self.renderer)?;
+            renderer.get().context()
         };
         let offscreen = bind_offscreen(world, context, self.scene_pass, &self.gpu.device, size)
             .map_err(PresenterError::OffscreenTarget)?;

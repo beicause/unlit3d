@@ -465,33 +465,6 @@ pub fn drain_all_stepped_worlds(host: &World) {
     }
 }
 
-/// Run every job queued for a stepped world, without ticking it.
-///
-/// This is the first half of [step_stepped_world]: a host that must answer a
-/// command before its next frame drains the queue with it instead of running a
-/// whole tick.
-///
-/// # Errors
-///
-/// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
-/// and [StepError::NotStepped] when it names a threaded world.
-pub fn drain_stepped_world(host: &World, entity: Entity) -> Result<StepOutcome, StepError> {
-    let mut proxy = host.root_scope().query_one::<&mut WorldProxy>(entity)?;
-    let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
-        return Err(StepError::NotStepped);
-    };
-    if stepped.status.is_finished() {
-        return Ok(StepOutcome::Finished);
-    }
-    if stepped.control.stop_requested() {
-        return Ok(StepOutcome::Stopped);
-    }
-    if !run_queued_jobs(stepped) {
-        return Ok(StepOutcome::Panicked);
-    }
-    Ok(StepOutcome::Ran)
-}
-
 /// Run the jobs a stepped world has queued, stopping at the first panic.
 fn run_queued_jobs(stepped: &mut SteppedWorld) -> bool {
     loop {

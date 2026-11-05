@@ -43,15 +43,9 @@ enum ToolError {
     /// The report could not be serialized into JSON.
     #[error(transparent)]
     Serialize(#[from] serde_json::Error),
-    /// The file could not be written to the host\'s directory.
+    /// The file could not be written to the host's directory.
     #[error("{0}")]
     Write(String),
-}
-
-impl From<String> for ToolError {
-    fn from(message: String) -> Self {
-        Self::Write(message)
-    }
 }
 
 /// How long a recording lasts when its caller names no limit.
@@ -179,7 +173,7 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Tool
     world
         .root_scope_mut()
         .spawn(bundle![ActiveRecording(handle)]);
-    serde_json::to_value(report).map_err(ToolError::from)
+    Ok(serde_json::to_value(report)?)
 }
 
 /// Stop the recording, write its samples and report the file.
@@ -194,7 +188,7 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
         return Err(ToolError::EmptyRecording);
     };
     let bytes = format.encode(audio.format, &audio.samples)?;
-    let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes).map_err(ToolError::from)?;
+    let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes).map_err(ToolError::Write)?;
     let report = Recorded {
         path: saved.path,
         size: saved.size,
@@ -203,7 +197,7 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
         sample_rate: audio.format.sample_rate,
         channels: audio.format.channels,
     };
-    serde_json::to_value(report).map_err(ToolError::from)
+    Ok(serde_json::to_value(report)?)
 }
 
 /// Stop the recording and answer with its sound in memory.
@@ -258,7 +252,7 @@ fn status(world: &mut World) -> Result<Value, ToolError> {
         seconds: recording.seconds(),
         full: recording.is_full(),
     };
-    serde_json::to_value(report).map_err(ToolError::from)
+    Ok(serde_json::to_value(report)?)
 }
 
 /// Take the recording in progress out of the world.

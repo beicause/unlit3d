@@ -262,7 +262,7 @@ python3 $D --bin ./target/debug/unlit3dx-examples --args='--headless --mcp' '[
   `list_worlds` 看到什么。
 - `crates/unlit3dx/src/world.rs` —— `WorldSender`（留在代理实体上、让 bridge 够得着线程/
   步进 world 的命令通道）、`WorldName`（`list_worlds` 报告的名字）与
-  `drain_stepped_world`（把队列里的 job 跑掉）。
+  `drain_all_stepped_worlds`（把每个步进 world 队列里的 job 跑掉）。
 - `unlit3dx_examples/src/mcp.rs` —— `--headless --mcp` 宿主：不建 winit、离屏渲染、
   `step_frames`/`scene_status` 两个自有工具。它的端到端验证在
   `unlit3dx_examples/tests/mcp_input/native.rs`（起真实进程 + 手写 JSON-RPC 客户端）。
