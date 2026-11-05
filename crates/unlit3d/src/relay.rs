@@ -182,7 +182,7 @@ impl<T: Clone> Stream<T> {
         StreamReader {
             inner: Arc::new(ReaderInner {
                 queue: receiver,
-                batch: Mutex::new(Vec::new()),
+                batch: Mutex::new(Arc::new(Vec::new())),
             }),
         }
     }
@@ -252,7 +252,11 @@ pub struct StreamReader<T> {
 
 struct ReaderInner<T> {
     queue: Receiver<T>,
-    batch: Mutex<Vec<T>>,
+    /// This tick's values, published for reading rather than held shut: a
+    /// reader takes a shared reference to the vector out of the lock and
+    /// reads it without one, so a reader that reads another stream from
+    /// inside a callback cannot deadlock against itself.
+    batch: Mutex<Arc<Vec<T>>>,
 }
 
 impl<T> StreamReader<T> {
@@ -263,18 +267,24 @@ impl<T> StreamReader<T> {
     /// twice in one tick drops what the first call collected.
     pub fn pump(&self) {
         let mut batch = sync::lock(&self.inner.batch);
-        batch.clear();
+        // The previous batch's buffer comes back when nothing else holds it,
+        // which is the usual case: a reader pumps once a tick and every read
+        // between pumps has finished by then.
+        let mut values = Arc::try_unwrap(Arc::clone(&batch)).unwrap_or_default();
+        values.clear();
         while let Ok(value) = self.inner.queue.try_recv() {
-            batch.push(value);
+            values.push(value);
         }
+        *batch = Arc::new(values);
     }
 
     /// Run `f` over this tick's values, oldest first.
     ///
     /// Reading does not consume: every reader in the world sees the same
-    /// batch, so no one can take a value away from the next.
+    /// batch, so no one can take a value away from the next. No lock is held
+    /// while `f` runs, so `f` may read another stream, or this one again.
     pub fn with_batch<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
-        let batch = sync::lock(&self.inner.batch);
+        let batch = Arc::clone(&sync::lock(&self.inner.batch));
         f(&batch)
     }
 
@@ -369,6 +379,26 @@ mod tests {
         drop(reader);
         assert!(!stream.has_readers());
         assert_eq!(stream.publish(1), 0);
+    }
+
+    /// A callback that reads another stream - or this one again - runs with
+    /// no lock held, so it cannot deadlock against itself.
+    #[test]
+    fn a_batch_callback_may_read_a_batch() {
+        let stream = Stream::new();
+        let other = Stream::new();
+        let reader = stream.subscribe();
+        let other_reader = other.subscribe();
+        stream.publish(1);
+        other.publish(2);
+        reader.pump();
+        other_reader.pump();
+        let nested = reader.with_batch(|batch| {
+            let inner = reader.with_batch(|batch| batch.to_vec());
+            let elsewhere = other_reader.with_batch(|batch| batch.to_vec());
+            (batch.to_vec(), inner, elsewhere)
+        });
+        assert_eq!(nested, (vec![1], vec![1], vec![2]));
     }
 
     #[test]

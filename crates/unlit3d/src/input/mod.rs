@@ -1001,8 +1001,10 @@ impl InputEvents {
     /// before anything reads the batch.
     pub fn refresh(&self) {
         self.events.pump();
-        let mut state = sync::write(&self.state);
+        // The batch is out of its lock before the closure runs, so folding
+        // the events into the state is the only lock held here.
         self.events.with_batch(|batch| {
+            let mut state = sync::write(&self.state);
             for event in batch {
                 state.record(event);
             }

@@ -113,6 +113,15 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let entity = world.root_scope_mut().spawn(bundle![OnAudioFill::new(
         AudioFillOrder(i32::MAX),
         move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
+            // The gain is read before the lock is taken. A query is the
+            // world's to arbitrate and panics on a conflicting borrow, and a
+            // panic is only recoverable because the lock sees none of it: the
+            // recorder's guard covers the samples and nothing else.
+            let gain = {
+                let mut rows = world.root_scope().query::<&GlobalAudioGain>();
+                rows.iter().next().map(|audio_gain| audio_gain.0)
+            }
+            .unwrap_or(1.0);
             let mut state = sync::lock(&recorder);
             if state.format.is_none() {
                 let format = AudioFormat {
@@ -124,19 +133,14 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
                 state.max_samples = frames.saturating_mul(usize::from(format.channels).max(1));
                 state.format = Some(format);
             }
-            let mut global_audio_gain_rows = world.root_scope().query::<&GlobalAudioGain>();
-
-            let gain = global_audio_gain_rows
-                .iter()
-                .next()
-                .map(|audio_gain| audio_gain.0)
-                .unwrap_or(1.0);
-            for &sample in chunk.out.iter() {
-                if state.samples.len() >= state.max_samples {
-                    break;
-                }
-                state.samples.push((sample * gain).clamp(-1.0, 1.0));
-            }
+            let room = state.max_samples.saturating_sub(state.samples.len());
+            state.samples.extend(
+                chunk
+                    .out
+                    .iter()
+                    .take(room)
+                    .map(|sample| (sample * gain).clamp(-1.0, 1.0)),
+            );
         },
     ),]);
     RecordingHandle { entity, state }
@@ -410,6 +414,27 @@ mod tests {
         assert_eq!(handle.frame_count(), 2);
         assert!(handle.is_full());
         handle.cancel(&mut world);
+    }
+
+    #[test]
+    fn a_full_recording_keeps_nothing_from_later_fills() {
+        let mut world = World::new();
+        constant_source(&mut world, 0.5);
+        world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
+        let format = AudioFormat {
+            sample_rate: 4,
+            channels: 2,
+        };
+        let handle = start_recording(&mut world, 0.5);
+        let mut out = [0.0f32; 8];
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        // The limit is 0.5s at 4 Hz over 2 channels: four samples, not eight.
+        assert_eq!(handle.frame_count(), 2);
+        assert!(handle.is_full());
+        out.fill(1.0);
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        let recorded = handle.stop(&mut world).expect("the recording saw a fill");
+        assert_eq!(recorded.samples, vec![1.0; 4]);
     }
 
     #[test]

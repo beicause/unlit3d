@@ -19,24 +19,69 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// The stop signal a thread and its owner share.
 #[derive(Debug, Default)]
 pub(crate) struct Stop {
-    /// Whether a stop has been requested.
-    requested: Mutex<bool>,
-    /// Signalled whenever `requested` turns true.
+    /// Whether a stop has been requested, and whether the thread is over.
+    ///
+    /// Both are facts about the same thread and are waited on by the same
+    /// callers, so one lock and one condition variable carry them: a waiter
+    /// that takes the lock, finds nothing and waits holds the lock across the
+    /// wait, so it cannot miss a signal sent before it went to sleep.
+    requested: Mutex<StopState>,
+    /// Signalled whenever `requested` or `finished` turns true.
     signal: Condvar,
+}
+
+/// What a stop signal has been told, and what it can tell.
+#[derive(Debug, Default)]
+struct StopState {
+    /// Whether a stop has been requested.
+    requested: bool,
+    /// Whether the thread that owns this stop has left its loop.
+    finished: bool,
 }
 
 impl Stop {
     /// Request a stop and wake whoever is waiting on one.
     fn request(&self) {
-        let mut requested = sync::lock(&self.requested);
-        *requested = true;
-        drop(requested);
+        let mut state = sync::lock(&self.requested);
+        state.requested = true;
+        drop(state);
         self.signal.notify_all();
+    }
+
+    /// Mark the thread as over and wake whoever is waiting on it.
+    fn finish(&self) {
+        let mut state = sync::lock(&self.requested);
+        state.finished = true;
+        drop(state);
+        self.signal.notify_all();
+    }
+
+    /// Wait up to `timeout` for the thread to finish.
+    ///
+    /// Returns whether it finished in time. A thread that already finished
+    /// returns at once, and a signal that arrives before the wait does not
+    /// get missed: the check and the wait happen under one lock.
+    fn wait_finished(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = sync::lock(&self.requested);
+        loop {
+            if state.finished {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            state = match self.signal.wait_timeout(state, deadline - now) {
+                Ok((state, _)) => state,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
     }
 
     /// Whether a stop has been requested.
     fn requested(&self) -> bool {
-        *sync::lock(&self.requested)
+        sync::lock(&self.requested).requested
     }
 }
 
@@ -92,11 +137,11 @@ impl ThreadControl {
         if !self.self_driven {
             return;
         }
-        let requested = sync::lock(&self.stop.requested);
-        if *requested {
+        let state = sync::lock(&self.stop.requested);
+        if state.requested {
             return;
         }
-        let _ = self.stop.signal.wait_timeout(requested, timeout);
+        let _ = self.stop.signal.wait_timeout(state, timeout);
     }
 }
 
@@ -260,7 +305,7 @@ impl WorldThread {
             .name(name)
             .spawn(move || {
                 let control = ThreadControl {
-                    stop: thread_stop,
+                    stop: Arc::clone(&thread_stop),
                     self_driven: true,
                     last_tick: Mutex::new(None),
                 };
@@ -285,6 +330,9 @@ impl WorldThread {
                         thread_status.record_panic(message);
                     }
                 }
+                // The state is the last word on how the world ended, so it is
+                // published before whoever waits on the thread is woken.
+                thread_stop.finish();
             })
             .expect("the world thread spawns");
         Self {
@@ -323,17 +371,15 @@ impl WorldThread {
     /// Wait up to `timeout` for the thread to finish.
     ///
     /// Returns whether it finished in time. A thread that already finished,
-    /// or was detached, counts as finished.
+    /// or was detached, counts as finished. The wait is woken by the thread
+    /// itself as it leaves its loop, so it costs nothing while the thread
+    /// runs.
     pub fn join_timeout(&mut self, timeout: Duration) -> bool {
-        let Some(joined) = self.joined.as_ref() else {
+        if self.joined.is_none() {
             return true;
-        };
-        let deadline = Instant::now() + timeout;
-        while !joined.is_finished() {
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(1));
+        }
+        if !self.status.stop.wait_finished(timeout) {
+            return false;
         }
         self.join();
         true
@@ -617,6 +663,24 @@ mod tests {
             before.elapsed() < STOP_TIMEOUT + Duration::from_secs(1),
             "the drop waited far longer than the grace period"
         );
+    }
+
+    /// Waiting for a thread that is still ticking gives up on the timeout
+    /// instead of waiting for the thread.
+    #[test]
+    fn a_join_timeout_gives_up_on_a_stuck_tick() {
+        let mut thread = WorldThread::spawn("test", |_, _| {
+            // Sleep through the stop: nothing ends the tick but the sleep.
+            std::thread::sleep(Duration::from_secs(30));
+            false
+        });
+        let before = Instant::now();
+        assert!(!thread.join_timeout(Duration::from_millis(50)));
+        assert!(
+            before.elapsed() < Duration::from_secs(1),
+            "the wait outlasted its timeout"
+        );
+        thread.detach();
     }
 
     /// A detached thread is never joined.
