@@ -35,7 +35,7 @@ const_shader_layout = { version = "0.5.1", default-features = false, features = 
 # ring buffer bridges the audio thread that fills it and the stream's
 # callback that drains it.
 cpal = { version = "0.18.2", default-features = false }
-egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts", "bytemuck"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 # Reflection: a component's own field list is its codec, so nothing declares
 # those fields twice. `facet` derives the reflection, `facet-json` turns it
