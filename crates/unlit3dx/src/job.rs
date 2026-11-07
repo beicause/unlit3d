@@ -11,8 +11,6 @@
 //! sends the job, remembers the key, and answers on the caller's next tick — or
 //! publishes that value itself, through the snapshot its subscription fills.
 
-use std::fmt;
-
 use unlit_ecs::World;
 
 /// A unit of work for a world: a boxed closure that runs against it.
@@ -25,24 +23,15 @@ use unlit_ecs::World;
 pub type Job = Box<dyn FnOnce(&mut World) + Send + 'static>;
 
 /// Why a job was not handed to a world.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SendError {
     /// The world's command queue is full; the job was not queued.
+    #[error("the world's command queue is full")]
     Full,
     /// The world has stopped; the job was not queued.
+    #[error("the world has stopped")]
     Closed,
 }
-
-impl fmt::Display for SendError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Full => f.write_str("the world's command queue is full"),
-            Self::Closed => f.write_str("the world has stopped"),
-        }
-    }
-}
-
-impl std::error::Error for SendError {}
 
 impl<T> From<async_channel::TrySendError<T>> for SendError {
     fn from(error: async_channel::TrySendError<T>) -> Self {

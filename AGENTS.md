@@ -11,6 +11,7 @@
 - **不要用字面量硬编码可能会变的常量**，如缓冲大小、顶点属性大小、纹理像素大小、结构体大小、字节数组索引等，可用`size_of`、`VertexFormat::size`、`TextureFormat::block_copy_size`、`ShaderLayout::SIZE`等计算。
 - **减少不必要的内存分配**，例如：谨慎考虑返回`Vec`的函数，优先考虑返回迭代器或接受`&mut Vec`。遍历迭代器，避免不必要地收集到`Vec`再遍历。每帧复用Vec/HashMap缓存而不是重新创建。
 - **字节转换统一走 zerocopy**。
+- **自定义错误类型用 `thiserror` 派生 `Error`**，不要手写 `impl fmt::Display` 与 `impl std::error::Error`。
 - **可执行程序（`[[bin]]`/`[[example]]`）的名字用连字符（`-`）连接**，包名与库名保持下划线。
 - **单元测试和集成测试**：对于较复杂、易错的函数逻辑要添加单元测试，对于各个库的功能添加集成测试，对于整体渲染的正确性添加快照测试。具体测试所在目录参见根目录 [`README.md`](./README.md) 的「测试与基准」一节。对于发现的bug或回归问题，要告知用户，并尽可能添加针对性测试。
 - **绕开驱动/后端 bug 时，要在绊到它的那一处绕，并把原因记下来**：症状、成因、绕法与代价写进根目录的 [`WORKAROUND.md`](./WORKAROUND.md)（中文版 [`WORKAROUND.zh-CN.md`](./WORKAROUND.zh-CN.md)），绕过代码旁留一行注释指回该文档。

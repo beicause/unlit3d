@@ -510,35 +510,14 @@ impl MidiSequencer {
 }
 
 /// Why a soundfont or a MIDI file could not be built.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum VoiceError {
     /// The bytes are not a soundfont.
-    SoundFont(SoundFontError),
+    #[error("the soundfont failed ({0})")]
+    SoundFont(#[from] SoundFontError),
     /// The bytes are not a MIDI file.
-    MidiFile(MidiFileError),
-}
-
-impl std::fmt::Display for VoiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SoundFont(error) => write!(f, "the soundfont failed ({error})"),
-            Self::MidiFile(error) => write!(f, "the midi file failed ({error})"),
-        }
-    }
-}
-
-impl std::error::Error for VoiceError {}
-
-impl From<SoundFontError> for VoiceError {
-    fn from(error: SoundFontError) -> Self {
-        Self::SoundFont(error)
-    }
-}
-
-impl From<MidiFileError> for VoiceError {
-    fn from(error: MidiFileError) -> Self {
-        Self::MidiFile(error)
-    }
+    #[error("the midi file failed ({0})")]
+    MidiFile(#[from] MidiFileError),
 }
 
 /// A job that sends `kind` to `voice`, `delay` seconds from the next fill's

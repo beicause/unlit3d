@@ -36,6 +36,7 @@ glam.workspace = true
 hashbrown.workspace = true
 ringbuf.workspace = true
 smallvec.workspace = true
+thiserror.workspace = true
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true

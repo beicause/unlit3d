@@ -114,21 +114,12 @@ pub fn compose(
 }
 
 /// Failure reasons reported by [`compose`].
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ComposeError {
     /// The WESL compiler rejected the module.
-    Compile(wesl::Error),
+    #[error("WESL compilation failed: {0}")]
+    Compile(#[from] wesl::Error),
 }
-
-impl core::fmt::Display for ComposeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Compile(error) => write!(f, "WESL compilation failed: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for ComposeError {}
 
 #[cfg(test)]
 mod tests {

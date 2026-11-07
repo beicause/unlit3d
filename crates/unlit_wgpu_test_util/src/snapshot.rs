@@ -174,9 +174,10 @@ macro_rules! snapshots {
 ///
 /// The paths and scores a caller reports come from here rather than from a
 /// panic, so a tool can turn a mismatch into its own exit code.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
     /// The frame's bytes do not describe `width` x `height` RGBA pixels.
+    #[error("frame size mismatch: {got} bytes, expected {expected}")]
     FrameSize {
         /// Bytes the frame holds.
         got: usize,
@@ -184,10 +185,13 @@ pub enum SnapshotError {
         expected: usize,
     },
     /// The snapshot file could not be read or written.
-    Io(std::io::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     /// The snapshot could not be decoded as WebP.
-    Decode(image::ImageError),
+    #[error("decoding the snapshot failed: {0}")]
+    Decode(#[from] image::ImageError),
     /// The snapshot's dimensions differ from the frame's.
+    #[error("the snapshot is {}x{} but the frame is {}x{}", .snapshot.0, .snapshot.1, .frame.0, .frame.1)]
     Dimensions {
         /// The snapshot's dimensions.
         snapshot: (u32, u32),
@@ -195,36 +199,8 @@ pub enum SnapshotError {
         frame: (u32, u32),
     },
     /// The two images could not be scored.
-    Score(ssimulacra2::Ssimulacra2Error),
-}
-
-impl core::fmt::Display for SnapshotError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::FrameSize { got, expected } => {
-                write!(f, "frame size mismatch: {got} bytes, expected {expected}")
-            }
-            Self::Io(error) => write!(f, "{error}"),
-            Self::Decode(error) => write!(f, "decoding the snapshot failed: {error}"),
-            Self::Dimensions { snapshot, frame } => write!(
-                f,
-                "the snapshot is {}x{} but the frame is {}x{}",
-                snapshot.0, snapshot.1, frame.0, frame.1
-            ),
-            Self::Score(error) => write!(f, "scoring the frames failed: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for SnapshotError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Decode(error) => Some(error),
-            Self::Score(error) => Some(error),
-            Self::FrameSize { .. } | Self::Dimensions { .. } => None,
-        }
-    }
+    #[error("scoring the frames failed: {0}")]
+    Score(#[from] ssimulacra2::Ssimulacra2Error),
 }
 
 /// Turn an RGBA8 frame into the RGB the metric reads.

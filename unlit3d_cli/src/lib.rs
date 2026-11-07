@@ -19,62 +19,26 @@ pub use config::{
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Everything that can stop a render or a save.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The configuration is incomplete or inconsistent.
+    #[error("{0}")]
     Config(String),
     /// The GPU could not provide an adapter or a device.
+    #[error("{0}")]
     Gpu(String),
     /// The configuration file is not valid JSON.
-    Json(serde_json::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
     /// A glTF document could not be read.
-    Gltf(gltf::Error),
+    #[error(transparent)]
+    Gltf(#[from] gltf::Error),
     /// The image could not be encoded.
-    Image(image::ImageError),
+    #[error(transparent)]
+    Image(#[from] image::ImageError),
     /// A document has no animation under the requested name or index.
+    #[error("{0}")]
     Animation(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Config(message) | Self::Gpu(message) | Self::Animation(message) => {
-                formatter.write_str(message)
-            }
-            Self::Json(error) => write!(formatter, "{error}"),
-            Self::Gltf(error) => write!(formatter, "{error}"),
-            Self::Image(error) => write!(formatter, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Json(error) => Some(error),
-            Self::Gltf(error) => Some(error),
-            Self::Image(error) => Some(error),
-            Self::Config(_) | Self::Gpu(_) | Self::Animation(_) => None,
-        }
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Json(error)
-    }
-}
-
-impl From<gltf::Error> for Error {
-    fn from(error: gltf::Error) -> Self {
-        Self::Gltf(error)
-    }
-}
-
-impl From<image::ImageError> for Error {
-    fn from(error: image::ImageError) -> Self {
-        Self::Image(error)
-    }
 }
 
 /// The pixels a render produced.

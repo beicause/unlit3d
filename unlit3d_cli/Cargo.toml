@@ -26,6 +26,7 @@ image.workspace = true
 pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 # The MCP server lives in the ECS crate; the render tools reach the command
 # types through `unlit_ecs::mcp`.
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", default-features = false, features = ["mcp"] }

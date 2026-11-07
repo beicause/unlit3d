@@ -24,6 +24,7 @@ pollster.workspace = true
 # every field of `AdapterInfo`, `Features` and `Limits`.
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 # For `DeviceTier`/`DeviceCapabilities`: a test that narrows the device to
 # WebGL2's shape has to record the capabilities that go with it, and they have
 # to be the same type the renderer reads. This is a dev-dependency cycle

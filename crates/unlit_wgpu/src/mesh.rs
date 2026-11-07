@@ -182,27 +182,16 @@ impl StreamChannels {
 }
 
 /// Failure reasons reported by the compression helpers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CompressError {
     /// The input slice was empty.
+    #[error("the input slice is empty")]
     EmptyInput,
     /// A vertex index is at or above the primitive-restart value `0xFFFF`,
     /// so the mesh cannot use 16-bit indices. Carries the offending index.
+    #[error("vertex index {0} does not fit in u16")]
     TooManyVertices(u32),
 }
-
-impl core::fmt::Display for CompressError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::EmptyInput => write!(f, "the input slice is empty"),
-            Self::TooManyVertices(index) => {
-                write!(f, "vertex index {index} does not fit in u16")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CompressError {}
 
 /// Per-mesh vertex-decode parameters and draw addressing.
 ///
