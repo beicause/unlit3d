@@ -3,8 +3,9 @@
 //! A Draco bitstream is synthesised in memory with the decoder's companion
 //! encoder, wrapped in a GLB whose primitive accessors deliberately carry no
 //! buffer views (their data lives in the stream), and fed through
-//! LitGltf::from_bytes, LitGltf::load and draco::decode. No GPU is involved:
-//! the streams are inspected before they would reach allocate_lit_mesh.
+//! LitGltf::from_bytes and draco::decode. A committed, self-contained fixture
+//! covers LitGltf::load without writing any file. No GPU is involved: the
+//! streams are inspected before they would reach allocate_lit_mesh.
 
 use super::draco;
 use super::streams::MeshStreams;
@@ -50,6 +51,13 @@ const WEIGHTS: [[f32; 4]; 4] = [
     [0.25, 0.25, 0.25, 0.25],
 ];
 const FACES: [[u32; 3]; 2] = [[0, 1, 2], [0, 2, 3]];
+/// Per-vertex position displacements for a morph target on the synthetic mesh.
+const MORPH_DISPLACEMENTS: [[f32; 3]; 4] = [
+    [0.5, 0.0, 0.0],
+    [0.0, 0.5, 0.0],
+    [0.0, 0.0, 0.5],
+    [0.25, 0.25, 0.25],
+];
 
 /// A 1x1 RGBA PNG, embedded so the textured variant has a real image to import.
 const PNG: [u8; 70] = [
@@ -125,8 +133,10 @@ fn glb(json: String, bin: &[u8]) -> Vec<u8> {
 
 /// A Draco GLB whose accessors have no buffer views, exactly as a compressed
 /// primitive declares them. Toggling textured and color_components exercises
-/// the UV gate and the three-component colour alpha rule.
-fn build_glb(textured: bool, color_components: u8, method: i32) -> Vec<u8> {
+/// the UV gate and the three-component colour alpha rule; `morph_targets`
+/// adds one positional target whose displacements live in an ordinary
+/// accessor, as the extension requires.
+fn build_glb(textured: bool, color_components: u8, method: i32, morph_targets: bool) -> Vec<u8> {
     let draco = if color_components == 4 {
         encode_draco(&COLORS4, method)
     } else {
@@ -141,6 +151,14 @@ fn build_glb(textured: bool, color_components: u8, method: i32) -> Vec<u8> {
     bin.extend_from_slice(&PNG);
     while bin.len() % 4 != 0 {
         bin.push(0);
+    }
+    let morph_offset = bin.len();
+    if morph_targets {
+        for displacement in &MORPH_DISPLACEMENTS {
+            for value in displacement {
+                bin.extend_from_slice(&value.to_le_bytes());
+            }
+        }
     }
 
     let material = if textured {
@@ -157,7 +175,7 @@ fn build_glb(textured: bool, color_components: u8, method: i32) -> Vec<u8> {
         "VEC3"
     };
 
-    let root = json!({
+    let mut root = json!({
         "asset": {"version": "2.0"},
         "extensionsRequired": ["KHR_draco_mesh_compression"],
         "extensionsUsed": ["KHR_draco_mesh_compression"],
@@ -202,11 +220,25 @@ fn build_glb(textured: bool, color_components: u8, method: i32) -> Vec<u8> {
         "samplers": [{}],
         "textures": [{"sampler": 0, "source": 0}]
     });
+    if morph_targets {
+        root["accessors"].as_array_mut().unwrap().push(json!({
+            "bufferView": 2,
+            "componentType": 5126,
+            "count": 4,
+            "type": "VEC3"
+        }));
+        root["bufferViews"].as_array_mut().unwrap().push(json!({
+            "buffer": 0,
+            "byteOffset": morph_offset,
+            "byteLength": MORPH_DISPLACEMENTS.len() * 3 * std::mem::size_of::<f32>()
+        }));
+        root["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION": 7}]);
+    }
     glb(root.to_string(), &bin)
 }
 
 fn decoded(textured: bool, color_components: u8, method: i32) -> MeshStreams {
-    let bytes = build_glb(textured, color_components, method);
+    let bytes = build_glb(textured, color_components, method, false);
     let gltf = super::LitGltf::from_bytes(&bytes).expect("a Draco GLB imports without validation");
     let mesh = gltf
         .document
@@ -254,9 +286,11 @@ fn a_draco_primitive_decodes_every_stream_it_declares() {
     assert_eq!(colors.len(), COLORS4.len());
     for (got, want) in colors.iter().zip(COLORS4.iter()) {
         for component in 0..4 {
-            let expected = (want[component].clamp(0.0, 1.0) * 255.0).round() as i32;
-            assert!(
-                (got[component] as i32 - expected).abs() <= 1,
+            // COLOR_0 is encoded as plain floats, so the decoder's conversion
+            // must match glTF's `Normalize<u8> for f32` exactly.
+            let expected = (want[component].max(0.0) * 255.0) as u8;
+            assert_eq!(
+                got[component], expected,
                 "color {got:?} differs from {want:?}"
             );
         }
@@ -273,8 +307,29 @@ fn a_draco_primitive_decodes_every_stream_it_declares() {
 
     assert!(
         streams.morph_deltas.is_none(),
-        "a Draco bitstream carries no morph targets"
+        "a primitive declaring no morph targets uploads no displacements"
     );
+}
+
+#[test]
+fn a_draco_primitive_uploads_morph_target_displacements() {
+    let bytes = build_glb(true, 4, 0, true);
+    let gltf = super::LitGltf::from_bytes(&bytes).expect("a Draco GLB with a morph target imports");
+    let streams = streams_of(&gltf);
+    let morph = streams
+        .morph_deltas
+        .expect("a compressed primitive uploads its target displacements");
+
+    assert_eq!(morph.target_count, 1);
+    assert_eq!(morph.deltas.len(), POSITIONS.len() * 3);
+    for (vertex, displacement) in MORPH_DISPLACEMENTS.iter().enumerate() {
+        let start = vertex * 3;
+        assert_eq!(
+            &morph.deltas[start..start + 3],
+            &displacement[..],
+            "vertex {vertex} keeps its displacement"
+        );
+    }
 }
 
 #[test]
@@ -426,12 +481,42 @@ fn a_validation_failure_without_draco_is_returned_unchanged() {
 }
 
 #[test]
+fn an_unrelated_validation_failure_on_a_draco_document_is_returned_unchanged() {
+    // The extension is declared, but the default scene index is out of range.
+    // Declaring Draco must not swallow an error it does not explain.
+    let root = json!({
+        "asset": {"version": "2.0"},
+        "extensionsRequired": ["KHR_draco_mesh_compression"],
+        "scene": 1,
+        "scenes": [{"nodes": []}],
+        "meshes": []
+    });
+    let bytes = glb(root.to_string(), &[]);
+    let error = match super::LitGltf::from_bytes(&bytes) {
+        Err(error) => error,
+        Ok(_) => panic!("an out-of-range scene is rejected even on a Draco document"),
+    };
+    let gltf::Error::Validation(errors) = &error else {
+        panic!("the original validation error is returned");
+    };
+    assert_eq!(
+        errors.len(),
+        2,
+        "Draco's own rejection and the bad scene are both reported"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|(_, kind)| matches!(kind, gltf::json::validation::Error::IndexOutOfBounds)),
+        "the out-of-range scene is among the returned errors"
+    );
+}
+
+#[test]
 fn the_file_loader_accepts_a_draco_glb() {
-    let bytes = build_glb(true, 4, 0);
-    let path = std::env::temp_dir().join(format!("unlit3d-draco-load-{}.glb", std::process::id()));
-    std::fs::write(&path, &bytes).expect("the fixture writes");
-    let result = super::LitGltf::load(&path);
-    let _ = std::fs::remove_file(&path);
-    let gltf = result.expect("a Draco GLB loads from disk");
+    // The committed fixture is self-contained: no external URIs and its image
+    // comes from a buffer view, so loading it exercises the file path without
+    // writing any file.
+    let gltf = super::LitGltf::load(DRACO_FLOWER).expect("a Draco GLB loads from disk");
     assert_eq!(gltf.document.meshes().count(), 1);
 }

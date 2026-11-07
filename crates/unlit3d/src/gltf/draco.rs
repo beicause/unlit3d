@@ -4,11 +4,12 @@
 //! `attributes` object maps each glTF semantic to the unique id of the
 //! attribute inside that stream, while the primitive's accessors are left
 //! without buffer views because the stream, not a buffer, holds their data.
-//! [`decode`] reads those semantics back out; morph targets are not part of a
-//! Draco bitstream, so a compressed primitive does not upload them.
+//! [`decode`] reads those semantics back out. Morph targets are not compressed
+//! into the bitstream; their displacements live in ordinary accessors and are
+//! uploaded as usual.
 
 use super::material::samples_base_color_texture;
-use super::streams::MeshStreams;
+use super::streams::{MeshStreams, read_morph_deltas};
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::PointAttribute;
@@ -22,19 +23,21 @@ pub(super) const EXTENSION: &str = "KHR_draco_mesh_compression";
 /// Decode a compressed primitive's geometry into the streams a lit mesh wants.
 ///
 /// `extension` is the primitive's `KHR_draco_mesh_compression` value. A
-/// semantic it does not list is left out of the result; a Draco bitstream does
-/// not carry morph targets, so those are never present.
+/// semantic it does not list is left out of the result. Morph target
+/// displacements are read from their own accessors, not from the bitstream.
 pub(super) fn decode(
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
     primitive: &gltf::Primitive<'_>,
     extension: &Value,
 ) -> MeshStreams {
-    let view_index = extension
-        .get("bufferView")
-        .and_then(Value::as_u64)
-        .expect("a Draco extension names the bufferView holding the stream")
-        as usize;
+    let view_index = usize::try_from(
+        extension
+            .get("bufferView")
+            .and_then(Value::as_u64)
+            .expect("a Draco extension names the bufferView holding the stream"),
+    )
+    .expect("the Draco bufferView index fits usize");
     let attributes = extension
         .get("attributes")
         .and_then(Value::as_object)
@@ -43,8 +46,16 @@ pub(super) fn decode(
         .views()
         .nth(view_index)
         .expect("the Draco bufferView exists");
-    let buffer: &[u8] = &buffers[view.buffer().index()];
-    let bytes = &buffer[view.offset()..view.offset() + view.length()];
+    let buffer = buffers
+        .get(view.buffer().index())
+        .expect("the Draco bufferView names a buffer");
+    let offset = view.offset();
+    let end = offset
+        .checked_add(view.length())
+        .expect("the Draco stream does not overflow its buffer");
+    let bytes = buffer
+        .get(offset..end)
+        .expect("the Draco stream stays inside its buffer");
 
     let mut input = DecoderBuffer::new(bytes);
     let mut geometry = Mesh::new();
@@ -54,7 +65,7 @@ pub(super) fn decode(
 
     let points = geometry.num_points();
     let attribute = |semantic: &str| -> Option<&PointAttribute> {
-        let id = attributes.get(semantic).and_then(Value::as_u64)? as u32;
+        let id = u32::try_from(attributes.get(semantic).and_then(Value::as_u64)?).ok()?;
         geometry.attribute_by_unique_id(id)
     };
 
@@ -90,6 +101,7 @@ pub(super) fn decode(
             .flat_map(|face| face.iter().map(|point| point.0))
             .collect(),
     );
+    streams.morph_deltas = read_morph_deltas(buffers, primitive, points);
     streams
 }
 
@@ -102,6 +114,9 @@ fn integral_max(data_type: DataType) -> f32 {
         DataType::Uint16 => u16::MAX as f32,
         DataType::Int32 => i32::MAX as f32,
         DataType::Uint32 => u32::MAX as f32,
+        DataType::Int64 => i64::MAX as f32,
+        DataType::Uint64 => u64::MAX as f32,
+        DataType::Bool => 1.0,
         _ => 1.0,
     }
 }
@@ -114,7 +129,7 @@ fn widen(attribute: &PointAttribute, points: usize, components: usize) -> Vec<f3
         let max = integral_max(attribute.data_type());
         let signed = matches!(
             attribute.data_type(),
-            DataType::Int8 | DataType::Int16 | DataType::Int32
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
         );
         for value in &mut values {
             *value = if signed {
@@ -145,7 +160,9 @@ fn colors(attribute: &PointAttribute, points: usize) -> Vec<[u8; 4]> {
     debug_assert!(remainder.is_empty());
     rows.iter()
         .map(|row| {
-            let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+            // Match glTF's `Normalize<u8> for f32`: clamp negatives to zero
+            // and truncate (the `as u8` cast saturates values above 1.0).
+            let byte = |value: f32| (value.max(0.0) * 255.0) as u8;
             [
                 byte(row[0]),
                 byte(row[1]),

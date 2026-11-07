@@ -751,13 +751,14 @@ with `draco-core`, a pure-Rust decoder with no native dependency, so compressed
 documents load on every target the engine runs on — including wasm32. glTF's own
 validation rejects the extension and the accessors whose data lives only in the
 compressed stream; the loader therefore re-parses a document without validation
-*only* when it declares Draco, and returns the original error for every other
-validation failure. The extension maps each glTF attribute semantic to the
+*only* when every validation error is one of those two, and returns the original
+error otherwise. The extension maps each glTF attribute semantic to the
 Draco attribute's unique id, decodes the stream, reconstructs faces as indices,
 and rescales normalized integers the way the ordinary reader does. Morph
-targets are not carried in the bitstream, so a compressed primitive draws
-undeformed; everything else — the pipeline key, materials and the rule that
-only a textured primitive uploads UVs — is the same as an uncompressed one.
+target displacements are not compressed: they live in ordinary accessors and
+are uploaded as usual, just as on an uncompressed primitive. Everything else —
+the pipeline key, materials and the rule that only a textured primitive uploads
+UVs — is the same as an uncompressed one.
 
 What it does is patch the world you already render:
 
@@ -835,12 +836,12 @@ What it does is patch the world you already render:
   It takes `&World`, so a caller drives it from wherever it already has one, and
   it touches nothing the passed `&[GltfNode]` does not name.
 
-What loads: positions, UVs, vertex colors, joints, weights and indices —
+What loads: positions, UVs, vertex colors, normals, joints, weights and indices —
 from ordinary accessors or a Draco-decoded stream; base-color textures and the materials that sample them; blended
 (`alphaMode: BLEND`), cut-off (`alphaMode: MASK`) and double-sided materials;
 skinned primitives; positional morph targets; node hierarchies, accumulated
 into world transforms; and the animations that drive them. What does not yet:
-normal and tangent morphs, normals and tangents.
+normal and tangent morphs, tangents, and primitive modes other than `TRIANGLES`.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `LitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.

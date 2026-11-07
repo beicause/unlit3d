@@ -2,8 +2,8 @@
 //!
 //! A lit mesh is uploaded from borrowed slices, so the decoded data has to
 //! outlive the `allocate_lit_mesh` call. Both the ordinary accessor reader
-//! and the Draco decoder fill this one struct, and [`MeshStreams::desc`] lends
-//! it to the allocator as a [`LitMeshDesc`].
+//! and the Draco decoder fill this one struct, and [`MeshStreams::desc`] hands
+//! its streams to the allocator as a [`LitMeshDesc`].
 
 use super::material::{morph_target_count, samples_base_color_texture};
 use crate::lit::LitMeshDesc;
@@ -27,8 +27,12 @@ pub(super) struct MeshStreams {
 }
 
 impl MeshStreams {
-    /// Borrow the streams as the description `allocate_lit_mesh` consumes.
-    pub fn desc(&self) -> LitMeshDesc<'_> {
+    /// Take the streams as the description `allocate_lit_mesh` consumes.
+    ///
+    /// The description owns its morph displacements, so they are moved out
+    /// rather than cloned; a stream is spent on one allocation anyway.
+    pub fn desc(&mut self) -> LitMeshDesc<'_> {
+        let morph_deltas = self.morph_deltas.take();
         LitMeshDesc {
             positions: &self.positions,
             uvs: self.uvs.as_deref(),
@@ -37,7 +41,7 @@ impl MeshStreams {
             indices: self.indices.as_deref(),
             joints: self.joints.as_deref(),
             weights: self.weights.as_deref(),
-            morph_deltas: self.morph_deltas.clone(),
+            morph_deltas,
         }
     }
 }
@@ -94,30 +98,7 @@ pub(super) fn from_reader(
             .into_f32()
             .collect()
     });
-    // The displacements the mesh's morph stream reads, packed the way a
-    // mesh wants them: for each vertex, every position-displacing target in
-    // order, three components each. Writing straight into the packed array
-    // keeps one allocation for the whole thing, however many targets the
-    // primitive declares; a target of normals alone is skipped here.
-    let morph_deltas = (morph_target_count(primitive) > 0).then(|| {
-        let target_count = morph_target_count(primitive);
-        let mut deltas = vec![0.0; positions.len() * target_count * 3];
-        let mut target = 0;
-        for (displacements, _, _) in reader.read_morph_targets() {
-            let Some(displacements) = displacements else {
-                continue;
-            };
-            for (vertex, displacement) in displacements.enumerate() {
-                let start = (vertex * target_count + target) * 3;
-                deltas[start..start + 3].copy_from_slice(&displacement);
-            }
-            target += 1;
-        }
-        MorphDeltas {
-            deltas,
-            target_count: target_count as u32,
-        }
-    });
+    let morph_deltas = read_morph_deltas(buffers, primitive, positions.len());
 
     MeshStreams {
         positions,
@@ -129,4 +110,43 @@ pub(super) fn from_reader(
         weights,
         morph_deltas,
     }
+}
+
+/// Pack a primitive's position-displacing morph targets for a mesh of
+/// `vertex_count` vertices, as the mesh's displacement stream wants them:
+/// for each vertex, every positional target in order, three components each.
+///
+/// Morph targets are not compressed into a Draco bitstream — their
+/// displacements live in ordinary accessors — so both the accessor reader and
+/// the Draco decoder share this packing. A Draco decode can change the vertex
+/// order and count, so a conformant generator writes these displacements in
+/// the decoded order; displacements past `vertex_count` are ignored rather
+/// than panicking on a malformed document.
+pub(super) fn read_morph_deltas(
+    buffers: &[gltf::buffer::Data],
+    primitive: &gltf::Primitive<'_>,
+    vertex_count: usize,
+) -> Option<MorphDeltas> {
+    let target_count = morph_target_count(primitive);
+    (target_count > 0).then(|| {
+        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+        let mut deltas = vec![0.0; vertex_count * target_count * 3];
+        let mut target = 0;
+        for (displacements, _, _) in reader.read_morph_targets() {
+            let Some(displacements) = displacements else {
+                continue;
+            };
+            for (vertex, displacement) in displacements.enumerate() {
+                let start = (vertex * target_count + target) * 3;
+                if let Some(slot) = deltas.get_mut(start..start + 3) {
+                    slot.copy_from_slice(&displacement);
+                }
+            }
+            target += 1;
+        }
+        MorphDeltas {
+            deltas,
+            target_count: target_count as u32,
+        }
+    })
 }
