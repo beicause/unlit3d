@@ -13,11 +13,12 @@
 //! that unload it again.
 //!
 //! A primitive carrying `KHR_draco_mesh_compression` is decoded with
-//! `draco-core` when its mesh is inserted. glTF validation rejects that
-//! extension and the accessors whose data lives only in the compressed stream,
-//! so the loader re-parses a document declaring Draco without validation when
-//! those are its only validation errors. Morph target displacements live in
-//! ordinary accessors even on a compressed primitive and are uploaded as usual.
+//! `draco-core` while the document is loaded: its stream is written back as
+//! ordinary buffer views and accessors, so the document is validated normally
+//! and every later reader -- morph targets, skins and animations included --
+//! sees only accessors. A document without a compressed primitive keeps its
+//! original validation error. Decoding happens once at import rather than on
+//! each mesh insertion.
 //!
 //! # Usage
 //!
@@ -119,12 +120,14 @@
 //! A primitive that carries normals uploads them, so a lit surface is shaded by
 //! the normals the document gives it rather than by the ones screen-space
 //! derivatives infer from its positions. A primitive compressed with
-//! `KHR_draco_mesh_compression` is decoded on
-//! import and uploads the same streams; morph target displacements come from
-//! their own accessors and are uploaded too. Only the `TRIANGLES` primitive
-//! mode is drawn. Everything else a glTF document can carry is ignored: no
-//! tangents. A mesh whose primitive uses techniques outside this subset still
-//! uploads and spawns — it just renders without them.
+//! `KHR_draco_mesh_compression` is decoded on import into the same accessors,
+//! so morph target displacements, skins and animations apply to it exactly as
+//! to an uncompressed one; its `TRIANGLE_STRIP` mode, which the extension
+//! permits, is normalized to a triangle list as the stream is decoded. Only
+//! the `TRIANGLES` primitive mode is drawn for an ordinary primitive.
+//! Everything else a glTF document can carry is ignored: no tangents. A mesh
+//! whose primitive uses techniques outside this subset still uploads and
+//! spawns — it just renders without them.
 //!
 //! Every handle returned here keeps what it names alive: the next
 //! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
@@ -410,15 +413,15 @@ impl LitGltf {
         Ok(Self::from_parts(document, buffers, images))
     }
 
-    /// Re-import a document that failed validation only when Draco explains
-    /// every failure.
+    /// Try to repair a document that failed validation by decoding its Draco
+    /// primitives back into ordinary accessors.
     ///
-    /// glTF validation rejects the Draco extension as unsupported and reports
-    /// the primitive accessors that hold no buffer view, because their data
-    /// lives in the compressed stream. This engine decodes that stream itself,
-    /// so a document declaring the extension is safe to accept without
-    /// validation when every validation error is one of those two. Any other
-    /// error keeps its original value.
+    /// glTF validation rejects the Draco extension and the accessors whose data
+    /// lives only in the compressed stream. Re-parsing without validation,
+    /// decoding each stream into real buffer views and validating again lets
+    /// the rest of the loader read one uniform document. A document with no
+    /// compressed primitive keeps the original error; a failure to decode is
+    /// reported as a validation error naming the extension.
     fn import_draco(
         error: gltf::Error,
         parse: impl FnOnce() -> Result<gltf::Gltf, gltf::Error>,
@@ -431,48 +434,18 @@ impl LitGltf {
         ),
         gltf::Error,
     > {
-        if !Self::is_draco_only_validation(&error) {
+        if !matches!(error, gltf::Error::Validation(_)) {
             return Err(error);
         }
-        let gltf = parse()?;
-        let declares_draco = gltf
-            .document
-            .extensions_required()
-            .chain(gltf.document.extensions_used())
-            .any(|extension| extension == draco::EXTENSION);
-        if !declares_draco {
+        let gltf::Gltf { document, blob } = parse()?;
+        let mut buffers = gltf::import_buffers(&document, base, blob)?;
+        let mut root = document.into_json();
+        if !draco::fill_accessors(&mut root, &mut buffers)? {
             return Err(error);
         }
-        let buffers = gltf::import_buffers(&gltf.document, base, gltf.blob)?;
-        let images = gltf::import_images(&gltf.document, base, &buffers)?;
-        Ok((gltf.document, buffers, images))
-    }
-
-    /// Whether every validation error is one Draco alone explains.
-    ///
-    /// glTF reports the extension as `Unsupported` at its
-    /// `extensionsRequired` entry and each accessor whose data lives in the
-    /// stream as `Missing` at its `bufferView`. Any other error — an
-    /// out-of-range index, an invalid accessor, an unsupported extension that
-    /// is not Draco — means the document has a real problem, so it is not
-    /// re-parsed without validation.
-    fn is_draco_only_validation(error: &gltf::Error) -> bool {
-        let gltf::Error::Validation(errors) = error else {
-            return false;
-        };
-        !errors.is_empty()
-            && errors.iter().all(|(path, kind)| match kind {
-                gltf::json::validation::Error::Unsupported => {
-                    let path = path.as_str();
-                    path.strip_prefix("extensionsRequired[")
-                        .and_then(|rest| rest.split_once("] = \""))
-                        .is_some_and(|(_, extension)| {
-                            extension.trim_end_matches('"') == draco::EXTENSION
-                        })
-                }
-                gltf::json::validation::Error::Missing => path.as_str().ends_with(".bufferView"),
-                _ => false,
-            })
+        let document = gltf::Document::from_json(root)?;
+        let images = gltf::import_images(&document, base, &buffers)?;
+        Ok((document, buffers, images))
     }
 
     fn from_parts(
@@ -791,10 +764,7 @@ impl LitGltf {
         let key = self.pipeline_key(&source.device(world), mesh, primitive);
         let primitive_id = primitive;
         let primitive = self.primitive(mesh.index(), primitive_id.index());
-        let mut streams = match primitive.extension_value(draco::EXTENSION) {
-            Some(extension) => draco::decode(&self.document, &self.buffers, &primitive, extension),
-            None => from_reader(&self.buffers, &primitive),
-        };
+        let mut streams = from_reader(&self.buffers, &primitive);
         let gpu_mesh = source.allocate_lit_mesh(world, &key.options, streams.desc());
 
         GltfMesh {

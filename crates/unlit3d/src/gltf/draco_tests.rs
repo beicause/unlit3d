@@ -1,11 +1,13 @@
 //! Unit tests for the KHR_draco_mesh_compression import path.
 //!
 //! A Draco bitstream is synthesised in memory with the decoder's companion
-//! encoder, wrapped in a GLB whose primitive accessors deliberately carry no
-//! buffer views (their data lives in the stream), and fed through
-//! LitGltf::from_bytes and draco::decode. A committed, self-contained fixture
-//! covers LitGltf::load without writing any file. No GPU is involved: the
-//! streams are inspected before they would reach allocate_lit_mesh.
+//! encoder and wrapped in a GLB whose primitive accessors deliberately carry
+//! no buffer views (their data lives in the stream). The loader decodes the
+//! stream back into ordinary accessors and validates the repaired document,
+//! so the tests inspect the resulting streams through the same accessor reader
+//! an uncompressed primitive uses. A committed, self-contained fixture covers
+//! LitGltf::load without writing any file. No GPU is involved: the streams are
+//! inspected before they would reach allocate_lit_mesh.
 
 use super::draco;
 use super::streams::MeshStreams;
@@ -16,6 +18,7 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::PointIndex;
 use draco_core::mesh::Mesh;
 use draco_core::mesh_encoder::MeshEncoder;
+use serde_json::Value;
 use serde_json::json;
 
 const POSITIONS: [[f32; 3]; 4] = [
@@ -131,12 +134,17 @@ fn glb(json: String, bin: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A Draco GLB whose accessors have no buffer views, exactly as a compressed
-/// primitive declares them. Toggling textured and color_components exercises
-/// the UV gate and the three-component colour alpha rule; `morph_targets`
-/// adds one positional target whose displacements live in an ordinary
-/// accessor, as the extension requires.
-fn build_glb(textured: bool, color_components: u8, method: i32, morph_targets: bool) -> Vec<u8> {
+/// The JSON and binary chunk of a Draco GLB whose accessors have no buffer
+/// views, exactly as a compressed primitive declares them. Toggling textured
+/// and color_components exercises the UV gate and the three-component colour
+/// alpha rule; `morph_targets` adds one positional target whose displacements
+/// live in an ordinary accessor, as the extension requires.
+fn build_parts(
+    textured: bool,
+    color_components: u8,
+    method: i32,
+    morph_targets: bool,
+) -> (Value, Vec<u8>) {
     let draco = if color_components == 4 {
         encode_draco(&COLORS4, method)
     } else {
@@ -225,7 +233,9 @@ fn build_glb(textured: bool, color_components: u8, method: i32, morph_targets: b
             "bufferView": 2,
             "componentType": 5126,
             "count": 4,
-            "type": "VEC3"
+            "type": "VEC3",
+            "min": [0.0, 0.0, 0.0],
+            "max": [0.5, 0.5, 0.5]
         }));
         root["bufferViews"].as_array_mut().unwrap().push(json!({
             "buffer": 0,
@@ -234,22 +244,74 @@ fn build_glb(textured: bool, color_components: u8, method: i32, morph_targets: b
         }));
         root["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION": 7}]);
     }
+    (root, bin)
+}
+
+fn build_glb(textured: bool, color_components: u8, method: i32, morph_targets: bool) -> Vec<u8> {
+    let (root, bin) = build_parts(textured, color_components, method, morph_targets);
     glb(root.to_string(), &bin)
 }
 
-fn decoded(textured: bool, color_components: u8, method: i32) -> MeshStreams {
-    let bytes = build_glb(textured, color_components, method, false);
-    let gltf = super::LitGltf::from_bytes(&bytes).expect("a Draco GLB imports without validation");
+fn streams_of(gltf: &super::LitGltf) -> MeshStreams {
     let mesh = gltf
         .document
         .meshes()
         .next()
         .expect("the document has a mesh");
     let primitive = mesh.primitives().next().expect("the mesh has a primitive");
-    let extension = primitive
-        .extension_value(draco::EXTENSION)
-        .expect("the primitive declares Draco");
-    draco::decode(&gltf.document, &gltf.buffers, &primitive, extension)
+    super::streams::from_reader(&gltf.buffers, &primitive)
+}
+
+fn decoded(textured: bool, color_components: u8, method: i32) -> MeshStreams {
+    let bytes = build_glb(textured, color_components, method, false);
+    let gltf =
+        super::LitGltf::from_bytes(&bytes).expect("a Draco GLB imports as validated accessors");
+    streams_of(&gltf)
+}
+
+#[test]
+fn a_draco_document_becomes_ordinary_accessors() {
+    let bytes = build_glb(true, 4, 0, false);
+    let gltf =
+        super::LitGltf::from_bytes(&bytes).expect("a Draco GLB imports as validated accessors");
+
+    assert!(
+        !gltf
+            .document
+            .extensions_required()
+            .any(|extension| extension == draco::EXTENSION),
+        "the repaired document no longer requires Draco"
+    );
+    assert!(
+        !gltf
+            .document
+            .extensions_used()
+            .any(|extension| extension == draco::EXTENSION),
+        "the repaired document no longer uses Draco"
+    );
+    let primitive = gltf
+        .document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    assert!(
+        primitive.extension_value(draco::EXTENSION).is_none(),
+        "the primitive's Draco extension is consumed"
+    );
+    assert_eq!(
+        primitive.mode(),
+        gltf::mesh::Mode::Triangles,
+        "the decoded triangle list is the mode an ordinary reader draws"
+    );
+    assert!(
+        gltf.document
+            .accessors()
+            .all(|accessor| accessor.view().is_some()),
+        "every accessor now has a buffer view"
+    );
 }
 
 #[test]
@@ -286,8 +348,8 @@ fn a_draco_primitive_decodes_every_stream_it_declares() {
     assert_eq!(colors.len(), COLORS4.len());
     for (got, want) in colors.iter().zip(COLORS4.iter()) {
         for component in 0..4 {
-            // COLOR_0 is encoded as plain floats, so the decoder's conversion
-            // must match glTF's `Normalize<u8> for f32` exactly.
+            // COLOR_0 is encoded as plain floats, so the ordinary reader's
+            // conversion must match glTF's Normalize<u8> for f32 exactly.
             let expected = (want[component].max(0.0) * 255.0) as u8;
             assert_eq!(
                 got[component], expected,
@@ -399,25 +461,12 @@ const PLAIN_FLOWER: &str = concat!(
     "/../../unlit3d_asset_files/assets/flower-plain.glb"
 );
 
-fn streams_of(gltf: &super::LitGltf) -> MeshStreams {
-    let mesh = gltf
-        .document
-        .meshes()
-        .next()
-        .expect("the document has a mesh");
-    let primitive = mesh.primitives().next().expect("the mesh has a primitive");
-    match primitive.extension_value(draco::EXTENSION) {
-        Some(extension) => draco::decode(&gltf.document, &gltf.buffers, &primitive, extension),
-        None => super::streams::from_reader(&gltf.buffers, &primitive),
-    }
-}
-
 #[test]
 fn a_real_3dgarden_asset_decodes_like_its_plain_twin() {
     let draco_bytes = std::fs::read(DRACO_FLOWER).expect("the Draco fixture reads");
     let plain_bytes = std::fs::read(PLAIN_FLOWER).expect("the plain fixture reads");
     let compressed = super::LitGltf::from_bytes(&draco_bytes)
-        .expect("the real Draco GLB imports without validation");
+        .expect("the real Draco GLB imports as validated accessors");
     let reference =
         super::LitGltf::from_bytes(&plain_bytes).expect("the plain GLB imports normally");
 
@@ -482,8 +531,9 @@ fn a_validation_failure_without_draco_is_returned_unchanged() {
 
 #[test]
 fn an_unrelated_validation_failure_on_a_draco_document_is_returned_unchanged() {
-    // The extension is declared, but the default scene index is out of range.
-    // Declaring Draco must not swallow an error it does not explain.
+    // The extension is declared, but the document has no compressed primitive
+    // to repair and its default scene index is out of range. The original
+    // validation errors must be returned, including the bad scene.
     let root = json!({
         "asset": {"version": "2.0"},
         "extensionsRequired": ["KHR_draco_mesh_compression"],
@@ -513,10 +563,100 @@ fn an_unrelated_validation_failure_on_a_draco_document_is_returned_unchanged() {
 }
 
 #[test]
+fn an_unrelated_validation_failure_survives_the_repair() {
+    // A compressed primitive is present, so the Draco errors are repaired, but
+    // the out-of-range scene is not something Draco explains: re-validating the
+    // repaired document must still report it.
+    let (mut root, bin) = build_parts(true, 4, 0, false);
+    root["scene"] = json!(1);
+    let bytes = glb(root.to_string(), &bin);
+    let error = match super::LitGltf::from_bytes(&bytes) {
+        Err(error) => error,
+        Ok(_) => panic!("an out-of-range scene is rejected after the Draco repair"),
+    };
+    let gltf::Error::Validation(errors) = &error else {
+        panic!("the re-validation error is returned");
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|(_, kind)| matches!(kind, gltf::json::validation::Error::IndexOutOfBounds)),
+        "the bad scene is reported after the repair: {errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|(_, kind)| matches!(kind, gltf::json::validation::Error::Unsupported)),
+        "the Draco extension rejection is gone after the repair: {errors:?}"
+    );
+}
+
+#[test]
+fn a_triangle_strip_primitive_is_normalized_to_triangles() {
+    // The extension permits TRIANGLE_STRIP, but Draco always decodes to a
+    // triangle list. The repair rewrites the mode so the ordinary reader draws
+    // exactly the decoded geometry.
+    let (mut root, bin) = build_parts(true, 4, 0, false);
+    root["meshes"][0]["primitives"][0]["mode"] = json!(5);
+    let bytes = glb(root.to_string(), &bin);
+    let gltf = super::LitGltf::from_bytes(&bytes).expect("a strip-mode Draco GLB imports");
+    let primitive = gltf
+        .document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    assert_eq!(primitive.mode(), gltf::mesh::Mode::Triangles);
+    assert_eq!(
+        streams_of(&gltf)
+            .indices
+            .expect("the strip becomes a triangle list")
+            .len(),
+        FACES.len() * 3
+    );
+}
+
+#[test]
+fn a_corrupt_draco_stream_returns_an_error() {
+    // Truncate the stream's buffer view: decoding must fail with a returned
+    // error naming the extension, not panic on the unvalidated document.
+    let (mut root, bin) = build_parts(true, 4, 0, false);
+    root["bufferViews"][0]["byteLength"] = json!(4);
+    let bytes = glb(root.to_string(), &bin);
+    let error = match super::LitGltf::from_bytes(&bytes) {
+        Err(error) => error,
+        Ok(_) => panic!("a truncated Draco stream is rejected"),
+    };
+    let gltf::Error::Validation(errors) = &error else {
+        panic!("the decode failure is reported as a validation error");
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|(path, _)| path.as_str().contains(draco::EXTENSION)),
+        "the error names the extension that failed to decode: {errors:?}"
+    );
+}
+
+#[test]
 fn the_file_loader_accepts_a_draco_glb() {
     // The committed fixture is self-contained: no external URIs and its image
     // comes from a buffer view, so loading it exercises the file path without
     // writing any file.
     let gltf = super::LitGltf::load(DRACO_FLOWER).expect("a Draco GLB loads from disk");
     assert_eq!(gltf.document.meshes().count(), 1);
+    let primitive = gltf
+        .document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    assert!(
+        primitive.extension_value(draco::EXTENSION).is_none(),
+        "the file path repairs the document too"
+    );
 }

@@ -502,12 +502,14 @@ impl InstanceContext<'_> {
 带有 `KHR_draco_mesh_compression` 的 primitive 会在加载器内用 `draco-core` 解码——
 一个纯 Rust、无原生依赖的解码器，因此压缩文档在本引擎运行的每个目标上都能加载，
 包括 wasm32。glTF 自身的校验会拒绝该扩展，也会拒绝那些数据只存在于压缩流中、
-没有 buffer view 的 accessor；因此加载器**仅在**每条校验错误都属于这两类时才不经校验
-重新解析，其余任何校验失败都原样返回原本的错误。扩展把每个 glTF 属性语义映射到 Draco 属性的
-unique id，解码出顶点流、把面重建为索引，并按普通 reader 的规则重缩放归一化整数。
-形变目标位移不参与压缩：它们仍存在普通 accessor 中，因此压缩 primitive 与未压缩的一样
-照常上传这些位移；其余一切——管线 key、材质，以及「只有采样纹理的 primitive 才上传 UV」
-的规则——都与未压缩文档一致。
+没有 buffer view 的 accessor；因此加载器不经校验重新解析这类文档，用扩展里的
+「属性语义 → 属性 unique id」映射解码每条流，再把解码出的数据回填成普通的 buffer view
+与 accessor，最后用 `Document::from_json` 对修复后的文档做正常校验。此后所有 reader——
+形变目标、蒙皮、动画以及网格上传本身——看到的都只有 accessor；扩展允许使用的
+`TRIANGLE_STRIP` primitive 会在解码流时被规范化成三角形列表。不含压缩 primitive 的文档
+保留原本的校验错误，修复后仍存在的无关错误（比如越界的场景下标）照常上报，
+解码失败则作为指明该扩展的校验错误返回，而不是在未校验输入上 panic。其余一切——
+管线 key、材质，以及「只有采样纹理的 primitive 才上传 UV」的规则——都与未压缩文档一致。
 
 它做的是修补你已经在渲染的那个世界：
 
@@ -558,13 +560,13 @@ unique id，解码出顶点流、把面重建为索引，并按普通 reader 的
   权重通道所指的每个 `MorphWeights`。它接受 `&World`，因此调用方在已经持有 world 的任何
   地方都能驱动它，并且不会碰传入 `&[GltfNode]` 之外的任何东西。
 
-支持加载：位置、UV、顶点色、法线、关节、权重与索引——既来自普通 accessor，也来自 Draco
-解码出的流；基础色纹理及采样它们的材质；混合
+支持加载：位置、UV、顶点色、法线、关节、权重与索引——来自普通 accessor，其中也包括加载器
+在导入时从 Draco 流回填的那些；基础色纹理及采样它们的材质；混合
 （`alphaMode: BLEND`）、裁剪（`alphaMode: MASK`）与双面材质；蒙皮 primitive；位移位置的形变目标；
 按世界变换累加的节点层级；以及驱动它们的动画。暂不支持：法线与切线形变、切线，以及
-`TRIANGLES` 之外的 primitive mode。网格上传所用的管线 key 总是由
-primitive 自身的属性推导（见 `LitGltf::pipeline_key`），所以它绘制所用的变体绝不会
-要求网格不存在的流。
+`TRIANGLES` 之外的 primitive mode（`TRIANGLE_STRIP` 的 Draco primitive 会在导入时规范成三角形列表）。
+网格上传所用的管线 key 总是由 primitive 自身的属性推导（见 `LitGltf::pipeline_key`），
+所以它绘制所用的变体绝不会要求网格不存在的流。
 
 图像按「最接近解码出像素」的 GPU 格式上传，因此纹理保留自己的通道数与精度，而不会被一
 律拓宽成 RGBA8：8 位布局上传为 `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`，16 位上传为同宽
