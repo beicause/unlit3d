@@ -18,7 +18,7 @@ directly, and you are expected to know WebGPU to use it well.
 |---------|---------|----------|
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
-| `gltf` | no | the `gltf` module: load a glTF document into an `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
+| `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into an `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 | `mcp` | no | the `mcp` module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
 
@@ -746,6 +746,19 @@ the world-space transform of every node is computed up front, so `LitGltf` is
 a *record* of the model, not a GPU resource: it owns no `World` and no
 [`MeshSource`](mesh_source::MeshSource).
 
+A primitive carrying `KHR_draco_mesh_compression` is decoded in the loader
+with `draco-core`, a pure-Rust decoder with no native dependency, so compressed
+documents load on every target the engine runs on — including wasm32. glTF's own
+validation rejects the extension and the accessors whose data lives only in the
+compressed stream; the loader therefore re-parses a document without validation
+*only* when it declares Draco, and returns the original error for every other
+validation failure. The extension maps each glTF attribute semantic to the
+Draco attribute's unique id, decodes the stream, reconstructs faces as indices,
+and rescales normalized integers the way the ordinary reader does. Morph
+targets are not carried in the bitstream, so a compressed primitive draws
+undeformed; everything else — the pipeline key, materials and the rule that
+only a textured primitive uploads UVs — is the same as an uncompressed one.
+
 What it does is patch the world you already render:
 
 - A document's collections are addressed by typed ids — `ImageId`,
@@ -822,8 +835,8 @@ What it does is patch the world you already render:
   It takes `&World`, so a caller drives it from wherever it already has one, and
   it touches nothing the passed `&[GltfNode]` does not name.
 
-What loads: positions, UVs, vertex colors, joints, weights and indices;
-base-color textures and the materials that sample them; blended
+What loads: positions, UVs, vertex colors, joints, weights and indices —
+from ordinary accessors or a Draco-decoded stream; base-color textures and the materials that sample them; blended
 (`alphaMode: BLEND`), cut-off (`alphaMode: MASK`) and double-sided materials;
 skinned primitives; positional morph targets; node hierarchies, accumulated
 into world transforms; and the animations that drive them. What does not yet:

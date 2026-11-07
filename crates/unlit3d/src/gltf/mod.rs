@@ -12,6 +12,12 @@
 //! inserted into any number of worlds, and each insertion keeps the handles
 //! that unload it again.
 //!
+//! A primitive carrying `KHR_draco_mesh_compression` is decoded with
+//! `draco-core` when its mesh is inserted; the loader re-parses such a document
+//! without glTF validation, which would otherwise reject the extension and the
+//! accessors whose data lives only in the compressed stream. Morph targets are
+//! not part of the bitstream, so a compressed primitive draws undeformed.
+//!
 //! # Usage
 //!
 //! ```rust,no_run
@@ -111,9 +117,12 @@
 //! plays by itself; the caller picks the time.
 //! A primitive that carries normals uploads them, so a lit surface is shaded by
 //! the normals the document gives it rather than by the ones screen-space
-//! derivatives infer from its positions. Everything else a glTF document can
-//! carry is ignored: no tangents. A mesh whose primitive uses techniques
-//! outside this subset still uploads and spawns — it just renders without them.
+//! derivatives infer from its positions. A primitive compressed with
+//! `KHR_draco_mesh_compression` is decoded on import and uploads the same
+//! streams; a Draco bitstream holds no morph targets, so those are skipped.
+//! Everything else a glTF document can carry is ignored: no tangents. A mesh
+//! whose primitive uses techniques outside this subset still uploads and spawns
+//! — it just renders without them.
 //!
 //! Every handle returned here keeps what it names alive: the next
 //! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
@@ -132,8 +141,7 @@ use crate::components::{
     GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, SkinPose,
     Transform, ZSortedDrawing,
 };
-use crate::lit::{InstanceColor, InstanceCutoff, LitMeshDesc, LitPipelineKey};
-use crate::mesh::MorphDeltas;
+use crate::lit::{InstanceColor, InstanceCutoff, LitPipelineKey};
 use crate::mesh_source::MeshSource;
 use gltf::animation::Property;
 use gltf::animation::util::ReadOutputs;
@@ -143,9 +151,13 @@ use unlit_wgpu::pipeline::{BaseColorChannels, LitOptions};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 mod animation;
+mod draco;
+#[cfg(test)]
+mod draco_tests;
 mod image;
 mod material;
 mod scene;
+mod streams;
 #[cfg(test)]
 mod tests;
 
@@ -155,6 +167,7 @@ use self::material::{
     alpha_cutoff, morph_target_count, sampler_descriptor, samples_base_color_texture, textured_key,
 };
 use self::scene::{decompose, node_locals, node_order, node_parents, node_world_matrices};
+use self::streams::from_reader;
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
 /// out.
@@ -362,8 +375,20 @@ impl LitGltf {
     /// [`gltf::Error`] when the file cannot be read or parsed, or a referenced
     /// buffer or image cannot be decoded.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, gltf::Error> {
-        let (document, buffers, images) = gltf::import(path)?;
-        Ok(Self::from_parts(document, buffers, images))
+        let path = path.as_ref();
+        let base = path.parent().unwrap_or_else(|| Path::new("./"));
+        let imported = gltf::import(path).or_else(|error| {
+            Self::import_draco(
+                error,
+                || {
+                    gltf::Gltf::from_reader_without_validation(std::io::BufReader::new(
+                        std::fs::File::open(path)?,
+                    ))
+                },
+                Some(base),
+            )
+        })?;
+        Ok(Self::from_parts(imported.0, imported.1, imported.2))
     }
 
     /// Parse a glTF document from `bytes`.
@@ -373,8 +398,50 @@ impl LitGltf {
     /// must be embedded too (as data URIs or buffer views), because there is
     /// no base URI to resolve external references against.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, gltf::Error> {
-        let (document, buffers, images) = gltf::import_slice(bytes)?;
+        let (document, buffers, images) = gltf::import_slice(bytes).or_else(|error| {
+            Self::import_draco(
+                error,
+                || gltf::Gltf::from_slice_without_validation(bytes),
+                None,
+            )
+        })?;
         Ok(Self::from_parts(document, buffers, images))
+    }
+
+    /// Re-import a document that failed validation only when it needs Draco.
+    ///
+    /// glTF's validation rejects the Draco extension as unsupported and also
+    /// reports the primitive accessors that hold no buffer view, because their
+    /// data lives in the compressed stream. This engine decodes that stream
+    /// itself, so a document declaring the extension is safe to accept without
+    /// validation. Anything else keeps its original error.
+    fn import_draco(
+        error: gltf::Error,
+        parse: impl FnOnce() -> Result<gltf::Gltf, gltf::Error>,
+        base: Option<&Path>,
+    ) -> Result<
+        (
+            gltf::Document,
+            Vec<gltf::buffer::Data>,
+            Vec<gltf::image::Data>,
+        ),
+        gltf::Error,
+    > {
+        let gltf::Error::Validation(_) = &error else {
+            return Err(error);
+        };
+        let gltf = parse()?;
+        let declares_draco = gltf
+            .document
+            .extensions_required()
+            .chain(gltf.document.extensions_used())
+            .any(|extension| extension == draco::EXTENSION);
+        if !declares_draco {
+            return Err(error);
+        }
+        let buffers = gltf::import_buffers(&gltf.document, base, gltf.blob)?;
+        let images = gltf::import_images(&gltf.document, base, &buffers)?;
+        Ok((gltf.document, buffers, images))
     }
 
     fn from_parts(
@@ -693,91 +760,11 @@ impl LitGltf {
         let key = self.pipeline_key(&source.device(world), mesh, primitive);
         let primitive_id = primitive;
         let primitive = self.primitive(mesh.index(), primitive_id.index());
-        let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
-
-        let positions: Vec<[f32; 3]> = reader
-            .read_positions()
-            .expect("a glTF primitive carries its POSITION attribute")
-            .collect();
-        // Read only the streams the primitive declares: an attribute it does
-        // not carry is not uploaded, so decoding it would be wasted work.
-        let uvs: Option<Vec<[f32; 2]>> = samples_base_color_texture(&primitive).then(|| {
-            reader
-                .read_tex_coords(0)
-                .expect("the primitive samples a texture, so it has TEXCOORD_0")
-                .into_f32()
-                .collect()
-        });
-        let colors: Option<Vec<[u8; 4]>> = primitive
-            .get(&gltf::Semantic::Colors(0))
-            .is_some()
-            .then(|| {
-                reader
-                    .read_colors(0)
-                    .expect("the primitive has COLOR_0")
-                    .into_rgba_u8()
-                    .collect()
-            });
-        // A primitive that carries normals describes its own surface, which is
-        // smoother than the one screen-space derivatives infer from the
-        // positions; one without them falls back to those derivatives.
-        let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|normals| normals.collect());
-        let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
-        let skinned = primitive.get(&gltf::Semantic::Joints(0)).is_some()
-            && primitive.get(&gltf::Semantic::Weights(0)).is_some();
-        let joints: Option<Vec<[u16; 4]>> = skinned.then(|| {
-            reader
-                .read_joints(0)
-                .expect("the primitive has JOINTS_0")
-                .into_u16()
-                .collect()
-        });
-        let weights: Option<Vec<[f32; 4]>> = skinned.then(|| {
-            reader
-                .read_weights(0)
-                .expect("the primitive has WEIGHTS_0")
-                .into_f32()
-                .collect()
-        });
-        // The displacements the mesh's morph stream reads, packed the way a
-        // mesh wants them: for each vertex, every position-displacing target in
-        // order, three components each. Writing straight into the packed array
-        // keeps one allocation for the whole thing, however many targets the
-        // primitive declares; a target of normals alone is skipped here.
-        let morph_deltas = (morph_target_count(&primitive) > 0).then(|| {
-            let target_count = morph_target_count(&primitive);
-            let mut deltas = vec![0.0; positions.len() * target_count * 3];
-            let mut target = 0;
-            for (displacements, _, _) in reader.read_morph_targets() {
-                let Some(displacements) = displacements else {
-                    continue;
-                };
-                for (vertex, displacement) in displacements.enumerate() {
-                    let start = (vertex * target_count + target) * 3;
-                    deltas[start..start + 3].copy_from_slice(&displacement);
-                }
-                target += 1;
-            }
-            MorphDeltas {
-                deltas,
-                target_count: target_count as u32,
-            }
-        });
-
-        let gpu_mesh = source.allocate_lit_mesh(
-            world,
-            &key.options,
-            LitMeshDesc {
-                positions: &positions,
-                uvs: uvs.as_deref(),
-                colors: colors.as_deref(),
-                normals: normals.as_deref(),
-                indices: indices.as_deref(),
-                joints: joints.as_deref(),
-                weights: weights.as_deref(),
-                morph_deltas,
-            },
-        );
+        let streams = match primitive.extension_value(draco::EXTENSION) {
+            Some(extension) => draco::decode(&self.document, &self.buffers, &primitive, extension),
+            None => from_reader(&self.buffers, &primitive),
+        };
+        let gpu_mesh = source.allocate_lit_mesh(world, &key.options, streams.desc());
 
         GltfMesh {
             mesh_index: mesh,

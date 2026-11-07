@@ -15,7 +15,7 @@
 |---------|------|-----------|
 | `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
-| `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
+| `gltf` | 否 | `gltf` 模块：把一个 glTF 文档（含 `KHR_draco_mesh_compression` 压缩的 primitive）加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
 | `mcp` | 否 | `mcp` 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
 
@@ -499,6 +499,15 @@ impl InstanceContext<'_> {
 每个节点的世界空间变换也提前算好，因此 `LitGltf` 是模型的**记录**，而不是 GPU
 资源：它既不拥有 `World`，也不拥有 `MeshSource`。
 
+带有 `KHR_draco_mesh_compression` 的 primitive 会在加载器内用 `draco-core` 解码——
+一个纯 Rust、无原生依赖的解码器，因此压缩文档在本引擎运行的每个目标上都能加载，
+包括 wasm32。glTF 自身的校验会拒绝该扩展，也会拒绝那些数据只存在于压缩流中、
+没有 buffer view 的 accessor；因此加载器**仅在**文档声明了 Draco 时才不经校验重新解析，
+其余任何校验失败都原样返回原本的错误。扩展把每个 glTF 属性语义映射到 Draco 属性的
+unique id，解码出顶点流、把面重建为索引，并按普通 reader 的规则重缩放归一化整数。
+形变目标不在压缩位流里，因此压缩 primitive 以未形变方式绘制；其余一切——管线 key、
+材质，以及「只有采样纹理的 primitive 才上传 UV」的规则——都与未压缩文档一致。
+
 它做的是修补你已经在渲染的那个世界：
 
 - 文档的集合用类型化 id 寻址——`ImageId`、`MaterialId`、`MeshId`、
@@ -548,7 +557,8 @@ impl InstanceContext<'_> {
   权重通道所指的每个 `MorphWeights`。它接受 `&World`，因此调用方在已经持有 world 的任何
   地方都能驱动它，并且不会碰传入 `&[GltfNode]` 之外的任何东西。
 
-支持加载：位置、UV、顶点色、关节、权重与索引；基础色纹理及采样它们的材质；混合
+支持加载：位置、UV、顶点色、关节、权重与索引——既来自普通 accessor，也来自 Draco
+解码出的流；基础色纹理及采样它们的材质；混合
 （`alphaMode: BLEND`）、裁剪（`alphaMode: MASK`）与双面材质；蒙皮 primitive；位移位置的形变目标；
 按世界变换累加的节点层级；以及驱动它们的动画。暂不支持：法线与切线形变、法线与切线。网格上传所用的管线 key 总是由
 primitive 自身的属性推导（见 `LitGltf::pipeline_key`），所以它绘制所用的变体绝不会
