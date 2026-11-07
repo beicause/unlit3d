@@ -753,6 +753,8 @@ validation rejects the extension and the accessors whose data lives only in the
 compressed stream, so the loader re-parses such a document without validation,
 decodes each stream with the extension's semantic-to-attribute-id map, and
 writes the decompressed values back as ordinary buffer views and accessors.
+Normalized integers are rescaled according to the accessor's own declaration —
+most exporters leave the stream's flag clear — before they become float accessors.
 `Document::from_json` then validates the repaired document normally: every
 later reader — morph targets, skins, animations and the mesh upload itself —
 sees only accessors, and a `TRIANGLE_STRIP` primitive, which the extension

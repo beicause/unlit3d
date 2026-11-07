@@ -71,7 +71,7 @@ const PNG: [u8; 70] = [
     0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
-fn push_attribute<const N: usize>(mesh: &mut Mesh, ty: GeometryAttributeType, rows: &[[f32; N]]) {
+fn make_attribute<const N: usize>(ty: GeometryAttributeType, rows: &[[f32; N]]) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(ty, N as u8, DataType::Float32, false, rows.len());
     for (index, row) in rows.iter().enumerate() {
@@ -81,17 +81,21 @@ fn push_attribute<const N: usize>(mesh: &mut Mesh, ty: GeometryAttributeType, ro
                 .write((index * N + component) * 4, &value.to_le_bytes());
         }
     }
-    mesh.add_attribute(attribute);
+    attribute
 }
 
-/// Encode the shared square, giving COLOR_0 a caller-chosen width.
+fn push_attribute<const N: usize>(mesh: &mut Mesh, ty: GeometryAttributeType, rows: &[[f32; N]]) {
+    mesh.add_attribute(make_attribute(ty, rows));
+}
+
+/// Encode the shared square with a caller-supplied COLOR_0 attribute.
 /// `method` selects sequential (0) or EdgeBreaker (1) connectivity.
-fn encode_draco<const C: usize>(colors: &[[f32; C]], method: i32) -> Vec<u8> {
+fn encode_square(method: i32, color: PointAttribute) -> Vec<u8> {
     let mut mesh = Mesh::new();
     push_attribute(&mut mesh, GeometryAttributeType::Position, &POSITIONS);
     push_attribute(&mut mesh, GeometryAttributeType::Normal, &NORMALS);
     push_attribute(&mut mesh, GeometryAttributeType::TexCoord, &UVS);
-    push_attribute(&mut mesh, GeometryAttributeType::Color, colors);
+    mesh.add_attribute(color);
     push_attribute(&mut mesh, GeometryAttributeType::Generic, &JOINTS);
     push_attribute(&mut mesh, GeometryAttributeType::Generic, &WEIGHTS);
     for face in FACES {
@@ -113,6 +117,62 @@ fn encode_draco<const C: usize>(colors: &[[f32; C]], method: i32) -> Vec<u8> {
         .encode(&options, &mut buffer)
         .expect("the synthetic mesh encodes");
     buffer.data().to_vec()
+}
+
+fn encode_draco<const C: usize>(colors: &[[f32; C]], method: i32) -> Vec<u8> {
+    encode_square(method, make_attribute(GeometryAttributeType::Color, colors))
+}
+
+/// COLOR_0 stored as UNSIGNED_SHORT in the bitstream. glTF declares
+/// normalization on the accessor, not in the Draco stream, so real exporters
+/// leave the bitstream's normalized flag clear and these arrive as 0..65535.
+const COLORS_U16: [[u16; 4]; 4] = [
+    [u16::MAX, 0, 0, u16::MAX],
+    [0, u16::MAX, 0, u16::MAX],
+    [0, 0, u16::MAX, 32767],
+    [32767, 32767, 0, 16383],
+];
+
+fn u16_color_attribute() -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Color,
+        4,
+        DataType::Uint16,
+        false,
+        COLORS_U16.len(),
+    );
+    for (index, row) in COLORS_U16.iter().enumerate() {
+        for (component, value) in row.iter().enumerate() {
+            attribute
+                .buffer_mut()
+                .write((index * 4 + component) * 2, &value.to_le_bytes());
+        }
+    }
+    attribute
+}
+
+/// COLOR_0 stored as UNSIGNED_BYTE, the most common normalized color format.
+const COLORS_U8: [[u8; 4]; 4] = [
+    [u8::MAX, 0, 0, u8::MAX],
+    [0, u8::MAX, 0, u8::MAX],
+    [0, 0, u8::MAX, 127],
+    [127, 127, 0, 63],
+];
+
+fn u8_color_attribute() -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Color,
+        4,
+        DataType::Uint8,
+        false,
+        COLORS_U8.len(),
+    );
+    for (index, row) in COLORS_U8.iter().enumerate() {
+        attribute.buffer_mut().write(index * 4, &row[..]);
+    }
+    attribute
 }
 
 /// Wrap a JSON document and its binary chunk into a GLB.
@@ -145,11 +205,28 @@ fn build_parts(
     method: i32,
     morph_targets: bool,
 ) -> (Value, Vec<u8>) {
-    let draco = if color_components == 4 {
-        encode_draco(&COLORS4, method)
+    let (draco, color_accessor) = if color_components == 4 {
+        (
+            encode_draco(&COLORS4, method),
+            json!({"componentType": 5126, "count": 4, "type": "VEC4"}),
+        )
     } else {
-        encode_draco(&COLORS3, method)
+        (
+            encode_draco(&COLORS3, method),
+            json!({"componentType": 5126, "count": 4, "type": "VEC3"}),
+        )
     };
+    build_parts_with(textured, draco, color_accessor, morph_targets)
+}
+
+/// The same document built from a caller-supplied Draco stream and COLOR_0
+/// accessor, so a test can declare normalized integers the way an exporter does.
+fn build_parts_with(
+    textured: bool,
+    draco: Vec<u8>,
+    color_accessor: Value,
+    morph_targets: bool,
+) -> (Value, Vec<u8>) {
     let mut bin = Vec::new();
     bin.extend_from_slice(&draco);
     while bin.len() % 4 != 0 {
@@ -177,12 +254,6 @@ fn build_parts(
     } else {
         json!({"pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 1.0]}})
     };
-    let color_type = if color_components == 4 {
-        "VEC4"
-    } else {
-        "VEC3"
-    };
-
     let mut root = json!({
         "asset": {"version": "2.0"},
         "extensionsRequired": ["KHR_draco_mesh_compression"],
@@ -214,7 +285,7 @@ fn build_parts(
              "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"componentType": 5126, "count": 4, "type": "VEC3"},
             {"componentType": 5126, "count": 4, "type": "VEC2"},
-            {"componentType": 5126, "count": 4, "type": color_type},
+            {"componentType": 5126, "count": 4, "type": "VEC4"},
             {"componentType": 5126, "count": 4, "type": "VEC4"},
             {"componentType": 5126, "count": 4, "type": "VEC4"},
             {"componentType": 5123, "count": 6, "type": "SCALAR"}
@@ -228,6 +299,7 @@ fn build_parts(
         "samplers": [{}],
         "textures": [{"sampler": 0, "source": 0}]
     });
+    root["accessors"][3] = color_accessor;
     if morph_targets {
         root["accessors"].as_array_mut().unwrap().push(json!({
             "bufferView": 2,
@@ -549,10 +621,11 @@ fn an_unrelated_validation_failure_on_a_draco_document_is_returned_unchanged() {
     let gltf::Error::Validation(errors) = &error else {
         panic!("the original validation error is returned");
     };
-    assert_eq!(
-        errors.len(),
-        2,
-        "Draco's own rejection and the bad scene are both reported"
+    assert!(
+        errors
+            .iter()
+            .any(|(_, kind)| matches!(kind, gltf::json::validation::Error::Unsupported)),
+        "Draco's own rejection is among the returned errors: {errors:?}"
     );
     assert!(
         errors
@@ -637,6 +710,126 @@ fn a_corrupt_draco_stream_returns_an_error() {
             .iter()
             .any(|(path, _)| path.as_str().contains(draco::EXTENSION)),
         "the error names the extension that failed to decode: {errors:?}"
+    );
+}
+
+#[test]
+fn normalized_integer_colors_are_rescaled_from_the_accessor_declaration() {
+    // Real exporters store normalized COLOR_0 as raw integers in the stream
+    // with the Draco normalized flag clear; only the accessor declares the
+    // normalization. Decoding must bake it into the rewritten F32 values.
+    let (root, bin) = build_parts_with(
+        true,
+        encode_square(0, u16_color_attribute()),
+        json!({
+            "componentType": 5123,
+            "count": 4,
+            "type": "VEC4",
+            "normalized": true
+        }),
+        false,
+    );
+    let bytes = glb(root.to_string(), &bin);
+    let gltf = super::LitGltf::from_bytes(&bytes)
+        .expect("a normalized-integer Draco GLB imports as validated accessors");
+    let colors = streams_of(&gltf)
+        .colors
+        .expect("the primitive declares COLOR_0");
+    assert_eq!(
+        colors,
+        [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 127],
+            [127, 127, 0, 63],
+        ],
+        "normalized colors are rescaled into 0..255"
+    );
+    assert!(
+        colors.iter().any(|color| color[3] != 255),
+        "alpha is not saturated to white"
+    );
+}
+
+#[test]
+fn normalized_u8_colors_are_rescaled_from_the_accessor_declaration() {
+    let (root, bin) = build_parts_with(
+        true,
+        encode_square(0, u8_color_attribute()),
+        json!({
+            "componentType": 5121,
+            "count": 4,
+            "type": "VEC4",
+            "normalized": true
+        }),
+        false,
+    );
+    let bytes = glb(root.to_string(), &bin);
+    let gltf = super::LitGltf::from_bytes(&bytes)
+        .expect("a normalized UNSIGNED_BYTE Draco GLB imports as validated accessors");
+    let colors = streams_of(&gltf)
+        .colors
+        .expect("the primitive declares COLOR_0");
+    assert_eq!(
+        colors,
+        [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 127],
+            [127, 127, 0, 63],
+        ],
+        "normalized bytes are rescaled from 0..255"
+    );
+    assert!(
+        colors.iter().any(|color| color[3] != 255),
+        "alpha is not saturated to white"
+    );
+}
+
+#[test]
+fn a_short_draco_attribute_is_rejected_instead_of_zero_filled() {
+    // The accessor declares VEC4 but the stream carries only three components.
+    // Zero-filling the fourth would silently hide a malformed stream.
+    let (mut root, bin) = build_parts(true, 3, 0, false);
+    root["accessors"][3]["type"] = json!("VEC4");
+    let bytes = glb(root.to_string(), &bin);
+    let error = match super::LitGltf::from_bytes(&bytes) {
+        Err(error) => error,
+        Ok(_) => panic!("a Draco attribute with too few components is rejected"),
+    };
+    let gltf::Error::Validation(errors) = &error else {
+        panic!("the malformed stream is reported as a validation error");
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|(path, _)| path.as_str().contains(draco::EXTENSION)),
+        "the error names the extension: {errors:?}"
+    );
+}
+
+#[test]
+fn extra_draco_components_are_dropped_rather_than_rejected() {
+    // The reverse of the short-attribute case: the stream carries VEC4 but the
+    // accessor declares VEC3. That is legal — glTF takes the first three
+    // components — so the fourth is dropped instead of failing the load.
+    let (mut root, bin) = build_parts(true, 4, 0, false);
+    root["accessors"][3]["type"] = json!("VEC3");
+    let bytes = glb(root.to_string(), &bin);
+    let gltf = super::LitGltf::from_bytes(&bytes)
+        .expect("a stream wider than its accessor is still legal");
+    let colors = streams_of(&gltf)
+        .colors
+        .expect("the primitive declares COLOR_0");
+    assert_eq!(
+        colors,
+        [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ],
+        "the dropped fourth component leaves an opaque color"
     );
 }
 

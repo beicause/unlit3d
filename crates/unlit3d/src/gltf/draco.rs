@@ -17,6 +17,7 @@ use draco_core::mesh::Mesh as DracoMesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use gltf::json::validation::{Checked, USize64};
 use gltf::json::{self, Index, Path, Value, accessor, buffer, mesh};
+use std::mem::size_of;
 
 /// The extension a compressed primitive declares.
 pub(super) const EXTENSION: &str = "KHR_draco_mesh_compression";
@@ -54,16 +55,27 @@ pub(super) fn fill_accessors(
             let attribute = geometry
                 .attribute_by_unique_id(*unique_id)
                 .ok_or_else(|| invalid("a Draco attribute id is missing from the stream"))?;
-            let components = match root
-                .accessors
-                .get(*accessor_index)
-                .map(|accessor| &accessor.type_)
-            {
-                Some(Checked::Valid(kind)) => kind.multiplicity(),
-                _ => return Err(invalid("a Draco accessor has an invalid type")),
+            let (components, accessor_normalized) = match root.accessors.get(*accessor_index) {
+                Some(accessor) => match &accessor.type_ {
+                    Checked::Valid(kind) => (kind.multiplicity(), accessor.normalized),
+                    Checked::Invalid => {
+                        return Err(invalid("a Draco accessor has an invalid type"));
+                    }
+                },
+                None => return Err(invalid("a Draco primitive names a missing accessor")),
             };
-            let values = read_attribute(attribute, points, components);
+            if (attribute.num_components() as usize) < components {
+                return Err(invalid(
+                    "a Draco attribute has fewer components than its accessor declares",
+                ));
+            }
             let joints = semantic.starts_with("JOINTS_");
+            // The accessor declaration decides normalization; the bitstream flag is
+            // only a fallback for exporters that set it, since most leave it clear.
+            // Joint indices are written back as integers, so they are never rescaled
+            // into 0..1.
+            let normalize = !joints && (accessor_normalized || attribute.normalized());
+            let values = read_attribute(attribute, points, components, normalize);
             let bytes = encode(&values, joints);
             let view = push_view(root, buffer_index, &mut blob, bytes);
 
@@ -76,8 +88,11 @@ pub(super) fn fill_accessors(
             } else {
                 accessor::ComponentType::F32
             }));
-            // min/max come from the document: glTF requires them on POSITION
-            // and a conformant generator writes them for the decoded data.
+            // min/max are kept as the document wrote them. glTF requires them on
+            // POSITION and a conformant generator writes them for the decoded data.
+            // A normalized integer accessor stores them unscaled while this rewrite
+            // bakes the scale into the values, so for that case alone they no longer
+            // describe the data; nothing in this loader reads them.
             accessor.normalized = false;
         }
 
@@ -141,6 +156,12 @@ fn push_view(
     blob: &mut Vec<u8>,
     bytes: Vec<u8>,
 ) -> Index<buffer::View> {
+    // glTF requires a buffer view's byte offset into its buffer to be a
+    // multiple of the accessor's component size. Padding the loader-owned
+    // blob to the widest component the decoder writes keeps that true even
+    // when a stream is not naturally a multiple of four bytes.
+    const ALIGNMENT: usize = size_of::<f32>();
+    blob.resize(blob.len().div_ceil(ALIGNMENT) * ALIGNMENT, 0);
     let offset = blob.len();
     let length = bytes.len();
     blob.extend(bytes);
@@ -176,13 +197,20 @@ fn encode(values: &[f32], joints: bool) -> Vec<u8> {
     }
 }
 
-/// Widen a decoded attribute into f32 rows, applying glTF's normalized
-/// integer rule: Draco's reader widens integers but does not rescale them.
-fn read_attribute(attribute: &PointAttribute, points: usize, components: usize) -> Vec<f32> {
+/// Widen a decoded attribute into f32 rows, rescaling normalized integers.
+///
+/// Draco's reader widens integers without rescaling, and the rewritten
+/// accessor is a float, so the normalization has to be baked into the values.
+/// `normalize` comes from the accessor declaration (or the bitstream flag),
+/// not from the bitstream alone: most exporters leave that flag clear.
+fn read_attribute(
+    attribute: &PointAttribute,
+    points: usize,
+    components: usize,
+    normalize: bool,
+) -> Vec<f32> {
     let mut values = attribute.read_f32s(points, components);
-    if attribute.normalized()
-        && let Some(max) = integral_max(attribute.data_type())
-    {
+    if normalize && let Some(max) = integral_max(attribute.data_type()) {
         let signed = matches!(
             attribute.data_type(),
             DataType::Int8 | DataType::Int16 | DataType::Int32
@@ -269,10 +297,10 @@ fn collect(root: &json::Root) -> Result<Vec<Compressed>, gltf::Error> {
 
             let mut attributes = Vec::new();
             for (semantic, accessor) in &primitive.attributes {
+                // An invalid semantic cannot name a stream attribute; glTF's
+                // own validation reports it, so leave it alone here.
                 let Checked::Valid(semantic) = semantic else {
-                    return Err(invalid(
-                        "a Draco primitive has an invalid attribute semantic",
-                    ));
+                    continue;
                 };
                 let name = semantic.to_string();
                 let Some(unique_id) = ids.get(&name).and_then(Value::as_u64) else {

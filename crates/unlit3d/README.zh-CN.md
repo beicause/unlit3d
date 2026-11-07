@@ -504,7 +504,8 @@ impl InstanceContext<'_> {
 包括 wasm32。glTF 自身的校验会拒绝该扩展，也会拒绝那些数据只存在于压缩流中、
 没有 buffer view 的 accessor；因此加载器不经校验重新解析这类文档，用扩展里的
 「属性语义 → 属性 unique id」映射解码每条流，再把解码出的数据回填成普通的 buffer view
-与 accessor，最后用 `Document::from_json` 对修复后的文档做正常校验。此后所有 reader——
+与 accessor：归一化整数按 accessor 自身的声明缩放（多数导出器不设流里的标志），再写成
+浮点 accessor。最后用 `Document::from_json` 对修复后的文档做正常校验。此后所有 reader——
 形变目标、蒙皮、动画以及网格上传本身——看到的都只有 accessor；扩展允许使用的
 `TRIANGLE_STRIP` primitive 会在解码流时被规范化成三角形列表。不含压缩 primitive 的文档
 保留原本的校验错误，修复后仍存在的无关错误（比如越界的场景下标）照常上报，
