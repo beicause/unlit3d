@@ -51,9 +51,11 @@ pub const CELL_WORDS: usize = 16;
 /// How many lights one cell holds: the record minus its count word.
 pub const LIGHTS_PER_CELL: usize = CELL_WORDS - 1;
 
-/// The vertices a quad light keeps after the horizon clip: four corners plus at
-/// most one per clipped edge.
-pub const MAX_POLYGON_VERTICES: usize = 5;
+/// How many corners a quad light's polygon has.
+///
+/// A horizon clip can add one more, so whoever stores a clipped polygon sizes
+/// its array at one past this.
+pub const QUAD_LIGHT_CORNERS: usize = 4;
 
 /// How many directional lights one frame's [`LightingUniform`] carries.
 ///

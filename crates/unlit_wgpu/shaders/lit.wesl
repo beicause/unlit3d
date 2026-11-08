@@ -620,8 +620,8 @@ fn quad_radiance(light: light::LightGpu, p: vec3<f32>, n: vec3<f32>) -> vec3<f32
     if count < 3u {
         return vec3<f32>(0.0);
     }
-    var points: array<vec3<f32>, polygon::MAX_POLYGON_VERTICES>;
-    for (var i = 0u; i < count && i < polygon::MAX_POLYGON_VERTICES; i += 1u) {
+    var points: array<vec3<f32>, polygon::QUAD_LIGHT_CORNERS>;
+    for (var i = 0u; i < count && i < polygon::QUAD_LIGHT_CORNERS; i += 1u) {
         points[i] = array_access::load_light_vertex(light.kind.y + i);
     }
     // The polygon's own normal comes from its winding, which the CPU normalized

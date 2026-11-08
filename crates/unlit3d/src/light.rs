@@ -25,7 +25,7 @@ use glam::{Affine3A, UVec4, Vec2, Vec3, Vec4};
 use unlit_ecs::Scope;
 use unlit_wgpu::light::{
     BoundingSphere, DirectionalGpu, LightGpu, LightKind as GpuLightKind, LightingUniform,
-    MAX_DIRECTIONAL_LIGHTS, PackedLight,
+    MAX_DIRECTIONAL_LIGHTS, PackedLight, QUAD_LIGHT_CORNERS,
 };
 
 use crate::components::Transform;
@@ -278,10 +278,10 @@ pub struct QuadLight {
     pub range: f32,
     /// The polygon's corners in order, in the light's own space.
     ///
-    /// A quad uses all four; a triangle repeats one of them, because a convex
-    /// polygon needs three corners and the array has room for a fourth that a
-    /// horizon clip would produce.
-    pub vertices: [Vec3; 4],
+    /// A quad uses all of them; a triangle repeats one, because a convex
+    /// polygon needs three corners and the array has room for the fourth that a
+    /// triangle leaves unused.
+    pub vertices: [Vec3; QUAD_LIGHT_CORNERS],
 }
 
 impl QuadLight {
@@ -316,7 +316,7 @@ impl Light for QuadLight {
         // no area, and the shader draws nothing for it. The corners are matched
         // in the light's own space, where the caller stated them, so a scaled
         // light keeps the corners it was given.
-        let mut live = [Vec3::ZERO; 4];
+        let mut live = [Vec3::ZERO; QUAD_LIGHT_CORNERS];
         let mut count = 0;
         for corner in self.vertices {
             if count > 0 && (live[count - 1] - corner).length_squared() <= MERGED_CORNER_SQUARED {

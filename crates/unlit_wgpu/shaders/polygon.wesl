@@ -11,13 +11,15 @@
 // on where the eye is.
 //
 // The same polygon appears as a quad light's four corners or, once a horizon
-// clip has cut it, as up to `MAX_POLYGON_VERTICES` points. One extra vertex is
-// all a convex polygon needs: clipping a convex polygon by one half-space adds
-// at most one corner.
+// clip has cut it, as up to `QUAD_LIGHT_CORNERS + 1` points. One extra vertex
+// is all a convex polygon needs: clipping a convex polygon by one half-space
+// adds at most one.
 
-/// The most corners a clipped polygon can have: a quad cut by the receiver's
-/// horizon plane.
-public const MAX_POLYGON_VERTICES: u32 = 5u;
+/// How many corners a quad light's polygon has.
+///
+/// A horizon clip adds at most one more, so the clipped polygon needs
+/// `QUAD_LIGHT_CORNERS + 1` entries.
+public const QUAD_LIGHT_CORNERS: u32 = 4u;
 
 /// One edge's contribution to the polygon's form factor.
 ///
@@ -54,29 +56,33 @@ fn polygon_edge_contribution(n: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>) -> f32 
 /// the horizon and the angle sum would count area the surface cannot see.
 ///
 /// `points` is passed by value and its length is fixed at
-/// [`MAX_POLYGON_VERTICES`]; `count` says how many entries are live.
+/// [`QUAD_LIGHT_CORNERS`]; `count` says how many entries are live. The clipped
+/// polygon it writes has room for the one corner a horizon clip can add.
 public fn polygon_form_factor(
     n: vec3<f32>,
     p: vec3<f32>,
-    points: array<vec3<f32>, MAX_POLYGON_VERTICES>,
+    points: array<vec3<f32>, QUAD_LIGHT_CORNERS>,
     count: u32,
 ) -> f32 {
     // Sutherland-Hodgman against the plane through `p`: keep what a surface
     // facing `n` can see. A convex polygon crosses that plane at most twice,
     // so the output has at most one corner more than the input.
-    var clipped: array<vec3<f32>, MAX_POLYGON_VERTICES>;
+    var clipped: array<vec3<f32>, QUAD_LIGHT_CORNERS + 1>;
     var clipped_count = 0u;
     for (var i = 0u; i < count; i += 1u) {
         let current = points[i] - p;
         let next = points[(i + 1u) % count] - p;
         let current_above = dot(current, n);
         let next_above = dot(next, n);
-        if current_above >= 0.0 && clipped_count < MAX_POLYGON_VERTICES {
+        // The capacity is the worst case for a convex input, so the guards only
+        // keep the writes provably in bounds.
+        if current_above >= 0.0 && clipped_count < QUAD_LIGHT_CORNERS + 1 {
             clipped[clipped_count] = current;
             clipped_count += 1u;
         }
         // The edge crosses the horizon: interpolate the point where it does.
-        if (current_above >= 0.0) != (next_above >= 0.0) && clipped_count < MAX_POLYGON_VERTICES {
+        let crosses = (current_above >= 0.0) != (next_above >= 0.0);
+        if crosses && clipped_count < QUAD_LIGHT_CORNERS + 1 {
             let crossing = current_above / (current_above - next_above);
             clipped[clipped_count] = current + crossing * (next - current);
             clipped_count += 1u;
