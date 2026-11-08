@@ -52,12 +52,13 @@
 
 - **设计文档分散在各`README`中**：根[`README.md`](./README.md)记动机、功能与编码原则，各 crate 的`README.md`记该 crate 的设计抉择与架构。
   它们要随代码一并更新，保持最新。同时更新中英文版的`README`，不要只更新一版。
+- **`.agents/skills/unlit3d/` 里的技能文档随代码一并更新**：它是 Agent 写场景、查 API、调试示例的第一手依据，签名与约定过时会让 Agent 照旧名字写出编不过的代码，新子系统没人告诉它就等于不存在。改到渲染管线、光照、附件与目标特化、帧与输入、MCP 工具、多 world 装配这些面时，顺手核对对应那一篇；新增子系统的同时补一节。
 - **中文里引号一律用单直角引号（`「」`）**，绝不用双引号（`“”`）或引号（`""`）。
 - **代码内的文档注释、git提交信息默认全用英文**。文档注释随代码一并更新，保持最新；注释面向用户，不含无关上下文、特定于用户与Agent的会话内容、显而易见的细节等。
 - **不要看docs/internal/**。这里面是 WIP 的实施细节，极易过时且可能存在错误。
 - **测试生成的二进制快照文件一律放`unlit3d_asset_files`子模块中**。
 - **快照不匹配的帧写在 `target/` 下，每一趟各占一个目录**：`cargo xtask test` 的默认档位在 `target/snapshot-mismatches`，`UNLIT3D_DEVICE_TIER=webgl2` 那趟在 `target/snapshot-mismatches-webgl2`，`cargo xtask test-wasm` 在 `target/snapshot-mismatches-wasm`。单独跑测试时，目录由 `UNLIT3D_SNAPSHOT_MISMATCH_DIR` 指定，未设置则用 `target/snapshot-mismatches`。
-- **调试 examples 时，可以用 unlit3d-mcp 技能，绝不用截屏软件**。
+- **调试 examples 时，可以用 unlit3d 技能里的 MCP 宿主，绝不用截屏软件**。
 - **跑测试用 `cargo nextest run`，不用 `cargo test`**。`nextest`比`test`更快，输出格式更友好。唯一例外是`cargo test --doc`，因为 `nextest` 不跑 doctest。`cargo xtask test`快捷命令会跑 nextest 和 doctest 两者。
 - **本地跑 cargo 时，不用设 RUSTFLAGS**，遵循本地 cargo 配置即可，不要照抄 CI 设置 RUSTFLAGS `debuginfo=0`，设置它会让编译缓存失效。
 - **常用命令见 `cargo xtask --help`**，以及 `xtask` 包目录的 [`README.md`](./xtask/README.md)。

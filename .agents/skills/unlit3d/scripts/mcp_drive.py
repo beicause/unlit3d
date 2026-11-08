@@ -16,9 +16,9 @@ is always named explicitly.
 Usage:
   mcp_drive.py --bin ./target/debug/unlit3dx-examples '[{"call": "list_worlds"}, {"sleep": 6},
                  {"call": "save_screenshot",
-                  "args": {"world": {"Handle": 5}, "directory": "/tmp"}}]'
+                  "args": {"directory": "/tmp", "file_name": "shot.png"}}]'
   mcp_drive.py --bin ./target/debug/unlit3d-examples \\
-               --args '--mcp --scene spin_cube' '[{"call": "list_worlds"}]'
+               --args='--mcp --scene spin_cube' '[{"call": "list_worlds"}]'
 '''
 import argparse
 import json
