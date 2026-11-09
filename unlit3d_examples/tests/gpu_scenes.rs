@@ -196,6 +196,27 @@ const LETTERBOX_TOLERANCE: Tolerance = Tolerance {
 /// drawn frame. `frames` names the snapshots in frame order, and the scene's own
 /// table is walked alongside it — a scene freezes only some of the frames it
 /// draws, and the two have to agree on which.
+/// The live texture behind a bound target's handle.
+///
+/// A target's handle outlives its textures: a resize replaces what the node
+/// holds, so the readback resolves the node through the frame's graph.
+fn target_texture(world: &World, scene: &Scene, target: &PersistentTarget) -> wgpu::Texture {
+    let context = world
+        .root_scope()
+        .query_one::<&Renderer>(scene.renderer)
+        .expect("the renderer is a resource entity")
+        .get()
+        .context();
+    let mut graph = context
+        .try_graph(&world.root_scope())
+        .expect("the frame's resource graph exists");
+    graph
+        .get()
+        .get(&target.texture)
+        .cloned()
+        .expect("the target texture is a resource node")
+}
+
 async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[Snapshot]) {
     let ctx = Ctx::headless().await;
     let size = def.size;
@@ -222,15 +243,19 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         .expect("the renderer is a resource entity")
         .get()
         .context();
-    let target = unlit3d_examples::bind_offscreen_target(
+    let target = PersistentTarget::bind(
         &world,
         context,
         scene.pass,
         &ctx.device,
         size,
-        def.samples,
-        def.depth,
-    );
+        TargetConfig {
+            samples: def.samples,
+            with_depth: def.depth,
+            ..TargetConfig::default()
+        },
+    )
+    .expect("the scene's pass draws into a bound target");
 
     // Only the frames a scene freezes are read back, so the frames between two
     // captures are stepped without being drawn. That leans on a draw not
@@ -269,8 +294,8 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
             def.id
         );
 
-        let bytes =
-            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
+        let texture = target_texture(&world, &scene, &target);
+        let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &texture);
         assert_image_snapshot_with_tolerance(*snapshot, &bytes, size.0, size.1, tolerance);
         compared += 1;
     }
@@ -317,15 +342,19 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         .expect("the renderer is a resource entity")
         .get()
         .context();
-    let target = unlit3d_examples::bind_offscreen_target(
+    let target = PersistentTarget::bind(
         &world,
         context,
         scene.pass,
         &ctx.device,
         size,
-        def.samples,
-        def.depth,
-    );
+        TargetConfig {
+            samples: def.samples,
+            with_depth: def.depth,
+            ..TargetConfig::default()
+        },
+    )
+    .expect("the scene's pass draws into a bound target");
 
     // Only the last frame is compared, so only it is drawn: the frames before
     // it are stepped for the state they leave behind, and the frame before the
@@ -339,7 +368,8 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         scene.end_frame(&mut world).unwrap();
     }
 
-    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
+    let texture = target_texture(&world, &scene, &target);
+    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &texture);
     assert_image_snapshot_with_tolerance(snapshot, &bytes, size.0, size.1, LETTERBOX_TOLERANCE);
 }
 

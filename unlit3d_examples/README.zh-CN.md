@@ -3,8 +3,8 @@
 # unlit3d_examples
 
 一个带 egui 叠加层、可切换场景的窗口化示例，通过
-[`unlit3d::winit::WindowSurface`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
-渲染。它的场景也会由 `tests/gpu_suite.rs` 离屏绘制，逐帧与存储的快照比较，因此它既是
+[`unlit3d::winit::presenter`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md#呈现一帧)
+呈现。它的场景也会由 `tests/gpu_suite.rs` 离屏绘制，逐帧与存储的快照比较，因此它既是
 本工作区的示例程序，也是一项渲染回归检查。Android APK 把它作为所打包的两个示例
 之一，另一个是 [`unlit3dx_examples`](../unlit3dx_examples/README.zh-CN.md)。
 

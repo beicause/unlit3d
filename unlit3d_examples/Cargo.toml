@@ -49,7 +49,6 @@ unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-feature
 # The glTF documents the scenes embed. Their own crate because the bytes would
 # otherwise sit in this crate's metadata, copied for every crate that reads it.
 unlit3d_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.3", default-features = false }
-web-time.workspace = true
 # A URL the UI asks to open is opened by this one call on every platform.
 webbrowser.workspace = true
 # The GPU-info panel reads the device's limits from their serde description,

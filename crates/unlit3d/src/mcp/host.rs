@@ -683,6 +683,9 @@ pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value
 }
 
 /// The offscreen texture a screenshot reads, from `handle` or by query.
+///
+/// `id` may name the texture or any view of it, since a caller that draws
+/// into an offscreen target knows the view its pass binds.
 fn screenshot_target(
     world: &World,
     context: RenderContext,
@@ -696,6 +699,7 @@ fn screenshot_target(
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
         return match graph.get::<Resource>(&handle) {
             Some(Resource::Texture(texture)) => Ok(texture.clone()),
+            Some(Resource::TextureView(view)) => Ok(view.texture().clone()),
             _ => Err(format!("resource id {} is not a texture", id.to_bits())),
         };
     }

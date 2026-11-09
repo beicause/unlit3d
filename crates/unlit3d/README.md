@@ -17,7 +17,7 @@ directly, and you are expected to know WebGPU to use it well.
 | Feature | Default | Provides |
 |---------|---------|----------|
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
-| `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
+| `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into an `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 | `mcp` | no | the `mcp` module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
@@ -166,10 +166,14 @@ without the tree changing.
   offscreen target and a pass copying that target onto the swap chain are two
   entities in one world, not two worlds.
 - A pass names views; it does not own them. Attachments come from a
-  [`FrameAttachments`](attachments::FrameAttachments) or a
-  [`WindowSurface`](winit::WindowSurface), both of which live in the same world and keep
-  their handles stable, so a pass can take a new color view every frame
-  without the sources below it being rebuilt.
+  [`FrameAttachments`](attachments::FrameAttachments), a
+  [`WindowSurface`](winit::WindowSurface) or a
+  [`PersistentTarget`](offscreen::PersistentTarget), all of which live in the same world
+  and keep their handles stable, so a pass can take a new color view every frame
+  without the sources below it being rebuilt. A surface's color view is the swap
+  chain's and changes every frame; a persistent target's is a texture of its own
+  and changes only on resize, which is what lets a screenshot read the frame after
+  it was presented.
 - Each source fills a [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, and the
   renderer records that scene into the pass opened over the pass's
   attachments. A frame is therefore still one encoder and one submission, no
@@ -1180,7 +1184,8 @@ The `winit` module is three layers. `winit::surface` is the presentation half:
 [`WindowSurface`](winit::WindowSurface) configures a window's swap chain and
 hands out a [`Frame`](winit::Frame), and
 [`FrameAttachments`](attachments::FrameAttachments) holds the depth and
-multisample targets a frame draws with. `winit::event` is the bridge: every
+multisample targets a frame draws with. `winit::presenter` composes the two into
+the ready-made windowed loop (see [Presenting a frame](#presenting-a-frame)). `winit::event` is the bridge: every
 `ApplicationHandler` callback has a behaviour-component family, and
 [`WinitHost`](winit::event::WinitHost) is the one `ApplicationHandler` an
 application implements — it owns the world, dispatches each callback to its
@@ -1234,6 +1239,53 @@ host.world_mut()
 host.run(event_loop)
 # }
 ```
+
+### Presenting a frame
+
+[`winit::presenter`](winit::presenter) is the ready-made windowed loop. It
+builds a [`Presenter`](winit::presenter::Presenter) component once the GPU
+answers, and three behaviours drive it: [`pump_presented`](winit::presenter::pump_presented)
+keeps frames coming, [`present_frames`](winit::presenter::present_frames) draws
+the world's passes into the swap chain, and
+[`resize_presented`](winit::presenter::resize_presented) follows the window.
+
+Which way the picture reaches the window is
+[`PresentationPath`](winit::presenter::PresentationPath):
+
+| Path | What the scene draws into | Cost | Readable after present |
+|------|---------------------------|------|------------------------|
+| `Surface` | the swap chain image itself | one pass | no |
+| `Intermediate` | a `PersistentTarget` texture, then a blit pass copies it onto the swap chain | two passes | yes |
+
+`Surface` is the plain window: fewest passes, but the swap chain image is
+recycled on present and is not a resource-graph node, so nothing can read it
+back. `Intermediate` pays one blit to keep the frame in a texture that
+outlives the present -- what a screenshot, a snapshot test or a later
+post-processing chain needs. The target's size is its own
+[`IntermediateSize`](offscreen::IntermediateSize): a multiple of the window
+(`Scale(1.0)` follows it, `Scale(0.5)` renders at half the width and height)
+or a fixed pixel size.
+
+These are the primitives, and the presenter composes them; a caller
+assembling its own loop uses them directly:
+
+| Want | Use |
+|------|-----|
+| draw into a window, nothing reads the frame | a pass with the surface's attachments ([`WindowSurface`](winit::WindowSurface) plus [`FrameAttachments`](attachments::FrameAttachments)) |
+| draw into a window and read the frame | `PresentationPath::Intermediate`, or a [`PersistentTarget`](offscreen::PersistentTarget) plus a pass with a [`BlitSource`](blit::BlitSource) |
+| draw with no window at all | a pass with a `PersistentTarget`, then `readback_texture`; no presenter involved |
+| draw with no target at all | a pass with no attachments: the sources still build their scenes, nothing is recorded |
+
+A presenter needs a window because it presents; the two pure-offscreen forms
+do not, which is how the snapshot tests and the headless examples draw.
+
+An MCP screenshot reads a texture out of the resource graph by handle, so it
+sees the frame only under `Intermediate` -- a swap chain image is not a node.
+The tools take an optional `target` resource id — either the texture's own id
+or any view of it, since the pass that draws into an offscreen target usually
+holds only the view; without one they pick the world's only readable texture
+and report the ambiguity when a chain has several, which is the hook a
+post-processing chain uses to choose which stage to capture.
 
 ## Tests
 

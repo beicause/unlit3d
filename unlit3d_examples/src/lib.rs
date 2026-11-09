@@ -18,11 +18,12 @@ use unlit_ecs::{Bundle, DynamicBundle, bundle};
 
 use cli::{Args, Parsed};
 use scenes::{Advance, SceneControl};
+use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::scene::ViewportRect;
 use unlit3d::frame::Frame;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
-use unlit3d::winit::WindowSurface;
 use unlit3d::winit::builtin::{
     DisplayHandle, ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, WinitProxy,
     request_redraw_while_foreground, window, winit_input_behaviour,
@@ -30,12 +31,7 @@ use unlit3d::winit::builtin::{
 #[cfg(target_os = "android")]
 use unlit3d::winit::event::OnSuspended;
 use unlit3d::winit::event::{OnUserEvent, OnWindowEvent, WinitHost};
-// `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
-// library has no clock; `web-time` reads the browser's `Performance.now()`
-// there and re-exports `std::time` everywhere else.
-use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureView};
-use unlit_wgpu::scene::ViewportRect;
-use web_time::Instant;
+use unlit3d::winit::presenter::SCENE_PASS_ORDER;
 use winit::event::WindowEvent;
 use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::Window;
@@ -50,35 +46,17 @@ const SAMPLE_COUNT: u32 = scenes::spin_cube::SAMPLE_COUNT;
 /// reproducible instead, and this is the fixed step that makes it so.
 pub const FIXED_STEP: f32 = 1.0 / 60.0;
 
-/// The format a scene is rendered into when it is drawn without a display.
-///
-/// sRGB, like the view a window surface presents through: it is what lets the
-/// built-in lit shader's colors reach the readback unchanged.
-const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-/// The order of the pass a scene draws its content in.
-///
-/// It is the first pass of the frame; a run that presents through a blit adds
-/// a second pass ordered after it.
-const SCENE_ORDER: FramePassOrder = FramePassOrder(0);
-
-/// The order of the pass that blits the offscreen frame into the swap chain.
-///
-/// The scene draws with the pass at order `0`; the blit pass comes after it,
-/// so one render records the scene first and then presents it.
-const BLIT_ORDER: FramePassOrder = FramePassOrder(1);
-
 /// The order the controls run at.
 ///
 /// `ensure_presented` states no order: it is the one that sets the frame's skip
 /// flag, and a behaviour that reads the flag states a later order rather than
 /// leaving the two to chance. The controls come first of those readers, since
 /// switching a scene skips the frame for the two after them.
-const CONTROLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(10);
+const CONTROLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-30);
 
 /// The order the scene advances at: after the controls, which may have skipped
 /// the frame, and before the present, which draws what the advance produced.
-const ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(20);
+const ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-20);
 
 /// The order the frame presents at: after the advance, so what it draws is the
 /// frame the advance produced.
@@ -186,167 +164,6 @@ pub fn run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// An offscreen target a pass draws into, and the view of it the next pass
-/// samples.
-///
-/// The texture is kept so a readback can copy out of it and a resize can drop
-/// it; the view is the handle the blit pass's [`BlitSource`] is pointed at,
-/// and it lives in the same resource graph as the attachments — a source
-/// samples a view the frame's graph holds, not one it makes for itself.
-pub struct OffscreenTarget {
-    /// The color texture the pass's frames land in.
-    pub texture: wgpu::Texture,
-    /// A view of `texture`, registered in the frame's resource graph.
-    pub view: ResHandle<TextureView>,
-}
-
-/// Bind an offscreen `size`-pixel target to `pass`, and return it with a view
-/// of the texture the frames land in.
-///
-/// The attachments go into the frame's resource graph exactly as a window
-/// surface's do, so the renderer specializes its pipelines on them the same
-/// way — and the color texture is the one a readback copies out of. A scene
-/// declares its own sample count and whether it draws into a depth attachment,
-/// matching how its snapshots were captured.
-pub fn bind_offscreen_target(
-    world: &World,
-    context: RenderContext,
-    pass: Entity,
-    device: &wgpu::Device,
-    size: (u32, u32),
-    samples: u32,
-    with_depth: bool,
-) -> OffscreenTarget {
-    use unlit_wgpu::render_attachments::create_color_target;
-    use unlit_wgpu::resources::TextureExt;
-
-    let color = create_color_target(device, OFFSCREEN_FORMAT, size.0, size.1);
-    // The texture is registered as a resource in its own right, and the view
-    // depends on it, so the pass holding the view keeps the texture alive —
-    // and a screenshot can resolve the texture by handle and read it back.
-    let color_view = {
-        let mut graph = context.graph(&world.root_scope());
-        let texture = graph.get().insert(color.clone(), None);
-        let view = graph.get().insert(
-            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
-        graph.get().add_dependency(&view, &texture);
-        view
-    };
-    let attachments =
-        FrameAttachments::new(world, context, OFFSCREEN_FORMAT, size, samples, with_depth);
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| {
-            pass.get().set_attachments(&attachments, color_view.clone());
-        })
-        .expect("the pass entity exists");
-
-    OffscreenTarget {
-        texture: color,
-        view: color_view,
-    }
-}
-
-/// Mount the pass that samples `view` into the swap chain, and the source it
-/// draws with.
-///
-/// The pass is a second [`FramePass`] in the scene's own world, ordered after
-/// the pass the scene draws with, so one render walks both and one submission
-/// carries the frame. It is given the default load ops, clearing the surface
-/// before the fullscreen triangle covers it.
-fn mount_blit(world: &mut World, view: ResHandle<TextureView>) -> Blit {
-    let pass = world.root_scope_mut().spawn(Pass::new(BLIT_ORDER));
-    let source = world
-        .scope_mut(pass)
-        .expect("the pass was just spawned")
-        .spawn(bundle![Source::new(BlitSource::new(view))]);
-    Blit { pass, source }
-}
-
-/// Rebuild the offscreen target for a new window size, and point the blit at
-/// it.
-///
-/// The color texture the scene's frames land in and the attachments the pass
-/// draws into are replaced for the new size. The new texture is registered in
-/// the scene world's graph, as at first bind, so a screenshot can still resolve
-/// it by handle; the blit source is pointed at a view of it, which makes
-/// `BlitSource` rebuild its bind group on the next frame. The `Offscreen` slot
-/// is re-pointed at the new target as well, so it never names a texture the
-/// frames no longer land in.
-fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
-    let (width, height) = size;
-    if width == 0 || height == 0 {
-        return;
-    }
-    let Some(scene_entity) = world
-        .root_scope()
-        .query_one::<&SceneEntity>(app)
-        .ok()
-        .and_then(|mut slot| slot.get().0)
-    else {
-        return;
-    };
-    let Some(gpu) = gpu(world, app) else {
-        return;
-    };
-    let def = world
-        .root_scope()
-        .query_one::<&InitialScene>(app)
-        .expect("the app entity carries its initial scene")
-        .get()
-        .0;
-    let mut scene_world = world
-        .root_scope()
-        .query_one::<&World>(scene_entity)
-        .expect("the scene entity carries a world");
-    let mut scene = world
-        .root_scope()
-        .query_one::<&Scene>(scene_entity)
-        .expect("the scene entity carries a scene");
-    let (pass, blit) = (scene.get().pass, scene.get().blit);
-    let context = scene_world
-        .get()
-        .root_scope()
-        .query_one::<&Renderer>(scene.get().renderer)
-        .expect("the renderer is a resource entity")
-        .get()
-        .context();
-    let target = bind_offscreen_target(
-        scene_world.get(),
-        context,
-        pass,
-        &gpu.device,
-        size,
-        def.samples,
-        def.depth,
-    );
-    let Some(blit) = blit else {
-        return;
-    };
-    // The blit samples a view the frame's graph holds, so the source is
-    // pointed at the rebuilt target's view and rebuilds its bind group on the
-    // next frame.
-    let view = target.view.clone();
-    let _ = world
-        .root_scope()
-        .query_one::<&mut Offscreen>(app)
-        .map(|mut slot| slot.get().0 = Some(target));
-    let _ = scene_world
-        .get()
-        .root_scope()
-        .query_one::<&mut Source>(blit.source)
-        .map(|mut source| {
-            source
-                .get()
-                .as_mut::<BlitSource>()
-                .expect("the blit pass's source is a blit")
-                .view = view;
-        });
-}
-
 /// Drive the windowed example on `event_loop` until it exits.
 ///
 /// The loop is built by the caller, because that is the one thing the entry
@@ -419,6 +236,9 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         .spawn(bundle![serve_scene_controls(app)]);
     world.root_scope_mut().spawn(bundle![advance_scene(app)]);
     world.root_scope_mut().spawn(bundle![present_frame(app)]);
+    let (pump, redraw) = pump_presented();
+    world.root_scope_mut().spawn(bundle![pump]);
+    world.root_scope_mut().spawn(bundle![redraw]);
     // A resize is a second `OnWindowEvent` behaviour, so it sits on its own
     // entity: two of one family on an entity would be two borrows of one cell.
     world.root_scope_mut().spawn(bundle![resize_scene(app)]);
@@ -452,19 +272,6 @@ enum UserEvent {
     /// callbacks mutably and the one that runs it takes it out.
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     Command(Option<unlit_ecs::mcp::McpCommand>),
-}
-
-/// The scene's blit pass, in MCP mode only.
-///
-/// The pass draws the offscreen frame the scene's own pass produced into the
-/// swap chain. It is a second [`FramePass`] in the same world, ordered after
-/// the scene's, so one render walks both passes in one submit.
-#[derive(Clone, Copy)]
-pub struct Blit {
-    /// The pass that draws the offscreen frame into the swap chain.
-    pub pass: Entity,
-    /// The source under that pass that samples the offscreen target.
-    pub source: Entity,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -599,12 +406,6 @@ pub struct Scene {
     /// in the frame: a pass records the sources in its own scope, so the pass a
     /// source's entity sits under is the pass its scene is drawn in.
     pub pass: Entity,
-    /// The pass that presents that frame's offscreen target into a swap chain,
-    /// in MCP mode only.
-    ///
-    /// It is a second pass in the same world rather than a world of its own, so
-    /// the scene and the blit record in one walk of one renderer.
-    pub blit: Option<Blit>,
     /// The snapshot the scene's test compares each frame against, if any.
     ///
     /// The scene's per-frame behaviour is not here: it was moved into the
@@ -698,23 +499,8 @@ impl Bundle for RenderWorld {
 )]
 struct WorldName(&'static str);
 
-/// The swap chain the presented world draws through, absent while suspended.
-struct SurfaceSlot(Option<WindowSurface>);
-
-/// The depth and multisample attachments the presented frame draws with, built
-/// with the surface and dropped with it.
-///
-/// They belong to the pass the swap chain's image is drawn into — the scene's
-/// own pass, or the MCP run's blit pass — so they are rebuilt when that pass
-/// is.
-struct AttachmentsSlot(Option<FrameAttachments>);
-
-/// The target the MCP scene's frames land in, in MCP mode. The blit pass
-/// samples it.
-struct Offscreen(Option<OffscreenTarget>);
-
-/// The time the previous frame was drawn at, for the frame delta.
-struct LastFrame(Instant);
+/// The presentation path, absent until the scene and surface are ready.
+struct PresenterSlot(Option<Presenter>);
 
 /// The scene the example starts with; a switch replaces it.
 struct InitialScene(&'static scenes::SceneDef);
@@ -748,10 +534,7 @@ impl Bundle for App {
         bundle![
             GpuState::Idle,
             SceneEntity(None),
-            Offscreen(None),
-            SurfaceSlot(None),
-            AttachmentsSlot(None),
-            LastFrame(Instant::now()),
+            PresenterSlot(None),
             InitialScene(self.scene),
             SelectorPos(None),
             GpuInfoPos(None),
@@ -759,7 +542,6 @@ impl Bundle for App {
             ExitRequest(false),
             WinitProxy(self.proxy),
             FrameSkip::default(),
-            draw_on_redraw(),
         ]
     }
 }
@@ -803,39 +585,6 @@ impl PanelRects {
 /// False on the web and on Android, which have no stdio transport; see
 /// [`MCP_SUPPORTED`].
 struct McpEnabled(bool);
-
-/// One frame's work, deferred to the host's apply.
-///
-/// The frame is a dispatch of the host world's `OnFrame` behaviours, which
-/// need `&World`; the command is what hands them a `&mut World`, so it
-/// computes the frame's delta and drives them. It is applied between two event
-/// callbacks, so no frame is drawn while one is being handled.
-struct DrawFrame {
-    /// The app entity carrying the state the frame reads and writes.
-    app: Entity,
-}
-
-impl Command for DrawFrame {
-    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        let app = self.app;
-        let now = Instant::now();
-        let delta_time = world
-            .root_scope()
-            .query_one::<&LastFrame>(app)
-            .map_or(0.0, |mut last| (now - last.get().0).as_secs_f32());
-        let _ = world
-            .root_scope()
-            .query_one::<&mut LastFrame>(app)
-            .map(|mut slot| slot.get().0 = now);
-        let mut frame = Frame {
-            delta_time,
-            index: 0,
-            size: (0, 0),
-        };
-        dispatch_frame(world, &mut frame);
-        Ok(())
-    }
-}
 
 /// The interval a scene's index advances at, in seconds, or `None` to advance
 /// it once per drawn frame.
@@ -955,34 +704,54 @@ fn gpu(world: &World, app: Entity) -> Option<Gpu> {
     }
 }
 
-/// The scene's world and the renderer entity inside it.
+/// Build the presentation path once the scene's queued world has landed.
 ///
-/// The swap chain is presented by a pass of that same world — the scene's own,
-/// or the MCP run's blit pass — so one world is all a frame reaches through.
-fn with_presented<R>(world: &World, app: Entity, f: impl FnOnce(&World, Entity) -> R) -> Option<R> {
-    let scene = world
-        .root_scope()
-        .query_one::<&SceneEntity>(app)
-        .ok()?
-        .get()
-        .0?;
-    let mut nested = world.root_scope().query_one::<&World>(scene).ok()?;
-    let renderer = world
-        .root_scope()
-        .query_one::<&Scene>(scene)
-        .ok()?
-        .get()
-        .renderer;
-    Some(f(nested.get(), renderer))
+/// The window is created before the GPU request, so the raw surface can travel
+/// through the asynchronous setup. `BuildPresenter` creates the library surface
+/// from that raw handle on the main thread, after the scene world exists.
+struct BuildPresenter {
+    app: Entity,
+    scene: Entity,
+    renderer: Entity,
+    pass: Entity,
+    gpu: Gpu,
+    size: (u32, u32),
+    surface: wgpu::Surface<'static>,
+    path: PresentationPath,
 }
 
-/// Bring the scene and the swap chain up, as far as the state allows.
+impl Command for BuildPresenter {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
+        let presenter = match build_presenter(
+            world,
+            Some(self.scene),
+            self.renderer,
+            self.pass,
+            self.surface,
+            &self.gpu.instance,
+            &self.gpu.adapter,
+            self.size,
+            self.path,
+        ) {
+            Ok(presenter) => presenter,
+            Err(error) => {
+                log::error!("failed to build the presentation path: {error}");
+                return Ok(());
+            }
+        };
+        world
+            .root_scope()
+            .query_one::<&mut PresenterSlot>(self.app)?
+            .get()
+            .0 = Some(presenter);
+        Ok(())
+    }
+}
+
+/// Bring the scene and its presentation path up, as far as the state allows.
 ///
-/// A callback only has `&World`, so the scene's world cannot be spawned from
-/// one: it is queued and the entity the queue reserves is kept, and the host's
-/// apply lands the world. This runs again on the next frame and finishes what
-/// the previous pass could not, because the offscreen target, the blit pass and
-/// the swap chain are all built out of the world that has by then landed.
+/// Spawning the scene world and building its surface both need `&mut World`,
+/// so they are queued. The next frame finishes whichever stage has landed.
 fn present(world: &World, app: Entity) {
     let Some(gpu) = gpu(world, app) else {
         return;
@@ -990,8 +759,8 @@ fn present(world: &World, app: Entity) {
     let Some(window) = window(world) else {
         return;
     };
-    let size = window.inner_size();
-    let size = (size.width.max(1), size.height.max(1));
+    let window_size = window.inner_size();
+    let size = (window_size.width.max(1), window_size.height.max(1));
     let def = world
         .root_scope()
         .query_one::<&InitialScene>(app)
@@ -1002,10 +771,6 @@ fn present(world: &World, app: Entity) {
         .root_scope()
         .query_one::<&McpEnabled>(app)
         .is_ok_and(|mut mcp| mcp.get().0);
-
-    // Phase one: the scene's world. Its build needs the GPU context and the
-    // window's size, both of which are known here, and the queue reserves the
-    // entity the world lands on.
     let scene_entity = match world
         .root_scope()
         .query_one::<&SceneEntity>(app)
@@ -1051,88 +816,21 @@ fn present(world: &World, app: Entity) {
         .query_one::<&World>(scene_entity)
         .is_err()
     {
-        // The queued spawn has not landed yet; the next frame retries.
         return;
     }
-    let renderer = world
-        .root_scope()
-        .query_one::<&Scene>(scene_entity)
-        .expect("the scene entity carries a scene")
-        .get()
-        .renderer;
-    let _ = world
-        .root_scope()
-        .query_one::<&mut Scene>(scene_entity)
-        .map(|mut scene| scene.get().resize(size, def.baseline));
-
-    // Phase two, MCP mode only: the offscreen target the scene's own pass
-    // renders into, and the pass that blits it into the swap chain.
-    if mcp {
-        let (pass, bound_blit) = {
-            let mut scene = world
-                .root_scope()
-                .query_one::<&Scene>(scene_entity)
-                .expect("the scene entity carries a scene");
-            (scene.get().pass, scene.get().blit)
-        };
-        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
-            return;
-        };
-        let context = nested
-            .get()
+    let (renderer, pass) = {
+        let mut scene = world
             .root_scope()
-            .query_one::<&Renderer>(renderer)
-            .expect("the renderer is a resource entity")
-            .get()
-            .context();
-        if world
-            .root_scope()
-            .query_one::<&Offscreen>(app)
-            .is_ok_and(|mut slot| slot.get().0.is_none())
-        {
-            let target = bind_offscreen_target(
-                &*nested.get(),
-                context,
-                pass,
-                &gpu.device,
-                size,
-                def.samples,
-                def.depth,
-            );
-            let view = target.view.clone();
-            let _ = world
-                .root_scope()
-                .query_one::<&mut Offscreen>(app)
-                .map(|mut slot| slot.get().0 = Some(target));
-            let blit = mount_blit(&mut *nested.get(), view);
-            let _ = world
-                .root_scope()
-                .query_one::<&mut Scene>(scene_entity)
-                .map(|mut scene| scene.get().blit = Some(blit));
-            return;
-        }
-        if bound_blit.is_none() {
-            let view = world
-                .root_scope()
-                .query_one::<&Offscreen>(app)
-                .ok()
-                .and_then(|mut slot| slot.get().0.as_ref().map(|target| target.view.clone()))
-                .expect("the offscreen target was just built");
-            let blit = mount_blit(&mut *nested.get(), view);
-            let _ = world
-                .root_scope()
-                .query_one::<&mut Scene>(scene_entity)
-                .map(|mut scene| scene.get().blit = Some(blit));
-            return;
-        }
-    }
-
+            .query_one::<&mut Scene>(scene_entity)
+            .expect("the scene entity carries a scene");
+        scene.get().resize(size, def.baseline);
+        (scene.get().renderer, scene.get().pass)
+    };
     if world
         .root_scope()
-        .query_one::<&SurfaceSlot>(app)
+        .query_one::<&PresenterSlot>(app)
         .is_ok_and(|mut slot| slot.get().0.is_some())
     {
-        resize_surface(world, app, size.0, size.1);
         return;
     }
     let surface = match gpu.instance.create_surface(window.clone()) {
@@ -1142,175 +840,55 @@ fn present(world: &World, app: Entity) {
             return;
         }
     };
-    let created = with_presented(world, app, |nested, renderer| {
-        nested
-            .root_scope()
-            .query_one::<&mut Renderer>(renderer)
-            .map(|mut renderer| {
-                let window_surface = WindowSurface::new(
-                    nested,
-                    &mut *renderer.get(),
-                    &gpu.instance,
-                    &gpu.adapter,
-                    window.clone(),
-                    surface,
-                );
-                let attachments = if mcp {
-                    FrameAttachments::new(
-                        nested,
-                        renderer.get().context(),
-                        window_surface.color_format(),
-                        window_surface.size(),
-                        1,
-                        false,
-                    )
-                } else {
-                    FrameAttachments::new(
-                        nested,
-                        renderer.get().context(),
-                        window_surface.color_format(),
-                        window_surface.size(),
-                        SAMPLE_COUNT,
-                        true,
-                    )
-                };
-                (window_surface, attachments)
-            })
-    });
-    let Some(Ok((window_surface, attachments))) = created else {
-        return;
+    let path = if mcp {
+        PresentationPath::Intermediate(TargetConfig {
+            samples: def.samples,
+            with_depth: def.depth,
+            ..TargetConfig::default()
+        })
+    } else {
+        PresentationPath::Surface {
+            samples: SAMPLE_COUNT,
+            with_depth: true,
+        }
     };
-    let _ = world
-        .root_scope()
-        .query_one::<&mut SurfaceSlot>(app)
-        .map(|mut slot| slot.get().0 = Some(window_surface));
-    let _ = world
-        .root_scope()
-        .query_one::<&mut AttachmentsSlot>(app)
-        .map(|mut slot| slot.get().0 = Some(attachments));
+    world.root_scope().queue().push(BuildPresenter {
+        app,
+        scene: scene_entity,
+        renderer,
+        pass,
+        gpu,
+        size,
+        surface,
+        path,
+    });
     window.request_redraw();
 }
 
-/// Re-state the surface's size and the attachments drawn with it.
-fn resize_surface(world: &World, app: Entity, width: u32, height: u32) {
-    let Ok(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
-        return;
-    };
-    let slot = slot.get();
-    let Some(surface) = slot.0.as_mut() else {
-        return;
-    };
-    with_presented(world, app, |nested, renderer| {
-        nested
-            .root_scope()
-            .query_one::<&mut Renderer>(renderer)
-            .map(|mut renderer| {
-                surface.resize(nested, &mut *renderer.get(), width, height);
-            })
-            .expect("the renderer is a resource entity");
-    });
-    let size = surface.size();
-    if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app)
-        && let Some(attachments) = attachments.get().0.as_mut()
+/// Release the surface and its attached passes before a scene is replaced.
+fn release_presenter(world: &World, app: Entity) {
+    let presenter = world
+        .root_scope()
+        .query_one::<&mut PresenterSlot>(app)
+        .ok()
+        .and_then(|mut slot| slot.get().0.take());
+    if let Some(presenter) = presenter
+        && let Err(error) = presenter.release(world)
     {
-        with_presented(world, app, |nested, _renderer| {
-            attachments.resize(nested, size);
-        });
+        log::error!("failed to release the presentation path: {error}");
     }
 }
 
-/// Drop the swap chain the platform is about to invalidate.
 #[cfg(target_os = "android")]
 fn release(world: &World, app: Entity) {
-    let Ok(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
-        return;
-    };
-    let Some(surface) = slot.get().0.take() else {
-        return;
-    };
-    let Some(scene_entity) = world
-        .root_scope()
-        .query_one::<&SceneEntity>(app)
-        .ok()
-        .and_then(|mut slot| slot.get().0)
-    else {
-        return;
-    };
-    let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) else {
-        return;
-    };
-    let mut scene = world
-        .root_scope()
-        .query_one::<&Scene>(scene_entity)
-        .expect("the scene entity carries a scene");
-    let renderer = scene.get().renderer;
-    let mcp = world
-        .root_scope()
-        .query_one::<&McpEnabled>(app)
-        .is_ok_and(|mut mcp| mcp.get().0);
-    // The pass that drew into the swap chain still names a view of it, and that
-    // id is what keeps the view alive. Parking the pass drops it, so the view
-    // goes with the surface the release collects.
-    let nested_world = nested.get();
-    if let Some(presenting) = presenting_pass(scene.get(), mcp) {
-        let _ = nested_world
-            .root_scope()
-            .query_one::<&mut FramePass>(presenting)
-            .map(|mut pass| pass.get().park());
-    }
-    nested_world
-        .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            surface.release(nested_world, &mut *renderer.get());
-        })
-        .expect("the renderer is a resource entity");
-    if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app) {
-        attachments.get().0 = None;
-    }
+    release_presenter(world, app);
 }
 
 /// Rebuild the app around a different scene.
 fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
-    let released = world
-        .root_scope()
-        .query_one::<&mut SurfaceSlot>(app)
-        .ok()
-        .and_then(|mut slot| slot.get().0.take());
-    if let Some(surface) = released
-        && let Some(scene_entity) = world
-            .root_scope()
-            .query_one::<&SceneEntity>(app)
-            .ok()
-            .and_then(|mut slot| slot.get().0)
-        && let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity)
-    {
-        let renderer = world
-            .root_scope()
-            .query_one::<&Scene>(scene_entity)
-            .expect("the scene entity carries a scene")
-            .get()
-            .renderer;
-        let nested = nested.get();
-        nested
-            .root_scope()
-            .query_one::<&mut Renderer>(renderer)
-            .map(|mut renderer| {
-                surface.release(nested, &mut *renderer.get());
-            })
-            .expect("the renderer is a resource entity");
-    }
-    if let Ok(mut attachments) = world.root_scope().query_one::<&mut AttachmentsSlot>(app) {
-        attachments.get().0 = None;
-    }
-    // The MCP run's offscreen target was built around the scene a switch just
-    // dropped, so it goes with it: the rebuilt scene binds a target of its own,
-    // and its blit pass samples that one. The world holding it is despawned
-    // below, passes and sources with it. The switching frame skips drawing, so
-    // nothing renders into the target being released.
-    if let Ok(mut offscreen) = world.root_scope().query_one::<&mut Offscreen>(app) {
-        offscreen.get().0 = None;
-    }
+    // The target and blit belong to the scene world, so both go with it.
+    // The switching frame skips drawing before the replacement is built.
+    release_presenter(world, app);
     if let Some(entity) = world
         .root_scope()
         .query_one::<&mut SceneEntity>(app)
@@ -1324,7 +902,6 @@ fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
     }
     present(world, app);
 }
-
 /// Run the scene world's input dispatch for the frame.
 fn dispatch_input_on_frame() -> OnFrame {
     OnFrame::new(|world, _entity, _frame| {
@@ -1411,13 +988,13 @@ fn ensure_presented(app: Entity) -> OnFrame {
         }
         if !world
             .root_scope()
-            .query_one::<&SurfaceSlot>(app)
+            .query_one::<&PresenterSlot>(app)
             .is_ok_and(|mut slot| slot.get().0.is_some())
         {
             present(world, app);
             if !world
                 .root_scope()
-                .query_one::<&SurfaceSlot>(app)
+                .query_one::<&PresenterSlot>(app)
                 .is_ok_and(|mut slot| slot.get().0.is_some())
             {
                 FrameSkip::skip(world);
@@ -1542,25 +1119,10 @@ fn advance_scene(app: Entity) -> OnFrame {
     })
 }
 
-/// The pass the frame presents through: the blit pass in MCP mode, the scene's
-/// own pass otherwise.
+/// Present the advanced scene through the shared presentation path.
 ///
-/// `None` once an MCP scene has lost its blit pass, which leaves nothing to
-/// present.
-fn presenting_pass(scene: &Scene, mcp: bool) -> Option<Entity> {
-    if mcp {
-        scene.blit.map(|blit| blit.pass)
-    } else {
-        Some(scene.pass)
-    }
-}
-
-/// Present the advanced scene into the swap chain.
-///
-/// In MCP mode the swap chain's image is drawn by the blit pass, which samples
-/// the offscreen target the scene's own pass rendered into; otherwise the
-/// scene's pass draws into it directly. Either way the frame is one render and
-/// one submission.
+/// The example retains its scene-specific viewport and command lifecycle; the
+/// library owns surface acquisition, target selection, rendering and present.
 fn present_frame(app: Entity) -> OnFrame {
     OnFrame::with_order(PRESENT_ORDER, move |world, _entity, _frame| {
         if FrameSkip::is_skipped(world) {
@@ -1574,81 +1136,49 @@ fn present_frame(app: Entity) -> OnFrame {
         else {
             return;
         };
-        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
-            return;
-        };
-        let mcp = world
-            .root_scope()
-            .query_one::<&McpEnabled>(app)
-            .is_ok_and(|mut mcp| mcp.get().0);
-        let (renderer, presenting, scene_pass, viewport) = {
+        let (scene_pass, viewport) = {
             let mut scene = world
                 .root_scope()
                 .query_one::<&Scene>(scene_entity)
                 .expect("the scene entity carries a scene");
-            // A world that lost its blit pass has nothing to present: the frame
-            // is skipped rather than taken down.
-            let Some(presenting) = presenting_pass(scene.get(), mcp) else {
+            (scene.get().pass, scene.get().viewport)
+        };
+        {
+            let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
                 return;
             };
-            (
-                scene.get().renderer,
-                presenting,
-                scene.get().pass,
-                scene.get().viewport,
-            )
-        };
-
-        let Ok(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
-            return;
-        };
-        let Some(surface) = slot.get().0.as_mut() else {
-            return;
-        };
-        let nested_world: &World = nested.get();
-        let mut attachments = world
-            .root_scope()
-            .query_one::<&mut AttachmentsSlot>(app)
-            .expect("the app entity carries its attachments slot");
-        let attachments = attachments.get().0.as_ref();
-        // The presenting pass parks first and takes the frame's view only
-        // after the swap chain image has been acquired. Between the two, and
-        // after the frame has been presented and destroyed, the pass states
-        // no attachment — so a frame rendered by anything other than this
-        // loop, an MCP tool's screenshot of the scene, skips the pass rather
-        // than recording into a dead swap-chain image. When the attachments
-        // are gone — the surface is being torn down — the pass stays parked
-        // and the frame is presented empty rather than stale.
-        if let Some(frame) = surface.acquire_for(nested_world, renderer, presenting, attachments) {
-            // The region the content is drawn into belongs to the scene's
-            // own pass, which a resize re-letterboxes: the pass that
-            // presents an offscreen frame covers the whole target and keeps
-            // its own. Restating it here keeps the scene's state and the
-            // pass's in step whatever changed the window.
-            nested_world
+            // Restate the letterboxed region after any window resize. The blit
+            // pass keeps its full-target viewport.
+            nested
+                .get()
                 .root_scope()
                 .query_one::<&mut FramePass>(scene_pass)
                 .map(|mut pass| pass.get().viewport = viewport)
                 .expect("the scene's own pass exists");
-            let mut renderer_row = nested_world
-                .root_scope()
-                .query_one::<&mut Renderer>(renderer)
-                .expect("the renderer is a resource entity");
-            renderer_row.get().render(nested_world);
-            let context = renderer_row.get().context();
-            let queue = context
-                .queue(&nested_world.root_scope())
-                .expect("the queue resource");
-            frame.present_and_park(nested_world, &queue, presenting);
         }
-        let _ = world
+        let presented = world
             .root_scope()
-            .query_one::<&mut Scene>(scene_entity)
-            .map(|mut scene| {
-                if let Err(error) = scene.get().end_frame(&mut *nested.get()) {
-                    log::error!("a command queued by a scene failed: {error}");
-                }
+            .query_one::<&mut PresenterSlot>(app)
+            .ok()
+            .and_then(|mut slot| {
+                slot.get()
+                    .0
+                    .as_mut()
+                    .map(|presenter| presenter.present(world))
             });
+        if let Some(Err(error)) = presented {
+            log::error!("failed to present a frame: {error}");
+        }
+        if let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) {
+            let _ = world
+                .root_scope()
+                .query_one::<&mut Scene>(scene_entity)
+                .map(|mut scene| {
+                    if let Err(error) = scene.get().end_frame(&mut *nested.get()) {
+                        log::error!("a command queued by a scene failed: {error}");
+                    }
+                });
+        }
     })
 }
 
@@ -1748,15 +1278,6 @@ fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
     })
 }
 
-/// Draw on the frames the loop asks for.
-fn draw_on_redraw() -> OnWindowEvent {
-    OnWindowEvent::new(|world, entity, payload| {
-        if matches!(&payload.event, WindowEvent::RedrawRequested) {
-            world.root_scope().queue().push(DrawFrame { app: entity });
-        }
-    })
-}
-
 /// Re-state the scene and the surface for a new window size.
 fn resize_scene(app: Entity) -> OnWindowEvent {
     OnWindowEvent::new(move |world, _entity, payload| {
@@ -1786,14 +1307,19 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| scene.get().resize(size, baseline));
-        if world
+        let resized = world
             .root_scope()
-            .query_one::<&McpEnabled>(app)
-            .is_ok_and(|mut mcp| mcp.get().0)
-        {
-            resize_offscreen(world, app, size);
+            .query_one::<&mut PresenterSlot>(app)
+            .ok()
+            .and_then(|mut slot| {
+                slot.get()
+                    .0
+                    .as_mut()
+                    .map(|presenter| presenter.resize(world, size))
+            });
+        if let Some(Err(error)) = resized {
+            log::error!("failed to resize the presentation path: {error}");
         }
-        resize_surface(world, app, size.0, size.1);
     })
 }
 
@@ -1907,7 +1433,7 @@ impl Scene {
         };
         let pass = world.root_scope_mut().spawn(Pass {
             load,
-            ..Pass::new(SCENE_ORDER)
+            ..Pass::new(SCENE_PASS_ORDER)
         });
         // The scene's content is built for the region it will be drawn into,
         // not for the whole target: a camera built for the target's aspect
@@ -2014,7 +1540,6 @@ impl Scene {
                 size: content,
                 viewport,
                 pass,
-                blit: None,
                 snapshot,
                 frame_rate,
                 frame: 0,
@@ -3008,46 +2533,30 @@ mod tests {
         GPU_INFO_MIN_WIDTH, GpuInfo, OVERLAY_BUTTON_MIN_SIZE, OVERLAY_MARGIN, api_docs_button,
         egui, frame_rate_readout, fullscreen_button, gpu_info_panel, letterbox, limit_rows, tick,
     };
-    // The scene-switch test below drives the app's own slots through a headless
-    // device, so it is host-only — and these are the names only it uses.
+    // The scene-switch test below drives the app's own slots, so it is the only
+    // part of this module that needs these names.
     #[cfg(not(target_arch = "wasm32"))]
-    use super::{
-        InitialScene, OFFSCREEN_FORMAT, Offscreen, OffscreenTarget, SceneEntity, scenes,
-        switch_scene,
-    };
+    use super::{InitialScene, PresenterSlot, SceneEntity, scenes, switch_scene};
     #[cfg(not(target_arch = "wasm32"))]
     use unlit_ecs::bundle;
     #[cfg(not(target_arch = "wasm32"))]
-    use unlit_wgpu::resources::{ResourceGraph, TextureExt};
-    #[cfg(not(target_arch = "wasm32"))]
-    use unlit_wgpu_test_util::{Ctx, block_on};
-    #[cfg(not(target_arch = "wasm32"))]
-    use unlit3d::prelude::{World, create_color_target};
+    use unlit3d::prelude::World;
 
-    /// A scene switch drops the MCP run's offscreen target, which was built
-    /// around the scene it replaced.
+    /// A scene switch drops the presentation path, which was built around the
+    /// scene it replaced.
     ///
-    /// The texture received the dying scene's frames, so it is keyed to that
-    /// scene; the world that sampled it is despawned with the scene, its blit
-    /// pass and sources included. Left behind, the rebuilt scene would render
-    /// into a target nothing blits and the next MCP frame would show the old
-    /// scene's last picture.
+    /// The path's surface and the pass that presents through it belong to the
+    /// dying scene's world, so the rebuilt scene builds a fresh one instead of
+    /// presenting through a pass that went with the world it drew.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn a_scene_switch_drops_the_mcp_offscreen_target() {
-        let ctx = block_on(Ctx::headless());
+    fn a_scene_switch_drops_the_presentation_path() {
         let mut world = World::new();
 
         let old_scene = world.root_scope_mut().spawn(bundle![]);
-        let texture = create_color_target(&ctx.device, OFFSCREEN_FORMAT, 8, 8);
-        let mut graph = ResourceGraph::new();
-        let view = graph.insert(
-            TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
         let app = world.root_scope_mut().spawn(bundle![
             InitialScene(scenes::default()),
-            Offscreen(Some(OffscreenTarget { texture, view })),
+            PresenterSlot(None),
             SceneEntity(Some(old_scene)),
         ]);
 
@@ -3058,12 +2567,12 @@ mod tests {
         assert!(
             world
                 .root_scope()
-                .query_one::<&Offscreen>(app)
-                .expect("the app keeps its slots")
+                .query_one::<&PresenterSlot>(app)
+                .expect("the app keeps its presentation slot")
                 .get()
                 .0
                 .is_none(),
-            "the offscreen target went with the scene that filled it"
+            "the presentation path went with the scene it presented"
         );
         assert!(
             !world.root_scope().contains(old_scene),

@@ -1,319 +1,54 @@
-//! The presentation path: the window surface, the frame loop that drives
-//! it, and the offscreen target an image tool can read.
+//! The multi-world presentation path.
 //!
-//! By default the scene draws straight into the swap chain: one renderer,
-//! one world, one pass, no copy. Turning the offscreen path on with
-//! [`setup_presenter`]'s last argument adds a second pass to that same
-//! world: the scene's own pass draws every frame into a persistent
-//! offscreen color texture, and the pass added after it copies that
-//! texture over the swap chain. The texture survives present, so a
-//! screenshot can read the last frame back from it, and the swap chain's
-//! format or size changes never touch the scene's pipeline — which is why
-//! an MCP-driven scene asks for it.
-//!
-//! [`setup_presenter`] builds all of that once the GPU context exists;
-//! [`draw_presented`], [`pump_presented`] and [`resize_presented`]
-//! are the behaviours a windowed app spawns to drive it.
+//! The machinery a windowed scene presents with -- the [`Presenter`]
+//! component, the window surface, the offscreen target and the behaviours
+//! that pump, resize and present -- lives in
+//! [`unlit3d::winit::presenter`]; this module re-exports it and adds the
+//! multi-world pacing. The host world owns the window and the presenter;
+//! the renderer and the passes live in a render sub-world. Frames are
+//! queued as a command rather than drawn inline, so the host's own async
+//! tasks are polled between the event callbacks, and the draw behaviour
+//! drains the sub-world's command queue before dispatching the frame into
+//! it -- which is what makes the sub-world a server: clients' requests
+//! land as jobs here, on the main thread, between one frame's render and
+//! the next.
 
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use unlit_ecs::bundle;
+use unlit_ecs::World;
 use unlit_ecs::sync;
-use unlit_ecs::{Command, Entity, EntityAccessError, World};
-use unlit_wgpu::render_attachments::create_color_target;
-use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
-use unlit3d::attachments::FrameAttachments;
-use unlit3d::blit::BlitSource;
-use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
-use unlit3d::pass::{FramePass, FramePassOrder, Pass};
+use unlit_ecs::{Command, Entity, EntityAccessError};
 
-use crate::executor::LocalTasks;
-use unlit3d::renderer::Renderer;
-use unlit3d::source::{RenderContext, Source};
-use unlit3d::winit::WindowSurface;
+pub use unlit3d::winit::presenter::{
+    BLIT_PASS_ORDER, Presenter, PresenterError, SCENE_PASS_ORDER, resize_presented,
+};
+
+use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
+use unlit3d::offscreen::{OFFSCREEN_SAMPLES, TargetConfig};
 use unlit3d::winit::builtin::window;
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
+use unlit3d::winit::presenter::{PRESENT_ORDER, PresentationPath};
 use winit::event::WindowEvent;
-use winit::window::Window;
 
+use crate::executor::LocalTasks;
 use crate::gpu::Gpu;
-
 use crate::host::drain_sub_world;
 
-/// Why the presentation path could not be built, or a frame could not be
-/// presented.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum PresenterError {
-    /// The host world carries no window to present to.
-    #[error("the scene setup found no window")]
-    NoWindow,
-    /// The window surface could not be built from the display handle.
-    #[error("failed to build the presentation surface: {0}")]
-    Surface(#[from] wgpu::CreateSurfaceError),
-    /// The render sub-world is not reachable from the host.
-    #[error("the scene setup found no render world: {0}")]
-    NoRenderWorld(unlit_ecs::EntityAccessError),
-    /// The render sub-world carries no renderer at the named entity.
-    #[error("the scene setup found no renderer: {0}")]
-    NoRenderer(unlit_ecs::EntityAccessError),
-    /// The offscreen target could not be bound to the scene pass.
-    #[error("failed to bind the offscreen target: {0}")]
-    OffscreenTarget(unlit_ecs::EntityAccessError),
-    /// The swap chain surface could not be opened.
-    #[error("failed to open the window surface: {0}")]
-    WindowSurface(unlit_ecs::EntityAccessError),
-    /// A resource the render world was expected to carry is gone at runtime.
-    #[error("the presentation path lost a render-world resource: {0}")]
-    MissingResource(#[from] unlit_ecs::EntityAccessError),
-    /// The offscreen path copying source is not a blit source.
-    #[error("the blit pass source is not a blit source: {0}")]
-    NotABlitSource(#[from] unlit3d::source::WrongSourceType),
-}
-
-/// The color format the offscreen target uses; the blit converts into the
-/// surface's own format.
-pub(crate) const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-/// The sample count a windowed frame resolves with, whether it lands in
-/// the swap chain or in an offscreen target.
-pub(crate) const FRAME_SAMPLES: u32 = 4;
-
-/// The order a scene's own pass records at, ahead of the copying pass.
+/// Build the presentation path and spawn its [`Presenter`] in the host
+/// world.
 ///
-/// A caller building the render world spawns its pass with this order, so
-/// the pass [`setup_presenter`] adds lands after it.
-pub const SCENE_PASS_ORDER: FramePassOrder = FramePassOrder(0);
-
-/// The order the offscreen path's copying pass records at: after the
-/// scene's own, so the target it samples holds this frame's picture.
-pub const BLIT_PASS_ORDER: FramePassOrder = FramePassOrder(1);
-
-/// The frame-behaviour order the draw runs at: after the default band, so
-/// every behaviour that feeds the frame has run, and before behaviours that
-/// read its result state an order of their own.
-pub(crate) const DRAW_ORDER: i32 = 10;
-
-/// Everything needed to render a frame and present it.
-///
-/// The presenter is a component of its own entity, spawned by
-/// [`setup_presenter`]: everything it holds arrives after the GPU
-/// request resolves, and a component set fixed at spawn has no room for
-/// that.
-pub struct Presenter {
-    /// The render sub-world the frames are dispatched into.
-    render: Entity,
-    /// The renderer inside the render sub-world.
-    renderer: Entity,
-    /// The pass the scene's own sources draw into.
-    scene_pass: Entity,
-    /// The pass that copies the offscreen target over the surface;
-    /// `None` when the scene presents itself.
-    blit: Option<Blit>,
-    /// The GPU context the offscreen target is rebuilt with on resize.
-    gpu: Gpu,
-    /// The swap chain wrapper, held by the render sub-world.
-    surface: WindowSurface,
-    /// The presenting pass's attachments to the swap chain: the scene's
-    /// own sample count without the offscreen path, one sample and no
-    /// depth with it, since the blit covers the target with one triangle.
-    attachments: FrameAttachments,
-    /// The size used until the window reports its own.
-    fallback_size: (u32, u32),
-}
-
-/// The pass that copies the offscreen target into the swap chain.
-struct Blit {
-    /// The pass in the render sub-world, ordered after every other pass.
-    pass: Entity,
-    /// The source under that pass, sampling the offscreen target.
-    source: Entity,
-}
-
-impl Presenter {
-    /// The pass that draws into the swap chain.
-    ///
-    /// The offscreen target sits in front of it when the blit pass exists;
-    /// otherwise the scene's own pass draws straight into the surface.
-    fn presenting(&self) -> Entity {
-        self.blit.as_ref().map_or(self.scene_pass, |blit| blit.pass)
-    }
-
-    /// Draw the frame's result into the swap chain and present it.
-    ///
-    /// The presenting pass parks first and takes the frame's view only
-    /// after the swap chain image has been acquired. Between the two, and
-    /// after the image has been presented and destroyed, the pass states
-    /// no attachment — so a frame rendered by anything other than this
-    /// loop, an MCP tool's screenshot of the scene, skips the pass rather
-    /// than recording into a dead swap-chain image.
-    fn present(&mut self, host: &World) -> Result<(), PresenterError> {
-        let Ok(mut nested) = host.root_scope().query_one::<&World>(self.render) else {
-            return Ok(());
-        };
-        let presenting = self.presenting();
-        let world = nested.get();
-        let Some(swap_frame) =
-            self.surface
-                .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
-        else {
-            return Ok(());
-        };
-        let mut renderer_row = world
-            .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)?;
-        renderer_row.get().render(world);
-        let context = renderer_row.get().context();
-        let queue = context.queue(&world.root_scope())?;
-        swap_frame.present_and_park(world, &queue, presenting);
-        Ok(())
-    }
-
-    /// Match the surface, the attachments and the offscreen target to a
-    /// new size.
-    ///
-    /// The surface resizes first and reports the size it ended up with;
-    /// the swap chain's attachments follow it, and the offscreen target is
-    /// rebuilt for that size — its new view becomes the blit source's
-    /// input, which makes the source rebuild its bind group on the next
-    /// frame.
-    fn resize(&mut self, host: &World, size: (u32, u32)) -> Result<(), PresenterError> {
-        let mut nested = host.root_scope().query_one::<&World>(self.render)?;
-        let world = nested.get();
-        let size = {
-            let mut renderer = world
-                .root_scope()
-                .query_one::<&mut Renderer>(self.renderer)?;
-            self.surface
-                .resize(world, &mut *renderer.get(), size.0, size.1);
-            self.surface.size()
-        };
-        if size.0 == 0 || size.1 == 0 {
-            return Ok(());
-        }
-        self.attachments.resize(world, size);
-        let Some(blit) = self.blit.as_ref() else {
-            return Ok(());
-        };
-        let context = {
-            let mut renderer = world.root_scope().query_one::<&Renderer>(self.renderer)?;
-            renderer.get().context()
-        };
-        let offscreen = bind_offscreen(world, context, self.scene_pass, &self.gpu.device, size)
-            .map_err(PresenterError::OffscreenTarget)?;
-        let mut source = world.root_scope().query_one::<&mut Source>(blit.source)?;
-        source.get().as_mut::<BlitSource>()?.view = offscreen.view;
-        Ok(())
-    }
-}
-
-/// Where one offscreen target's frames land.
-///
-/// The texture is the one a screenshot copies out of; the view is the
-/// handle a pass draws into and a blit reads, and it stays the same
-/// resource node across a resize only until the target is rebuilt.
-pub struct OffscreenTarget {
-    /// The color texture the frames land in.
-    pub texture: wgpu::Texture,
-    /// The view of that texture, registered in the world's resource graph.
-    pub view: ResHandle<TextureView>,
-}
-
-/// Bind an offscreen target of `size` pixels to `pass`, and answer where
-/// its frames land.
-///
-/// The attachments go into the render world's resource graph exactly as a
-/// window surface's do, so the renderer specializes its pipelines on them
-/// the same way — and the color texture is the one a screenshot copies
-/// out of.
-pub fn bind_offscreen(
-    world: &World,
-    context: RenderContext,
-    pass: Entity,
-    device: &wgpu::Device,
-    size: (u32, u32),
-) -> Result<OffscreenTarget, EntityAccessError> {
-    let color = create_color_target(device, OFFSCREEN_FORMAT, size.0, size.1);
-    // The texture is registered as a resource in its own right, and the
-    // view depends on it, so whoever holds the view keeps the texture
-    // alive — and a screenshot can resolve the texture by handle and read
-    // it back.
-    let view = {
-        let mut graph = context.try_graph(&world.root_scope())?;
-        let texture = graph.get().insert(color.clone(), None);
-        let view = graph.get().insert(
-            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
-        graph.get().add_dependency(&view, &texture);
-        view
-    };
-    let attachments =
-        FrameAttachments::new(world, context, OFFSCREEN_FORMAT, size, FRAME_SAMPLES, true);
-    let mut pass_row = world.root_scope().query_one::<&mut FramePass>(pass)?;
-    pass_row.get().set_attachments(&attachments, view.clone());
-    Ok(OffscreenTarget {
-        texture: color,
-        view,
-    })
-}
-
-/// Open the window surface in `world`, through its `renderer`, and build
-/// the attachments its frames draw with.
-///
-/// The surface is configured for the world that presents it, which is the
-/// scene's own unless an offscreen target is in use.
-fn open_surface(
-    world: &World,
-    renderer: Entity,
-    gpu: &Gpu,
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    samples: u32,
-    with_depth: bool,
-) -> Result<(WindowSurface, FrameAttachments), EntityAccessError> {
-    world
-        .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            let renderer = renderer.get();
-            {
-                let surface = WindowSurface::new(
-                    world,
-                    &mut *renderer,
-                    &gpu.instance,
-                    &gpu.adapter,
-                    Arc::clone(&window),
-                    surface,
-                );
-                let attachments = FrameAttachments::new(
-                    world,
-                    renderer.context(),
-                    surface.color_format(),
-                    surface.size(),
-                    samples,
-                    with_depth,
-                );
-                (surface, attachments)
-            }
-        })
-}
-
-/// Build the presentation path for a live render sub-world and spawn its
-/// [`Presenter`] component.
-///
-/// `render`, `renderer` and `scene_pass` name the sub-world, its renderer
-/// and the pass the scene's own sources draw into, all already filled in.
-/// The window comes from the host world; when it has not reported a size
-/// yet, `fallback_size` stands in.
+/// `render`, `renderer` and `scene_pass` name the render sub-world, its
+/// renderer and the pass the scene's own sources draw into, all already
+/// filled in. The window comes from the host world; when it has not
+/// reported a size yet, `fallback_size` stands in.
 ///
 /// `offscreen` chooses the path. With it the scene's frames land in a
 /// persistent target that a screenshot reads back, and a pass added after
 /// the scene's copies that target over the swap chain; without it the
-/// scene's pass draws straight into the swap chain — one pass and one copy
-/// fewer, which is what a plain window wants.
+/// scene's pass draws straight into the swap chain -- one pass and one
+/// copy fewer, which is what a plain window wants.
 ///
 /// # Errors
 ///
@@ -328,89 +63,39 @@ pub fn setup_presenter(
     fallback_size: (u32, u32),
     offscreen: bool,
 ) -> Result<(), PresenterError> {
-    let window = window(world).ok_or(PresenterError::NoWindow)?;
-    let surface = gpu.instance.create_surface(window.clone())?;
-    let raw_size = window.inner_size();
-    let size = if raw_size.width == 0 || raw_size.height == 0 {
-        fallback_size
+    let surface = gpu
+        .instance
+        .create_surface(window(world).ok_or(PresenterError::NoWindow)?)?;
+    let path = if offscreen {
+        PresentationPath::Intermediate(TargetConfig::default())
     } else {
-        (raw_size.width, raw_size.height)
-    };
-
-    let (blit, surface, attachments) = {
-        let mut nested = world
-            .root_scope()
-            .query_one::<&mut World>(render)
-            .map_err(PresenterError::NoRenderWorld)?;
-        let context = nested
-            .get()
-            .root_scope()
-            .query_one::<&Renderer>(renderer)
-            .map_err(PresenterError::NoRenderer)
-            .map(|mut renderer| renderer.get().context())?;
-        // The offscreen path keeps the scene away from the swap chain: the
-        // scene's pass draws into a target of its own, and a pass added
-        // after it copies that target over the surface.
-        if offscreen {
-            let target = bind_offscreen(nested.get(), context, scene_pass, &gpu.device, size)
-                .map_err(PresenterError::OffscreenTarget)?;
-            let blit_pass = nested
-                .get()
-                .root_scope_mut()
-                .spawn(Pass::new(BLIT_PASS_ORDER));
-            let blit_source = nested
-                .get()
-                .scope_mut(blit_pass)?
-                .spawn(bundle![Source::new(BlitSource::new(target.view))]);
-            // The presenting pass takes each frame's swap chain image in
-            // [`Presenter::present`], which is the only place that knows it.
-            let (surface, attachments) =
-                open_surface(nested.get(), renderer, gpu, window, surface, 1, false)
-                    .map_err(PresenterError::WindowSurface)?;
-            (
-                Some(Blit {
-                    pass: blit_pass,
-                    source: blit_source,
-                }),
-                surface,
-                attachments,
-            )
-        } else {
-            let (surface, attachments) = open_surface(
-                nested.get(),
-                renderer,
-                gpu,
-                window,
-                surface,
-                FRAME_SAMPLES,
-                true,
-            )
-            .map_err(PresenterError::WindowSurface)?;
-            (None, surface, attachments)
+        PresentationPath::Surface {
+            samples: OFFSCREEN_SAMPLES,
+            with_depth: true,
         }
     };
-    world.root_scope_mut().spawn(bundle![Presenter {
-        render,
+    unlit3d::winit::presenter::setup_presenter(
+        world,
+        Some(render),
         renderer,
         scene_pass,
-        blit,
-        gpu: gpu.clone(),
         surface,
-        attachments,
+        &gpu.instance,
+        &gpu.adapter,
         fallback_size,
-    },]);
-    Ok(())
+        path,
+    )
+    .map(|_| ())
 }
 
 /// One frame's dispatch, deferred to the command apply.
 ///
 /// The frame behaviours need a mutable world, and they run between two
-/// event callbacks — so the pump and the redraw request queue this
+/// event callbacks -- so the pump and the redraw request queue this
 /// command instead of drawing inline.
 #[derive(Clone)]
 struct DrawFrame {
-    /// The instant the previous frame dispatched, shared by both
-    /// producers.
+    /// The instant the previous frame dispatched, shared by both producers.
     last: Arc<Mutex<Option<web_time::Instant>>>,
     /// The index the next dispatched frame takes.
     index: Arc<AtomicU32>,
@@ -458,22 +143,23 @@ impl Command for DrawFrame {
 /// The draw behaviour: drain the render sub-world's command queue, then
 /// dispatch the frame into it and present the result.
 ///
+/// `render` names the render sub-world the presenter presents from.
 /// Draining is what makes the sub-world a server: clients' requests land
 /// as jobs here, on the main thread, between one frame's render and the
 /// next.
 ///
-/// The renderer walks every pass of the world here, so the scene's own pass
-/// and the offscreen path's copying pass both record on this one call.
-pub fn draw_presented() -> OnFrame {
+/// The renderer walks every pass of the sub-world here, so the scene's own
+/// pass -- and the offscreen path's copying pass, when there is one -- both
+/// record on this one call.
+pub fn draw_presented(render: Entity) -> OnFrame {
     OnFrame::with_order(
-        FrameBehaviourOrder(DRAW_ORDER),
+        FrameBehaviourOrder(PRESENT_ORDER),
         move |world, _entity, frame| {
             let mut presenter_rows = world.root_scope().query::<(Entity, &mut Presenter)>();
 
             let Some(presenter) = presenter_rows.iter().next().map(|(_, p)| p) else {
                 return;
             };
-            let render = presenter.render;
             let Ok(mut nested) = world.root_scope().query_one::<&mut World>(render) else {
                 return;
             };
@@ -536,24 +222,4 @@ fn queue_draw(
         index: Arc::clone(index),
         pending: Arc::clone(pending),
     });
-}
-
-/// The resize behaviour: match the presenter to the window's new size,
-/// skipping the degenerate zero size windows report on minimize.
-pub fn resize_presented() -> OnWindowEvent {
-    OnWindowEvent::new(move |world, _entity, payload| {
-        let WindowEvent::Resized(size) = &payload.event else {
-            return;
-        };
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-        let mut rows = world.root_scope().query::<(Entity, &mut Presenter)>();
-        let Some((_, presenter)) = rows.iter().next() else {
-            return;
-        };
-        if let Err(error) = presenter.resize(world, (size.width, size.height)) {
-            log::error!("failed to resize the presentation path: {error}");
-        }
-    })
 }

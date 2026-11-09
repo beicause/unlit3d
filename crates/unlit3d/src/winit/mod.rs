@@ -41,6 +41,11 @@
 
 pub mod builtin;
 pub mod event;
+pub mod presenter;
 pub mod surface;
 
+pub use presenter::{
+    BLIT_PASS_ORDER, PresentationPath, Presenter, PresenterError, SCENE_PASS_ORDER,
+    build_presenter, present_frames, pump_presented, resize_presented, setup_presenter,
+};
 pub use surface::{Frame, WindowSurface};

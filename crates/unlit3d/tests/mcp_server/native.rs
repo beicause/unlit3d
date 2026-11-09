@@ -579,6 +579,28 @@ pub fn run() {
             centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
             "the centre should be the red mesh, got {centre:?}"
         );
+
+        // `target` names the texture or any view of it: the pass that draws
+        // into an offscreen target holds the view, not the texture.
+        let resources = server.tool("list_resources", json!({})).await;
+        let view = resources
+            .as_array()
+            .expect("list_resources returns an array")
+            .iter()
+            .find(|resource| resource["kind"] == "TextureView")
+            .map(|resource| resource["id"].as_u64().expect("a resource id is a number"))
+            .expect("the offscreen target registers a view");
+        let shot = server
+            .request(
+                "tools/call",
+                json!({ "name": "read_screenshot", "arguments": { "target": view } }),
+            )
+            .await;
+        let by_view = image::load_from_memory(&image_bytes(&shot))
+            .expect("a view-named screenshot is a WebP")
+            .to_rgba8();
+        assert_eq!(by_view, image, "a view names the texture it views");
+
         server
             .tool("remove_mesh", json!({ "entity": triangle["entity"] }))
             .await;

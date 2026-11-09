@@ -295,7 +295,8 @@ pub struct HandleArg {
     /// Omit when the world holds exactly one.
     #[serde(default)]
     pub context: Option<u64>,
-    /// The resource's id, as `list_resources` reports it.
+    /// The resource's id, as `list_resources` reports it. A texture view is
+    /// read through the texture it views.
     pub id: u64,
     /// The image format to answer with: `"webp"` (lossless, the default),
     /// `"png"`, or `"jpeg"`.
@@ -452,7 +453,8 @@ pub struct SaveTexture {
     /// Omit when the world holds exactly one.
     #[serde(default)]
     pub context: Option<u64>,
-    /// The resource's id, as `list_resources` reports it.
+    /// The resource's id, as `list_resources` reports it. A texture view is
+    /// read through the texture it views.
     pub id: u64,
     /// The directory to write the file into; created when it does not exist.
     pub directory: String,
@@ -473,8 +475,8 @@ pub struct SaveScreenshot {
     /// world's only one.
     #[serde(default)]
     pub renderer: Option<u64>,
-    /// The id of the texture to read, as `list_resources` reports it. Omit
-    /// for the world's only readable texture.
+    /// The id of the texture to read, as `list_resources` reports it, or the
+    /// id of any view of it. Omit for the world's only readable texture.
     #[serde(default)]
     pub target: Option<u64>,
     /// The directory to write the file into; created when it does not exist.
@@ -537,8 +539,8 @@ pub struct Screenshot {
     /// world's only one.
     #[serde(default)]
     pub renderer: Option<u64>,
-    /// The id of the texture to read, as `list_resources` reports it. Omit
-    /// for the world's only readable texture.
+    /// The id of the texture to read, as `list_resources` reports it, or the
+    /// id of any view of it. Omit for the world's only readable texture.
     #[serde(default)]
     pub target: Option<u64>,
     /// The image format to answer with: `"webp"` (lossless, the default),

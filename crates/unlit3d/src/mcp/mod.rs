@@ -261,7 +261,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "read_screenshot",
-        "Render one frame of a world and read its offscreen target back as an image content block. Pass the target's resource handle to choose it, or omit for the world's only readable texture; the format argument picks lossless webp, the default, png, or jpeg. Prefer save_screenshot to write the image to a file instead of returning it inline.",
+        "Render one frame of a world and read its offscreen target back as an image content block. Pass the target's resource handle, or the handle of any view of it, to choose it, or omit for the world's only readable texture; the format argument picks lossless webp, the default, png, or jpeg. Prefer save_screenshot to write the image to a file instead of returning it inline.",
         read_screenshot,
     ));
     router.add_route(tool(

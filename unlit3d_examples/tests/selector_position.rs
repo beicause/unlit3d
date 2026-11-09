@@ -261,15 +261,19 @@ fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
         .expect("the renderer is a resource entity")
         .get()
         .context();
-    let _ = unlit3d_examples::bind_offscreen_target(
+    PersistentTarget::bind(
         world,
         context,
         scene.pass,
         &ctx.device,
         size,
-        1,
-        false,
-    );
+        TargetConfig {
+            samples: 1,
+            with_depth: false,
+            ..TargetConfig::default()
+        },
+    )
+    .expect("the scene's pass draws into a bound target");
 }
 
 gpu_tests! {

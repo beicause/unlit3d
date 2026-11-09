@@ -44,7 +44,8 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 ## 必须知道的行为
 
 - **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless --mcp`，它不建 winit 事件循环。
-- **`--mcp` 会改变渲染路径**：`unlit3dx_examples` 里 `let offscreen = mcp;`，即带 `--mcp` 时场景自己的 pass 离屏渲染，同一个 world 里再加一个 pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。
+- **`--mcp` 会改变渲染路径**：`unlit3dx_examples` 里 `let offscreen = mcp;`，即带 `--mcp` 时场景自己的 pass 画进常驻纹理（`PresentationPath::Intermediate`），同一个 world 里再加一个 blit pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。不改这条路径的话，MCP 截图拿不到画面——交换链图像不是资源图节点。
+- **截图只能读到常驻纹理**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，此时工具会报 `the world has no readable texture to screenshot; pass \`target\``。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
 - **命令要有人泵**。`unlit3dx` 的桥接把命令投进各 world 的队列，桌面端由 winit 的 `about_to_wait` 行为泵，无窗口的宿主必须自己循环调 `unlit3dx::mcp::pump_mcp(&mut host)`。它除了 drain 命令还会把排队到 stepped world 的 job 跑掉——stepped world 的队列本来只在 `step_stepped_world` 里推进，只等回复而不推进帧的客户端会一直等不到答复。
@@ -144,7 +145,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | `step_frames`    | 按固定 60 Hz 帧推进场景                                          | `frames`（≥1）  |
 | `scene_status`   | 报告帧号、球数、MIDI 序列状态、各按钮中心、world 与纹理 id       | 无              |
 
-`scene_status` 的字段：`ready`、`frame`、`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits）。（`ready` 目前恒为 `true`，是硬编码的保留字段，不要拿它判断玩法 world 起没起来。）
+`scene_status` 的字段：`ready`、`frame`、`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits，可直接当 `read_texture_as_image` 的 `id` 与 `save_screenshot` 的 `target`）。（`ready` 目前恒为 `true`，是硬编码的保留字段，不要拿它判断玩法 world 起没起来。）
 
 一个典型回合（所有 `Handle` 与 `id` 都是示意值，照 `scene_status` 报的填；`C` 是这条连接的名字）：
 

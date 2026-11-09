@@ -14,7 +14,7 @@
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
 | `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
-| `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
+| `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；`presenter`，建在它之上的现成窗口循环；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档（含 `KHR_draco_mesh_compression` 压缩的 primitive）加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
 | `mcp` | 否 | `mcp` 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
@@ -122,9 +122,10 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   小块——那里的多重采样解析是一次 blit，而 blit 会受裁剪矩形限制。其下的源就是它录制
   的源，因此一个 world 可以按帧的需要放任意多个 pass——一个画进离屏目标的 pass 与一个
   把该目标贴到交换链的 pass 是同一个 world 里的两个实体，而不是两个 world。
-- pass 只指名 view，不拥有它们。附件来自 `FrameAttachments` 或 `WindowSurface`，两者
-  都在同一个 world 里，且句柄保持稳定，因此一个 pass 可以每帧换一个新的颜色 view
-  而不触发其下源的重建。
+- pass 只指名 view，不拥有它们。附件来自 `FrameAttachments`、`WindowSurface` 或
+  `PersistentTarget`，它们都在同一个 world 里，且句柄保持稳定，因此一个 pass 可以每帧
+  换一个新的颜色 view 而不触发其下源的重建。交换链的颜色 view 每帧都变，而常驻目标的
+  颜色 view 是它自己的纹理、只在 resize 时变——正因如此，截图才能在呈现之后回读这一帧。
 - 每个源在 `build_scene` 中填充一个 `Scene`，随后渲染器把该场景录制进以这个 pass
   自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
 - 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：内置
@@ -875,6 +876,41 @@ host.world_mut()
 host.run(event_loop)
 # }
 ```
+
+### 呈现一帧
+
+`winit::presenter` 是现成的窗口循环。它在 GPU 就绪后建一个 `Presenter` 组件，
+再由三个行为驱动：`pump_presented` 让帧持续到来，`present_frames` 把 world 的
+pass 画进交换链，`resize_presented` 跟随窗口。
+
+画面走哪条路到窗口由 `PresentationPath` 决定：
+
+| 路径 | 场景画进什么 | 代价 | 呈现后能否回读 |
+|------|--------------|------|----------------|
+| `Surface` | 交换链图像本身 | 一趟 pass | 否 |
+| `Intermediate` | 一张 `PersistentTarget` 纹理，再由 blit pass 贴到交换链 | 两趟 pass | 是 |
+
+`Surface` 是朴素窗口：pass 最少，但交换链图像在呈现时就被回收，而且它不是资源图节点，
+所以谁都读不回来。`Intermediate` 多付一次 blit，换来一帧留在活过呈现的纹理里——截图、
+快照测试、以及后续的后处理链要的就是这个。目标尺寸由它自己的 `IntermediateSize` 决定：
+窗口的倍数（`Scale(1.0)` 跟随窗口，`Scale(0.5)` 按半宽半高渲染）或固定像素尺寸。
+
+这些都是原语，presenter 只是把它们组合起来；自己搭帧循环的调用方直接使用它们：
+
+| 想要 | 用什么 |
+|------|--------|
+| 画进窗口，没人读这一帧 | 用交换链附件的 pass（`WindowSurface` 加 `FrameAttachments`） |
+| 画进窗口，并要读这一帧 | `PresentationPath::Intermediate`，或 `PersistentTarget` 配一趟带 `BlitSource` 的 pass |
+| 完全没有窗口地画 | 用 `PersistentTarget` 的 pass，再 `readback_texture`；不涉及 presenter |
+| 完全不要目标地画 | 不带附件的 pass：源照旧构建它们的场景，只是什么都不录制 |
+
+presenter 因为要呈现而必须有窗口；后两种纯离屏形式不需要，快照测试与无窗口示例正是
+这么画的。
+
+MCP 截图按句柄从资源图里取纹理，因此只有在 `Intermediate` 下才看得到这一帧——交换链
+图像不是节点。工具接受可选的 `target` 资源 id，既可以是纹理自己的 id，也可以是它任意
+一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）；不给时取 world 里唯一一张可
+读纹理，链上有好几张时会报出歧义，这正是后处理链用来挑「截哪一级」的接口。
 
 ## 测试
 

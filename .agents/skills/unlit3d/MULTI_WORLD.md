@@ -68,5 +68,7 @@ for index in 0..frames {
 
 ## 展示路径与离线取帧
 
-- `setup_presenter(.., offscreen)` 传 `false` 时场景直画交换链；要截图、快照或 MCP 就传 `true`，场景画进持久 target、再由第二个 pass 贴到交换链——纹理才活得过 present，交换链换格式或尺寸也不碰场景 pipeline。
-- 离线取帧：`bind_offscreen(&world, ctx, pass, &device, size)` 拿到 `OffscreenTarget { texture, view }`，再配 `readback_texture`。`device` 必须是 `setup_presenter` 用的那个 `gpu.device`，否则附件进不了同一个图。
+- `setup_presenter(.., offscreen)` 传 `false` 时场景直画交换链（`PresentationPath::Surface`）；要截图、快照或 MCP 就传 `true`（`PresentationPath::Intermediate`），场景画进常驻 target、再由第二个 pass 贴到交换链——纹理才活得过 present，交换链换格式或尺寸也不碰场景 pipeline。
+- 中间纹理的尺寸与采样是 `TargetConfig`：`size` 用 `IntermediateSize`（`Scale(1.0)` 跟随窗口、`Scale(0.5)` 半宽半高、`Fixed(w, h)` 固定像素），`samples` / `with_depth` 决定附件。presenter 的 `resize` 会按新的窗口尺寸重新 resolve 并原地换掉纹理与 view，blit 的 bind group 靠依赖自动重建。
+- 离线取帧：`PersistentTarget::bind(&world, ctx, pass, &device, size, config)` 拿到 `{ texture, view }`，再配 `readback_texture`。`device` 必须是 `setup_presenter` 用的那个 `gpu.device`，否则附件进不了同一个图。
+- 离屏目标必须在**它有读者的那个 world** 里建：全屏截图的离屏纹理建在渲染子 world 里，而 MCP 工具作用于宿主 world，于是 `screenshot` 在宿主里找不到纹理。要截渲染 world 就指名 `{"Handle": bits}`（`list_worlds` 取），或把 target 建在工具所在的 world。

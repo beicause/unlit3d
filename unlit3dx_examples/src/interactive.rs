@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use unlit_ecs::{Entity, World, bundle};
+use unlit_wgpu::resources::ResHandle;
 use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::input::{InputEvent, InputWriter, dispatch_input};
 use unlit3d::prelude::*;
@@ -27,14 +28,11 @@ pub struct Interactive {
     worlds: SceneHandles,
     render: Entity,
     renderer: Entity,
-    /// The view id the offscreen frames draw into, for a caller that reads
-    /// them back through the render world's resource graph.
-    pub target: u64,
     /// The entity the render sub-world is spawned under.
     pub render_world: Entity,
-    /// The texture the offscreen pass draws into, for a caller that reads
-    /// frames back.
-    frame_texture: wgpu::Texture,
+    /// The texture the offscreen pass draws into. Its resource id is what a
+    /// caller reads frames back through.
+    pub target: ResHandle<wgpu::Texture>,
     stepper: SceneStepper,
     frame: Frame,
     samples: Vec<f32>,
@@ -124,7 +122,28 @@ impl Interactive {
     /// frame has been drawn.
     pub fn render_frame(&self, host: &World) -> Vec<u8> {
         self.draw(host);
-        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &self.frame_texture)
+        let texture = {
+            let mut nested = host
+                .root_scope()
+                .query_one::<&World>(self.render)
+                .expect("the render sub-world exists");
+            let world = nested.get();
+            let context = world
+                .root_scope()
+                .query_one::<&Renderer>(self.renderer)
+                .expect("the renderer is a resource entity")
+                .get()
+                .context();
+            let mut graph = context
+                .try_graph(&world.root_scope())
+                .expect("the frame's resource graph exists");
+            graph
+                .get()
+                .get(&self.target)
+                .cloned()
+                .expect("the target texture is a resource node")
+        };
+        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &texture)
     }
 
     /// Draw the frame where the scene stands, into the offscreen texture.
@@ -312,16 +331,22 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
             .expect("the renderer is a resource entity")
             .get()
             .context();
-        bind_offscreen(world, context, pass.0, &config.device, WINDOW_SIZE)
-            .expect("the offscreen target binds")
+        PersistentTarget::bind(
+            world,
+            context,
+            pass.0,
+            &config.device,
+            WINDOW_SIZE,
+            TargetConfig::default(),
+        )
+        .expect("the offscreen target binds")
     };
     let interactive = Interactive {
         worlds,
         render: render.entity,
         renderer: renderer.0,
         render_world: render.entity,
-        target: target.view.id().to_bits(),
-        frame_texture: target.texture,
+        target: target.texture,
         stepper: SceneStepper::new(PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
         frame: Frame {
             delta_time: (1.0 / HEADLESS_HZ) as f32,

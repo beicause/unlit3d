@@ -61,7 +61,10 @@ use unlit3d::winit::builtin::{
     winit_input_behaviour,
 };
 use unlit3d::winit::event::WinitHost;
+// The multi-world pacing of these three differs from the single-world ones
+// the unlit3d prelude also names.
 use unlit3dx::prelude::*;
+use unlit3dx::present::{draw_presented, pump_presented, setup_presenter};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
@@ -198,6 +201,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // builds the presentation path; from then on the pump and the redraw
     // requests dispatch frames into it.
     let app = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
+    let render_entity = render.entity;
     world.root_scope_mut().spawn(bundle![request_gpu(app, {
         // Only an MCP-driven scene needs the offscreen target: it is what
         // a screenshot reads back. A plain window draws into the swap chain.
@@ -236,7 +240,9 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             }
         }
     }),]);
-    world.root_scope_mut().spawn(bundle![draw_presented()]);
+    world
+        .root_scope_mut()
+        .spawn(bundle![draw_presented(render_entity)]);
     let (pump, redraw) = pump_presented();
     world.root_scope_mut().spawn(bundle![pump]);
     world.root_scope_mut().spawn(bundle![redraw]);

@@ -174,11 +174,15 @@
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
 | GPU | `request_gpu(app, ready)` 返回 `OnFrame`；`Gpu { instance, adapter, device, queue, capabilities }`；`Gpu::request(instance, surface)` / `Gpu::headless()` 都是 async 返回 `Result`，实际用法是让 `request_gpu` 在就绪回调里交给你 | `crates/unlit3dx/src/gpu.rs` |
-| 常量 | `SCENE_PASS_ORDER = FramePassOrder(0)`、`BLIT_PASS_ORDER = FramePassOrder(1)`（公开；`OFFSCREEN_FORMAT` / `FRAME_SAMPLES` 是 `pub(crate)`） | `crates/unlit3dx/src/present.rs` |
-| 装配 | `setup_presenter(world, render, renderer, scene_pass, gpu, fallback_size, offscreen)`，返回 `Result<(), PresenterError>`——**是 enum，不是 `String`** | 同上 |
-| 离屏 | `bind_offscreen`、`OffscreenTarget { texture, view }` | 同上 |
-| 每帧行为 | `draw_presented` / `pump_presented` / `resize_presented` | 同上 |
-| 组件 | `Presenter`：字段**全私有**，外部构造不出来，只能经由 `setup_presenter`；没有公开访问函数 | 同上 |
+| 常量 | `SCENE_PASS_ORDER = FramePassOrder(0)`、`BLIT_PASS_ORDER = FramePassOrder(1)`、`PRESENT_ORDER = 10` | `crates/unlit3d/src/winit/presenter.rs` |
+| 两条路径 | `PresentationPath`：`Surface { samples, with_depth }` 直画交换链；`Intermediate(TargetConfig)` 画进常驻纹理再加一个 blit pass 贴回交换链。默认 `Surface { samples: OFFSCREEN_SAMPLES, with_depth: true }` | 同上 |
+| 装配（库） | `build_presenter(world, render, renderer, scene_pass, surface, instance, adapter, fallback_size, path)` → `Presenter`；`setup_presenter(..)` 同参再 spawn 成组件并返回 `Entity`。`surface` 由调用方 `instance.create_surface(window)` 造 | 同上 |
+| 装配（dx） | `setup_presenter(world, render, renderer, scene_pass, gpu, fallback_size, offscreen: bool)`，内部造 surface 并映射成 `Intermediate(TargetConfig::default())` / `Surface`，返回 `Result<(), PresenterError>`——**是 enum，不是 `String`** | `crates/unlit3dx/src/present.rs` |
+| 组件方法 | `Presenter::present(host)` / `resize(host, size)` / `release(host)`（`release` 消费 self，所以槽件要存 `Option<Presenter>`）；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
+| 每帧行为（dx） | `draw_presented(render)`——它自己 drain sub-world + 分发帧再调 `Presenter::present`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
+| 每帧行为（单 world） | `present_frames()` / `pump_presented()` / `resize_presented()`：单 world 直接用，它不懂示例的 `Scene`，所以要自己重述 viewport、自己 `Scene::end_frame` 时走示例那条 | 同上 |
+| 纯离屏 | `PersistentTarget::bind(world, context, pass, &device, size, TargetConfig { format, samples, with_depth, size })` + `readback_texture`；`resize` 原地 `replace` 纹理与 view，节点 id 不变 | `crates/unlit3d/src/offscreen.rs` |
+| 尺寸 | `IntermediateSize`：`Scale(f32)`（窗口倍数，`1.0` 跟随窗口，`0.5` 半宽半高，至少 1px）或 `Fixed(u32, u32)` | 同上 |
 
 ## 物理 / 音频 / 合成
 

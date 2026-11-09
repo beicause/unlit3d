@@ -382,32 +382,7 @@ impl TestGpu {
         samples: u32,
         with_depth: bool,
     ) -> wgpu::Texture {
-        use unlit_wgpu::render_attachments::create_color_target;
-        let device = self
-            .context
-            .device(&world.root_scope())
-            .expect("the context's device");
-        let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
-        let (_, color_view) = self.register_texture(world, color.clone());
-        let attachments = FrameAttachments::new(
-            world,
-            self.context,
-            COLOR_FORMAT,
-            (WIDTH, HEIGHT),
-            samples,
-            with_depth,
-        );
-        world
-            .root_scope()
-            .query_one::<&mut FramePass>(self.pass)
-            .map(|mut pass| {
-                let pass = pass.get();
-                {
-                    pass.set_attachments(&attachments, color_view);
-                }
-            })
-            .expect("the pass entity exists");
-        color
+        self.bind_offscreen_target_at(world, (WIDTH, HEIGHT), samples, with_depth)
     }
 
     /// Like [`Self::bind_offscreen_target_with`], but at a chosen size.
@@ -421,26 +396,44 @@ impl TestGpu {
         samples: u32,
         with_depth: bool,
     ) -> wgpu::Texture {
-        use unlit_wgpu::render_attachments::create_color_target;
+        self.bind_offscreen_target_at(world, size, samples, with_depth)
+    }
+
+    /// Bind a `size`-pixel offscreen target to the harness's pass, and return its
+    /// colour texture.
+    ///
+    /// The frame's own [`PersistentTarget`] does the binding, so a test draws
+    /// into exactly the target a windowed presenter would.
+    fn bind_offscreen_target_at(
+        &self,
+        world: &World,
+        size: (u32, u32),
+        samples: u32,
+        with_depth: bool,
+    ) -> wgpu::Texture {
         let device = self
             .context
             .device(&world.root_scope())
             .expect("the context's device");
-        let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
-        let (_, color_view) = self.register_texture(world, color.clone());
-        let attachments =
-            FrameAttachments::new(world, self.context, COLOR_FORMAT, size, samples, with_depth);
-        world
-            .root_scope()
-            .query_one::<&mut FramePass>(self.pass)
-            .map(|mut pass| {
-                let pass = pass.get();
-                {
-                    pass.set_attachments(&attachments, color_view);
-                }
-            })
-            .expect("the pass entity exists");
-        color
+        let target = PersistentTarget::bind(
+            world,
+            self.context,
+            self.pass,
+            &device,
+            size,
+            TargetConfig {
+                format: COLOR_FORMAT,
+                samples,
+                with_depth,
+                ..TargetConfig::default()
+            },
+        )
+        .expect("the pass entity exists");
+        self.graph(world)
+            .get()
+            .get(&target.texture)
+            .cloned()
+            .expect("the target texture is a resource node")
     }
 
     /// Bind the offscreen target for `label` and render one frame.

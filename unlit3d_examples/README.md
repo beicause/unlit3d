@@ -2,8 +2,8 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3d_e
 
 # unlit3d_examples
 
-A windowed example with selectable scenes, rendered through
-[`unlit3d::winit::WindowSurface`]. Its scenes are also drawn offscreen by
+A windowed example with selectable scenes, presented through
+[`unlit3d::winit::presenter`]. Its scenes are also drawn offscreen by
 `tests/gpu_suite.rs`, which compares every frame against a stored snapshot, so
 the crate is both the workspace's example program and a rendering regression
 check. The Android APK packages it as one of its two examples, the other

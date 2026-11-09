@@ -67,7 +67,7 @@ fn status(host: &World, interactive: &Interactive) -> Value {
         "buttons": buttons,
         "render_world": { "Handle": interactive.render_world.to_bits() },
         "audio_world": { "Handle": worlds.audio.entity.to_bits() },
-        "target": interactive.target,
+        "target": interactive.target.id().to_bits(),
     })
 }
 

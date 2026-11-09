@@ -99,10 +99,7 @@ pub mod prelude {
         step_once,
     };
     #[cfg(feature = "render")]
-    pub use crate::present::{
-        BLIT_PASS_ORDER, OffscreenTarget, Presenter, SCENE_PASS_ORDER, bind_offscreen,
-        draw_presented, pump_presented, resize_presented, setup_presenter,
-    };
+    pub use crate::present::{draw_presented, pump_presented, setup_presenter};
     #[cfg(feature = "audio")]
     pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]
@@ -126,5 +123,9 @@ pub mod prelude {
             spawn_stepped_world_with_init, spawn_threaded_world, spawn_threaded_world_with_init,
             step_stepped_world, with_stepped_world, with_stepped_world_mut,
         },
+    };
+    #[cfg(feature = "render")]
+    pub use unlit3d::winit::presenter::{
+        BLIT_PASS_ORDER, Presenter, PresenterError, SCENE_PASS_ORDER, resize_presented,
     };
 }

@@ -31,6 +31,7 @@ pub mod lit;
 pub mod mcp;
 pub mod mesh;
 pub mod mesh_source;
+pub mod offscreen;
 mod order;
 pub mod pass;
 pub mod pipeline;
@@ -61,6 +62,11 @@ pub mod prelude {
     };
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};
+    #[cfg(feature = "winit")]
+    pub use crate::winit::presenter::{
+        PresentationPath, Presenter, build_presenter, present_frames, pump_presented,
+        resize_presented, setup_presenter,
+    };
     pub use crate::{
         attachments::FrameAttachments,
         blit::BlitSource,
@@ -85,6 +91,7 @@ pub mod prelude {
         line::{Line, LineSegment, LineSource},
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,
+        offscreen::{IntermediateSize, PersistentTarget, TargetConfig},
         pass::{FramePass, FramePassOrder, Pass, PassInfo},
         relay::{Snapshot, SnapshotReader, Stream, StreamReader},
         renderer::Renderer,

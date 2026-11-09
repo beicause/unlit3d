@@ -413,12 +413,13 @@ world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
 ```
 
 `Gpu::headless` is the same request without a window, for tests and
-tools. The **present** module owns the plumbing from a sub-world to a
-window: `setup_presenter` by default has the scene's pass draw straight into
-the swap chain, and with its offscreen path on adds a second pass to the same
-world that copies a persistent target over the surface — which keeps the
-frame long enough to read back, so screenshots and snapshot tests ask for
-it. `draw_presented`
+tools. The **present** module is a thin wrapper over `unlit3d::winit::presenter`
+that knows how to reach into a sub-world: `setup_presenter` by default has the
+scene's pass draw straight into the swap chain (`PresentationPath::Surface`),
+and with its offscreen path on builds
+`PresentationPath::Intermediate` instead — a persistent target plus a second
+pass in the same world that copies it over the surface, which keeps the frame
+long enough to read back, so screenshots and snapshot tests ask for it. `draw_presented`
 is the per-frame behaviour that drains the sub-world, dispatches the
 frame and presents it, `pump_presented` keeps frames coming while the
 window lives, and `resize_presented` follows the window around. The render

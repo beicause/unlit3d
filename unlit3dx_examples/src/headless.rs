@@ -144,7 +144,14 @@ pub fn run(
             .expect("the renderer is a resource entity")
             .get()
             .context();
-        bind_offscreen(world, context, pass.0, device, config.size)
+        PersistentTarget::bind(
+            world,
+            context,
+            pass.0,
+            device,
+            config.size,
+            TargetConfig::default(),
+        )
     };
 
     let mut output = HeadlessOutput {
@@ -214,16 +221,28 @@ pub fn run(
         drain_sub_world(world);
         dispatch_frame(world, &mut frame);
         if config.capture.contains(&index) {
-            let _ = world
-                .root_scope()
-                .query_one::<&mut Renderer>(renderer.0)
-                .map(|mut r| {
-                    r.get().render(&*world);
-                });
             let target = offscreen.as_ref().expect("the offscreen target exists");
+            let context = {
+                let mut renderer_row = world
+                    .root_scope()
+                    .query_one::<&mut Renderer>(renderer.0)
+                    .expect("the renderer is a resource entity");
+                renderer_row.get().render(&*world);
+                renderer_row.get().context()
+            };
+            let texture = {
+                let mut graph = context
+                    .try_graph(&world.root_scope())
+                    .expect("the frame's resource graph exists");
+                graph
+                    .get()
+                    .get(&target.texture)
+                    .cloned()
+                    .expect("the target texture is a resource node")
+            };
             output
                 .frames
-                .push(readback_texture(device, queue, &target.texture));
+                .push(readback_texture(device, queue, &texture));
         }
     }
 

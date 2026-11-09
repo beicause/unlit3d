@@ -4,7 +4,7 @@ use std::path::Path;
 use unlit_ecs::bundle;
 
 use glam::Mat4;
-use unlit_wgpu::resources::{ResourceGraph, TextureExt};
+use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::gltf::LitGltf;
 use unlit3d::prelude::*;
 
@@ -452,9 +452,9 @@ fn output_size(config: &Config) -> Result<(u32, u32), Error> {
 /// Give `pass` an output-sized colour target, and its optional depth and
 /// multisample attachments, and return the colour texture.
 ///
-/// The texture is registered in the graph in its own right, so a screenshot can
-/// name it and read it back, and the view depends on it so the graph keeps it
-/// alive.
+/// The target is the library's [`PersistentTarget`], so the texture is
+/// registered in the graph in its own right — a screenshot can name it and read
+/// it back — and the view depends on it, which keeps it alive.
 fn bind_target(
     world: &World,
     context: RenderContext,
@@ -464,27 +464,26 @@ fn bind_target(
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
-    let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
-    let color_view = {
-        let mut graph = context.graph(&world.root_scope());
-        let texture = graph.get().insert(color.clone(), None);
-        let view = graph.get().insert(
-            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
-        graph.get().add_dependency(&view, &texture);
-        view
-    };
-    let attachments =
-        FrameAttachments::new(world, context, COLOR_FORMAT, size, samples, with_depth);
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| {
-            pass.get().set_attachments(&attachments, color_view);
-        })
-        .expect("the pass entity exists");
-    color
+    let target = PersistentTarget::bind(
+        world,
+        context,
+        pass,
+        device,
+        size,
+        TargetConfig {
+            format: COLOR_FORMAT,
+            samples,
+            with_depth,
+            ..TargetConfig::default()
+        },
+    )
+    .expect("the pass and the frame's resource graph exist");
+    context
+        .graph(&world.root_scope())
+        .get()
+        .get(&target.texture)
+        .cloned()
+        .expect("the target texture is a resource node")
 }
 
 /// Run f with the mesh source mounted at source_entity, borrowing both at once.
