@@ -16,7 +16,7 @@
 10. 要截图 / 快照 / MCP 就开了 offscreen 展示路径？
 11. 指针用 `OnPointer`，面板先问 `egui_wants_pointer_input()`？
 12. 要明暗就用 `unlit: false` 的 key，且灯 spawn 在画 mesh 的那个 source 子树里、朝向对（沿 `-Z`）？
-13. MCP 结果用 `max` 截断、优先 `save_*` 落盘；所有 id 与坐标从 `list_worlds` / `scene_status` / `list_resources` 取？
+13. MCP 大结果先落盘或挑字段读，不整表内联；所有 id 与坐标从 `list_worlds` / `scene_status` / `list_resources` 取？
 
 ## 症状 → 检查项
 

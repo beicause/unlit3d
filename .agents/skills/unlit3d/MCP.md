@@ -1,38 +1,36 @@
 # 用 MCP 操纵运行中的 world
 
-工具签名与数量以 `listTools` 的返回为准；world / 资源 id 一律从返回值取，别抄示例里的数值。排查项见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)，源码位置见 [EXAMPLES.md](EXAMPLES.md)。
+工具签名与数量以 `tools/list` 的返回为准；world / 资源 id 一律从返回值取，别抄示例里的数值。排查项见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)，源码位置见 [EXAMPLES.md](EXAMPLES.md)。
 
 ## 服务器与驱动
 
 MCP 服务器住在 `unlit_ecs`（`crates/unlit_ecs/src/mcp/`）里，让 agent 读写一个**正在运行**的 world。它没有特权通道：每个工具都写在公开 API（`World`、`Renderer`、`MeshSource`、`ResourceGraph`）之上，且服务器本身不认识引擎——工具由定义其作用对象的 crate 各自用 `inventory::submit!` 注册（`unlit_ecs` 注册 world 与实体工具、`unlit3d` 注册渲染工具、`unlit3dx` 注册音频录音与宿主控制工具）。传输是 stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有 `.mcp.json`。示例程序还能注册自己的工具：`unlit3dx_examples --headless --mcp` 就多两个按帧驱动的工具。
 
-`scripts/mcp_drive.py` 是配套的极简客户端：启动宿主、握手、按参数执行若干次调用，最后终止宿主。调用约定：
-
-- `--bin` 必填；`--args` 省略时默认 `--mcp --stepped`（也可由 `EXAMPLE_ARGS` 环境变量覆盖）。
-- `--args` 的值以 `-` 开头时必须写成 `--args=...`，否则被 argparse 当成选项。
-- 操作是一个 JSON 数组：`{"call": "<tool>", "args": {...}, "max": 4000}` 调工具、`{"listTools": true}` 列工具、`{"sleep": 6}` 等待（**仅桌面 / winit 宿主**需要等事件循环起来；`--headless --mcp` 按帧驱动不要 sleep）；`max` 截断每条结果。
-- 不传位置参数时从 stdin 读操作数组。
-
-以下命令假定工作目录是仓库根（`D` 与 `--bin` 都是相对仓库根的路径）。
+客户端用 **mcpdo**（MCP Inspector 的连接 CLI，随 `@modelcontextprotocol/inspector` 一起装）：它起一个常驻 daemon，`connect` 一次之后，后续每条命令都打到**同一个宿主进程**——world 的状态跨命令持续，这是它比「每次调用都重新启动宿主」的一次性客户端（`mcp-inspector --cli`）更合适的根本原因。`@modelcontextprotocol/inspector` 已全局安装就直接调 `mcpdo`（下文命令都这么写）；没装就在每条命令前加免安装前缀（首次要下载，慢）：
 
 ```sh
-D=.agents/skills/unlit3d/scripts/mcp_drive.py
-
-# 列出工具（--args 省略，走默认的 --mcp --stepped）
-python3 $D --bin ./target/debug/unlit3dx-examples '[{"listTools": true}]'
-
-# 列 world → 等 6 秒 → 总览 → 截图
-# 注意：{"Handle": 5} 是示意值，先跑 list_worlds 拿本次启动的 bits 再填
-python3 $D --bin ./target/debug/unlit3dx-examples '[
-  {"call": "list_worlds"},
-  {"sleep": 6},
-  {"call": "world_summary", "max": 2000},
-  {"call": "save_screenshot", "args": {"world": {"Handle": 5}, "directory": "/tmp", "file_name": "shot.png"}}
-]'
-
-# 换宿主：--args 的值以 - 开头，必须写成 --args=... 的形式
-python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube' '[{"call": "list_worlds"}]'
+pnpm dlx --package @modelcontextprotocol/inspector mcpdo <子命令…>
 ```
+
+```sh
+# 连接：stdio 宿主以 -- 分隔写在后面；连接名就是 target 本身
+mcpdo connect -- ./target/debug/unlit3dx-examples --headless --mcp
+
+# 之后所有命令都用 --connection（或 @<连接名>）指名这条连接
+mcpdo --connection './target/debug/unlit3dx-examples' tools/list --format json
+mcpdo --connection './target/debug/unlit3dx-examples' tools/call scene_status --format json
+mcpdo --connection './target/debug/unlit3dx-examples' tools/call step_frames frames:=10 --format json
+mcpdo disconnect './target/debug/unlit3dx-examples'
+```
+
+要点：
+
+- **一次会话 = 一次 connect + N 条 tools/call**，最后 `disconnect`（或者直接 kill 宿主）。工具参数写 `key:=value`（`:=` 后是按 JSON 解析的字面量，对象/数组/字符串都行）。
+- **`--format json` 给 agent 读**；不加是给人看的带色文本。stdout 只有结果，宿主的日志走 stderr，不碍事。
+- 连接在 daemon 里**跨 shell 持久**，所以「连点两个按钮中间要 `step_frames`」这类多步流程天然成立；一次性客户端每次调用都拿到全新宿主，做不了这种事。
+- 桌面 / winit 宿主需要 `DISPLAY` 或 `WAYLAND_DISPLAY`，`connect` 前设好（如 `WAYLAND_DISPLAY=wayland-1`）。
+- daemon 把状态放在 `~/.mcp-inspector/`；沙箱只读 home 时用 `HOME=<可写目录>` 指过去。
+- 换宿主就再开一条连接：`mcpdo connect -- ./target/debug/unlit3d-examples --mcp --scene spin_cube`。
 
 ## 四个 `--mcp` 宿主
 
@@ -61,7 +59,7 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 
 ## 工具清单
 
-工具按注册 crate 分六组，**名称、参数与数量以 `listTools` 返回为准**；`unlit3dx_examples --headless --mcp` 另外注册 2 个自有工具（见下节）。所有工具的 `world` 都可省略（默认 `"Host"`）。
+工具按注册 crate 分六组，**名称、参数与数量以 `tools/list` 返回为准**；`unlit3dx_examples --headless --mcp` 另外注册 2 个自有工具（见下节）。所有工具的 `world` 都可省略（默认 `"Host"`）。
 
 ### world 与实体
 
@@ -148,21 +146,23 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 
 `scene_status` 的字段：`ready`、`frame`、`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits）。（`ready` 目前恒为 `true`，是硬编码的保留字段，不要拿它判断玩法 world 起没起来。）
 
-一个典型回合（所有 `Handle` 与 `id` 都是示意值，照 `scene_status` 报的填）：
+一个典型回合（所有 `Handle` 与 `id` 都是示意值，照 `scene_status` 报的填；`C` 是这条连接的名字）：
 
 ```sh
-D=.agents/skills/unlit3d/scripts/mcp_drive.py   # 本块自带，单独抄也不会空
-python3 $D --bin ./target/debug/unlit3dx-examples --args='--headless --mcp' '[
-  {"call": "scene_status"},
-  {"call": "step_frames", "args": {"frames": 60}},
-  {"call": "send_input", "args": {"world": <gameplay_world>, "events": [
-    {"Mouse": {"Moved": {"position": <button_center>}}},
-    {"Mouse": {"Button": {"position": <button_center>, "button": "Primary", "pressed": true}}},
-    {"Mouse": {"Button": {"position": <button_center>, "button": "Primary", "pressed": false}}}
-  ]}},
-  {"call": "step_frames", "args": {"frames": 60}},
-  {"call": "read_texture_as_image", "args": {"world": <render_world>, "id": <target>, "format": "png"}}
-]'
+mcpdo connect -- ./target/debug/unlit3dx-examples --headless --mcp
+C='./target/debug/unlit3dx-examples'
+
+mcpdo --connection "$C" tools/call scene_status --format json
+mcpdo --connection "$C" tools/call step_frames frames:=60 --format json
+mcpdo --connection "$C" tools/call send_input 'world:=<gameplay_world>' 'events:=[
+  {"Mouse": {"Moved": {"position": <button_center>}}},
+  {"Mouse": {"Button": {"position": <button_center>, "button": "Primary", "pressed": true}}},
+  {"Mouse": {"Button": {"position": <button_center>, "button": "Primary", "pressed": false}}}
+]' --format json
+mcpdo --connection "$C" tools/call step_frames frames:=60 --format json
+mcpdo --connection "$C" tools/call read_texture_as_image 'world:=<render_world>' 'id:=<target>' 'format:="png"' --format json
+
+mcpdo disconnect "$C"
 ```
 
 要点：

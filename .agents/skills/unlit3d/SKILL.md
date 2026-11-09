@@ -52,7 +52,7 @@ description: 用 unlit3d（单 world 渲染库）与 unlit3dx（多 world 运行
 
 ## 上下文成本（所有附件共用）
 
-- MCP 结果用 `max` 截断，别把整个实体表灌进上下文。
+- MCP 大结果别整表灌进上下文：优先落盘（`save_buffer` / `save_texture_as_image`）或读要的那一个字段；批量查询先想清楚要不要全部。
 - 优先 `save_*` 落盘而不是 `read_*` 内联：内联图片 / base64 会永久占掉一块模型上下文，落盘文件可按需读、也可不读。
 - 示例里的 world 句柄、资源 id、按钮坐标都是示意值；**每次启动都会变**，一律从 `list_worlds` / `scene_status` / `list_resources` 的返回值取。
 
