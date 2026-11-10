@@ -46,11 +46,15 @@ const SAMPLE_COUNT: u32 = scenes::spin_cube::SAMPLE_COUNT;
 /// reproducible instead, and this is the fixed step that makes it so.
 pub const FIXED_STEP: f32 = 1.0 / 60.0;
 
-/// The order the controls run at.
+/// The order the scene and its presentation path come up at.
 ///
-/// `ensure_presented` states no order: it is the one that sets the frame's skip
-/// flag, and a behaviour that reads the flag states a later order rather than
-/// leaving the two to chance. The controls come first of those readers, since
+/// It is the one that sets the frame's skip flag, so it comes before every
+/// reader of the flag: a behaviour that reads it states a later order rather
+/// than leaving the two to chance.
+const READY_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-40);
+
+/// The order the controls run at: after `ensure_presented`, which may have
+/// skipped the frame, and first of the readers that act on the flag, since
 /// switching a scene skips the frame for the two after them.
 const CONTROLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-30);
 
@@ -58,14 +62,19 @@ const CONTROLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-30);
 /// the frame, and before the present, which draws what the advance produced.
 const ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-20);
 
-/// The order the frame presents at: after the advance, so what it draws is the
-/// frame the advance produced.
-const PRESENT_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(30);
+/// The order the scene's region is restated at: after the advance, and before
+/// the library's present, which draws the pass the region belongs to.
+const VIEWPORT_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(0);
+
+/// The order the scene world's queued commands are applied at: after the
+/// library's present, whose render is what queued them.
+const FLUSH_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(20);
 
 /// The order the scene world advances its scene at: after `step_sequence`,
 /// which decides whether this frame advances and records the decision for the
-/// behaviour that runs it.
-const SCENE_ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(10);
+/// behaviour that runs it. The value shares nothing with the host world's
+/// orders: the two worlds dispatch separately.
+const SCENE_ADVANCE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(20);
 
 /// Whether this build can serve the Model Context Protocol.
 ///
@@ -225,17 +234,20 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         proxy,
         mcp: args.mcp && MCP_SUPPORTED,
     });
-    // The frame's own behaviours. Requesting the GPU and building the scene and
-    // its surface state no order: nothing reads what they write in the same
-    // frame. The three that do state one — the controls, the advance and the
-    // present — since the first of them decides whether the frame runs at all.
+    // The frame's own behaviours. Requesting the GPU states no order: nothing
+    // reads what it writes in the same frame. The rest state one, chained from
+    // the behaviour that brings the scene up and decides whether the frame runs
+    // at all, through the readers of that decision, to the library's present
+    // and the flush that follows it.
     world.root_scope_mut().spawn(bundle![request_gpu(app)]);
     world.root_scope_mut().spawn(bundle![ensure_presented(app)]);
     world
         .root_scope_mut()
         .spawn(bundle![serve_scene_controls(app)]);
     world.root_scope_mut().spawn(bundle![advance_scene(app)]);
-    world.root_scope_mut().spawn(bundle![present_frame(app)]);
+    world.root_scope_mut().spawn(bundle![restate_viewport(app)]);
+    world.root_scope_mut().spawn(bundle![present_frames()]);
+    world.root_scope_mut().spawn(bundle![flush_scene(app)]);
     let (pump, redraw) = pump_presented();
     world.root_scope_mut().spawn(bundle![pump]);
     world.root_scope_mut().spawn(bundle![redraw]);
@@ -499,8 +511,13 @@ impl Bundle for RenderWorld {
 )]
 struct WorldName(&'static str);
 
-/// The presentation path, absent until the scene and surface are ready.
-struct PresenterSlot(Option<Presenter>);
+/// The entity carrying the presentation path, absent until the scene and
+/// surface are ready.
+///
+/// The path is its own entity rather than a component of the app because the
+/// library's frame behaviours find it by querying for a [Presenter]; dropping
+/// the entity is how a scene switch gives the path up.
+struct PresenterEntity(Option<Entity>);
 
 /// The scene the example starts with; a switch replaces it.
 struct InitialScene(&'static scenes::SceneDef);
@@ -534,7 +551,7 @@ impl Bundle for App {
         bundle![
             GpuState::Idle,
             SceneEntity(None),
-            PresenterSlot(None),
+            PresenterEntity(None),
             InitialScene(self.scene),
             SelectorPos(None),
             GpuInfoPos(None),
@@ -739,11 +756,12 @@ impl Command for BuildPresenter {
                 return Ok(());
             }
         };
+        let entity = world.root_scope_mut().spawn(bundle![presenter]);
         world
             .root_scope()
-            .query_one::<&mut PresenterSlot>(self.app)?
+            .query_one::<&mut PresenterEntity>(self.app)?
             .get()
-            .0 = Some(presenter);
+            .0 = Some(entity);
         Ok(())
     }
 }
@@ -826,11 +844,7 @@ fn present(world: &World, app: Entity) {
         scene.get().resize(size, def.baseline);
         (scene.get().renderer, scene.get().pass)
     };
-    if world
-        .root_scope()
-        .query_one::<&PresenterSlot>(app)
-        .is_ok_and(|mut slot| slot.get().0.is_some())
-    {
+    if presenter_entity(world, app).is_some() {
         return;
     }
     let surface = match gpu.instance.create_surface(window.clone()) {
@@ -865,23 +879,45 @@ fn present(world: &World, app: Entity) {
     window.request_redraw();
 }
 
-/// Release the surface and its attached passes before a scene is replaced.
-fn release_presenter(world: &World, app: Entity) {
-    let presenter = world
+/// The entity carrying the presentation path, while one is up.
+fn presenter_entity(world: &World, app: Entity) -> Option<Entity> {
+    world
         .root_scope()
-        .query_one::<&mut PresenterSlot>(app)
+        .query_one::<&PresenterEntity>(app)
+        .ok()
+        .and_then(|mut slot| slot.get().0)
+}
+
+/// Release the swap chain, keeping the presentation path for a later resume.
+fn release_surface(world: &World, app: Entity) {
+    let Some(entity) = presenter_entity(world, app) else {
+        return;
+    };
+    let released = world
+        .root_scope()
+        .query_one::<&mut Presenter>(entity)
+        .map(|mut presenter| presenter.get().release(world));
+    if let Ok(Err(error)) = released {
+        log::error!("failed to release the presentation path: {error}");
+    }
+}
+
+/// Release the presentation path and drop it, before its scene goes.
+fn release_presenter(world: &World, app: Entity) {
+    release_surface(world, app);
+    let entity = world
+        .root_scope()
+        .query_one::<&mut PresenterEntity>(app)
         .ok()
         .and_then(|mut slot| slot.get().0.take());
-    if let Some(presenter) = presenter
-        && let Err(error) = presenter.release(world)
-    {
-        log::error!("failed to release the presentation path: {error}");
+    if let Some(entity) = entity {
+        world.root_scope().queue().despawn(entity);
     }
 }
 
 #[cfg(target_os = "android")]
 fn release(world: &World, app: Entity) {
-    release_presenter(world, app);
+    release_surface(world, app);
 }
 
 /// Rebuild the app around a different scene.
@@ -966,7 +1002,7 @@ fn run_scene_advance(entity: Entity) -> OnFrame {
 /// `apply`; the surface is built out of that world. Each frame retries, and
 /// the frames that cannot yet draw are skipped.
 fn ensure_presented(app: Entity) -> OnFrame {
-    OnFrame::new(move |world, _entity, _frame| {
+    OnFrame::with_order(READY_ORDER, move |world, _entity, _frame| {
         let resumed = world
             .root_scope()
             .query::<(Entity, &Resumed)>()
@@ -986,19 +1022,12 @@ fn ensure_presented(app: Entity) -> OnFrame {
             FrameSkip::skip(world);
             return;
         }
-        if !world
-            .root_scope()
-            .query_one::<&PresenterSlot>(app)
-            .is_ok_and(|mut slot| slot.get().0.is_some())
-        {
-            present(world, app);
-            if !world
-                .root_scope()
-                .query_one::<&PresenterSlot>(app)
-                .is_ok_and(|mut slot| slot.get().0.is_some())
-            {
-                FrameSkip::skip(world);
-            }
+        if presenter_entity(world, app).is_some() {
+            return;
+        }
+        present(world, app);
+        if presenter_entity(world, app).is_none() {
+            FrameSkip::skip(world);
         }
     })
 }
@@ -1119,15 +1148,15 @@ fn advance_scene(app: Entity) -> OnFrame {
     })
 }
 
-/// Present the advanced scene through the shared presentation path.
+/// Restate the scene's letterboxed region on the pass that draws it.
 ///
-/// The example retains its scene-specific viewport and command lifecycle; the
-/// library owns surface acquisition, target selection, rendering and present.
-fn present_frame(app: Entity) -> OnFrame {
-    OnFrame::with_order(PRESENT_ORDER, move |world, _entity, _frame| {
-        if FrameSkip::is_skipped(world) {
-            return;
-        }
+/// A window resize changes the region, and the library's present renders the
+/// pass this frame, so this runs before it. The blit pass, when there is one,
+/// keeps its full-target viewport. A skipped frame still restates the region:
+/// keeping the pass's viewport in step with the window costs nothing and
+/// leaves the pass right for the frame that draws again.
+fn restate_viewport(app: Entity) -> OnFrame {
+    OnFrame::with_order(VIEWPORT_ORDER, move |world, _entity, _frame| {
         let Some(scene_entity) = world
             .root_scope()
             .query_one::<&SceneEntity>(app)
@@ -1143,42 +1172,45 @@ fn present_frame(app: Entity) -> OnFrame {
                 .expect("the scene entity carries a scene");
             (scene.get().pass, scene.get().viewport)
         };
-        {
-            let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
-                return;
-            };
-            // Restate the letterboxed region after any window resize. The blit
-            // pass keeps its full-target viewport.
-            nested
-                .get()
-                .root_scope()
-                .query_one::<&mut FramePass>(scene_pass)
-                .map(|mut pass| pass.get().viewport = viewport)
-                .expect("the scene's own pass exists");
-        }
-        let presented = world
+        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
+            return;
+        };
+        nested
+            .get()
             .root_scope()
-            .query_one::<&mut PresenterSlot>(app)
+            .query_one::<&mut FramePass>(scene_pass)
+            .map(|mut pass| pass.get().viewport = viewport)
+            .expect("the scene's own pass exists");
+    })
+}
+
+/// Apply the commands the scene world queued while presenting.
+///
+/// The library's present renders the scene world, so its commands are applied
+/// after it -- a later order -- rather than by the presenter itself. A skipped
+/// frame still flushes: the commands queue up on the scene world either way,
+/// and dropping none of them keeps the scene's own record intact.
+fn flush_scene(app: Entity) -> OnFrame {
+    OnFrame::with_order(FLUSH_ORDER, move |world, _entity, _frame| {
+        let Some(scene_entity) = world
+            .root_scope()
+            .query_one::<&SceneEntity>(app)
             .ok()
-            .and_then(|mut slot| {
-                slot.get()
-                    .0
-                    .as_mut()
-                    .map(|presenter| presenter.present(world))
+            .and_then(|mut slot| slot.get().0)
+        else {
+            return;
+        };
+        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
+            return;
+        };
+        let _ = world
+            .root_scope()
+            .query_one::<&mut Scene>(scene_entity)
+            .map(|mut scene| {
+                if let Err(error) = scene.get().end_frame(&mut *nested.get()) {
+                    log::error!("a command queued by a scene failed: {error}");
+                }
             });
-        if let Some(Err(error)) = presented {
-            log::error!("failed to present a frame: {error}");
-        }
-        if let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) {
-            let _ = world
-                .root_scope()
-                .query_one::<&mut Scene>(scene_entity)
-                .map(|mut scene| {
-                    if let Err(error) = scene.get().end_frame(&mut *nested.get()) {
-                        log::error!("a command queued by a scene failed: {error}");
-                    }
-                });
-        }
     })
 }
 
@@ -1307,17 +1339,14 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| scene.get().resize(size, baseline));
+        let Some(presenter) = presenter_entity(world, app) else {
+            return;
+        };
         let resized = world
             .root_scope()
-            .query_one::<&mut PresenterSlot>(app)
-            .ok()
-            .and_then(|mut slot| {
-                slot.get()
-                    .0
-                    .as_mut()
-                    .map(|presenter| presenter.resize(world, size))
-            });
-        if let Some(Err(error)) = resized {
+            .query_one::<&mut Presenter>(presenter)
+            .map(|mut presenter| presenter.get().resize(world, size));
+        if let Ok(Err(error)) = resized {
             log::error!("failed to resize the presentation path: {error}");
         }
     })
@@ -1556,7 +1585,7 @@ impl Scene {
     /// Called on every resize and on the first frame that knows the window's
     /// size, so the projection and the size the scene's behaviour is handed
     /// follow the target together. The region is the scene's own state here and
-    /// reaches the pass that draws it from [`present_frame`], which is the one
+    /// reaches the pass that draws it from [`restate_viewport`], which is the one
     /// place holding both that pass and this scene.
     fn resize(&mut self, target: (u32, u32), baseline: Option<(u32, u32)>) {
         let (viewport, content) = letterbox(baseline, target, true);
@@ -2536,7 +2565,7 @@ mod tests {
     // The scene-switch test below drives the app's own slots, so it is the only
     // part of this module that needs these names.
     #[cfg(not(target_arch = "wasm32"))]
-    use super::{InitialScene, PresenterSlot, SceneEntity, scenes, switch_scene};
+    use super::{InitialScene, PresenterEntity, SceneEntity, scenes, switch_scene};
     #[cfg(not(target_arch = "wasm32"))]
     use unlit_ecs::bundle;
     #[cfg(not(target_arch = "wasm32"))]
@@ -2554,9 +2583,10 @@ mod tests {
         let mut world = World::new();
 
         let old_scene = world.root_scope_mut().spawn(bundle![]);
+        let old_presenter = world.root_scope_mut().spawn(bundle![]);
         let app = world.root_scope_mut().spawn(bundle![
             InitialScene(scenes::default()),
-            PresenterSlot(None),
+            PresenterEntity(Some(old_presenter)),
             SceneEntity(Some(old_scene)),
         ]);
 
@@ -2567,12 +2597,16 @@ mod tests {
         assert!(
             world
                 .root_scope()
-                .query_one::<&PresenterSlot>(app)
+                .query_one::<&PresenterEntity>(app)
                 .expect("the app keeps its presentation slot")
                 .get()
                 .0
                 .is_none(),
             "the presentation path went with the scene it presented"
+        );
+        assert!(
+            !world.root_scope().contains(old_presenter),
+            "the presentation path's entity was despawned"
         );
         assert!(
             !world.root_scope().contains(old_scene),

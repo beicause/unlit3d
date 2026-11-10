@@ -697,11 +697,18 @@ fn screenshot_target(
         let handle = graph
             .resolve(id)
             .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        return match graph.get::<Resource>(&handle) {
-            Some(Resource::Texture(texture)) => Ok(texture.clone()),
-            Some(Resource::TextureView(view)) => Ok(view.texture().clone()),
-            _ => Err(format!("resource id {} is not a texture", id.to_bits())),
+        let texture = match graph.get::<Resource>(&handle) {
+            Some(Resource::Texture(texture)) => texture.clone(),
+            Some(Resource::TextureView(view)) => view.texture().clone(),
+            _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
         };
+        if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return Err(format!(
+                "resource id {} is a texture no one can read back: it lacks COPY_SRC",
+                id.to_bits()
+            ));
+        }
+        return Ok(texture);
     }
     let mut found: Option<wgpu::Texture> = None;
     for node in graph.nodes() {

@@ -33,7 +33,7 @@ world.root_scope_mut().spawn(bundle![request_gpu(app, move |world, gpu| {
         .expect("the presenter is built");
 })]);
 
-world.root_scope_mut().spawn(bundle![draw_presented()]);
+world.root_scope_mut().spawn(bundle![draw_presented(render.entity)]);
 let (pump, redraw) = pump_presented();
 world.root_scope_mut().spawn(bundle![pump]);
 world.root_scope_mut().spawn(bundle![redraw]);
@@ -44,7 +44,12 @@ host.run(event_loop)?;
 **无窗口 / 定步长**（测试、离屏、wasm）——**示意骨架**，进程自己驱动每一帧：
 
 ```rust
+// 示意骨架：render_world/pass/device 来自 setup_render_world 返回的装配（ctx 是它的
+// RenderContext），size 是你要的离屏尺寸；名字对应该文其它片段。
 let step = 1.0 / HEADLESS_HZ;                                 // 每帧时长（秒）
+// 目标建在它在的那个 world 里；pass 由 setup_render_world 建好。
+let target = PersistentTarget::bind(&render_world, ctx, pass.0, &device, size, TargetConfig::default())
+    .expect("the offscreen target is bound");
 let mut frame = Frame { delta_time: step as f32, index: 0, size };
 for index in 0..frames {
     frame.index = index;
@@ -55,8 +60,15 @@ for index in 0..frames {
     drain_sub_world(world);                                   // render world 的 job 在宿主线程跑
     dispatch_frame(world, &mut frame);
     let _ = world.root_scope().query_one::<&mut Renderer>(renderer.0)
-        .map(|mut row| { row.get().render(&*world); });       // render 要 &World，不能再借 &mut
-    let pixels = readback_texture(device, queue, &offscreen.texture);
+        .map(|mut row| { row.get().render(&world); });        // render 要 &World，不能再借 &mut
+    // target.texture 是资源节点的 handle，取回真纹理才能回读。
+    let texture = world.root_scope().query_one::<&mut Renderer>(renderer.0)
+        .map(|mut row| row.get().context())
+        .expect("the renderer exists")
+        .graph(&world.root_scope()).get()
+        .get(&target.texture).cloned()
+        .expect("the target texture is a resource node");
+    let pixels = readback_texture(device, queue, &texture);
 }
 ```
 

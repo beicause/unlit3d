@@ -45,7 +45,8 @@ pub mod presenter;
 pub mod surface;
 
 pub use presenter::{
-    BLIT_PASS_ORDER, PresentationPath, Presenter, PresenterError, SCENE_PASS_ORDER,
-    build_presenter, present_frames, pump_presented, resize_presented, setup_presenter,
+    BLIT_PASS_ORDER, HostPump, PresentationPath, Presenter, PresenterError, SCENE_PASS_ORDER,
+    build_presenter, present_frames, pump_presented, pump_presented_with, resize_presented,
+    setup_presenter,
 };
 pub use surface::{Frame, WindowSurface};

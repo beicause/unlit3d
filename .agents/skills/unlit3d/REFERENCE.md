@@ -178,9 +178,10 @@
 | 两条路径 | `PresentationPath`：`Surface { samples, with_depth }` 直画交换链；`Intermediate(TargetConfig)` 画进常驻纹理再加一个 blit pass 贴回交换链。默认 `Surface { samples: OFFSCREEN_SAMPLES, with_depth: true }` | 同上 |
 | 装配（库） | `build_presenter(world, render, renderer, scene_pass, surface, instance, adapter, fallback_size, path)` → `Presenter`；`setup_presenter(..)` 同参再 spawn 成组件并返回 `Entity`。`surface` 由调用方 `instance.create_surface(window)` 造 | 同上 |
 | 装配（dx） | `setup_presenter(world, render, renderer, scene_pass, gpu, fallback_size, offscreen: bool)`，内部造 surface 并映射成 `Intermediate(TargetConfig::default())` / `Surface`，返回 `Result<(), PresenterError>`——**是 enum，不是 `String`** | `crates/unlit3dx/src/present.rs` |
-| 组件方法 | `Presenter::present(host)` / `resize(host, size)` / `release(host)`（`release` 消费 self，所以槽件要存 `Option<Presenter>`）；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
-| 每帧行为（dx） | `draw_presented(render)`——它自己 drain sub-world + 分发帧再调 `Presenter::present`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
-| 每帧行为（单 world） | `present_frames()` / `pump_presented()` / `resize_presented()`：单 world 直接用，它不懂示例的 `Scene`，所以要自己重述 viewport、自己 `Scene::end_frame` 时走示例那条 | 同上 |
+| 组件方法 | `Presenter::present(host)` / `resize(host, size)` / `release(host)`；三者都只借 `&mut self`，所以宿主可以直接把 `Presenter` 挂成组件、暂停时 `release` 而不必拆掉实体，恢复后继续 `present` 会自动重开交换链；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
+| 每帧行为（dx） | `draw_presented(render)`——它自己 drain sub-world + 分发帧再调 `Presenter::present`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn（内部就是 `pump_presented_with(Some(LocalTasks::pump))`）；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
+| 每帧行为（单 world） | `present_frames()` / `pump_presented()` / `resize_presented()`：`present_frames` 跳过 `FrameSkip` 标记的帧、且 winit 宿主报告挂起时不呈现（无 `Resumed` 组件的 world 视为已恢复），所以设标志的行为要给更小的 order；它不懂示例的 `Scene`，重述 viewport、`Scene::end_frame` 要自己挂行为 | 同上 |
+| 宿主前置任务 | `pump_presented_with(Some(Box::new(pump)))`：`pump: HostPump = Box<dyn FnMut(&mut World)>`，每帧 dispatch 前在宿主 world 上跑一次，用来排空子 world 的 job、poll 宿主任务 | 同上 |
 | 纯离屏 | `PersistentTarget::bind(world, context, pass, &device, size, TargetConfig { format, samples, with_depth, size })` + `readback_texture`；`resize` 原地 `replace` 纹理与 view，节点 id 不变 | `crates/unlit3d/src/offscreen.rs` |
 | 尺寸 | `IntermediateSize`：`Scale(f32)`（窗口倍数，`1.0` 跟随窗口，`0.5` 半宽半高，至少 1px）或 `Fixed(u32, u32)` | 同上 |
 

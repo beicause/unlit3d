@@ -1249,6 +1249,16 @@ keeps frames coming, [`present_frames`](winit::presenter::present_frames) draws
 the world's passes into the swap chain, and
 [`resize_presented`](winit::presenter::resize_presented) follows the window.
 
+`present_frames` presents a frame only when the host did not skip it -- and
+not while the winit host reports the app suspended -- so the behaviour that
+decides that -- bringing the scene up, waiting for the GPU -- states an
+earlier order; the frame order is not stable within one value, so sharing
+`PRESENT_ORDER` with it would make the outcome depend on sort order.
+A runtime whose scene lives in a sub-world passes its own work to
+[`pump_presented_with`](winit::presenter::pump_presented_with): the pump runs
+it on the host world before every dispatch, which is where that world's jobs
+and tasks are drained.
+
 Which way the picture reaches the window is
 [`PresentationPath`](winit::presenter::PresentationPath):
 
@@ -1278,6 +1288,11 @@ assembling its own loop uses them directly:
 
 A presenter needs a window because it presents; the two pure-offscreen forms
 do not, which is how the snapshot tests and the headless examples draw.
+
+A presenter takes `&mut self` for all three of its methods, so it lives as a
+component of its own entity: `release` drops the swap chain and keeps
+everything else, and the next `present` opens one again -- a host that
+suspends resumes by presenting, with no state to track on its side.
 
 An MCP screenshot reads a texture out of the resource graph by handle, so it
 sees the frame only under `Intermediate` -- a swap chain image is not a node.

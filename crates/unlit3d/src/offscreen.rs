@@ -153,7 +153,6 @@ impl PersistentTarget {
         if size == self.size {
             return Ok(());
         }
-        self.size = size;
         let color = create_color_target(device, self.config.format, size.0, size.1);
         {
             let mut graph = context.try_graph(&world.root_scope())?;
@@ -163,6 +162,7 @@ impl PersistentTarget {
                 TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             );
         }
+        self.size = size;
         // Replaces the depth and multisample views in place and maintains the
         // graph, which rebuilds what reads the replaced ones.
         self.attachments.resize(world, size);
@@ -181,7 +181,9 @@ pub enum IntermediateSize {
     /// `1.0` follows the window exactly, so a screenshot is the picture on the
     /// glass; `0.5` renders at half the width and height.
     Scale(f32),
-    /// A fixed pixel size that ignores the window.
+    /// A fixed size in physical pixels that ignores the window.
+    ///
+    /// Rounded up to at least one pixel per axis, like [`Self::Scale`].
     Fixed(u32, u32),
 }
 
@@ -194,7 +196,7 @@ impl IntermediateSize {
                 let height = (window_size.1 as f32 * scale) as u32;
                 (width.max(1), height.max(1))
             }
-            Self::Fixed(width, height) => (width, height),
+            Self::Fixed(width, height) => (width.max(1), height.max(1)),
         }
     }
 }
@@ -213,5 +215,6 @@ mod tests {
             (640, 360)
         );
         assert_eq!(IntermediateSize::Scale(0.0).resolve(window), (1, 1));
+        assert_eq!(IntermediateSize::Fixed(0, 0).resolve(window), (1, 1));
     }
 }

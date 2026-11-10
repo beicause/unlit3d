@@ -883,6 +883,11 @@ host.run(event_loop)
 再由三个行为驱动：`pump_presented` 让帧持续到来，`present_frames` 把 world 的
 pass 画进交换链，`resize_presented` 跟随窗口。
 
+`present_frames` 只在宿主没有跳过这一帧、且 winit 宿主没有报告应用挂起时呈现，所以
+决定跳过的那一端——建场景、等 GPU——必须声明更小的 order；帧 order 在同一数值内不保序，
+与 `PRESENT_ORDER` 撞值会让结果取决于排序。场景住在子 world 的运行时把自己的活交给 `pump_presented_with`：pump 会在
+每次 dispatch 前在宿主 world 上跑它，子 world 的 job 与任务正是在那里排空。
+
 画面走哪条路到窗口由 `PresentationPath` 决定：
 
 | 路径 | 场景画进什么 | 代价 | 呈现后能否回读 |
@@ -906,6 +911,10 @@ pass 画进交换链，`resize_presented` 跟随窗口。
 
 presenter 因为要呈现而必须有窗口；后两种纯离屏形式不需要，快照测试与无窗口示例正是
 这么画的。
+
+presenter 的三个方法都只借 `&mut self`，所以它作为独立实体的组件存在：`release` 丢掉
+交换链、其余一概保留，下一次 `present` 会自己重开一条——挂起的宿主继续呈现即可，
+自己不必记任何状态。
 
 MCP 截图按句柄从资源图里取纹理，因此只有在 `Intermediate` 下才看得到这一帧——交换链
 图像不是节点。工具接受可选的 `target` 资源 id，既可以是纹理自己的 id，也可以是它任意

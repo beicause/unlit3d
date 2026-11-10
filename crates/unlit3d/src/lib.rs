@@ -64,8 +64,8 @@ pub mod prelude {
     pub use crate::ui::{UiPanel, UiSource};
     #[cfg(feature = "winit")]
     pub use crate::winit::presenter::{
-        PresentationPath, Presenter, build_presenter, present_frames, pump_presented,
-        resize_presented, setup_presenter,
+        HostPump, PresentationPath, Presenter, build_presenter, present_frames, pump_presented,
+        pump_presented_with, resize_presented, setup_presenter,
     };
     pub use crate::{
         attachments::FrameAttachments,

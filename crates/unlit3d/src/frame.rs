@@ -9,8 +9,9 @@
 //! the world — a windowed application's host world, or a `Scene` advancing the
 //! world it drives. A behaviour spawned with [`OnFrame::new`] states no order;
 //! one whose reads or writes another depends on states the order at both ends
-//! with [`OnFrame::with_order`]. unlit3d declares no order values of its own,
-//! so a frame is extended by spawning behaviours, never by editing a list.
+//! with [`OnFrame::with_order`]. The library states the orders of the frames
+//! it assembles itself, and every caller states the orders of its own: a
+//! frame is extended by spawning behaviours, never by editing a list.
 //!
 //! Like every other behaviour, a frame behaviour runs with `&World`, so a
 //! structural change goes through [`unlit_ecs::Scope::queue`] and lands when the driver

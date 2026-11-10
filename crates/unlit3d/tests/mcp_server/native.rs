@@ -581,24 +581,44 @@ pub fn run() {
         );
 
         // `target` names the texture or any view of it: the pass that draws
-        // into an offscreen target holds the view, not the texture.
+        // into an offscreen target holds the view, not the texture. Only the
+        // colour view can be read back, so the views that refuse are what
+        // tells it apart from the depth and multisample ones -- the listing
+        // carries no usage to ask.
         let resources = server.tool("list_resources", json!({})).await;
-        let view = resources
+        let views = resources
             .as_array()
             .expect("list_resources returns an array")
             .iter()
-            .find(|resource| resource["kind"] == "TextureView")
+            .filter(|resource| resource["kind"] == "TextureView")
             .map(|resource| resource["id"].as_u64().expect("a resource id is a number"))
-            .expect("the offscreen target registers a view");
-        let shot = server
-            .request(
-                "tools/call",
-                json!({ "name": "read_screenshot", "arguments": { "target": view } }),
-            )
-            .await;
-        let by_view = image::load_from_memory(&image_bytes(&shot))
-            .expect("a view-named screenshot is a WebP")
-            .to_rgba8();
+            .collect::<Vec<_>>();
+        assert!(
+            views.len() > 1,
+            "the offscreen world registers a view per attachment, got {views:?}"
+        );
+        let mut readable = Vec::new();
+        for view in views {
+            let result = server
+                .request(
+                    "tools/call",
+                    json!({ "name": "read_screenshot", "arguments": { "target": view } }),
+                )
+                .await;
+            if result["isError"] == true {
+                continue;
+            }
+            let by_view = image::load_from_memory(&image_bytes(&result))
+                .expect("a view-named screenshot is a WebP")
+                .to_rgba8();
+            readable.push((view, by_view));
+        }
+        assert_eq!(
+            readable.len(),
+            1,
+            "only the colour attachment can be read back"
+        );
+        let (_, by_view) = readable.pop().expect("one view is readable");
         assert_eq!(by_view, image, "a view names the texture it views");
 
         server

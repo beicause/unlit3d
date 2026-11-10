@@ -17,6 +17,8 @@
 //! render world in a sub-world -- multi-world runtimes -- spawns its own
 //! pump and calls [`Presenter::present`] itself.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -28,12 +30,12 @@ use unlit_ecs::{Command, Entity, EntityAccessError};
 
 use crate::attachments::FrameAttachments;
 use crate::blit::BlitSource;
-use crate::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
+use crate::frame::{Frame, FrameBehaviourOrder, FrameSkip, OnFrame, dispatch_frame};
 use crate::offscreen::{PersistentTarget, TargetConfig};
 use crate::pass::{FramePass, FramePassOrder, Pass};
 use crate::renderer::Renderer;
 use crate::source::Source;
-use crate::winit::builtin::window;
+use crate::winit::builtin::{Resumed, window};
 use crate::winit::event::{OnAboutToWait, OnWindowEvent};
 use crate::winit::surface::WindowSurface;
 use winit::event::WindowEvent;
@@ -169,11 +171,14 @@ impl Presenter {
     /// loop, an MCP tool's screenshot of the scene, skips the pass rather
     /// than recording into a dead swap-chain image.
     ///
+    /// A surface released by [`Self::release`] is opened again here, so a host
+    /// that suspended only has to keep presenting.
+    ///
     /// # Errors
     ///
     /// Returns an error when the render world's renderer or its resources
-    /// are gone. A render sub-world that is gone presents nothing and
-    /// returns `Ok`.
+    /// are gone, or the window can no longer back a surface. A render
+    /// sub-world that is gone presents nothing and returns `Ok`.
     pub fn present(&mut self, host: &World) -> Result<(), PresenterError> {
         let mut nested = match self.render {
             Some(render) => match host.root_scope().query_one::<&World>(render) {
@@ -187,6 +192,12 @@ impl Presenter {
             None => host,
         };
         let presenting = self.presenting();
+        if self.surface.is_released() {
+            let mut renderer_row = world.root_scope().query_one::<&Renderer>(self.renderer)?;
+            self.surface
+                .build(world, renderer_row.get())
+                .map_err(PresenterError::Surface)?;
+        }
         let Some(swap_frame) =
             self.surface
                 .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
@@ -237,9 +248,6 @@ impl Presenter {
                 .resize(world, &mut *renderer.get(), size.0, size.1);
             self.surface.size()
         };
-        if size.0 == 0 || size.1 == 0 {
-            return Ok(());
-        }
         self.attachments.resize(world, size);
         let Some(target) = self.target.as_mut() else {
             return Ok(());
@@ -267,7 +275,7 @@ impl Presenter {
     /// # Errors
     ///
     /// Returns an error when the render world or its renderer is gone.
-    pub fn release(self, host: &World) -> Result<(), PresenterError> {
+    pub fn release(&mut self, host: &World) -> Result<(), PresenterError> {
         let mut nested = match self.render {
             Some(render) => Some(
                 host.root_scope()
@@ -512,7 +520,15 @@ struct DrawFrame {
     /// Set while a draw is queued but not yet applied, so the pump and a
     /// redraw request in the same turn coalesce into one frame.
     pending: Arc<AtomicBool>,
+    /// Work the host does right before the dispatch, when it has any.
+    pre_dispatch: Option<SharedHostPump>,
 }
+
+/// Work the host does before a frame dispatches, for the world being dispatched.
+pub type HostPump = Box<dyn FnMut(&mut World)>;
+
+/// The same work, shared by the two producers that queue a frame.
+type SharedHostPump = Rc<RefCell<HostPump>>;
 
 impl Command for DrawFrame {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
@@ -539,6 +555,9 @@ impl Command for DrawFrame {
             index: self.index.fetch_add(1, Ordering::Relaxed),
             size,
         };
+        if let Some(pre_dispatch) = &self.pre_dispatch {
+            (pre_dispatch.borrow_mut())(world);
+        }
         dispatch_frame(world, &mut frame);
         // A frame has been dispatched, so the next producer may queue one.
         self.pending.store(false, Ordering::Release);
@@ -553,10 +572,27 @@ impl Command for DrawFrame {
 /// dispatches frames is [`pump_presented`]. The renderer walks every pass
 /// of the world here, so the scene's own pass -- and the offscreen path's
 /// copying pass, when there is one -- both record on this one call.
+///
+/// A frame the host skipped -- because its scene or its presentation path is
+/// not up yet -- is not presented either, so the behaviour that decides
+/// states an earlier order. Neither is a frame the winit host reports the
+/// app suspended for; a world with no winit host counts as resumed. When a
+/// world carries more than one presenter, the first one the query yields
+/// presents.
 pub fn present_frames() -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER),
         move |world, _entity, _frame| {
+            // A suspended winit host has no surface worth presenting into.
+            let resumed = world
+                .root_scope()
+                .query::<&Resumed>()
+                .iter()
+                .next()
+                .is_none_or(|state| state.0);
+            if !resumed || FrameSkip::is_skipped(world) {
+                return;
+            }
             let mut rows = world.root_scope().query::<(Entity, &mut Presenter)>();
             let Some((_, presenter)) = rows.iter().next() else {
                 return;
@@ -575,20 +611,33 @@ pub fn present_frames() -> OnFrame {
 /// to the compositor, and a simulation left waiting on them freezes with
 /// it; the pump keeps the scene advancing on its own.
 pub fn pump_presented() -> (OnAboutToWait, OnWindowEvent) {
+    pump_presented_with(None)
+}
+
+/// `pump_presented`, with host work that runs before every frame dispatch.
+///
+/// A runtime that keeps its scene in a sub-world polls that world's own tasks
+/// and drains its command queue first; `pre_dispatch` receives the host world
+/// so it can do that on the same turn, before the behaviours that read what
+/// the work landed are dispatched.
+pub fn pump_presented_with(pre_dispatch: Option<HostPump>) -> (OnAboutToWait, OnWindowEvent) {
+    let pre_dispatch: Option<SharedHostPump> = pre_dispatch.map(|pump| Rc::new(RefCell::new(pump)));
     let last: Arc<Mutex<Option<web_time::Instant>>> = Arc::default();
     let index: Arc<AtomicU32> = Arc::default();
     let pending: Arc<AtomicBool> = Arc::default();
     let pump = {
         let (last, index, pending) = (Arc::clone(&last), Arc::clone(&index), Arc::clone(&pending));
+        let pre_dispatch = pre_dispatch.clone();
         OnAboutToWait::new(move |world, _entity, ()| {
-            queue_draw(world, &last, &index, &pending);
+            queue_draw(world, &last, &index, &pending, &pre_dispatch);
         })
     };
     let redraw = {
         let (last, index, pending) = (Arc::clone(&last), Arc::clone(&index), Arc::clone(&pending));
+        let pre_dispatch = pre_dispatch.clone();
         OnWindowEvent::new(move |world, _entity, payload| {
             if matches!(payload.event, WindowEvent::RedrawRequested) {
-                queue_draw(world, &last, &index, &pending);
+                queue_draw(world, &last, &index, &pending, &pre_dispatch);
             }
         })
     };
@@ -605,6 +654,7 @@ fn queue_draw(
     last: &Arc<Mutex<Option<web_time::Instant>>>,
     index: &Arc<AtomicU32>,
     pending: &Arc<AtomicBool>,
+    pre_dispatch: &Option<SharedHostPump>,
 ) {
     if pending.swap(true, Ordering::AcqRel) {
         return;
@@ -613,6 +663,7 @@ fn queue_draw(
         last: Arc::clone(last),
         index: Arc::clone(index),
         pending: Arc::clone(pending),
+        pre_dispatch: pre_dispatch.clone(),
     });
 }
 

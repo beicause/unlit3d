@@ -125,7 +125,9 @@ use crate::renderer::Renderer;
 pub struct WindowSurface {
     instance: wgpu::Instance,
     window: Arc<::winit::window::Window>,
-    surface: wgpu::Surface<'static>,
+    /// The swap chain; `None` after [`Self::release`], until a host builds a
+    /// surface for the same window again.
+    surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     /// The format the frame's color attachment is viewed as.
     ///
@@ -175,7 +177,7 @@ impl WindowSurface {
         Self {
             instance: instance.clone(),
             window,
-            surface,
+            surface: Some(surface),
             config,
             color_format,
             color_view: None,
@@ -216,35 +218,77 @@ impl WindowSurface {
         }
         self.config.width = width;
         self.config.height = height;
+        let Some(surface) = self.surface.as_ref() else {
+            // A released surface has no swap chain to configure; the size is
+            // kept for the one a host builds from the window later.
+            return;
+        };
         let device = renderer
             .context()
             .device(&world.root_scope())
             .expect("the context's device resource exists");
-        self.surface.configure(&device, &self.config);
+        surface.configure(&device, &self.config);
     }
 
     /// Release the swap chain.
     ///
     /// Drops the surface and the color view it registered in the frame's
     /// graph, so nothing is left naming a swap chain that is gone. The device,
-    /// the pipelines and everything else the scene draws from are untouched:
-    /// the caller's own window presents the same scene again through a surface
-    /// built from it.
+    /// the pipelines and everything else the scene draws from are untouched,
+    /// and neither is the window: [`Self::build`] opens a surface for the same
+    /// window again, at the size this one last knew.
     ///
     /// This is what a suspension needs. Android invalidates the native surface
     /// for as long as the app is not in the foreground, which outlives the swap
     /// chain but not the window, the scene or the GPU context.
-    pub fn release(self, world: &World, renderer: &mut Renderer) {
-        // Giving up the id is the whole removal. Dropping it — with the
-        // surface whose images it views — leaves the graph's pass below to
-        // collect the view, before anything can be left naming a swap chain
+    pub fn release(&mut self, world: &World, renderer: &mut Renderer) {
+        // Giving up the ids is the whole removal. Dropping them — the surface
+        // with the view whose images it holds — leaves the graph's pass below
+        // to collect the view, before anything can be left naming a swap chain
         // that is gone.
-        drop(self);
+        let surface = self.surface.take();
+        drop(surface);
+        self.color_view = None;
         renderer
             .context()
             .graph(&world.root_scope())
             .get()
             .maintain();
+    }
+
+    /// Whether [`Self::release`] dropped the swap chain and nothing has opened one
+    /// since.
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        self.surface.is_none()
+    }
+
+    /// Open a surface for the window and configure it at the size the released
+    /// one had.
+    ///
+    /// The counterpart of [`Self::release`]: a host that suspended keeps its
+    /// window and its scene, and this gives it a swap chain to present through
+    /// again. A surface that is already open is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the platform surface the window could not create.
+    pub fn build(
+        &mut self,
+        world: &World,
+        renderer: &Renderer,
+    ) -> Result<(), wgpu::CreateSurfaceError> {
+        if self.surface.is_some() {
+            return Ok(());
+        }
+        let surface = self.instance.create_surface(self.window.clone())?;
+        let device = renderer
+            .context()
+            .device(&world.root_scope())
+            .expect("the context's device resource exists");
+        surface.configure(&device, &self.config);
+        self.surface = Some(surface);
+        Ok(())
     }
 
     /// Acquire the next frame.
@@ -266,11 +310,16 @@ impl WindowSurface {
             .context()
             .device(&world.root_scope())
             .expect("the context's device resource exists");
-        let surface_texture = match self.surface.get_current_texture() {
+        let Some(surface) = self.surface.as_ref() else {
+            // A released surface has nothing to acquire from: the caller
+            // presents nothing until a host builds one again.
+            return None;
+        };
+        let surface_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&device, &self.config);
+                surface.configure(&device, &self.config);
                 return None;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
@@ -375,8 +424,8 @@ impl WindowSurface {
     /// current one in place, and the next acquire retries.
     fn recreate_surface(&mut self, device: &wgpu::Device) {
         if let Ok(surface) = self.instance.create_surface(self.window.clone()) {
-            self.surface = surface;
-            self.surface.configure(device, &self.config);
+            surface.configure(device, &self.config);
+            self.surface = Some(surface);
         }
     }
 }
