@@ -519,15 +519,13 @@ resolve `import unlit_wgpu::mesh_compression;` against the same modules the
 built-in pipeline uses, which is what a caller's own family does.
 
 The module creation the crate itself performs goes through
-[`util::shader_module`], a thin wrapper over wgpu's module creation. In debug
-builds it is plain
-[`Device::create_shader_module`](wgpu::Device::create_shader_module); in release builds it
-selects [`ShaderRuntimeChecks::unchecked`](wgpu::ShaderRuntimeChecks::unchecked) through
-[`Device::create_shader_module_trusted`](wgpu::Device::create_shader_module_trusted), which skips the runtime checks wgpu
-would otherwise inject around every composed shader — shader-side bounds
-checks, loop bounding and the like — on shaders that are composed at build
-time from this package or a caller's entry module. wgpu's own validation and
-the browser's WebGPU validation still run either way.
+[`util::shader_module`], a thin wrapper over
+[`Device::create_shader_module`](wgpu::Device::create_shader_module) with
+wgpu's runtime checks left on: the shader-side bounds checks, loop bounding and
+the like that wgpu injects around a module. Composed WGSL is not exempt from
+them. A module is composed from this package plus, when a caller has one, that
+caller's entry point — a caller's own source goes into the same composition —
+and a release build would otherwise hand the backend a shader nothing bounds.
 
 ## Design
 

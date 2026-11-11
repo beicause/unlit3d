@@ -471,12 +471,11 @@ WESL 条件编译开关，且在多采样目标上会让位于 alpha-to-coverage
 `wesl::resolver::PackageResolver` 可以针对内置管线所用的同一批模块解析
 `import unlit_wgpu::mesh_compression;`，调用者自己的家族走的正是这条路。
 
-crate 自身创建着色器模块时走 `util::shader_module`，它是对 wgpu 模块创建的一层薄封装：
-debug 构建下就是普通的 `Device::create_shader_module`；release 构建下则通过
-`Device::create_shader_module_trusted` 选择 `ShaderRuntimeChecks::unchecked`，
-免去 wgpu 本会为每份组合出的着色器注入的运行时检查——着色器侧的边界检查、循环
-兜底等——因为它们都在构建期由本包或调用者的入口模块组合而成。无论哪种构建，
-wgpu 自身的验证与浏览器的 WebGPU 验证都照常运行。
+crate 自身创建着色器模块时走 `util::shader_module`，它是对 `Device::create_shader_module`
+的一层薄封装，wgpu 的运行时检查一概保留——着色器侧的边界检查、循环兜底等由 wgpu
+为每份模块注入。组合出的 WGSL 不因此豁免：模块由本包加上调用者自己的入口点组合而成，
+调用者的源码就在这份组合里，若跳过检查，release 构建交给后端的将是一份没有边界约束的
+着色器。
 
 ## 设计
 

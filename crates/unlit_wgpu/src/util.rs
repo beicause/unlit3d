@@ -90,41 +90,21 @@ impl<V> Hash for Hashed<V> {
     }
 }
 
-/// Create a shader module from the crate's composed WGSL.
+/// Create a shader module from composed WGSL.
 ///
-/// In debug builds the module goes through
-/// [`Device::create_shader_module`](wgpu::Device::create_shader_module),
-/// so wgpu's runtime checks — shader-side bounds checks, loop bounding and
-/// the like — all apply. In release builds it goes through
-/// [`Device::create_shader_module_trusted`](wgpu::Device::create_shader_module_trusted)
-/// with [`ShaderRuntimeChecks::unchecked`](wgpu::ShaderRuntimeChecks::unchecked),
-/// which hands the module to the backend
-/// without injecting any of them. The WGSL this helper accepts is composed at
-/// build time from the crate's own shader package or a caller's entry module,
-/// never arbitrary user code, so the unchecked contract holds: every loop is
-/// bounded, and every binding stays within the region its bind group
-/// describes.
-///
-/// wgpu's own validation always runs either way, and on WebGPU the trusted
-/// path simply calls
-/// [`Device::create_shader_module`](wgpu::Device::create_shader_module) — the browser keeps
-/// checking its modules.
+/// The module goes through
+/// [`Device::create_shader_module`](wgpu::Device::create_shader_module), so
+/// wgpu's runtime checks — shader-side bounds checks, loop bounding and the
+/// like — all apply. The WGSL is composed at build time, but a caller splices
+/// a snippet of its own into the composition and `unlit3d` hands whole
+/// composed modules in, so the source being build-time is no reason to skip
+/// them: those checks are what keeps a caller's shader inside its bindings.
 pub fn shader_module(device: &wgpu::Device, wgsl: &str, label: &str) -> wgpu::ShaderModule {
     let desc = wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     };
-    if cfg!(debug_assertions) {
-        device.create_shader_module(desc)
-    } else {
-        #[expect(
-            unsafe_code,
-            reason = "the composed WGSL is build-time and trusted; see the function docs"
-        )]
-        unsafe {
-            device.create_shader_module_trusted(desc, wgpu::ShaderRuntimeChecks::unchecked())
-        }
-    }
+    device.create_shader_module(desc)
 }
 
 /// Headless device setup shared by the crate's unit tests.

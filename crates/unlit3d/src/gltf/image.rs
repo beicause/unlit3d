@@ -5,6 +5,9 @@
 
 use core::mem::size_of;
 
+use zerocopy::byteorder::little_endian::{F32, U16};
+use zerocopy::{FromBytes, IntoBytes};
+
 use super::MAX_TEXEL_BYTES;
 
 /// Round `value` up to the next multiple of `alignment`.
@@ -185,10 +188,14 @@ fn read_channel(format: gltf::image::Format, bytes: &[u8]) -> f32 {
         | gltf::image::Format::R16G16
         | gltf::image::Format::R16G16B16
         | gltf::image::Format::R16G16B16A16 => {
-            f32::from(u16::from_le_bytes([bytes[0], bytes[1]])) / f32::from(u16::MAX)
+            // A glTF texel always carries a whole channel, so the read cannot
+            // run short of bytes.
+            let (value, _) = U16::read_from_prefix(bytes).expect("a glTF texel holds its channels");
+            f32::from(value.get()) / f32::from(u16::MAX)
         }
         gltf::image::Format::R32G32B32FLOAT | gltf::image::Format::R32G32B32A32FLOAT => {
-            f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+            let (value, _) = F32::read_from_prefix(bytes).expect("a glTF texel holds its channels");
+            value.get()
         }
     }
 }
@@ -218,11 +225,11 @@ fn write_channel(
         | wgpu::TextureFormat::Rgba16Float => {
             let bits = half::f16::from_f32(clamped).to_bits();
             scratch[slot * size_of::<u16>()..][..size_of::<u16>()]
-                .copy_from_slice(&bits.to_le_bytes());
+                .copy_from_slice(U16::new(bits).as_bytes());
         }
         wgpu::TextureFormat::Rgba32Float => {
             scratch[slot * size_of::<f32>()..][..size_of::<f32>()]
-                .copy_from_slice(&clamped.to_le_bytes());
+                .copy_from_slice(F32::new(clamped).as_bytes());
         }
         _ => unreachable!("a glTF image uploads in one of the formats above"),
     }

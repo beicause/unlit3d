@@ -16,10 +16,14 @@
 //! written in the [`RecordingFormat`] its caller names: a RIFF/WAVE file of
 //! the samples themselves, or the same samples in a lossless FLAC stream.
 
+use core::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use unlit_ecs::sync;
 use unlit_ecs::{Entity, World, bundle};
+
+use zerocopy::IntoBytes;
+use zerocopy::byteorder::little_endian::{I16, U16, U32};
 
 use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill};
 
@@ -150,12 +154,78 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
 
 /// How many bits one quantized sample takes, the resolution both encoders
 /// declare for the samples they hold.
-const BITS_PER_SAMPLE: usize = i16::BITS as usize;
+const BITS_PER_SAMPLE: u16 = i16::BITS as u16;
+
+/// How many bytes one quantized sample takes.
+const SAMPLE_BYTES: u16 = BITS_PER_SAMPLE / u8::BITS as u16;
+
+/// The format tag the format chunk declares for uncompressed integer PCM.
+const FORMAT_PCM: u16 = 1;
 
 /// Quantize a sample into the 16-bit range both encoders write.
 fn quantize(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
 }
+
+/// The body of the RIFF format chunk: what the samples are.
+#[repr(C)]
+#[derive(
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+    zerocopy_derive::Unaligned,
+)]
+struct WavFmtChunk {
+    /// `FORMAT_PCM`, the only encoding this writer produces.
+    format_tag: U16,
+    /// The interleaved channel count.
+    channels: U16,
+    /// The sample rate, in hertz.
+    sample_rate: U32,
+    /// The bytes one second of samples takes.
+    byte_rate: U32,
+    /// The bytes one frame takes: one sample on every channel, end to end.
+    block_align: U16,
+    /// `BITS_PER_SAMPLE`.
+    bits_per_sample: U16,
+}
+
+/// The header a RIFF/WAVE file puts in front of its samples.
+///
+/// It is one value rather than a sequence of fields so that the sizes its
+/// chunks declare are the header's own size and the sample body's, measured
+/// the same way — nothing here is a byte count written out by hand.
+#[repr(C)]
+#[derive(
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+    zerocopy_derive::Unaligned,
+)]
+struct WavHeader {
+    /// The identifier of the file's one RIFF chunk.
+    riff: [u8; 4],
+    /// The bytes of the file that follow this field.
+    riff_size: U32,
+    /// The form type, which says what the RIFF chunk holds.
+    wave: [u8; 4],
+    /// The identifier of the format chunk.
+    fmt: [u8; 4],
+    /// The bytes the format chunk's body takes.
+    fmt_size: U32,
+    /// What the samples are.
+    fmt_chunk: WavFmtChunk,
+    /// The identifier of the sample chunk.
+    data: [u8; 4],
+    /// The bytes the samples take.
+    data_size: U32,
+}
+
+/// The bytes a RIFF size field leaves out: the identifier and the size field
+/// in front of it.
+const RIFF_PREFIX_BYTES: usize = size_of::<[u8; 4]>() + size_of::<U32>();
 
 /// Write interleaved samples as a 16-bit PCM RIFF/WAVE file.
 ///
@@ -164,24 +234,31 @@ fn quantize(sample: f32) -> i16 {
 pub(crate) fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
     let channels = format.channels.max(1);
     let sample_rate = format.sample_rate.max(1);
-    let block_align = channels * 2;
-    let data_len = (samples.len() * 2) as u32;
-    let mut bytes = Vec::with_capacity(44 + data_len as usize);
-    bytes.extend_from_slice(b"RIFF");
-    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-    bytes.extend_from_slice(b"WAVE");
-    bytes.extend_from_slice(b"fmt ");
-    bytes.extend_from_slice(&16u32.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&channels.to_le_bytes());
-    bytes.extend_from_slice(&sample_rate.to_le_bytes());
-    bytes.extend_from_slice(&(sample_rate * u32::from(block_align)).to_le_bytes());
-    bytes.extend_from_slice(&block_align.to_le_bytes());
-    bytes.extend_from_slice(&16u16.to_le_bytes());
-    bytes.extend_from_slice(b"data");
-    bytes.extend_from_slice(&data_len.to_le_bytes());
+    let block_align = channels * SAMPLE_BYTES;
+    let data_len = (samples.len() * usize::from(SAMPLE_BYTES)) as u32;
+    let header = WavHeader {
+        riff: *b"RIFF",
+        riff_size: U32::new(
+            (size_of::<WavHeader>() + data_len as usize - RIFF_PREFIX_BYTES) as u32,
+        ),
+        wave: *b"WAVE",
+        fmt: *b"fmt ",
+        fmt_size: U32::new(size_of::<WavFmtChunk>() as u32),
+        fmt_chunk: WavFmtChunk {
+            format_tag: U16::new(FORMAT_PCM),
+            channels: U16::new(channels),
+            sample_rate: U32::new(sample_rate),
+            byte_rate: U32::new(sample_rate * u32::from(block_align)),
+            block_align: U16::new(block_align),
+            bits_per_sample: U16::new(BITS_PER_SAMPLE),
+        },
+        data: *b"data",
+        data_size: U32::new(data_len),
+    };
+    let mut bytes = Vec::with_capacity(size_of::<WavHeader>() + data_len as usize);
+    bytes.extend_from_slice(header.as_bytes());
     for &sample in samples {
-        bytes.extend_from_slice(&quantize(sample).to_le_bytes());
+        bytes.extend_from_slice(I16::new(quantize(sample)).as_bytes());
     }
     bytes
 }
@@ -209,7 +286,7 @@ pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>
     let source = flacenc::source::MemSource::from_samples(
         &quantized,
         channels,
-        BITS_PER_SAMPLE,
+        usize::from(BITS_PER_SAMPLE),
         format.sample_rate.max(1) as usize,
     );
     let mut stream = flacenc::encode_with_fixed_block_size(&verified, source, block_size)?;
@@ -370,6 +447,7 @@ impl RecordingHandle {
 mod tests {
     use super::*;
     use crate::audio::dispatch_audio_fill;
+    use zerocopy::FromBytes;
 
     fn constant_source(world: &mut World, level: f32) -> Entity {
         world.root_scope_mut().spawn(bundle![OnAudioFill::new(
@@ -480,28 +558,33 @@ mod tests {
             channels: 2,
         };
         let bytes = write_wav(format, &[0.0, -1.0, 1.0, 2.0]);
-        assert_eq!(&bytes[0..4], b"RIFF");
-        assert_eq!(&bytes[8..12], b"WAVE");
-        assert_eq!(&bytes[12..16], b"fmt ");
-        assert_eq!(&bytes[36..40], b"data");
-        assert_eq!(bytes.len(), 44 + 8);
+        let (header, samples) =
+            WavHeader::read_from_prefix(&bytes).expect("the file starts with its header");
+
+        assert_eq!(&header.riff, b"RIFF");
+        assert_eq!(&header.wave, b"WAVE");
+        assert_eq!(&header.fmt, b"fmt ");
+        assert_eq!(&header.data, b"data");
         assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            44 + 8 - 8
+            header.riff_size.get() as usize,
+            size_of::<WavHeader>() - RIFF_PREFIX_BYTES + header.data_size.get() as usize
         );
-        assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()), 1);
-        assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 8000);
-        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 8);
-        assert_eq!(i16::from_le_bytes(bytes[44..46].try_into().unwrap()), 0);
-        assert_eq!(
-            i16::from_le_bytes(bytes[46..48].try_into().unwrap()),
-            -i16::MAX
-        );
-        assert_eq!(
-            i16::from_le_bytes(bytes[50..52].try_into().unwrap()),
-            i16::MAX
-        );
+        assert_eq!(header.fmt_size.get(), size_of::<WavFmtChunk>() as u32);
+        assert_eq!(header.fmt_chunk.format_tag.get(), FORMAT_PCM);
+        assert_eq!(header.fmt_chunk.channels.get(), 2);
+        assert_eq!(header.fmt_chunk.sample_rate.get(), 8000);
+        assert_eq!(header.fmt_chunk.byte_rate.get(), 8000 * 2 * 2);
+        assert_eq!(header.fmt_chunk.block_align.get(), 2 * SAMPLE_BYTES);
+        assert_eq!(header.fmt_chunk.bits_per_sample.get(), BITS_PER_SAMPLE);
+        assert_eq!(header.data_size.get() as usize, samples.len());
+
+        let samples: Vec<i16> = samples
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|sample| i16::from_le_bytes(*sample))
+            .collect();
+        assert_eq!(samples, [0, -i16::MAX, i16::MAX, i16::MAX]);
     }
 
     #[test]

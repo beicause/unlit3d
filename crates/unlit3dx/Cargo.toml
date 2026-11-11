@@ -48,6 +48,8 @@ unlit3d = { path = "../unlit3d", version = "0.1.0-dev.3", default-features = fal
 web-time.workspace = true
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
+zerocopy.workspace = true
+zerocopy-derive.workspace = true
 
 [dev-dependencies]
 # The encoder's tests decode the stream it wrote, so a stream that only its

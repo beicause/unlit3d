@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 // The WESL shader package is generated at build time from `shaders/*.wesl`.
 // Every module it bundles is part of the core, including the built-in entry
