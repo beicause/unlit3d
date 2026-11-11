@@ -152,13 +152,14 @@ impl Ctx {
 /// application — which is how the GLES and WebGL2 paths are reached on a
 /// machine whose default is Vulkan. A browser has no environment to read and
 /// no adapter to hand out without a canvas, so this builds the instance itself
-/// and probes with a canvas that is never drawn into; see [`new_instance`].
+/// and probes with a canvas that is never drawn into; `new_instance` below
+/// shows the backend it names.
 async fn context(tier: DeviceTier) -> Result<GpuContext, GpuRequestError> {
     #[cfg(target_arch = "wasm32")]
     {
         GpuContext::present_to(
             new_instance(),
-            create_canvas(),
+            wgpu::SurfaceTarget::Canvas(create_canvas()),
             tier,
             wgpu::PowerPreference::default(),
         )

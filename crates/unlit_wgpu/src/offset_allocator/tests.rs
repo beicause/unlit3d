@@ -1,5 +1,8 @@
 use core::num::NonZeroU32;
 
+// Property tests are the host suite's: `proptest`'s generator needs an RNG,
+// and `rand`'s `wasm32` backend is a build configuration of its own.
+#[cfg(not(target_arch = "wasm32"))]
 use proptest::prelude::*;
 
 use super::*;
@@ -525,6 +528,7 @@ fn extend_appends_after_an_allocated_tail() {
     assert_eq!(whole.offset, 0);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     /// Whatever mix of allocations and frees it is given, the allocator keeps
     /// its invariants: every offset is a multiple of the alignment, every

@@ -53,7 +53,6 @@ zerocopy-derive.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
-proptest.workspace = true
 unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", default-features = false, features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
 
@@ -63,6 +62,13 @@ wesl = { version = "0.6.0", default-features = false, features = ["package"] }
 # The GPU tests drive the shared registry rather than libtest's generated
 # harness, so one file serves both `cargo nextest` and the browser's wasm
 # build. `wasm-bindgen` is what exports the page's entry point on the web.
+
+# Property tests are the host suite's alone. `proptest` generates its inputs
+# from `rand`, whose `wasm32-unknown-unknown` backend is a configuration of its
+# own (`getrandom` refuses the target without it), and a browser run drives the
+# GPU tests rather than the unit ones anyway.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen.workspace = true

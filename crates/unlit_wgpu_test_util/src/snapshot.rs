@@ -683,7 +683,9 @@ mod tests {
     // baseline takes, so the test names the policy directly rather than setting
     // a process-wide variable that a test running beside it would also see. The
     // path is one of its own under `target`, so the test never writes into the
-    // source tree or the snapshot submodule.
+    // source tree or the snapshot submodule. A browser has no filesystem, so
+    // the test exists only for the host.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_missing_snapshot_is_recorded_unless_it_is_required() {
         let path = std::path::Path::new("target/unit-test-snapshots/never-stored.webp");

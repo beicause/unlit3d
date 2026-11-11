@@ -1,3 +1,6 @@
+// Property tests are the host suite's: `proptest`'s generator needs an RNG,
+// and `rand`'s `wasm32` backend is a build configuration of its own.
+#[cfg(not(target_arch = "wasm32"))]
 use proptest::prelude::*;
 
 use super::*;
@@ -430,6 +433,7 @@ fn empty_input_is_rejected() {
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     /// Decoding is the shader's inverse of the compression, so a round trip
     /// is what checks the two agree. The generated boxes cover collapsed axes

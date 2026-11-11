@@ -535,6 +535,9 @@ impl<N> Dag<N> {
 
 #[cfg(test)]
 mod tests {
+    // Property tests are the host suite's: `proptest`'s RNG has no `wasm32`
+    // backend, and a browser run drives the GPU tests instead.
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
 
     use super::*;
@@ -770,6 +773,7 @@ mod tests {
     ///
     /// This is the property behind the refusal, checked against a model of the
     /// reachability the accepted edges build up.
+    #[cfg(not(target_arch = "wasm32"))]
     fn expected_edge(
         direct: &[Vec<bool>],
         reaches: &[Vec<bool>],
@@ -785,6 +789,7 @@ mod tests {
         Ok(!direct[from][to])
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest::proptest! {
         /// Every edge the graph accepts joins two nodes the topological order
         /// puts in dependency order, and every edge it refuses is one the
