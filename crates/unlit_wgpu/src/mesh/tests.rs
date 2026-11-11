@@ -1,3 +1,5 @@
+use proptest::prelude::*;
+
 use super::*;
 use wgpu::WriteOnly;
 use zerocopy::IntoBytes;
@@ -426,4 +428,89 @@ fn empty_input_is_rejected() {
         .is_err(),
         "an empty UV stream must be rejected"
     );
+}
+
+proptest::proptest! {
+    /// Decoding is the shader's inverse of the compression, so a round trip
+    /// is what checks the two agree. The generated boxes cover collapsed axes
+    /// and skewed extents, which is where a per-axis scale can go wrong.
+    #[test]
+    fn any_box_round_trips_positions_within_one_quantization_step(
+        positions in proptest::collection::vec(
+            (-1e4f32..1e4, -1e4f32..1e4, -1e4f32..1e4),
+            1..32,
+        ),
+    ) {
+        let positions: Vec<[f32; 3]> = positions.into_iter().map(|(x, y, z)| [x, y, z]).collect();
+        let mut metadata = MeshMetadata::default();
+        let encoded: Vec<_> = compress_positions(&positions, &mut metadata).collect();
+        prop_assert_eq!(encoded.len(), positions.len());
+
+        // One quantization step of the box's half-extent, per axis.
+        let tolerance = metadata.aabb_half_extents.max_element() * 2.0 / i16::MAX as f32;
+        for (position, packed) in positions.iter().zip(&encoded) {
+            let decoded = decode_position(*packed, &metadata);
+            let expected = glam::Vec3::from(*position);
+            prop_assert!(
+                (decoded - expected).abs().max_element() <= tolerance,
+                "{decoded} vs {expected} in box {:?} +- {:?}",
+                metadata.aabb_center,
+                metadata.aabb_half_extents,
+            );
+        }
+    }
+
+    /// A direction survives the octahedral round trip at any angle, including
+    /// the folded hemisphere and the poles the projection singles out.
+    #[test]
+    fn any_direction_round_trips_through_the_octahedral_normal(
+        normals in proptest::collection::vec((-1e3f32..1e3, -1e3f32..1e3, -1e3f32..1e3), 1..16),
+    ) {
+        let normals: Vec<[f32; 3]> = normals.into_iter().map(|(x, y, z)| [x, y, z]).collect();
+        let encoded: Vec<_> = compress_normals(&normals).collect();
+        prop_assert_eq!(encoded.len(), normals.len());
+
+        // Snorm16 carries a direction to about `1 / i16::MAX` radians.
+        let tolerance = 2e-3;
+        for (normal, packed) in normals.iter().zip(&encoded) {
+            let decoded = decode_normal(*packed);
+            let expected = glam::Vec3::from(*normal).normalize();
+            prop_assert!(
+                (decoded - expected).abs().max_element() <= tolerance,
+                "{decoded} vs {expected}",
+            );
+        }
+    }
+
+    /// The narrowed index buffer names exactly the indices it was given, and
+    /// is refused exactly when one of them is past what a `Uint16` buffer can
+    /// name.
+    #[test]
+    fn indices_narrow_exactly_when_every_one_fits(indices in proptest::collection::vec(0u32..(u16::MAX as u32 + 8), 0..16)) {
+        let narrowed = compress_indices(&indices);
+        let fits = !indices.is_empty() && indices.iter().all(|&index| index_fits_u16(index));
+        prop_assert_eq!(narrowed.is_ok(), fits);
+        match narrowed {
+            Ok(iter) => {
+                let narrowed: Vec<u16> = iter.collect();
+                let expected: Vec<u16> = indices.iter().map(|&index| index as u16).collect();
+                prop_assert_eq!(narrowed, expected);
+            }
+            Err(error) => {
+                let offending = indices.iter().copied().find(|&index| !index_fits_u16(index));
+                match (offending, error) {
+                    (None, CompressError::EmptyInput) => {}
+                    (Some(index), CompressError::TooManyVertices(reported)) => {
+                        prop_assert_eq!(reported, index);
+                    }
+                    (offending, error) => prop_assert!(
+                        false,
+                        "{:?} was refused with {:?}",
+                        offending,
+                        error
+                    ),
+                }
+            }
+        }
+    }
 }

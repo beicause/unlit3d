@@ -1,5 +1,7 @@
 use core::num::NonZeroU32;
 
+use proptest::prelude::*;
+
 use super::*;
 
 /// The alignment every allocation of a buffer sub-allocator needs.
@@ -521,4 +523,98 @@ fn extend_appends_after_an_allocated_tail() {
     // is only possible because `free` merged across the boundary.
     let whole = allocator.allocate(128).unwrap();
     assert_eq!(whole.offset, 0);
+}
+
+proptest::proptest! {
+    /// Whatever mix of allocations and frees it is given, the allocator keeps
+    /// its invariants: every offset is a multiple of the alignment, every
+    /// charge covers the request, no range overlaps a live one, and handing
+    /// everything back returns the chunk as one region.
+    #[test]
+    fn churn_keeps_every_allocation_aligned_and_disjoint(
+        operations in proptest::collection::vec((any::<bool>(), 1u32..4096), 0..128),
+    ) {
+        let alignment = COPY_ALIGNMENT;
+        let chunk = 1u32 << 16;
+        let mut allocator = Allocator::with_max_nodes_and_alignment(chunk, 4096, alignment);
+        let mut live: Vec<(Allocation, u32)> = Vec::new();
+
+        for (free, requested) in operations {
+            if free && !live.is_empty() {
+                let index = requested as usize % live.len();
+                let (allocation, _) = live.swap_remove(index);
+                allocator.free(allocation);
+                continue;
+            }
+
+            let Some(allocation) = allocator.allocate(requested) else {
+                // Space, not nodes, is what runs out here: the node limit is
+                // far above the number of live ranges this test can reach.
+                prop_assert!(
+                    allocator.storage_report().largest_free_region < requested,
+                    "no allocation of {} units although {} were free in one region",
+                    requested,
+                    allocator.storage_report().largest_free_region,
+                );
+                continue;
+            };
+
+            let charged = allocator.allocation_size(allocation);
+            prop_assert_eq!(allocation.offset % alignment.get(), 0);
+            prop_assert_eq!(charged % alignment.get(), 0);
+            prop_assert!(charged >= requested, "{} charged for {}", charged, requested);
+
+            let end = allocation.offset + charged;
+            for &(other, other_charged) in &live {
+                let other_end = other.offset + other_charged;
+                prop_assert!(
+                    end <= other.offset || other_end <= allocation.offset,
+                    "range {}..{} overlaps {}..{}",
+                    allocation.offset,
+                    end,
+                    other.offset,
+                    other_end,
+                );
+            }
+            live.push((allocation, charged));
+        }
+
+        for (allocation, _) in live {
+            allocator.free(allocation);
+        }
+        let report = allocator.storage_report();
+        prop_assert_eq!(report.total_free_space, chunk);
+        prop_assert_eq!(report.largest_free_region, chunk);
+    }
+
+    /// A request no larger than the largest free region is always granted: the
+    /// bin search never misses a range big enough for the rounded request.
+    #[test]
+    fn a_request_that_fits_the_largest_free_region_is_granted(
+        requested in 1u32..4096,
+        occupied in proptest::collection::vec(1u32..4096, 0..32),
+    ) {
+        let mut allocator = Allocator::with_max_nodes_and_alignment(1 << 18, 4096, COPY_ALIGNMENT);
+        let mut live = Vec::new();
+        for size in occupied {
+            match allocator.allocate(size) {
+                Some(allocation) => live.push(allocation),
+                None => break,
+            }
+        }
+
+        let largest = allocator.storage_report().largest_free_region;
+        if largest >= requested {
+            prop_assert!(
+                allocator.allocate(requested).is_some(),
+                "no allocation of {} units although {} were free in one region",
+                requested,
+                largest,
+            );
+        }
+
+        for allocation in live {
+            allocator.free(allocation);
+        }
+    }
 }

@@ -181,6 +181,15 @@ The tests fall into three layers, by how close they sit to the code they check:
   reference glTF scene through the command-line tool's library and compares it
   against the same snapshots. Either is re-blessed with `SNAPSHOT_UPDATE=1`.
 
+Inside the unit layer, some properties are checked against generated inputs rather
+than written cases: `proptest` drives the offset allocator (offsets stay aligned and
+disjoint, and a request that fits the largest free region is granted), the dependency
+graph (every edge it accepts lands in dependency order, and a sweep leaves the
+survivors ordered) and mesh compression (positions and directions round-trip within
+one quantization step, and indices narrow exactly when they fit). A failing input is
+written to the crate's `proptest-regressions/` so the same case runs again; those
+files are committed, since the seed is the test case.
+
 Each crate's integration tests are **one binary**, not one per source file: the
 files under `tests/` are modules of the suite file beside them (`gpu_suite.rs`,
 or `suite.rs` where the tests are plain `libtest`), pulled in with `#[path]`.
@@ -243,7 +252,7 @@ Per-crate notes:
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
 | [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. An end-to-end MCP test builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the fixed-step playback clock (`src/lib.rs`) and the window overlays (`src/overlay.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the fixed-step playback clock (`src/lib.rs`) and the window overlays (`src/overlay.rs`). Its rendering output is snapshotted by `tests/gpu_suite.rs`. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: jobs reaching their world, snapshot and stream subscriptions, the state a world publishes about itself, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
 | [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |

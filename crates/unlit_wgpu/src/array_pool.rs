@@ -328,8 +328,11 @@ mod tests {
         wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
     }
 
+    /// The element size these tests pool at: one `u32` each.
+    const ELEMENT: usize = size_of::<u32>();
+
     fn pool(device: &wgpu::Device, elements: u32) -> ArrayPool {
-        ArrayPool::new(device, "test::arrays", 4, elements, None)
+        ArrayPool::new(device, "test::arrays", ELEMENT as u64, elements, None)
     }
 
     #[test]
@@ -363,12 +366,12 @@ mod tests {
         pool.write(first, &[1, 2, 3, 4, 5, 6, 7, 8]);
         pool.write(second, &[9, 10, 11, 12, 13, 14, 15, 16]);
 
-        let first_start = first.allocation.offset as usize * 4;
+        let first_start = first.allocation.offset as usize * ELEMENT;
         assert_eq!(
             &pool.data[first_start..first_start + 8],
             &[1, 2, 3, 4, 5, 6, 7, 8]
         );
-        let second_start = second.allocation.offset as usize * 4;
+        let second_start = second.allocation.offset as usize * ELEMENT;
         assert_eq!(
             &pool.data[second_start..second_start + 8],
             &[9, 10, 11, 12, 13, 14, 15, 16]
@@ -395,7 +398,7 @@ mod tests {
         let second = pool.allocate(&device, 32).expect("the pool grows");
         assert_eq!(first.allocation.offset, 0, "the first range did not move");
         assert!(pool.capacity() >= u64::from(second.allocation.offset + second.count));
-        let start = first.allocation.offset as usize * 4;
+        let start = first.allocation.offset as usize * ELEMENT;
         assert_eq!(
             &pool.data[start..start + 8],
             &[1, 2, 3, 4, 5, 6, 7, 8],
