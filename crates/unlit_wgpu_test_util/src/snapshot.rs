@@ -356,9 +356,12 @@ pub const DEFAULT_MISMATCH_DIR: &str = "target/snapshot-mismatches";
 /// uninitialized submodule, a build directory that was cleaned — pass every
 /// comparison by writing a fresh set of baselines into the void.
 ///
-/// Set to anything non-empty, this makes the absent file an error instead, which
-/// is what the CI runs do: on the host they set it, and a checkout that stopped
-/// carrying snapshots then fails where it used to go green.
+/// Set to any value, even an empty one, this makes the absent file an error
+/// instead, which is what the CI runs do: on the host they set it, and a
+/// checkout that stopped carrying snapshots then fails where it used to go
+/// green. Presence is what counts rather than a non-empty value, so a run that
+/// meant to set it and set it empty fails loudly instead of quietly recording
+/// baselines.
 #[cfg(not(target_arch = "wasm32"))]
 pub const REQUIRE_SNAPSHOTS_ENV: &str = "UNLIT3D_REQUIRE_SNAPSHOTS";
 
