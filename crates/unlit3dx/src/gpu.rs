@@ -6,6 +6,11 @@
 //! as a command between two event callbacks. Nothing outside this module
 //! needs to know any of that: [`request_gpu`] runs the request and calls
 //! back when the context is ready.
+//!
+//! The adapter and device themselves are requested by
+//! [`unlit_wgpu::context`], which every entry point in this repository shares;
+//! what this module adds is the frame-driven form of the request and the
+//! callback a scene is set up in.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,114 +18,35 @@ use std::rc::Rc;
 use unlit_ecs::{Command, Entity, EntityAccessError, World};
 
 use crate::executor::LocalTasks;
-use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
+use unlit_wgpu::capabilities::DeviceTier;
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
+
+/// The GPU context a scene draws with.
+pub use unlit_wgpu::context::{GpuContext as Gpu, GpuRequestError};
 
 /// The frame-behaviour order the GPU request runs at: before the default
 /// band, so the GPU is there before any behaviour that states no order runs.
 pub(crate) const REQUEST_GPU_ORDER: i32 = -1;
 
-/// The GPU context a scene draws with.
+/// Ask for the adapter and device that can present to `target`, at the
+/// device tier `UNLIT3D_DEVICE_TIER` names.
 ///
-/// Everything here is a wgpu handle, so the handles may cross into
-/// another thread's setup; the scene itself cannot cross threads and is
-/// set up where the request started. The native backends' handles are
-/// send-and-sync; the WebGPU backend's device holds an `Rc`, so on the
-/// web the handles only ever cross tasks, never threads.
-#[derive(Clone)]
-pub struct Gpu {
-    /// The instance presentation surfaces are created from.
-    pub instance: wgpu::Instance,
-    /// The adapter the device was requested from.
-    pub adapter: wgpu::Adapter,
-    /// The device every buffer and pipeline belongs to.
-    pub device: wgpu::Device,
-    /// The queue frames are submitted to.
-    pub queue: wgpu::Queue,
-    /// What the device can do beyond the WebGPU baseline, captured while
-    /// the adapter is still here to report it.
-    pub capabilities: DeviceCapabilities,
-}
-
-impl Gpu {
-    /// Request the adapter and device that can present to `surface`.
-    ///
-    /// The surface is a probe: it exists only so the adapter is required
-    /// to present to the window, and is dropped before the device is
-    /// requested.
-    pub async fn request(
-        instance: wgpu::Instance,
-        surface: wgpu::Surface<'static>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let adapter = request_adapter(&instance, Some(&surface)).await?;
-        // The surface only probes the adapter; the device request must not
-        // keep it alive.
-        drop(surface);
-        Self::from_adapter(instance, adapter).await
-    }
-
-    /// Request an adapter and device without a window to present to, for
-    /// headless renders.
-    pub async fn headless() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = request_adapter(&instance, None).await?;
-        Self::from_adapter(instance, adapter).await
-    }
-
-    /// Request a device from `adapter` and gather the context around it.
-    async fn from_adapter(
-        instance: wgpu::Instance,
-        adapter: wgpu::Adapter,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        log::debug!("adapter landed; requesting a device");
-        let tier = DeviceTier::from_env();
-        let capabilities = tier.capabilities_of(&adapter);
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: tier.limits(&adapter.limits()),
-                ..Default::default()
-            })
-            .await?;
-        log::debug!("device landed");
-        Ok(Self {
-            instance,
-            adapter,
-            device,
-            queue,
-            capabilities,
-        })
-    }
-}
-
-/// Ask `instance` for a high-performance adapter that can present to
-/// `surface`, when one is given.
-async fn request_adapter(
-    instance: &wgpu::Instance,
-    surface: Option<&wgpu::Surface<'static>>,
-) -> Result<wgpu::Adapter, Box<dyn std::error::Error + Send + Sync>> {
-    log::debug!("requesting an adapter");
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface,
-            ..Default::default()
-        })
-        .await?;
-    Ok(adapter)
-}
-
-/// Why a GPU request could not start the renderer.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum GpuRequestError {
-    /// The window surface could not be built from the display handle.
-    #[error("failed to build the presentation surface: {0}")]
-    Surface(#[from] wgpu::CreateSurfaceError),
-    /// The adapter or device request failed.
-    #[error("failed to request a GPU context: {0}")]
-    Request(#[source] Box<dyn std::error::Error + Send + Sync>),
+/// This is [`Gpu::present_to`] with the choices a windowed app makes: a
+/// high-performance adapter, so a machine with two GPUs draws with the
+/// discrete one.
+async fn request(
+    instance: wgpu::Instance,
+    target: impl Into<wgpu::SurfaceTarget<'static>>,
+) -> Result<Gpu, GpuRequestError> {
+    let tier = DeviceTier::from_env();
+    Gpu::present_to(
+        instance,
+        target,
+        tier,
+        wgpu::PowerPreference::HighPerformance,
+    )
+    .await
 }
 
 /// The answer a GPU request settles on.
@@ -205,7 +131,6 @@ where
                 return;
             };
             stage = RequestStage::Requesting;
-            log::debug!("requesting a GPU context");
             let slot = Rc::clone(&answer);
             let spawned = LocalTasks::spawn(world, async move {
                 // The display handle is owned, not borrowed: the instance
@@ -214,12 +139,9 @@ where
                     wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
                 )
                 .await;
-                let request = match instance.create_surface(window) {
-                    Ok(probe) => match Gpu::request(instance, probe).await {
-                        Ok(gpu) => GpuRequest::Ready(gpu),
-                        Err(error) => GpuRequest::Failed(GpuRequestError::Request(error)),
-                    },
-                    Err(error) => GpuRequest::Failed(GpuRequestError::Surface(error)),
+                let request = match request(instance, window).await {
+                    Ok(gpu) => GpuRequest::Ready(gpu),
+                    Err(error) => GpuRequest::Failed(error),
                 };
                 *slot.borrow_mut() = Some(request);
             });

@@ -5,6 +5,7 @@
 use std::sync::Once;
 
 pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
+use unlit_wgpu::context::{GpuContext, GpuRequestError};
 
 /// The logging facade the tests record through, re-exported so a test crate
 /// needs no `log` dependency of its own.
@@ -134,69 +135,54 @@ impl Ctx {
     /// without one.
     pub async fn headless_for(tier: DeviceTier) -> Ctx {
         init_logging();
-        let instance = new_instance();
-
-        // A browser creates a GL context from a canvas, so its adapter request
-        // has to name a surface even though nothing is ever drawn into it. The
-        // surface is dropped once the adapter has been chosen: the device
-        // outlives the surface it was chosen for.
-        #[cfg(target_arch = "wasm32")]
-        let surface = Some(create_surface(&instance));
-        #[cfg(not(target_arch = "wasm32"))]
-        let surface: Option<wgpu::Surface<'static>> = None;
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: surface.as_ref(),
-                ..Default::default()
-            })
-            .await
-            .expect("no graphics adapter available");
-        let capabilities = tier.capabilities_of(&adapter);
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("unlit_wgpu_test_util"),
-                required_features: wgpu::Features::empty(),
-                required_limits: tier.limits(&adapter.limits()),
-                default_queue: wgpu::QueueDescriptor { label: None },
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .expect("failed to request device");
-        drop(surface);
+        let gpu = context(tier).await.expect("a GPU for the test suite");
         Ctx {
             tier,
-            device,
-            queue,
-            capabilities,
+            device: gpu.device,
+            queue: gpu.queue,
+            capabilities: gpu.capabilities,
         }
     }
 }
 
-/// The instance a context's device comes from.
+/// Request the device a test draws with.
 ///
-/// Natively the environment chooses, so `WGPU_BACKEND` selects a backend the
-/// same way it does in an application — which is how the GLES and WebGL2 paths
-/// are reached on a machine whose default is Vulkan.
-fn new_instance() -> wgpu::Instance {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env())
-    }
+/// Natively the shared bootstrap's environment-driven instance chooses the
+/// backend, so `WGPU_BACKEND` selects one the same way it does in an
+/// application — which is how the GLES and WebGL2 paths are reached on a
+/// machine whose default is Vulkan. A browser has no environment to read and
+/// no adapter to hand out without a canvas, so this builds the instance itself
+/// and probes with a canvas that is never drawn into; see [`new_instance`].
+async fn context(tier: DeviceTier) -> Result<GpuContext, GpuRequestError> {
     #[cfg(target_arch = "wasm32")]
     {
-        // A browser has no environment to read, and WebGL2 is what the wasm
-        // suite is for, so the backend is named rather than discovered.
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::GL;
-        // WebGL cannot report a fence as done on its own, so a `poll(Wait)`
-        // would never resolve: `AutoFinish` is what makes the backend finish
-        // the fence itself and let a readback complete. See wgpu#4589.
-        descriptor.backend_options.gl.fence_behavior = wgpu::GlFenceBehavior::AutoFinish;
-        wgpu::Instance::new(descriptor)
+        GpuContext::present_to(
+            new_instance(),
+            create_canvas(),
+            tier,
+            wgpu::PowerPreference::default(),
+        )
+        .await
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        GpuContext::headless(tier, wgpu::PowerPreference::default()).await
+    }
+}
+
+/// The instance a browser's context comes from.
+///
+/// A browser has no environment to read, and WebGL2 is what the wasm suite is
+/// for, so the backend is named rather than discovered.
+#[cfg(target_arch = "wasm32")]
+fn new_instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::GL;
+    // WebGL cannot report a fence as done on its own, so a `poll(Wait)` would
+    // never resolve: `AutoFinish` is what makes the backend finish the fence
+    // itself and let a readback complete. See wgpu#4589.
+    descriptor.backend_options.gl.fence_behavior = wgpu::GlFenceBehavior::AutoFinish;
+    wgpu::Instance::new(descriptor)
 }
 
 /// A canvas for the browser to make a WebGL context from.
@@ -204,17 +190,14 @@ fn new_instance() -> wgpu::Instance {
 /// The canvas is never attached to the document and never sized: the context
 /// is what the adapter request needs, not the drawing surface.
 #[cfg(target_arch = "wasm32")]
-fn create_surface(instance: &wgpu::Instance) -> wgpu::Surface<'static> {
+fn create_canvas() -> web_sys::HtmlCanvasElement {
     use wasm_bindgen::JsCast as _;
 
-    let canvas = web_sys::window()
+    web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.create_element("canvas").ok())
         .and_then(|element| element.dyn_into::<web_sys::HtmlCanvasElement>().ok())
-        .expect("a document to create the test canvas in");
-    instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-        .expect("a surface from the test canvas")
+        .expect("a document to create the test canvas in")
 }
 
 /// Pair a binding slot with a resource.
@@ -361,7 +344,8 @@ pub use snapshot::{
 // embedded by `snapshot!`.
 #[cfg(all(feature = "snapshot", not(target_arch = "wasm32")))]
 pub use snapshot::{
-    DEFAULT_MISMATCH_DIR, MISMATCH_DIR_ENV, score_frame_webp, snapshot_path, store_frame_webp,
+    DEFAULT_MISMATCH_DIR, MISMATCH_DIR_ENV, REQUIRE_SNAPSHOTS_ENV, score_frame_webp, snapshot_path,
+    store_frame_webp,
 };
 
 // The encoder is the one piece of the storing half a browser needs: a frame that

@@ -19,6 +19,7 @@ pub mod array_pool;
 pub mod buffer_pool;
 pub mod capabilities;
 pub mod compose;
+pub mod context;
 mod dag;
 pub mod globals;
 pub mod instance_stream;
@@ -35,6 +36,7 @@ pub mod specialize;
 pub mod staging;
 pub mod texel_array;
 #[cfg(feature = "egui")]
+#[cfg_attr(docsrs, doc(cfg(feature = "egui")))]
 pub mod ui;
 pub mod util;
 pub mod vertex_pool;

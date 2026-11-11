@@ -412,8 +412,12 @@ world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
 })]);
 ```
 
-`Gpu::headless` is the same request without a window, for tests and
-tools. The **present** module is a thin wrapper over `unlit3d::winit::presenter`
+The type itself is `unlit_wgpu::context::GpuContext`, the bootstrap every entry
+point here shares: it requests an adapter and then a device whose limits are the
+device tier's. `Gpu::present_to` takes the caller's instance and probes the
+adapter with a window surface it drops again, so a context outlives the window it
+was requested for; `Gpu::headless` is the same request without a window, for tests
+and tools. The **present** module is a thin wrapper over `unlit3d::winit::presenter`
 that knows how to reach into a sub-world: `setup_presenter` by default has the
 scene's pass draw straight into the swap chain (`PresentationPath::Surface`),
 and with its offscreen path on builds

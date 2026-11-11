@@ -15,6 +15,7 @@ use unlit_ecs::mcp::{
     CommandSender, McpServer, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
 };
 use unlit_ecs::{World, bundle};
+use unlit_wgpu::capabilities::DeviceTier;
 use unlit3d::winit::builtin::ExitRequest;
 use unlit3dx::mcp::{pump_mcp, serve_mcp};
 use unlit3dx::prelude::*;
@@ -23,7 +24,11 @@ use crate::interactive::{Interactive, InteractiveConfig, scene_status};
 
 /// Run the interactive headless host until MCP asks it to exit.
 pub fn run(soundfont: std::sync::Arc<[u8]>) {
-    let gpu = pollster::block_on(Gpu::headless()).expect("the headless run opens a GPU");
+    let gpu = pollster::block_on(Gpu::headless(
+        DeviceTier::from_env(),
+        wgpu::PowerPreference::default(),
+    ))
+    .expect("the headless run opens a GPU");
     let (mut host, _input, interactive) = crate::interactive::run(InteractiveConfig {
         device: gpu.device,
         queue: gpu.queue,

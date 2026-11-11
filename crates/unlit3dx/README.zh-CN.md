@@ -312,7 +312,10 @@ world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
 })]);
 ```
 
-`Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块是
+`Gpu` 这个类型本身就是 `unlit_wgpu::context::GpuContext`——本仓库每个入口共用的引导：
+它请求适配器，再请求一个 limits 为设备档位所定的设备。`Gpu::present_to` 接收调用者的
+instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此上下文比它所请求的那个窗口
+活得更久；`Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块是
 `unlit3d::winit::presenter` 之上的一层薄封装，多知道一件事——怎么伸手进子 world：
 `setup_presenter` 默认让场景自己的 pass 直接画进交换链（`PresentationPath::Surface`）；
 打开离屏路径后改建 `PresentationPath::Intermediate`，即一张常驻目标加同一个 world 里

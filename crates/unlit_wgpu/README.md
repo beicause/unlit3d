@@ -82,6 +82,13 @@ and CI checks that combination separately.
   already on the device's own limits. `DeviceTier` is the other half — how much
   of the baseline to request, from the WebGPU baseline (the default) through
   the adapter's own limits to WebGL2's shape.
+- [`context`] — the GPU bootstrap every entry point in this repository shares:
+  request an adapter, then a device whose limits are the device tier's, and keep
+  the capabilities the adapter reported.
+  [`GpuContext::headless`](context::GpuContext::headless) builds its own instance;
+  [`GpuContext::present_to`](context::GpuContext::present_to) takes the caller's
+  instance and probes the adapter with a surface for a window, which it drops
+  again so the context owns no surface.
 - [`scene`] — the declarative description of a frame: pipelines, their bind
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening
@@ -103,7 +110,8 @@ and CI checks that combination separately.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, the `GlobalBindings` description and the global
   bind-group layout builder every pipeline binds the frame's shared inputs
-  through, plus the built-in lit pipeline.
+  through, plus the built-in lit pipeline, which composes its entry shaders
+  through `compose`.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front: hashing it writes the stored word instead of walking the value, which
   keeps a per-frame key cheap when its members are large. The hash comes from
@@ -916,6 +924,11 @@ cargo nextest run -p unlit_wgpu --all-features   # just this crate
 The integration tests are one binary, and it requires `egui`. A run without
 that feature does not fail: Cargo skips the target whole, so the suite
 leaves the run silently and only the unit tests report.
+
+Not every case draws a mesh: the helpers that hold GPU memory across frames — the
+instance stream, the buffer pool, the vertex pool and the texel array — are checked
+by writing through the offset each one reports and reading the bytes back, including
+across a grow, which is where their unit tests can only inspect the bookkeeping.
 
 The GPU integration tests render meshes into offscreen textures, read them back
 and compare them against the snapshots under `tests/snapshots` with the

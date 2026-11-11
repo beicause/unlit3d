@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![warn(unsafe_code)]
+#![forbid(unsafe_code)]
 
 pub mod scenes;
 
@@ -293,76 +293,16 @@ enum UserEvent {
 
 /// The GPU context a scene draws with, requested asynchronously.
 ///
-/// Everything here is a `Send + Sync` wgpu handle, so the request can run off
-/// the event loop's thread and the context can cross back to it. The scene
-/// itself cannot cross: its ECS world is single-threaded, so it is built on
-/// the main thread once this arrives.
+/// The type is [`unlit_wgpu::context::GpuContext`]'s, shared with the other
+/// entry points in this repository. Everything in it is a `Send + Sync` wgpu
+/// handle, so the request can run off the event loop's thread and the context
+/// can cross back to it. The scene itself cannot cross: its ECS world is
+/// single-threaded, so it is built on the main thread once this arrives.
 ///
 /// The context and its device outlive a suspension: rebuilding them would drop
 /// every pipeline, buffer and texture the scene holds, for a change the
 /// platform only makes to the native window.
-#[derive(Clone)]
-struct Gpu {
-    instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    /// What the device can do beyond the WebGPU baseline, captured while the
-    /// adapter is still here to report it.
-    ///
-    /// `wgpu::Device` exposes its limits and features but not the downlevel
-    /// flags, and the adapter is not kept once the device exists, so this is
-    /// read once and carried; see [`DeviceCapabilities`].
-    capabilities: DeviceCapabilities,
-}
-
-impl Gpu {
-    /// Request the adapter and device that can present to `surface`.
-    ///
-    /// `surface` is a *probe*: it exists only so the adapter is required to be
-    /// able to present to the window, and is dropped again before the device
-    /// is requested. The context deliberately ends up owning no surface,
-    /// because a surface is tied to the native window it was created from —
-    /// Android replaces that window across a suspension — while the adapter
-    /// and device are not. Whoever presents builds one for the window it has
-    /// at that moment.
-    ///
-    /// Async because both requests resolve on the browser's task queue on the
-    /// web; blocking on them there would hang the page.
-    async fn request(
-        instance: wgpu::Instance,
-        surface: wgpu::Surface<'static>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await?;
-        drop(surface);
-
-        // The tier is what decides how much of the WebGPU baseline the device
-        // is asked for, and so which paths it takes. `UNLIT3D_DEVICE_TIER`
-        // selects it — the WebGPU baseline by default, WebGL2's shape when
-        // asked for; see [`DeviceTier`].
-        let tier = DeviceTier::from_env();
-        let capabilities = tier.capabilities_of(&adapter);
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: tier.limits(&adapter.limits()),
-                ..Default::default()
-            })
-            .await?;
-        Ok(Self {
-            instance,
-            adapter,
-            device,
-            queue,
-            capabilities,
-        })
-    }
-}
+use unlit_wgpu::context::GpuContext as Gpu;
 
 /// Where the one-time GPU setup stands.
 ///
@@ -1264,10 +1204,17 @@ fn request_gpu(app: Entity) -> OnFrame {
                 wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
             )
             .await;
-            let surface = instance
-                .create_surface(window)
-                .expect("the window presents to a surface");
-            match Gpu::request(instance, surface).await {
+            // A high-performance adapter, so a machine with two GPUs draws with
+            // the discrete one; `UNLIT3D_DEVICE_TIER` decides how much of the
+            // WebGPU baseline the device is asked for.
+            let request = Gpu::present_to(
+                instance,
+                window,
+                DeviceTier::from_env(),
+                wgpu::PowerPreference::HighPerformance,
+            )
+            .await;
+            match request {
                 Ok(gpu) => {
                     let _ = proxy.send_event(UserEvent::Ready(gpu));
                 }

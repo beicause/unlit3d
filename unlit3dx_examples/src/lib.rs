@@ -34,6 +34,8 @@
 //! steps the worlds the same way, because the target has no threads to
 //! put them on, and --stepped asks a windowed run to take that same path.
 
+#![forbid(unsafe_code)]
+
 pub mod headless;
 /// The interactive run, stepped inline: the wasm page drives this module.
 pub mod interactive;
@@ -407,7 +409,10 @@ fn run_headless(args: &Args) -> ExitCode {
         log::error!("--frames must be at least 1");
         return ExitCode::FAILURE;
     }
-    let gpu = match pollster::block_on(Gpu::headless()) {
+    let gpu = match pollster::block_on(Gpu::headless(
+        DeviceTier::from_env(),
+        wgpu::PowerPreference::default(),
+    )) {
         Ok(gpu) => gpu,
         Err(error) => {
             log::error!("the headless run could not open a GPU: {error}");

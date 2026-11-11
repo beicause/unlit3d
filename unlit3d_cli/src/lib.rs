@@ -1,9 +1,11 @@
 #![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
 
 use std::path::Path;
 use unlit_ecs::bundle;
 
 use glam::Mat4;
+use unlit_wgpu::context::GpuContext;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::gltf::LitGltf;
 use unlit3d::prelude::*;
@@ -95,7 +97,13 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         ));
     }
 
-    let (device, queue, capabilities) = request_device().await?;
+    // Nothing presents here, so the context is requested without a surface;
+    // `UNLIT3D_DEVICE_TIER` decides how much of the WebGPU baseline the device
+    // is asked for.
+    let gpu = GpuContext::headless(DeviceTier::from_env(), wgpu::PowerPreference::default())
+        .await
+        .map_err(|error| Error::Gpu(error.to_string()))?;
+    let (device, queue, capabilities) = (gpu.device, gpu.queue, gpu.capabilities);
     let (world, target, renderer) = build_world(
         config,
         &device,
@@ -117,38 +125,6 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         width: output_size.0,
         height: output_size.1,
     })
-}
-
-/// Ask the backend for a device and a queue.
-///
-/// # Errors
-///
-/// Fails when no adapter is available or the device cannot be created.
-pub async fn request_device() -> Result<(wgpu::Device, wgpu::Queue, DeviceCapabilities), Error> {
-    let tier = DeviceTier::from_env();
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: None,
-            ..Default::default()
-        })
-        .await
-        .map_err(|error| Error::Gpu(format!("no graphics adapter available: {error}")))?;
-    let capabilities = tier.capabilities_of(&adapter);
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("unlit3d_cli"),
-            required_features: wgpu::Features::empty(),
-            required_limits: tier.limits(&adapter.limits()),
-            default_queue: wgpu::QueueDescriptor { label: None },
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        })
-        .await
-        .map_err(|error| Error::Gpu(format!("failed to request a device: {error}")))?;
-    Ok((device, queue, capabilities))
 }
 
 /// Build the world a render draws, and the target it draws into.
@@ -361,10 +337,19 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
     let render = std::thread::Builder::new()
         .name("unlit3d-cli-mcp-render".to_owned())
         .spawn(move || {
-            let built =
-                pollster::block_on(request_device()).map(|(device, queue, capabilities)| {
-                    offscreen_world(device, queue, capabilities, size, samples, depth)
-                });
+            let built = pollster::block_on(async {
+                let gpu =
+                    GpuContext::headless(DeviceTier::from_env(), wgpu::PowerPreference::default())
+                        .await?;
+                Ok::<_, unlit_wgpu::context::GpuRequestError>(offscreen_world(
+                    gpu.device,
+                    gpu.queue,
+                    gpu.capabilities,
+                    size,
+                    samples,
+                    depth,
+                ))
+            });
             match built {
                 Ok((mut world, _renderer)) => {
                     let _ = ready_tx.send(Ok(()));

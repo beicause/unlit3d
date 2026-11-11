@@ -59,6 +59,10 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
   随帧走到录制绘制之处。`DeviceCapabilities` 只装 `base_vertex`，是否具备 storage
   buffer 已在设备自身的 limits 上。`DeviceTier` 是另一半——请求多少基线能力：从
   WebGPU 基线（默认），到适配器自身的 limits，再到 WebGL2 的形态。
+- `context` —— 本仓库每个入口共用的 GPU 引导：请求适配器，再请求一个 limits 为
+  设备档位所定的设备，并留下适配器报告的能力。`GpuContext::headless` 自建
+  instance；`GpuContext::present_to` 接收调用者的 instance，并用一个窗口 surface
+  探测适配器，随后丢弃该 surface，因此上下文不持有任何 surface。
 - `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏
@@ -522,7 +526,7 @@ crate 自身创建着色器模块时走 `util::shader_module`，它是对 `Devic
   这正是它能随报告或传输流动的原因。句柄经
   [`ResHandle::id`](resources::ResHandle::id) 给出其 id，id 再经
   [`resolve`](resources::ResourceGraph::resolve) 还原。
-- **纹理视图的格式随视图记录。** 这是「不做不必要的包装」的唯一例外：wgpu 无法从
+- **纹理视图的格式随视图记录。** 这是「不做不必要的包装」的唯一例外：`wgpu` 无法从
   `TextureView` 得知其创建时的格式，而 sRGB 视图覆盖非 sRGB 纹理时，管线要匹配的正是
   视图格式而非纹理格式。
 
@@ -728,6 +732,10 @@ cargo nextest run -p unlit_wgpu --all-features   # 只跑本 crate
 
 集成测试是一个二进制，它要求 `egui`。不带该 feature 跑并不会报错：Cargo 会把整个
 target 跳过，于是 suite 悄无声息地不在这一趟里，只有单元测试报告结果。
+
+并非每个用例都在画网格：跨帧持有 GPU 内存的那几个助手——实例流、buffer 池、顶点池
+与 texel 数组——是照着它们各自报出的偏移写入、再回读字节来检查的，其中还包括增长
+（grow）那一步，而它们的单元测试只能查簿记。
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
 SSIMULACRA2 感知指标比较。该目录是指向
