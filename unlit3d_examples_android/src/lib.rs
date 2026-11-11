@@ -10,7 +10,10 @@
 //! what the activity asks for in its `android.app.lib_name` manifest entry.
 
 #![cfg(target_os = "android")]
-#![warn(unsafe_code)]
+// `forbid` cannot be overruled, so it would leave the exported symbol below
+// unable to state the `unsafe_code` it needs; `deny` with an `expect` on that
+// one item is the strictest level available to a crate that exports one.
+#![deny(unsafe_code)]
 
 use winit::platform::android::activity::AndroidApp;
 

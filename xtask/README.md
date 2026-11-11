@@ -39,8 +39,10 @@ and a doc comment rustdoc would rewrite is still rustfmt's to settle. Accepts
 --error-on-warnings` and then `format --check` — which is what CI's lint job
 runs, so a misspelling or a misformatted `Cargo.toml` fails here instead of
 only there. Both are pointed at the workspace root rather than the working
-directory, since that is where `typos.toml` and `tombi.toml` live. Neither
-ships with cargo: when one is missing the step says which tool, not how to
+directory, since that is where `typos.toml` lives and where the repository's
+TOML files start. `tombi` keeps no config file of its own: it validates and
+formats every TOML file against the schemas the catalog it fetches names.
+Neither ships with cargo: when one is missing the step says which tool, not how to
 install it — both are distributed outside cargo.
 
 Clippy runs twice, because each compiles a different set of code:

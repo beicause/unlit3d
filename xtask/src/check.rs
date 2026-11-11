@@ -42,8 +42,9 @@ pub fn run(release: bool) -> Result<(), String> {
 
     // Both tools take the directory to work on as their only argument, and both
     // are run from here rather than from the working directory: a task may be
-    // started from anywhere inside the workspace, and these two read their
-    // configuration — `typos.toml`, `tombi.toml` — from where they are pointed.
+    // started from anywhere inside the workspace, and `typos` reads the
+    // `typos.toml` beside the files it is pointed at. `tombi` keeps no config
+    // file: it validates every TOML file against the schemas its catalog names.
     require("typos")?;
     require("tombi")?;
 
@@ -145,9 +146,9 @@ fn require(tool: &str) -> Result<(), String> {
 /// The directory the task's tools work on, which is the workspace root.
 ///
 /// Asked of cargo rather than read from the working directory, so that a task
-/// started from a crate's own directory covers the whole workspace: these
-/// tools read their configuration from the directory they are pointed at, and
-/// `typos.toml` and `tombi.toml` live at the root.
+/// started from a crate's own directory covers the whole workspace: `typos`
+/// reads the configuration beside the files it is pointed at, and
+/// `typos.toml` lives at the root.
 fn workspace_root() -> Result<PathBuf, String> {
     let mut metadata = Command::new("cargo");
     metadata.args(["locate-project", "--workspace", "--message-format", "plain"]);

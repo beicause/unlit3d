@@ -1,5 +1,7 @@
 //! The unlit3d-cli binary: parse the arguments, render, and write the image.
 
+#![forbid(unsafe_code)]
+
 use std::io::Write;
 use std::process::ExitCode;
 
