@@ -657,11 +657,17 @@ mod tests {
         dag.add_edge(base, right).unwrap();
         dag.add_edge(left, join).unwrap();
         dag.add_edge(right, join).unwrap();
+        // Two nodes with no edges at all: a full walk lists them too, which is
+        // what lets a caller build every resource from one pass.
+        let lone = dag.insert("lone");
+        let another = dag.insert("another");
 
         let mut order = Vec::new();
         dag.topological_order_into(&mut order);
         let position = |id: NodeId| order.iter().position(|&node| node == id).unwrap();
-        assert_eq!(order.len(), 4);
+        assert_eq!(order.len(), 6);
+        assert!(order.contains(&lone));
+        assert!(order.contains(&another));
         assert!(position(base) < position(left));
         assert!(position(base) < position(right));
         assert!(position(left) < position(join));

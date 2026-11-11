@@ -239,42 +239,21 @@ fn packing_more_than_capacity_panics() {
 }
 
 #[test]
-fn an_array_creates_a_texture_a_bind_group_can_bind() {
+fn an_upload_records_the_copy_it_was_given() {
+    // The noop device validates nothing, so what this holds is that each path
+    // records its copy without panicking: two elements on the texel path, none
+    // at all, and then the buffer path for the same bytes.
     let (device, _queue) = noop_device();
-    let array = TexelArray::new(&device, Some("test::texel_array"), MATRIX_ELEMENT, 4, ROOMY);
-
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("test::texel_array"),
-        entries: &[TexelArrayLayout::binding(0, wgpu::ShaderStages::VERTEX)],
-    });
-    let _bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("test::texel_array"),
-        layout: &layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: array.binding_resource(),
-        }],
-    });
-}
-
-#[test]
-fn an_upload_records_a_copy_the_device_accepts() {
-    let (device, _queue) = noop_device();
-    let mut array = TexelArray::new(&device, Some("test::texel_array"), MATRIX_ELEMENT, 4, ROOMY);
     let mut encoder = device.create_command_encoder(&Default::default());
 
-    array.upload(&device, &mut encoder, &[0; 2 * MATRIX_ELEMENT as usize]);
+    let mut texel = TexelArray::new(&device, Some("test.texel"), MATRIX_ELEMENT, 4, ROOMY);
+    texel.upload(&device, &mut encoder, &[0; 2 * MATRIX_ELEMENT as usize]);
+    let mut empty = TexelArray::new(&device, Some("test.texel"), MATRIX_ELEMENT, 4, ROOMY);
+    empty.upload(&device, &mut encoder, &[]);
 
-    let _ = encoder.finish();
-}
-
-#[test]
-fn an_upload_of_an_empty_array_records_a_copy_too() {
-    let (device, _queue) = noop_device();
-    let mut array = TexelArray::new(&device, Some("test::texel_array"), MATRIX_ELEMENT, 4, ROOMY);
-    let mut encoder = device.create_command_encoder(&Default::default());
-
-    array.upload(&device, &mut encoder, &[]);
+    let elements = [1u8; 2 * SCALAR_ELEMENT as usize];
+    let mut buffered = Array::new(&device, Some("test.buffer"), SCALAR_ELEMENT, 4, None);
+    buffered.upload(&device, &mut encoder, &elements);
 
     let _ = encoder.finish();
 }
@@ -292,19 +271,6 @@ fn an_array_holds_a_buffer_or_a_texture_by_its_limit() {
     assert!(texel.is_texel());
     assert_eq!(texel.capacity(), 64, "a row of 64 holds the four elements");
     assert!(matches!(texel.handle(), ArrayHandle::Texel(_)));
-}
-
-#[test]
-fn an_array_uploads_the_same_bytes_on_either_path() {
-    let (device, _queue) = noop_device();
-    let elements = [1u8; 2 * SCALAR_ELEMENT as usize];
-
-    let mut buffered = Array::new(&device, Some("test"), SCALAR_ELEMENT, 4, None);
-    let mut texel = Array::new(&device, Some("test"), SCALAR_ELEMENT, 4, Some(ROOMY));
-    let mut encoder = device.create_command_encoder(&Default::default());
-    buffered.upload(&device, &mut encoder, &elements);
-    texel.upload(&device, &mut encoder, &elements);
-    let _ = encoder.finish();
 }
 
 #[test]
@@ -358,18 +324,41 @@ fn a_layout_entry_follows_the_resource_the_array_holds() {
 
 #[test]
 fn a_bind_group_accepts_an_array_of_either_path() {
+    // Both constructors hand back a resource a bind group takes: a buffer on
+    // the storage path, a texture on the texel path, and the texel array's own
+    // entry on the path it chose for itself.
     let (device, _queue) = noop_device();
+    let texel = TexelArray::new(&device, Some("test.texel_array"), MATRIX_ELEMENT, 4, ROOMY);
+    let texel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("test.texel_array"),
+        entries: &[TexelArrayLayout::binding(0, wgpu::ShaderStages::VERTEX)],
+    });
+    let _ = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test.texel_array"),
+        layout: &texel_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: texel.binding_resource(),
+        }],
+    });
+
     for max_dimension in [None, Some(ROOMY)] {
-        let array = Array::new(&device, Some("test"), MATRIX_ELEMENT, 4, max_dimension);
+        let array = Array::new(
+            &device,
+            Some("test.array"),
+            MATRIX_ELEMENT,
+            4,
+            max_dimension,
+        );
         let entry = array
             .handle()
             .layout_entry(0, wgpu::ShaderStages::VERTEX, MATRIX_ELEMENT);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("test::array"),
+            label: Some("test.array"),
             entries: &[entry],
         });
-        let _bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test::array"),
+        let _ = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("test.array"),
             layout: &layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,

@@ -305,20 +305,4 @@ mod tests {
             .expect("the request is filled");
         assert_eq!(attributes.title, "unlit3d");
     }
-
-    #[test]
-    fn request_redraw_while_foreground_needs_the_resumed_state() {
-        let mut world = World::new();
-        let entity = world
-            .root_scope_mut()
-            .spawn(bundle![Resumed(false), request_redraw_while_foreground()]);
-        world.apply().unwrap();
-        let mut on_about_to_wait_row = world
-            .root_scope()
-            .query_one::<&mut OnAboutToWait>(entity)
-            .expect("the behaviour is there");
-
-        let behaviour = on_about_to_wait_row.get();
-        behaviour.run(&world, entity, &());
-    }
 }

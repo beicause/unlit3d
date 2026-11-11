@@ -234,17 +234,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_is_the_webgpu_baseline() {
-        assert!(DeviceCapabilities::default().base_vertex());
-        assert_eq!(DeviceCapabilities::default(), DeviceCapabilities::WEBGPU);
-    }
-
-    #[test]
-    fn a_webgl2_device_has_no_base_vertex() {
-        assert!(!DeviceCapabilities::WEBGL2.base_vertex());
-    }
-
-    #[test]
     fn the_webgpu_tier_asks_for_the_baseline_and_no_more() {
         let adapter = wgpu::Limits {
             max_texture_dimension_2d: 16384,
@@ -350,11 +339,30 @@ mod tests {
 
     #[test]
     fn the_tier_decides_the_capabilities() {
-        assert!(DeviceTier::WebGpu.capabilities().base_vertex());
-        // A tier narrowed by limits does not change the adapter's flags, so
-        // the baseline and the adapter's own agree on what the format says.
-        assert!(DeviceTier::Native.capabilities().base_vertex());
-        assert!(!DeviceTier::WebGl2.capabilities().base_vertex());
+        // A device assumed rather than asked about is the baseline; a narrowed
+        // tier reports what the real device of that tier would, and a tier
+        // narrowed by its limits alone does not change the adapter's flags.
+        for (actual, expected) in [
+            (DeviceCapabilities::default(), DeviceCapabilities::WEBGPU),
+            (
+                DeviceTier::WebGpu.capabilities(),
+                DeviceCapabilities::WEBGPU,
+            ),
+            (
+                DeviceTier::Native.capabilities(),
+                DeviceCapabilities::WEBGPU,
+            ),
+            (
+                DeviceTier::WebGl2.capabilities(),
+                DeviceCapabilities::WEBGL2,
+            ),
+        ] {
+            assert_eq!(actual, expected);
+        }
+        // "base_vertex" is what the two constants differ in, and WebGL2 is
+        // GLES 3.0, which has no such entry point.
+        assert!(DeviceCapabilities::WEBGPU.base_vertex());
+        assert!(!DeviceCapabilities::WEBGL2.base_vertex());
         assert_eq!(DeviceTier::default(), DeviceTier::WebGpu);
     }
 
