@@ -418,7 +418,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
 宿主负责排空的 channel 投递；拥有该 world 的一方运行 job，并在命令自带的 channel 上作答。
 world 是 `!Send` 的，正是这一形状让它保持如此。
 
-工具指名哪个 world 由客户端决定：`crate::mcp::WorldId` 为 `"Host"` 时指服务器建立时所围绕的
+工具指名哪个 world 由客户端决定：`crate::mcp::WorldRef` 为 `"Host"` 时指服务器建立时所围绕的
 world，为 `{"Handle": bits}` 时指某个宿主实体所携带的 world。想让其余 world 也可被
 寻址的宿主自行回答 `list_worlds`，因为只有它知道哪些实体携带着 world。
 

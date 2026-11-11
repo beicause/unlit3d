@@ -40,8 +40,8 @@ pub use entity::{Entity, Location};
 #[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]
 pub use entity::{EntityProxy, EntityVecProxy};
 pub use error::{ArchetypeAccessError, EntityAccessError, RemoteEntityError};
-pub use identity::{RemoteEntity, WorldId};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
+pub use identity::{RemoteEntity, WorldId};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
 pub use query::{

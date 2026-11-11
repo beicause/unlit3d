@@ -3,8 +3,7 @@
 //!
 //! A [World](crate::World) is not `Send`, so it stays on the thread that owns
 //! it; the protocol runs on its own tokio thread and the two meet at an
-//! [McpCommand] carrying the [WorldId] of the
-//! world it should run against.
+//! [McpCommand] carrying the [WorldRef] of the world it should run against.
 //!
 //! The tools themselves live in the crates that define the types they read. A
 //! crate submits a [ToolSource], whose `extend` registers that crate's tools;
@@ -24,7 +23,7 @@ pub use crate::reflect::{
 };
 pub use host::{
     Despawned, EncodedAudio, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity,
-    WorldEntry, WorldId, extension_of, saved_name, to_value, with_extension, write_file,
+    WorldEntry, WorldRef, extension_of, saved_name, to_value, with_extension, write_file,
 };
 pub use inventory;
 pub use server::{

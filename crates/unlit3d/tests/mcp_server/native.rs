@@ -11,7 +11,7 @@ use crate::common::{sphere, stored};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, ReadHalf, WriteHalf};
 use unlit_ecs::bundle;
-use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId, serve_with};
+use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldRef, serve_with};
 use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit_wgpu_test_util::{Ctx, block_on};
@@ -179,7 +179,7 @@ impl Server {
                 while let Ok(command) = incoming.recv_blocking() {
                     if command.wants_worlds() {
                         command.answer_worlds(vec![WorldEntry {
-                            world: WorldId::Host,
+                            world: WorldRef::Host,
                             name: "host",
                         }]);
                     } else {

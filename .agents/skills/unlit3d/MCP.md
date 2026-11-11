@@ -50,13 +50,13 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
 - **命令要有人泵**。`unlit3dx` 的桥接把命令投进各 world 的队列，桌面端由 winit 的 `about_to_wait` 行为泵，无窗口的宿主必须自己循环调 `unlit3dx::mcp::pump_mcp(&mut host)`。它除了 drain 命令还会把排队到 stepped world 的 job 跑掉——stepped world 的队列本来只在 `step_stepped_world` 里推进，只等回复而不推进帧的客户端会一直等不到答复。
 
-## WorldId 与世界名
+## WorldRef 与世界名
 
-每个工具都用 `WorldId` 指名 world：字符串 `"Host"` 指宿主线程自己持有的 world，`{"Handle": bits}` 指某个宿主实体携带的 world（`bits` 是该实体的 `u64`）。**先调 `list_worlds` 再指名别的 world。**
+每个工具都用 `WorldRef` 指名 world：字符串 `"Host"` 指宿主线程自己持有的 world，`{"Handle": bits}` 指某个宿主实体携带的 world（`bits` 是该实体的 `u64`）。**先调 `list_worlds` 再指名别的 world。**
 
 宿主暴露它携带的每一个可调度的 world：带 `&World` 组件的子 world（`spawn_sub_world`），以及由线程或步进驱动的 world（`spawn_threaded_world*` / `spawn_stepped_world*`，它们把命令通道留在代理实体上的 `WorldSender` 里）。子 world 的命令在宿主线程上同步执行；其余 world 的命令作为 job 投进它的执行者——它自己的线程，或 `step_stepped_world`。
 
-`list_worlds` 返回的是 `{"world": <WorldId>, "name": "..."}` 对象数组，名字是 spawn 时给的 `&'static str`（留在实体上的 `WorldName`）。**每个被报告的 world 都一定有名字**：宿主携带但不带 `WorldName` 的 world 不会出现在结果里。例如 `unlit3dx_examples --mcp` 会依次报出 host、render、physics、audio、gameplay 这些名字——具体句柄值每次启动都变，以返回值为准。
+`list_worlds` 返回的是 `{"world": <WorldRef>, "name": "..."}` 对象数组，名字是 spawn 时给的 `&'static str`（留在实体上的 `WorldName`）。**每个被报告的 world 都一定有名字**：宿主携带但不带 `WorldName` 的 world 不会出现在结果里。例如 `unlit3dx_examples --mcp` 会依次报出 host、render、physics、audio、gameplay 这些名字——具体句柄值每次启动都变，以返回值为准。
 
 ## 工具清单
 

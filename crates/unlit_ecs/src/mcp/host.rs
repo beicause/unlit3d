@@ -3,7 +3,7 @@
 //! A [World] is not [Send], and the work that reads it must happen on the
 //! thread that owns it. The MCP transport, on the other hand, runs on a tokio
 //! thread. The two meet at a command channel: a tool builds an [McpCommand]
-//! holding a closure and the [WorldId] of the world it should run against, the
+//! holding a closure and the [WorldRef] of the world it should run against, the
 //! thread that owns that world resolves the id and calls
 //! [McpCommand::dispatch], and the [Output] travels back on the command's reply
 //! channel.
@@ -73,16 +73,21 @@ pub struct EncodedAudio {
 /// channel; the world it touches never does.
 pub type Job = Box<dyn FnOnce(&mut World) -> Result<Output, String> + Send + 'static>;
 
-/// Which world a tool or a command runs against.
+/// Which world a tool or a command runs against, as the wire names it.
 ///
 /// A host carries several worlds: the one its own thread holds directly, and
 /// any number it reaches through a host entity carrying a [World] component.
-/// A [World] is not [Send], so a command
-/// never names one directly — it names the entity that carries it, and the
-/// thread that owns that entity resolves the id to the world it holds.
+/// A [World] is not [Send], so a command never names one directly — it names
+/// the entity that carries it, and the thread that owns that entity resolves
+/// the reference to the world it holds.
+///
+/// This is the transport's own vocabulary, not the library's. It says where a
+/// host keeps a world, while [`WorldId`](crate::WorldId) says which world a
+/// handle came from, and the two are answered by different sides: a host
+/// resolves a reference, a world resolves an id.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema, facet::Facet)]
 #[repr(u8)]
-pub enum WorldId {
+pub enum WorldRef {
     /// The world the thread receiving the command owns directly.
     #[default]
     Host,
@@ -90,8 +95,8 @@ pub enum WorldId {
     Handle(u64),
 }
 
-impl WorldId {
-    /// The id of the world carried by `entity`.
+impl WorldRef {
+    /// The reference to the world carried by `entity`.
     #[must_use]
     pub const fn handle(entity: Entity) -> Self {
         Self::Handle(entity.to_bits())
@@ -109,13 +114,13 @@ impl WorldId {
 
 /// One world a host reports, with the name it was spawned under.
 ///
-/// `list_worlds` answers with these: the id is what every other tool names
-/// the world by, and the name is what tells a person which world it is. The
-/// host supplies both, because only the host knows the worlds it carries.
+/// `list_worlds` answers with these: the reference is what every other tool
+/// names the world by, and the name is what tells a person which world it is.
+/// The host supplies both, because only the host knows the worlds it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, facet::Facet)]
 pub struct WorldEntry {
-    /// The id every other tool names this world by.
-    pub world: WorldId,
+    /// The reference every other tool names this world by.
+    pub world: WorldRef,
     /// The name the world was spawned under.
     pub name: &'static str,
 }
@@ -135,7 +140,7 @@ pub struct McpCommand {
     request: Request,
     reply: async_channel::Sender<Result<Output, String>>,
     /// The world a [`Request::Job`] runs against.
-    world: WorldId,
+    world: WorldRef,
 }
 
 impl McpCommand {
@@ -165,7 +170,7 @@ impl McpCommand {
             Self {
                 request,
                 reply,
-                world: WorldId::Host,
+                world: WorldRef::Host,
             },
             receiver,
         )
@@ -173,14 +178,14 @@ impl McpCommand {
 
     /// Direct the command at `world`.
     #[must_use]
-    pub fn with_world(mut self, world: WorldId) -> Self {
+    pub fn with_world(mut self, world: WorldRef) -> Self {
         self.world = world;
         self
     }
 
     /// The world a job runs against.
     #[must_use]
-    pub const fn world(&self) -> WorldId {
+    pub const fn world(&self) -> WorldRef {
         self.world
     }
 
@@ -335,43 +340,43 @@ mod tests {
     #[derive(Debug, Deserialize)]
     struct Arg {
         #[serde(default)]
-        world: WorldId,
+        world: WorldRef,
     }
 
     #[test]
     fn a_world_id_parses_from_json() {
         let host: Arg = serde_json::from_str("{}").unwrap();
-        assert_eq!(host.world, WorldId::Host);
+        assert_eq!(host.world, WorldRef::Host);
         let host: Arg = serde_json::from_str(r#"{"world": "Host"}"#).unwrap();
-        assert_eq!(host.world, WorldId::Host);
+        assert_eq!(host.world, WorldRef::Host);
         let handle: Arg = serde_json::from_str(r#"{"world": {"Handle": 7}}"#).unwrap();
-        assert_eq!(handle.world, WorldId::Handle(7));
+        assert_eq!(handle.world, WorldRef::Handle(7));
     }
 
     #[test]
     fn a_world_id_maps_to_and_from_an_entity() {
         let entity = Entity::from_bits(0x0000_0002_0000_0001);
         assert_eq!(
-            WorldId::handle(entity),
-            WorldId::Handle(0x0000_0002_0000_0001)
+            WorldRef::handle(entity),
+            WorldRef::Handle(0x0000_0002_0000_0001)
         );
-        assert_eq!(WorldId::handle(entity).entity(), Some(entity));
-        assert_eq!(WorldId::Host.entity(), None);
-        assert_eq!(WorldId::default(), WorldId::Host);
+        assert_eq!(WorldRef::handle(entity).entity(), Some(entity));
+        assert_eq!(WorldRef::Host.entity(), None);
+        assert_eq!(WorldRef::default(), WorldRef::Host);
     }
 
     #[test]
     fn a_list_worlds_command_carries_no_job() {
         let (command, receiver) = McpCommand::list_worlds();
         assert!(command.wants_worlds());
-        assert_eq!(command.world(), WorldId::Host);
+        assert_eq!(command.world(), WorldRef::Host);
         command.answer_worlds(vec![
             WorldEntry {
-                world: WorldId::Host,
+                world: WorldRef::Host,
                 name: "host",
             },
             WorldEntry {
-                world: WorldId::Handle(3),
+                world: WorldRef::Handle(3),
                 name: "render",
             },
         ]);

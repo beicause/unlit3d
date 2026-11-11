@@ -363,7 +363,7 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
                     while let Ok(command) = receiver.recv() {
                         if command.wants_worlds() {
                             command.answer_worlds(vec![unlit_ecs::mcp::WorldEntry {
-                                world: unlit_ecs::mcp::WorldId::Host,
+                                world: unlit_ecs::mcp::WorldRef::Host,
                                 name: "host",
                             }]);
                         } else {

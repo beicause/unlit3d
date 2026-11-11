@@ -281,7 +281,7 @@ pub(crate) struct StartRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: unlit_ecs::mcp::WorldId,
+    pub world: unlit_ecs::mcp::WorldRef,
     /// How many seconds of audio to record at most. The recording stops and
     /// keeps what it captured when it reaches the limit.
     #[serde(default)]
@@ -294,7 +294,7 @@ pub(crate) struct StopRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: unlit_ecs::mcp::WorldId,
+    pub world: unlit_ecs::mcp::WorldRef,
     /// The directory to write the file into; created when it does not exist.
     pub directory: String,
     /// The file name to write; it is given a `.flac` extension when it
@@ -309,7 +309,7 @@ pub(crate) struct ReadRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: unlit_ecs::mcp::WorldId,
+    pub world: unlit_ecs::mcp::WorldRef,
     /// The audio format to answer with: `"flac"` (lossless, the default) or
     /// `"wav"`.
     #[serde(default)]

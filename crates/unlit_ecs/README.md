@@ -525,7 +525,7 @@ call into a `crate::mcp::McpCommand`, and posts it through a channel the host
 drains; whoever owns the world runs the job and answers on the command's own
 channel. A world is `!Send`, and this is the shape that keeps it that way.
 
-Which world a tool names is the client's to say: `crate::mcp::WorldId` is
+Which world a tool names is the client's to say: `crate::mcp::WorldRef` is
 `"Host"` for the world the server was built around, or `{"Handle": bits}` for a
 world a host entity carries. A host that wants its other worlds addressable
 answers `list_worlds` itself, because only it knows which entities carry one.

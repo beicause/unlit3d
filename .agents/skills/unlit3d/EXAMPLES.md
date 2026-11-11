@@ -61,7 +61,7 @@
 ### MCP 与调试宿主
 
 - `crates/unlit_ecs/src/mcp/server.rs` —— `McpServer`、`ToolRouter`、`serve_stdio_with` 与 `serve_with`，以及 `tool()` / `ToolSource` 这套注册机制。
-- `crates/unlit_ecs/src/mcp/host.rs` —— 传输契约：`McpCommand`、`Output`、`WorldId`、`WorldEntry`、`Job`，以及落盘助手。
+- `crates/unlit_ecs/src/mcp/host.rs` —— 传输契约：`McpCommand`、`Output`、`WorldRef`、`WorldEntry`、`Job`，以及落盘助手。
 - `crates/unlit_ecs/src/mcp/tools.rs` —— world 与实体工具，末尾的 `register` 是它们的注册表。
 - `crates/unlit3d/src/mcp/` —— 渲染工具（`host.rs`）与它们的 `register`（`mod.rs`）。
 - `crates/unlit3dx/src/mcp/mod.rs` —— 音频录音工具、`request_exit` 与它们的 `register`；录制实现在 `crates/unlit3dx/src/record.rs`。

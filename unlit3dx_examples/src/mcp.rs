@@ -80,7 +80,7 @@ fn status(host: &World, interactive: &Interactive) -> Value {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct StepFrames {
     #[serde(default)]
-    world: unlit_ecs::mcp::WorldId,
+    world: unlit_ecs::mcp::WorldRef,
     /// How many fixed-length frames to advance.
     frames: u32,
 }

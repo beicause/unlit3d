@@ -29,7 +29,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::mcp::host::{McpCommand, Output, WorldId};
+use crate::mcp::host::{McpCommand, Output, WorldRef};
 use crate::{Entity, World};
 
 pub use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
@@ -118,7 +118,7 @@ impl McpServer {
 /// [`McpCommand::dispatch`] on it.
 pub async fn send(
     commands: &CommandSender,
-    world: WorldId,
+    world: WorldRef,
     job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
 ) -> Result<Result<Output, String>, ErrorData> {
     let (command, receiver) = McpCommand::new(job);
@@ -136,7 +136,7 @@ pub async fn send(
 /// Send a job to the world `world` names and await its output.
 pub async fn run(
     commands: &CommandSender,
-    world: WorldId,
+    world: WorldRef,
     job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
 ) -> ToolResult {
     match send(commands, world, job).await? {
@@ -166,7 +166,7 @@ pub async fn run(
 /// Send a job to the world `world` names and await its JSON result.
 pub async fn command(
     commands: &CommandSender,
-    world: WorldId,
+    world: WorldRef,
     job: impl FnOnce(&mut World) -> Result<Value, String> + Send + 'static,
 ) -> ToolResult {
     run(commands, world, move |world| job(world).map(Output::from)).await
@@ -176,7 +176,7 @@ pub async fn command(
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Drives one or more worlds through the public API of the crates that registered their tools: inspect and edit entities and components, inspect a world's resource graph, read or save buffers and textures, send input, and render or screenshot frames. Every tool names its world with a WorldId (\"Host\", or {\"Handle\": bits} for a world a host entity carries), and a tool that needs engine handles names them explicitly.",
+            "Drives one or more worlds through the public API of the crates that registered their tools: inspect and edit entities and components, inspect a world's resource graph, read or save buffers and textures, send input, and render or screenshot frames. Every tool names its world with a WorldRef (\"Host\", or {\"Handle\": bits} for a world a host entity carries), and a tool that needs engine handles names them explicitly.",
         )
     }
 }
@@ -188,7 +188,7 @@ pub struct NoArgs {}
 /// Serve MCP over stdio, handing every command to `sink`.
 ///
 /// `sink` is how a command reaches the thread that owns the world its
-/// [WorldId] names: a host sends it to its own render thread, or a windowed host
+/// [WorldRef] names: a host sends it to its own render thread, or a windowed host
 /// posts it to its event loop, where it resolves the id to a world and calls
 /// [`McpCommand::dispatch`]. Returning `false` means the command could not be
 /// delivered - the event loop is gone, say - and the waiting tool call is
@@ -263,7 +263,7 @@ pub struct WorldArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
     /// world's root scope, which sees everything.
     #[serde(default)]
@@ -276,7 +276,7 @@ pub struct ContextArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// Any entity carrying the world's render context, as its `u64` bits —
     /// its device, queue, graph or capabilities. Omit when the world holds
     /// exactly one.
@@ -290,7 +290,7 @@ pub struct HandleArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// Any entity carrying the world's render context, as its `u64` bits.
     /// Omit when the world holds exactly one.
     #[serde(default)]
@@ -310,7 +310,7 @@ pub struct EntityArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
     /// world's root scope, which sees everything.
     #[serde(default)]
@@ -329,7 +329,7 @@ pub struct ListEntities {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
     /// world's root scope, which sees everything.
     #[serde(default)]
@@ -349,7 +349,7 @@ pub struct GetComponent {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
     /// world's root scope, which sees everything.
     #[serde(default)]
@@ -366,7 +366,7 @@ pub struct SetComponent {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
     /// world's root scope, which sees everything.
     #[serde(default)]
@@ -385,7 +385,7 @@ pub struct SpawnEntity {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
     /// world's root scope, which sees everything.
     #[serde(default)]
@@ -400,7 +400,7 @@ pub struct ReadBuffer {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// Any entity carrying the world's render context, as its `u64` bits.
     /// Omit when the world holds exactly one.
     #[serde(default)]
@@ -421,7 +421,7 @@ pub struct SaveBuffer {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// Any entity carrying the world's render context, as its `u64` bits.
     /// Omit when the world holds exactly one.
     #[serde(default)]
@@ -448,7 +448,7 @@ pub struct SaveTexture {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// Any entity carrying the world's render context, as its `u64` bits.
     /// Omit when the world holds exactly one.
     #[serde(default)]
@@ -470,7 +470,7 @@ pub struct SaveScreenshot {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -493,7 +493,7 @@ pub struct InputArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity carrying the input state, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -506,7 +506,7 @@ pub struct SendInput {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity carrying the input state, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -521,7 +521,7 @@ pub struct RendererArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -534,7 +534,7 @@ pub struct Screenshot {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -555,7 +555,7 @@ pub struct CreateMesh {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The scope to spawn into, as its `u64` bits. Omit for the entity
     /// carrying the mesh source.
     #[serde(default)]
@@ -627,7 +627,7 @@ pub struct LoadGltf {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: WorldId,
+    pub world: WorldRef,
     /// The scope to load into, as its `u64` bits. Omit for the entity
     /// carrying the mesh source.
     #[serde(default)]

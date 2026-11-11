@@ -187,10 +187,10 @@ pub(crate) fn start_mcp(world: &World, app: Entity) {
 /// called.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub(crate) fn dispatch_command(world: &World, command: unlit_ecs::mcp::McpCommand) {
-    use unlit_ecs::mcp::{WorldEntry, WorldId};
+    use unlit_ecs::mcp::{WorldEntry, WorldRef};
     if command.wants_worlds() {
         let mut worlds = vec![WorldEntry {
-            world: WorldId::Host,
+            world: WorldRef::Host,
             name: "host",
         }];
         for (entity, _) in world.root_scope().query::<(Entity, &World)>().iter() {
@@ -199,7 +199,7 @@ pub(crate) fn dispatch_command(world: &World, command: unlit_ecs::mcp::McpComman
             };
             let name = name.get();
             worlds.push(WorldEntry {
-                world: WorldId::handle(entity),
+                world: WorldRef::handle(entity),
                 name: name.0,
             });
         }

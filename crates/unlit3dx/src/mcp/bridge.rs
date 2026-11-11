@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
-use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
+use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldRef};
 use unlit_ecs::sync;
 use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
@@ -119,11 +119,11 @@ fn dispatch_command(world: &World, command: McpCommand) {
 /// the tools is one it can name.
 fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
     let mut worlds = vec![WorldEntry {
-        world: WorldId::Host,
+        world: WorldRef::Host,
         name: "host",
     }];
     let push = |entity: Entity, worlds: &mut Vec<WorldEntry>| {
-        let id = WorldId::handle(entity);
+        let id = WorldRef::handle(entity);
         let Ok(mut name) = world.root_scope().query_one::<&WorldName>(entity) else {
             return;
         };
@@ -301,7 +301,7 @@ mod tests {
         let bare = host.root_scope_mut().spawn(bundle![Marker]);
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldId::handle(bare));
+        let command = command.with_world(WorldRef::handle(bare));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -328,7 +328,7 @@ mod tests {
             let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldId::handle(nested_world));
+        let command = command.with_world(WorldRef::handle(nested_world));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -412,7 +412,7 @@ mod tests {
             let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldId::handle(threaded.entity));
+        let command = command.with_world(WorldRef::handle(threaded.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -442,7 +442,7 @@ mod tests {
             let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldId::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
         step_stepped_world(&host, stepped.entity, FRAME_SECONDS).expect("the stepped world starts");
@@ -470,7 +470,7 @@ mod tests {
         assert!(stepped.is_finished(), "the tick ended the world");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldId::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -502,7 +502,7 @@ mod tests {
             .expect("the first job fits");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldId::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
