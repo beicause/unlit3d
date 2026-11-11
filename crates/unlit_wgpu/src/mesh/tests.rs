@@ -1,4 +1,5 @@
 use super::*;
+use wgpu::WriteOnly;
 use zerocopy::IntoBytes;
 
 /// Write raw UVs, compressed colors and raw normals through the
