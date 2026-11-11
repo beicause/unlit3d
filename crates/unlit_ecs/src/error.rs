@@ -17,6 +17,7 @@
 //! stays a panic; see the module documentation of [`crate`].
 
 use crate::Entity;
+use crate::identity::WorldId;
 
 /// Why a lookup of, or through, an entity handle was turned down.
 ///
@@ -110,6 +111,30 @@ pub enum EntityAccessError {
     /// The entity's archetype could not be reached.
     #[error(transparent)]
     Archetype(#[from] ArchetypeAccessError),
+}
+
+/// Why a remote handle was turned down by the world it was offered to.
+///
+/// A handle crosses a thread, a job or a channel together with the id of the
+/// world that made it; resolving one against a world is what tells the two
+/// apart. It is a single variant because there is a single way to be turned
+/// down: the handle is fine, it simply belongs somewhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RemoteEntityError {
+    /// The handle was made in a world other than the one it was offered to.
+    ///
+    /// Both worlds are named, so a message can say which handle was meant for
+    /// where rather than only that it was refused.
+    #[error("{entity:?} belongs to world {found:?}, not to {expected:?}")]
+    ForeignWorld {
+        /// The handle that was offered.
+        entity: Entity,
+        /// The world that was asked to resolve it.
+        expected: WorldId,
+        /// The world that made it.
+        found: WorldId,
+    },
 }
 
 /// Why a lookup by archetype id was turned down.

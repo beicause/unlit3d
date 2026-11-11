@@ -264,9 +264,51 @@ integer.
 `Bundle::name` is the one place that answers this, so a bundle with a naming
 rule of its own overrides it.
 
+## Identity across worlds
+
+`Entity` is an index and a generation into one world's storage. Every world
+numbers its entities from zero, so the same handle exists in all of them and
+means something different in each: hand a handle to another world and it names
+whatever entity happens to share its bits. The handle only refers to an entity
+if it was produced by the world it is read in, and that is a rule a caller can
+forget.
+
+So a handle that leaves its world carries the world with it:
+`World::remote(entity)` builds a `RemoteEntity` - the handle and the `WorldId`
+of the world that made it - and `World::resolve(remote)` reads one back. The
+resolving world compares the id against its own and answers
+`RemoteEntityError::ForeignWorld` when they differ, naming both worlds, rather
+than resolving the handle into an unrelated local entity:
+
+```rust
+use unlit_ecs::{RemoteEntityError, World};
+
+let mut first = World::new();
+let mut second = World::new();
+let cube = first.root_scope_mut().spawn(unlit_ecs::bundle![0u32]);
+let remote = first.remote(cube);
+assert_eq!(first.resolve(remote), Ok(cube));
+assert!(matches!(
+    second.resolve(remote),
+    Err(RemoteEntityError::ForeignWorld { .. })
+));
+```
+
+A `WorldId` is made with the world and dies with it. Nothing reuses one, so a
+handle to a world that has since been dropped is refused rather than answered by
+whatever world was made next. The number behind the id is assigned in creation
+order and is not stable across runs; it is for telling worlds apart inside one
+process, not for naming one in a file.
+
+The plain `Entity` is what a world's own code uses. It carries no world id, and
+it stays 16 bytes because every archetype row and every query result holds one:
+making it fatter would cost the storage the ECS exists to pack. A boundary - a
+job, a channel, a thread - is where the pair takes over. `RemoteEntity` is
+`Copy`, its fields are public, and it has no world in it, so a message can be
+built and taken apart without a world at hand.
 ## What is in the box
 
-[`World`], [`Entity`], [`Location`], [`Bundle`] / [`DynamicBundle`] (and the
+[`World`], [`Entity`], [`Location`], [`WorldId`], [`RemoteEntity`], [`Bundle`] / [`DynamicBundle`] (and the
 [`bundle!`] macro that writes one), and the
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,

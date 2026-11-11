@@ -193,9 +193,44 @@ assert!(!cube.name().is_empty(), "bundle names the entity it builds");
 
 这一切都由 `Bundle::name` 一处作答，所以有自己命名规则的 bundle 覆盖它即可。
 
+## 跨世界的身份
+
+`Entity` 是某个 world 存储里的索引加世代。每个 world 的实体编号都从 0 开始,
+于是同一个句柄在所有 world 里都存在，而每个 world 里指的是不同的东西：把句柄交给
+另一个 world，它就指到恰好 bits 相同的那个实体上。句柄只有在它由那个 world 产出时
+才指得到实体，而这条规则调用者会忘。
+
+所以离开自己世界的句柄要带着世界一起走：`World::remote(entity)` 造一个
+`RemoteEntity`——句柄加上产出它的那个 world 的 `WorldId`——`World::resolve(remote)`
+把它读回来。解析的那个 world 拿 id 与自己的比，不同就答
+`RemoteEntityError::ForeignWorld` 并把两个 world 都报出来，而不是把句柄解析成
+一个毫不相干的本地实体：
+
+```rust
+use unlit_ecs::{RemoteEntityError, World};
+
+let mut first = World::new();
+let mut second = World::new();
+let cube = first.root_scope_mut().spawn(unlit_ecs::bundle![0u32]);
+let remote = first.remote(cube);
+assert_eq!(first.resolve(remote), Ok(cube));
+assert!(matches!(
+    second.resolve(remote),
+    Err(RemoteEntityError::ForeignWorld { .. })
+));
+```
+
+`WorldId` 随 world 生、随 world 灭，没有任何东西复用它，所以指向已销毁 world 的
+句柄会被拒，而不是由下一个造出来的 world 代答。id 背后的数字按创建顺序分配，跨运行
+不稳定；它用于在一个进程内分辨 world，不用于把 world 写进文件。
+
+裸 `Entity` 是 world 内部代码用的形态。它不带 world id，也就保住了 16 字节——每个
+archetype 行、每个查询结果都装着一个，把它变胖要花的是 ECS 存在意义所在的打包密度。
+边界——job、channel、线程——才是这一对出场的地方。`RemoteEntity` 是 `Copy`，字段公开，
+里面没有 world，所以消息可以在手里没有 world 的时候拼出来、拆开来。
 ## 内容概览
 
-`World`、`Entity`、`Location`、`Bundle` / `DynamicBundle`（以及写出 bundle 的
+`World`、`Entity`、`Location`、`WorldId`、`RemoteEntity`、`Bundle` / `DynamicBundle`（以及写出 bundle 的
 `bundle!` 宏）、把 world 收窄到一个 scope 的
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`）、

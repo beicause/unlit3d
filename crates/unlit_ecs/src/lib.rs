@@ -11,6 +11,7 @@ mod component;
 mod entity;
 mod error;
 mod hash;
+mod identity;
 mod info;
 mod lifecycle;
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
@@ -38,7 +39,8 @@ pub use entity::{Entity, Location};
 #[cfg(feature = "reflect")]
 #[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]
 pub use entity::{EntityProxy, EntityVecProxy};
-pub use error::{ArchetypeAccessError, EntityAccessError};
+pub use error::{ArchetypeAccessError, EntityAccessError, RemoteEntityError};
+pub use identity::{RemoteEntity, WorldId};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};

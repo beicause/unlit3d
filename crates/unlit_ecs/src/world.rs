@@ -39,8 +39,9 @@ use crate::bundle::{Bundle, BundleComponent, DynamicBundle};
 use crate::column::AnyColumn;
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
-use crate::error::EntityAccessError;
+use crate::error::{EntityAccessError, RemoteEntityError};
 use crate::hash::TypeIdHashMap;
+use crate::identity::{RemoteEntity, WorldId};
 use crate::lifecycle::{Lifecycle, LifecycleCallback};
 use crate::query::Mode;
 use crate::scope::ScopeTree;
@@ -89,6 +90,8 @@ pub struct World {
     /// that counts rows has to know where they are. They take the first
     /// [`World::SCAFFOLDING_ROWS`] rows of it.
     scaffolding: u32,
+    /// What tells this world's handles from another world's.
+    id: WorldId,
 }
 
 /// The exclusive borrow of a world's command queue.
@@ -128,6 +131,7 @@ impl World {
             root: Entity::from_raw(0, 0),
             shared: Entity::from_raw(0, 0),
             scaffolding: 0,
+            id: WorldId::next(),
         };
         // The root's scope is itself, which is where walking up the tree stops.
         // It is recorded before the shared scope is inserted, because that one
@@ -149,6 +153,47 @@ impl World {
             "the scaffolding takes the first rows of its archetype",
         );
         world
+    }
+
+    // -- identity ----------------------------------------------------------
+
+    /// What tells this world's entity handles from another world's.
+    ///
+    /// The id is made with the world and dies with it: no two live worlds share
+    /// one, and a world made after this one is gone does not inherit its id. See
+    /// [`World::remote`] for the handle that carries it.
+    #[must_use]
+    pub fn id(&self) -> WorldId {
+        self.id
+    }
+
+    /// The handle to carry `entity` out of this world.
+    ///
+    /// The plain [`Entity`] names a row in this world's storage and means
+    /// something else in every other world, so a handle that crosses a thread,
+    /// a job or a channel crosses as the pair.
+    #[must_use]
+    pub fn remote(&self, entity: Entity) -> RemoteEntity {
+        RemoteEntity {
+            world: self.id,
+            entity,
+        }
+    }
+
+    /// The local handle `remote` names, if it was made in this world.
+    ///
+    /// Turns a handle from another world down rather than resolving it to
+    /// whatever local entity shares its bits; the error names both worlds.
+    pub fn resolve(&self, remote: RemoteEntity) -> Result<Entity, RemoteEntityError> {
+        if remote.world == self.id {
+            Ok(remote.entity)
+        } else {
+            Err(RemoteEntityError::ForeignWorld {
+                entity: remote.entity,
+                expected: self.id,
+                found: remote.world,
+            })
+        }
     }
 
     // -- the tree ----------------------------------------------------------
@@ -795,6 +840,45 @@ mod tests {
 
     #[derive(Clone, Copy, Debug)]
     struct Marker;
+
+    /// Two worlds never share an id, and a handle made in one is turned down by
+    /// the other rather than resolving to whatever entity shares its bits.
+    #[test]
+    fn a_handle_from_another_world_is_turned_down() {
+        let first = World::new();
+        let second = World::new();
+        assert_ne!(first.id(), second.id());
+
+        let entity = first.root();
+        let remote = first.remote(entity);
+        assert_eq!(first.resolve(remote), Ok(entity), "the maker resolves it");
+        assert_eq!(
+            second.resolve(remote),
+            Err(RemoteEntityError::ForeignWorld {
+                entity,
+                expected: second.id(),
+                found: first.id(),
+            }),
+        );
+        assert_eq!(
+            second.resolve(second.remote(entity)),
+            Ok(entity),
+            "the same entity number is this world's own",
+        );
+    }
+
+    /// A world dropped and made again does not hand its id to the new one, so a
+    /// stale handle is refused rather than resolving into its replacement.
+    #[test]
+    fn a_replacement_world_carries_a_fresh_id() {
+        let stale = World::new();
+        let id = stale.id();
+        let remote = stale.remote(stale.root());
+        drop(stale);
+        let fresh = World::new();
+        assert_ne!(fresh.id(), id);
+        assert!(fresh.resolve(remote).is_err());
+    }
 
     /// The lookup behind the lifecycle hooks, which is its only caller: an
     /// archetype that does not carry the component simply has no hook to run.
