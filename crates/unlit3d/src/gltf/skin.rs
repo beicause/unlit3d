@@ -86,7 +86,8 @@ impl LitGltf {
     /// first and the mesh's `weights` is the fallback; a mesh that states
     /// neither starts at zero, which is to say undeformed. The vector is as
     /// long as the deforming target list, so it is always the right length for
-    /// the [`MorphWeights`] a spawned mesh binds to — a document that states
+    /// the [`MorphWeights`](crate::components::MorphWeights) a spawned mesh
+    /// binds to — a document that states
     /// fewer weights than it has targets is padded, and one that states more is
     /// truncated, because the renderer rejects a mismatch.
     ///

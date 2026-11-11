@@ -19,16 +19,19 @@ impl LitGltf {
     ///
     /// Returns a [`GltfNode`] naming one entity per primitive of the node's
     /// mesh — each carrying the
-    /// node's world-space [`Transform`], the uploaded [`GpuMesh`], the
+    /// node's world-space [`Transform`](crate::components::Transform), the
+    /// uploaded [`GpuMesh`](crate::components::GpuMesh), the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
     /// material's base-color factor. A primitive that samples its material's
-    /// base-color texture also carries the matching [`GpuMaterial`]. A blended
+    /// base-color texture also carries the matching
+    /// [`GpuMaterial`](crate::components::GpuMaterial). A blended
     /// primitive ([`gltf::material::AlphaMode::Blend`]) also carries
     /// [`ZSortedDrawing`], so it is drawn after the opaque geometry and
     /// composited back-to-front, and its pipeline writes no depth: each of its
     /// fragments covers a surface only partly, and the ones behind it are
     /// still to be drawn. A skinned primitive (one whose mesh carries a
-    /// joint stream) carries a [`SkinBinding`] to the node's [`SkinPose`], which is
+    /// joint stream) carries a [`SkinBinding`] to the node's
+    /// [`SkinPose`](crate::components::SkinPose), which is
     /// spawned on an entity of its own so several meshes can share it — see
     /// [`Self::skin_pose`]. Children are not spawned; use
     /// [`Self::spawn_default_scene`] for the whole scene.

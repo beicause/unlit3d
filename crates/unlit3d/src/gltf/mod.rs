@@ -1,13 +1,13 @@
 //! Load glTF documents and patch them into another world's
-//! [`MeshSource`]: upload textures, materials and meshes into an existing
-//! resource graph, unload them again, and spawn entities that draw the
-//! document's default scene.
+//! [`MeshSource`](crate::mesh_source::MeshSource): upload textures, materials
+//! and meshes into an existing resource graph, unload them again, and spawn
+//! entities that draw the document's default scene.
 //!
 //! [`LitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each
 //! node's world-space transform — plus nothing else. It holds no
-//! [`World`](unlit_ecs::World), no [`MeshSource`] and no GPU resources of its
-//! own. Everything GPU lives in
+//! [`World`](unlit_ecs::World), no [`MeshSource`](crate::mesh_source::MeshSource)
+//! and no GPU resources of its own. Everything GPU lives in
 //! the graph of the `MeshSource` the caller patches, so a document can be
 //! inserted into any number of worlds, and each insertion keeps the handles
 //! that unload it again.
@@ -103,11 +103,12 @@
 //! absent everywhere else, blending with nothing. A primitive carrying both
 //! `JOINTS_0` and `WEIGHTS_0` uploads its actual joint stream and draws
 //! skinned; [`LitGltf::skin_pose`] turns the node's skin into the
-//! [`SkinPose`] its joints deform by, and spawning such a node creates the
-//! pose entity its mesh binds to. A primitive whose mesh declares a morph
-//! target that displaces positions uploads those displacements and spawns with
-//! a [`MorphBinding`] to a [`MorphWeights`] entity holding the node's starting
-//! weights — see [`LitGltf::morph_weights`] — so writing that entity is how
+//! [`SkinPose`](crate::components::SkinPose) its joints deform by, and spawning
+//! such a node creates the pose entity its mesh binds to. A primitive whose mesh
+//! declares a morph target that displaces positions uploads those displacements
+//! and spawns with a [`MorphBinding`](crate::components::MorphBinding) to a
+//! [`MorphWeights`](crate::components::MorphWeights) entity holding the node's
+//! starting weights — see [`LitGltf::morph_weights`] — so writing that entity is how
 //! a caller morphs the mesh. A `doubleSided` material rasterizes its back
 //! faces instead of culling them, so its geometry draws from either side.
 //! A document's animations are sampled on demand:
@@ -322,8 +323,9 @@ pub struct GltfMesh {
 ///
 /// Produced by [`LitGltf::spawn_node`] / [`LitGltf::spawn_default_scene`]
 /// and given back to [`LitGltf::apply_animation`], which drives the node's
-/// transform, its [`SkinPose`] and its [`MorphWeights`] through the entities
-/// this names.
+/// transform, its [`SkinPose`](crate::components::SkinPose) and its
+/// [`MorphWeights`](crate::components::MorphWeights) through the entities this
+/// names.
 #[derive(Clone, Debug)]
 pub struct GltfNode {
     /// The node in the glTF document these entities draw.
@@ -331,10 +333,11 @@ pub struct GltfNode {
     /// One entity per primitive of the node's mesh; empty for a node with no
     /// mesh.
     pub entities: Vec<Entity>,
-    /// The entity holding the node's [`SkinPose`], when the node is skinned.
+    /// The entity holding the node's [`SkinPose`](crate::components::SkinPose),
+    /// when the node is skinned.
     pub pose: Option<Entity>,
-    /// The entity holding the node's [`MorphWeights`], when the node's mesh
-    /// has morph targets.
+    /// The entity holding the node's [`MorphWeights`](crate::components::MorphWeights),
+    /// when the node's mesh has morph targets.
     pub weights: Option<Entity>,
 }
 

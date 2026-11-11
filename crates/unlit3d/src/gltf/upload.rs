@@ -95,7 +95,7 @@ impl LitGltf {
     /// Upload `image` into `source`'s resource graph and return its handle.
     ///
     /// The texture holds the image's decoded pixels in the GPU format closest
-    /// to them — see the [module docs](self#texture-formats); its sampler is
+    /// to them — see the [module docs](super#texture-formats); its sampler is
     /// not uploaded here, because that belongs to the material that samples
     /// it.
     pub fn insert_image(
