@@ -178,7 +178,6 @@ without the tree changing.
   renderer records that scene into the pass opened over the pass's
   attachments. A frame is therefore still one encoder and one submission, no
   matter how many passes it has.
-
 - The built-in mesh rendering is one source, [`MeshSource`](mesh_source::MeshSource), and it has no more
   privilege than a caller's own. There is no mesh-specific field or draw path in
   the renderer: the built-in lit family is registered through the same
@@ -836,15 +835,21 @@ What it does is patch the world you already render:
 - A document's animations are sampled rather than played:
   `LitGltf::animation_count`, `LitGltf::animation_name` and
   `LitGltf::animation_duration` describe the clips it carries, and
-  `LitGltf::apply_animation(world, clip, time, &spawned)` evaluates one at a
+  `document.apply_animation(&scope, clip, time, &spawned)` evaluates one at a
   chosen time. It samples each channel — `STEP`, `LINEAR` or `CUBICSPLINE`, with
   rotations slerped — into the animated nodes' local transforms, recomposes the
   world matrices down the node hierarchy, and writes the result where the
   spawned entities read it: each animated node's [`Transform`](components::Transform) (and
   its descendants', which inherit the change), every [`SkinPose`](components::SkinPose) whose mesh
   follows a moved joint, and every [`MorphWeights`](components::MorphWeights) a weight channel names.
-  It takes `&World`, so a caller drives it from wherever it already has one, and
-  it touches nothing the passed `&[GltfNode]` does not name.
+  It takes a `&Scope`, so a caller drives it alongside anything else that reads
+  the world, and it touches nothing the passed `&[GltfNode]` does not name.
+- A clip is decoded once and kept: the keyframes a channel addresses are
+  collected on the first frame that plays the clip rather than re-read from the
+  document's buffers on every frame. The working set — the locals it overwrites,
+  the recomposed world matrices, and the per-node flags and weight buffers — is
+  likewise reused across frames, growing to its high-water mark once. A frame
+  therefore allocates only where it writes something new into the world.
 
 What loads: positions, UVs, vertex colors, normals, joints, weights and indices —
 from ordinary accessors, including those the loader fills from a Draco stream on

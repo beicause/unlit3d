@@ -72,7 +72,7 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告帧号、球数、MIDI
 序列状态与每个面板按钮的中心，`request_exit` 让进程退出。该模式下自动掉球与背景自动播放
 均关闭，因此每个可见与可听的变化都来自客户端。`mcp_input` 集成测试（[English](tests/mcp_input/main.rs)、
-[简体中文](tests/mcp_input/main.rs)）启动这个二进制，只通过 MCP 点击面板、捕获三张图片
+[简体中文](tests/mcp_input/main.rs)）启动这个二进制，只通过 MCP 的 `send_input` 点击面板、捕获三张图片
 快照、把序列播放期间录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，
 并请求进程正常退出。
 

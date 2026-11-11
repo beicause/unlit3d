@@ -52,7 +52,7 @@ mesh 路径之上增加 glTF 加载器，见下文。开启 `reflect` 会派生 
    OOP 中，对象自身状态在内部维护。
 2. 拓展性体现在系统的相加上，而不在组件上，组件缺乏 OOP 的继承性。例：bevy 的材质
    拓展需要用户为每个自定义材质注册一个插件，较繁琐。bevy 的材质所需的 GPU 句柄往往
-   绑死了 `ShaderBuffer`、`Mesh`、`Image` 等类型的 Handle，用户无法自定义自己的资源
+   绑死了 `ShaderBuffer`、`Mesh`、`Image` 等类型的 `Handle`，用户无法自定义自己的资源
    句柄用于材质。而这在 OOP 中，用基类并拓展非常容易。
 
 由于渲染资源类型单一，bevy 的 `RenderAssetUsages` 机制也易出错：主世界被提取了渲染
@@ -519,7 +519,7 @@ impl InstanceContext<'_> {
   `PrimitiveId`、`NodeId` 与 `AnimationId`——节点下标因此不会误传给动画或图像。
   `images()`、`materials()`、`meshes()`、`primitives()`、`nodes()` 与
   `animations()` 迭代器给出文档实际携带的 id。
-- `insert_resources` 一次上传整份文档，返回持有全部句柄的 `GltfResources`；
+- `insert_resources` 一次上传整份文档，返回持有全部句柄的 `gltf::GltfResources`；
   `spawn_node` / `spawn_default_scene` 接收的正是这个结构体，每个句柄都带有它来自的
   文档条目的类型化 id。想一次只插入一类资源的调用方
   ——比如让两份文档共用一个纹理——也可以改用 `insert_image` / `insert_material` /
@@ -555,12 +555,15 @@ impl InstanceContext<'_> {
   法线需要反转，也没有光照方程需要求值。
 - 文档中的动画按需采样而非自动播放：`LitGltf::animation_count`、
   `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
-  `LitGltf::apply_animation(world, clip, time, &spawned)` 在选定的时间求值其中一个。
+  `document.apply_animation(&scope, clip, time, &spawned)` 在选定的时间求值其中一个。
   它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，旋转走球面插值）采样进被动画节点的局部
   变换，沿节点层级重新组合出世界矩阵，再把结果写到生成实体读取它的地方：每个被动画节点的
   `Transform`（以及继承其变化的子孙节点）、每个因关节移动而跟随的网格的 `SkinPose`、以及
-  权重通道所指的每个 `MorphWeights`。它接受 `&World`，因此调用方在已经持有 world 的任何
-  地方都能驱动它，并且不会碰传入 `&[GltfNode]` 之外的任何东西。
+  权重通道所指的每个 `MorphWeights`。它接受 `&Scope`，因此调用方可以与其他读取 world 的
+  代码同时驱动它，并且不会碰传入 `&[GltfNode]` 之外的任何东西。
+- 片段只解码一次并保留：通道指向的关键帧在第一次播放该片段的帧里收集，之后不再从文档的
+  缓冲区逐帧重读。工作集——它覆写的局部变换、重新组合的世界矩阵，以及每节点的标志与权重
+  缓冲——同样跨帧复用，只增长到其高水位一次。因此一帧只在向 world 写入新内容的地方分配。
 
 支持加载：位置、UV、顶点色、法线、关节、权重与索引——来自普通 accessor，其中也包括加载器
 在导入时从 Draco 流回填的那些；基础色纹理及采样它们的材质；混合
@@ -832,8 +835,8 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 ## winit 集成
 
 `winit` 模块分三层。`winit::surface` 是表现层：`WindowSurface` 配置窗口的交换链
-并交出 `Frame`，`FrameAttachments` 持有该帧绘制所用的深度与多重采样目标。
-`winit::event` 是桥接层：`ApplicationHandler` 的每个回调都有一个对应的行为组件族，
+并交出 `Frame`，`FrameAttachments` 持有该帧绘制所用的深度与多重采样目标。`winit::presenter` 把这两半
+组装成现成的窗口循环（见[呈现一帧](#呈现一帧)）。`winit::event` 是桥接层：`ApplicationHandler` 的每个回调都有一个对应的行为组件族，
 而 `WinitHost` 是应用唯一实现的 `ApplicationHandler`——它持有 world，把每个回调
 分发给对应的族，自身不持有任何应用逻辑。`winit::builtin` 是一组现成的行为，其中没有
 任何一条是应用走不了的路径。
