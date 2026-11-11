@@ -688,7 +688,8 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
 ///
 /// The click is recorded rather than served here: a panel runs while the world
 /// is borrowed, and it has no window to ask; the frame loop reads the request
-/// and calls [`fullscreen::toggle`], which is where a browser accepts it from.
+/// and calls [`crate::fullscreen::toggle`], which is where a browser accepts it
+/// from.
 pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entity) {
     world
         .scope_mut(ui)

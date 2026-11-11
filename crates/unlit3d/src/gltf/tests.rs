@@ -1,7 +1,10 @@
 //! Integration-style unit tests over synthetic glTF documents.
 
 use super::*;
+use crate::components::{MorphWeights, SkinPose};
+use crate::gltf::material::{morph_target_count, samples_base_color_texture};
 use unlit_ecs::World;
+use unlit_ecs::bundle;
 
 /// A GLB holding one skinned triangle: node 0 draws mesh 0 under skin 0,
 /// whose single joint is node 1 at `translation`.
