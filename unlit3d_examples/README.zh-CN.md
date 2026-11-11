@@ -292,8 +292,8 @@ tie-break 规则决定，API 把这件事留给实现。这样零星几个像素
 
 ## 测试
 
-本 crate 自己的测试覆盖命令行（`src/cli.rs`）与固定步长播放时钟（`src/lib.rs`），
-`tests/gpu_suite.rs` 则覆盖渲染。测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
+本 crate 自己的测试覆盖命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`）
+与窗口浮层（`src/overlay.rs`），`tests/gpu_suite.rs` 则覆盖渲染。测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
 [根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证

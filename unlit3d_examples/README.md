@@ -392,8 +392,9 @@ before committing them. That submodule is checked out with
 
 ## Tests
 
-The crate's own tests cover the command line (`src/cli.rs`) and the fixed-step
-playback clock (`src/lib.rs`), and `tests/gpu_suite.rs` covers the rendering.
+The crate's own tests cover the command line (`src/cli.rs`), the fixed-step
+playback clock (`src/lib.rs`) and the window overlays (`src/overlay.rs`), and
+`tests/gpu_suite.rs` covers the rendering.
 Where each test layer sits across the workspace, and what CI runs, is in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
