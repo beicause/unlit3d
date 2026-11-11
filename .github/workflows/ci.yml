@@ -221,6 +221,12 @@ jobs:
           # what it needs: requiring it here is what turns a checkout that
           # lost the asset from a silent skip into a failure.
           UNLIT3D_REQUIRE_SOUNDFONT: "1"
+          # A missing snapshot is normally stored rather than compared, so the
+          # first run of a new test records its baseline. Requiring them here
+          # turns that into a failure instead: a checkout whose submodule step
+          # stopped working would otherwise pass every comparison by writing
+          # fresh baselines into an empty directory.
+          UNLIT3D_REQUIRE_SNAPSHOTS: "1"
 
       # A frame that fails its snapshot comparison is written rather than only
       # scored, so a mismatch arrives as an image to look at instead of a number

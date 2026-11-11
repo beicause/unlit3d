@@ -150,10 +150,13 @@ is what arranges it:
   really decoded and really scored in the browser.
 
 A missing snapshot is *stored* rather than compared, and setting
-`SNAPSHOT_UPDATE=1` re-stores every snapshot it touches. So a snapshot that was
-never committed silently passes CI by writing itself — which is why the CI
-snapshot job checks the submodule out. On the web a missing snapshot cannot
-arise: the build would not have compiled.
+`SNAPSHOT_UPDATE=1` re-stores every snapshot it touches. That is what lets the
+first run of a new test record its baseline, and it is also how a snapshot that
+was never committed passes by writing itself — so a run that must not invent
+baselines sets `UNLIT3D_REQUIRE_SNAPSHOTS=1`, which turns the absent file into a
+failure that names where it looked. The CI runs set it; locally, leaving it
+unset keeps recording a baseline a one-command affair. On the web a missing
+snapshot cannot arise: the build would not have compiled.
 
 A frame that *fails* its comparison is kept before the assertion fails, so a run
 that fails in CI leaves the frame behind for the job to upload: natively it is

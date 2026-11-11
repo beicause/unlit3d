@@ -201,6 +201,20 @@ pub enum SnapshotError {
     /// The two images could not be scored.
     #[error("scoring the frames failed: {0}")]
     Score(#[from] ssimulacra2::Ssimulacra2Error),
+    /// A snapshot was required to exist and did not.
+    ///
+    /// Raised where [`REQUIRE_SNAPSHOTS_ENV`] is set, instead of recording the
+    /// frame as a new baseline: the run is one that must not invent baselines.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(
+        "the snapshot at {} is missing, and {REQUIRE_SNAPSHOTS_ENV} is set; \
+         check that tests/snapshots exists and the asset submodule is checked out",
+        .path.display()
+    )]
+    MissingSnapshot {
+        /// Where the snapshot was looked for.
+        path: std::path::PathBuf,
+    },
 }
 
 /// Turn an RGBA8 frame into the RGB the metric reads.
@@ -333,13 +347,30 @@ pub const MISMATCH_DIR_ENV: &str = "UNLIT3D_SNAPSHOT_MISMATCH_DIR";
 #[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_MISMATCH_DIR: &str = "target/snapshot-mismatches";
 
+/// The environment variable that turns a missing snapshot from a baseline being
+/// recorded into a failure.
+///
+/// A missing snapshot is stored rather than compared, so the first run of a new
+/// test records its baseline without a busted comparison to bless. The same
+/// kindness is what lets a checkout that lost `tests/snapshots` — an
+/// uninitialized submodule, a build directory that was cleaned — pass every
+/// comparison by writing a fresh set of baselines into the void.
+///
+/// Set to anything non-empty, this makes the absent file an error instead, which
+/// is what the CI runs do: on the host they set it, and a checkout that stopped
+/// carrying snapshots then fails where it used to go green.
+#[cfg(not(target_arch = "wasm32"))]
+pub const REQUIRE_SNAPSHOTS_ENV: &str = "UNLIT3D_REQUIRE_SNAPSHOTS";
+
 /// Assert that `rgba` matches `snapshot` within [`DEFAULT_TOLERANCE`].
 ///
 /// Natively a missing snapshot is written from this frame rather than failed
 /// on, so the first run of a new test records its baseline, and
-/// `SNAPSHOT_UPDATE=1` rewrites one that exists. On the web the baseline is
-/// embedded in the binary, so there is nothing to write and a missing one
-/// could not have compiled.
+/// `SNAPSHOT_UPDATE=1` rewrites one that exists. Setting
+/// [`REQUIRE_SNAPSHOTS_ENV`] turns that recording into a failure, which is what
+/// a run that must not invent baselines — CI — sets. On the web the baseline is
+/// embedded in the binary, so there is nothing to write and a missing one could
+/// not have compiled.
 pub fn assert_image_snapshot(snapshot: Snapshot, rgba: &[u8], width: u32, height: u32) {
     assert_image_snapshot_with_tolerance(snapshot, rgba, width, height, DEFAULT_TOLERANCE);
 }
@@ -432,6 +463,13 @@ fn store_mismatch(name: &str, rgba: &[u8], width: u32, height: u32) {
     crate::browser::record_mismatch(name, &webp);
 }
 
+/// Whether this run must not record baselines, read from
+/// [`REQUIRE_SNAPSHOTS_ENV].
+#[cfg(not(target_arch = "wasm32"))]
+fn require_snapshots() -> bool {
+    std::env::var_os(REQUIRE_SNAPSHOTS_ENV).is_some()
+}
+
 /// Measure a frame against its baseline, storing one where none exists yet.
 #[cfg(not(target_arch = "wasm32"))]
 fn compare(
@@ -442,13 +480,51 @@ fn compare(
     channel_delta: u8,
 ) -> Result<Comparison, SnapshotError> {
     let path = snapshot_path(snapshot.name());
+    compare_with_policy(
+        snapshot,
+        &path,
+        rgba,
+        width,
+        height,
+        channel_delta,
+        require_snapshots(),
+    )
+}
+
+/// Measure a frame against its baseline at `path`, taking the
+/// missing-baseline policy as an argument rather than reading it from the
+/// environment.
+///
+/// Both the path and the policy are passed here by [`compare`], which is what
+/// reads the environment once and resolves the name; a test of either then
+/// needs neither a process-wide variable nor a file in the source tree.
+#[cfg(not(target_arch = "wasm32"))]
+fn compare_with_policy(
+    snapshot: Snapshot,
+    path: &std::path::Path,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    channel_delta: u8,
+    require_snapshots: bool,
+) -> Result<Comparison, SnapshotError> {
     let update = std::env::var_os("SNAPSHOT_UPDATE").is_some();
+
+    if !path.exists() && require_snapshots {
+        // Recording a baseline is a convenience for the first run of a new test.
+        // A run that asks for it not to happen is one that must not have that:
+        // a checkout missing its snapshots would otherwise go green by writing
+        // them into an empty directory.
+        return Err(SnapshotError::MissingSnapshot {
+            path: path.to_owned(),
+        });
+    }
 
     if !path.exists() || update {
         // A snapshot name may carry subdirectories. `create_dir_all` is a
         // no-op for the directories that already exist, including the
         // `tests/snapshots` symlink into the asset repository.
-        store_frame_webp(&path, rgba, width, height)?;
+        store_frame_webp(path, rgba, width, height)?;
         log::info!(
             "snapshot `{}` {}",
             snapshot.name(),
@@ -463,7 +539,7 @@ fn compare(
         });
     }
 
-    compare_frame_webp(&path, rgba, width, height, channel_delta)
+    compare_frame_webp(path, rgba, width, height, channel_delta)
 }
 
 /// Measure a frame against the baseline embedded in this binary.
@@ -601,5 +677,39 @@ mod tests {
             pixel[3] = 0;
         }
         assert_eq!(outlier_fraction(&baseline, &current, 8), 0.0);
+    }
+
+    // What `REQUIRE_SNAPSHOTS_ENV` decides is which of the two branches a missing
+    // baseline takes, so the test names the policy directly rather than setting
+    // a process-wide variable that a test running beside it would also see. The
+    // path is one of its own under `target`, so the test never writes into the
+    // source tree or the snapshot submodule.
+    #[test]
+    fn a_missing_snapshot_is_recorded_unless_it_is_required() {
+        let path = std::path::Path::new("target/unit-test-snapshots/never-stored.webp");
+        let _ = std::fs::remove_file(path);
+        let snapshot = super::Snapshot::on_disk("unit-test/never-stored.webp");
+
+        // A run that may record: the frame becomes a baseline, and is not
+        // scored against itself.
+        let comparison = super::compare_with_policy(snapshot, path, &frame(16), 4, 4, 8, false)
+            .expect("recording a missing baseline is not a failure");
+        assert!(comparison.score.is_infinite());
+        assert!(path.exists(), "the frame should have been stored");
+        std::fs::remove_file(path).expect("the baseline is the test's own to drop");
+
+        // A run that may not: the same call refuses instead of writing, which is
+        // what keeps a checkout that lost its snapshots from going green.
+        let error = super::compare_with_policy(snapshot, path, &frame(16), 4, 4, 8, true)
+            .map(|comparison| comparison.score)
+            .expect_err("a required snapshot that is missing is a failure");
+        assert!(matches!(
+            error,
+            super::SnapshotError::MissingSnapshot { .. }
+        ));
+        assert!(
+            !path.exists(),
+            "a refused run must not write the baseline either"
+        );
     }
 }
