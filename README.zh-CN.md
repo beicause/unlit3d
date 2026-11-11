@@ -116,6 +116,8 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
   的代码处绕开，并把症状、成因与代价记进 [`WORKAROUND.zh-CN.md`](WORKAROUND.zh-CN.md)，
   后来的人才能分清那是刻意的怪写法还是笔误。
 
+`cargo xtask` 的各任务及其参数见 [`xtask/README.zh-CN.md`](xtask/README.zh-CN.md)。
+
 ## 测试与基准
 
 测试按「离被测代码有多近」分三层：

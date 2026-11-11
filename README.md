@@ -158,62 +158,7 @@ ECS is as small as it is.
   [`WORKAROUND.md`](WORKAROUND.md), so a later reader can tell a deliberate
   oddity from a mistake.
 
-## Common commands
-
-Commands follow the `cargo xtask` convention:
-
-- **`cargo xtask check`** — `typos` and `tombi` over the repository, then clippy
-  twice: over the four libraries with no features at all, and over the whole
-  workspace with every feature (`-D warnings`); then the doc build with every
-  feature and `-D warnings`, so a broken intra-doc link fails here as it would
-  in CI; then `cargo fmt --check`. The gate before a commit. The no-features
-  pass is the one nothing else can stand in for: it is what proves the
-  libraries' general facilities compile without the built-in backends, and the
-  one a false optional feature fails. `--release` uses the release profile.
-- **`cargo xtask test`** — `cargo nextest run` over the unit and integration
-  tests, then `cargo test --doc` for the doctests nextest does not cover.
-  `--release` uses the release profile.
-- **`cargo xtask test-wasm`** — build the GPU tests for
-  `wasm32-unknown-unknown`, bindgen them, and run them in a real browser through
-  WebGL2, one page per test; then load each example and check it drew
-  something. Needs `wasm-bindgen-cli` at the version the workspace resolves,
-  `cargo nextest`, and Node; it installs the runner's own dependencies and a
-  browser, unless `CHROME_PATH` names one to reuse. `--show` opens a visible
-  window to watch a failure happen.
-- **`cargo xtask run-wasm`** — build the web examples and serve them from a
-  built-in static server (WebGPU needs a secure context; `file://` will not
-  do). `--app` picks which are built — `unlit3d`, `unlit3dx` or `all`, the
-  default — and the landing page at the root links whichever are there;
-  `--no-serve` only builds. Every wasm build, here and in `test-wasm`, uses
-  the workspace's `wasm-release` cargo profile: release's settings at an
-  `opt-level` aimed at size, since a browser downloads the binary. Every wasm
-  build also enables the `simd128` target feature, which the physics and the
-  audio synthesis vectorize under.
-- **`cargo xtask build-android`** — cross-compile both examples' shared
-  libraries (`unlit3d_examples_android` and `unlit3dx_examples_android`, which
-  hold the Android entry points and nothing else) with `cargo ndk` into
-  `android/app/src/main/jniLibs`, then run Gradle to build the APK. Debug by
-  default; `--release` builds an unsigned release APK. Needs JDK 17+ and
-  `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
-- **`cargo xtask publish`** — upload the publishable crates (`unlit_ecs`,
-  `unlit_wgpu`, `unlit3d`, `unlit3dx`) to crates.io in dependency order,
-  waiting for each to reach the index before packaging the next. Arguments
-  after `--` are passed through to each `cargo publish`, so `-- --dry-run`
-  runs every check without uploading.
-- **`cargo nextest run`** — use it directly to filter or re-run individual tests
-  (`-p <crate>`, `-E 'test(<name>)'`). nextest does not run doctests, so it is no
-  substitute for `cargo xtask test`.
-- **`cargo bench -p unlit3d_benchmarks`** — time a frame of the rendering path as
-  entities per second. `--bench ecs` instead measures the ECS's component-access
-  paths on their own, and `--bench profile -- <entities> <frames>` with
-  `--features profile-tracing` prints one line per frame phase. See
-  [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) for what each target
-  covers.
-- **`typos`** — spell check, over the whole repository. Part of `cargo xtask
-  check`; a word it flags that is legitimate goes into `typos.toml`.
-- **`tombi lint --error-on-warnings`** and **`tombi format`** — TOML lint and
-  format check, also part of `cargo xtask check`. A feature table is expected
-  to be sorted, and `tombi format` is what sorts it.
+See [`xtask/README.md`](xtask/README.md) for the `cargo xtask` tasks and their arguments.
 
 ## Tests and benchmarks
 
