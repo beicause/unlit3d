@@ -82,6 +82,11 @@ libtest-mimic = "0.8.2"
 log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
 pollster = { version = "1.0.1", default-features = false }
 profiling = { version = "1.0.18", default-features = false }
+# Property tests: the arithmetic that has no obvious example case — bin
+# rounding, allocation churn, topological order — is driven by generated
+# inputs, and a failure shrinks to the smallest one. Only `std` is needed; the
+# fork and timeout defaults would pull in a process-forking harness.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 # The physics world. No parallel feature: the physics world owns its thread,
 # so the rayon pool and the scheduler plumbing it pulls in are not needed.
 rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "f32", "std"] }

@@ -33,15 +33,18 @@
 //! not offer — `unlit3d`'s `MeshSource` is the generic pipeline registry
 //! a caller can build its own render bridge on, for instance.
 #![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "audio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "audio")))]
 pub mod audio;
 /// The snapshot subscriptions between worlds.
 pub mod channel;
 /// A single-threaded executor for a world's async tasks.
 pub mod executor;
 #[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod gpu;
 /// The uniform handle to a spawned world.
 pub mod handle;
@@ -50,10 +53,13 @@ pub mod host;
 /// Jobs, the work handed to another world.
 pub mod job;
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "mcp", not(target_arch = "wasm32")))))]
 pub mod mcp;
 #[cfg(feature = "physics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "physics")))]
 pub mod physics;
 #[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod present;
 /// Requests a world answers, and the waiting for their answers.
 pub mod request;
@@ -62,13 +68,16 @@ pub mod request;
 // format is public wherever it is compiled: the headless run encodes its mix
 // through it rather than carrying an encoder of its own.
 #[cfg(feature = "audio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "audio")))]
 pub mod record;
 #[cfg(feature = "synth")]
+#[cfg_attr(docsrs, doc(cfg(feature = "synth")))]
 pub mod synth;
 /// World threads and their pacing.
 pub mod thread;
-#[cfg(feature = "render")]
 /// UI panels laid out in one world and drawn in another.
+#[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod ui;
 /// Threaded worlds, which run on their own thread.
 pub mod world;

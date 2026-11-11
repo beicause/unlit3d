@@ -13,6 +13,14 @@ exclude = ["/tests"]
 # targets of their own; see its docs.
 autotests = false
 
+# docs.rs builds with the default features only, which would leave every
+# feature-gated module out of the published documentation. All features is
+# what puts them there; the docsrs cfg is what lets their `doc(cfg(...))`
+# markers render the badge naming the feature.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 # One binary for the whole integration suite: the tests share the harness in
 # tests/common and link the same GPU stack, so a link per file would repeat
 # both. The required features are those its cases use -- glTF documents, the

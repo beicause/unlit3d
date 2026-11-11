@@ -13,6 +13,7 @@ pub mod frame;
 /// buffer per distinct record, uploaded once however many draws read them.
 pub mod global_uniforms;
 #[cfg(feature = "gltf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gltf")))]
 pub mod gltf;
 pub mod input;
 /// The frame's lights, and the clustering a lit frame does of them.
@@ -28,6 +29,7 @@ pub mod lit;
 /// The rendering tools a world answers through the Model Context Protocol
 /// server in [`unlit_ecs::mcp`].
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "mcp", not(target_arch = "wasm32")))))]
 pub mod mcp;
 pub mod mesh;
 pub mod mesh_source;
@@ -40,6 +42,7 @@ pub mod pipeline;
 /// The proxies here are what a reflected component's glam and ECS fields go
 /// through, and are reusable by a caller's own reflected components.
 #[cfg(feature = "reflect")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]
 pub mod reflect;
 /// The handles a value takes when it leaves a world: a snapshot or a stream.
 pub mod relay;
@@ -47,8 +50,10 @@ pub mod renderer;
 pub mod scene;
 pub mod source;
 #[cfg(feature = "ui")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ui")))]
 pub mod ui;
 #[cfg(feature = "winit")]
+#[cfg_attr(docsrs, doc(cfg(feature = "winit")))]
 pub mod winit;
 
 /// The types most callers need for typical usage.

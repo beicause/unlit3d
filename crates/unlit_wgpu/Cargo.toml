@@ -16,6 +16,14 @@ exclude = ["/assets", "/tests"]
 # targets of their own; see its docs.
 autotests = false
 
+# docs.rs builds with the default features only, which would leave every
+# feature-gated module out of the published documentation. All features is
+# what puts them there; the docsrs cfg is what lets their `doc(cfg(...))`
+# markers render the badge naming the feature.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 # One binary for the whole integration suite: both files link the same GPU stack,
 # so a link per file would repeat that work. The egui backend is required, which
 # is why the binary is skipped whole when that feature is off.
@@ -45,6 +53,7 @@ zerocopy-derive.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+proptest.workspace = true
 unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", default-features = false, features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
 

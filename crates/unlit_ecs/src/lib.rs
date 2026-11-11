@@ -14,11 +14,13 @@ mod hash;
 mod info;
 mod lifecycle;
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "mcp", not(target_arch = "wasm32")))))]
 pub mod mcp;
 /// File-naming helpers that need neither a filesystem nor a random id.
 pub mod naming;
 pub mod query;
 #[cfg(feature = "reflect")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]
 pub mod reflect;
 mod scope;
 /// Lock helpers that ignore poisoning, so one panic cannot fail every later
@@ -34,6 +36,7 @@ pub use command::{Command, CommandErase, Commands};
 pub use component::Component;
 pub use entity::{Entity, Location};
 #[cfg(feature = "reflect")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]
 pub use entity::{EntityProxy, EntityVecProxy};
 pub use error::{ArchetypeAccessError, EntityAccessError};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
