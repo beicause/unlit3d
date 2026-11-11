@@ -16,6 +16,7 @@ cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
 ```text
 cargo xtask check          # typos, tombi, clippy and the doc build, then `cargo fmt --check`
 cargo xtask test           # nextest over unit and integration tests, then the doctests
+cargo xtask line-count     # print every Rust file's line count, marking the ones at 1000 lines
 cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
 cargo xtask miri           # run the ECS's tests under Miri, which is what checks its unsafe
 cargo xtask test-wasm      # run the GPU tests in a browser, through wasm and WebGL2
@@ -82,6 +83,31 @@ A frame that fails its snapshot comparison is written before the test fails, und
 `target/snapshot-mismatches-webgl2` for the tier pass — a directory each, so a
 frame that differs under both tiers can be told apart. CI uploads them when a
 test fails, so a mismatch can be looked at rather than only scored.
+
+### `cargo xtask line-count`
+
+Prints the line count of every Rust file in the workspace, longest first,
+marking the ones that reach a thousand lines. A file that long holds several
+unrelated concerns in one place, and reading it in parts invites a missed half
+and a misjudged whole. Split it by concern.
+
+The files are git's rather than a directory walk's: `git ls-files --cached
+--others --exclude-standard` is the index plus what is untracked, minus what is
+ignored. So `target/` and every other ignored path are absent, the asset
+submodule's own sources are absent, and so is anything left in a nested checkout
+or another worktree — all of them by the rule that already decides what the
+repository holds, rather than by a list of directory names this task would have
+to keep in step with `.gitignore`. A file that is not yet added still counts: it
+is one `git add` away from joining the tree.
+
+The count is of newline bytes rather than of decoded lines, which is the same
+number for any UTF-8 file, since a byte inside a multi-byte sequence is never
+`\n`; a last line with no trailing newline still counts. Nothing is compiled, so
+this is cheap enough to run on a whim, and it is not part of `cargo xtask check`:
+reaching the ceiling is a design question rather than a diagnostic. For the same
+reason the task reports rather than fails — the files above the line today are
+the ones still to be split, and a task that stayed red until then would be
+ignored. It does need git, but so does everything else here.
 
 ### `cargo xtask print-gpu`
 
@@ -264,6 +290,7 @@ the crate that failed.
 src/main.rs           argument parsing (argh) and task dispatch
 src/check.rs          `cargo xtask check`
 src/test.rs           `cargo xtask test`
+src/line_count.rs     `cargo xtask line-count`: the longest Rust files
 src/print_gpu.rs      `cargo xtask print-gpu`: the device, read by `gpu-info`
 src/miri.rs           `cargo xtask miri`: the ECS's tests under Miri
 src/test_wasm.rs      `cargo xtask test-wasm`: the browser pass and its runner
@@ -271,7 +298,7 @@ src/run_wasm.rs       `cargo xtask run-wasm`: the wasm build, bindgen and page
 src/build_android.rs  `cargo xtask build-android`: the cross-build and the APK
 src/publish.rs        `cargo xtask publish`: the crates and their publish order
 src/http.rs           the static file server `run-wasm` serves with
-src/step.rs           running one child command and reporting which step failed
+src/step.rs           running one child command, and the workspace root tasks act on
 ```
 
 ## Building it

@@ -11,6 +11,7 @@
 mod build_android;
 mod check;
 mod http;
+mod line_count;
 mod miri;
 mod print_gpu;
 mod publish;
@@ -38,6 +39,7 @@ fn run() -> Result<(), String> {
         Task::RunWasm(task) => run_wasm::run(&task),
         Task::BuildAndroid(task) => build_android::run(&task),
         Task::Publish(task) => publish::run(&task),
+        Task::LineCount(task) => line_count::run(&task),
         Task::PrintGpu(task) => print_gpu::run(&task),
     }
 }
@@ -72,6 +74,9 @@ enum Task {
     BuildAndroid(BuildAndroidArgs),
     /// Publish the workspace's crates to crates.io, in dependency order.
     Publish(PublishArgs),
+    /// Print the line count of every Rust file in the workspace, marking the
+    /// ones that reach the ceiling.
+    LineCount(LineCountArgs),
     /// Print the GPU device the tests draw with, as JSON.
     PrintGpu(PrintGpuArgs),
 }
@@ -167,6 +172,15 @@ struct BuildAndroidArgs {
     #[argh(switch)]
     release: bool,
 }
+
+/// Arguments of `cargo xtask line-count`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "line-count",
+    description = "print the line count of every Rust file in the workspace, marking the ones that reach 1000 lines"
+)]
+struct LineCountArgs {}
 
 /// Arguments of `cargo xtask print-gpu`.
 #[derive(FromArgs)]

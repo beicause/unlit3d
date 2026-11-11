@@ -14,6 +14,7 @@
 ```text
 cargo xtask check          # typos、tombi、clippy 与文档构建，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
+cargo xtask line-count     # 打印每个 Rust 文件的行数，标记达到 1000 行的
 cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备（两个档位各一份）
 cargo xtask miri           # 在 Miri 下跑 ECS 的测试，那是校验其 unsafe 的门禁
 cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
@@ -68,6 +69,23 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 档位那趟放在 `target/snapshot-mismatches-webgl2`——各占一个目录，因此两个档位下都
 不同的帧可以被区分开。测试失败时 CI 会上传它们，于是不匹配可以被人查看，而不只是被
 打分。
+
+### `cargo xtask line-count`
+
+打印工作区内每个 Rust 文件的行数，长的在前，并标出达到一千行的那些。文件过长，意味着
+多套互不相干的逻辑共处一处，局部读取易致漏读与误判。按职责拆分。
+
+文件清单问的是 git，而不是走目录树：`git ls-files --cached --others
+--exclude-standard` 就是索引加未跟踪、去掉被忽略的。于是 `target/` 及其他被忽略的
+路径不来，子模块自己的源码不来，嵌套的 checkout 或另一个 worktree 里留下的东西也不来
+——靠的是本就决定「仓库里有什么」的那条规则，而不是一张要跟着 `.gitignore` 改的目录名
+清单。还没 add 的文件照样算：它离进树只差一次 `git add`。
+
+数的是换行字节而不是解码后的行，对任何 UTF-8 文件两者相同：多字节序列里的字节永远不是
+`\n`；末行没有换行符也照样算一行。它不编译任何东西，随手跑一趟也不贵，而且不进
+`cargo xtask check`：撞上上限是设计问题，不是一条诊断。同理，这个任务只报告而不失败——
+今天在上限之上的文件正是还没拆的那些，一个一直红着的任务只会被无视。它要用 git，但本仓库
+的其他事情也一样。
 
 ### `cargo xtask print-gpu`
 
@@ -215,6 +233,7 @@ crate 继续。
 src/main.rs          参数解析（argh）与任务分发
 src/check.rs         cargo xtask check
 src/test.rs          cargo xtask test
+src/line_count.rs    cargo xtask line-count：最长的那些 Rust 文件
 src/print_gpu.rs      cargo xtask print-gpu：由 gpu-info 读出的设备
 src/miri.rs           cargo xtask miri：在 Miri 下跑 ECS 的测试
 src/test_wasm.rs      cargo xtask test-wasm：浏览器那一趟及其 runner
@@ -222,7 +241,7 @@ src/run_wasm.rs      cargo xtask run-wasm：wasm 构建、bindgen 与页面
 src/build_android.rs cargo xtask build-android：交叉构建与 APK
 src/publish.rs       cargo xtask publish：要发布的 crate 及其顺序
 src/http.rs          run-wasm 用来提供服务的静态文件服务器
-src/step.rs          运行单个子命令并报告是哪一步失败
+src/step.rs          运行单个子命令，以及任务所作用的工作区根目录
 ```
 
 ## 构建它

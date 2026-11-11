@@ -1,7 +1,10 @@
 //! Running one step of a task as a child command.
 
-use std::ffi::OsStr;
-use std::process::Command;
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 /// Run `command`, reporting which step failed.
 ///
@@ -49,4 +52,29 @@ fn quote(word: &OsStr) -> String {
     } else {
         format!("'{}'", word.replace('\'', r"'\''"))
     }
+}
+/// The directory a task's tools work on, which is the workspace root.
+///
+/// Asked of cargo rather than read from the working directory, so that a task
+/// started inside one crate still covers the whole workspace: `typos` reads the
+/// configuration beside the files it is pointed at, and `typos.toml` lives at
+/// the root.
+pub fn workspace_root() -> Result<PathBuf, String> {
+    let mut metadata = Command::new("cargo");
+    metadata.args(["locate-project", "--workspace", "--message-format", "plain"]);
+    let output = metadata
+        .output()
+        .map_err(|error| format!("running `cargo locate-project`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`cargo locate-project` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let manifest = String::from_utf8(output.stdout)
+        .map_err(|error| format!("reading `cargo locate-project`'s output: {error}"))?;
+    Path::new(manifest.trim())
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "`cargo locate-project` named a manifest with no directory".to_owned())
 }

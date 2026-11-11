@@ -1,7 +1,6 @@
 //! `cargo xtask check`: the typo and TOML checks, clippy, the doc build, then a
 //! formatting check.
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::step;
@@ -38,7 +37,7 @@ use crate::step;
 /// Every run denies warnings, as CI does. Without it a warning here is a
 /// warning CI turns into an error, which is the same gap in a different guise.
 pub fn run(release: bool) -> Result<(), String> {
-    let root = workspace_root()?;
+    let root = step::workspace_root()?;
 
     // Both tools take the directory to work on as their only argument, and both
     // are run from here rather than from the working directory: a task may be
@@ -141,30 +140,4 @@ fn require(tool: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// The directory the task's tools work on, which is the workspace root.
-///
-/// Asked of cargo rather than read from the working directory, so that a task
-/// started from a crate's own directory covers the whole workspace: `typos`
-/// reads the configuration beside the files it is pointed at, and
-/// `typos.toml` lives at the root.
-fn workspace_root() -> Result<PathBuf, String> {
-    let mut metadata = Command::new("cargo");
-    metadata.args(["locate-project", "--workspace", "--message-format", "plain"]);
-    let output = metadata
-        .output()
-        .map_err(|error| format!("running `cargo locate-project`: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`cargo locate-project` failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let manifest = String::from_utf8(output.stdout)
-        .map_err(|error| format!("reading `cargo locate-project`'s output: {error}"))?;
-    Path::new(manifest.trim())
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "`cargo locate-project` named a manifest with no directory".to_owned())
 }
