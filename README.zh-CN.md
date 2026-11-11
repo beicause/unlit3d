@@ -186,7 +186,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。一个端到端 MCP 测试在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_suite.rs` 的渲染快照。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`）、窗口浮层（`src/overlay.rs`），以及 `tests/gpu_suite.rs` 的渲染快照。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 抵达目标 world、快照与流订阅、world 对自己状态的发布、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
