@@ -579,10 +579,10 @@ mod tests {
         assert_eq!(header.data_size.get() as usize, samples.len());
 
         let samples: Vec<i16> = samples
-            .as_chunks::<2>()
+            .as_chunks::<{ size_of::<I16>() }>()
             .0
             .iter()
-            .map(|sample| i16::from_le_bytes(*sample))
+            .map(|sample| I16::from_bytes(*sample).get())
             .collect();
         assert_eq!(samples, [0, -i16::MAX, i16::MAX, i16::MAX]);
     }
@@ -660,11 +660,14 @@ mod tests {
             .samples()
             .map(|sample| sample.expect("a decodable sample") as i16)
             .collect();
-        let pcm: Vec<i16> = wav[44..]
-            .as_chunks::<2>()
+        let (header, samples) =
+            WavHeader::read_from_prefix(&wav).expect("the file starts with its header");
+        assert_eq!(samples.len(), header.data_size.get() as usize);
+        let pcm: Vec<i16> = samples
+            .as_chunks::<{ size_of::<I16>() }>()
             .0
             .iter()
-            .map(|sample| i16::from_le_bytes(*sample))
+            .map(|sample| I16::from_bytes(*sample).get())
             .collect();
         assert_eq!(decoded, pcm);
     }

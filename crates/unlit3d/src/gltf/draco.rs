@@ -18,6 +18,8 @@ use draco_core::mesh_decoder::MeshDecoder;
 use gltf::json::validation::{Checked, USize64};
 use gltf::json::{self, Index, Path, Value, accessor, buffer, mesh};
 use std::mem::size_of;
+use zerocopy::IntoBytes;
+use zerocopy::byteorder::little_endian::{F32, U16};
 
 /// The extension a compressed primitive declares.
 pub(super) const EXTENSION: &str = "KHR_draco_mesh_compression";
@@ -182,19 +184,24 @@ fn push_view(
 
 /// Encode decoded floats the way the rewritten accessor declares them.
 fn encode(values: &[f32], joints: bool) -> Vec<u8> {
-    if joints {
-        // Joint indices name a joint, not a quantity: they are never
-        // normalized, and glTF only allows unsigned integers for them.
-        values
-            .iter()
-            .flat_map(|value| (*value as u16).to_le_bytes())
-            .collect()
-    } else {
-        values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect()
+    // Joint indices name a joint, not a quantity: they are never normalized,
+    // and glTF only allows unsigned integers for them.
+    let mut bytes = Vec::with_capacity(
+        values.len()
+            * if joints {
+                size_of::<U16>()
+            } else {
+                size_of::<F32>()
+            },
+    );
+    for value in values {
+        if joints {
+            bytes.extend_from_slice(U16::new(*value as u16).as_bytes());
+        } else {
+            bytes.extend_from_slice(F32::new(*value).as_bytes());
+        }
     }
+    bytes
 }
 
 /// Widen a decoded attribute into f32 rows, rescaling normalized integers.

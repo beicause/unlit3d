@@ -48,7 +48,7 @@
 - 附件与读回：`crates/unlit3d/src/attachments.rs`（`FrameAttachments`）、`crates/unlit_wgpu/src/render_attachments.rs`（`create_*_target` / `default_depth_stencil_format`）、`crates/unlit_wgpu/src/readback.rs`（`readback_texture`）。
 - 目标特化：`crates/unlit_wgpu/src/specialize.rs`（`SurfaceKey` / `SurfaceTarget::set_surface`）。
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。
-- 输入：`crates/unlit3d/src/input/mod.rs`。
+- 输入：`crates/unlit3d/src/input/`（事件词汇在 `event.rs`，状态在 `state.rs`，帧循环的接线在 `mod.rs`）。
 - UI：`crates/unlit3d/src/ui/mod.rs`。
 - winit 桥与内置行为：`crates/unlit3d/src/winit/` 下的 `event.rs` / `builtin.rs` / `surface.rs`。
 
