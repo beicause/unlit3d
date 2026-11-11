@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use glam::Vec3;
-use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, RemoteEntity, Scope, World, bundle};
 use unlit3d::components::Transform;
 use unlit3dx::prelude::*;
 
@@ -27,7 +27,7 @@ use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance, look};
 use super::tick::advancing_in;
 use super::{GamePhysics, ScenePoses, pose_job, world_ended};
-use crate::render::{BallInstance, RenderEntity, despawn_instances_job, show, sweep};
+use crate::render::{BallInstance, despawn_instances_job, show, sweep};
 
 /// How long between automatic ball drops, in seconds.
 const SPAWN_PERIOD: f32 = 0.7;
@@ -76,7 +76,7 @@ pub struct Ball {
     /// Which color it is, an index into `BALL_COLORS`.
     pub color: usize,
     /// The render instance the render world created for it.
-    pub instance: Option<RenderEntity>,
+    pub instance: Option<RemoteEntity>,
     /// The body the physics world spawned for it.
     pub body: Option<RigidBodyHandle>,
     /// How far the ball has come: see [`BallPhase`].
@@ -94,7 +94,7 @@ struct ShowCandidate {
     /// The color, an index into `BALL_COLORS`.
     color: usize,
     /// The instance to point at the assets and show.
-    instance: RenderEntity,
+    instance: RemoteEntity,
     /// The transform to show it at.
     transform: Transform,
 }
@@ -108,7 +108,7 @@ enum Waiting {
     ///
     /// The instance travels with the decision, so a ball that reaches this
     /// branch is known to have both halves and needs no second look.
-    Show(RenderEntity),
+    Show(RemoteEntity),
     /// It waited too long, or a world that owed a half ended: reclaim it.
     Reclaim,
 }
@@ -130,7 +130,7 @@ pub struct Balls {
     bodies: Pending<Entity, RigidBodyHandle>,
     /// The instances the render world owes: one request per ball, asked under
     /// the ball it is for.
-    instances: Pending<Entity, RenderEntity>,
+    instances: Pending<Entity, RemoteEntity>,
     /// The shows the render world owes: one request per ball, asked under the
     /// ball whose instance is being shown. What it answers is whether the
     /// instance really wears its assets.
@@ -140,7 +140,7 @@ pub struct Balls {
     retired: Pending<(), Vec<BallInstance>>,
     /// Where the answers land, reused across ticks.
     settled_bodies: Vec<(Entity, Settled<RigidBodyHandle>)>,
-    settled_instances: Vec<(Entity, Settled<RenderEntity>)>,
+    settled_instances: Vec<(Entity, Settled<RemoteEntity>)>,
     settled_shows: Vec<(Entity, Settled<bool>)>,
     settled_retired: Vec<((), Settled<Vec<BallInstance>>)>,
     /// The balls a request was given up on this tick, and has to reclaim.
@@ -177,7 +177,7 @@ pub struct Balls {
     /// a full queue only delays the cleanup.
     despawns: Vec<RigidBodyHandle>,
     /// The instances that have nobody left to stand for, kept the same way.
-    orphans: Vec<RenderEntity>,
+    orphans: Vec<RemoteEntity>,
     /// The xorshift state for spawn placement.
     rng: u64,
 }
@@ -384,7 +384,7 @@ fn waiting(ball: &Ball, entity: Entity, expired: &[Entity], stale: bool) -> Wait
 fn live_poses(
     scope: &Scope<'_>,
     snapshot: &GamePhysics,
-    poses: &mut Vec<(RenderEntity, Transform)>,
+    poses: &mut Vec<(RemoteEntity, Transform)>,
 ) {
     for ball in scope.query::<&Ball>().iter() {
         if ball.phase == BallPhase::Waiting {

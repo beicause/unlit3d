@@ -17,7 +17,7 @@
 //! key the request was asked under, and the next job names it.
 
 use glam::{Affine3A, Vec3};
-use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, RemoteEntity, Scope, World};
 use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::bounds::FrustumPlanes;
 use unlit3d::components::{
@@ -59,17 +59,6 @@ impl OwnedLitMeshDesc {
     }
 }
 
-/// An entity of the render sub-world.
-///
-/// Every world numbers its entities from zero, so an id from the world that
-/// sends a job names something unrelated in the world that runs it: the
-/// render entities a scene passes around are wrapped in this, and a bare
-/// [`Entity`] in the same code is one of another world's. The wrap costs
-/// nothing at run time; it is what keeps a gameplay entity from reaching a
-/// render query by mistake.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RenderEntity(pub Entity);
-
 /// The render world's mesh source and the pipeline key its server jobs
 /// use.
 ///
@@ -81,7 +70,7 @@ pub struct RenderEntity(pub Entity);
 /// For a pipeline of the caller's own, register a family and allocate
 /// through `unlit3d`'s [`MeshSource`] directly; the world is the same
 /// registry either way.
-pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey)> {
+pub(crate) fn mesh_source(world: &World) -> Option<(RemoteEntity, LitPipelineKey)> {
     let mut sources = world.root_scope().query::<(&Source, Entity)>();
     let entity = sources
         .iter()
@@ -99,7 +88,7 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey
                 ..LitOptions::standard()
             })
         });
-    Some((RenderEntity(entity), key))
+    Some((world.remote(entity), key))
 }
 
 /// Allocate a mesh in the render world, answering its asset entity.
@@ -108,13 +97,13 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RenderEntity, LitPipelineKey
 /// makes for itself. Panics when the world carries no `MeshSource`.
 /// several things in one step. Panics when the world carries no
 /// `MeshSource`.
-pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> RenderEntity {
+pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> RemoteEntity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
     let root = world.root_scope();
     let mesh = root
-        .query_one::<&mut Source>(source_entity.0)
+        .query_one::<&mut Source>(source_entity.entity)
         .map(|mut source| {
             source
                 .get()
@@ -125,12 +114,11 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> Rende
         .expect("the mesh source entity exists");
     // The asset hangs under the source that draws it, so the world holds
     // one subtree per source rather than asset entities at its root.
-    RenderEntity(
-        world
-            .scope_mut(source_entity.0)
-            .expect("the mesh source entity exists")
-            .spawn(bundle![mesh]),
-    )
+    let entity = world
+        .scope_mut(source_entity.entity)
+        .expect("the mesh source entity exists")
+        .spawn(bundle![mesh]);
+    world.remote(entity)
 }
 
 /// Allocate a material over the RGBA image `pixels`, answering its asset
@@ -147,7 +135,7 @@ pub(crate) fn allocate_rgba_material(
     size: (u32, u32),
     pixels: &[[u8; 4]],
     descriptor: wgpu::SamplerDescriptor<'static>,
-) -> RenderEntity {
+) -> RemoteEntity {
     assert_eq!(
         pixels.len(),
         size.0 as usize * size.1 as usize,
@@ -168,13 +156,13 @@ fn allocate_material(
     world: &mut World,
     descriptor: wgpu::SamplerDescriptor<'static>,
     build_texture: impl FnOnce(&MeshSource, &Scope<'_>) -> wgpu::Texture,
-) -> RenderEntity {
+) -> RemoteEntity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
     let root = world.root_scope();
     let material = root
-        .query_one::<&mut Source>(source_entity.0)
+        .query_one::<&mut Source>(source_entity.entity)
         .map(|mut source| {
             let source = source
                 .get()
@@ -186,12 +174,11 @@ fn allocate_material(
             source.allocate_lit_material(&root, &key.options, view, sampler)
         })
         .expect("the mesh source entity exists");
-    RenderEntity(
-        world
-            .scope_mut(source_entity.0)
-            .expect("the mesh source entity exists")
-            .spawn(bundle![material]),
-    )
+    let entity = world
+        .scope_mut(source_entity.entity)
+        .expect("the mesh source entity exists")
+        .spawn(bundle![material]);
+    world.remote(entity)
 }
 
 /// Spawn one rendered instance from asset entities, answering the new
@@ -202,38 +189,37 @@ fn allocate_material(
 /// asset entity is gone.
 pub(crate) fn instance_of(
     world: &mut World,
-    mesh: RenderEntity,
-    material: RenderEntity,
+    mesh: RemoteEntity,
+    material: RemoteEntity,
     transform: Transform,
-) -> RenderEntity {
+) -> RemoteEntity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
     let mesh = world
         .root_scope()
-        .query_one::<&GpuMesh>(mesh.0)
+        .query_one::<&GpuMesh>(mesh.entity)
         .expect("the mesh asset entity exists")
         .get()
         .clone();
     let material = world
         .root_scope()
-        .query_one::<&GpuMaterial>(material.0)
+        .query_one::<&GpuMaterial>(material.entity)
         .expect("the material asset entity exists")
         .get()
         .clone();
     // The instance hangs under the source that draws it: a source draws
     // the subtree it owns, so an instance spawned beside it is never seen.
-    RenderEntity(
-        world
-            .scope_mut(source_entity.0)
-            .expect("the mesh source entity exists")
-            .spawn(Rendered {
-                transform,
-                mesh,
-                material,
-                pipeline: GpuRenderPipeline::new(key),
-            }),
-    )
+    let entity = world
+        .scope_mut(source_entity.entity)
+        .expect("the mesh source entity exists")
+        .spawn(Rendered {
+            transform,
+            mesh,
+            material,
+            pipeline: GpuRenderPipeline::new(key),
+        });
+    world.remote(entity)
 }
 
 /// One thing the render world draws: a mesh, the material bound to it, the
@@ -269,19 +255,19 @@ impl Bundle for Rendered {
 /// Spawn one rendered instance that starts hidden, until its body is ready.
 pub(crate) fn hidden_instance_of(
     world: &mut World,
-    mesh: RenderEntity,
-    material: RenderEntity,
+    mesh: RemoteEntity,
+    material: RemoteEntity,
     transform: Transform,
-) -> RenderEntity {
+) -> RemoteEntity {
     let instance = instance_of(world, mesh, material, transform);
     let Some((source, _)) = mesh_source(world) else {
         return instance;
     };
-    let Ok(scope) = world.scope(source.0) else {
+    let Ok(scope) = world.scope(source.entity) else {
         return instance;
     };
     let _ = scope
-        .query_one::<&mut InstanceVisibility>(instance.0)
+        .query_one::<&mut InstanceVisibility>(instance.entity)
         .map(|mut visibility| visibility.get().visible = false);
     instance
 }
@@ -296,8 +282,8 @@ pub(crate) fn hidden_instance_of(
 pub struct BallInstance {
     /// The ball, an entity of the gameplay world.
     pub ball: Entity,
-    /// The render instance that stands for it, an entity of the render world.
-    pub instance: RenderEntity,
+    /// The render instance that stands for it, a handle of the render world.
+    pub instance: RemoteEntity,
 }
 
 /// Retire the instances the camera cannot see: despawn each one and answer
@@ -325,17 +311,17 @@ pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> 
         };
         let mut outside = instances;
         {
-            let Ok(scope) = world.scope(source.0) else {
+            let Ok(scope) = world.scope(source.entity) else {
                 return Vec::new();
             };
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
             outside.retain(|answer| {
-                let Ok(mut mesh) = scope.query_one::<&GpuMesh>(answer.instance.0) else {
+                let Ok(mut mesh) = scope.query_one::<&GpuMesh>(answer.instance.entity) else {
                     return false;
                 };
                 let model = scope
-                    .query_one::<&Transform>(answer.instance.0)
+                    .query_one::<&Transform>(answer.instance.entity)
                     .map_or(Affine3A::IDENTITY, |mut transform| {
                         transform.get().compute_matrix()
                     });
@@ -345,9 +331,9 @@ pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> 
         if outside.is_empty() {
             return outside;
         }
-        if let Ok(mut scope) = world.scope_mut(source.0) {
+        if let Ok(mut scope) = world.scope_mut(source.entity) {
             for answer in &outside {
-                let _ = scope.despawn(answer.instance.0);
+                let _ = scope.despawn(answer.instance.entity);
             }
         }
         outside
@@ -355,16 +341,16 @@ pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> 
 }
 
 /// A job that despawns the instances it names.
-pub(crate) fn despawn_instances_job(instances: Vec<RenderEntity>) -> Job {
+pub(crate) fn despawn_instances_job(instances: Vec<RemoteEntity>) -> Job {
     Box::new(move |world: &mut World| {
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Ok(mut scope) = world.scope_mut(source.0) else {
+        let Ok(mut scope) = world.scope_mut(source.entity) else {
             return;
         };
         for instance in instances {
-            let _ = scope.despawn(instance.0);
+            let _ = scope.despawn(instance.entity);
         }
     })
 }
@@ -379,25 +365,25 @@ pub(crate) fn despawn_instances_job(instances: Vec<RenderEntity>) -> Job {
 /// between a world that has not answered and one that answered no.
 pub(crate) fn show(
     world: &mut World,
-    instance: RenderEntity,
-    mesh: RenderEntity,
-    material: RenderEntity,
+    instance: RemoteEntity,
+    mesh: RemoteEntity,
+    material: RemoteEntity,
     transform: &Transform,
 ) -> bool {
     let Some((source, _)) = mesh_source(world) else {
         return false;
     };
-    let Ok(scope) = world.scope(source.0) else {
+    let Ok(scope) = world.scope(source.entity) else {
         return false;
     };
     let Ok(mesh) = scope
-        .query_one::<&GpuMesh>(mesh.0)
+        .query_one::<&GpuMesh>(mesh.entity)
         .map(|mut mesh| mesh.get().clone())
     else {
         return false;
     };
     let Ok(material) = scope
-        .query_one::<&GpuMaterial>(material.0)
+        .query_one::<&GpuMaterial>(material.entity)
         .map(|mut material| material.get().clone())
     else {
         return false;
@@ -408,7 +394,7 @@ pub(crate) fn show(
             &mut GpuMaterial,
             &mut Transform,
             &mut InstanceVisibility,
-        )>(instance.0)
+        )>(instance.entity)
         .map(|mut row| {
             let (instance_mesh, instance_material, instance_transform, visibility) = row.get();
             *instance_mesh = mesh;

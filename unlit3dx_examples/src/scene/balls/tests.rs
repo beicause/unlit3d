@@ -2,7 +2,7 @@ use super::super::shared::SceneAssets;
 use super::*;
 use glam::Quat;
 
-fn ball(instance: Option<RenderEntity>, body: Option<RigidBodyHandle>, shown: bool) -> Ball {
+fn ball(instance: Option<RemoteEntity>, body: Option<RigidBodyHandle>, shown: bool) -> Ball {
     Ball {
         kind: 0,
         color: 0,
@@ -25,23 +25,17 @@ fn only_shown_balls_are_posed() {
     let mut world = World::new();
     let handle = RigidBodyHandle::from_raw_parts(7, 0);
     let waiting_body = RigidBodyHandle::from_raw_parts(8, 0);
-    let instance = RenderEntity(Entity::from_raw(10, 0));
+    let instance = world.remote(Entity::from_raw(10, 0));
     {
         let mut scope = world.root_scope_mut();
         scope.spawn(bundle![ball(Some(instance), Some(handle), true)]);
     }
+    let waiting = world.remote(Entity::from_raw(11, 0));
+    let without_body = world.remote(Entity::from_raw(12, 0));
     {
         let mut scope = world.root_scope_mut();
-        scope.spawn(bundle![ball(
-            Some(RenderEntity(Entity::from_raw(11, 0))),
-            Some(waiting_body),
-            false
-        )]);
-        scope.spawn(bundle![ball(
-            Some(RenderEntity(Entity::from_raw(12, 0))),
-            None,
-            true
-        )]);
+        scope.spawn(bundle![ball(Some(waiting), Some(waiting_body), false)]);
+        scope.spawn(bundle![ball(Some(without_body), None, true)]);
     }
 
     let mut snapshot = GamePhysics::default();
@@ -66,13 +60,13 @@ fn only_shown_balls_are_posed() {
 fn a_pose_names_the_instance_not_the_ball() {
     let mut world = World::new();
     let handle = RigidBodyHandle::from_raw_parts(7, 0);
-    let instance = RenderEntity(Entity::from_raw(10, 0));
+    let instance = world.remote(Entity::from_raw(10, 0));
     let ball = {
         let mut scope = world.root_scope_mut();
         scope.spawn(bundle![ball(Some(instance), Some(handle), true)])
     };
     assert_ne!(
-        RenderEntity(ball),
+        world.remote(ball),
         instance,
         "the fixture must not let them coincide"
     );
@@ -89,7 +83,7 @@ fn a_pose_names_the_instance_not_the_ball() {
     assert_eq!(poses[0].0, instance, "the pose names the render instance");
     assert_ne!(
         poses[0].0,
-        RenderEntity(ball),
+        world.remote(ball),
         "the pose must not name the ball entity"
     );
 }
@@ -98,8 +92,9 @@ fn a_pose_names_the_instance_not_the_ball() {
 /// reclaimed when a request it is waiting on was given up on.
 #[test]
 fn a_ball_waits_shows_and_is_reclaimed() {
+    let world = World::new();
     let entity = Entity::from_raw(1, 0);
-    let instance = RenderEntity(Entity::from_raw(10, 0));
+    let instance = world.remote(Entity::from_raw(10, 0));
     let body = RigidBodyHandle::from_raw_parts(7, 0);
 
     let missing_instance = ball(None, Some(body), false);
@@ -134,8 +129,9 @@ fn a_ball_waits_shows_and_is_reclaimed() {
 /// dropped on would reclaim it a fixed time after it landed.
 #[test]
 fn a_shown_ball_is_only_taken_by_its_world_ending() {
+    let world = World::new();
     let entity = Entity::from_raw(1, 0);
-    let instance = RenderEntity(Entity::from_raw(10, 0));
+    let instance = world.remote(Entity::from_raw(10, 0));
     let body = RigidBodyHandle::from_raw_parts(7, 0);
     let shown = ball(Some(instance), Some(body), true);
     assert_eq!(waiting(&shown, entity, &[], false), Waiting::Wait);
@@ -203,8 +199,8 @@ fn ready_scene_state(world: &mut World, scene: &Scene, jobs: &async_channel::Rec
     let state = state.get();
     state.ready = true;
     state.loaded = Some(SceneAssets {
-        meshes: vec![RenderEntity(Entity::from_raw(1, 0))],
-        materials: vec![RenderEntity(Entity::from_raw(2, 0)); BALL_COLORS.len()],
+        meshes: vec![world.remote(Entity::from_raw(1, 0))],
+        materials: vec![world.remote(Entity::from_raw(2, 0)); BALL_COLORS.len()],
     });
 }
 
@@ -216,7 +212,7 @@ fn a_clear_takes_the_halves_a_fold_just_landed() {
     let mut world = World::new();
     let (scene, render, physics) = stalled_scene();
     ready_scene_state(&mut world, &scene, &render);
-    let instance = RenderEntity(Entity::from_raw(10, 0));
+    let instance = world.remote(Entity::from_raw(10, 0));
     let body = RigidBodyHandle::from_raw_parts(7, 0);
     let entity = world
         .root_scope_mut()
@@ -265,7 +261,7 @@ fn an_answer_without_its_ball_is_cleaned_up() {
     let mut world = World::new();
     let (scene, render, physics) = stalled_scene();
     ready_scene_state(&mut world, &scene, &render);
-    let instance = RenderEntity(Entity::from_raw(10, 0));
+    let instance = world.remote(Entity::from_raw(10, 0));
     let body = RigidBodyHandle::from_raw_parts(7, 0);
     let gone = world
         .root_scope_mut()

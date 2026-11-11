@@ -27,9 +27,9 @@ world.root_scope_mut().spawn(bundle![request_gpu(app, move |world, gpu| {
     // 回调拿 &mut World，在两次事件回调之间执行：正好一次建完渲染 world 与展示路径。
     let (renderer, pass) = setup_render_world(world, render.entity, &gpu.device, &gpu.queue, gpu.capabilities);
     mount_scene_content(&render, pass, panels);   // 场景内容一律走 job
-    // renderer / pass 是示例的 RenderEntity 包装，setup_presenter 要里面的 Entity，所以取 .0。
+    // renderer / pass 是示例的 RemoteEntity：同号的 Entity 在别的 world 里指别的东西，setup_presenter 要里面的 Entity，所以取 .entity。
     // 尺寸给「还没有窗口时的兜底大小」，示例用的是 WINDOW_SIZE = (1024, 720)。
-    setup_presenter(world, render.entity, renderer.0, pass.0, gpu, (1024, 720), false)
+    setup_presenter(world, render.entity, renderer.entity, pass.entity, gpu, (1024, 720), false)
         .expect("the presenter is built");
 })]);
 
@@ -76,7 +76,7 @@ for index in 0..frames {
 
 - 世界装配只放配置（device/queue/tick 率/重力/缓冲大小），**游戏内容一律走 job**；setup 里出现「游戏里的某个东西」就说明写错了层。
 - 一个 scene 对每个它要说话的世界只留一个 port（`JobSender` + 订阅值），收在一个结构体里递下去。
-- 跨 world 的实体用 newtype 包一层（示例的 `RenderEntity(pub Entity)`）：每个 world 的实体编号都从 0 开始，裸 `Entity` 一定会混。
+- 跨 world 的实体用 `unlit_ecs::RemoteEntity`（句柄 + 产出它的 `WorldId`）：每个 world 的实体编号都从 0 开始，裸 `Entity` 一定会混。跨 world 传值时用 `World::remote` 收、用 `World::resolve` 解，解不开说明句柄来自别的 world。
 
 ## 展示路径与离线取帧
 

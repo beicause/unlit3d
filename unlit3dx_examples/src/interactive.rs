@@ -327,14 +327,14 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
         let world = nested.get();
         let context = world
             .root_scope()
-            .query_one::<&Renderer>(renderer.0)
+            .query_one::<&Renderer>(renderer.entity)
             .expect("the renderer is a resource entity")
             .get()
             .context();
         PersistentTarget::bind(
             world,
             context,
-            pass.0,
+            pass.entity,
             &config.device,
             WINDOW_SIZE,
             TargetConfig::default(),
@@ -344,7 +344,7 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
     let interactive = Interactive {
         worlds,
         render: render.entity,
-        renderer: renderer.0,
+        renderer: renderer.entity,
         render_world: render.entity,
         target: target.texture,
         stepper: SceneStepper::new(PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),

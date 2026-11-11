@@ -140,14 +140,14 @@ pub fn run(
         let world = nested.get();
         let context = world
             .root_scope()
-            .query_one::<&Renderer>(renderer.0)
+            .query_one::<&Renderer>(renderer.entity)
             .expect("the renderer is a resource entity")
             .get()
             .context();
         PersistentTarget::bind(
             world,
             context,
-            pass.0,
+            pass.entity,
             device,
             config.size,
             TargetConfig::default(),
@@ -225,7 +225,7 @@ pub fn run(
             let context = {
                 let mut renderer_row = world
                     .root_scope()
-                    .query_one::<&mut Renderer>(renderer.0)
+                    .query_one::<&mut Renderer>(renderer.entity)
                     .expect("the renderer is a resource entity");
                 renderer_row.get().render(&*world);
                 renderer_row.get().context()

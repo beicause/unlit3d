@@ -42,7 +42,7 @@ use std::time::Duration;
 use glam::{Quat, Vec3};
 use hashbrown::HashMap;
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, RemoteEntity, World};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::components::Transform;
 use unlit3d::frame::{Frame, dispatch_frame};
@@ -52,7 +52,7 @@ use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 use unlit3dx::ui::UiPanelHost;
 
-use crate::render::{RenderEntity, camera_looking_at, mesh_source};
+use crate::render::{camera_looking_at, mesh_source};
 
 use self::audio::Music;
 use self::balls::BallDrops;
@@ -114,9 +114,9 @@ pub const GAMEPLAY_HZ: f64 = 60.0;
 /// The entities are the render world's own. Every world numbers its entities
 /// from zero, so an id from the world that sends the job names something
 /// unrelated in the world that runs it, which is why they are
-/// [`RenderEntity`]s rather than bare entities.
+/// [`RemoteEntity`]s rather than bare entities.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct ScenePoses(pub Vec<(RenderEntity, Transform)>);
+pub struct ScenePoses(pub Vec<(RemoteEntity, Transform)>);
 
 /// A job that writes `poses` onto the render entities they name.
 ///
@@ -132,12 +132,12 @@ pub fn pose_job(poses: ScenePoses) -> Job {
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Ok(scope) = world.scope(source.0) else {
+        let Ok(scope) = world.scope(source.entity) else {
             return;
         };
         for (entity, pose) in poses.0.iter() {
             let _ = scope
-                .query_one::<&mut Transform>(entity.0)
+                .query_one::<&mut Transform>(entity.entity)
                 .map(|mut transform| {
                     transform.get().clone_from(pose);
                 });
@@ -183,7 +183,7 @@ pub fn setup_render_world(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
-) -> (RenderEntity, RenderEntity) {
+) -> (RemoteEntity, RemoteEntity) {
     let Ok(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
@@ -207,7 +207,7 @@ pub fn setup_render_world(
         .scope_mut(pass)
         .expect("the scene's pass is alive")
         .spawn(bundle![Source::new(source)]);
-    (RenderEntity(renderer), RenderEntity(pass))
+    (world.remote(renderer), world.remote(pass))
 }
 
 /// A job that gives the render world this scene's camera: one entity
@@ -228,7 +228,7 @@ pub fn camera_job() -> Job {
             panic!("the render world carries no MeshSource");
         };
         let camera_entity = world
-            .scope_mut(source.0)
+            .scope_mut(source.entity)
             .expect("the mesh source entity exists")
             .spawn(bundle![camera_looking_at(
                 WINDOW_SIZE,
@@ -268,7 +268,7 @@ pub fn camera_job() -> Job {
 /// without its setup ever hearing of one. The panel itself lives in the
 /// gameplay world and nothing here reaches it: the source draws whatever the
 /// slots hold, and the world holding the panel fills them.
-pub fn mount_scene_content(render: &WorldHandle, pass: RenderEntity, panels: Option<PanelSlots>) {
+pub fn mount_scene_content(render: &WorldHandle, pass: RemoteEntity, panels: Option<PanelSlots>) {
     if let Err(error) = render.sender.send(camera_job()) {
         log::error!("the render world refused its camera ({error:?})");
     }

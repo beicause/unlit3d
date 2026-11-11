@@ -225,8 +225,8 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             let outcome = setup_presenter(
                 world,
                 render.entity,
-                renderer.0,
-                pass.0,
+                renderer.entity,
+                pass.entity,
                 gpu,
                 WINDOW_SIZE,
                 offscreen,
