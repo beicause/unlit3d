@@ -51,6 +51,11 @@ facet = { version = "0.50.0-rc.7", default-features = false, features = ["std"] 
 # underneath it.
 facet-format = { version = "0.50.0-rc.7", default-features = false }
 facet-json = { version = "0.50.0-rc.7", default-features = false }
+# Resamples the glTF textures' mip chain. Its std feature is the whole point:
+# the crate is no_std by default and only the std build has the buffers a
+# resize needs. No image or bytemuck integration — the pixels come from the
+# decoder as bytes, and go back the same way.
+fast_image_resize = { version = "6.1.0", default-features = false, features = ["std"] }
 # The FLAC encoder the audio tools write a recorded mix with. Only the
 # encoder itself is used: the parallel, serde and log features are its own
 # plumbing, not something a one-shot file write needs.

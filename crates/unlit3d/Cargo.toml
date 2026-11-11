@@ -44,6 +44,7 @@ draco-core = { workspace = true, optional = true }
 egui = { workspace = true, optional = true }
 facet = { workspace = true, features = ["reflect"], optional = true }
 facet-json = { workspace = true, optional = true }
+fast_image_resize = { workspace = true, optional = true }
 glam.workspace = true
 gltf = { workspace = true, optional = true }
 half = { workspace = true, optional = true }
@@ -85,7 +86,7 @@ default = ["ui", "winit"]
 ## the [`gltf`](crate::gltf) module: upload textures, materials and meshes into
 ## an existing resource graph, unload them again, and spawn entities that draw
 ## the document's default scene.
-gltf = ["dep:draco-core", "dep:gltf", "dep:half"]
+gltf = ["dep:draco-core", "dep:fast_image_resize", "dep:gltf", "dep:half"]
 ## The [mcp](crate::mcp) module: the rendering tools a world answers through the
 ## Model Context Protocol server defined by [unlit_ecs]. Implies `reflect`,
 ## whose registry is the codec those tools use, and `gltf`, so the load_gltf tool

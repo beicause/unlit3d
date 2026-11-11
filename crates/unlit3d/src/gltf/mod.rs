@@ -86,6 +86,15 @@
 //! A caller writing its own shader either sets the same flags or takes the
 //! luma from the red channel as it is.
 //!
+//! Every upload carries a full mip chain, averaged at load time rather than
+//! sampled from a texture that has only its base level: a minified texture
+//! with one level aliases whatever the sampler is set to. Each level is the
+//! box average of the one above it, taken in the representation that makes an
+//! average mean what it does to light — an sRGB image averages in linear
+//! light, a half-float one in single precision, and the rest in their own
+//! texels. Averaging a stored encoding instead would shift the level's
+//! brightness, which is the error the chain exists to avoid.
+//!
 //! `Rgba32Float` is also the only upload a device may refuse to filter: it is
 //! `unfilterable-float` without `Features::FLOAT32_FILTERABLE`, and then the
 //! material that samples it binds a non-filtering sampler — a different

@@ -7,7 +7,7 @@
 //! call; the per-kind calls are for a caller that shares textures or materials
 //! between documents.
 
-use super::image::{align_up, encode_rows, image_format};
+use super::image::{encode_mip_chain, image_format};
 use super::material::{alpha_cutoff, sampler_descriptor, samples_base_color_texture, textured_key};
 use super::streams::from_reader;
 use super::{
@@ -108,6 +108,7 @@ impl LitGltf {
         let device = source.device(world);
         let format = image_format(data, &device);
         let (width, height) = (data.width, data.height);
+        let mips = encode_mip_chain(data, format.format);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -115,7 +116,7 @@ impl LitGltf {
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: mips.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: format.format,
@@ -123,32 +124,29 @@ impl LitGltf {
             view_formats: &[],
         });
 
-        // `encode_rows` pads every row to the 256-byte stride a buffer-to-texture
-        // copy needs; the padding bytes stay zero.
-        let bytes_per_row = align_up(
-            width * format.texel_bytes(),
-            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
-        );
-        let rows = encode_rows(data, format.format);
-        source.queue(world).write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &rows,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
+        // Every level's rows are padded to the 256-byte stride a
+        // buffer-to-texture copy asks for; the padding bytes stay zero.
+        for (level, mip) in mips.iter().enumerate() {
+            source.queue(world).write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mip.rows,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(mip.bytes_per_row),
+                    rows_per_image: Some(mip.height),
+                },
+                wgpu::Extent3d {
+                    width: mip.width,
+                    height: mip.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         let (texture, view) = source.register_texture_and_default_view(world, texture);
         GltfImage {

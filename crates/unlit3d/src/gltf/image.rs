@@ -34,13 +34,6 @@ pub(super) struct ImageFormat {
     pub(super) filtering: bool,
 }
 
-impl ImageFormat {
-    /// The bytes one texel of the format occupies.
-    pub(super) fn texel_bytes(self) -> u32 {
-        texel_bytes(self.format)
-    }
-}
-
 /// The bytes one texel of an upload format occupies.
 pub(super) fn texel_bytes(format: wgpu::TextureFormat) -> u32 {
     format
@@ -87,31 +80,292 @@ pub(super) fn image_format(data: &gltf::image::Data, device: &wgpu::Device) -> I
     ImageFormat { format, filtering }
 }
 
-/// Encode `data`'s pixels as the rows of a `format` texture.
+/// One level of a texture's mip chain: its size, and the padded rows a
+/// `Queue::write_texture` of that level takes.
+pub(super) struct EncodedMip {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) bytes_per_row: u32,
+    pub(super) rows: Vec<u8>,
+}
+
+impl EncodedMip {
+    /// Pad `work`, the tightly packed `width` by `height` image in its working
+    /// form, to the copy stride a buffer-to-texture copy asks for.
+    fn from_work(
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        texel: usize,
+        work_texel: usize,
+        work: &[u8],
+    ) -> Self {
+        let texels = width as usize * height as usize;
+        let encoded = encode_work(format, texels, work_texel, work);
+        Self::new(width, height, texel, &encoded)
+    }
+
+    /// Pad `texels`, the tightly packed `width` by `height` image, to the copy
+    /// stride a buffer-to-texture copy asks for.
+    fn new(width: u32, height: u32, texel: usize, texels: &[u8]) -> Self {
+        let bytes_per_row = align_up(width * texel as u32, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let row_bytes = width as usize * texel;
+        let stride = bytes_per_row as usize;
+        let mut rows = vec![0u8; stride * height as usize];
+        for (packed, row) in texels
+            .chunks_exact(row_bytes)
+            .zip(rows.chunks_exact_mut(stride))
+        {
+            row[..row_bytes].copy_from_slice(packed);
+        }
+        Self {
+            width,
+            height,
+            bytes_per_row,
+            rows,
+        }
+    }
+}
+
+/// How many levels a `width` by `height` mip chain has: down to one texel.
+pub(super) fn mip_level_count(width: u32, height: u32) -> u32 {
+    (32 - width.max(height).leading_zeros()).max(1)
+}
+
+/// The mip chain of `data` in `format`, level zero first.
+///
+/// Level zero is the image itself. Every level below it is an average of the
+/// level above, which is the level a minified texture is sampled from: without
+/// the chain, a texture covering fewer pixels than it has samples aliases,
+/// whatever the sampler is set to.
+///
+/// Each average is a box filter taken in the representation that makes
+/// averaging mean what it does to light — an sRGB image averages in linear
+/// light, a half float one in single precision, and the rest in their own
+/// texels. Averaging a stored encoding instead would darken or brighten the
+/// level, which is the error the chain exists to avoid.
+pub(super) fn encode_mip_chain(
+    data: &gltf::image::Data,
+    format: wgpu::TextureFormat,
+) -> Vec<EncodedMip> {
+    let texel = texel_bytes(format) as usize;
+    let level_count = mip_level_count(data.width, data.height);
+    let base = encode_compact(data, format);
+    let mut chain = Vec::with_capacity(level_count as usize);
+    chain.push(EncodedMip::new(data.width, data.height, texel, &base));
+    if level_count == 1 {
+        return chain;
+    }
+
+    let pixel_type = work_pixel_type(format);
+    let mut work = decode_work(format, base);
+    let mut resizer = fast_image_resize::Resizer::new();
+    let options = fast_image_resize::ResizeOptions {
+        algorithm: fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Box),
+        // A base color texture is not premultiplied by its alpha, so an average
+        // must not weight the color channels by it.
+        mul_div_alpha: false,
+        ..Default::default()
+    };
+
+    // Two buffers alternate between the level being averaged and the level
+    // being written, so the chain allocates once per image rather than once
+    // per level.
+    let work_texel = pixel_type.size();
+    let (mut width, mut height) = (data.width, data.height);
+    let mut level = Vec::new();
+    for _ in 1..level_count {
+        let (next_width, next_height) = ((width / 2).max(1), (height / 2).max(1));
+        let next_size = next_width as usize * next_height as usize * work_texel;
+        if level.len() < next_size {
+            level.resize(next_size, 0);
+        }
+
+        let work_size = width as usize * height as usize * work_texel;
+        let source =
+            fast_image_resize::images::ImageRef::new(width, height, &work[..work_size], pixel_type)
+                .expect("the working buffer holds the level above");
+        let mut destination = fast_image_resize::images::Image::from_slice_u8(
+            next_width,
+            next_height,
+            &mut level[..next_size],
+            pixel_type,
+        )
+        .expect("the level buffer holds the level it is resized into");
+        resizer
+            .resize(&source, &mut destination, &options)
+            .expect("a box filter resizes an image of its own pixel type");
+
+        std::mem::swap(&mut work, &mut level);
+        (width, height) = (next_width, next_height);
+        chain.push(EncodedMip::from_work(
+            format, width, height, texel, work_texel, &work,
+        ));
+    }
+    chain
+}
+
+/// Encode `data`'s pixels as a tightly packed `format` image: one texel after
+/// another, with no row padding.
 ///
 /// A channel the source does not carry — the alpha of a three-channel image,
 /// say — is filled with an opaque one, and every value is clamped to `0..=1`
-/// on the way in, which is all the wider float formats need. Each row is
-/// padded to the 256-byte stride a buffer-to-texture copy asks for.
-pub(super) fn encode_rows(data: &gltf::image::Data, format: wgpu::TextureFormat) -> Vec<u8> {
+/// on the way in, which is all the wider float formats need.
+fn encode_compact(data: &gltf::image::Data, format: wgpu::TextureFormat) -> Vec<u8> {
     let (width, height) = (data.width as usize, data.height as usize);
-    let channels = source_channels(data.format);
+    let pixel_bytes = source_channel_bytes(data.format) * source_channels(data.format);
     let texel = texel_bytes(format) as usize;
-    let bytes_per_row = align_up(
-        width as u32 * texel as u32,
-        wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
-    ) as usize;
-    let mut rows = vec![0u8; bytes_per_row * height];
+    let mut texels = vec![0u8; width * height * texel];
     let mut scratch = [0u8; MAX_TEXEL_BYTES];
 
-    for (y, out) in rows.chunks_exact_mut(bytes_per_row).enumerate() {
-        for x in 0..width {
-            let pixel = &data.pixels[(y * width + x) * channels..];
-            let bytes = encode_texel(data.format, format, pixel, &mut scratch);
-            out[x * texel..][..texel].copy_from_slice(bytes);
+    for (index, out) in texels.chunks_exact_mut(texel).enumerate() {
+        let pixel = &data.pixels[index * pixel_bytes..];
+        out.copy_from_slice(encode_texel(data.format, format, pixel, &mut scratch));
+    }
+    texels
+}
+
+/// The pixel type a format's levels are averaged in.
+///
+/// An 8-bit unorm format keeps its own components, except that a nonlinear one
+/// widens to 16 bits: averaging sRGB texels takes a decode to linear light
+/// first, and 16 bits hold that light finely enough that encoding it back
+/// never moves a channel by more than one step of the 8-bit result. A half
+/// float format widens to single precision for the reason the sRGB one widens
+/// at all — an average of many half floats is not itself a half float — and a
+/// single precision format is already there.
+fn work_pixel_type(format: wgpu::TextureFormat) -> fast_image_resize::PixelType {
+    use fast_image_resize::PixelType as P;
+    match format {
+        wgpu::TextureFormat::R8Unorm => P::U8,
+        wgpu::TextureFormat::Rg8Unorm => P::U8x2,
+        wgpu::TextureFormat::Rgba8UnormSrgb => P::U16x4,
+        wgpu::TextureFormat::R16Float => P::F32,
+        wgpu::TextureFormat::Rg16Float => P::F32x2,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => P::F32x4,
+        _ => unreachable!("a glTF image uploads in one of the formats above"),
+    }
+}
+
+/// The working bytes of an upload image: what the levels below it are averaged
+/// from.
+///
+/// Takes the packed level by value, so that a format whose upload encoding is
+/// already its working form moves its bytes instead of copying them.
+fn decode_work(format: wgpu::TextureFormat, texels: Vec<u8>) -> Vec<u8> {
+    match format {
+        wgpu::TextureFormat::Rgba8UnormSrgb => srgb_to_linear_texels(&texels),
+        wgpu::TextureFormat::R16Float
+        | wgpu::TextureFormat::Rg16Float
+        | wgpu::TextureFormat::Rgba16Float => halves_to_floats(&texels),
+        _ => texels,
+    }
+}
+
+/// The upload texels of a level held in `work`, its working form.
+///
+/// `texels` and `work_texel` say how much of `work` is the level: a working
+/// buffer outlives the level it was sized for, so it may hold more bytes than
+/// the level they are read as.
+fn encode_work(
+    format: wgpu::TextureFormat,
+    texels: usize,
+    work_texel: usize,
+    work: &[u8],
+) -> Vec<u8> {
+    let work = &work[..texels * work_texel];
+    match format {
+        wgpu::TextureFormat::Rgba8UnormSrgb => linear_to_srgb_texels(work),
+        wgpu::TextureFormat::R16Float
+        | wgpu::TextureFormat::Rg16Float
+        | wgpu::TextureFormat::Rgba16Float => floats_to_halves(work),
+        _ => work.to_vec(),
+    }
+}
+
+/// Widen half float texels to single precision.
+fn halves_to_floats(texels: &[u8]) -> Vec<u8> {
+    let (halves, _) = texels.as_chunks::<2>();
+    let mut floats = Vec::with_capacity(halves.len() * size_of::<f32>());
+    for half in halves {
+        let value = half::f16::from_bits(u16::from_le_bytes(*half)).to_f32();
+        floats.extend_from_slice(&value.to_le_bytes());
+    }
+    floats
+}
+
+/// Narrow single precision texels to half float.
+fn floats_to_halves(floats: &[u8]) -> Vec<u8> {
+    let (floats, _) = floats.as_chunks::<4>();
+    let mut halves = Vec::with_capacity(floats.len() * size_of::<u16>());
+    for value in floats {
+        let bits = half::f16::from_f32(f32::from_le_bytes(*value)).to_bits();
+        halves.extend_from_slice(&bits.to_le_bytes());
+    }
+    halves
+}
+
+/// Decode four-channel sRGB texels into 16-bit linear light.
+///
+/// Alpha is a coverage, not a color, so it is widened without being decoded.
+fn srgb_to_linear_texels(texels: &[u8]) -> Vec<u8> {
+    let mut linear = Vec::with_capacity(texels.len() * size_of::<u16>());
+    for texel in texels.as_chunks::<4>().0 {
+        for (slot, byte) in texel.iter().enumerate() {
+            let value = if slot == 3 {
+                widen(*byte)
+            } else {
+                quantize_linear(srgb_to_linear(f32::from(*byte) / f32::from(u8::MAX)))
+            };
+            linear.extend_from_slice(&value.to_le_bytes());
         }
     }
-    rows
+    linear
+}
+
+/// Encode 16-bit linear light back into four-channel sRGB texels.
+fn linear_to_srgb_texels(linear: &[u8]) -> Vec<u8> {
+    let mut texels = Vec::with_capacity(linear.len() / size_of::<u16>());
+    for texel in linear.as_chunks::<{ 4 * size_of::<u16>() }>().0 {
+        for (slot, value) in texel.as_chunks::<2>().0.iter().enumerate() {
+            let value = f32::from(u16::from_le_bytes(*value)) / f32::from(u16::MAX);
+            let encoded = if slot == 3 {
+                value
+            } else {
+                linear_to_srgb(value)
+            };
+            texels.push((encoded.clamp(0.0, 1.0) * f32::from(u8::MAX)).round() as u8);
+        }
+    }
+    texels
+}
+
+/// The 16-bit value a `0..=1` number takes.
+fn quantize_linear(value: f32) -> u16 {
+    (value.clamp(0.0, 1.0) * f32::from(u16::MAX)).round() as u16
+}
+
+/// Widen an 8-bit channel to 16 bits, keeping both end points exact.
+fn widen(value: u8) -> u16 {
+    u16::from(value) * (u16::MAX / u16::from(u8::MAX))
+}
+
+/// The linear light a `0..=1` sRGB channel stands for.
+fn srgb_to_linear(value: f32) -> f32 {
+    if value <= 0.040_45 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The `0..=1` sRGB channel a linear light value encodes as.
+fn linear_to_srgb(value: f32) -> f32 {
+    if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// The number of bytes one channel of a glTF pixel format occupies.
@@ -238,7 +492,7 @@ fn write_channel(
 #[cfg(test)]
 mod tests {
     use super::MAX_TEXEL_BYTES;
-    use super::{encode_rows, encode_texel, texel_bytes};
+    use super::{EncodedMip, encode_mip_chain, encode_texel, mip_level_count, texel_bytes};
 
     /// A one-by-one image of `pixels` in the given format.
     fn image(format: gltf::image::Format, pixels: Vec<u8>) -> gltf::image::Data {
@@ -248,6 +502,31 @@ mod tests {
             width: 1,
             height: 1,
         }
+    }
+
+    /// A `width` by `height` image of `pixels` in the given format.
+    fn sized_image(
+        format: gltf::image::Format,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) -> gltf::image::Data {
+        gltf::image::Data {
+            pixels,
+            format,
+            width,
+            height,
+        }
+    }
+
+    /// The texels of one level, with its row padding removed.
+    fn texels(mip: &EncodedMip, format: wgpu::TextureFormat) -> Vec<u8> {
+        let row_bytes = mip.width as usize * texel_bytes(format) as usize;
+        mip.rows
+            .chunks_exact(mip.bytes_per_row as usize)
+            .flat_map(|row| &row[..row_bytes])
+            .copied()
+            .collect()
     }
 
     /// The texel `data` encodes into `format`, without its row padding.
@@ -306,6 +585,31 @@ mod tests {
     }
 
     #[test]
+    fn every_texel_of_a_wide_image_is_read_from_its_own_bytes() {
+        use gltf::image::Format as F;
+        // A 16-bit texel holds two bytes per channel, so the second texel of a
+        // row starts at byte eight, not at byte four.
+        let texel = |red: u16| {
+            [red, 0u16, 0u16, u16::MAX]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>()
+        };
+        let data = sized_image(F::R16G16B16A16, 2, 1, [texel(0), texel(u16::MAX)].concat());
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba16Float);
+        let level = texels(&chain[0], wgpu::TextureFormat::Rgba16Float);
+        let channels = level
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| half::f16::from_bits(u16::from_le_bytes(*bytes)).to_f32())
+            .collect::<Vec<_>>();
+        // `0x3c00` is one in half float; a texel read from the wrong byte
+        // offset would surface the first texel's zero alpha there instead.
+        assert_eq!(&channels[..4], &[0.0, 0.0, 0.0, 1.0], "{channels:?}");
+        assert_eq!(&channels[4..], &[1.0, 0.0, 0.0, 1.0], "{channels:?}");
+    }
+    #[test]
     fn a_float_image_out_of_range_clamps() {
         use gltf::image::Format as F;
         let data = image(F::R32G32B32A32FLOAT, {
@@ -329,15 +633,108 @@ mod tests {
     #[test]
     fn rows_are_padded_to_the_copy_stride() {
         use gltf::image::Format as F;
-        let data = gltf::image::Data {
-            pixels: vec![7; 2 * 4],
-            format: F::R8G8B8A8,
-            width: 2,
-            height: 1,
+        let data = sized_image(F::R8G8B8A8, 2, 1, vec![7; 2 * 4]);
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let base = &chain[0];
+        assert_eq!(base.rows.len(), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        assert_eq!(&base.rows[..8], &[7; 8]);
+        assert_eq!(&base.rows[8..], &vec![0; 256 - 8][..]);
+    }
+
+    #[test]
+    fn a_chain_descends_to_one_texel() {
+        assert_eq!(mip_level_count(1, 1), 1);
+        assert_eq!(mip_level_count(4, 4), 3);
+        // The chain follows the longer side down to one texel.
+        assert_eq!(mip_level_count(5, 3), 3);
+        assert_eq!(mip_level_count(1, 8), 4);
+    }
+
+    #[test]
+    fn a_chain_holds_every_level_of_the_image() {
+        use gltf::image::Format as F;
+        let data = sized_image(F::R8G8B8A8, 5, 3, vec![0x40; 5 * 3 * 4]);
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let sizes = chain
+            .iter()
+            .map(|mip| (mip.width, mip.height))
+            .collect::<Vec<_>>();
+        // A level is half the one above it, rounded down, and never zero.
+        assert_eq!(sizes, vec![(5, 3), (2, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn an_image_with_one_texel_has_no_level_below_it() {
+        use gltf::image::Format as F;
+        let data = image(F::R8G8B8A8, vec![9, 8, 7, 255]);
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(chain.len(), 1);
+        assert_eq!(
+            texels(&chain[0], wgpu::TextureFormat::Rgba8UnormSrgb),
+            vec![9, 8, 7, 255]
+        );
+    }
+
+    #[test]
+    fn a_linear_format_averages_its_own_values() {
+        use gltf::image::Format as F;
+        // `R8Unorm` is not an sRGB format, so a level below it is the plain
+        // average of the texels above it.
+        let data = sized_image(F::R8, 2, 2, vec![0, 0, 100, 100]);
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::R8Unorm);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(texels(&chain[1], wgpu::TextureFormat::R8Unorm), vec![50]);
+    }
+
+    #[test]
+    fn an_srgb_format_averages_in_linear_light() {
+        use gltf::image::Format as F;
+        // Half black and half white is half the light, which an sRGB encoding
+        // of that light puts at 188, not at the 128 a middle of the two
+        // encodings would give.
+        let data = sized_image(
+            F::R8G8B8A8,
+            2,
+            2,
+            vec![
+                0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
+            ],
+        );
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(chain.len(), 2);
+        let level = texels(&chain[1], wgpu::TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(level[3], 255, "alpha is a coverage, not a color");
+        for channel in &level[..3] {
+            assert!((187..=189).contains(channel), "{level:?}");
+        }
+    }
+
+    #[test]
+    fn a_half_float_format_averages_in_single_precision() {
+        use gltf::image::Format as F;
+        // A glTF 16-bit texel is a normalized `u16`, and the upload widens it
+        // to half float. Two white texels and two black ones average to a half
+        // in the red channel, which is not a value any of the four holds — so
+        // the average cannot be taken in half float and stay exact.
+        let texel = |red: u16| {
+            [red, 0u16, 0u16, u16::MAX]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>()
         };
-        let rows = encode_rows(&data, wgpu::TextureFormat::Rgba8UnormSrgb);
-        assert_eq!(rows.len(), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
-        assert_eq!(&rows[..8], &[7; 8]);
-        assert_eq!(&rows[8..], &vec![0; 256 - 8][..]);
+        let pixels = [texel(u16::MAX), texel(u16::MAX), texel(0), texel(0)].concat();
+        let data = sized_image(F::R16G16B16A16, 2, 2, pixels);
+        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba16Float);
+        let level = texels(&chain[1], wgpu::TextureFormat::Rgba16Float);
+        let channels = level
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| half::f16::from_bits(u16::from_le_bytes(*bytes)).to_f32())
+            .collect::<Vec<_>>();
+        assert_eq!(channels.len(), 4);
+        assert!((channels[0] - 0.5).abs() < 1e-3, "{channels:?}");
+        assert_eq!(&channels[1..3], &[0.0, 0.0], "{channels:?}");
+        assert!((channels[3] - 1.0).abs() < 1e-3, "{channels:?}");
     }
 }
