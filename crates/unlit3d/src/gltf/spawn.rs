@@ -87,7 +87,7 @@ impl LitGltf {
                     let pose = *pose.get_or_insert_with(|| {
                         world.spawn_named(
                             "gltf skin pose",
-                            bundle![self.skin_pose(NodeId::new(node.index()))],
+                            bundle![self.skin_pose(NodeId::new(index))],
                         )
                     });
                     SkinBinding { pose }
@@ -98,7 +98,7 @@ impl LitGltf {
                         world.spawn_named(
                             "gltf morph weights",
                             bundle![MorphWeights {
-                                weights: self.morph_weights(NodeId::new(node.index()))
+                                weights: self.morph_weights(NodeId::new(index))
                             }],
                         )
                     });

@@ -42,6 +42,7 @@ use unlit_wgpu::specialize::{
 use unlit_wgpu::util::Hashed;
 use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
+use zerocopy::byteorder::native_endian::{U16, U32};
 
 use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh};
@@ -157,8 +158,7 @@ impl IndexOffset {
                 chunks.write_iter(
                     indices
                         .iter()
-                        .map(|&index| (index + self.baked) as u16)
-                        .map(u16::to_ne_bytes),
+                        .map(|&index| U16::new((index + self.baked) as u16).into()),
                 );
             }
             wgpu::IndexFormat::Uint32 => {
@@ -166,8 +166,7 @@ impl IndexOffset {
                 chunks.write_iter(
                     indices
                         .iter()
-                        .map(|&index| index + self.baked)
-                        .map(u32::to_ne_bytes),
+                        .map(|&index| U32::new(index + self.baked).into()),
                 );
             }
         }
@@ -1130,13 +1129,13 @@ mod tests {
                 .as_chunks::<{ size_of::<u16>() }>()
                 .0
                 .iter()
-                .map(|index| u32::from(u16::from_ne_bytes(*index)))
+                .map(|index| u32::from(U16::from(*index).get()))
                 .collect(),
             wgpu::IndexFormat::Uint32 => bytes[..count * size_of::<u32>()]
                 .as_chunks::<{ size_of::<u32>() }>()
                 .0
                 .iter()
-                .map(|index| u32::from_ne_bytes(*index))
+                .map(|index| U32::from(*index).get())
                 .collect(),
         }
     }

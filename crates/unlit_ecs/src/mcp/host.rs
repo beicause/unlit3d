@@ -260,7 +260,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 /// The information structs the original crates expose carry their own
 /// reflection, so the JSON this transport speaks is derived from their fields
 /// rather than written down a second time here.
-pub fn to_value<T: facet::Facet<'static>>(value: &T) -> Result<Value, String> {
+pub fn to_value<'a, T: facet::Facet<'a>>(value: &T) -> Result<Value, String> {
     let text = facet_json::to_string(value).map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }

@@ -71,6 +71,19 @@ impl LitGltf {
         SkinPose { matrices: poses }
     }
 
+    /// Whether a node's skin deformed this frame, given which nodes moved.
+    ///
+    /// A pose depends on the mesh node's world matrix and on every joint's, so
+    /// it is stale when either moved and current otherwise. Walking the joints
+    /// is cheaper than rebuilding a matrix per joint and writing it back.
+    pub(super) fn skin_moved(&self, node: usize, dirty: &[bool]) -> bool {
+        dirty[node]
+            || self
+                .node(node)
+                .skin()
+                .is_some_and(|skin| skin.joints().any(|joint| dirty[joint.index()]))
+    }
+
     /// The number of joints a node's skin has.
     ///
     /// `None` when the node names no skin, so a caller can walk a document

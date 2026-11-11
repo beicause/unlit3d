@@ -29,17 +29,18 @@ pub(super) fn node_locals(document: &gltf::Document) -> Vec<Transform> {
         .collect()
 }
 
-/// The world-space matrix of every node, indexed by node index.
+/// The world-space matrix of every node, indexed by node index, walked in the
+/// parent-first order [`node_order`] returns.
 ///
 /// World matrices are accumulated root-first so a child always sees its
-/// parent's matrix before its own is computed. Hierarchies are traversed
-/// iteratively so arbitrarily deep scenes cannot overflow the stack.
+/// parent's matrix before its own is computed.
 pub(super) fn node_world_matrices(
     document: &gltf::Document,
     parents: &[Option<usize>],
+    order: &[usize],
 ) -> Vec<glam::Mat4> {
     let mut world = vec![glam::Mat4::IDENTITY; document.nodes().len()];
-    for &root in &node_order(document, parents) {
+    for &root in order {
         let node_data = document.nodes().nth(root).expect("node index in bounds");
         let local = glam::Mat4::from_cols_array_2d(&node_data.transform().matrix());
         world[root] = match parents[root] {
@@ -50,29 +51,55 @@ pub(super) fn node_world_matrices(
     world
 }
 
-/// The node indices in an order where every node follows its parent.
+/// The children of every node, indexed by node index.
+///
+/// glTF states a hierarchy as children lists, and a node's descendants are what
+/// an animation has to revisit when it moves the node: a document's shape does
+/// not change, so the table is built once and a frame walks it.
+pub(super) fn node_children(document: &gltf::Document) -> Vec<Vec<usize>> {
+    document
+        .nodes()
+        .map(|node| node.children().map(|child| child.index()).collect())
+        .collect()
+}
+
+/// The node indices in an order where every node follows its parent, read out
+/// of `children`.
 ///
 /// The order is the same whether a node's own local matrix is the document's
 /// or one an animation replaced it with, so recomposing from it can reuse the
-/// cached `parents` table.
-pub(super) fn node_order(document: &gltf::Document, parents: &[Option<usize>]) -> Vec<usize> {
-    let roots: Vec<usize> = (0..document.nodes().len())
+/// cached `parents` table. It is also the order the world matrices have to be
+/// accumulated in, so a document keeps one copy rather than walking the tree
+/// per frame.
+pub(super) fn node_order(children: &[Vec<usize>], parents: &[Option<usize>]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(children.len());
+    let mut stack: Vec<usize> = (0..children.len())
         .filter(|&index| parents[index].is_none())
         .collect();
-    let mut order = Vec::with_capacity(document.nodes().len());
-    let mut stack = roots;
     while let Some(node) = stack.pop() {
         order.push(node);
-        stack.extend(
-            document
-                .nodes()
-                .nth(node)
-                .expect("node index in bounds")
-                .children()
-                .map(|child| child.index()),
-        );
+        stack.extend(children[node].iter().copied());
     }
     order
+}
+
+/// How many morph targets each node's mesh displaces, indexed by node index.
+///
+/// A weights channel states one value per target per keyframe, so the count is
+/// what slices a keyframe's values out of the channel; a node with no mesh, or
+/// a mesh whose targets displace nothing, counts as zero.
+pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
+    document
+        .nodes()
+        .map(|node| {
+            node.mesh().map_or(0, |mesh| {
+                mesh.primitives()
+                    .map(|primitive| super::material::morph_target_count(&primitive))
+                    .max()
+                    .unwrap_or(0)
+            })
+        })
+        .collect()
 }
 
 /// Split a world-space matrix into the parts an entity's

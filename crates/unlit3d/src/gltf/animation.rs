@@ -2,6 +2,100 @@
 //! value sampling for translations, scales, rotations and morph weights.
 
 use gltf::animation::Interpolation;
+use gltf::animation::Property;
+use gltf::animation::util::ReadOutputs;
+
+/// A channel's keyframe data, decoded once rather than every frame.
+///
+/// The glTF crate hands out an iterator over an accessor's bytes; sampling needs
+/// random access to those keyframes, so they are collected here. A document's
+/// keyframes never change, which is what lets a frame read them again without
+/// decoding them again.
+pub(super) struct Channel {
+    /// The node the channel targets.
+    pub(super) node: usize,
+    /// The interpolation its sampler states.
+    pub(super) interpolation: Interpolation,
+    /// The input keyframes, in seconds.
+    pub(super) times: Vec<f32>,
+    /// The output values, in the layout the property uses.
+    pub(super) values: ChannelValues,
+}
+
+/// The output values of a channel, one variant per property they can address.
+pub(super) enum ChannelValues {
+    /// A translation, one value per keyframe (times the interpolation stride).
+    Translations(Vec<[f32; 3]>),
+    /// A scale, one value per keyframe (times the interpolation stride).
+    Scales(Vec<[f32; 3]>),
+    /// A rotation, one value per keyframe (times the interpolation stride).
+    Rotations(Vec<[f32; 4]>),
+    /// Morph target weights, `targets` values per keyframe (times the stride).
+    Weights(Vec<f32>),
+}
+
+/// Every channel of `animation` that can be sampled, with its keyframes decoded.
+///
+/// A channel the document states incompletely is dropped here rather than on
+/// every frame that plays the animation: one whose inputs are missing or name a
+/// single keyframe has no interval to interpolate over, and the spec requires
+/// two anyway. A weights channel is kept unvalidated against its target count,
+/// which depends on the mesh the node carries and is checked where that is
+/// known.
+pub(super) fn channels(
+    animation: gltf::animation::Animation<'_>,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Channel> {
+    let mut channels = Vec::new();
+    for channel in animation.channels() {
+        let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+        let Some(inputs) = reader.read_inputs() else {
+            continue;
+        };
+        let times: Vec<f32> = inputs.collect();
+        if times.len() < 2 {
+            continue;
+        }
+        let Some(outputs) = reader.read_outputs() else {
+            continue;
+        };
+        let interpolation = channel.sampler().interpolation();
+        let required = times.len() * interpolation_stride(interpolation);
+        let values = match (channel.target().property(), outputs) {
+            (Property::Translation, ReadOutputs::Translations(values)) => {
+                ChannelValues::Translations(complete(values, required))
+            }
+            (Property::Scale, ReadOutputs::Scales(values)) => {
+                ChannelValues::Scales(complete(values, required))
+            }
+            (Property::Rotation, ReadOutputs::Rotations(values)) => {
+                ChannelValues::Rotations(complete(values.into_f32(), required))
+            }
+            (Property::MorphTargetWeights, ReadOutputs::MorphTargetWeights(values)) => {
+                ChannelValues::Weights(values.into_f32().collect())
+            }
+            _ => continue,
+        };
+        channels.push(Channel {
+            node: channel.target().node().index(),
+            interpolation,
+            times,
+            values,
+        });
+    }
+    channels
+}
+
+/// The values of a channel that states every keyframe the times name, or
+/// nothing when it states fewer — such a channel cannot be sampled.
+fn complete<T>(values: impl Iterator<Item = T>, required: usize) -> Vec<T> {
+    let values: Vec<T> = values.collect();
+    if values.len() < required {
+        Vec::new()
+    } else {
+        values
+    }
+}
 
 /// How many values a keyframe stores under an interpolation.
 ///
@@ -108,7 +202,8 @@ pub(super) fn sample_rotation(
     }
 }
 
-/// A glTF `weights` channel sampled at `time`, one weight per morph target.
+/// A glTF `weights` channel sampled at `time`, one weight per morph target,
+/// written into `out` (which is cleared first) rather than returned.
 ///
 /// A cubic keyframe groups its tangents and values kind-first — every
 /// in-tangent, then every value, then every out-tangent — which is a different
@@ -119,35 +214,35 @@ pub(super) fn sample_weights(
     values: &[f32],
     targets: usize,
     time: f32,
-) -> Vec<f32> {
+    out: &mut Vec<f32>,
+) {
+    out.clear();
     match interpolation {
         Interpolation::Step => {
             let frame = step_frame(times, time);
-            values[frame * targets..(frame + 1) * targets].to_vec()
+            out.extend_from_slice(&values[frame * targets..(frame + 1) * targets]);
         }
         Interpolation::Linear => {
             let (frame, t) = keyframe(times, time);
             let a = &values[frame * targets..(frame + 1) * targets];
             let b = &values[(frame + 1) * targets..(frame + 2) * targets];
-            a.iter().zip(b).map(|(&a, &b)| a + (b - a) * t).collect()
+            out.extend(a.iter().zip(b).map(|(&a, &b)| a + (b - a) * t));
         }
         Interpolation::CubicSpline => {
             let (frame, t) = keyframe(times, time);
             let span = times[frame + 1] - times[frame];
             let base = frame * 3 * targets;
             let next = (frame + 1) * 3 * targets;
-            (0..targets)
-                .map(|target| {
-                    cubic_f32(
-                        values[base + targets + target],
-                        values[base + 2 * targets + target],
-                        values[next + targets + target],
-                        values[next + target],
-                        t,
-                        span,
-                    )
-                })
-                .collect()
+            out.extend((0..targets).map(|target| {
+                cubic_f32(
+                    values[base + targets + target],
+                    values[base + 2 * targets + target],
+                    values[next + targets + target],
+                    values[next + target],
+                    t,
+                    span,
+                )
+            }));
         }
     }
 }
@@ -340,10 +435,10 @@ mod tests {
         let times = [0.0, 2.0];
         // Two targets per keyframe: 0, 10 then 2, 20.
         let values = [0.0, 10.0, 2.0, 20.0];
-        assert_eq!(
-            sample_weights(Interpolation::Linear, &times, &values, 2, 1.0),
-            vec![1.0, 15.0]
-        );
+        let mut out = vec![99.0; 5];
+        sample_weights(Interpolation::Linear, &times, &values, 2, 1.0, &mut out);
+        // The buffer is cleared, not just filled up to the target count.
+        assert_eq!(out, vec![1.0, 15.0]);
     }
 
     #[test]
@@ -353,9 +448,15 @@ mod tests {
         // value sits after both keyframes' in-tangent and value blocks.
         let times = [0.0, 1.0];
         let values = [0.0, 1.0, 2.0, 3.0, 9.0, 4.0];
-        assert_eq!(
-            sample_weights(Interpolation::CubicSpline, &times, &values, 1, 0.5),
-            vec![4.875]
+        let mut out = Vec::new();
+        sample_weights(
+            Interpolation::CubicSpline,
+            &times,
+            &values,
+            1,
+            0.5,
+            &mut out,
         );
+        assert_eq!(out, vec![4.875]);
     }
 }

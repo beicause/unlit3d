@@ -855,6 +855,94 @@ fn apply_animation_holds_a_step_keyframe() {
 }
 
 #[test]
+fn apply_animation_resamples_a_clip_it_has_already_played() {
+    // The keyframes are decoded once and kept, so a second frame has to
+    // re-sample them rather than replay what the first one wrote.
+    let gltf = LitGltf::from_bytes(&parented_animated_document(
+        "LINEAR",
+        &[0.0, 2.0],
+        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+        &[[0.0, 0.0, 0.0, 1.0]; 2],
+    ))
+    .expect("the animated document parses");
+    let mut world = World::new();
+    let parent = world.root_scope_mut().spawn(bundle![Transform::default()]);
+    let nodes = [GltfNode {
+        node: NodeId::new(0),
+        entities: vec![parent],
+        pose: None,
+        weights: None,
+    }];
+    let translation = |world: &mut World| {
+        world
+            .root_scope()
+            .query_one::<&Transform>(parent)
+            .expect("the parent carries a transform")
+            .get()
+            .translation
+    };
+    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 0.5, &nodes);
+    assert_eq!(translation(&mut world), glam::Vec3::new(1.0, 0.0, 0.0));
+    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.5, &nodes);
+    assert_eq!(translation(&mut world), glam::Vec3::new(3.0, 0.0, 0.0));
+}
+
+#[test]
+fn two_documents_animate_in_the_same_frame() {
+    // One document's working set is handed back before the next takes it, so a
+    // frame that animates two of them gets each one's own result.
+    let left = LitGltf::from_bytes(&parented_animated_document(
+        "LINEAR",
+        &[0.0, 2.0],
+        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+        &[[0.0, 0.0, 0.0, 1.0]; 2],
+    ))
+    .expect("the animated document parses");
+    let right = LitGltf::from_bytes(&parented_animated_document(
+        "LINEAR",
+        &[0.0, 2.0],
+        &[[0.0, 0.0, 0.0], [0.0, 8.0, 0.0]],
+        &[[0.0, 0.0, 0.0, 1.0]; 2],
+    ))
+    .expect("the animated document parses");
+    let mut world = World::new();
+    let left_entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
+    let right_entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
+    let left_nodes = [GltfNode {
+        node: NodeId::new(0),
+        entities: vec![left_entity],
+        pose: None,
+        weights: None,
+    }];
+    let right_nodes = [GltfNode {
+        node: NodeId::new(0),
+        entities: vec![right_entity],
+        pose: None,
+        weights: None,
+    }];
+    left.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &left_nodes);
+    right.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &right_nodes);
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&Transform>(left_entity)
+            .expect("the entity carries a transform")
+            .get()
+            .translation,
+        glam::Vec3::new(2.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&Transform>(right_entity)
+            .expect("the entity carries a transform")
+            .get()
+            .translation,
+        glam::Vec3::new(0.0, 4.0, 0.0)
+    );
+}
+
+#[test]
 fn apply_animation_rebuilds_a_skin_pose() {
     let gltf = LitGltf::from_bytes(&animated_skinned_document(
         &[0.0, 2.0],

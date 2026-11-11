@@ -163,7 +163,10 @@ mod streams;
 mod tests;
 mod upload;
 
-use self::scene::{decompose, node_locals, node_parents, node_world_matrices};
+use self::scene::{
+    decompose, node_children, node_locals, node_order, node_parents, node_world_matrices,
+    nodes_morph_targets,
+};
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
 /// out.
@@ -255,6 +258,26 @@ pub struct LitGltf {
     /// node's local translation, rotation or scale, and the world matrices are
     /// then recomposed from these locals and [`Self::parents`].
     locals: Vec<Transform>,
+    /// The children of every node, indexed by node index.
+    ///
+    /// An animation walks it to mark what a moved node carries.
+    children: Vec<Vec<usize>>,
+    /// Every node index, parent before child: the order the world matrices are
+    /// recomposed in, so a node always sees its parent's matrix.
+    order: Vec<usize>,
+    /// How many morph targets each node's mesh displaces, indexed by node index.
+    ///
+    /// A weights channel is as long as its targets, so a frame needs the count
+    /// to slice its values; keeping the count is what lets it read a node's
+    /// targets without building the node's weight vector.
+    morph_targets: Vec<usize>,
+    /// Each animation's channels, decoded on first use, indexed by animation
+    /// index.
+    ///
+    /// Decoding a channel's accessors yields an iterator, and sampling needs
+    /// random access to the keyframes, so they are collected once here rather
+    /// than on every frame that plays the clip.
+    clips: Vec<std::sync::OnceLock<Vec<animation::Channel>>>,
 }
 
 /// A texture uploaded from a glTF image.
@@ -449,8 +472,14 @@ impl LitGltf {
     ) -> Self {
         let parents = node_parents(&document);
         let locals = node_locals(&document);
-        let node_matrices = node_world_matrices(&document, &parents);
+        let children = node_children(&document);
+        let order = node_order(&children, &parents);
+        let node_matrices = node_world_matrices(&document, &parents, &order);
         let node_transforms = node_matrices.iter().map(|&m| decompose(m)).collect();
+        let morph_targets = nodes_morph_targets(&document);
+        let clips = std::iter::repeat_with(std::sync::OnceLock::new)
+            .take(document.animations().count())
+            .collect();
         Self {
             document,
             buffers,
@@ -459,6 +488,10 @@ impl LitGltf {
             node_matrices,
             parents,
             locals,
+            children,
+            order,
+            morph_targets,
+            clips,
         }
     }
 

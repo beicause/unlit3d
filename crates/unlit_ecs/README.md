@@ -280,9 +280,10 @@ the archetype predicate),
 components), [`World::type_name`] for naming a component type a type-erased
 reader only knows by [`TypeId`](core::any::TypeId), [`WorldInfo`] /
 [`ArchetypeInfo`] / [`EntityInfo`]
-for reporting a world's shape as plain data (with `EntityProxy` and
-`EntityVecProxy` as the reflection an entity field names), and the specialized
-hash containers
+for reporting a world's shape (with `EntityProxy` and `EntityVecProxy` as the
+reflection an entity field names; the component names are borrowed from the
+world, so a listing reads each archetype's list instead of copying it per
+entity), and the specialized hash containers
 [`TypeIdHashMap`], [`EntityHashMap`] and friends.
 
 A query is a type parameter. [`Scope::query`] and [`Scope::query_one`] name what

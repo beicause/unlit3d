@@ -753,6 +753,11 @@ pub struct ResourceGraphMaintain {
 #[derive(Debug, Default)]
 pub struct ResourceGraph {
     graph: Dag<Node>,
+    /// Reused dependency order, so a rebuild pass does not allocate one.
+    ///
+    /// Lifted out of the graph for the duration of a pass, because the recipes
+    /// it names rebuild against the graph itself.
+    order: Vec<NodeId>,
 }
 
 impl ResourceGraph {
@@ -1060,8 +1065,11 @@ impl ResourceGraph {
         // The order is fixed up front, so the rebuilds cannot disturb the walk
         // they are part of even though a recipe runs between its steps. A
         // recipe only reads the graph, so the nodes it names are all still
-        // there.
-        for node in self.graph.topological_order() {
+        // there, and the buffer is held outside the graph for the same reason:
+        // a recipe builds against the graph while the walk's list is in flight.
+        let mut order = core::mem::take(&mut self.order);
+        self.graph.topological_order_into(&mut order);
+        for &node in &order {
             let Some(recipe) = self
                 .graph
                 .get(node)
@@ -1081,6 +1089,7 @@ impl ResourceGraph {
             slot.resource = rebuilt;
             slot.dirty = false;
         }
+        self.order = order;
     }
 
     /// Mark `node` and every node built from it dirty.

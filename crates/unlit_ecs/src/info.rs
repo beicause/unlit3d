@@ -3,8 +3,10 @@
 //! A world stores components behind type-erased columns, so a caller that only
 //! has a scope can count entities and archetypes but cannot name a component:
 //! the names live in a side table keyed by [`TypeId`]. These structures put a
-//! name back on every column and borrow nothing from the world, which is what a
-//! bridge that reports a world over JSON needs.
+//! name back on every column, which is what a bridge that reports a world over
+//! JSON needs. The component lists borrow the world's own name table — a world
+//! keeps one copy of each archetype's names, not one per entity — so listing a
+//! world costs an allocation per archetype, not one per row.
 //!
 //! Every count here is what one scope sees, not what the world holds: a scope of a
 //! scene reports that scene. The two root entities are reported by handle so
@@ -30,14 +32,14 @@ use crate::entity::Entity;
 /// [`Scope::entity_info`]: crate::Scope::entity_info
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
-pub struct EntityInfo {
+pub struct EntityInfo<'a> {
     /// The entity's handle.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
     pub entity: Entity,
     /// The entity's name, which its handle carries but its bits do not, so a
     /// reader of this listing sees the label the entity was spawned with even
     /// though the handle travels as a bare integer.
-    pub name: &'static str,
+    pub name: &'a str,
     /// The archetype the entity lives in, as [`Location::archetype`].
     ///
     /// [`Location::archetype`]: crate::Location::archetype
@@ -55,14 +57,17 @@ pub struct EntityInfo {
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
     pub scope: Entity,
     /// The component names of the entity's archetype, in column order.
-    pub components: Vec<&'static str>,
+    ///
+    /// Borrowed from the world, so every entity of one archetype shares the
+    /// same list rather than carrying a copy.
+    pub components: &'a [&'a str],
 }
 
 /// One archetype: its id, how many of its rows a scope sees, and its component
 /// names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
-pub struct ArchetypeInfo {
+pub struct ArchetypeInfo<'a> {
     /// The archetype id, the value [`EntityInfo::archetype`] carries.
     pub index: u32,
     /// The number of rows visible from the scope, not the archetype's total.
@@ -71,7 +76,10 @@ pub struct ArchetypeInfo {
     /// [`WorldInfo::entities`].
     pub len: usize,
     /// Its component names, in column order.
-    pub components: Vec<&'static str>,
+    ///
+    /// Borrowed from the world: the archetype's own name table is what a
+    /// listing reports, so reading one copies nothing.
+    pub components: &'a [&'a str],
 }
 
 /// A scope's high-level shape.

@@ -296,7 +296,7 @@ impl<'w> Scope<'w> {
 
     /// Every archetype with at least one visible row, in id order.
     #[must_use]
-    pub fn archetype_infos(&self) -> Vec<ArchetypeInfo> {
+    pub fn archetype_infos(&self) -> Vec<ArchetypeInfo<'_>> {
         self.world
             .archetypes()
             .as_slice()
@@ -307,7 +307,7 @@ impl<'w> Scope<'w> {
                 (len > 0).then(|| ArchetypeInfo {
                     index: index as u32,
                     len,
-                    components: archetype.names().to_vec(),
+                    components: archetype.names(),
                 })
             })
             .collect()
@@ -327,7 +327,7 @@ impl<'w> Scope<'w> {
     /// The handle reported, and the name beside it, both come from the row that
     /// stores the entity, so a handle that arrived as bare bits is answered with
     /// the label its spawn site gave it.
-    pub fn entity_info(&self, entity: Entity) -> Result<EntityInfo, EntityAccessError> {
+    pub fn entity_info(&self, entity: Entity) -> Result<EntityInfo<'_>, EntityAccessError> {
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
         let stored = *archetype
@@ -340,19 +340,19 @@ impl<'w> Scope<'w> {
             archetype: location.archetype(),
             row: location.row(),
             scope: self.world.parent_scope(stored)?,
-            components: archetype.names().to_vec(),
+            components: archetype.names(),
         })
     }
 
     /// At most `limit` visible entities' information, in storage order.
     #[must_use]
-    pub fn entity_infos(&self, limit: usize) -> Vec<EntityInfo> {
+    pub fn entity_infos(&self, limit: usize) -> Vec<EntityInfo<'_>> {
         let mut infos = Vec::new();
         for (index, archetype) in self.world.archetypes().as_slice().iter().enumerate() {
             if !self.archetype_visible(archetype) {
                 continue;
             }
-            let components: Vec<&'static str> = archetype.names().to_vec();
+            let components = archetype.names();
             let start = self.world.content_start(index as u32);
             for (row, &entity) in archetype.entities()[start..].iter().enumerate() {
                 let row = start + row;
@@ -371,7 +371,7 @@ impl<'w> Scope<'w> {
                         .world
                         .parent_scope(entity)
                         .expect("a visible row names a live entity"),
-                    components: components.clone(),
+                    components,
                 });
             }
         }

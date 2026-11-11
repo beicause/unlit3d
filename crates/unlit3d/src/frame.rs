@@ -19,6 +19,8 @@
 //! skipped sets [FrameSkip], which its siblings read; [dispatch_frame] clears it
 //! before the first behaviour runs, so every frame starts whole.
 
+use std::cell::RefCell;
+
 pub(crate) use unlit_ecs::{Entity, World};
 
 /// One frame's context: what changes from frame to frame and is not world
@@ -117,26 +119,11 @@ impl FrameSkip {
 
     /// Set the flag on every [FrameSkip] in the world.
     fn set(world: &World, value: bool) {
-        for entity in Self::entities(world) {
-            let _ = world
-                .root_scope()
-                .query_one::<&mut FrameSkip>(entity)
-                .map(|mut skip| {
-                    let skip = skip.get();
-                    skip.0 = value
-                });
-        }
-    }
-
-    /// The entities carrying a [FrameSkip], collected before any is borrowed
-    /// mutably.
-    fn entities(world: &World) -> Vec<Entity> {
         world
             .root_scope()
-            .query::<(&FrameSkip, Entity)>()
+            .query::<&mut FrameSkip>()
             .iter()
-            .map(|(_frame_skip, entity)| entity)
-            .collect()
+            .for_each(|skip| skip.0 = value);
     }
 }
 
@@ -280,6 +267,21 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     }
 }
 
+thread_local! {
+    /// The behaviour list [`dispatch`] reuses across frames.
+    ///
+    /// The initializer is already a const block. Clippy's `thread_local`
+    /// analysis differs by target and reports a candidate anyway on Android,
+    /// so the lint is silenced here rather than expected: an expectation goes
+    /// unfulfilled on every target where it does not fire.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
+    static BEHAVIOURS: RefCell<Vec<(FrameBehaviourOrder, Entity)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
 /// Run every `B` in `world`, sorted by order alone.
 ///
 /// Behaviours that state no order sort equal, and the sort is unstable, so the
@@ -289,23 +291,30 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 /// change landing inside the dispatch would leave it stale. Queue structural
 /// work instead; the driver applies it after the dispatch.
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
-    let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
-        .root_scope()
-        .query::<(&B, Entity)>()
-        .iter()
-        .map(|(b, entity)| (b.order(), entity))
-        .collect();
-    order.sort_unstable_by_key(|(order, _entity)| *order);
-    for (_, entity) in order {
+    // The list has the same shape every frame, so it is handed out and taken
+    // back rather than allocated per frame. Taking it also keeps the slot free
+    // while a behaviour runs.
+    let mut order = BEHAVIOURS.with_borrow_mut(std::mem::take);
+    order.clear();
+    order.extend(
         world
             .root_scope()
-            .query_one::<&mut B>(entity)
+            .query::<(&B, Entity)>()
+            .iter()
+            .map(|(behaviour, entity)| (behaviour.order(), entity)),
+    );
+    order.sort_unstable_by_key(|(order, _entity)| *order);
+    for (_, entity) in &order {
+        world
+            .root_scope()
+            .query_one::<&mut B>(*entity)
             .map(|mut behaviour| {
                 let behaviour = behaviour.get();
-                behaviour.run(world, entity, frame)
+                behaviour.run(world, *entity, frame)
             })
             .unwrap_or_else(|_| panic!("the behaviour entity exists: {entity:?}"));
     }
+    BEHAVIOURS.with_borrow_mut(|slot| *slot = order);
 }
 
 #[cfg(test)]

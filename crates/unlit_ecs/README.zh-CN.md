@@ -23,7 +23,7 @@
   设计中容易泄漏的「组件被移除」记账工作的原因。
 - **读写只需要一个 scope。** `&World` 可以打开根 scope，它看得见一切；一个场景的 `Scope`
   只看得见该场景的子树，看不见旁边的东西。结构变更——spawn 与 despawn——需要
-  `ScopeMut`，或者由驱动器应用的 `Commands` 队列。
+  `&mut` `ScopeMut`，或者由驱动器应用的 `Commands` 队列。
 - **world 是 `!Send` 的。** 组件存在 `UnsafeCell` 里，共享的 `&World` 才能触及它们，
   因此 world 留在创建它的线程——渲染器和其他与线程绑定的状态属于这里。并行是调用者的事，办法是把工作切分到纯数据上，
   而不是共享 world。
@@ -118,7 +118,7 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 `EntityAccessError::NotReserved`。`ScopeMut::despawn` 删除该实体及其整棵子树，
 子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先，并回答这次带走了多少实体。
 `ScopeMut::link` 与
-`unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
+`ScopeMut::unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
 它们是纯结构变更，不跑任何生命周期回调。三者都回答 `Result`，失败时给出的错误指明
 是哪一种原因：实体已不在、它在 scope 之外、它在 shared 子树里因而只有根能动、它是
 脚手架、或者这次搬动会把树切成两半。于是手里握着别处句柄的调用者不必猜，可以直接去问
@@ -137,7 +137,7 @@ scope，所以过滤不再走树。问两个实体是否相关仍要沿父链走
 也不会把它拖死。这条关系只有 world 的树里
 一份，而不放在组件里：可见性每次访问都要判定，而组件要被借用来回答它，于是独占借用
 某个实体的组件就会让另一个实体的可见性检查 panic。只有一份也意味着没有东西需要对账：
-只有 `ScopeMut::link` 与 `unlink` 会写这棵树，而它们需要 `&mut World`，所以经共享
+只有 `ScopeMut::link` 与 `ScopeMut::unlink` 会写这棵树，而它们需要 `&mut World`，所以经共享
 world 拿到的借用永远不可能与它们相撞。从 `Scope` 读取时，每问一个实体就在树里查一次，
 `Scope::entity_info` 把它报告为 `scope`。
 查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
@@ -206,8 +206,9 @@ archetype 谓词写作 `QueryBorrow::by`）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`（archetype
 自带其组件名字）、用于给只知 `TypeId` 的擦除类型读取者命名组件类型的
 `World::type_name`、用于把 world
-形态当作纯数据汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
-指名 `EntityProxy` 与 `EntityVecProxy`），以及
+形态汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
+指名 `EntityProxy` 与 `EntityVecProxy`；组件名借自 world，所以一次列举读的是
+该 archetype 自己那份列表，不按实体复制），以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
 查询是一个类型参数。`Scope::query` 与 `Scope::query_one` 指明要取什么，`Q` 可以是
@@ -341,14 +342,14 @@ assert!(scope.query_one::<Has<f32>>(entity).unwrap().get());
 
 `mcp` feature（默认关闭，仅原生目标）把本 crate 变成一个经 stdio 由客户端驱动的
 [模型上下文协议](https://modelcontextprotocol.io)服务器。它放在这里，是因为协议的
-传输侧必须指名一个 `World` 并把工作交给它：`McpCommand` 携带着一个 job，由拥有该
+传输侧必须指名一个 `World` 并把工作交给它：`crate::mcp::McpCommand` 携带着一个 job，由拥有该
 world 的线程运行。桥接层不在这个边界上借用任何东西，也没有别的 crate 拥有传输所需的类型。
 
 本 crate 依旧保持「只有一个哈希器依赖」的形态：该模块在 `wasm32` 上被关掉（协议的
 传输在该目标上无法构建），它新增的每个依赖都是可选且按目标门控的，因此浏览器构建
 完全不带上它们。
 
-工具来自定义其作用对象的各个 crate，而不是来自本 crate。crate 把一个 `ToolSource`
+工具来自定义其作用对象的各个 crate，而不是来自本 crate。crate 把一个 `crate::mcp::ToolSource`
 提交到链接期表——与 `reflect` 注册表所用的同一套 `inventory` 机制——`McpServer::new`
 遍历该表逐个注册：
 
@@ -373,17 +374,17 @@ fn register(router: &mut ToolRouter<McpServer>) {
 部分，而不必由宿主把它们暴露出来。scope 不拥有的操作——在它子树之外 spawn、despawn
 它的祖先——会被拒绝，而不是被悄悄改道。
 
-组件经由 `reflect` 注册表按名字寻址：组件的 crate 把一个 `ComponentEntry` 提交到
+组件经由 `reflect` 注册表按名字寻址：组件的 crate 把一个 `crate::reflect::ComponentEntry` 提交到
 同一种链接期表，于是 `get_component` 与 `set_component` 能编解码一个 ECS 自己
 从未听说过的值。
 
 ## MCP 服务器够不到什么
 
-传输线程不是 world 的线程。它读取协议，把一次调用变成一个 `McpCommand`，再经一条
+传输线程不是 world 的线程。它读取协议，把一次调用变成一个 `crate::mcp::McpCommand`，再经一条
 宿主负责排空的 channel 投递；拥有该 world 的一方运行 job，并在命令自带的 channel 上作答。
 world 是 `!Send` 的，正是这一形状让它保持如此。
 
-工具指名哪个 world 由客户端决定：`WorldId` 为 `"Host"` 时指服务器建立时所围绕的
+工具指名哪个 world 由客户端决定：`crate::mcp::WorldId` 为 `"Host"` 时指服务器建立时所围绕的
 world，为 `{"Handle": bits}` 时指某个宿主实体所携带的 world。想让其余 world 也可被
 寻址的宿主自行回答 `list_worlds`，因为只有它知道哪些实体携带着 world。
 

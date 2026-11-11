@@ -25,8 +25,8 @@
 //! An edge points from a node to a node that depends on it: a dependency, then
 //! the resource built from it. [`Dag::dependencies`] therefore walks back along
 //! the edges, [`Dag::for_each_dependent_mut`] walks forward, and
-//! [`Dag::topological_order`] puts every node after the nodes it depends on. An
-//! edge is recorded once however often it is declared, which
+//! [`Dag::topological_order_into`] writes every node after the nodes it depends
+//! on. An edge is recorded once however often it is declared, which
 //! [`Dag::add_edge`] reports: only the declaration that recorded it returns
 //! `true`.
 
@@ -148,6 +148,10 @@ pub struct Dag<N> {
     plan_stack: Vec<(u32, bool)>,
     /// Reused list of the slots a plan selected, in the order it selected them.
     order: Vec<u32>,
+    /// Reused progress counter of the topological walk, one per slot.
+    pending: Vec<u32>,
+    /// Reused list of the slots the topological walk may emit next.
+    ready: Vec<u32>,
 }
 
 impl<N> Default for Dag<N> {
@@ -170,6 +174,8 @@ impl<N> Dag<N> {
             stack: Vec::new(),
             plan_stack: Vec::new(),
             order: Vec::new(),
+            pending: Vec::new(),
+            ready: Vec::new(),
         }
     }
 
@@ -332,47 +338,42 @@ impl<N> Dag<N> {
         removed
     }
 
-    /// Every node, ordered so that a node always follows the nodes it depends
-    /// on.
+    /// Write every node into `order`, each one after the nodes it depends on.
     ///
     /// Nodes that do not depend on one another come in an unspecified order.
     /// The graph refuses every edge that would close a cycle, so every node is
-    /// listed.
-    pub fn topological_order(&self) -> Vec<NodeId> {
+    /// written. `order` is cleared first and keeps its allocation, so a caller
+    /// that walks the graph every frame passes the same buffer each time.
+    pub fn topological_order_into(&mut self, order: &mut Vec<NodeId>) {
+        order.clear();
         // How many dependencies each node is still waiting for, and the nodes
-        // waiting for none.
-        let mut pending: Vec<u32> = self
-            .nodes
-            .iter()
-            .map(|slot| {
-                if slot.weight.is_some() {
-                    slot.dependencies.len() as u32
-                } else {
-                    0
-                }
-            })
-            .collect();
-        let mut ready: Vec<u32> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| {
+        // waiting for none. Both are kept on the graph, so a walk after the
+        // first one allocates nothing.
+        self.pending.clear();
+        self.pending.extend(self.nodes.iter().map(|slot| {
+            if slot.weight.is_some() {
+                slot.dependencies.len() as u32
+            } else {
+                0
+            }
+        }));
+        self.ready.clear();
+        self.ready
+            .extend(self.nodes.iter().enumerate().filter_map(|(index, slot)| {
                 (slot.weight.is_some() && slot.dependencies.is_empty()).then_some(index as u32)
-            })
-            .collect();
-        let mut order = Vec::with_capacity(self.live);
-        while let Some(index) = ready.pop() {
+            }));
+        order.reserve(self.live);
+        while let Some(index) = self.ready.pop() {
             order.push(self.node_id(index));
             for &edge in &self.nodes[index as usize].dependents {
                 let to = self.edges[edge as usize].to;
-                pending[to as usize] -= 1;
-                if pending[to as usize] == 0 {
-                    ready.push(to);
+                self.pending[to as usize] -= 1;
+                if self.pending[to as usize] == 0 {
+                    self.ready.push(to);
                 }
             }
         }
         debug_assert_eq!(order.len(), self.live, "the graph is acyclic");
-        order
     }
 
     /// Remove the node `id` names together with every edge touching it, and
@@ -534,6 +535,8 @@ impl<N> Dag<N> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -655,7 +658,8 @@ mod tests {
         dag.add_edge(left, join).unwrap();
         dag.add_edge(right, join).unwrap();
 
-        let order = dag.topological_order();
+        let mut order = Vec::new();
+        dag.topological_order_into(&mut order);
         let position = |id: NodeId| order.iter().position(|&node| node == id).unwrap();
         assert_eq!(order.len(), 4);
         assert!(position(base) < position(left));
@@ -669,7 +673,24 @@ mod tests {
         let mut dag = Dag::new();
         dag.insert("a");
         dag.insert("b");
-        assert_eq!(dag.topological_order().len(), 2);
+        let mut order = Vec::new();
+        dag.topological_order_into(&mut order);
+        assert_eq!(order.len(), 2);
+    }
+
+    #[test]
+    fn the_topological_order_refills_one_buffer() {
+        // A caller walks the graph every frame, so the second walk writes over
+        // the first one's contents rather than appending to them.
+        let mut dag = Dag::new();
+        let base = dag.insert("base");
+        let dependent = dag.insert("dependent");
+        dag.add_edge(base, dependent).unwrap();
+        let mut order = Vec::new();
+        dag.topological_order_into(&mut order);
+        dag.topological_order_into(&mut order);
+        assert_eq!(order.len(), 2);
+        assert_eq!(order, vec![base, dependent]);
     }
 
     #[test]
@@ -734,5 +755,129 @@ mod tests {
 
         assert_eq!(sweeps, 2, "one sweep removed the two, the next found none");
         assert_eq!(dag.len(), 1);
+    }
+
+    /// What a graph accepts is exactly what its model says it should: a
+    /// self-loop, an edge whose endpoint does not resolve, an edge that would
+    /// close a cycle, and a repeat of an edge already recorded are all refused
+    /// the same way the graph refuses them.
+    ///
+    /// This is the property behind the refusal, checked against a model of the
+    /// reachability the accepted edges build up.
+    fn expected_edge(
+        direct: &[Vec<bool>],
+        reaches: &[Vec<bool>],
+        from: usize,
+        to: usize,
+    ) -> Result<bool, EdgeError> {
+        if from == to {
+            return Err(EdgeError::SelfLoop);
+        }
+        if reaches[to][from] {
+            return Err(EdgeError::Cycle);
+        }
+        Ok(!direct[from][to])
+    }
+
+    proptest::proptest! {
+        /// Every edge the graph accepts joins two nodes the topological order
+        /// puts in dependency order, and every edge it refuses is one the
+        /// model says would loop or repeat.
+        #[test]
+        fn the_topological_order_respects_every_accepted_edge(
+            nodes in 1usize..8,
+            edges in proptest::collection::vec((0usize..8, 0usize..8), 0..24),
+        ) {
+            let mut dag = Dag::new();
+            let ids: Vec<NodeId> = (0..nodes).map(|index| dag.insert(index)).collect();
+
+            // The model: `direct` is the edges recorded, `reaches` their
+            // transitive closure.
+            let mut direct = vec![vec![false; nodes]; nodes];
+            let mut reaches = vec![vec![false; nodes]; nodes];
+
+            for &(from, to) in &edges {
+                // The generator picks from a fixed range; fold it onto the
+                // nodes this case actually made.
+                let (from, to) = (from % nodes, to % nodes);
+                let expected = expected_edge(&direct, &reaches, from, to);
+                let actual = dag.add_edge(ids[from], ids[to]);
+                prop_assert_eq!(actual, expected, "edge {} -> {}", from, to);
+                if actual == Ok(true) {
+                    direct[from][to] = true;
+                    // Every node that reaches `from` now reaches everything
+                    // `to` reaches.
+                    let column: Vec<usize> =
+                        (0..nodes).filter(|&a| a == from || reaches[a][from]).collect();
+                    let row: Vec<usize> =
+                        (0..nodes).filter(|&b| b == to || reaches[to][b]).collect();
+                    for &a in &column {
+                        for &b in &row {
+                            reaches[a][b] = true;
+                        }
+                    }
+                }
+            }
+
+            let mut order = Vec::new();
+            dag.topological_order_into(&mut order);
+            prop_assert_eq!(order.len(), dag.len(), "every node is written once");
+
+            let position = |id: NodeId| order.iter().position(|&other| other == id);
+            for from in 0..nodes {
+                for to in 0..nodes {
+                    if direct[from][to] {
+                        let from_position = position(ids[from]).expect("a live node is written");
+                        let to_position = position(ids[to]).expect("a live node is written");
+                        prop_assert!(
+                            from_position < to_position,
+                            "{} -> {} came out as {} then {}",
+                            from,
+                            to,
+                            from_position,
+                            to_position,
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Removing nodes keeps the order valid for whatever is left: every
+        /// surviving edge still comes out dependency first, and the walk covers
+        /// exactly the live nodes.
+        #[test]
+        fn a_sweep_keeps_the_order_valid_for_the_survivors(
+            nodes in 1usize..8,
+            edges in proptest::collection::vec((0usize..8, 0usize..8), 0..24),
+            removed in proptest::collection::vec(0usize..8, 0..8),
+        ) {
+            let mut dag = Dag::new();
+            let ids: Vec<NodeId> = (0..nodes).map(|index| dag.insert(index)).collect();
+            let mut accepted = Vec::new();
+            for &(from, to) in &edges {
+                let (from, to) = (from % nodes, to % nodes);
+                if dag.add_edge(ids[from], ids[to]) == Ok(true) {
+                    accepted.push((from, to));
+                }
+            }
+
+            let removed: Vec<usize> = removed.into_iter().filter(|&index| index < nodes).collect();
+            dag.remove_where_drop(|&index| removed.contains(&index));
+
+            let mut order = Vec::new();
+            dag.topological_order_into(&mut order);
+            let live: Vec<usize> = (0..nodes).filter(|index| !removed.contains(index)).collect();
+            prop_assert_eq!(order.len(), live.len());
+
+            let position = |id: NodeId| order.iter().position(|&other| other == id);
+            for &(from, to) in &accepted {
+                if removed.contains(&from) || removed.contains(&to) {
+                    continue;
+                }
+                let from_position = position(ids[from]).expect("a survivor is written");
+                let to_position = position(ids[to]).expect("a survivor is written");
+                prop_assert!(from_position < to_position);
+            }
+        }
     }
 }

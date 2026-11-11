@@ -332,7 +332,8 @@ fn the_info_structs_report_the_view() {
     assert_eq!(info.entities, 2);
     assert_eq!(info.root, world.root());
     assert_eq!(info.shared, world.shared());
-    let archetypes = world.scope(scene).unwrap().archetype_infos();
+    let scope = world.scope(scene).unwrap();
+    let archetypes = scope.archetype_infos();
     let sum: usize = archetypes.iter().map(|info| info.len).sum();
     assert_eq!(sum, info.entities, "the lengths add up to the count");
 }
@@ -340,7 +341,8 @@ fn the_info_structs_report_the_view() {
 #[test]
 fn entity_infos_only_lists_what_the_view_sees() {
     let (world, scene, child, _) = fixture();
-    let infos = world.scope(scene).unwrap().entity_infos(usize::MAX);
+    let scope = world.scope(scene).unwrap();
+    let infos = scope.entity_infos(usize::MAX);
     assert_eq!(infos.len(), 2);
     assert!(infos.iter().any(|info| info.entity == child));
 }
