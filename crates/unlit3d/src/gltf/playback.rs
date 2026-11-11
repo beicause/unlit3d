@@ -6,7 +6,10 @@
 
 use std::cell::RefCell;
 
-use super::animation::{ChannelValues, channels, sample_rotation, sample_vec3, sample_weights};
+use super::animation::{
+    Channel, ChannelValues, channels, interpolation_stride, sample_rotation, sample_vec3,
+    sample_weights,
+};
 use super::scene::decompose;
 use super::{AnimationId, GltfNode, LitGltf};
 use crate::components::{MorphWeights, SkinPose, Transform};
@@ -39,7 +42,16 @@ struct Scratch {
 }
 
 thread_local! {
-    #[allow(clippy::missing_const_for_thread_local, reason = "the initializer is already a const block")]
+    /// The working set an animation samples into and leaves filled.
+    ///
+    /// The initializer is already a const block. Clippy's `thread_local`
+    /// analysis differs by target and reports a candidate anyway on Android,
+    /// so the lint is silenced here rather than expected: an expectation goes
+    /// unfulfilled on every target where it does not fire.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
     static SCRATCH: RefCell<Scratch> = const { RefCell::new(Scratch {
         locals: Vec::new(),
         matrices: Vec::new(),
@@ -168,9 +180,8 @@ impl LitGltf {
                 }
                 ChannelValues::Weights(values) => {
                     let targets = self.morph_targets[node];
-                    let needed = channel.times.len()
-                        * targets
-                        * super::animation::interpolation_stride(channel.interpolation);
+                    let needed =
+                        channel.times.len() * targets * interpolation_stride(channel.interpolation);
                     if targets == 0 || values.len() < needed {
                         continue;
                     }
@@ -257,7 +268,7 @@ impl LitGltf {
     /// # Panics
     ///
     /// If `animation` is out of bounds.
-    fn clip(&self, animation: AnimationId) -> &[super::animation::Channel] {
+    fn clip(&self, animation: AnimationId) -> &[Channel] {
         let index = animation.index();
         // Resolved first, so an out-of-bounds index panics with the same
         // message as every other accessor of an animation.

@@ -4,7 +4,6 @@
 //! are the morph targets' blend factors. Both are per-node state, so a caller
 //! spawns one of each per node and rewrites them while animating.
 
-use super::material::morph_target_count;
 use super::{LitGltf, NodeId};
 use crate::components::SkinPose;
 
@@ -115,12 +114,9 @@ impl LitGltf {
             .or_else(|| mesh.weights())
             .map(<[f32]>::to_vec)
             .unwrap_or_default();
-        let count = mesh
-            .primitives()
-            .map(|primitive| morph_target_count(&primitive))
-            .max()
-            .unwrap_or(0);
-        weights.resize(count, 0.0);
+        // The counts were worked out once as the document loaded, by the same
+        // rule the weights channels are sliced by.
+        weights.resize(self.morph_targets[node.index()], 0.0);
         weights
     }
 }

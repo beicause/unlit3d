@@ -140,6 +140,7 @@
 //! reaches the module in the first place.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use core::mem::size_of;
 
@@ -277,7 +278,7 @@ pub struct LitGltf {
     /// Decoding a channel's accessors yields an iterator, and sampling needs
     /// random access to the keyframes, so they are collected once here rather
     /// than on every frame that plays the clip.
-    clips: Vec<std::sync::OnceLock<Vec<animation::Channel>>>,
+    clips: Vec<OnceLock<Vec<animation::Channel>>>,
 }
 
 /// A texture uploaded from a glTF image.
@@ -477,7 +478,7 @@ impl LitGltf {
         let node_matrices = node_world_matrices(&document, &parents, &order);
         let node_transforms = node_matrices.iter().map(|&m| decompose(m)).collect();
         let morph_targets = nodes_morph_targets(&document);
-        let clips = std::iter::repeat_with(std::sync::OnceLock::new)
+        let clips = std::iter::repeat_with(OnceLock::new)
             .take(document.animations().count())
             .collect();
         Self {
