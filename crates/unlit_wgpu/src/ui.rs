@@ -108,6 +108,11 @@ use core::ops::Range;
 use hashbrown::HashMap;
 use zerocopy::IntoBytes;
 
+mod frame;
+mod materials;
+#[cfg(test)]
+mod tests;
+
 /// egui's own texture format: gamma-space RGBA, never sRGB-aware.
 ///
 /// egui's vertex colors and its font atlas are already gamma-encoded, so a
@@ -631,9 +636,3 @@ fn scissor_rect(clip_rect: egui::Rect, screen: ScreenDescriptor) -> ScissorRect 
         height: max_y - min_y,
     }
 }
-
-#[cfg(test)]
-mod tests;
-
-mod frame;
-mod materials;

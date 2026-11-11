@@ -96,6 +96,10 @@ use std::sync::{Arc, Weak};
 
 use crate::dag::{Dag, EdgeError, NodeId};
 
+mod graph;
+#[cfg(test)]
+mod tests;
+
 /// A kind of resource that can live in a [`ResourceGraph`], and the resource an
 /// id of that kind resolves to.
 ///
@@ -759,8 +763,3 @@ pub struct ResourceGraph {
     /// it names rebuild against the graph itself.
     order: Vec<NodeId>,
 }
-
-mod graph;
-
-#[cfg(test)]
-mod tests;

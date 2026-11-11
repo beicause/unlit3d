@@ -53,6 +53,7 @@ fn quote(word: &OsStr) -> String {
         format!("'{}'", word.replace('\'', r"'\''"))
     }
 }
+
 /// The directory a task's tools work on, which is the workspace root.
 ///
 /// Asked of cargo rather than read from the working directory, so that a task
