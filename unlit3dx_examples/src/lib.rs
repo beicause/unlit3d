@@ -412,6 +412,7 @@ fn run_headless(args: &Args) -> ExitCode {
     let gpu = match pollster::block_on(Gpu::headless(
         DeviceTier::from_env(),
         wgpu::PowerPreference::default(),
+        "unlit3dx_examples",
     )) {
         Ok(gpu) => gpu,
         Err(error) => {

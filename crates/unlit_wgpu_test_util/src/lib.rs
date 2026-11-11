@@ -162,12 +162,18 @@ async fn context(tier: DeviceTier) -> Result<GpuContext, GpuRequestError> {
             wgpu::SurfaceTarget::Canvas(create_canvas()),
             tier,
             wgpu::PowerPreference::default(),
+            "unlit_wgpu_test_util",
         )
         .await
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        GpuContext::headless(tier, wgpu::PowerPreference::default()).await
+        GpuContext::headless(
+            tier,
+            wgpu::PowerPreference::default(),
+            "unlit_wgpu_test_util",
+        )
+        .await
     }
 }
 

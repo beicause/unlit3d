@@ -62,7 +62,8 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
 - `context` —— 本仓库每个入口共用的 GPU 引导：请求适配器，再请求一个 limits 为
   设备档位所定的设备，并留下适配器报告的能力。`GpuContext::headless` 自建
   instance；`GpuContext::present_to` 接收调用者的 instance，并用一个窗口 surface
-  探测适配器，随后丢弃该 surface，因此上下文不持有任何 surface。
+  探测适配器，随后丢弃该 surface，因此上下文不持有任何 surface。两者都接收设备的
+  label——校验信息与 API 抓取里给设备命名的就是它。
 - `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏

@@ -54,6 +54,7 @@ pub(crate) fn request_gpu(app: Entity) -> OnFrame {
                 window,
                 DeviceTier::from_env(),
                 wgpu::PowerPreference::HighPerformance,
+                "unlit3d_examples",
             )
             .await;
             match request {

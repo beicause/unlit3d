@@ -27,6 +27,7 @@ pub fn run(soundfont: std::sync::Arc<[u8]>) {
     let gpu = pollster::block_on(Gpu::headless(
         DeviceTier::from_env(),
         wgpu::PowerPreference::default(),
+        "unlit3dx_examples",
     ))
     .expect("the headless run opens a GPU");
     let (mut host, _input, interactive) = crate::interactive::run(InteractiveConfig {

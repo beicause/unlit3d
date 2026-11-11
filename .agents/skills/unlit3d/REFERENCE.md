@@ -173,7 +173,7 @@
 
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
-| GPU | `Gpu` 就是 `unlit_wgpu::context::GpuContext`：`GpuContext::headless(tier, power_preference)` 自建 instance，`GpuContext::present_to(instance, window, tier, power_preference)` 用窗口 surface 探测适配器后丢弃它；两者都 async 返回 `Result<GpuContext, GpuRequestError>`。`request_gpu(app, ready)` 返回 `OnFrame`，把请求驱动成帧任务并在就绪回调里交给调用者 | `crates/unlit_wgpu/src/context.rs`、`crates/unlit3dx/src/gpu.rs` |
+| GPU | `Gpu` 就是 `unlit_wgpu::context::GpuContext`：`GpuContext::headless(tier, power_preference, label)` 自建 instance，`GpuContext::present_to(instance, window, tier, power_preference, label)` 用窗口 surface 探测适配器后丢弃它；`label` 是设备在校验信息里的名字，两者都 async 返回 `Result<GpuContext, GpuRequestError>`。`request_gpu(app, ready)` 返回 `OnFrame`，把请求驱动成帧任务并在就绪回调里交给调用者 | `crates/unlit_wgpu/src/context.rs`、`crates/unlit3dx/src/gpu.rs` |
 | 常量 | `SCENE_PASS_ORDER = FramePassOrder(0)`、`BLIT_PASS_ORDER = FramePassOrder(1)`、`PRESENT_ORDER = 10` | `crates/unlit3d/src/winit/presenter.rs` |
 | 两条路径 | `PresentationPath`：`Surface { samples, with_depth }` 直画交换链；`Intermediate(TargetConfig)` 画进常驻纹理再加一个 blit pass 贴回交换链。默认 `Surface { samples: OFFSCREEN_SAMPLES, with_depth: true }` | 同上 |
 | 装配（库） | `build_presenter(world, render, renderer, scene_pass, surface, instance, adapter, fallback_size, path)` → `Presenter`；`setup_presenter(..)` 同参再 spawn 成组件并返回 `Entity`。`surface` 由调用方 `instance.create_surface(window)` 造 | 同上 |

@@ -46,15 +46,18 @@ impl GpuContext {
     /// [`Self::present_to`] with a canvas nothing is drawn into.
     ///
     /// `tier` decides how much of the WebGPU baseline the device is asked
-    /// for, and so which paths it takes; see [`DeviceTier`].
+    /// for, and so which paths it takes; see [`DeviceTier`]. `label` names
+    /// the device in validation messages and API traces, so a run that opens
+    /// one says which entry point asked for it.
     pub async fn headless(
         tier: DeviceTier,
         power_preference: wgpu::PowerPreference,
+        label: &str,
     ) -> Result<Self, GpuRequestError> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = request_adapter(&instance, None, power_preference).await?;
-        Self::from_adapter(instance, adapter, tier).await
+        Self::from_adapter(instance, adapter, tier, label).await
     }
 
     /// Request an adapter that can present to `target`, and a device from it.
@@ -70,19 +73,21 @@ impl GpuContext {
     /// The instance is the caller's: a windowed entry point builds one that
     /// carries the display handle and checks whether the browser has WebGPU,
     /// which is an asynchronous step of its own; see
-    /// [`wgpu::util::new_instance_with_webgpu_detection`].
+    /// [`wgpu::util::new_instance_with_webgpu_detection`]. `label` names the
+    /// device the same way it does in [`Self::headless`].
     pub async fn present_to(
         instance: wgpu::Instance,
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         tier: DeviceTier,
         power_preference: wgpu::PowerPreference,
+        label: &str,
     ) -> Result<Self, GpuRequestError> {
         let probe = instance.create_surface(target)?;
         let adapter = request_adapter(&instance, Some(&probe), power_preference).await?;
         // The surface only probes the adapter; the device request must not
         // keep it alive.
         drop(probe);
-        Self::from_adapter(instance, adapter, tier).await
+        Self::from_adapter(instance, adapter, tier, label).await
     }
 
     /// Request a device from `adapter` and gather the context around it.
@@ -90,10 +95,12 @@ impl GpuContext {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         tier: DeviceTier,
+        label: &str,
     ) -> Result<Self, GpuRequestError> {
         let capabilities = tier.capabilities_of(&adapter);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
+                label: Some(label),
                 required_limits: tier.limits(&adapter.limits()),
                 ..Default::default()
             })

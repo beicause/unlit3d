@@ -88,7 +88,8 @@ and CI checks that combination separately.
   [`GpuContext::headless`](context::GpuContext::headless) builds its own instance;
   [`GpuContext::present_to`](context::GpuContext::present_to) takes the caller's
   instance and probes the adapter with a surface for a window, which it drops
-  again so the context owns no surface.
+  again so the context owns no surface. Both take the device's label, which is
+  what names the device in a validation message and in an API trace.
 - [`scene`] — the declarative description of a frame: pipelines, their bind
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening

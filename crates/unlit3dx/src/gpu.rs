@@ -45,6 +45,7 @@ async fn request(
         target,
         tier,
         wgpu::PowerPreference::HighPerformance,
+        "unlit3dx",
     )
     .await
 }

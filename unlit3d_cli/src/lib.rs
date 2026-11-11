@@ -100,9 +100,13 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     // Nothing presents here, so the context is requested without a surface;
     // `UNLIT3D_DEVICE_TIER` decides how much of the WebGPU baseline the device
     // is asked for.
-    let gpu = GpuContext::headless(DeviceTier::from_env(), wgpu::PowerPreference::default())
-        .await
-        .map_err(|error| Error::Gpu(error.to_string()))?;
+    let gpu = GpuContext::headless(
+        DeviceTier::from_env(),
+        wgpu::PowerPreference::default(),
+        "unlit3d_cli",
+    )
+    .await
+    .map_err(|error| Error::Gpu(error.to_string()))?;
     let (device, queue, capabilities) = (gpu.device, gpu.queue, gpu.capabilities);
     let (world, target, renderer) = build_world(
         config,
@@ -338,9 +342,12 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
         .name("unlit3d-cli-mcp-render".to_owned())
         .spawn(move || {
             let built = pollster::block_on(async {
-                let gpu =
-                    GpuContext::headless(DeviceTier::from_env(), wgpu::PowerPreference::default())
-                        .await?;
+                let gpu = GpuContext::headless(
+                    DeviceTier::from_env(),
+                    wgpu::PowerPreference::default(),
+                    "unlit3d_cli",
+                )
+                .await?;
                 Ok::<_, unlit_wgpu::context::GpuRequestError>(offscreen_world(
                     gpu.device,
                     gpu.queue,

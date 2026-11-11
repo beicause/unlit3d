@@ -417,7 +417,9 @@ point here shares: it requests an adapter and then a device whose limits are the
 device tier's. `Gpu::present_to` takes the caller's instance and probes the
 adapter with a window surface it drops again, so a context outlives the window it
 was requested for; `Gpu::headless` is the same request without a window, for tests
-and tools. The **present** module is a thin wrapper over `unlit3d::winit::presenter`
+and tools. Each names the device it asks for, so a validation message from a
+run says which entry point opened it — `unlit3dx` for the requests this crate
+makes on an app's behalf. The **present** module is a thin wrapper over `unlit3d::winit::presenter`
 that knows how to reach into a sub-world: `setup_presenter` by default has the
 scene's pass draw straight into the swap chain (`PresentationPath::Surface`),
 and with its offscreen path on builds
