@@ -1,10 +1,4 @@
-//! Integration-style unit tests over synthetic glTF documents.
-
-use super::*;
-use crate::components::{MorphWeights, SkinPose};
-use crate::gltf::material::{morph_target_count, samples_base_color_texture};
-use unlit_ecs::World;
-use unlit_ecs::bundle;
+//! The GLB documents the tests load, built byte by byte.
 
 /// A GLB holding one skinned triangle: node 0 draws mesh 0 under skin 0,
 /// whose single joint is node 1 at `translation`.
@@ -14,7 +8,7 @@ use unlit_ecs::bundle;
 /// joint's own transform is what moves the vertex) and the index buffer.
 /// The JSON is written out by hand rather than through a serializer,
 /// because the crate carries no JSON dependency beyond the loader's own.
-fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
+pub(super) fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
     let mut add = |bin: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| {
@@ -107,7 +101,7 @@ fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
 /// wrong target stride reads the wrong displacement. A target passed as
 /// `None` declares no positions at all, which is how a normals-only target
 /// is written here.
-fn morphed_document(
+pub(super) fn morphed_document(
     mesh_weights: Option<&[f32]>,
     node_weights: Option<&[f32]>,
     targets: &[Option<[f32; 3]>],
@@ -220,7 +214,7 @@ fn morphed_document(
 }
 
 /// A GLB holding one triangle whose material states `doubleSided` or not.
-fn sided_document(double_sided: bool) -> Vec<u8> {
+pub(super) fn sided_document(double_sided: bool) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
     let mut add = |bin: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| {
@@ -286,192 +280,8 @@ fn sided_document(double_sided: bool) -> Vec<u8> {
     glb
 }
 
-#[test]
-fn a_double_sided_material_culls_nothing() {
-    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-
-    let single =
-        LitGltf::from_bytes(&sided_document(false)).expect("the single-sided document parses");
-    assert_eq!(
-        single
-            .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
-            .options
-            .primitive
-            .cull_mode,
-        Some(wgpu::Face::Back),
-        "a material that is not double-sided culls back faces"
-    );
-
-    let double = LitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
-    assert_eq!(
-        double
-            .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
-            .options
-            .primitive
-            .cull_mode,
-        None,
-        "a double-sided material culls nothing"
-    );
-}
-
-#[test]
-fn culling_alone_distinguishes_the_two_sided_variants() {
-    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let single = LitGltf::from_bytes(&sided_document(false))
-        .expect("the single-sided document parses")
-        .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0));
-    let double = LitGltf::from_bytes(&sided_document(true))
-        .expect("the double-sided document parses")
-        .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0));
-    assert_ne!(
-        single, double,
-        "the two sides must be separate variants so each keeps its own pipeline"
-    );
-    assert_eq!(
-        single.options.primitive.cull_mode,
-        Some(wgpu::Face::Back),
-        "a single-sided primitive culls its back faces"
-    );
-    assert_eq!(
-        double.options.primitive.cull_mode, None,
-        "a double-sided material culls nothing"
-    );
-    // Nothing but the cull mode sets the two apart. The options are
-    // hashed, so the rewrite goes through `update`: the word follows the
-    // changed field and the equality check stays sound.
-    let mut normalized = single.options.clone();
-    normalized.update(|options| options.primitive.cull_mode = double.options.primitive.cull_mode);
-    assert_eq!(normalized, double.options);
-}
-
-#[test]
-fn a_morph_target_makes_the_mesh_morph() {
-    let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
-        .expect("the morphed document parses");
-    let primitive = gltf.primitive(0, 0);
-    assert_eq!(morph_target_count(&primitive), 1);
-}
-
-#[test]
-fn a_target_without_positions_does_not_make_the_mesh_morph() {
-    // A normals-only target displaces nothing this loader reads, so the
-    // mesh stays in the rigid path rather than drawing an empty morph.
-    let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[None]))
-        .expect("the morphed document parses");
-    let primitive = gltf.primitive(0, 0);
-    assert_eq!(morph_target_count(&primitive), 0);
-    assert!(gltf.morph_weights(NodeId::new(0)).is_empty());
-}
-
-#[test]
-fn a_node_overrides_the_mesh_weights() {
-    let gltf = LitGltf::from_bytes(&morphed_document(
-        Some(&[0.25]),
-        Some(&[0.75]),
-        &[Some([0.0, 1.0, 0.0])],
-    ))
-    .expect("the morphed document parses");
-    assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.75]);
-
-    let gltf = LitGltf::from_bytes(&morphed_document(
-        Some(&[0.25]),
-        None,
-        &[Some([1.0, 0.0, 0.0])],
-    ))
-    .expect("the morphed document parses");
-    assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.25]);
-}
-
-#[test]
-fn morph_weights_are_padded_to_the_target_count() {
-    // A document that states fewer weights than it has targets would make
-    // the renderer reject the mesh, so the shortfall is padded with the
-    // undeformed weight rather than passed on.
-    let gltf = LitGltf::from_bytes(&morphed_document(
-        Some(&[0.5]),
-        None,
-        &[Some([0.0, 1.0, 0.0]), Some([1.0, 0.0, 0.0])],
-    ))
-    .expect("the morphed document parses");
-    assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.5, 0.0]);
-
-    // And one that states more is truncated, for the same reason.
-    let gltf = LitGltf::from_bytes(&morphed_document(
-        Some(&[0.5, 1.0]),
-        None,
-        &[Some([0.0, 1.0, 0.0])],
-    ))
-    .expect("the morphed document parses");
-    assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.5]);
-}
-
-#[test]
-fn a_mesh_without_targets_starts_undeformed() {
-    let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[]))
-        .expect("the morphed document parses");
-    assert!(gltf.morph_weights(NodeId::new(0)).is_empty());
-    assert_eq!(morph_target_count(&gltf.primitive(0, 0)), 0);
-}
-
-#[test]
-fn a_rest_skin_pose_deforms_nothing() {
-    // The joint sits at rest, so its world matrix is the inverse bind
-    // matrix's inverse and every joint matrix comes out the identity: the
-    // pose a document uploads at rest has to leave the mesh exactly where
-    // it is.
-    let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
-        .expect("the skinned document parses");
-    let pose = gltf.skin_pose(NodeId::new(0));
-    assert_eq!(pose.matrices.len(), 1, "the skin has one joint");
-    assert!(
-        pose.matrices[0].abs_diff_eq(glam::Mat4::IDENTITY, 1e-6),
-        "{}",
-        pose.matrices[0]
-    );
-}
-
-#[test]
-fn a_joint_away_from_its_bind_pose_moves_the_mesh() {
-    // An inverse bind matrix records where a joint was *bound*, so a joint
-    // node that sits somewhere else pulls the vertices it weights to
-    // itself: the pose is the joint's world matrix against its bind
-    // matrix, not the identity.
-    let gltf = LitGltf::from_bytes(&skinned_document([3.0, -2.0, 1.0]))
-        .expect("the skinned document parses");
-    let pose = gltf.skin_pose(NodeId::new(0));
-    assert!(
-        pose.matrices[0].abs_diff_eq(
-            glam::Mat4::from_translation(glam::Vec3::new(3.0, -2.0, 1.0)),
-            1e-6
-        ),
-        "{}",
-        pose.matrices[0]
-    );
-}
-
-#[test]
-fn a_skinned_primitive_declares_its_joint_stream() {
-    // The primitive carries JOINTS_0 and WEIGHTS_0, so the mesh is
-    // uploaded with them and the variant a draw resolves reads them.
-    let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
-        .expect("the skinned document parses");
-    let primitive = gltf.primitive(0, 0);
-    assert!(primitive.get(&gltf::Semantic::Joints(0)).is_some());
-    assert!(primitive.get(&gltf::Semantic::Weights(0)).is_some());
-    assert!(!samples_base_color_texture(&primitive));
-}
-
-#[test]
-fn a_node_without_a_skin_has_no_pose() {
-    let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
-        .expect("the skinned document parses");
-    assert_eq!(gltf.skin_joint_count(NodeId::new(0)), Some(1));
-    assert_eq!(gltf.skin_joint_count(NodeId::new(1)), None);
-    assert!(gltf.skin_pose(NodeId::new(1)).matrices.is_empty());
-}
-
 /// 4-aligns `bin`, records a bufferView for `bytes` and returns its index.
-fn add_view(
+pub(super) fn add_view(
     bin: &mut Vec<u8>,
     views: &mut Vec<String>,
     bytes: &[u8],
@@ -491,7 +301,7 @@ fn add_view(
 }
 
 /// Wraps a JSON document and its binary chunk into a GLB.
-fn glb(json: String, bin: &[u8]) -> Vec<u8> {
+pub(super) fn glb(json: String, bin: &[u8]) -> Vec<u8> {
     let mut json = json.into_bytes();
     while !json.len().is_multiple_of(4) {
         json.push(b' ');
@@ -510,7 +320,7 @@ fn glb(json: String, bin: &[u8]) -> Vec<u8> {
 }
 
 /// The `min` and `max` a glTF accessor needs, as a JSON fragment.
-fn bounds(times: &[f32]) -> String {
+pub(super) fn bounds(times: &[f32]) -> String {
     let min = times.first().copied().unwrap_or(0.0);
     let max = times.last().copied().unwrap_or(0.0);
     format!(r#", "min": [{min}], "max": [{max}]"#)
@@ -518,7 +328,11 @@ fn bounds(times: &[f32]) -> String {
 
 /// Adds the triangle both an animated mesh and a static one draw, and
 /// pushes its position and index accessors, returning the index accessor.
-fn add_triangle(bin: &mut Vec<u8>, views: &mut Vec<String>, accessors: &mut Vec<String>) -> usize {
+pub(super) fn add_triangle(
+    bin: &mut Vec<u8>,
+    views: &mut Vec<String>,
+    accessors: &mut Vec<String>,
+) -> usize {
     let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
         .iter()
         .flat_map(|f| f.to_le_bytes())
@@ -543,7 +357,7 @@ fn add_triangle(bin: &mut Vec<u8>, views: &mut Vec<String>, accessors: &mut Vec<
 /// recomposition. `translations` and `rotations` hold one entry per
 /// keyframe, except under `CUBICSPLINE`, where each keyframe contributes
 /// its in-tangent, value and out-tangent in that order.
-fn parented_animated_document(
+pub(super) fn parented_animated_document(
     interpolation: &str,
     times: &[f32],
     translations: &[[f32; 3]],
@@ -605,7 +419,7 @@ fn parented_animated_document(
 
 /// A GLB holding one skinned triangle whose single joint node carries a
 /// translation animation.
-fn animated_skinned_document(times: &[f32], translations: &[[f32; 3]]) -> Vec<u8> {
+pub(super) fn animated_skinned_document(times: &[f32], translations: &[[f32; 3]]) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
     let mut accessors: Vec<String> = Vec::new();
@@ -692,7 +506,7 @@ fn animated_skinned_document(times: &[f32], translations: &[[f32; 3]]) -> Vec<u8
 
 /// A GLB holding one triangle with a single morph target whose weight the
 /// document animates.
-fn animated_morphed_document(times: &[f32], weights: &[f32]) -> Vec<u8> {
+pub(super) fn animated_morphed_document(times: &[f32], weights: &[f32]) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
     let mut accessors: Vec<String> = Vec::new();
@@ -751,251 +565,4 @@ fn animated_morphed_document(times: &[f32], weights: &[f32]) -> Vec<u8> {
         bin.len(),
     );
     glb(json, &bin)
-}
-
-#[test]
-fn an_animation_reports_its_name_and_duration() {
-    let gltf = LitGltf::from_bytes(&parented_animated_document(
-        "LINEAR",
-        &[0.0, 1.5, 4.0],
-        &[[0.0; 3]; 3],
-        &[[0.0, 0.0, 0.0, 1.0]; 3],
-    ))
-    .expect("the animated document parses");
-    assert_eq!(gltf.animation_count(), 1);
-    assert_eq!(gltf.animation_name(AnimationId::new(0)), Some("walk"));
-    assert!((gltf.animation_duration(AnimationId::new(0)) - 4.0).abs() < 1e-6);
-}
-
-#[test]
-fn apply_animation_moves_a_node_and_carries_its_child() {
-    let gltf = LitGltf::from_bytes(&parented_animated_document(
-        "LINEAR",
-        &[0.0, 2.0],
-        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
-        &[
-            [0.0, 0.0, 0.0, 1.0],
-            [
-                0.0,
-                0.0,
-                std::f32::consts::FRAC_1_SQRT_2,
-                std::f32::consts::FRAC_1_SQRT_2,
-            ],
-        ],
-    ))
-    .expect("the animated document parses");
-    let mut world = World::new();
-    let parent = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let child = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let nodes = [
-        GltfNode {
-            node: NodeId::new(0),
-            entities: vec![parent],
-            pose: None,
-            weights: None,
-        },
-        GltfNode {
-            node: NodeId::new(1),
-            entities: vec![child],
-            pose: None,
-            weights: None,
-        },
-    ];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
-    // The parent's own channel moves it...
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Transform>(parent)
-            .expect("the parent carries a transform")
-            .get()
-            .translation,
-        glam::Vec3::new(2.0, 0.0, 0.0)
-    );
-    let mut transform_row = world
-        .root_scope()
-        .query_one::<&Transform>(child)
-        .expect("the child carries a transform");
-
-    // ...and the child, which no translation channel names, inherits it
-    // along with the quarter turn its own channel reaches at the midpoint.
-    let child = transform_row.get();
-    assert_eq!(child.translation, glam::Vec3::new(2.0, 0.0, 0.0));
-    let quarter = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
-    assert!(child.rotation.dot(quarter).abs() > 1.0 - 1e-5, "{child:?}");
-}
-
-#[test]
-fn apply_animation_holds_a_step_keyframe() {
-    let gltf = LitGltf::from_bytes(&parented_animated_document(
-        "STEP",
-        &[0.0, 2.0],
-        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
-        &[[0.0, 0.0, 0.0, 1.0]; 2],
-    ))
-    .expect("the animated document parses");
-    let mut world = World::new();
-    let parent = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let nodes = [GltfNode {
-        node: NodeId::new(0),
-        entities: vec![parent],
-        pose: None,
-        weights: None,
-    }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.999, &nodes);
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Transform>(parent)
-            .expect("the parent carries a transform")
-            .get()
-            .translation,
-        glam::Vec3::ZERO
-    );
-}
-
-#[test]
-fn apply_animation_resamples_a_clip_it_has_already_played() {
-    // The keyframes are decoded once and kept, so a second frame has to
-    // re-sample them rather than replay what the first one wrote.
-    let gltf = LitGltf::from_bytes(&parented_animated_document(
-        "LINEAR",
-        &[0.0, 2.0],
-        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
-        &[[0.0, 0.0, 0.0, 1.0]; 2],
-    ))
-    .expect("the animated document parses");
-    let mut world = World::new();
-    let parent = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let nodes = [GltfNode {
-        node: NodeId::new(0),
-        entities: vec![parent],
-        pose: None,
-        weights: None,
-    }];
-    let translation = |world: &mut World| {
-        world
-            .root_scope()
-            .query_one::<&Transform>(parent)
-            .expect("the parent carries a transform")
-            .get()
-            .translation
-    };
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 0.5, &nodes);
-    assert_eq!(translation(&mut world), glam::Vec3::new(1.0, 0.0, 0.0));
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.5, &nodes);
-    assert_eq!(translation(&mut world), glam::Vec3::new(3.0, 0.0, 0.0));
-}
-
-#[test]
-fn two_documents_animate_in_the_same_frame() {
-    // One document's working set is handed back before the next takes it, so a
-    // frame that animates two of them gets each one's own result.
-    let left = LitGltf::from_bytes(&parented_animated_document(
-        "LINEAR",
-        &[0.0, 2.0],
-        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
-        &[[0.0, 0.0, 0.0, 1.0]; 2],
-    ))
-    .expect("the animated document parses");
-    let right = LitGltf::from_bytes(&parented_animated_document(
-        "LINEAR",
-        &[0.0, 2.0],
-        &[[0.0, 0.0, 0.0], [0.0, 8.0, 0.0]],
-        &[[0.0, 0.0, 0.0, 1.0]; 2],
-    ))
-    .expect("the animated document parses");
-    let mut world = World::new();
-    let left_entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let right_entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let left_nodes = [GltfNode {
-        node: NodeId::new(0),
-        entities: vec![left_entity],
-        pose: None,
-        weights: None,
-    }];
-    let right_nodes = [GltfNode {
-        node: NodeId::new(0),
-        entities: vec![right_entity],
-        pose: None,
-        weights: None,
-    }];
-    left.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &left_nodes);
-    right.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &right_nodes);
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Transform>(left_entity)
-            .expect("the entity carries a transform")
-            .get()
-            .translation,
-        glam::Vec3::new(2.0, 0.0, 0.0)
-    );
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Transform>(right_entity)
-            .expect("the entity carries a transform")
-            .get()
-            .translation,
-        glam::Vec3::new(0.0, 4.0, 0.0)
-    );
-}
-
-#[test]
-fn apply_animation_rebuilds_a_skin_pose() {
-    let gltf = LitGltf::from_bytes(&animated_skinned_document(
-        &[0.0, 2.0],
-        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
-    ))
-    .expect("the animated skinned document parses");
-    let mut world = World::new();
-    let mesh = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let pose = world.root_scope_mut().spawn(bundle![SkinPose::default()]);
-    let nodes = [GltfNode {
-        node: NodeId::new(0),
-        entities: vec![mesh],
-        pose: Some(pose),
-        weights: None,
-    }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
-    let mut skin_pose_row = world
-        .root_scope()
-        .query_one::<&SkinPose>(pose)
-        .expect("the pose entity carries a pose");
-
-    let pose = skin_pose_row.get();
-    assert!(
-        pose.matrices[0].abs_diff_eq(
-            glam::Mat4::from_translation(glam::Vec3::new(2.0, 0.0, 0.0)),
-            1e-6
-        ),
-        "{}",
-        pose.matrices[0]
-    );
-}
-
-#[test]
-fn apply_animation_writes_morph_weights() {
-    let gltf = LitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
-        .expect("the animated morphed document parses");
-    let mut world = World::new();
-    let mesh = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    let weights = world
-        .root_scope_mut()
-        .spawn(bundle![MorphWeights { weights: vec![0.0] }]);
-    let nodes = [GltfNode {
-        node: NodeId::new(0),
-        entities: vec![mesh],
-        pose: None,
-        weights: Some(weights),
-    }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
-    let mut morph_weights_row = world
-        .root_scope()
-        .query_one::<&MorphWeights>(weights)
-        .expect("the weights entity carries weights");
-
-    let weights = morph_weights_row.get();
-    assert_eq!(weights.weights, vec![1.0]);
 }

@@ -34,7 +34,13 @@ pub fn run(_task: &LineCountArgs) -> Result<(), String> {
 
     let mut counted = Vec::new();
     for path in sources(&root)? {
-        let lines = measure(&root.join(&path))?;
+        let full = root.join(&path);
+        // The index keeps a deleted file until the deletion is staged, so a
+        // path that is no longer on disk is a file the workspace no longer has.
+        if !full.exists() {
+            continue;
+        }
+        let lines = measure(&full)?;
         counted.push((lines, path));
     }
     // Longest first: the files that need splitting are what a reader is looking

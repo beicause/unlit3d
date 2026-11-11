@@ -10,7 +10,7 @@
 
 mod common;
 
-#[path = "gpu_lit.rs"]
+#[path = "gpu_lit/main.rs"]
 mod gpu_lit;
 #[path = "gpu_resources.rs"]
 mod gpu_resources;

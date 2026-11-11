@@ -26,7 +26,7 @@ mod blit;
 mod custom_instances;
 #[path = "custom_pipeline.rs"]
 mod custom_pipeline;
-#[path = "gltf_scene.rs"]
+#[path = "gltf_scene/mod.rs"]
 mod gltf_scene;
 #[path = "gpu_ecs.rs"]
 mod gpu_ecs;
