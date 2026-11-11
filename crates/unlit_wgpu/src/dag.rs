@@ -344,6 +344,10 @@ impl<N> Dag<N> {
     /// The graph refuses every edge that would close a cycle, so every node is
     /// written. `order` is cleared first and keeps its allocation, so a caller
     /// that walks the graph every frame passes the same buffer each time.
+    ///
+    /// Takes `&mut self` because the walk reuses the graph's own pending and
+    /// ready buffers, so two walks cannot overlap: a caller that holds the
+    /// order across a walk of the same graph must take it out first.
     pub fn topological_order_into(&mut self, order: &mut Vec<NodeId>) {
         order.clear();
         // How many dependencies each node is still waiting for, and the nodes

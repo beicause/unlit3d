@@ -307,6 +307,8 @@ impl ResourceGraph {
         // recipe only reads the graph, so the nodes it names are all still
         // there, and the buffer is held outside the graph for the same reason:
         // a recipe builds against the graph while the walk's list is in flight.
+        // It cannot start a walk of its own either — the walk needs the graph
+        // mutably and a recipe is handed only a shared reference.
         let mut order = core::mem::take(&mut self.order);
         self.graph.topological_order_into(&mut order);
         for &node in &order {
