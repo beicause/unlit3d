@@ -2,6 +2,20 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
+/// The renderer this crate is built on, re-exported.
+///
+/// This crate's own signatures name its types — [`unlit_wgpu::resources::ResourceGraph`],
+/// [`unlit_wgpu::capabilities::DeviceCapabilities`], the scene and pipeline types — so a
+/// caller that builds its own sources and pipelines reaches them here rather than
+/// depending on a second copy of the crate.
+pub use unlit_wgpu;
+/// The wgpu underneath, re-exported.
+///
+/// The same argument as [`unlit_wgpu`]: types like [`wgpu::Device`] and
+/// [`wgpu::SamplerDescriptor`] cross this crate's boundary, so both sides have to
+/// name one wgpu.
+pub use unlit_wgpu::wgpu;
+
 pub mod attachments;
 mod behaviour;
 pub mod blit;

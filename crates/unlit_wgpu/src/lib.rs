@@ -15,6 +15,15 @@ wesl_core::wesl_pkg!(
     "unlit_wgpu.rs"
 );
 
+/// The wgpu this crate is built on, re-exported.
+///
+/// Types like [`wgpu::PrimitiveState`], [`wgpu::BlendState`] and
+/// [`wgpu::BindGroupLayout`] appear in this crate's own signatures, so a
+/// caller that depends on another wgpu gets types that do not unify with
+/// these: the two are different types that print and behave alike. Reach this
+/// one through the re-export and both sides name one wgpu.
+pub use wgpu;
+
 pub mod array_pool;
 pub mod buffer_pool;
 pub mod capabilities;
