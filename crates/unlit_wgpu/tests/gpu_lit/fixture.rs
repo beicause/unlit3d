@@ -511,6 +511,7 @@ pub(super) fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstanc
         // ops are ignored for the attachment the pass does not declare.
         let mut pass = context.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
             depth_clear(),
             stencil_clear(),

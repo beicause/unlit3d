@@ -166,6 +166,7 @@ fn render_ui_with(
     {
         let mut pass = context.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
             depth_clear(),
             stencil_clear(),

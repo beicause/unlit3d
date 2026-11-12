@@ -23,6 +23,7 @@ pub(super) async fn a_loaded_color_attachment_keeps_its_contents() {
     {
         let mut pass = context.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
             depth_clear(),
             stencil_clear(),
@@ -35,6 +36,7 @@ pub(super) async fn a_loaded_color_attachment_keeps_its_contents() {
     {
         let mut pass = context.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Load,
             depth_clear(),
             stencil_clear(),

@@ -28,6 +28,7 @@ pub(super) async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     {
         let mut pass = ft.attachments.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
             depth_clear(),
             stencil_clear(),
@@ -97,6 +98,7 @@ pub(super) async fn the_readback_module_returns_a_texture_as_tight_rows() {
     {
         let mut pass = ft.attachments.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
             depth_clear(),
             stencil_clear(),

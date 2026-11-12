@@ -122,6 +122,10 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   小块——那里的多重采样解析是一次 blit，而 blit 会受裁剪矩形限制。其下的源就是它录制
   的源，因此一个 world 可以按帧的需要放任意多个 pass——一个画进离屏目标的 pass 与一个
   把该目标贴到交换链的 pass 是同一个 world 里的两个实体，而不是两个 world。
+- pass 用自己实体的名字录制：wgpu 把它当作这个 pass 录制期间所报校验错误的标签打印出
+  来，因此错误会指名出错的那个 pass，而不是帧里所有 pass 共用的一个常量。名字由
+  `ScopeMut::spawn_named` 给出，否则用 bundle 自身类型的名字；实体没有名字时按
+  `unlit3d::pass` 录制。
 - pass 只指名 view，不拥有它们。附件来自 `FrameAttachments`、`WindowSurface` 或
   `PersistentTarget`，它们都在同一个 world 里，且句柄保持稳定，因此一个 pass 可以每帧
   换一个新的颜色 view 而不触发其下源的重建。交换链的颜色 view 每帧都变，而常驻目标的

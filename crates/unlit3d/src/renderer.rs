@@ -31,6 +31,11 @@ use crate::order::{OrderWarnings, Ordering};
 use crate::pass::{FramePass, FramePassOrder, PassInfo};
 use crate::source::{FrameSourceOrder, RenderContext, Source};
 
+/// The label a pass records under when its entity carries no name: a handle
+/// rebuilt from bits keeps none, and a nameless pass would leave a validation
+/// error saying only that some pass of the frame went wrong.
+const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
+
 /// The top-level frame driver.
 ///
 /// Spawn it once — as a component on a resource entity — and call
@@ -340,8 +345,24 @@ impl Renderer {
                 let load = root
                     .query_one::<&RenderLoadOps>(pass_entity)
                     .map_or_else(|_| RenderLoadOps::default(), |mut load| *load.get());
-                let mut render_pass =
-                    attachments.begin_pass(&mut encoder, load.color, load.depth, load.stencil);
+                // The label reaches the validation errors wgpu raises while
+                // this pass records, so a message about a bad draw names the
+                // pass entity it came from instead of a shared constant. A
+                // caller that wants a readable name states one with
+                // `ScopeMut::spawn_named`; the pass bundle names its entity
+                // after its own type otherwise.
+                let label = world
+                    .entity_name(pass_entity)
+                    .ok()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(FALLBACK_PASS_LABEL);
+                let mut render_pass = attachments.begin_pass(
+                    &mut encoder,
+                    label,
+                    load.color,
+                    load.depth,
+                    load.stencil,
+                );
                 // The scenes composite as one draw list: the sequenced
                 // draws of every source, then the depth-sorted ones pooled
                 // across sources back-to-front, then the trailing ones. That

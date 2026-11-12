@@ -29,6 +29,7 @@
 //! let mut encoder = device.create_command_encoder(&Default::default());
 //! let mut pass = attachments.begin_pass(
 //!     &mut encoder,
+//!     "scene",
 //!     color_clear(),
 //!     depth_clear(), // the reverse-z far plane
 //!     stencil_clear(),
@@ -231,7 +232,13 @@ impl RenderAttachments {
         })
     }
 
-    /// Begin a render pass over the attachments.
+    /// Begin a render pass over the attachments, named `label`.
+    ///
+    /// The label reaches every validation error the pass raises, so the
+    /// message that names the pass also names the thing that owns it — the
+    /// caller's pass entity, say. Errors wgpu reports without it name only the
+    /// command (`RenderPass::draw`) and leave the reader to guess which pass
+    /// of the frame was at fault.
     ///
     /// Each `*_load` value is the load op of its attachment:
     /// [`wgpu::LoadOp::Clear(value)`](wgpu::LoadOp) clears it to `value`,
@@ -253,6 +260,7 @@ impl RenderAttachments {
     pub fn begin_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
+        label: &'a str,
         color_load: wgpu::LoadOp<wgpu::Color>,
         depth_load: wgpu::LoadOp<f32>,
         stencil_load: wgpu::LoadOp<u32>,
@@ -348,7 +356,7 @@ impl RenderAttachments {
         });
 
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("unlit_wgpu::pass"),
+            label: Some(label),
             color_attachments: &color_attachments,
             depth_stencil_attachment,
             timestamp_writes: None,

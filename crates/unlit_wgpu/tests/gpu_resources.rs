@@ -442,6 +442,7 @@ async fn a_texel_array_reads_back_the_elements_it_was_given() {
     {
         let mut pass = attachments.begin_pass(
             &mut encoder,
+            "test pass",
             wgpu::LoadOp::Clear(wgpu::Color::BLACK),
             depth_clear(),
             stencil_clear(),

@@ -165,6 +165,12 @@ without the tree changing.
   so a world holds as many passes as the frame needs — a pass drawing into an
   offscreen target and a pass copying that target onto the swap chain are two
   entities in one world, not two worlds.
+- A pass records under its entity's name: it is what wgpu prints as the label
+  of a validation error raised while the pass records, so an error names the
+  pass it came from instead of a constant shared by every pass of the frame.
+  `ScopeMut::spawn_named` states the name; a bundle states its own type's name
+  otherwise, and a pass whose entity carries none records as
+  `unlit3d::pass`.
 - A pass names views; it does not own them. Attachments come from a
   [`FrameAttachments`](attachments::FrameAttachments), a
   [`WindowSurface`](winit::WindowSurface) or a
