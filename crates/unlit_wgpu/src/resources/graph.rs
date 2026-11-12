@@ -361,6 +361,14 @@ impl ResourceGraph {
             self.dirty_rebuilds -= 1;
         }
         self.order = order;
+        // Every dirty node that carries a recipe was visited and rebuilt, so
+        // the incrementally kept count must have reached zero. A recipe that
+        // dirtied a node behind this walk's back would leave it positive and
+        // make the next maintain skip the walk for a resource that needs it.
+        debug_assert_eq!(
+            self.dirty_rebuilds, 0,
+            "every dirty resource with a recipe is rebuilt by one walk"
+        );
     }
 
     /// Mark `node` and every node built from it dirty.
