@@ -105,9 +105,10 @@ pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
 /// Split a world-space matrix into the parts an entity's
 /// [`Transform`] stores: translation, rotation and scale.
 ///
-/// The decomposition is lossy for sheared matrices, and an axis scaled to
-/// zero keeps an arbitrary rotation (there is no rotation to preserve along a
-/// collapsed axis). Both are fine for an unlit renderer.
+/// The decomposition is lossy for a sheared matrix, and an axis scaled to zero
+/// keeps an arbitrary rotation (there is no rotation to preserve along a
+/// collapsed axis). Neither loss is recoverable from a [`Transform`], which
+/// stores the three parts and nothing else.
 pub(super) fn decompose(matrix: glam::Mat4) -> Transform {
     let translation = matrix.w_axis.truncate();
     let x = matrix.x_axis.truncate();

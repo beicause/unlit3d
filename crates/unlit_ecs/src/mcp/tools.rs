@@ -347,8 +347,8 @@ mod tests {
 
     #[test]
     fn an_unknown_scope_reads_the_same_as_a_dead_one() {
-        // A handle that never named anything must not be told apart from one
-        // that used to: the difference is a probing oracle.
+        // A handle that never named anything must not be told apart from a
+        // dead one: the difference is a probing oracle.
         let world = World::new();
         let bits = 0x1234_5678_9abc_def0u64;
         let restored = Entity::from_bits(bits);

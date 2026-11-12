@@ -281,7 +281,7 @@ impl Allocator {
         self.bin_indices = [None; NUM_LEAF_BINS];
         self.nodes = vec![Node::default(); self.max_nodes as usize];
 
-        // The free list is a stack. Nodes go in in reverse order so that index
+        // The free list is a stack. Nodes go in reverse order so that index
         // zero pops first.
         self.free_nodes = (0..self.max_nodes)
             .map(|i| NodeIndex::new(self.max_nodes - i - 1))
@@ -507,8 +507,8 @@ impl Allocator {
             return false;
         };
 
-        // The chunk used to end at `self.size`, which is aligned because every
-        // node's size is rounded up to the alignment.
+        // The chunk ends at `self.size` before this call, and that end is
+        // aligned because every node's size is rounded up to the alignment.
         match self.tail {
             // The chunk ends in free space, which the appended space is
             // contiguous with: grow that node instead of adding a neighbour, so

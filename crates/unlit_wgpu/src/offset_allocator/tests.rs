@@ -12,9 +12,9 @@ const COPY_ALIGNMENT: NonZeroU32 = NonZeroU32::new(wgpu::COPY_BUFFER_ALIGNMENT a
 
 #[test]
 fn small_float_uint_to_float() {
-    // Denorms, exp=1 and exp=2 + mantissa = 0 are all precise.
-    // NOTE: Assuming 8 values (3 bit) mantissa.
-    // If this test fails, please change this assumption!
+    // Denorms, exp = 1 and exp = 2 with a zero mantissa are all precise.
+    // The 17 below is derived from the 8-value (3-bit) mantissa that
+    // `small_float::MANTISSA_BITS` states; changing it breaks the loop.
     let precise_number_count = 17;
     for i in 0..precise_number_count {
         let round_up = small_float::uint_to_float_round_up(i);
@@ -73,9 +73,8 @@ fn small_float_uint_to_float() {
 
 #[test]
 fn small_float_float_to_uint() {
-    // Denorms, exp=1 and exp=2 + mantissa = 0 are all precise.
-    // NOTE: Assuming 8 values (3 bit) mantissa.
-    // If this test fails, please change this assumption!
+    // The same 8-value (3-bit) mantissa assumption as above: every value
+    // below 17 survives the conversion both ways.
     let precise_number_count = 17;
     for i in 0..precise_number_count {
         let v = small_float::float_to_uint(i);
@@ -83,7 +82,8 @@ fn small_float_float_to_uint() {
     }
 
     // Test that float->uint->float conversion is precise for all numbers.
-    // NOTE: Test values < 240. 240->4G = overflows 32 bit integer.
+    // Values below 240 only: 240 would map to 4G, overflowing a 32-bit
+    // integer.
     for i in 0..240 {
         let v = small_float::float_to_uint(i);
         let round_up = small_float::uint_to_float_round_up(v);

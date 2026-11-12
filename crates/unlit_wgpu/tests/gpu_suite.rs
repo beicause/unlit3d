@@ -1,8 +1,8 @@
 //! The integration suite for `unlit_wgpu`: every GPU test file in one binary.
 //!
-//! Cargo links one binary per test target, and each of these files used to be a
-//! target of its own, so each paid for a link of the whole GPU stack. Here they
-//! are modules of a single target, sharing one compilation of [common].
+//! The files below are modules of a single test target, sharing one
+//! compilation of [common]; the root README's `Tests and benchmarks` section
+//! explains why a crate's integration tests are one binary.
 //!
 //! The manifest states the feature this binary needs (`egui`) rather than the
 //! modules repeating `#[cfg(feature = ...)]`: a target whose required feature is

@@ -1,9 +1,8 @@
 //! The integration suite for `unlit3dx`: every test file in one binary.
 //!
-//! Cargo links one binary per test target, so these files used to be four
-//! targets, each linking the multi-world stack on its own. Here they are
-//! modules of a single target, which libtest's generated harness drives as
-//! usual.
+//! The files below are modules of a single test target, which libtest's
+//! generated harness drives; the root README's `Tests and benchmarks` section
+//! explains why a crate's integration tests are one binary.
 //!
 //! The manifest states the features this binary needs (`audio`, `physics`,
 //! `synth`) rather than each module gating its own tests: a target whose

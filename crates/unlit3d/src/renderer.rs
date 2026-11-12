@@ -83,12 +83,9 @@ pub struct Renderer {
     source_warnings: OrderWarnings<FrameSourceOrder>,
     /// The scene each (pass, source) pair built this frame, keyed by the pair.
     ///
-    /// A scene is the frame's temporary product rather than the source's
-    /// state: a source several passes see is built once per pass, and each
-    /// pass needs the draws for its own target. The slots outlive the frame so
-    /// a steady scene reuses their allocations and a lookup finds one without
-    /// a scan; a pair the world no longer reaches gives its buffers back at the
-    /// end of the frame.
+    /// Slots outlive the frame, so a steady scene reuses its allocations and a
+    /// lookup finds it without a scan; a pair the world no longer reaches gives
+    /// its buffers back at the end of the frame.
     scenes: BTreeMap<(Entity, Entity), SceneSlot>,
     /// Reports sources no pass reaches, without repeating itself every frame.
     placement_warnings: PlacementWarnings,

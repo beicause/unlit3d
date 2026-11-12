@@ -43,8 +43,8 @@ fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
     let mut h = harness();
     let key = LitPipelineKey::new(unlit_options());
 
-    // The mesh packs the channels the caller passed, not the ones the key
-    // used to declare: the options are pure policy now.
+    // The mesh packs the channels the caller passed. The options are pure
+    // policy, so the key declares no channels for the mesh to follow.
     let textured = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
         &key.options,

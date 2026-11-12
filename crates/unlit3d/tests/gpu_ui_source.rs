@@ -1,17 +1,13 @@
 //! End-to-end GPU tests for [`UiSource`] as a frame source.
 //!
-//! Two groups. The first draws UI with no `MeshSource` and no camera at all,
-//! which is the frame shape that used to produce nothing because the renderer
-//! bailed out when it had no camera. The second draws a mesh and a UI in one
-//! pass, which is where the two sources have to agree on record order, scissor
-//! state and the frame's load ops.
-//!
-//! The snapshot coverage that used to live here now runs in `unlit3d_examples`
-//! (the `ui_only` and `mesh_and_ui` scenes), whose snapshot tests verify the
-//! same frames against the stored snapshots. Every remaining test renders one
-//! frame to warm egui up — the first frame does not know the font metrics —
-//! and asserts on the second. Nothing here reads the clock or the layout
-//! feedback, so a frame is reproducible.
+//! Two groups. The first draws UI with no `MeshSource` and no camera at all;
+//! the second draws a mesh and a UI in one pass, which is where the two sources
+//! have to agree on record order, scissor state and the frame's load ops.
+//! Snapshots of these frames are verified by the `ui_only` and `mesh_and_ui`
+//! scenes in `unlit3d_examples`. Every test renders one frame to warm egui up
+//! — the first frame does not know the font metrics — and asserts on the
+//! second. Nothing here reads the clock or the layout feedback, so a frame is
+//! reproducible.
 
 use crate::common::*;
 use unlit_ecs::bundle;
@@ -645,7 +641,7 @@ async fn ui_does_not_clip_the_mesh() {
 /// The resolve that ends a multisampled pass is a blit on the GL and WebGL2
 /// backends, and a blit there is clipped by the scissor rectangle the pass
 /// still holds when it ends. A panel is the last source recorded and every one
-/// of its draws sets a scissor, so a clipped panel used to resolve its own
+/// of its draws sets a scissor, so a clipped panel would resolve its own
 /// rectangle alone and leave the rest of the target as it was, which is a
 /// frame that only repaints where the UI window sits. Covering the whole
 /// target once the sources are recorded is what keeps the resolve whole.

@@ -1,11 +1,9 @@
 //! The integration suite for `unlit3d`: every GPU test the crate has, in one
 //! binary.
 //!
-//! Cargo links one binary per test target, and each of these files used to be a
-//! target of its own. They share the same harness ([common]), so every one of
-//! them paid for the harness and for a link of the whole GPU stack. Here they
-//! are modules of a single target: [common] is compiled once, and the files
-//! below are compiled into one binary.
+//! The files below are modules of a single test target, sharing one
+//! compilation of [common]; the root README's `Tests and benchmarks` section
+//! explains why a crate's integration tests are one binary.
 //!
 //! The registry each module builds with `gpu_tests!` is concatenated below and
 //! handed to the runner once. The runner itself is `gpu_test_main!`: it drives

@@ -520,9 +520,8 @@ pub trait RenderPipelineKey: 'static {
 /// [GpuRenderPipeline](crate::components::GpuRenderPipeline) component can hold
 /// any family's key without naming it in its type.
 ///
-/// The family is still chosen by the key's type: [Self::as_any] is what a
-/// family downcasts with to tell its own keys from another family's, exactly as
-/// the component's type parameter used to.
+/// The family is chosen by the key's type: [Self::as_any] is what a family
+/// downcasts with to tell its own keys from another family's.
 pub trait DynRenderPipelineKey: 'static {
     /// This key as [`Any`](core::any::Any), for a family to downcast to its
     /// own key type.

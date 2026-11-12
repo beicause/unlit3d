@@ -229,8 +229,8 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 
     // The replacement takes the ranges the cube vacated — one allocation per
     // pool — and draws at the spot the cube drew at, tinted pure red through
-    // its per-instance colour so the pixel the cube used to own can only come
-    // from the replacement's own data.
+    // its per-instance colour, so the pixel there can only come from the
+    // replacement's own data.
     let replacement = gpu.allocate_cube_mesh(&world);
     gpu.spawn(
         &mut world,

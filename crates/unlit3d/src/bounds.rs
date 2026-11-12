@@ -167,8 +167,7 @@ mod tests {
     }
 
     /// A collapsed axis contributes nothing to the support radius instead of
-    /// becoming an un-normalizable direction, which the old unit-axis form
-    /// would have had to special-case.
+    /// becoming an un-normalizable direction, so no axis needs a special case.
     #[test]
     fn a_collapsed_axis_bounds_nothing() {
         let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(1.0));

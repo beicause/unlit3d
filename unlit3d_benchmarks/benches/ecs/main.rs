@@ -162,8 +162,7 @@ fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     sum
 }
 
-/// Three [`Scope::query_one`] per entity: the shape the resolve pass used to
-/// have.
+/// Three [`Scope::query_one`] per entity, as in the resolve pass.
 fn get_three(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {

@@ -1,8 +1,8 @@
 //! The integration suite for `unlit_ecs`: every test file in one binary.
 //!
-//! Cargo links one binary per test target, so these files used to be nine
-//! targets, each linking the crate on its own. Here they are modules of a
-//! single target, which libtest's generated harness drives as usual.
+//! The files below are modules of a single test target, which libtest's
+//! generated harness drives; the root README's `Tests and benchmarks` section
+//! explains why a crate's integration tests are one binary.
 
 #[path = "behavior.rs"]
 mod behavior;

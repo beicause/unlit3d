@@ -1,9 +1,8 @@
 //! GPU coverage for vertex skinning: the validation of a skinned mesh's
 //! joint stream and pose binding, and a pose shared by several meshes.
 //!
-//! The multi-frame snapshot coverage that used to live here now runs in
-//! `unlit3d_examples` (the `skinned` scene), whose snapshot test verifies
-//! the same frames against the stored snapshots.
+//! Multi-frame snapshots of the same frames are verified by the `skinned`
+//! scene in `unlit3d_examples`.
 
 use crate::common::*;
 use unlit_ecs::bundle;

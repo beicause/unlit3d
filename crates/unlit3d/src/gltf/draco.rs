@@ -93,8 +93,8 @@ pub(super) fn fill_accessors(
             // min/max are kept as the document wrote them. glTF requires them on
             // POSITION and a conformant generator writes them for the decoded data.
             // A normalized integer accessor stores them unscaled while this rewrite
-            // bakes the scale into the values, so for that case alone they no longer
-            // describe the data; nothing in this loader reads them.
+            // bakes the scale into the values, so for that case alone they describe
+            // the pre-rewrite values; nothing in this loader reads them.
             accessor.normalized = false;
         }
 

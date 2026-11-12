@@ -1,6 +1,6 @@
 //! GPU coverage for the lit pipeline itself: a frame's lights reaching the
-//! surface, the ambient term, and the kinds whose records used to be shaded
-//! wrongly.
+//! surface, the ambient term, and the light kinds whose records are easy to
+//! shade wrongly.
 //!
 //! The covered scene in `unlit3d_examples` (the `lit` scene) verifies how the
 //! four kinds look; the cases here pin the arithmetic a picture can hide — a

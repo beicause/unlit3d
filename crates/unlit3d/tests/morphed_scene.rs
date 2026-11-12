@@ -2,9 +2,8 @@
 //! mesh's targets and weight binding, and a weight entity shared by several
 //! meshes.
 //!
-//! The multi-frame snapshot coverage that used to live here now runs in
-//! `unlit3d_examples` (the `morphed` scene), whose snapshot test verifies
-//! the same frames against the stored snapshots.
+//! Multi-frame snapshots of the same frames are verified by the `morphed`
+//! scene in `unlit3d_examples`.
 
 use crate::common::*;
 use unlit_ecs::bundle;

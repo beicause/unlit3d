@@ -711,8 +711,9 @@ mod tests {
         let center = Vec3::new(5.0, 0.0, -10.0);
         let (lo, hi) = screen_cells(&projection, true, center, 10.0, 1.0, dims, full)
             .expect("the tangent bounds overlap the screen");
-        // The exact tangents reach NDC x = 0.3900 and 0.6150; the old disc
-        // around the center's NDC x = 0.5 ended at 0.6005 and missed cell 7.
+        // The exact tangents reach NDC x = 0.3900 and 0.6150, while a disc of
+        // the sphere's screen radius around the center's NDC x = 0.5 ends at
+        // 0.6005 and misses cell 7.
         assert_eq!(lo.0, 6);
         assert_eq!(hi.0, 7);
         assert!(hi.1 >= lo.1);

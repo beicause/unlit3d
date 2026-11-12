@@ -13,8 +13,8 @@ use super::*;
 /// luck and fails on any other width.
 pub(super) async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     // 60 RGBA pixels is 240 bytes: a multiple of the buffer alignment (4) but
-    // not of the copy row alignment (256), which is exactly the case the
-    // harness used to reject.
+    // not of the copy row alignment (256), which is the case a copy that pads
+    // rows without stripping the padding gets wrong.
     const WIDTH: u32 = 60;
     const HEIGHT: u32 = 8;
     let ctx = Ctx::headless().await;
