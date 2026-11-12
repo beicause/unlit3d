@@ -17,16 +17,15 @@ use super::{
 use crate::lit::LitPipelineKey;
 use crate::mesh_source::MeshSource;
 use unlit_ecs::Scope;
-use unlit_wgpu::pipeline::{BaseColorChannels, LitOptions};
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::resources::TextureExt;
 
 impl LitGltf {
     /// The [`LitPipelineKey`] the primitive renders with.
     ///
     /// The key carries only what a caller picks: the texture filtering the
-    /// material's base-color texture needs, the luminance expansion that
-    /// texture's format calls for, whether a `BLEND` material blends without
-    /// writing depth and whether a `MASK` one cuts. Everything geometric —
+    /// material's base-color texture needs, whether a `BLEND` material blends
+    /// without writing depth and whether a `MASK` one cuts. Everything geometric —
     /// which vertex channels the primitive carries, whether it samples its
     /// base-color texture, whether it skins or morphs — is a property of the
     /// draw, so [`Self::insert_mesh`] uploads the streams the primitive's own
@@ -57,10 +56,6 @@ impl LitGltf {
         {
             let image = info.texture().source().index();
             options.texture_filtering = self.image_filtering(image, device);
-            // A one- or two-channel texture uploads in a format that cannot
-            // decode sRGB for itself, so the shader expands the texel and
-            // decodes the luminance instead.
-            options.base_color = self.image_luminance(image);
         }
         // glTF base colors and textures are straight (non-premultiplied)
         // alpha, which is exactly what `ALPHA_BLENDING` composites. A blended
@@ -94,10 +89,11 @@ impl LitGltf {
 
     /// Upload `image` into `source`'s resource graph and return its handle.
     ///
-    /// The texture holds the image's decoded pixels in the GPU format closest
-    /// to them — see the [module docs](super#texture-formats); its sampler is
-    /// not uploaded here, because that belongs to the material that samples
-    /// it.
+    /// The texture holds the image's decoded pixels widened into the
+    /// four-channel format of their bit depth — see the
+    /// [module docs](super#texture-formats) — and carries as much of a mip
+    /// chain as the document's [`MipChain`] asks for. Its sampler is not
+    /// uploaded here, because that belongs to the material that samples it.
     pub fn insert_image(
         &self,
         source: &mut MeshSource,
@@ -108,7 +104,7 @@ impl LitGltf {
         let device = source.device(world);
         let format = image_format(data, &device);
         let (width, height) = (data.width, data.height);
-        let mips = encode_mip_chain(data, format.format);
+        let mips = encode_mip_chain(data, format.format, self.mips);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -336,23 +332,5 @@ impl LitGltf {
     /// sample — the same answer [`Self::insert_image`] bakes into the handle.
     fn image_filtering(&self, image: usize, device: &wgpu::Device) -> bool {
         image_format(&self.images[image], device).filtering
-    }
-
-    /// How image `image`'s texels have to be expanded once sampled: nothing for
-    /// a texture that already carries RGB, and the matching base-color layout
-    /// for one carrying a single luma channel, or luma and alpha.
-    ///
-    /// Both bit depths are affected. Neither `R8Unorm` nor `R16Float` can
-    /// decode sRGB for itself — WebGPU attaches the transfer function only to
-    /// four-channel formats — so the shader does it, on the assumption the
-    /// grayscale source is sRGB-encoded just as an RGB one would be.
-    fn image_luminance(&self, image: usize) -> BaseColorChannels {
-        match self.images[image].format {
-            gltf::image::Format::R8 | gltf::image::Format::R16 => BaseColorChannels::Luminance,
-            gltf::image::Format::R8G8 | gltf::image::Format::R16G16 => {
-                BaseColorChannels::LuminanceAlpha
-            }
-            _ => BaseColorChannels::Rgba,
-        }
     }
 }

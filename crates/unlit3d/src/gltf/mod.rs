@@ -65,35 +65,30 @@
 //!
 //! # Texture formats
 //!
-//! An image is uploaded in the GPU format closest to the pixels the loader
-//! decoded, so a document's textures keep their channels and their precision
-//! instead of all being widened to RGBA8: 8-bit layouts upload as
-//! `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`, 16-bit ones as the half-float
-//! formats of the same width, and 32-bit float ones as `Rgba32Float`. Two
-//! shapes have no format of their own and widen by one channel: the
-//! three-channel layouts, because neither an sRGB nor a float format comes in
-//! three channels, and a 32-bit float one for the same reason.
+//! An image is uploaded in the four-channel GPU format of its bit depth: an
+//! 8-bit layout lands in `Rgba8UnormSrgb`, a 16-bit one in `Rgba16Float`,
+//! and a 32-bit float one in `Rgba32Float`. Source channels the format does
+//! not carry widen — a three-channel image gains an opaque alpha, and a
+//! one- or two-channel one fans its luma out to every color slot, with its
+//! alpha (the second channel, for a two-channel image) or opacity kept.
 //!
-//! A one- or two-channel image is the interesting case: WebGPU has no
-//! luminance format and no component swizzle, so a grayscale texture samples
-//! as `(l, 0, 0, 1)` — the red channel carrying the luma — unless the shader
-//! expands it. The built-in lit shader does, under
-//! `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA`, which
-//! [`LitGltf::pipeline_key`] sets for exactly those uploads: the texel
-//! fans out to RGB (and its second channel to alpha) and the luminance is
-//! decoded from sRGB, which is the encoding the glTF spec asks of a base-color
-//! texture and the one an RGB upload would have been decoded by the sampler.
-//! A caller writing its own shader either sets the same flags or takes the
-//! luma from the red channel as it is.
+//! The widening is what makes an 8-bit upload correct: WebGPU attaches the
+//! sRGB transfer function only to four-channel formats, so a grayscale texture
+//! could not decode itself, but a widened one does — the sampler decodes the
+//! texel exactly as it would an RGB one, which is the encoding the glTF spec
+//! asks of a base-color texture. The float formats are linear data, which the
+//! spec asks no transfer function of, and they upload without one.
 //!
-//! Every upload carries a full mip chain, averaged at load time rather than
-//! sampled from a texture that has only its base level: a minified texture
-//! with one level aliases whatever the sampler is set to. Each level is the
-//! box average of the one above it, taken in the representation that makes an
-//! average mean what it does to light — an sRGB image averages in linear
-//! light, a half-float one in single precision, and the rest in their own
-//! texels. Averaging a stored encoding instead would shift the level's
-//! brightness, which is the error the chain exists to avoid.
+//! Every upload carries a mip chain by default, averaged at load time rather
+//! than sampled from a texture that has only its base level: a minified
+//! texture with one level aliases whatever the sampler is set to. Each level
+//! is the box average of the one above it, taken in the representation that
+//! makes an average mean what it does to light — an sRGB image averages in
+//! linear light, a half-float one in single precision, and a single-precision
+//! one in its own texels. Averaging a stored encoding instead would shift the
+//! level's brightness, which is the error the chain exists to avoid. How much
+//! of a chain a document builds follows [`MipChain`], set with
+//! [`LitGltf::mip_chain`].
 //!
 //! `Rgba32Float` is also the only upload a device may refuse to filter: it is
 //! `unfilterable-float` without `Features::FLOAT32_FILTERABLE`, and then the
@@ -170,6 +165,7 @@ mod draco;
 #[cfg(test)]
 mod draco_tests;
 mod image;
+pub use self::image::MipChain;
 mod material;
 mod playback;
 mod scene;
@@ -295,6 +291,22 @@ pub struct LitGltf {
     /// random access to the keyframes, so they are collected once here rather
     /// than on every frame that plays the clip.
     clips: Vec<OnceLock<Vec<animation::Channel>>>,
+    /// How much of a mip chain the document's textures carry.
+    mips: MipChain,
+}
+
+impl LitGltf {
+    /// Set how much of a mip chain the document's textures carry.
+    ///
+    /// The default is [`MipChain::Full`]: every texture builds the chain down
+    /// to one texel, so a minified texture does not alias. Pass
+    /// [`MipChain::Off`] to upload base levels only, or [`MipChain::Levels`]
+    /// to cap the chain — for a caller that knows how far its textures are
+    /// minified, or wants the upload itself cheap.
+    pub fn mip_chain(mut self, mips: MipChain) -> Self {
+        self.mips = mips;
+        self
+    }
 }
 
 /// A texture uploaded from a glTF image.
@@ -312,11 +324,12 @@ pub struct GltfImage {
     pub view: ResHandle<TextureView>,
     /// Whether the texture may be sampled with a filtering sampler.
     ///
-    /// An image is uploaded in the GPU format closest to its own pixels, and
-    /// some of those — 32-bit float, unless the device has
-    /// `Features::FLOAT32_FILTERABLE` — can only be bound to a non-filtering
-    /// sampler. A material built from this image has to declare the matching
-    /// bind-group layout, which is what this flag decides.
+    /// An 8- or 16-bit upload always filters; the one upload that may not is
+    /// 32-bit float — `Rgba32Float` is `unfilterable-float` unless the
+    /// device has `Features::FLOAT32_FILTERABLE`, and then it can only be
+    /// bound to a non-filtering sampler. A material built from this image has
+    /// to declare the matching bind-group layout, which is what this flag
+    /// decides.
     pub filtering: bool,
 }
 
@@ -509,6 +522,7 @@ impl LitGltf {
             order,
             morph_targets,
             clips,
+            mips: MipChain::default(),
         }
     }
 

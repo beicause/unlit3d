@@ -825,20 +825,21 @@ own attributes (see `LitGltf::pipeline_key`), so the variant it draws with never
 asks for a stream the mesh does not have. The full list of what the loader reads
 and what it ignores is the `gltf` module's supported subset.
 
-An image is uploaded in the GPU format closest to the pixels the loader decoded,
-so textures keep their channels and their precision instead of all being widened
-to RGBA8. The mapping, and the two cases that need a shader or a layout to match
-— a grayscale texture's luminance and an unfilterable `Rgba32Float` — are in
-the `gltf` module.
+An image is uploaded in the four-channel GPU format of its bit depth, widened
+where the source carries fewer channels — which is what lets an 8-bit grayscale
+texture decode its sRGB encoding in the sampler, the way an RGB one already
+could. The mapping, and the one format a device may refuse to filter
+(`Rgba32Float`), are in the `gltf` module.
 
-Every upload comes with a full mip chain, averaged at load time rather than left
+Every upload comes with a mip chain, averaged at load time rather than left
 to a sampler reading a texture that has only its base level: a minified texture
 with one level aliases whatever the sampler is set to. Each level is the box
 average of the one above it, taken in the representation that makes an average
 mean what it does to light — an sRGB image averages in linear light, a half-float
-one in single precision, and the rest in their own texels. Averaging a stored
+one in single precision, and a single-precision one in its own texels. Averaging a stored
 encoding instead would shift the level's brightness, which is the error the chain
-exists to avoid.
+exists to avoid. How much of the chain a document builds follows `MipChain`,
+set with `LitGltf::mip_chain`.
 ## UI
 
 `ui::UiPanel` is itself a behaviour component holding a closure, so
