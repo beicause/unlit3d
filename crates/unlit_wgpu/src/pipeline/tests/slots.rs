@@ -138,6 +138,7 @@ fn composes_each_variant_to_valid_wgsl() {
             for texel_arrays in [false, true] {
                 let wgsl = compose_shader(&candidate, texel_arrays)
                     .unwrap_or_else(|error| panic!("variant {candidate:?} failed: {error}"));
+                assert_valid_wgsl(&wgsl, &format!("variant {candidate:?}"));
                 assert!(wgsl.contains("fn vs_main"), "variant {candidate:?}");
                 assert!(wgsl.contains("fn fs_main"), "variant {candidate:?}");
                 // Disabled features must leave no conditional attributes behind.

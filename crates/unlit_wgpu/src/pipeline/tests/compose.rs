@@ -2,6 +2,28 @@
 
 use super::*;
 
+/// Every built-in entry shader composes into a module naga accepts, under each
+/// state its flags can take.
+///
+/// The lit variants are covered by the slot suite, which composes every one of
+/// them; this covers the others — the strokes under both states of their one
+/// flag, and the stages that take no flags at all — because a slot enumerates
+/// lit variants only.
+#[test]
+fn every_built_in_module_composes_to_valid_wgsl() {
+    let cases: [(&str, &[(&'static str, bool)]); 4] = [
+        ("line", &[("HARD_EDGE", false)]),
+        ("line", &[("HARD_EDGE", true)]),
+        ("blit", &[]),
+        ("fullscreen_vertex", &[]),
+    ];
+    for (module, features) in cases {
+        let wgsl = crate::compose::compose(module, features, None)
+            .unwrap_or_else(|error| panic!("{module} composes: {error}"));
+        assert_valid_wgsl(&wgsl, module);
+    }
+}
+
 /// A caller composes their own entry shader against the built-in package
 /// with `wesl` directly: [`crate::shader`] is the `StaticPackage` that
 /// resolves `import unlit_wgpu::…`.

@@ -142,7 +142,11 @@ public fn pixel_of(clip: vec4<f32>, size: vec2<f32>) -> vec2<f32> {
 }
 
 /// The vertex stage: one corner of the quad covering `input`'s segment.
-public fn vertex_out(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutput {
+///
+/// `index` is the draw's vertex ordinal, the entry point's
+/// `@builtin(vertex_index)`: a non-entry function cannot carry a builtin of
+/// its own, so the entry point reads it and passes it on.
+public fn vertex_out(input: VertexInput, index: u32) -> VertexOutput {
     let corner = CORNERS[index];
     let station = corner.x;
     let side = corner.y;

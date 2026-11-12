@@ -9,6 +9,25 @@ mod instance;
 mod slots;
 mod variants;
 
+/// Asserts that `wgsl` parses and validates, without a device.
+///
+/// Every assertion made here would otherwise be answered by the driver: a
+/// module that a GPU test never draws with — a variant no scene selects, the
+/// replacement a caller passes — would go unchecked, and the composition is
+/// offline work that fails offline. Composing and validating are the same
+/// answer the driver would give, so a broken module is caught by the unit
+/// suite rather than by whichever GPU test happens to draw it first.
+fn assert_valid_wgsl(wgsl: &str, what: &str) {
+    let module =
+        wgpu::naga::front::wgsl::parse_str(wgsl).unwrap_or_else(|error| panic!("{what}: {error}"));
+    wgpu::naga::valid::Validator::new(
+        wgpu::naga::valid::ValidationFlags::all(),
+        wgpu::naga::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .unwrap_or_else(|error| panic!("{what}: {error:?}"));
+}
+
 /// Whether `source` calls `call` with `wrapper` immediately before it.
 ///
 /// Every name a module imports is mangled with the path it came from — a call to
