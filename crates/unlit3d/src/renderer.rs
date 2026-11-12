@@ -77,6 +77,12 @@ pub struct Renderer {
     /// Reports passes that declared the same [`FramePassOrder`], without
     /// repeating itself every frame.
     pass_warnings: OrderWarnings<FramePassOrder>,
+    /// Reports passes that name a camera the world no longer has, without
+    /// repeating itself every frame.
+    camera_warnings: MissingCameraWarnings,
+    /// The (pass, camera) pairs this frame found missing, reused so the check
+    /// allocates nothing.
+    missing_cameras: Vec<(Entity, Entity)>,
     /// The sources of the pass being recorded, in record order.
     ///
     /// One buffer serves every pass in turn, because a pass's sources are
@@ -143,6 +149,40 @@ impl PlacementWarnings {
     }
 }
 
+/// Reports passes whose stated camera the world no longer has, without
+/// repeating itself every frame.
+///
+/// A pass keeps the camera it names after that entity is despawned or loses its
+/// [`Camera`](crate::components::Camera), so the check runs every frame and
+/// would otherwise write one line per pass per frame. It remembers the pairs it
+/// last reported and speaks up again only for a pair it has not reported —
+/// exactly when a pass's camera went away.
+#[derive(Default)]
+struct MissingCameraWarnings {
+    reported: Vec<(Entity, Entity)>,
+}
+
+impl MissingCameraWarnings {
+    /// Report the `missing` (pass, camera) pairs that were not reported last
+    /// frame, and return whether there was anything new to report.
+    fn check(&mut self, missing: &[(Entity, Entity)]) -> bool {
+        let mut reported = false;
+        for pair in missing {
+            if !self.reported.contains(pair) {
+                log::warn!(
+                    "the pass {:?} names the camera {:?}, which is gone or carries no Camera, so its sources pick one themselves",
+                    pair.0,
+                    pair.1
+                );
+                reported = true;
+            }
+        }
+        self.reported.clear();
+        self.reported.extend_from_slice(missing);
+        reported
+    }
+}
+
 impl Renderer {
     /// Build a renderer driving the frame context `ctx`.
     ///
@@ -157,6 +197,8 @@ impl Renderer {
             context: ctx,
             passes: Ordering::default(),
             pass_warnings: OrderWarnings::default(),
+            camera_warnings: MissingCameraWarnings::default(),
+            missing_cameras: Vec::new(),
             sources: Ordering::default(),
             source_warnings: OrderWarnings::default(),
             scenes: BTreeMap::new(),
@@ -292,7 +334,7 @@ impl Renderer {
             let context = self.context;
             let root = world.root_scope();
             for (pass_entity, pass) in root.query::<(Entity, &FramePass)>().iter() {
-                let Some(info) = self.pass_info(world, pass) else {
+                let Some(info) = self.pass_info(world, pass_entity, pass) else {
                     continue;
                 };
                 // Each source builds against its own subtree: the source
@@ -440,6 +482,8 @@ impl Renderer {
         // longer exists.
         self.scenes.retain(|_, slot| slot.used);
         self.source_warnings.retain_owners(self.passes.entities());
+        self.camera_warnings.check(&self.missing_cameras);
+        self.missing_cameras.clear();
 
         {
             profiling::scope!("renderer.frame.submit");
@@ -488,14 +532,21 @@ impl Renderer {
     ///
     /// The camera the pass names is checked here, once per frame rather than
     /// once per source: a pass naming an entity that carries no `Camera` — or
-    /// a despawned one — is warned about and reported as no camera, so its
-    /// sources fall back to finding one themselves.
+    /// a despawned one — is reported as no camera, so its sources fall back to
+    /// finding one themselves. The pair joins [`Self::missing_cameras`] rather
+    /// than warning on the spot: a pass keeps the name after the entity goes
+    /// away, so the report is deduplicated once the frame's passes are known.
     ///
     /// # Panics
     ///
     /// If one of the pass's views is gone from the graph, or if it is not a
     /// texture view.
-    fn pass_info(&self, world: &World, pass: &FramePass) -> Option<PassInfo> {
+    fn pass_info(
+        &mut self,
+        world: &World,
+        pass_entity: Entity,
+        pass: &FramePass,
+    ) -> Option<PassInfo> {
         let attachments = pass.attachments(world, self.context)?;
         let camera = pass.camera.filter(|camera| {
             let has_camera = world
@@ -503,11 +554,7 @@ impl Renderer {
                 .query_one::<&crate::components::Camera>(*camera)
                 .is_ok();
             if !has_camera {
-                log::warn!(
-                    "the pass at {:?} names the camera {:?}, which is gone or carries no Camera, so its sources pick one themselves",
-                    pass.order,
-                    camera
-                );
+                self.missing_cameras.push((pass_entity, *camera));
             }
             has_camera
         });
@@ -605,5 +652,32 @@ mod tests {
              misplaced one is reported"
         );
         assert!(renderer.reached.contains(&under));
+    }
+
+    /// A pass keeps the camera it names after that entity goes away, so the
+    /// missing pair is one every frame; it is reported once, not once a frame.
+    #[test]
+    fn a_missing_camera_is_reported_once() {
+        let pass = Entity::from_raw(1, 0);
+        let camera = Entity::from_raw(2, 0);
+        let another = Entity::from_raw(3, 0);
+        let mut warnings = MissingCameraWarnings::default();
+
+        assert!(
+            warnings.check(&[(pass, camera)]),
+            "a pair not reported before is reported"
+        );
+        assert!(
+            !warnings.check(&[(pass, camera)]),
+            "the same pair on the next frame says nothing"
+        );
+        assert!(
+            warnings.check(&[(pass, camera), (pass, another)]),
+            "a pass that names a second missing camera is news again"
+        );
+        assert!(
+            !warnings.check(&[(pass, another)]),
+            "dropping one of the pairs leaves the other as last reported"
+        );
     }
 }
