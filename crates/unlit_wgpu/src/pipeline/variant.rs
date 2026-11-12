@@ -46,7 +46,7 @@ impl LitVariant {
     ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 18] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); FEATURE_COUNT] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (

@@ -2,6 +2,16 @@ use super::*;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
+/// The capacity a feature list is stored with: the widest flag set the built-in
+/// families compose with.
+///
+/// It is a capacity hint rather than a limit — [`ShaderRecipe`] grows past it
+/// when a caller composes with more — so the only thing it has to keep up
+/// with is the largest list a family returns: the
+/// [`LitVariant`](crate::pipeline::LitVariant) `features` list, which is
+/// declared with this same constant.
+pub const FEATURE_COUNT: usize = 18;
+
 /// The identity of one composed shader module: everything the WGSL depends on
 /// and nothing else.
 ///
@@ -21,7 +31,7 @@ pub struct ShaderRecipe {
     /// a caller's stage module is mounted under.
     pub module: &'static str,
     /// The conditional-compilation flags the module composes with.
-    pub features: SmallVec<[(&'static str, bool); 18]>,
+    pub features: SmallVec<[(&'static str, bool); FEATURE_COUNT]>,
     /// The caller's module mounted in place of the package's, if any.
     pub shader: Option<Shader>,
 }
@@ -61,19 +71,24 @@ impl core::fmt::Debug for ShaderRecipe {
     }
 }
 
-/// The composed shader modules one device is drawing with, shared by every
-/// pipeline family that draws on it.
+/// The composed shader modules one holder is drawing with, keyed on the source
+/// each was composed from.
 ///
 /// Composing a WESL module is offline work — a resolver, a compiler, a
 /// conditional-compilation pass — and building the module from the result is
-/// another. Neither wgpu nor the pipeline cache pools the result: a family
-/// keyed on its whole pipeline state composes afresh for a variant that only
-/// turned off depth writes, and a second family drawing the same built-in stage
-/// composes its own copy. Both go through here instead, so one device composes
-/// one key once.
+/// another. Neither wgpu nor the pipeline cache pools the result, so a family
+/// keyed on its whole pipeline state would compose afresh for a variant that
+/// only turned off depth writes. Going through here instead, one `ShaderRecipe`
+/// is composed once however many variants ask for it.
 ///
-/// The cache never evicts: a built-in pipeline family has finitely many
-/// variants, and their modules are that many keys at most.
+/// Who holds the cache decides how far that reaches. A [`Variants`] family
+/// holds one, so every variant of that family shares its modules; a source that
+/// builds pipelines outside a family — the UI, whose targets each bring their
+/// own pipeline — holds one of its own across them. Two holders do not share
+/// modules, so a module two of them both draw with is composed once per holder.
+///
+/// The cache never evicts: a family has finitely many variants, and their
+/// modules are that many keys at most.
 pub struct ShaderCache {
     /// Composed modules, by the source they were composed from.
     modules: HashMap<ShaderRecipe, wgpu::ShaderModule>,
