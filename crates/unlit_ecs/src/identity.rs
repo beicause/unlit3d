@@ -4,8 +4,9 @@
 //! Every world numbers its entities from zero, so a single [`Entity`] value
 //! exists in all of them and means something different in each. A handle that
 //! leaves the world that made it therefore travels as a [`RemoteEntity`] - the
-//! handle and the [`WorldId`] of the world it was made in - and [`World::resolve`]
-//! turns one down when it names a world other than the resolver's, rather than
+//! handle and the [`WorldId`] of the world it was made in - and
+//! [`World::resolve`](crate::World::resolve) turns one down when it names a
+//! world other than the resolver's, rather than
 //! handing out whatever local entity happens to share its bits.
 //!
 //! An id is assigned when the world is made and stays with it until it is
@@ -36,7 +37,8 @@ impl WorldId {
 /// This is the handle to carry across a thread, a job or a channel. The plain
 /// [`Entity`] is only an index and a generation into one world's storage, so the
 /// pair is what stays meaningful once the handle is read anywhere else;
-/// [`World::remote`] makes one and [`World::resolve`] reads one back.
+/// [`World::remote`](crate::World::remote) makes one and
+/// [`World::resolve`](crate::World::resolve) reads one back.
 ///
 /// The fields are public so that a message can be built and taken apart without
 /// a world at hand: the world that receives it is the one that decides whether

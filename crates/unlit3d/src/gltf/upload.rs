@@ -92,7 +92,8 @@ impl LitGltf {
     /// The texture holds the image's decoded pixels widened into the
     /// four-channel format of their bit depth — see the
     /// [module docs](super#texture-formats) — and carries as much of a mip
-    /// chain as the document's [`MipChain`] asks for. Its sampler is not
+    /// chain as the document's [`MipChain`](crate::gltf::MipChain) asks for. Its
+    /// sampler is not
     /// uploaded here, because that belongs to the material that samples it.
     pub fn insert_image(
         &self,

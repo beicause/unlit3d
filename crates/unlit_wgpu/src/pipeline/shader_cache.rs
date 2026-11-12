@@ -7,9 +7,8 @@ use smallvec::SmallVec;
 ///
 /// It is a capacity hint rather than a limit — [`ShaderRecipe`] grows past it
 /// when a caller composes with more — so the only thing it has to keep up
-/// with is the largest list a family returns: the
-/// [`LitVariant`](crate::pipeline::LitVariant) `features` list, which is
-/// declared with this same constant.
+/// with is the largest list a family returns: the [`LitVariant`] `features`
+/// list, which is declared with this same constant.
 pub const FEATURE_COUNT: usize = 18;
 
 /// The identity of one composed shader module: everything the WGSL depends on
@@ -17,7 +16,7 @@ pub const FEATURE_COUNT: usize = 18;
 ///
 /// A pipeline's state — its blend, its cull mode, which surface it draws into —
 /// changes nothing about the source a stage is compiled from. So the pipeline
-/// key ([`PipelineVariant`](crate::specialize::PipelineVariant)) is finer than
+/// key ([`PipelineVariant`]) is finer than
 /// this one: many variants of one family compose the same module, and
 /// [`ShaderCache`] builds it once for all of them.
 ///
@@ -81,7 +80,8 @@ impl core::fmt::Debug for ShaderRecipe {
 /// only turned off depth writes. Going through here instead, one `ShaderRecipe`
 /// is composed once however many variants ask for it.
 ///
-/// Who holds the cache decides how far that reaches. A [`Variants`] family
+/// Who holds the cache decides how far that reaches. A
+/// [`Variants`](crate::specialize::Variants) family
 /// holds one, so every variant of that family shares its modules; a source that
 /// builds pipelines outside a family — the UI, whose targets each bring their
 /// own pipeline — holds one of its own across them. Two holders do not share

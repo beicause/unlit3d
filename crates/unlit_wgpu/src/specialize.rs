@@ -27,7 +27,7 @@
 //! pays one pointer comparison per lookup. A family whose shader is generated
 //! per variant, like the built-in lit one, cannot: many of its variants compile
 //! the same source, so the module is composed through
-//! [ShaderCache](crate::pipeline::ShaderCache), which is keyed on the source
+//! [ShaderCache], which is keyed on the source
 //! rather than on the pipeline. Cached variants are never evicted, matching the
 //! bounded-variant assumption.
 //!

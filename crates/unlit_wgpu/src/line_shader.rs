@@ -140,7 +140,8 @@ pub struct LineOptions {
     ///
     /// A caller's module is composed in place of the built-in source and
     /// changes nothing else: the layouts, the instance record and the
-    /// entry-point names stay the variant's. See [`Shader`].
+    /// entry-point names stay the variant's. See
+    /// [`Shader`](crate::pipeline::Shader).
     ///
     /// The shader takes part in equality and hashing whole, label included:
     /// two options whose shaders differ at all — a name among the

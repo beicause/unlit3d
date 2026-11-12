@@ -9,10 +9,10 @@
 //!
 //! The state the source owns is grouped by what it is for, and each group
 //! lives in its own submodule next to the code that maintains it:
-//! [`FrameArrays`] carries the metadata entry every mesh owns and the pose data
+//! `FrameArrays` carries the metadata entry every mesh owns and the pose data
 //! a draw reads, [`Lights`] the clustered lights and the uniforms describing
-//! them, [`MeshPools`] the vertex and index pools a pooled mesh shares, and
-//! [`FrameCaches`] the allocations one frame reuses.
+//! them, `MeshPools` the vertex and index pools a pooled mesh shares, and
+//! `FrameCaches` the allocations one frame reuses.
 //!
 //! The behaviour lives beside them: `pooled` allocates a mesh that shares the
 //! source's pools, `geometry` allocates meshes that own their buffers together

@@ -32,7 +32,7 @@ pub struct Lights {
     /// The source clusters every frame that has an active camera and a visible
     /// mesh, whether or not it draws a lit variant, since a frame's camera
     /// moves and its lights move with it. Its near and far planes are the
-    /// clustering's own: a [Camera](crate::components::Camera) carries a
+    /// clustering's own: a [Camera] carries a
     /// projection, not the extents that projection was built from.
     pub clustering: ClusterConfig,
     /// Reused per-frame light records, ranked by importance by the clusterer.
