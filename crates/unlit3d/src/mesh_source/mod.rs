@@ -162,10 +162,11 @@ pub struct MeshSource {
     lighting_buf: ResHandle<wgpu::Buffer>,
     /// The cluster grid this frame's lights are assigned to.
     ///
-    /// The source clusters every frame a lit pipeline is registered for, since
-    /// a frame's camera moves and its lights move with it. Its near and far
-    /// planes are the clustering's own: a [Camera]
-    /// carries a projection, not the extents that projection was built from.
+    /// The source clusters every frame that has an active camera and a visible
+    /// mesh, whether or not it draws a lit variant, since a frame's camera
+    /// moves and its lights move with it. Its near and far planes are the
+    /// clustering's own: a [Camera] carries a projection, not the extents that
+    /// projection was built from.
     pub clustering: ClusterConfig,
     /// Reused per-frame light records, ranked by importance by the clusterer.
     packed_lights: Vec<PackedLight>,
@@ -176,7 +177,8 @@ pub struct MeshSource {
     light_vertices: Vec<glam::Vec4>,
     /// Reused per-frame light records, in the order the clusterer ranked them.
     light_records: Vec<LightGpu>,
-    /// The frame-wide lighting uniform, rebuilt and uploaded every lit frame.
+    /// The frame-wide lighting uniform, rebuilt and uploaded on every frame
+    /// that reaches the upload.
     lighting: LightingUniform,
     /// Staging buffer for the cluster uniform, reused across frames.
     cluster_staging: StagingBuffer,
@@ -639,10 +641,10 @@ impl FrameSource for MeshSource {
             self.upload_morph_deltas(world, encoder);
         }
         {
-            // The lights are uploaded every frame: which frames draw a lit
-            // variant is not known ahead of the upload — a family serves
-            // whatever the scene presents each frame — so it cannot wait for
-            // the first one. A source that never draws one pays for nothing.
+            // The lights are uploaded on every frame that gets this far, not
+            // only on frames that draw a lit variant: a family serves whatever
+            // the scene presents each frame, so which frames those are is not
+            // known ahead of the upload and it cannot wait for the first one.
             profiling::scope!("mesh_source.lights.upload");
             self.upload_lights(world, encoder, &camera, (info.width, info.height));
         }

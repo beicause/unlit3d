@@ -95,9 +95,10 @@
 //!
 //! # Supported subset
 //!
-//! The unlit renderer draws static meshes with a base-color texture and an
-//! instance tint, and composites a material whose `alphaMode` is `BLEND` —
-//! straight alpha, drawn z-sorted so overlapping surfaces layer correctly.
+//! Every draw this module produces is unlit, since a glTF document carries no
+//! lights: a mesh draws with its base-color texture and its instance tint, and a
+//! material whose `alphaMode` is `BLEND` composites with straight alpha, drawn
+//! z-sorted so overlapping surfaces layer correctly.
 //! A `MASK` material cuts its fragments off below its `alphaCutoff` instead,
 //! so it draws binary coverage: opaque where the texel is opaque enough and
 //! absent everywhere else, blending with nothing. A primitive carrying both
@@ -126,9 +127,15 @@
 //! to an uncompressed one; its `TRIANGLE_STRIP` mode, which the extension
 //! permits, is normalized to a triangle list as the stream is decoded. Only
 //! the `TRIANGLES` primitive mode is drawn for an ordinary primitive.
-//! Everything else a glTF document can carry is ignored: no tangents. A mesh
-//! whose primitive uses techniques outside this subset still uploads and
-//! spawns — it just renders without them.
+//! Every primitive uploads its positions; its indices, `COLOR_0` and normals
+//! when the document declares them; UVs only when it samples a base-color
+//! texture, so a mesh that samples nothing carries no unused channel; and its
+//! joints and weights when it declares `JOINTS_0` and `WEIGHTS_0` both. Morph
+//! targets contribute positional displacements only. Tangents are the one
+//! attribute a primitive can declare that the loader drops.
+//! Everything else a glTF document can carry is ignored. A mesh whose
+//! primitive uses techniques outside this subset still uploads and spawns — it
+//! just renders without them.
 //!
 //! Every handle returned here keeps what it names alive: the next
 //! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
