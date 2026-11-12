@@ -18,7 +18,7 @@ directly, and you are expected to know WebGPU to use it well.
 |---------|---------|----------|
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
-| `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into an `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
+| `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into a `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 | `mcp` | no | the `mcp` module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
 
@@ -197,8 +197,9 @@ without the tree changing.
   itself travels with the frame rather than being rediscovered per source.
 - **Build and record are two phases.** A source registers resources in the graph
   and stages uploads during `build_scene`; recording only reads the scenes it
-  already produced, so no borrow conflict ever arises between a source's own
-  state and the graph.
+  already produced. Merging them would force the graph to be read before the
+  scene exists, leaving interior mutability to defer the borrow conflict to
+  runtime, so the two phases stay for the compile-time guarantee.
 - **The graph is maintained once per frame, in the build phase.** `replace` only
   marks; the source maintains exactly once, after its uploads and before it
   assembles the frame, so the resources nothing holds any more are collected and
@@ -250,18 +251,6 @@ its own build phase without the renderer passing it along.
   site, and the latter trades convenience for crashes. Making both the context
   and the sources members of the world means the conflict never arises, so no
   dedicated entry point is needed for it.
-- **A source releases its own GPU resources explicitly**, which avoids the
-  complexity of releasing resources automatically by reference count. The nodes
-  a source registers in the resource graph are not reclaimed when the entity is
-  destroyed, so removing a source must release them explicitly.
-
-**Building and recording are two phases.** The build phase has exclusive access
-to the resource graph to register resources and to write the data this frame
-will upload; the recording phase only reads each source's own `Scene` and never
-touches the resource graph. Merging them into one phase would force reading the
-resource graph before producing the `Scene`, leaving only interior mutability to
-defer the borrow conflict to runtime — so the two phases stay, in exchange for a
-compile-time guarantee.
 
 </details>
 
@@ -512,12 +501,11 @@ through the same public builders. See
 ### Lit or unlit
 
 [`LitOptions::unlit`](unlit_wgpu::pipeline::LitOptions::unlit) is one flag of
-the caller's options. Both modes draw through the same family — the mesh
+the caller's options, and it decides one thing: whether the fragment stage adds
+up the frame's lights. Both modes draw through the same family — the mesh
 channels, the instance stream, the bind group layouts and the shader package are
-shared — and the flag decides one thing: whether the fragment stage adds up the
-frame's lights. A lit draw, the default, reads the light arrays and the cluster
-uniform; an unlit one declares none of those bindings and returns its albedo.
-There is still no prepass, no shadow map, and no compute pass.
+shared — so a mesh allocated for one draws in the other. There is no prepass, no
+shadow map and no compute pass either way.
 
 ### Outlines
 
@@ -582,28 +570,19 @@ caller extends the set through the same trait the built-in ones use:
   in local space, for area light and soft window light. Its `rect` constructor
   builds the common rectangle.
 
-Shading is Lambert: a light modulates the base color and adds brightness, so
-there is no specular term, no metallic reflection, no Fresnel and no energy
-conservation anywhere. The clustered forward path is what keeps that affordable
-once the light count grows: the frame is split into screen tiles times
-logarithmically spaced depth slices on the CPU, each bounded light is written
-into the cells it can reach, and a fragment reads only its own cell — so the cost
-is one cell lookup plus the lights in it, not one loop over every light in the
-scene. The same path runs on WebGL2, which has no compute shaders at all.
+The shading itself is Lambert and nothing more; how a fragment finds the lights
+that reach it — clustering, the directional uniform, the polygon form factor — is
+laid out in [`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.md#lighting-forward-clustered-lambert).
+This layer supplies the lights as components and sums them per frame.
 
-A directional light is not clustered. It reaches every fragment, so it goes into
-a uniform instead of into every cell, up to
+A directional light is not clustered: it reaches every fragment, so it goes into
+a uniform instead, up to
 [`MAX_DIRECTIONAL_LIGHTS`](unlit_wgpu::light::MAX_DIRECTIONAL_LIGHTS) of them,
-with the weakest dropped past that. The ambient term sits in the same uniform,
+with the weakest dropped past that. The ambient term rides in that same uniform,
 but it is a light like any other rather than a field of the source:
 [`AmbientLight`](light::AmbientLight) is an ordinary component, the frame sums
 every one in the source's scope, and a scene adds, moves or removes one the way
-it does anything else.
-
-Polygon lights carry the classic Lambert form factor of the polygon seen from
-the shaded point rather than a fitted lookup table: it is a closed form over
-the polygon's edges, exact for a diffuse receiver, and it needs no
-precomputed texture. Shadows are out of scope, so the pipeline is a light
+it does anything else. Shadows are out of scope, so the pipeline is a light
 accumulator and nothing more.
 
 ## Custom shaders and per-instance data
@@ -743,33 +722,17 @@ camera.
 
 The `gltf` module (cargo feature `gltf`, off by default) loads a
 [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) document —
-`.glb` or `.gltf` — into an `LitGltf`. The document, its
-buffers and its images are parsed and decoded eagerly in the constructor, and
-the world-space transform of every node is computed up front, so `LitGltf` is
-a *record* of the model, not a GPU resource: it owns no `World` and no
+`.glb` or `.gltf` — into a `LitGltf`. The document, its buffers and its
+images are parsed and decoded eagerly in the constructor, and every node's
+world-space transform is computed up front, so `LitGltf` is a *record* of the
+model, not a GPU resource: it owns no `World` and no
 [`MeshSource`](mesh_source::MeshSource).
 
-A primitive carrying `KHR_draco_mesh_compression` is decoded in the loader
-with `draco-core`, a pure-Rust decoder with no native dependency, so compressed
-documents load on every target the engine runs on — including wasm32. glTF's own
-validation rejects the extension and the accessors whose data lives only in the
-compressed stream, so the loader re-parses such a document without validation,
-decodes each stream with the extension's semantic-to-attribute-id map, and
-writes the decompressed values back as ordinary buffer views and accessors.
-Normalized integers are rescaled according to the accessor's own declaration —
-most exporters leave the stream's flag clear — before they become float accessors.
-`Document::from_json` then validates the repaired document normally: every
-later reader — morph targets, skins, animations and the mesh upload itself —
-sees only accessors, and a `TRIANGLE_STRIP` primitive, which the extension
-permits, is normalized to a triangle list as the stream is decoded. A document
-with no compressed primitive keeps its original validation error, an unrelated
-error still present after the repair (an out-of-range scene, say) is reported,
-and a failure to decode is returned as a validation error naming the extension
-rather than panicking on unvalidated input. Everything else — the pipeline key,
-materials and the rule that only a textured primitive uploads UVs — is the same
-as an uncompressed one.
-
-What it does is patch the world you already render:
+Compressed primitives are decoded at import with `draco-core`, a pure-Rust
+decoder, so a document carrying `KHR_draco_mesh_compression` loads on every
+target the engine runs on, wasm32 included. The import and the GPU format each
+image is uploaded in are the `gltf` module's own subject; what follows is what
+the module patches into the world you already render:
 
 - A document's collections are addressed by typed ids — `ImageId`,
   `MaterialId`, `MeshId`, `PrimitiveId`, `NodeId` and `AnimationId` —
@@ -851,32 +814,16 @@ What it does is patch the world you already render:
   likewise reused across frames, growing to its high-water mark once. A frame
   therefore allocates only where it writes something new into the world.
 
-What loads: positions, UVs, vertex colors, normals, joints, weights and indices —
-from ordinary accessors, including those the loader fills from a Draco stream on
-import; base-color textures and the materials that sample them; blended
-(`alphaMode: BLEND`), cut-off (`alphaMode: MASK`) and double-sided materials;
-skinned primitives; positional morph targets; node hierarchies, accumulated
-into world transforms; and the animations that drive them. What does not yet:
-normal and tangent morphs, tangents, and primitive modes other than `TRIANGLES`
-(a `TRIANGLE_STRIP` Draco primitive is normalized to a triangle list on import).
 The pipeline key a mesh is uploaded with is always derived from the primitive's
-own attributes (see `LitGltf::pipeline_key`),
-so the variant it draws with never asks for a stream the mesh does not have.
+own attributes (see `LitGltf::pipeline_key`), so the variant it draws with never
+asks for a stream the mesh does not have. The full list of what the loader reads
+and what it ignores is the `gltf` module's supported subset.
 
 An image is uploaded in the GPU format closest to the pixels the loader decoded,
-so textures keep their channels and precision instead of all being widened to
-RGBA8: 8-bit layouts upload as `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`, 16-bit
-ones as the half-float formats of the same width, and 32-bit float ones as
-`Rgba32Float`. Three-channel layouts widen by one, since neither an sRGB nor a
-float format comes in three channels. Two consequences are worth knowing: a
-grayscale texture carries its luminance in the red channel — WebGPU has neither
-a luminance format nor a component swizzle — so the lit shader's
-`BaseColorChannels::Luminance` and `BaseColorChannels::LuminanceAlpha` expand it
-to RGB(A) and decode the luminance from sRGB, which `LitGltf::pipeline_key`
-picks for exactly those uploads; and `Rgba32Float` is `unfilterable-float` on devices
-without `Features::FLOAT32_FILTERABLE`, in which case the material binds a
-non-filtering sampler and `LitOptions::texture_filtering` specializes the
-bind-group layout to match.
+so textures keep their channels and their precision instead of all being widened
+to RGBA8. The mapping, and the two cases that need a shader or a layout to match
+— a grayscale texture's luminance and an unfilterable `Rgba32Float` — are in
+the `gltf` module.
 
 ## UI
 
@@ -1327,12 +1274,12 @@ JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks
 the screenshot pixel by pixel. The multi-frame snapshot coverage of those scenes lives
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
 whose `tests/gpu_suite.rs` compares them against the SSIMULACRA2 snapshots under
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md).
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md).
 Clone the submodule here with `git submodule update --init --checkout`, which is
 what gets past its `update = none`; re-bless intentional
 changes with `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` and review
-the image diff. Where each test layer sits
-across the workspace, and what CI runs, is in the
+the image diff. Where each test layer sits across the workspace, and what CI
+runs, is in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## See also
