@@ -18,33 +18,19 @@
 // and a private module makes `pub` items inside it dead code.
 pub mod common;
 
-#[path = "blit.rs"]
 mod blit;
-#[path = "custom_instances.rs"]
 mod custom_instances;
-#[path = "custom_pipeline.rs"]
 mod custom_pipeline;
-#[path = "gltf_scene/mod.rs"]
 mod gltf_scene;
-#[path = "gpu_ecs.rs"]
 mod gpu_ecs;
-#[path = "gpu_ui_source.rs"]
 mod gpu_ui_source;
-#[path = "inverted_hull.rs"]
 mod inverted_hull;
-#[path = "letterbox.rs"]
 mod letterbox;
-#[path = "line_source.rs"]
 mod line_source;
-#[path = "lit_scene.rs"]
 mod lit_scene;
-#[path = "mcp_server/main.rs"]
 mod mcp_server;
-#[path = "morphed_scene.rs"]
 mod morphed_scene;
-#[path = "passes.rs"]
 mod passes;
-#[path = "skinned_scene.rs"]
 mod skinned_scene;
 
 unlit_wgpu_test_util::gpu_test_main!(

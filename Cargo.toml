@@ -136,6 +136,9 @@ zerocopy-derive = { version = "0.8.56", default-features = false }
 [workspace.lints.clippy]
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
+# A module lives in a file named after it, so its path says which file to open
+# without a directory listing in the middle. `mod.rs` is rejected.
+mod_module_files = "deny"
 print_stderr = "warn"
 print_stdout = "warn"
 

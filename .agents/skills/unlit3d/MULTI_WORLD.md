@@ -11,7 +11,7 @@
 
 ## 两种骨架
 
-**窗口版**——**示意，不是库 API**：`setup_render_world` / `mount_scene_content` / `SceneStepper` 是示例自己的装配助手（`unlit3dx_examples/src/scene/mod.rs`，是 `pub` 的，但属于示例、不属于库），库只提供 `spawn_context` / `Pass` / `Renderer` / `setup_presenter` 那一层，照抄时要把它们换成自己的装配；完整骨架见 `unlit3dx_examples/src/lib.rs`。GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
+**窗口版**——**示意，不是库 API**：`setup_render_world` / `mount_scene_content` / `SceneStepper` 是示例自己的装配助手（`unlit3dx_examples/src/scene.rs`，是 `pub` 的，但属于示例、不属于库），库只提供 `spawn_context` / `Pass` / `Renderer` / `setup_presenter` 那一层，照抄时要把它们换成自己的装配；完整骨架见 `unlit3dx_examples/src/lib.rs`。GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
 
 ```rust
 let event_loop = EventLoop::new()?;

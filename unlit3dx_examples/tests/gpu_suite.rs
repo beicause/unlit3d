@@ -9,11 +9,8 @@
 //! The runner is `gpu_test_main!`: it drives the registry through libtest-mimic
 //! natively, and exports the `run_test` entry point the wasm suite's page calls.
 
-#[path = "headless.rs"]
 mod headless;
-#[path = "mcp_input/main.rs"]
 mod mcp_input;
-#[path = "support.rs"]
 mod support;
 
 unlit_wgpu_test_util::gpu_test_main!([headless::all_tests(), mcp_input::all_tests()].concat());

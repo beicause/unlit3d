@@ -38,7 +38,7 @@
 
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
-| 建 | `MeshSource::new(&Scope, ctx)` + `device` / `queue` / `capabilities` / `context` | `crates/unlit3d/src/mesh_source/`（入口 `mod.rs`） |
+| 建 | `MeshSource::new(&Scope, ctx)` + `device` / `queue` / `capabilities` / `context` | `crates/unlit3d/src/mesh_source.rs`（`mesh_source/` 目录下的子模块由它声明） |
 | 注册管线族 | `register_family::<K, F, I>`；同一 key 类型重复注册会 panic | 同上，`families.rs` |
 | 自定义管线 key | `RenderPipelineKey` 只要求 `variant()`，变体须 `Clone + Hash + Eq`（每可见实体每帧查一次）。选项小且可哈希（如 `LitOptions`）就 `Hashed<选项>`；要按份描述符建一次、之后只比身份，就用 `unlit_wgpu::specialize::Interned<RenderPipelineDesc>`，变体可 `derive` 全套 | `crates/unlit_wgpu/src/specialize.rs`、`crates/unlit_wgpu/src/util.rs` |
 | 建 mesh | `allocate_mesh` + `MeshDesc { vertex_buffers, index_buffer, count, indexed, aabb, bind_group, morph_deltas }`（`MeshDesc` 定义在 `crates/unlit3d/src/mesh.rs`，与 `MorphDeltas` 同处） | 同上；`MeshDesc` 搜 `crates/unlit3d/src/mesh.rs` |
@@ -91,12 +91,12 @@
 | 自定义灯 | `trait Light`：`pack(world_from_local, LightSink)` 写 GPU 槽位、`describe(world_from_local) -> LightDescribe` 给 CPU 侧排序与剔除用；两者都要实现 | 同上 |
 | 描向 | 沿实体自己 `Transform` 的 `-Z` 照；方向光与聚光灯靠**旋转实体**瞄准，quad 光的多边形在实体 `XY` 平面；没有 `Transform` 就坐在原点朝 `-Z` | 同上 |
 | 强度 | 无量纲：片元把 base color 乘上各灯 `color × intensity` 之和，无曝光、无能量守恒。点光/聚光按 `range` 做平滑衰减，quad 光走多边形形状因子（自带平方反比，没有单独的 range 衰减） | `crates/unlit3d/src/light.rs` |
-| 示例封装 | `PlacedLight { light, translation, rotation }` + `PlacedLight::aiming(light, at, target)`：把 `-Z → 目标方向` 的旋转算好——**示例 bundle，不是库 API** | `unlit3d_examples/src/scenes/mod.rs` |
+| 示例封装 | `PlacedLight { light, translation, rotation }` + `PlacedLight::aiming(light, at, target)`：把 `-Z → 目标方向` 的旋转算好——**示例 bundle，不是库 API** | `unlit3d_examples/src/scenes.rs` |
 | 上限 | `MAX_DIRECTIONAL_LIGHTS = 4`：按 `intensity` 排，最弱的丢掉（且不占簇槽位，因为方向光根本不分簇）；`LIGHTS_PER_CELL = 15`：每簇能引用的有界灯数，满了丢最弱的；`QUAD_LIGHT_CORNERS = 4`（`QuadLight::vertices: [Vec3; QUAD_LIGHT_CORNERS]`）。被接收面的地平线平面裁掉一块后最多再多出 1 个角，所以**存裁剪结果**的数组写 `QUAD_LIGHT_CORNERS + 1`，没有第 5 个角的常量；裁剪后不足 3 个角直接算 0（Rust 与 WGSL 各有一份同名常量，实际生效的是 `crates/unlit_wgpu/shaders/polygon.wesl` 那份） | `crates/unlit_wgpu/src/light.rs` |
-| 分簇配置 | `MeshSource` 的 `clustering` 字段（`pub`），类型 `ClusterConfig { cell_pixels, z_slices, max_clusters, first_slice_depth, far }` + `ClusterConfig::DEFAULT`；从 prelude 直接可用 | `crates/unlit_wgpu/src/light.rs` / `crates/unlit3d/src/mesh_source/mod.rs` |
+| 分簇配置 | `MeshSource` 的 `clustering` 字段（`pub`），类型 `ClusterConfig { cell_pixels, z_slices, max_clusters, first_slice_depth, far }` + `ClusterConfig::DEFAULT`；从 prelude 直接可用 | `crates/unlit_wgpu/src/light.rs` / `crates/unlit3d/src/mesh_source.rs` |
 | 多边形光 | 少于 3 个角无面积、不画；重复一个角可以拼三角，相差极小的角会被合并 | `crates/unlit3d/src/light.rs` |
 | 关闭某盏灯 | `describe.intensity <= 0.0` 的灯在收集时直接跳过（不用 despawn，但 despawn 更省一次遍历） | 同上 |
-| 上传 | `upload_lights`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，前提与实例上传相同——这帧有活动相机且可见集非空——但**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source/mod.rs` |
+| 上传 | `upload_lights`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，前提与实例上传相同——这帧有活动相机且可见集非空——但**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source.rs` |
 
 ## 相机与变换
 
@@ -199,11 +199,11 @@
 
 ## glTF
 
-`LitGltf`（`crates/unlit3d/src/gltf/`，入口 `mod.rs`）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_default_scene`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。
+`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_default_scene`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。
 
 ## 常用常量
 
 | 项 | 值 |
 | --- | --- |
-| 示例格式 | 定义在 `unlit3d_examples/src/scenes/mod.rs`，是示例侧常量、不是库 API：`TEST_FORMAT = Rgba8UnormSrgb`、`TEST_SIZE = (256, 192)`、`BASELINE_SIZE = (960, 720)`、`SEQUENCE_STEP = 0.5` |
+| 示例格式 | 定义在 `unlit3d_examples/src/scenes.rs`，是示例侧常量、不是库 API：`TEST_FORMAT = Rgba8UnormSrgb`、`TEST_SIZE = (256, 192)`、`BASELINE_SIZE = (960, 720)`、`SEQUENCE_STEP = 0.5` |
 | 相机基线 | 眼 `(0.0, 1.2, 3.2)`、目标 `(0.0, 0.2, 0.0)`、fov 60°、near 0.1 |

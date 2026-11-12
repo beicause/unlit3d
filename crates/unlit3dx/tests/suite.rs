@@ -8,11 +8,7 @@
 //! `synth`) rather than each module gating its own tests: a target whose
 //! required features are off is skipped whole.
 
-#[path = "audio.rs"]
 mod audio;
-#[path = "multi_world.rs"]
 mod multi_world;
-#[path = "physics.rs"]
 mod physics;
-#[path = "subscriptions.rs"]
 mod subscriptions;

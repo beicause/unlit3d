@@ -43,28 +43,28 @@
 - 单 world 骨架与四步示例：`crates/unlit3d/README.md` 的「Example」一节（doctest，可直接抄）。
 - frame 模型与 source/pass 语义：`crates/unlit3d/src/source.rs`、`crates/unlit3d/src/pass.rs`、`crates/unlit3d/src/renderer.rs`。
 - 内建 lit family 与实例组件：`crates/unlit3d/src/lit.rs`；注册与分配在 `crates/unlit3d/src/lit/allocate.rs`。
-- mesh 分配与资源注册：`crates/unlit3d/src/mesh_source/`（目录，入口 `mod.rs`，family 在 `families.rs`）。
+- mesh 分配与资源注册：`crates/unlit3d/src/mesh_source.rs`（`mesh_source/` 目录下是它的子模块，family 在 `families.rs`）。
 - 管线策略与 `LitOptions`：`crates/unlit_wgpu/src/pipeline/options.rs`（聚合重导出在 `pipeline.rs`）。
 - 附件与读回：`crates/unlit3d/src/attachments.rs`（`FrameAttachments`）、`crates/unlit_wgpu/src/render_attachments.rs`（`create_*_target` / `default_depth_stencil_format`）、`crates/unlit_wgpu/src/readback.rs`（`readback_texture`）。
 - 目标特化：`crates/unlit_wgpu/src/specialize.rs`（`SurfaceKey` / `SurfaceTarget::set_surface`）。
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。
-- 输入：`crates/unlit3d/src/input/`（事件词汇在 `event.rs`，状态在 `state.rs`，帧循环的接线在 `mod.rs`）。
-- UI：`crates/unlit3d/src/ui/mod.rs`。
+- 输入：`crates/unlit3d/src/input.rs`（`input/` 目录下：事件词汇在 `event.rs`，状态在 `state.rs`，帧循环的接线在 `input.rs` 本身）。
+- UI：`crates/unlit3d/src/ui.rs`。
 - winit 桥与内置行为：`crates/unlit3d/src/winit/` 下的 `event.rs` / `builtin.rs` / `surface.rs`。
 
 ### 多 world
 
 - `crates/unlit3dx/README.md`；代码在 `crates/unlit3dx/src/world.rs`、`host.rs`、`job.rs`、`channel.rs`、`request.rs`。
 - 展示路径与 GPU 请求：`crates/unlit3dx/src/present.rs`、`crates/unlit3dx/src/gpu.rs`。
-- 参考装配（真正的骨架长什么样）：`unlit3dx_examples/src/lib.rs`、`scene/mod.rs`、`render.rs`、`headless.rs`。
+- 参考装配（真正的骨架长什么样）：`unlit3dx_examples/src/lib.rs`、`scene.rs`、`render.rs`、`headless.rs`。
 
 ### MCP 与调试宿主
 
 - `crates/unlit_ecs/src/mcp/server.rs` —— `McpServer`、`ToolRouter`、`serve_stdio_with` 与 `serve_with`，以及 `tool()` / `ToolSource` 这套注册机制。
 - `crates/unlit_ecs/src/mcp/host.rs` —— 传输契约：`McpCommand`、`Output`、`WorldRef`、`WorldEntry`、`Job`，以及落盘助手。
 - `crates/unlit_ecs/src/mcp/tools.rs` —— world 与实体工具，末尾的 `register` 是它们的注册表。
-- `crates/unlit3d/src/mcp/` —— 渲染工具（`host.rs`）与它们的 `register`（`mod.rs`）。
-- `crates/unlit3dx/src/mcp/mod.rs` —— 音频录音工具、`request_exit` 与它们的 `register`；录制实现在 `crates/unlit3dx/src/record.rs`。
+- `crates/unlit3d/src/mcp.rs` —— 渲染工具（`mcp/host.rs`）与它们的 `register`（`mcp.rs` 本身）。
+- `crates/unlit3dx/src/mcp.rs` —— 音频录音工具、`request_exit` 与它们的 `register`；录制实现在 `crates/unlit3dx/src/record.rs`。
 - `crates/unlit3dx/src/mcp/bridge.rs` —— `serve_mcp(world)` 起名为 `unlit3dx-mcp-transport` 的线程，宿主侧挂 `McpInbox` + `drain_mcp()` 的 `OnAboutToWait`；`pump_mcp(world)` 是无 winit 宿主用的同一套 drain + apply + 跑 stepped world 队列；`reachable_worlds` 决定 `list_worlds` 看到什么。
 - `crates/unlit3dx/src/world.rs` —— `WorldSender`（留在代理实体上、让 bridge 够得着线程/步进 world 的命令通道）、`WorldName` 与 `drain_all_stepped_worlds`。
 - `crates/unlit_ecs/README.md` —— 设计说明（无特权路径、传输、各 crate 注册工具）。

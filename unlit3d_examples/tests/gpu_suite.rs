@@ -5,9 +5,7 @@
 //! `Tests and benchmarks` section explains why a crate's integration tests are
 //! one binary.
 
-#[path = "gpu_scenes.rs"]
 mod gpu_scenes;
-#[path = "selector_position.rs"]
 mod selector_position;
 
 unlit_wgpu_test_util::gpu_test_main!(

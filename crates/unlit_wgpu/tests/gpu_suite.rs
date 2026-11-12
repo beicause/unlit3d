@@ -10,11 +10,8 @@
 
 mod common;
 
-#[path = "gpu_lit/main.rs"]
 mod gpu_lit;
-#[path = "gpu_resources.rs"]
 mod gpu_resources;
-#[path = "gpu_ui.rs"]
 mod gpu_ui;
 
 unlit_wgpu_test_util::gpu_test_main!(
