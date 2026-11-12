@@ -99,6 +99,7 @@ fn noop_context(world: &mut World) -> RenderContext {
         wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
         ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     )
 }
 

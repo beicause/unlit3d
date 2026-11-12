@@ -5,6 +5,7 @@ use std::path::Path;
 use unlit_ecs::bundle;
 
 use glam::Mat4;
+use unlit_wgpu::context::DeviceHealth;
 use unlit_wgpu::context::GpuContext;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::gltf::LitGltf;
@@ -107,12 +108,13 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     )
     .await
     .map_err(|error| Error::Gpu(error.to_string()))?;
-    let (device, queue, capabilities) = (gpu.device, gpu.queue, gpu.capabilities);
+    let (device, queue, capabilities) = (gpu.device.clone(), gpu.queue.clone(), gpu.capabilities);
     let (world, target, renderer) = build_world(
         config,
         &device,
         &queue,
         capabilities,
+        gpu.health(),
         output_size,
         render_size,
     )?;
@@ -145,6 +147,7 @@ pub fn build_world(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
+    health: DeviceHealth,
     output_size: (u32, u32),
     render_size: (u32, u32),
 ) -> Result<(World, wgpu::Texture, Entity), Error> {
@@ -155,6 +158,7 @@ pub fn build_world(
         queue.clone(),
         ResourceGraph::new(),
         capabilities,
+        health,
     );
     let renderer = world
         .root_scope_mut()
@@ -261,6 +265,7 @@ pub fn offscreen_world(
     device: wgpu::Device,
     queue: wgpu::Queue,
     capabilities: DeviceCapabilities,
+    health: DeviceHealth,
     size: (u32, u32),
     samples: u32,
     depth: bool,
@@ -272,6 +277,7 @@ pub fn offscreen_world(
         queue.clone(),
         ResourceGraph::new(),
         capabilities,
+        health,
     );
     let renderer = world
         .root_scope_mut()
@@ -348,10 +354,12 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
                     "unlit3d_cli",
                 )
                 .await?;
+                let health = gpu.health();
                 Ok::<_, unlit_wgpu::context::GpuRequestError>(offscreen_world(
                     gpu.device,
                     gpu.queue,
                     gpu.capabilities,
+                    health,
                     size,
                     samples,
                     depth,

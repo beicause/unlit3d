@@ -148,6 +148,7 @@ async fn frames_match_the_baselines() {
         &ctx.device,
         &ctx.queue,
         ctx.capabilities,
+        ctx.health.clone(),
     );
     assert_eq!(output.frames.len(), CAPTURE.len());
     let frames: [&[u8]; CAPTURE.len()] = [
@@ -191,12 +192,14 @@ async fn an_undrawn_frame_matches_a_drawn_one() {
         &ctx.device,
         &ctx.queue,
         ctx.capabilities,
+        ctx.health.clone(),
     );
     let surrounded = run(
         &config(soundfont, frames, captured.to_vec()),
         &ctx.device,
         &ctx.queue,
         ctx.capabilities,
+        ctx.health.clone(),
     );
     assert_eq!(alone.frames.len(), 1);
     assert_eq!(surrounded.frames.len(), captured.len());
@@ -237,6 +240,7 @@ async fn audio_matches_the_baseline() {
         &ctx.device,
         &ctx.queue,
         ctx.capabilities,
+        ctx.health.clone(),
     );
 
     let samples = support::to_samples(&output.audio);

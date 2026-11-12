@@ -63,6 +63,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
         ctx.queue.clone(),
         ResourceGraph::new(),
         ctx.capabilities,
+        ctx.health.clone(),
     );
     // The pass carries the load ops the frame is opened with, so the MCP
     // client can patch them on the entity it finds them on.

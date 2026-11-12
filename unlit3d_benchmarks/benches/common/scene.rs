@@ -56,6 +56,7 @@ impl Frame {
             queue,
             ResourceGraph::new(),
             DeviceCapabilities::default(),
+            DeviceHealth::unwatched(),
         );
         let mut source = MeshSource::new(&world.root_scope(), context);
 

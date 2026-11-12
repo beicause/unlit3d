@@ -30,10 +30,12 @@ pub fn run(soundfont: std::sync::Arc<[u8]>) {
         "unlit3dx_examples",
     ))
     .expect("the headless run opens a GPU");
+    let health = gpu.health();
     let (mut host, _input, interactive) = crate::interactive::run(InteractiveConfig {
         device: gpu.device,
         queue: gpu.queue,
         capabilities: gpu.capabilities,
+        health,
         soundfont,
     });
     host.root_scope_mut().spawn(bundle![ExitRequest(false)]);

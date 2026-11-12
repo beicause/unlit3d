@@ -71,6 +71,7 @@ pub fn run(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
+    health: DeviceHealth,
 ) -> HeadlessOutput {
     // Every capture entry has to name a frame the run steps, and the entries
     // have to ascend: a frame is drawn where the steps left it, so the frames
@@ -127,8 +128,14 @@ pub fn run(
         &input,
         true,
     );
-    let (renderer, pass) =
-        setup_render_world(&mut host, render.entity, device, queue, capabilities);
+    let (renderer, pass) = setup_render_world(
+        &mut host,
+        render.entity,
+        device,
+        queue,
+        capabilities,
+        health,
+    );
     // No control panel headless: nothing is there to click. The camera is
     // still the scene's, so it arrives as a job like the meshes do.
     mount_scene_content(&render, pass, None);

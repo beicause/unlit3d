@@ -198,6 +198,7 @@ fn scene_at(
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
+        ctx.health.clone(),
         size,
         SceneOptions {
             ui: true,
@@ -221,6 +222,7 @@ fn scene_with_gpu_info(
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
+        ctx.health.clone(),
         size,
         SceneOptions {
             ui: true,
@@ -240,6 +242,7 @@ fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Sc
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
+        ctx.health.clone(),
         size,
         SceneOptions {
             ui: true,

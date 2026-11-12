@@ -7,6 +7,7 @@ use crate::scene::DrawShape;
 use crate::source::spawn_context;
 use unlit_ecs::bundle;
 use unlit_ecs::{Entity, World};
+use unlit_wgpu::context::DeviceHealth;
 use unlit_wgpu::mesh::{MeshInstance, SecondaryFlags};
 use unlit_wgpu::pipeline::{LitOptions, LitVertexChannels};
 use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
@@ -135,6 +136,7 @@ fn harness() -> Harness {
         queue,
         ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     );
     let mut source = MeshSource::new(&world.root_scope(), ctx);
     source.register_lit_family(&world.root_scope());

@@ -78,6 +78,7 @@ impl TestGpu {
             ctx.queue.clone(),
             ResourceGraph::new(),
             ctx.capabilities,
+            ctx.health.clone(),
         );
         // The harness's default key reads the per-instance stream, which
         // carries the tint as well as the transform: the ECS tests tint their

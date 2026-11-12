@@ -225,6 +225,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
+        ctx.health.clone(),
         size,
         SceneOptions {
             ui: def.ui,
@@ -324,6 +325,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
+        ctx.health.clone(),
         size,
         SceneOptions {
             ui: def.ui,
@@ -590,6 +592,7 @@ async fn custom_pipeline_animates_between_frames() {
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
+        ctx.health.clone(),
         def.size,
         SceneOptions {
             ui: false,

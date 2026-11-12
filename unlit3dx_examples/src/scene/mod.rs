@@ -183,6 +183,7 @@ pub fn setup_render_world(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
+    health: DeviceHealth,
 ) -> (RemoteEntity, RemoteEntity) {
     let Ok(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
@@ -194,6 +195,7 @@ pub fn setup_render_world(
         queue.clone(),
         ResourceGraph::new(),
         capabilities,
+        health,
     );
     let renderer = world
         .root_scope_mut()

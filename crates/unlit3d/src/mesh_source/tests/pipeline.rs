@@ -1,4 +1,5 @@
 use super::*;
+use unlit_wgpu::context::DeviceHealth;
 
 #[test]
 fn registering_a_family_compiles_nothing() {
@@ -10,6 +11,7 @@ fn registering_a_family_compiles_nothing() {
         queue,
         ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     );
     let mut source = MeshSource::new(&world.root_scope(), ctx);
 
@@ -31,6 +33,7 @@ fn a_source_starts_with_no_pipelines() {
         queue,
         ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     );
     let source = MeshSource::new(&world.root_scope(), ctx);
 

@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use unlit_ecs::{Entity, World};
+use unlit_wgpu::context::DeviceLost;
 use unlit_wgpu::globals::Globals;
 use unlit_wgpu::scene::{Scene, ViewportRect};
 
@@ -54,6 +55,7 @@ const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
 ///     queue,
 ///     ResourceGraph::new(),
 ///     DeviceCapabilities::default(),
+///     DeviceHealth::unwatched(),
 /// );
 /// let source = MeshSource::new(&world.root_scope(), ctx);
 /// // One pass, drawing the mesh source under it.
@@ -99,6 +101,9 @@ pub struct Renderer {
     reached: BTreeSet<Entity>,
     /// The sources no pass reached this frame, reused between frames.
     unreached: Vec<Entity>,
+    /// The loss this renderer has already reported, so a dead device is
+    /// announced once rather than every frame.
+    reported_loss: Option<DeviceLost>,
 }
 
 /// The scene of one (pass, source) pair, kept between frames.
@@ -161,12 +166,27 @@ impl Renderer {
             placement_warnings: PlacementWarnings::default(),
             reached: BTreeSet::new(),
             unreached: Vec::new(),
+            reported_loss: None,
         }
     }
 
     /// The world addresses of the frame's GPU state.
     pub fn context(&self) -> RenderContext {
         self.context
+    }
+
+    /// What the device said when it was lost, or `None` while it is alive.
+    ///
+    /// The answer comes from the health
+    /// [`spawn_context`](crate::source::spawn_context) was given, so it is the
+    /// same state the context that made the device holds. A world whose device
+    /// nobody watches always says it is alive.
+    #[must_use]
+    pub fn device_lost(&self, world: &World) -> Option<DeviceLost> {
+        self.context
+            .health(&world.root_scope())
+            .ok()
+            .and_then(|health| health.lost())
     }
 
     /// Render one frame from the ECS `world`.
@@ -190,11 +210,32 @@ impl Renderer {
     /// Parking a pass that way leaves the sources under it where they are: a
     /// pass still reaches them, so they are not reported as misplaced.
     ///
+    /// A device that went away is reported once, and the frame is skipped
+    /// afterwards: a lost device accepts no work, so building into it would
+    /// record commands that never run and, where wgpu validates them, panic
+    /// with a message about the submission rather than about the loss. The
+    /// renderer keeps the loss beside the frames it skipped, so a caller can
+    /// read it back from [`Renderer::device_lost`].
+    ///
     /// # Panics
     ///
     /// If the context's device, queue or graph resource is gone.
     pub fn render(&mut self, world: &World) {
         profiling::scope!("renderer.frame");
+
+        // A lost device accepts no further work; everything below would
+        // record into a queue that silently drops it.
+        if let Some(lost) = self.device_lost(world) {
+            if self.reported_loss.as_ref() != Some(&lost) {
+                log::error!(
+                    "the device was lost ({}), so frames stop being drawn: {}",
+                    reason_name(lost.reason),
+                    lost.message
+                );
+                self.reported_loss = Some(lost);
+            }
+            return;
+        }
 
         let device = self
             .context
@@ -463,6 +504,14 @@ impl Renderer {
     }
 }
 
+/// The name wgpu gives a loss reason, for a message about it.
+fn reason_name(reason: wgpu::DeviceLostReason) -> &'static str {
+    match reason {
+        wgpu::DeviceLostReason::Unknown => "unknown",
+        wgpu::DeviceLostReason::Destroyed => "destroyed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +521,7 @@ mod tests {
     use crate::source::{FrameSource, spawn_context};
 
     use unlit_wgpu::capabilities::DeviceCapabilities;
+    use unlit_wgpu::context::DeviceHealth;
 
     /// A source that draws nothing: placement is decided from the tree alone.
     struct Nowhere;
@@ -502,6 +552,7 @@ mod tests {
             queue,
             unlit_wgpu::resources::ResourceGraph::new(),
             DeviceCapabilities::default(),
+            DeviceHealth::unwatched(),
         );
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
         (world, Renderer::new(ctx), pass)

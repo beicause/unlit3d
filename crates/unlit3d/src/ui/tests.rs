@@ -3,6 +3,7 @@ use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 use unlit_ecs::bundle;
 use unlit_wgpu::capabilities::DeviceCapabilities;
+use unlit_wgpu::context::DeviceHealth;
 
 use crate::input::{
     InputEvent, InputFeed, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent,
@@ -55,6 +56,7 @@ fn test_world() -> (World, RenderContext) {
         queue,
         unlit_wgpu::resources::ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     );
     (world, ctx)
 }

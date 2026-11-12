@@ -278,6 +278,8 @@ pub struct InteractiveConfig {
     pub queue: wgpu::Queue,
     /// The limits and features the device was requested with.
     pub capabilities: DeviceCapabilities,
+    /// Whether the device is still alive, from the context that made it.
+    pub health: DeviceHealth,
     /// The soundfont the synthesizer plays, as raw bytes; an empty slice
     /// silences the audio world the way the headless run's does.
     pub soundfont: Arc<[u8]>,
@@ -317,6 +319,7 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
         &config.device,
         &config.queue,
         config.capabilities,
+        config.health,
     );
     mount_scene_content(&render, pass, Some(panels));
     let target = {

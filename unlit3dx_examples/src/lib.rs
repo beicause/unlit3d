@@ -215,6 +215,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 &gpu.device,
                 &gpu.queue,
                 gpu.capabilities,
+                gpu.health(),
             );
             // The scene's own content — its camera, and the source that draws
             // whatever the gameplay world publishes — reaches the world it was
@@ -427,7 +428,13 @@ fn run_headless(args: &Args) -> ExitCode {
         audio_sample_rate: headless::AUDIO_SAMPLE_RATE,
         soundfont: unlit3dx_asset_bytes::soundfont().into(),
     };
-    let output = headless::run(&config, &gpu.device, &gpu.queue, gpu.capabilities);
+    let output = headless::run(
+        &config,
+        &gpu.device,
+        &gpu.queue,
+        gpu.capabilities,
+        gpu.health(),
+    );
     let out = std::path::Path::new(&args.out);
     if let Err(error) = std::fs::create_dir_all(out) {
         log::error!("could not create {}: {error}", out.display());

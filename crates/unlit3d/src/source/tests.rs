@@ -28,6 +28,7 @@ fn test_context(world: &mut World) -> RenderContext {
         queue,
         ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     )
 }
 
@@ -130,6 +131,7 @@ fn explicit_order_wins_over_spawn_order() {
         wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
         ResourceGraph::new(),
         DeviceCapabilities::default(),
+        DeviceHealth::unwatched(),
     );
 
     // Spawned overlay-first, so spawn order is the opposite of draw order.

@@ -35,6 +35,7 @@ pub(crate) fn present(world: &World, app: Entity) {
                 gpu.device.clone(),
                 gpu.queue.clone(),
                 gpu.capabilities,
+                gpu.health(),
                 size,
                 scenes::SceneOptions {
                     ui: def.ui,

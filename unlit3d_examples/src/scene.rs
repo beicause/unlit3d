@@ -80,6 +80,7 @@ impl Scene {
         device: wgpu::Device,
         queue: wgpu::Queue,
         capabilities: DeviceCapabilities,
+        health: DeviceHealth,
         size: (u32, u32),
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
@@ -92,6 +93,7 @@ impl Scene {
             queue,
             ResourceGraph::new(),
             capabilities,
+            health,
         );
         let renderer = world
             .root_scope_mut()

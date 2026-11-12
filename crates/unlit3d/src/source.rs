@@ -27,6 +27,7 @@ use unlit_ecs::{
     Bundle, DynamicBundle, Entity, EntityAccessError, QueryOne, Scope, ScopeMut, World,
 };
 use unlit_wgpu::capabilities::DeviceCapabilities;
+use unlit_wgpu::context::DeviceHealth;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 
@@ -102,6 +103,14 @@ pub struct RenderContext {
     /// once and carried here. See
     /// [`DeviceCapabilities`].
     pub(crate) capabilities: Entity,
+    /// Whether the device behind the frame is still able to work, as a
+    /// resource entity.
+    ///
+    /// A lost device accepts no further work and reports nothing on its own,
+    /// so the frame loop asks here before it builds: building into a device
+    /// that is gone produces either nothing or a validation panic, and neither
+    /// says what happened. See [`DeviceHealth`].
+    pub(crate) health: Entity,
     /// The frame's [`FrameClock`], as a resource entity.
     ///
     /// The clock belongs to the world rather than to each source: a source may
@@ -150,6 +159,24 @@ impl RenderContext {
         scope
             .query_one::<&DeviceCapabilities>(self.capabilities)
             .map(|mut row| *row.get())
+    }
+
+    /// Whether the device behind the frame is still able to work.
+    ///
+    /// The health is a handle on the state the [`GpuContext`] that made the
+    /// device installed, so it answers for that device and keeps answering
+    /// after the context is dropped. A world whose device was built by hand,
+    /// or one made from [`DeviceHealth::unwatched`], always says it is alive.
+    ///
+    /// [`GpuContext`]: unlit_wgpu::context::GpuContext
+    ///
+    /// # Errors
+    ///
+    /// If the context's health resource is gone.
+    pub fn health(self, scope: &Scope<'_>) -> Result<DeviceHealth, EntityAccessError> {
+        scope
+            .query_one::<&DeviceHealth>(self.health)
+            .map(|mut row| row.get().clone())
     }
 
     /// The frame's [`FrameClock`].
@@ -538,12 +565,18 @@ fn spawn_row<T: 'static>(
 /// The device and queue are `Clone` handles on a shared context, so the world
 /// holds its own reference to each; the graph is not `Sync` and moves into the
 /// world whole. Call this once per world.
+///
+/// `health` says whether that device is still alive; pass
+/// [`GpuContext::health`](unlit_wgpu::context::GpuContext::health) to let the
+/// frame loop notice a device that went away, or [`DeviceHealth::unwatched`]
+/// for a device whose loss nobody reports.
 pub fn spawn_context(
     world: &mut World,
     device: wgpu::Device,
     queue: wgpu::Queue,
     graph_component: ResourceGraph,
     capabilities: DeviceCapabilities,
+    health: DeviceHealth,
 ) -> RenderContext {
     // The graph entity is reserved first because the context names it, and
     // every one of the four entities carries the whole context: a reader handed
@@ -555,6 +588,7 @@ pub fn spawn_context(
         queue: world.reserve_entity("gpu_queue"),
         graph,
         capabilities: world.reserve_entity("device_capabilities"),
+        health: world.reserve_entity("device_health"),
         clock: world.reserve_entity("frame_clock"),
         uniforms: world.reserve_entity("global_uniforms"),
     };
@@ -577,6 +611,7 @@ pub fn spawn_context(
         capabilities,
         context,
     );
+    spawn_row(&mut shared_view, context.health, health, context);
     spawn_row(&mut shared_view, graph, graph_component, context);
     spawn_row(&mut shared_view, context.uniforms, uniforms, context);
     // The URLs the frame's sources asked to open, drained by the host after

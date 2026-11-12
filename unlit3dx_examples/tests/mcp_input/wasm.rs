@@ -32,9 +32,10 @@ pub async fn run() {
     let ctx = Ctx::headless().await;
     let soundfont = shared::soundfont_bytes().to_vec().into();
     let (host, _input, mut interactive) = interactive_run(InteractiveConfig {
-        device: ctx.device,
-        queue: ctx.queue,
+        device: ctx.device.clone(),
+        queue: ctx.queue.clone(),
         capabilities: ctx.capabilities,
+        health: ctx.health.clone(),
         soundfont,
     });
 

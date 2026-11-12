@@ -5,7 +5,7 @@
 use std::sync::Once;
 
 pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
-use unlit_wgpu::context::{GpuContext, GpuRequestError};
+use unlit_wgpu::context::{DeviceHealth, GpuContext, GpuRequestError};
 
 /// The logging facade the tests record through, re-exported so a test crate
 /// needs no `log` dependency of its own.
@@ -106,6 +106,12 @@ pub struct Ctx {
     /// adapter is dropped once the device exists, and the renderer needs the
     /// capabilities, not the adapter.
     pub capabilities: DeviceCapabilities,
+    /// Whether the device is still alive, from the context that made it.
+    ///
+    /// A test that draws through a world hands this to
+    /// `spawn_context`, so the frame loop stops rather than submitting into a
+    /// device that went away.
+    pub health: DeviceHealth,
 }
 
 impl Ctx {
@@ -138,6 +144,7 @@ impl Ctx {
         let gpu = context(tier).await.expect("a GPU for the test suite");
         Ctx {
             tier,
+            health: gpu.health(),
             device: gpu.device,
             queue: gpu.queue,
             capabilities: gpu.capabilities,
