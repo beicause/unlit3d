@@ -191,6 +191,19 @@ without the tree changing.
   caller's own family uses, and everything specific to it — its key, its
   instance record, its mesh and material helpers — lives in the
   [`lit`](lit) module.
+- Meshes that share the source's pools are allocated through
+  [`MeshSource::allocate_pooled_mesh`](mesh_source::MeshSource::allocate_pooled_mesh),
+  which is also what the built-in family uses: the caller states the streams
+  its mesh occupies and fills them, and the source allocates the vertex and
+  index ranges, applies the pool offset where the device has no `base_vertex`,
+  and hands back a complete [`GpuMesh`](components::GpuMesh).
+  [`MeshSource::allocate_lit_mesh`](mesh_source::MeshSource::allocate_lit_mesh)
+  is the built-in shader's use of it — it derives the streams its channels
+  imply and packs them with the writers in
+  [`unlit_wgpu::mesh`](unlit_wgpu::mesh). A mesh that owns whole buffers of its
+  own, the way the UI path does, allocates it with
+  [`MeshSource::allocate_mesh`](mesh_source::MeshSource::allocate_mesh)
+  instead.
 - The GPU state — the [`wgpu::Device`], the [`wgpu::Queue`] and the
   [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph) — lives in the world as
   resource components, addressed by a [`RenderContext`](source::RenderContext).

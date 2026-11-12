@@ -22,166 +22,30 @@
 //! [crate::light].
 
 use core::mem::size_of;
-use std::rc::Rc;
 
 use arrayvec::ArrayVec;
 use unlit_ecs::Scope;
 use unlit_wgpu::mesh::{
-    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
-    compress_weights, index_fits_u16,
+    ChannelEncoding, MeshInstance, PositionStreamChannels, SecondaryFlags, compress_weights,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GlobalBindings, INSTANCE_SLOT,
     LitOptions, LitVariant, LitVertexChannels, PRIMARY_SLOT, SECONDARY_SLOT,
 };
 use unlit_wgpu::resources::{ResHandle, TextureView};
-use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::{
-    SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
+    SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc,
 };
 use unlit_wgpu::util::Hashed;
-use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
-use zerocopy::byteorder::native_endian::{U16, U32};
 
-use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh};
-use crate::mesh::{MeshDesc, MorphDeltas};
+use crate::mesh::MorphDeltas;
 use crate::mesh_source::MeshSource;
 use crate::pipeline::{
     DrawContext, FamilyContext, InstanceContext, InstanceData, InstanceStreamDesc,
     RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
 };
-
-/// The byte size of one index of `format`.
-///
-/// A pooled index range starts at a multiple of [`wgpu::COPY_BUFFER_ALIGNMENT`],
-/// which is a multiple of either format's size, so dividing its byte offset by
-/// this yields a whole number of indices.
-fn index_format_size(format: wgpu::IndexFormat) -> u32 {
-    match format {
-        wgpu::IndexFormat::Uint16 => size_of::<u16>() as u32,
-        wgpu::IndexFormat::Uint32 => size_of::<u32>() as u32,
-    }
-}
-
-/// Where a mesh's vertex-pool offset goes, given whether the device has
-/// `base_vertex`.
-///
-/// A mesh's vertices sit somewhere inside the pool its streams share, so a draw
-/// has to be offset to reach them. A device with `base_vertex` names the offset
-/// on the draw, which leaves the indices mesh-local and keeps them narrow; a
-/// device without it — WebGL2, whose GLES 3.0 has no such draw — has to add the
-/// offset to the indices at upload, where the draw's own stays zero. The two
-/// are complementary, and exactly one is non-zero.
-///
-/// Baking can widen the indices when the offset pushes one past `u16::MAX`,
-/// which is the cost of binding the whole pool instead of rebinding a vertex
-/// buffer per mesh. A draw's `base_vertex` has no such cost, but is a signed
-/// 32-bit integer, so the offset has to fit one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct IndexOffset {
-    /// Added to every index at upload.
-    baked: u32,
-    /// Carried by the draw as its `base_vertex`.
-    draw_base_vertex: u32,
-}
-
-impl IndexOffset {
-    /// Split `vertex_offset` between the indices and the draw.
-    fn new(supports_base_vertex: bool, vertex_offset: u32) -> Self {
-        if supports_base_vertex {
-            Self {
-                baked: 0,
-                draw_base_vertex: vertex_offset,
-            }
-        } else {
-            Self {
-                baked: vertex_offset,
-                draw_base_vertex: 0,
-            }
-        }
-    }
-
-    /// The format `indices` pack into and the number of bytes they occupy,
-    /// with the pool offset applied.
-    ///
-    /// An offset carried by the draw leaves the indices mesh-local, so they
-    /// stay as narrow as the mesh's own vertex count allows; an offset baked in
-    /// here can push an index past `u16::MAX`, which widens *every* index of
-    /// the mesh to `Uint32`. Either way the width is decided on the baked
-    /// values.
-    ///
-    /// The length is padded to [`wgpu::COPY_BUFFER_ALIGNMENT`], which is the
-    /// alignment an index pool hands its ranges out at, so it is both the size
-    /// to allocate and the number of bytes [`Self::write`] fills.
-    ///
-    /// The slice must not be empty: an empty mesh has no index buffer at all.
-    fn packed_len(self, indices: &[u32]) -> (wgpu::IndexFormat, usize) {
-        let widened = indices
-            .iter()
-            .any(|&index| !index_fits_u16(index + self.baked));
-        let element = if widened {
-            size_of::<u32>()
-        } else {
-            size_of::<u16>()
-        };
-        let format = if widened {
-            wgpu::IndexFormat::Uint32
-        } else {
-            wgpu::IndexFormat::Uint16
-        };
-        let padded_len =
-            (indices.len() * element).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
-        (format, padded_len)
-    }
-
-    /// Write `indices` with the pool offset applied into `out`, which must be
-    /// exactly [`Self::packed_len`]`(indices)` bytes.
-    ///
-    /// The offset is applied as the bytes are written, so no intermediate index
-    /// buffer exists; the trailing alignment padding is zeroed.
-    ///
-    /// The slice must not be empty: an empty mesh has no index buffer at all.
-    fn write(self, indices: &[u32], out: wgpu::WriteOnly<'_, [u8]>) {
-        let (format, padded_len) = self.packed_len(indices);
-        assert_eq!(
-            out.len(),
-            padded_len,
-            "the target must hold exactly the packed index buffer"
-        );
-        let element = index_format_size(format) as usize;
-        let (data, mut padding) = out.split_at(indices.len() * element);
-        match format {
-            wgpu::IndexFormat::Uint16 => {
-                let (chunks, _remainder) = data.into_chunks::<{ size_of::<u16>() }>();
-                chunks.write_iter(
-                    indices
-                        .iter()
-                        .map(|&index| U16::new((index + self.baked) as u16).into()),
-                );
-            }
-            wgpu::IndexFormat::Uint32 => {
-                let (chunks, _remainder) = data.into_chunks::<{ size_of::<u32>() }>();
-                chunks.write_iter(
-                    indices
-                        .iter()
-                        .map(|&index| U32::new(index + self.baked).into()),
-                );
-            }
-        }
-        padding.fill(0);
-    }
-
-    /// [`Self::write`] into a fresh `Vec`, for tests that inspect the bytes.
-    #[cfg(test)]
-    fn pack(self, indices: &[u32]) -> (wgpu::IndexFormat, Vec<u8>) {
-        let (format, padded_len) = self.packed_len(indices);
-        let mut data = vec![0u8; padded_len];
-        self.write(indices, wgpu::WriteOnly::from_mut(data.as_mut_slice()));
-        (format, data)
-    }
-}
 
 /// The key of the built-in family, lit or unlit.
 ///

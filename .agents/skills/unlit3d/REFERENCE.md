@@ -54,7 +54,7 @@
 | 项 | 是什么 |
 | --- | --- |
 | 注册 | `MeshSource::register_lit_family` |
-| 建 mesh | `allocate_lit_mesh`，第二参是 `&key.options`（不是 `&key`） |
+| 建 mesh | `allocate_lit_mesh`，第二参是 `&key.options`（不是 `&key`）；它只是 `MeshSource::allocate_pooled_mesh`（共享池子的通用入口）在 lit 上的薄适配，自有整块缓冲的 mesh 用 `allocate_mesh` |
 | 建材质 | `allocate_lit_material`，同上 |
 | 描述 | `LitMeshDesc`：`positions` 必填，其余通道都是 `Option`，照抄时用 `..Default::default()` 补齐。`normals` 是 `expanded` / `inverted_hull()` 外扩壳的方向，缺了画不出壳 |
 | key | `LitPipelineKey::new(LitOptions)`，`pub options: Hashed<LitOptions>`；受光与否由 `LitOptions::unlit` 定（`false` 受光） |

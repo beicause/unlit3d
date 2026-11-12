@@ -136,6 +136,12 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   lit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
   东西——它的 key、实例记录、mesh 与材质辅助方法——都住在 `lit` 模块里。
   渲染器里没有任何 mesh 专用的字段或绘制路径。
+- 共享源池子的 mesh 一律经由 `MeshSource::allocate_pooled_mesh` 分配，内置家族用的
+  也是它：调用者声明自己的 mesh 占用哪几条流并填充它们，源负责分配顶点与索引区段、
+  在设备没有 `base_vertex` 时把池偏移烘进索引，并交回一个完整的 `GpuMesh`。
+  `MeshSource::allocate_lit_mesh` 是内置着色器对它的使用——由通道推导出流布局，再用
+  `unlit_wgpu::mesh` 里的写入器打包。整块缓冲自有的 mesh（例如 UI 路径）改用
+  `MeshSource::allocate_mesh` 分配。
 - GPU 状态——`wgpu::Device`、`wgpu::Queue` 与 `ResourceGraph`——作为资源组件存在于
   world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址；
   `RenderContext::of` 可以从它四个实体中的任意一个反查回整个上下文。

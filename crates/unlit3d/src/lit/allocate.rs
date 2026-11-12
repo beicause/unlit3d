@@ -1,13 +1,14 @@
 //! Mesh allocation and family registration for the built-in lit pipeline.
 
 use super::*;
+use crate::mesh_source::{PooledMeshDesc, PooledStream};
 
 /// Mesh allocation and family registration for the built-in lit pipeline.
 ///
-/// These are ordinary inherent methods on [`MeshSource`]: a caller's own family
-/// uses [`MeshSource::register_family`] and [`MeshSource::allocate_mesh`] the
-/// same way these use them, and the module gathers them next to the shader
-/// they serve.
+/// The allocation below is a use of [`MeshSource::allocate_pooled_mesh`], the
+/// same pooled path a caller's own family allocates its meshes through: the
+/// built-in shader's channel layout and packed stream writers are what this
+/// module adds, not access to the pools.
 impl MeshSource {
     /// Register the built-in lit shader as a family.
     ///
@@ -60,9 +61,10 @@ impl MeshSource {
     /// them once per frame, so animating a mesh costs a component write and no
     /// re-upload.
     ///
-    /// This is a convenience over [`MeshSource::allocate_mesh`]: it builds the
-    /// same [`MeshDesc`] a caller could build by hand, and shares the
-    /// compression in [unlit_wgpu::mesh] with anyone else who wants it.
+    /// This is a use of [`MeshSource::allocate_pooled_mesh`]: it derives the
+    /// streams the channels imply and packs them with the writers in
+    /// [unlit_wgpu::mesh], while the pooled allocation itself is shared with
+    /// every family.
     ///
     /// Which channels are packed follows the slices the caller passes: a
     /// channel with no slice is left out, and the mesh's vertex layout records
@@ -82,9 +84,6 @@ impl MeshSource {
         options: &Hashed<LitOptions>,
         desc: LitMeshDesc<'_>,
     ) -> GpuMesh {
-        let device = self.device(world);
-        let queue = self.queue(world);
-
         let LitMeshDesc {
             positions,
             uvs,
@@ -172,14 +171,6 @@ impl MeshSource {
             (&[] as &[[u16; 4]], &[] as &[[f32; 4]])
         };
 
-        // Both streams' lengths are known before anything is uploaded, so the
-        // pool can be sized first and each stream packed straight into it. The
-        // position stream's compression derives the mesh metadata as it runs.
-        let mut meta = MeshMetadata::default();
-        let vertex_count = positions.len();
-        let position_len = position_stream.byte_len(vertex_count);
-        let secondary_len = secondary_stream.byte_len(vertex_count);
-
         // The morph displacements, when the draw reads them. They are geometry
         // the mesh owns, written once here; the weights that blend them are
         // per-instance pose state the frame's global group binds. The source
@@ -201,7 +192,7 @@ impl MeshSource {
             morph_deltas
         });
 
-        // The vertex layout the key's options declare, slot for slot. An empty
+        // The vertex layout the channels declare, slot for slot. An empty
         // stream still gets a buffer entry — the pipeline simply declares no
         // attributes for that slot — so the mesh's layout matches the key's.
         let vertex_layouts = variant.vertex_buffer_layouts();
@@ -216,210 +207,43 @@ impl MeshSource {
                     attributes: VertexAttributes::new(),
                 })
         };
-        let position_layout = layout_of(PRIMARY_SLOT);
-        let secondary_layout = layout_of(SECONDARY_SLOT);
+        let streams = [
+            (PRIMARY_SLOT, layout_of(PRIMARY_SLOT)),
+            (SECONDARY_SLOT, layout_of(SECONDARY_SLOT)),
+        ];
 
-        // The mesh's streams are the vertex pool's: one element allocation
-        // covers every stream of the mesh at the same element index, which is
-        // what lets a draw address them all with one `firstVertex` or
-        // `baseVertex`. A stream the variant declares nothing for — an empty
-        // secondary stream, say — gets no buffer and no part in it.
-        let stream_layouts = [position_layout.clone(), secondary_layout.clone()];
-        let vertices = self
-            .vertex_pool
-            .allocate(&device, &queue, &stream_layouts, vertex_count as u32)
-            .expect("the vertex pool grows with the mesh");
-        let vertex_offset = vertices.allocation.offset;
-        // Each stream is packed straight into the pool through a queue write,
-        // so no CPU-side buffer is built first. The write view is the only
-        // mutable borrow, so the two streams are packed one after the other.
-        for (slot, layout, len) in [
-            (PRIMARY_SLOT, &position_layout, position_len),
-            (SECONDARY_SLOT, &secondary_layout, secondary_len),
-        ] {
-            if layout.array_stride == 0 {
-                continue;
-            }
-            let id = self.vertex_node(world, layout);
-            self.sync_vertex_node(world, &id, layout);
-            let buffer = self
-                .context
-                .graph(world)
-                .get()
-                .get(&id)
-                .expect("the stream's node exists")
-                .clone();
-            let mut view = queue
-                .write_buffer_with(
-                    &buffer,
-                    VertexStreamPool::byte_offset(layout, vertex_offset),
-                    core::num::NonZeroU64::new(len as u64)
-                        .expect("a declared stream is never empty"),
-                )
-                .expect("the stream's range fits its buffer");
-            if slot == PRIMARY_SLOT {
-                position_stream.write(
-                    positions,
-                    joints.iter().copied(),
-                    compress_weights(weights),
-                    &mut meta,
-                    view.slice(..),
-                );
-            } else {
-                secondary_stream.write(
-                    uvs.unwrap_or(&[]),
-                    colors.unwrap_or(&[]),
-                    normals.unwrap_or(&[]),
-                    &mut meta,
-                    view.slice(..),
-                );
-            }
-        }
-
-        // Index buffer (optional): `Uint16` when every index fits, otherwise
-        // `Uint32` — the same choice the compressor makes. The indices go into
-        // the index pool, so every indexed mesh draws out of one shared buffer
-        // and names its own slice through `GpuMesh::first`.
-        //
-        // A mesh's vertices are somewhere inside the pool its streams share, so
-        // a draw has to be offset by `vertex_offset` to reach them. How it is
-        // offset is the one thing that depends on the device: a draw's
-        // `base_vertex` is the direct way, but WebGL2 has no `base_vertex`, so
-        // there the offset is added to the indices themselves at upload and the
-        // draw's stays zero. Baking widens the indices if they no longer fit
-        // `u16`, which is the cost of binding the whole pool instead of
-        // rebinding a vertex buffer per mesh.
-        // A draw's `base_vertex` is a signed 32-bit integer, so an offset the
-        // draw has to carry must fit one. A baked offset is a `u32` index like
-        // any other and has no such limit.
-        let supports_base_vertex = self.capabilities(world).base_vertex();
-        assert!(
-            !supports_base_vertex || vertex_offset <= i32::MAX as u32,
-            "a vertex offset has to fit the i32 a draw's base vertex is"
-        );
-        // Where the pool offset goes. A device with `base_vertex` leaves the
-        // indices mesh-local and lets the draw add the offset; one without has
-        // to bake it into the indices and keep the draw's at zero. The two are
-        // complementary, and exactly one of them is non-zero.
-        let offset = IndexOffset::new(supports_base_vertex, vertex_offset);
-        let draw_base_vertex = offset.draw_base_vertex;
-        let (index_buffer, count, indexed, index_allocation, first) = match indices {
-            Some(indices) if !indices.is_empty() => {
-                let index_count = indices.len() as u32;
-                // The bytes the draw will read, offset where the device
-                // requires and sized for the pool's own alignment. An offset
-                // that pushes an index past `u16::MAX` has to widen the buffer
-                // it is written into, so the format and the bytes are decided
-                // together.
-                let (format, packed_len) = offset.packed_len(indices);
-                let range = self
-                    .index_pool
-                    .allocate(&device, &queue, packed_len as u32)
-                    .expect("the index pool grows with the mesh");
-                {
-                    let mut graph_holder = self.context.graph(world);
-                    let graph = graph_holder.get();
-                    MeshSource::sync_pool_node(&self.index_pool, &self.index_pool_id, graph);
-                    let buffer = graph
-                        .get(&self.index_pool_id)
-                        .expect("the index pool node exists")
-                        .clone();
-                    let mut view = queue
-                        .write_buffer_with(
-                            &buffer,
-                            u64::from(range.allocation.offset),
-                            core::num::NonZeroU64::new(packed_len as u64)
-                                .expect("an empty index buffer is never allocated"),
-                        )
-                        .expect("the index range fits its buffer");
-                    offset.write(indices, view.slice(..));
-                }
-                let first = range.allocation.offset / index_format_size(format);
-                (
-                    Some((self.index_pool_id.clone(), format)),
-                    index_count,
-                    true,
-                    Some(range.allocation),
-                    first,
-                )
-            }
-            // A non-indexed draw names its first vertex directly, so the pool
-            // offset goes on the draw's range. A non-zero `base_vertex` is
-            // ignored for a non-indexed draw, so it cannot carry the offset.
-            _ => (None, vertex_count as u32, false, None, vertex_offset),
-        };
-
-        // The mesh owns the metadata entry `meta` — the same AABB and UV
-        // decode parameters the compression just derived, plus the addressing
-        // the draw needs. The vertex offset is known here, and the mesh's own
-        // morph count is taken from the displacements it uploaded.
-        let aabb = Aabb::new(meta.aabb_center, meta.aabb_half_extents);
-        let mut mesh = self.allocate_mesh_with_metadata(
+        // The compression derives the mesh's metadata as it packs, so each
+        // stream writes into the entry the pooled allocation hands it. The two
+        // streams are packed one after the other, in slot order.
+        self.allocate_pooled_mesh(
             world,
-            MeshDesc {
-                // The streams are the vertex pool's, not the mesh's own: the
-                // mesh names the pool's node for each slot and its own range,
-                // so no buffer is registered under the mesh for them.
-                vertex_buffers: ArrayVec::new(),
-                // The indices are the index pool's, not the mesh's own: the
-                // mesh names the pool's node and its own range, so no buffer
-                // is registered under the mesh for them.
-                index_buffer: None,
-                count,
-                indexed,
-                aabb,
-                // The built-in variants bind nothing at the mesh group, so the
-                // mesh carries no group of its own.
-                bind_group: None,
+            PooledMeshDesc {
+                streams: &streams,
+                vertex_count: positions.len(),
+                indices,
                 morph_deltas,
+                skinned,
             },
-            meta,
-            skinned,
-            vertex_offset,
-        );
-
-        // The mesh's parts are complete only now: the pool-backed slots and
-        // ranges are known once the pools have been allocated above. The handle
-        // is freshly built and shared with nothing, so it is uniquely owned
-        // here and can be patched in place.
-        let parts = Rc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
-
-        // The mesh's layout is only the vertex streams it draws from: the
-        // per-instance stream is the family's own and is bound by the source
-        // at draw time, so it is not part of the mesh's layout at all.
-        let mut layouts = ArrayVec::<_, MAX_VERTEX_BUFFERS>::new();
-
-        // The mesh's slices of the pools it shares: the draw names its ranges
-        // by `first` and `base_vertex`, and the allocations are handed back on
-        // removal. The layout is the key's own, slot by slot: the family keys
-        // on it, so it is owned by the mesh even though the buffers behind it
-        // are the pool's. A stream the variant declares nothing for is left
-        // out, as it is for a mesh that owns its buffers.
-        for (slot, layout) in [
-            (PRIMARY_SLOT, &position_layout),
-            (SECONDARY_SLOT, &secondary_layout),
-        ] {
-            if layout.array_stride > 0 {
-                layouts.push((slot, layout.clone()));
-                // Resolved before the parts are borrowed mutably below: the
-                // lookup needs the source, which the borrow would rule out.
-                let node = self.vertex_node(world, layout);
-                parts.vertex_buffers.push((slot, node));
-            }
-        }
-        // The pool-backed slots join the layout only here, once the pools have
-        // been allocated; the mesh's handle is replaced with the complete one.
-        parts.index_buffer = index_buffer;
-        parts.index_allocation = index_allocation;
-        parts.vertex_allocation = Some(vertices.allocation);
-        mesh.vertex_layout = VertexLayout::new(layouts);
-        mesh.first = first;
-        // Zero whenever the offset was baked into the indices instead, which is
-        // what a draw on a device without `base_vertex` requires. The metadata
-        // entry carries `vertex_offset` either way: the shader reads
-        // pool-global vertex ordinals on both paths.
-        mesh.base_vertex = draw_base_vertex;
-        mesh
+            |stream: PooledStream<'_>| {
+                if stream.slot == PRIMARY_SLOT {
+                    position_stream.write(
+                        positions,
+                        joints.iter().copied(),
+                        compress_weights(weights),
+                        stream.metadata,
+                        stream.out,
+                    );
+                } else {
+                    secondary_stream.write(
+                        uvs.unwrap_or(&[]),
+                        colors.unwrap_or(&[]),
+                        normals.unwrap_or(&[]),
+                        stream.metadata,
+                        stream.out,
+                    );
+                }
+            },
+        )
     }
 
     /// Allocate the lit material bind group from an existing base-colour

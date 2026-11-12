@@ -8,7 +8,9 @@
 //! caller's own source runs beside it with no less privilege.
 //!
 //! The implementation lives in submodules by responsibility:
-//! `geometry` allocates meshes, textures and materials into the pools,
+//! `pool` allocates a mesh that shares the source's vertex and index pools,
+//! `geometry` allocates meshes that own their buffers, and the textures and
+//! materials both kinds draw with,
 //! `arrays` uploads the frame-level joint, morph and metadata arrays,
 //! `lighting` uploads the clustered lights, and `families` registers
 //! pipeline families, packs per-frame instances and assembles the draw list.
@@ -523,8 +525,11 @@ mod arrays;
 mod families;
 mod geometry;
 mod lighting;
+mod pool;
 #[cfg(test)]
 mod tests;
+
+pub use self::pool::{PooledMeshDesc, PooledStream};
 
 impl FrameSource for MeshSource {
     fn build_scene(
