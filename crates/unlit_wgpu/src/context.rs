@@ -12,6 +12,8 @@
 //! names its backend), what to probe the adapter with, and what the handles
 //! are for afterwards.
 
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use crate::capabilities::{DeviceCapabilities, DeviceTier};
 
 /// A ready-to-use GPU context: the instance, the adapter, and the device with
@@ -35,6 +37,48 @@ pub struct GpuContext {
     /// What the device can do beyond the WebGPU baseline, captured while
     /// the adapter is still here to report it.
     pub capabilities: DeviceCapabilities,
+    /// What the device said when it went away, if it has.
+    ///
+    /// A lost device stops submitting and reports nothing further, so this is
+    /// the only record of it. It stays `None` for a healthy device, and for a
+    /// device whose backend never calls back.
+    health: DeviceHealth,
+}
+
+/// Whether the device behind it is still able to work, and why not if it is
+/// not.
+///
+/// A lost device accepts no further work and reports nothing on its own: wgpu
+/// hands the reason to a callback, once. This is the holder of that reason, so
+/// a frame loop can ask rather than keep submitting into a device that does
+/// nothing. A device set up without one never reports a loss.
+#[derive(Clone, Default)]
+pub struct DeviceHealth(Arc<Mutex<Option<DeviceLost>>>);
+
+impl DeviceHealth {
+    /// A health that no device reports to.
+    ///
+    /// What a caller gets when it built the device itself and did not install
+    /// a callback; it always says the device is alive.
+    #[must_use]
+    pub fn unwatched() -> Self {
+        Self::default()
+    }
+
+    /// What the device said when it was lost, or `None` while it is alive.
+    #[must_use]
+    pub fn lost(&self) -> Option<DeviceLost> {
+        lock(&self.0).clone()
+    }
+}
+
+/// What a device said when it was lost.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceLost {
+    /// Why the device went away.
+    pub reason: wgpu::DeviceLostReason,
+    /// The backend's own account, which names the failure.
+    pub message: String,
 }
 
 impl GpuContext {
@@ -105,14 +149,57 @@ impl GpuContext {
                 ..Default::default()
             })
             .await?;
+        // A lost device reports nothing on its own: the callback is the only
+        // channel, and wgpu invokes it once. Recording it here means a caller
+        // that notices frames have stopped can ask why.
+        let health = DeviceHealth::default();
+        let record = health.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            *lock(&record.0) = Some(DeviceLost { reason, message });
+        });
         Ok(Self {
             instance,
             adapter,
             device,
             queue,
             capabilities,
+            health,
         })
     }
+
+    /// The device's health, for a caller that wants to watch it elsewhere.
+    ///
+    /// A render world keeps one next to the device and queue it hands out, so
+    /// the frame loop asks the same state this context holds: a device that
+    /// went away stops every frame that would need it, and the reason survives
+    /// the context being dropped.
+    #[must_use]
+    pub fn health(&self) -> DeviceHealth {
+        self.health.clone()
+    }
+
+    /// What the device said when it was lost, or `None` while it is alive.
+    ///
+    /// A lost device accepts no further work: submissions stop and every
+    /// resource it held is gone, so a caller that sees this should build a new
+    /// context rather than draw again. The reason distinguishes a device the
+    /// caller destroyed from one that failed on its own.
+    #[must_use]
+    pub fn lost(&self) -> Option<DeviceLost> {
+        self.health.lost()
+    }
+}
+
+/// Take `mutex`, ignoring poisoning.
+///
+/// A panic while the lock was held leaves the lost state as some other
+/// thread wrote it, which is still the best answer available; reporting a
+/// poisoning error from a query about the device would replace the real
+/// failure with a spurious one.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Ask `instance` for an adapter, which must be able to present to `probe`
