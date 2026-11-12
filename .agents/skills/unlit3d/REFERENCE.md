@@ -26,8 +26,8 @@
 | 绘制顺序 | `FramePassOrder(pub i32)`，低者先录 | 同上 |
 | 附件 | `FramePass::set_attachments`：深度 / MSAA 视图 + 颜色视图 | 同上 |
 | 视口 | `FramePass::viewport: Option<ViewportRect>`（字段在 pass.rs）；`ViewportRect::new(w, h)` / `at(x, y)` / `with_depth(min, max)` / `fit_aspect(aspect, target_w, target_h)` | `crates/unlit_wgpu/src/scene.rs` |
-| 每 pass 信息 | `PassInfo { surface: SurfaceKey, width, height, viewport }`，source 靠它知道画进什么目标、目标多大 | 同上 |
-| 清屏 | `RenderLoadOps { color, depth, stencil }`，默认 `color_clear()` / `depth_clear()`（清 0.0，reverse-z 的远平面）/ `stencil_clear()` | `crates/unlit3d/src/components.rs` |
+| 每 pass 信息 | `PassInfo { surface: SurfaceKey, width, height, viewport }`，source 靠它知道画进什么目标、目标多大 | `crates/unlit3d/src/pass.rs` |
+| 清屏 | `RenderLoadOps { color, depth, stencil }`（定义在 `crates/unlit3d/src/components.rs`），默认 `color_clear()` / `depth_clear()`（清 0.0，reverse-z 的远平面）/ `stencil_clear()`；三个 `const fn` 在 `crates/unlit_wgpu/src/render_attachments.rs`，经 prelude 重导出 | `crates/unlit3d/src/components.rs`、`crates/unlit_wgpu/src/render_attachments.rs` |
 | source 组件 | `Source::new(impl FrameSource)` + `with_order` / `as_mut::<T>` / `as_ref::<T>` | `crates/unlit3d/src/source.rs` |
 | source 顺序 | `FrameSourceOrder::MESH = 0`、`::LINE = 50`、`::UI = 100`：线默认夹在 mesh 与 UI 之间，因为它测 mesh 写下的深度 | 同上 |
 | 自定义 source | `trait FrameSource`：`build_scene` + `order`。会被**每个 pass 各调一次**，per-pass 状态按 `info.surface` 存 | 同上 |
@@ -48,7 +48,7 @@
 
 ## 内建 lit family
 
-全在 `crates/unlit3d/src/lit.rs`；注册是 `MeshSource` 的 inherent 方法，**不需要额外 trait import**。
+定义在 `crates/unlit3d/src/lit.rs`（策略与实例组件）与 `crates/unlit3d/src/lit/allocate.rs`（注册与分配）；注册是 `MeshSource` 的 inherent 方法，**不需要额外 trait import**。
 
 | 项 | 是什么 |
 | --- | --- |
@@ -64,7 +64,7 @@
 
 ## 管线策略 LitOptions
 
-`crates/unlit_wgpu/src/pipeline.rs`，搜 `pub struct LitOptions`。**无 `Default`**，用构造函数起底再改字段。
+`crates/unlit_wgpu/src/pipeline/options.rs`，搜 `pub struct LitOptions`（`pipeline.rs` 只做聚合重导出）。**无 `Default`**，用构造函数起底再改字段。
 
 | 构造 | 内容 |
 | --- | --- |
@@ -95,7 +95,7 @@
 | 分簇配置 | `MeshSource` 的 `clustering` 字段（`pub`），类型 `ClusterConfig { cell_pixels, z_slices, max_clusters, first_slice_depth, far }` + `ClusterConfig::DEFAULT`；从 prelude 直接可用 | `crates/unlit_wgpu/src/light.rs` / `crates/unlit3d/src/mesh_source/mod.rs` |
 | 多边形光 | 少于 3 个角无面积、不画；重复一个角可以拼三角，相差极小的角会被合并 | `crates/unlit3d/src/light.rs` |
 | 关闭某盏灯 | `describe.intensity <= 0.0` 的灯在收集时直接跳过（不用 despawn，但 despawn 更省一次遍历） | 同上 |
-| 上传 | `upload_lights`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，只要这帧有可见 mesh 就跑，**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source/mod.rs` |
+| 上传 | `upload_lights`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，前提与实例上传相同——这帧有活动相机且可见集非空——但**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source/mod.rs` |
 
 ## 相机与变换
 

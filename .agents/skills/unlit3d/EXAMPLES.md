@@ -22,7 +22,7 @@
 
 | 场景                                                        | 演示什么                                                       |
 | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| `spin_cube`                                                 | 纹理立方体 + 两块 egui 面板 + 键盘与拖拽；CI 的快照就是它       |
+| `spin_cube`                                                 | 纹理立方体 + 两块 egui 面板 + 键盘与拖拽；默认场景，也是窄宽高比快照的取样对象 |
 | `ui_only`                                                   | 没有 mesh source、没有相机也能出一帧 UI                          |
 | `mesh_and_ui`                                               | mesh source 与 UI source 同帧的记录顺序、scissor、load ops       |
 | `transparent`                                               | 透明 + `ZSortedDrawing` + blend                                  |
@@ -42,9 +42,9 @@
 
 - 单 world 骨架与四步示例：`crates/unlit3d/README.md` 的「Example」一节（doctest，可直接抄）。
 - frame 模型与 source/pass 语义：`crates/unlit3d/src/source.rs`、`crates/unlit3d/src/pass.rs`、`crates/unlit3d/src/renderer.rs`。
-- 内建 lit family 与实例组件：`crates/unlit3d/src/lit.rs`。
+- 内建 lit family 与实例组件：`crates/unlit3d/src/lit.rs`；注册与分配在 `crates/unlit3d/src/lit/allocate.rs`。
 - mesh 分配与资源注册：`crates/unlit3d/src/mesh_source/`（目录，入口 `mod.rs`，family 在 `families.rs`）。
-- 管线策略与 `LitOptions`：`crates/unlit_wgpu/src/pipeline.rs`。
+- 管线策略与 `LitOptions`：`crates/unlit_wgpu/src/pipeline/options.rs`（聚合重导出在 `pipeline.rs`）。
 - 附件与读回：`crates/unlit3d/src/attachments.rs`（`FrameAttachments`）、`crates/unlit_wgpu/src/render_attachments.rs`（`create_*_target` / `default_depth_stencil_format`）、`crates/unlit_wgpu/src/readback.rs`（`readback_texture`）。
 - 目标特化：`crates/unlit_wgpu/src/specialize.rs`（`SurfaceKey` / `SurfaceTarget::set_surface`）。
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。

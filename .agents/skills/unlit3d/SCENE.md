@@ -134,5 +134,5 @@ world.apply().expect("the queue is drained");
 ## 帧行为与顺序
 
 - `OnFrame::new` 不带顺序，所有不带顺序的构成一个 band，**band 内无序**；依赖别人的读或写，就用 `OnFrame::with_order(FrameBehaviourOrder(n))` 两端都声明。
-- 库不定义任何行为顺序常量（帧行为的顺序谁先谁后是应用的约定；只有 pass 侧有 `SCENE_PASS_ORDER` / `BLIT_PASS_ORDER`）。示例的排法是：默认 band 建资产（不带顺序），玩法 tick 在它**之后**（`BALLS_ORDER = 100`，因为 tick 读的就是建好的资产），发布面板最后（`PUBLISH_ORDER = 200`）。
+- 库只给**它自己装配的帧**定顺序：presenter 侧 `PRESENT_ORDER = 10`（默认 band 之后，好让喂帧的行为都跑完）、unlit3dx 内部 `REQUEST_GPU_ORDER = -1`（默认 band 之前，GPU 先就绪），pass 侧另有两个 `FramePassOrder` 常量 `SCENE_PASS_ORDER` / `BLIT_PASS_ORDER`。其余顺序都是应用的约定，示例的排法是：默认 band 建资产（不带顺序），玩法 tick 在它**之后**（`BALLS_ORDER = 100`，因为 tick 读的就是建好的资产），发布面板最后（`PUBLISH_ORDER = 200`）。
 - 「这一帧跳过」用兄弟组件做标志，让声明了顺序的行为去读，不要在回调里删行为（dispatch 期间增删行为是未定义顺序）。
