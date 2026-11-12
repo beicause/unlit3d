@@ -22,7 +22,7 @@ fn indexed_meshes_share_one_index_buffer() {
     let second = h.tri_mesh();
 
     // Both name the pool's node, and each names its own slice of it.
-    let pool = h.source.index_pool_id.clone();
+    let pool = h.source.pools.index_pool_id.clone();
     assert_eq!(
         first.parts.index_buffer.as_ref().map(|(id, _)| id.clone()),
         Some(pool.clone())
@@ -34,7 +34,7 @@ fn indexed_meshes_share_one_index_buffer() {
     assert_ne!(first.first, second.first, "the slices do not overlap");
 
     // The ranges tile the pool in allocation order.
-    let first_range = h.source.index_pool.allocation_size(
+    let first_range = h.source.pools.index_pool.allocation_size(
         first
             .parts
             .index_allocation
@@ -89,7 +89,7 @@ fn an_index_pool_that_grows_keeps_every_meshes_slice() {
     );
     assert_eq!(
         ctx.graph(&h.world.root_scope()).get().get(&first_node),
-        Some(h.source.index_pool.buffer()),
+        Some(h.source.pools.index_pool.buffer()),
         "the node follows the pool's buffer"
     );
     assert_eq!(
@@ -97,7 +97,7 @@ fn an_index_pool_that_grows_keeps_every_meshes_slice() {
         "the first mesh's slice did not move"
     );
     assert!(
-        h.source.index_pool.size() > first_offset as u64,
+        h.source.pools.index_pool.size() > first_offset as u64,
         "the pool grew"
     );
 }
@@ -195,6 +195,7 @@ fn a_vertex_pool_that_grows_keeps_every_meshes_element_index() {
     for (node, (_, layout)) in nodes.iter().zip(last.vertex_layout.iter()) {
         let pool_buffer = h
             .source
+            .pools
             .vertex_pool
             .buffer(layout)
             .expect("the layout has a buffer");
@@ -209,7 +210,7 @@ fn a_vertex_pool_that_grows_keeps_every_meshes_element_index() {
         "the first mesh's element index did not move"
     );
     assert!(
-        h.source.vertex_pool.element_capacity() > base_vertex,
+        h.source.pools.vertex_pool.element_capacity() > base_vertex,
         "the pool grew"
     );
 }
@@ -274,12 +275,13 @@ fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
     );
     let shapes: Vec<DrawShape> = h
         .source
+        .caches
         .visible_cache
         .iter()
         .map(|entry| entry.handles_key.shape)
         .collect();
     assert_eq!(
-        h.source.entry_handle_cache.len(),
+        h.source.caches.entry_handle_cache.len(),
         2,
         "each distinct slice interns its own handles"
     );

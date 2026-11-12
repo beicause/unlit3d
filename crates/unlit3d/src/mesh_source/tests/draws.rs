@@ -21,7 +21,7 @@ fn entities_without_a_sort_marker_are_drawn_first() {
         .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
     assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
-    assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
+    assert!(h.source.caches.visible_cache[0].depth > h.source.caches.visible_cache[1].depth);
 }
 
 #[test]
@@ -54,6 +54,7 @@ fn z_sorted_entries_carry_depths_that_sort_back_to_front() {
     // shallowest, so the pool draws far before near.
     let depth_of = |entity: Entity| {
         h.source
+            .caches
             .visible_cache
             .iter()
             .find(|entry| entry.mesh.entity == entity)
@@ -108,6 +109,7 @@ fn z_sorted_entries_sort_by_the_mesh_bounds_not_the_entity_origin() {
     // though its entity origin is not deeper than the other's.
     let depth_of = |entity: Entity| {
         h.source
+            .caches
             .visible_cache
             .iter()
             .find(|entry| entry.mesh.entity == entity)
@@ -152,7 +154,7 @@ fn z_sorted_depth_is_measured_along_the_view_axis() {
     h.source
         .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
-    let entry = &h.source.visible_cache[0];
+    let entry = &h.source.caches.visible_cache[0];
     assert_eq!(entry.mesh.entity, entity);
     // The geometry centre, not the entity origin.
     let centre = translation + aabb.center;
@@ -205,6 +207,7 @@ fn entities_are_drawn_in_pipeline_id_order() {
         .collect_and_sort_visible(&h.world.root_scope(), &camera, surface);
     let first_id = h
         .source
+        .caches
         .visible_cache
         .iter()
         .find(|entry| entry.mesh.entity == warm_standard)
@@ -212,6 +215,7 @@ fn entities_are_drawn_in_pipeline_id_order() {
         .pipeline_id;
     let second_id = h
         .source
+        .caches
         .visible_cache
         .iter()
         .find(|entry| entry.mesh.entity == warm_alternative)
@@ -305,11 +309,11 @@ fn sorting_survives_a_second_frame_on_the_reused_cache() {
     assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
 
     // The cache is cleared and refilled, not reallocated.
-    let capacity = h.source.visible_cache.capacity();
+    let capacity = h.source.caches.visible_cache.capacity();
     h.source
         .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
     assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
-    assert_eq!(h.source.visible_cache.capacity(), capacity);
+    assert_eq!(h.source.caches.visible_cache.capacity(), capacity);
 }
 
 // -- specialization cache ------------------------------------------------
@@ -356,9 +360,9 @@ fn rendering_a_world_twice_reuses_every_per_frame_cache() {
     let drawn_first = drawn(&h.source);
     assert_eq!(drawn_first.len(), 1, "the entity was drawn");
     let capacities = (
-        h.source.visible_cache.capacity(),
-        h.source.entry_handle_cache.capacity(),
-        h.source.pipeline_handle_cache.capacity(),
+        h.source.caches.visible_cache.capacity(),
+        h.source.caches.entry_handle_cache.capacity(),
+        h.source.caches.pipeline_handle_cache.capacity(),
         scene.draws.capacity(),
     );
 
@@ -374,9 +378,9 @@ fn rendering_a_world_twice_reuses_every_per_frame_cache() {
     assert_eq!(drawn(&h.source), drawn_first, "the same draws, in order");
     assert_eq!(
         (
-            h.source.visible_cache.capacity(),
-            h.source.entry_handle_cache.capacity(),
-            h.source.pipeline_handle_cache.capacity(),
+            h.source.caches.visible_cache.capacity(),
+            h.source.caches.entry_handle_cache.capacity(),
+            h.source.caches.pipeline_handle_cache.capacity(),
             scene.draws.capacity(),
         ),
         capacities,
@@ -459,9 +463,13 @@ fn entities_sharing_a_draw_state_share_one_handle_set() {
         &mut encoder,
     );
 
-    assert_eq!(h.source.visible_cache.len(), 3, "all three are visible");
     assert_eq!(
-        h.source.entry_handle_cache.len(),
+        h.source.caches.visible_cache.len(),
+        3,
+        "all three are visible"
+    );
+    assert_eq!(
+        h.source.caches.entry_handle_cache.len(),
         1,
         "one mesh, one draw state, one handle set"
     );
@@ -503,6 +511,7 @@ fn a_hidden_entity_is_not_drawn() {
 
     let drawn: Vec<_> = h
         .source
+        .caches
         .visible_cache
         .iter()
         .map(|entry| entry.mesh.entity)
@@ -526,7 +535,7 @@ fn a_hidden_entity_is_not_drawn() {
         &mut encoder,
     );
     assert_eq!(
-        h.source.visible_cache.len(),
+        h.source.caches.visible_cache.len(),
         2,
         "the entity is drawn again once the flag says so"
     );
@@ -678,18 +687,21 @@ fn z_sorted_entries_of_different_variants_sort_by_depth() {
 
     let order: Vec<Entity> = h
         .source
+        .caches
         .visible_cache
         .iter()
         .map(|entry| entry.mesh.entity)
         .collect();
     let pipelines: Vec<_> = h
         .source
+        .caches
         .visible_cache
         .iter()
         .map(|entry| entry.pipeline_id)
         .collect();
     let depth_of = |entity: Entity| {
         h.source
+            .caches
             .visible_cache
             .iter()
             .find(|entry| entry.mesh.entity == entity)

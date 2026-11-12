@@ -108,17 +108,10 @@ impl MeshSource {
         let (morph_target_count, morph_deltas_offset, morph_deltas_allocation) = match morph_deltas
         {
             Some(morph) => {
-                let range = self
-                    .morph_deltas_pool
-                    .allocate(&self.device(world), morph.deltas.len() as u32)
-                    .expect("the morph-displacement pool grows");
-                self.morph_deltas_pool.write(range, morph.deltas.as_bytes());
-                self.morph_deltas_dirty = true;
-                (
-                    morph.target_count,
-                    range.allocation.offset,
-                    Some(range.allocation),
-                )
+                let (offset, allocation) = self
+                    .arrays
+                    .allocate_morph_deltas(&self.device(world), &morph);
+                (morph.target_count, offset, Some(allocation))
             }
             None => (0, 0, None),
         };
@@ -142,18 +135,7 @@ impl MeshSource {
         // pooled.
         metadata.morph_count = morph_target_count;
         metadata.morph_deltas_offset = morph_deltas_offset;
-        let metadata_index = match self.free_metadata.pop() {
-            Some(index) => {
-                self.metadata[index as usize] = metadata;
-                index
-            }
-            None => {
-                let index = self.metadata.len() as u32;
-                self.metadata.push(metadata);
-                index
-            }
-        };
-        self.metadata_dirty = true;
+        let metadata_index = self.arrays.allocate_metadata(metadata);
 
         // The virtual root below is the one node that keeps the parts alive:
         // each part is registered on its own and the root is built from all of
@@ -300,22 +282,16 @@ impl MeshSource {
     /// before calling this still reads a live mesh.
     pub fn remove_mesh(&mut self, mesh: GpuMesh) {
         if let Some(vertex) = mesh.parts.vertex_allocation {
-            self.vertex_pool.release(vertex);
+            self.pools.vertex_pool.release(vertex);
         }
         if let Some(index) = mesh.parts.index_allocation {
-            self.index_pool.release(index);
+            self.pools.index_pool.release(index);
         }
         if let Some(deltas) = mesh.parts.morph_deltas_allocation {
-            self.morph_deltas_pool.release(deltas);
+            self.arrays.release_morph_deltas(deltas);
         }
 
-        let metadata_index = mesh.parts.metadata_index;
-        let emptied = self.metadata.get_mut(metadata_index as usize);
-        if let Some(entry) = emptied {
-            *entry = MeshMetadata::default();
-            self.free_metadata.push(metadata_index);
-            self.metadata_dirty = true;
-        }
+        self.arrays.release_metadata(mesh.parts.metadata_index);
     }
     /// The graph node of the vertex pool's buffer for `layout`, creating it if
     /// the pool has never been asked for the layout before.
@@ -327,16 +303,19 @@ impl MeshSource {
         world: &Scope<'_>,
         layout: &VertexBufferLayoutDesc,
     ) -> ResHandle<wgpu::Buffer> {
-        if let Some(id) = self.vertex_pool_ids.get(layout) {
+        if let Some(id) = self.pools.vertex_pool_ids.get(layout) {
             return id.clone();
         }
         let buffer = self
+            .pools
             .vertex_pool
             .buffer(layout)
             .expect("the layout was allocated a buffer")
             .clone();
         let id = self.context.graph(world).get().insert(buffer, None);
-        self.vertex_pool_ids.insert(layout.clone(), id.clone());
+        self.pools
+            .vertex_pool_ids
+            .insert(layout.clone(), id.clone());
         id
     }
 
@@ -351,6 +330,7 @@ impl MeshSource {
         layout: &VertexBufferLayoutDesc,
     ) {
         let buffer = self
+            .pools
             .vertex_pool
             .buffer(layout)
             .expect("the layout has a buffer");

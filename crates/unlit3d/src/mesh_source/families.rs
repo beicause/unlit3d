@@ -60,11 +60,13 @@ impl MeshSource {
         // grows, and while the two frame arrays a family may append to grow.
         let Self {
             families,
-            visible_cache,
-            packed_joints,
-            packed_morph_weights,
+            caches,
+            arrays,
             ..
         } = self;
+        let visible_cache = &mut caches.visible_cache;
+        let packed_joints = &mut arrays.packed_joints;
+        let packed_morph_weights = &mut arrays.packed_morph_weights;
         packed_joints.clear();
         packed_morph_weights.clear();
         for family in families.iter_mut() {
@@ -108,8 +110,8 @@ impl MeshSource {
         // the register closure, while the caches are disjoint fields.
         let (families, meshes, visible) = (
             &mut self.families,
-            &mut self.visible_meshes_cache,
-            &mut self.visible_cache,
+            &mut self.caches.visible_meshes_cache,
+            &mut self.caches.visible_cache,
         );
         let pipelines = &mut self.pipelines;
         let mut register = |desc| register_concrete(pipelines, desc);
@@ -147,13 +149,13 @@ impl MeshSource {
         scene: &mut Scene,
         uniforms: &FrameUniforms,
     ) {
-        let mut handles = std::mem::take(&mut self.entry_handle_cache);
+        let mut handles = std::mem::take(&mut self.caches.entry_handle_cache);
         handles.clear();
         {
             profiling::scope!("mesh_source.assemble.handles");
             let mut graph_holder = self.context.graph(world);
             let graph = graph_holder.get();
-            for entry in &self.visible_cache {
+            for entry in &self.caches.visible_cache {
                 let key = entry.handles_key.clone();
                 if handles.contains_key(&key) {
                     continue;
@@ -216,7 +218,7 @@ impl MeshSource {
         // frame's group for the pair this draw names: a pipeline drawn through
         // another camera, or into another viewport, gets a second group built
         // from the same recipe.
-        let mut pipeline_handles = std::mem::take(&mut self.pipeline_handle_cache);
+        let mut pipeline_handles = std::mem::take(&mut self.caches.pipeline_handle_cache);
         pipeline_handles.clear();
         {
             profiling::scope!("mesh_source.assemble.globals");
@@ -248,7 +250,7 @@ impl MeshSource {
         // One instance-stream binding per family, indexed the same way
         // [`MeshSource::families`] is. A family with no instance stream —
         // stride zero — carries `None`, and its draws bind no instance slot.
-        let mut family_instances = std::mem::take(&mut self.family_instance_cache);
+        let mut family_instances = std::mem::take(&mut self.caches.family_instance_cache);
         family_instances.clear();
         family_instances.extend(self.families.iter().map(|family| family.instance_binding()));
 
@@ -257,14 +259,14 @@ impl MeshSource {
         profiling::scope!("mesh_source.assemble.draws");
         assemble_scene(
             scene,
-            &self.visible_cache,
+            &self.caches.visible_cache,
             &pipeline_handles,
             &handles,
             &family_instances,
         );
 
-        self.pipeline_handle_cache = pipeline_handles;
-        self.entry_handle_cache = handles;
-        self.family_instance_cache = family_instances;
+        self.caches.pipeline_handle_cache = pipeline_handles;
+        self.caches.entry_handle_cache = handles;
+        self.caches.family_instance_cache = family_instances;
     }
 }

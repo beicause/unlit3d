@@ -87,7 +87,10 @@ fn a_frame_without_a_camera_only_clears() {
         &mut scene,
         &mut encoder,
     );
-    assert!(h.source.visible_cache.is_empty(), "nothing was drawn");
+    assert!(
+        h.source.caches.visible_cache.is_empty(),
+        "nothing was drawn"
+    );
     assert!(scene.draws.is_empty(), "the scene is empty");
 }
 
@@ -157,6 +160,7 @@ fn orthographic_z_sorted_entries_sort_by_view_axis_depth() {
     // mesh is the deeper draw.
     let depth_of = |entity: Entity| {
         h.source
+            .caches
             .visible_cache
             .iter()
             .find(|entry| entry.mesh.entity == entity)

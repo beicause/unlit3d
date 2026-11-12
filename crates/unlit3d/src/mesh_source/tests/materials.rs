@@ -35,7 +35,7 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
     // source owns and survive the mesh — what the mesh loses is its share
     // of them, which `remove_mesh` hands back.
     let before = ctx.graph(&h.world.root_scope()).get().len();
-    let index_pool_free = h.source.index_pool.free_space();
+    let index_pool_free = h.source.pools.index_pool.free_space();
     assert!(matches!(
         ctx.graph(&h.world.root_scope()).get().get(&mesh.parts.root),
         Some(Virtual)
@@ -57,7 +57,7 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
         "the graph shrank"
     );
     assert!(
-        h.source.index_pool.free_space() > index_pool_free,
+        h.source.pools.index_pool.free_space() > index_pool_free,
         "the mesh's index range is free again"
     );
 }
@@ -97,7 +97,7 @@ fn a_mesh_registers_its_pooled_parts_nowhere_under_its_root() {
         dependencies.contains(&bind_group.erase()),
         "the bind group is under the root"
     );
-    let pool = h.source.index_pool_id;
+    let pool = h.source.pools.index_pool_id;
     assert!(
         !dependencies.contains(&pool.erase()),
         "the index pool is not under the root"
@@ -171,14 +171,15 @@ fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
     let mut h = harness();
     let ctx = h.source.context();
     // The source starts with room for one entry and grows by 1.5x.
-    assert_eq!(h.source.metadata_array.capacity(), 1);
+    assert_eq!(h.source.arrays.metadata_array.capacity(), 1);
 
     h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
     assert_eq!(
-        h.source.metadata_array.capacity(),
+        h.source.arrays.metadata_array.capacity(),
         1,
         "one entry fills the room"
     );
@@ -186,9 +187,10 @@ fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
     h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
     assert_eq!(
-        h.source.metadata_array.capacity(),
+        h.source.arrays.metadata_array.capacity(),
         2,
         "a second entry outgrows room for one"
     );
@@ -197,34 +199,37 @@ fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
     h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
-    assert_eq!(h.source.metadata_array.capacity(), 3);
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
+    assert_eq!(h.source.arrays.metadata_array.capacity(), 3);
 
     h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
-    assert_eq!(h.source.metadata_array.capacity(), 4);
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
+    assert_eq!(h.source.arrays.metadata_array.capacity(), 4);
 
     // A fifth entry outgrows four, so the buffer grows again.
     let before = ctx
         .graph(&h.world.root_scope())
         .get()
-        .get(&h.source.metadata_buf)
+        .get(&h.source.arrays.metadata_buf)
         .cloned();
     h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
     assert_eq!(
-        h.source.metadata_array.capacity(),
+        h.source.arrays.metadata_array.capacity(),
         6,
         "growing past four reaches six (4 * 1.5)"
     );
     assert_ne!(
         ctx.graph(&h.world.root_scope())
             .get()
-            .get(&h.source.metadata_buf),
+            .get(&h.source.arrays.metadata_buf),
         before.as_ref(),
         "growth replaced the buffer"
     );
@@ -233,17 +238,22 @@ fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
     let before = ctx
         .graph(&h.world.root_scope())
         .get()
-        .get(&h.source.metadata_buf)
+        .get(&h.source.arrays.metadata_buf)
         .cloned();
     h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
-    assert_eq!(h.source.metadata_array.capacity(), 6, "six entries fit");
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
+    assert_eq!(
+        h.source.arrays.metadata_array.capacity(),
+        6,
+        "six entries fit"
+    );
     assert_eq!(
         ctx.graph(&h.world.root_scope())
             .get()
-            .get(&h.source.metadata_buf),
+            .get(&h.source.arrays.metadata_buf),
         before.as_ref(),
         "no growth means the same buffer, so no global group is rebuilt"
     );
@@ -252,20 +262,32 @@ fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
 #[test]
 fn a_removed_mesh_marks_the_metadata_array_for_upload() {
     let mut h = harness();
+    let ctx = h.source.context();
     let mesh = h.tri_mesh();
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
-    assert!(!h.source.metadata_dirty, "the mesh's own upload cleared it");
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
+    assert!(
+        !h.source.arrays.metadata_dirty,
+        "the mesh's own upload cleared it"
+    );
 
     // Removing the mesh clears its entry in the array, so the array
     // reaches the GPU again on the next frame.
     h.source.remove_mesh(mesh);
-    assert!(h.source.metadata_dirty, "removing a mesh marks the array");
+    assert!(
+        h.source.arrays.metadata_dirty,
+        "removing a mesh marks the array"
+    );
     let encoder = h.encoder();
     h.source
-        .upload_metadata(&h.world.root_scope(), &mut { encoder });
-    assert!(!h.source.metadata_dirty, "the upload cleared the mark");
+        .arrays
+        .upload_metadata(&h.world.root_scope(), ctx, &mut { encoder });
+    assert!(
+        !h.source.arrays.metadata_dirty,
+        "the upload cleared the mark"
+    );
 }
 
 // -- a whole built scene --------------------------------------------------
@@ -296,8 +318,8 @@ fn dropping_the_source_releases_the_nodes_it_registered() {
     let before = ctx.graph(&h.world.root_scope()).get().len();
     // Read the ids out before the source goes: once it is dropped there is
     // no `h.source` left to name them.
-    let metadata_buf = h.source.metadata_buf.clone();
-    let index_pool_id = h.source.index_pool_id.clone();
+    let metadata_buf = h.source.arrays.metadata_buf.clone();
+    let index_pool_id = h.source.pools.index_pool_id.clone();
 
     // The metadata buffer, the instance and index pools and the global
     // groups are the source's own; the mesh's parts hang off its root.

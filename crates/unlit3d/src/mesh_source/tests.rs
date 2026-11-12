@@ -121,6 +121,7 @@ fn resolve_draw(
     let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
     source.collect_and_sort_visible(world, &camera, surface);
     source
+        .caches
         .visible_cache
         .last()
         .expect("the entity is visible")
@@ -198,6 +199,7 @@ fn test_camera(eye: glam::Vec3) -> Camera {
 /// the draws happen in; use the entries' depths to reason about that.
 fn drawn(source: &MeshSource) -> Vec<Entity> {
     source
+        .caches
         .visible_cache
         .iter()
         .map(|entry| entry.mesh.entity)

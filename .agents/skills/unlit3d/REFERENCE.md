@@ -93,7 +93,7 @@
 | 强度 | 无量纲：片元把 base color 乘上各灯 `color × intensity` 之和，无曝光、无能量守恒。点光/聚光按 `range` 做平滑衰减，quad 光走多边形形状因子（自带平方反比，没有单独的 range 衰减） | `crates/unlit3d/src/light.rs` |
 | 示例封装 | `PlacedLight { light, translation, rotation }` + `PlacedLight::aiming(light, at, target)`：把 `-Z → 目标方向` 的旋转算好——**示例 bundle，不是库 API** | `unlit3d_examples/src/scenes.rs` |
 | 上限 | `MAX_DIRECTIONAL_LIGHTS = 4`：按 `intensity` 排，最弱的丢掉（且不占簇槽位，因为方向光根本不分簇）；`LIGHTS_PER_CELL = 15`：每簇能引用的有界灯数，满了丢最弱的；`QUAD_LIGHT_CORNERS = 4`（`QuadLight::vertices: [Vec3; QUAD_LIGHT_CORNERS]`）。被接收面的地平线平面裁掉一块后最多再多出 1 个角，所以**存裁剪结果**的数组写 `QUAD_LIGHT_CORNERS + 1`，没有第 5 个角的常量；裁剪后不足 3 个角直接算 0（Rust 与 WGSL 各有一份同名常量，实际生效的是 `crates/unlit_wgpu/shaders/polygon.wesl` 那份） | `crates/unlit_wgpu/src/light.rs` |
-| 分簇配置 | `MeshSource` 的 `clustering` 字段（`pub`），类型 `ClusterConfig { cell_pixels, z_slices, max_clusters, first_slice_depth, far }` + `ClusterConfig::DEFAULT`；从 prelude 直接可用 | `crates/unlit_wgpu/src/light.rs` / `crates/unlit3d/src/mesh_source.rs` |
+| 分簇配置 | `MeshSource` 的 `lights.clustering` 字段（`pub`），类型 `ClusterConfig { cell_pixels, z_slices, max_clusters, first_slice_depth, far }` + `ClusterConfig::DEFAULT`；从 prelude 直接可用 | `crates/unlit_wgpu/src/light.rs` / `crates/unlit3d/src/mesh_source/lighting.rs` |
 | 多边形光 | 少于 3 个角无面积、不画；重复一个角可以拼三角，相差极小的角会被合并 | `crates/unlit3d/src/light.rs` |
 | 关闭某盏灯 | `describe.intensity <= 0.0` 的灯在收集时直接跳过（不用 despawn，但 despawn 更省一次遍历） | 同上 |
 | 上传 | `upload_lights`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，前提与实例上传相同——这帧有活动相机且可见集非空——但**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source.rs` |

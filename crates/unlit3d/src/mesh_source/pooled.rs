@@ -243,6 +243,7 @@ impl MeshSource {
         let layouts: ArrayVec<_, MAX_VERTEX_BUFFERS> =
             streams.iter().map(|(_, layout)| layout.clone()).collect();
         let vertices = self
+            .pools
             .vertex_pool
             .allocate(&device, &queue, &layouts, vertex_count as u32)
             .expect("the vertex pool grows with the mesh");
@@ -300,15 +301,16 @@ impl MeshSource {
                 // are decided together.
                 let (format, packed_len) = offset.packed_len(indices);
                 let range = self
+                    .pools
                     .index_pool
                     .allocate(&device, &queue, packed_len as u32)
                     .expect("the index pool grows with the mesh");
                 {
                     let mut graph_holder = self.context.graph(world);
                     let graph = graph_holder.get();
-                    Self::sync_pool_node(&self.index_pool, &self.index_pool_id, graph);
+                    Self::sync_pool_node(&self.pools.index_pool, &self.pools.index_pool_id, graph);
                     let buffer = graph
-                        .get(&self.index_pool_id)
+                        .get(&self.pools.index_pool_id)
                         .expect("the index pool node exists")
                         .clone();
                     let mut view = queue
@@ -323,7 +325,7 @@ impl MeshSource {
                 }
                 let first = range.allocation.offset / index_format_size(format);
                 (
-                    Some((self.index_pool_id.clone(), format)),
+                    Some((self.pools.index_pool_id.clone(), format)),
                     index_count,
                     true,
                     Some(range.allocation),

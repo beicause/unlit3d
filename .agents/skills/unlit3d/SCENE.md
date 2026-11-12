@@ -79,7 +79,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
 
 - 四种灯 `DirectionalLight` / `PointLight` / `SpotLight` / `QuadLight`（矩形光用 `QuadLight::rect(..)`，任意多边形填 `vertices`）。`intensity` **无量纲**：片元就是 base color × Σ(color × intensity)，没有曝光也没有能量守恒，数字凭观感调。
 - 环境光 `AmbientLight { color }`，没有 intensity，一帧把所有环境光**相加**。
-- 上限与分簇：方向光只有个位数名额（超了按 importance 丢最弱的），每簇能引用的灯数、quad 光的最大角数都有常量；调 `MeshSource` 的 `clustering` 字段（`ClusterConfig`）改分簇粒度。常量与字段见 [REFERENCE.md](REFERENCE.md)。
+- 上限与分簇：方向光只有个位数名额（超了按 importance 丢最弱的），每簇能引用的灯数、quad 光的最大角数都有常量；调 `MeshSource` 的 `lights.clustering` 字段（`ClusterConfig`）改分簇粒度。常量与字段见 [REFERENCE.md](REFERENCE.md)。
 - 光源上传每帧跑一次遍历，门槛在调用点之前：**这帧有活动相机、且有可见 mesh** 才跑，与画不画受光 mesh 无关。
 - 可抄的完整例子：`unlit3d_examples/src/scenes/lit.rs`（共 8 盏：2 方向 + 3 点 + 1 聚光 + 1 矩形 + 1 三角面光）与 `lit_clusters.rs`（改分簇参数）。示例把「灯 + Transform」包成 `PlacedLight`（`scenes.rs`），`PlacedLight::aiming` 就是「转到 `-Z` 指向目标」的写法——**那是示例 bundle，不是库 API**，自己写就一个 `bundle![Transform, LightSource::new(..)]`。
 

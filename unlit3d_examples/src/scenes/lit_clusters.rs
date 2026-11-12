@@ -101,7 +101,7 @@ fn build_clusters(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    source.clustering = ClusterConfig {
+    source.lights.clustering = ClusterConfig {
         first_slice_depth: CLUSTER_NEAR,
         far: CLUSTER_FAR,
         ..ClusterConfig::DEFAULT
