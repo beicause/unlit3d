@@ -206,6 +206,32 @@ fn a_depth_less_surface_drops_the_state_and_a_deep_one_restores_it() {
     assert_eq!(state.depth_compare, Some(wgpu::CompareFunction::Greater));
 }
 
+/// The keys differ, the source does not: a variant's blend never reaches its
+/// WGSL, so two variants of one family compose one module between them.
+#[test]
+fn variants_that_differ_only_in_state_share_a_module() {
+    let (device, _queue) = crate::util::test::noop_device();
+    let mut cache = ShaderCache::new();
+    let plain = variant(
+        LitOptions::standard(),
+        LitVertexChannels::empty(),
+        false,
+        false,
+    );
+    let mut blended = plain.clone();
+    blended.options.update(|options| {
+        options.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+    });
+
+    let _ = plain.create(&device, &mut cache);
+    let _ = blended.create(&device, &mut cache);
+    assert_eq!(
+        cache.len(),
+        1,
+        "a second variant reuses the module the first composed"
+    );
+}
+
 /// The variant is a cache key like any other: one pipeline per target,
 /// reused when the same target comes back.
 #[test]

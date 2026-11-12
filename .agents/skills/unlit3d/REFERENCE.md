@@ -71,7 +71,7 @@
 | --- | --- |
 | `LitOptions::standard()`（**无参**） | 背面剔除、过滤型 base-color、`DepthStencilPolicy::default()`（写深度 + `Greater`，即 reverse-z）、`blend: None`、`unlit: false` |
 | `LitOptions::inverted_hull()` | `unlit` + `expanded` + 剔 `Front` + 不写深度；与 `standard()` 配对做描边壳，见 [SCENE.md](SCENE.md) |
-| `LitShader::new(label, source)` / `LineShader::new(label, source)` | 一整块 WESL 模块，**替换**（不是插入）内置入口着色器：它挂在被替换的 `lit.wesl` / `line.wesl` 所处的包路径上，自己声明 `vs_main` / `fs_main`，按需 `import package::lit_bindings` / `lit_vertex` / `lit_lighting` / `lit_fragment`（或 `line_bindings` / `line_vertex` / `line_fragment`）组合。入口点名与顶点流、布局仍是变体决定的。取值访问函数 `label()` / `source()` 都返回 `&str` |
+| `Shader::new(label, source)` | 一整块 WESL 模块，**替换**（不是插入）内置入口着色器：它挂在被替换的 `lit.wesl` / `line.wesl` 所处的包路径上，自己声明 `vs_main` / `fs_main`，按需 `import package::lit_bindings` / `lit_vertex` / `lit_lighting` / `lit_fragment`（或 `line_bindings` / `line_vertex` / `line_fragment`）组合。同一个 `Shader` 既能放进 `LitOptions::shader`，也能放进 `LineOptions::shader`；入口点名与顶点流、布局仍是变体决定的。取值访问函数 `label()` / `source()` 都返回 `&str` |
 
 字段分两类：**着色开关**（`shader` / `unlit` / `srgb_to_linear_output` / `base_color` / `alpha_cutoff` / `expanded` / `texture_filtering`）与**几何与混合**（`primitive` / `depth_stencil` / `blend` / `write_mask`）。
 

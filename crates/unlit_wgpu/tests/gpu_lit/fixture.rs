@@ -312,7 +312,8 @@ pub(super) fn fixture(ctx: &Ctx, variant: &LitVariant, sample_count: u32) -> Sce
         depth_stencil_format: variant.surface.depth_stencil_format,
         sample_count,
     };
-    let pipeline = SpecializedPipeline::create(&ctx.device, variant.clone());
+    let pipeline =
+        SpecializedPipeline::create(&ctx.device, variant.clone(), &mut ShaderCache::new());
 
     let (positions, uvs, colors, normals, indices) = cube();
     let mesh = GpuMesh::upload(

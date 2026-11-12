@@ -628,7 +628,7 @@ shader package — plus, if it needs any, its own per-instance vertex data.
 
 A caller who wants the built-in family — its layouts, its vertex streams, its
 per-instance record — and only a different piece of shade does not register
-anything: they put an [`LitShader`](unlit_wgpu::pipeline::LitShader) in
+anything: they put a [`Shader`](unlit_wgpu::pipeline::Shader) in
 [`LitOptions::shader`](unlit_wgpu::pipeline::LitOptions::shader) before
 building the [`LitPipelineKey`](lit::LitPipelineKey). It holds one whole WESL
 module, composed in place of the built-in `lit.wesl`: it declares its own

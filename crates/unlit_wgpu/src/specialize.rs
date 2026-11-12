@@ -24,10 +24,12 @@
 //!
 //! wgpu handles compare and hash by identity, so a family whose shader is fixed
 //! carries its [ShaderModule](wgpu::ShaderModule) and layout in the key and
-//! pays one pointer comparison per lookup; a family whose shader is generated
-//! per variant, like the built-in lit one, has nothing to share and builds the
-//! module on the miss along with the descriptor. Cached variants are never
-//! evicted, matching the bounded-variant assumption.
+//! pays one pointer comparison per lookup. A family whose shader is generated
+//! per variant, like the built-in lit one, cannot: many of its variants compile
+//! the same source, so the module is composed through
+//! [ShaderCache](crate::pipeline::ShaderCache), which is keyed on the source
+//! rather than on the pipeline. Cached variants are never evicted, matching the
+//! bounded-variant assumption.
 //!
 //! A key must be able to rebuild its descriptor, because the descriptor is not
 //! stored beside it: anything the descriptor depends on that the key does not
@@ -45,6 +47,7 @@ use arrayvec::ArrayVec;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
+use crate::pipeline::ShaderCache;
 use crate::render_attachments::RenderAttachments;
 use crate::scene::MAX_VERTEX_BUFFERS;
 use crate::util::Hashed;
@@ -61,7 +64,13 @@ use crate::util::Hashed;
 /// backend out.
 pub trait PipelineDescriptor<P>: Clone {
     /// Compile this blueprint into a pipeline.
-    fn create(&self, device: &wgpu::Device) -> P;
+    ///
+    /// `cache` is the device's composed shader modules, which this builds
+    /// through rather than calling `create_shader_module` itself: a descriptor
+    /// whose source an earlier variant already composed gets that module back,
+    /// and one that needs no shader module of its own ignores the cache. See
+    /// [ShaderCache].
+    fn create(&self, device: &wgpu::Device, cache: &mut ShaderCache) -> P;
 }
 
 /// A compiled pipeline together with the descriptor it came from.
@@ -79,10 +88,11 @@ pub struct SpecializedPipeline<P, D> {
 }
 
 impl<P, D: PipelineDescriptor<P>> SpecializedPipeline<P, D> {
-    /// Compile `descriptor` into a pipeline.
-    pub fn create(device: &wgpu::Device, descriptor: D) -> Self {
+    /// Compile `descriptor` into a pipeline, composing any shader module it
+    /// needs through `cache` rather than afresh.
+    pub fn create(device: &wgpu::Device, descriptor: D, cache: &mut ShaderCache) -> Self {
         Self {
-            pipeline: descriptor.create(device),
+            pipeline: descriptor.create(device, cache),
             descriptor,
         }
     }
@@ -129,6 +139,9 @@ pub struct Variants<P, V: PipelineVariant<P>> {
     keys: HashMap<V, u32>,
     /// The created variants, indexed by the returned index.
     variants: Vec<SpecializedPipeline<P, V::Descriptor>>,
+    /// The shader modules the variants draw with, shared across the family so
+    /// that variants differing only in pipeline state build one module.
+    shaders: ShaderCache,
 }
 
 impl<P, V: PipelineVariant<P>> Variants<P, V> {
@@ -138,6 +151,7 @@ impl<P, V: PipelineVariant<P>> Variants<P, V> {
             device: device.clone(),
             keys: HashMap::new(),
             variants: Vec::new(),
+            shaders: ShaderCache::new(),
         }
     }
 
@@ -151,7 +165,7 @@ impl<P, V: PipelineVariant<P>> Variants<P, V> {
         }
 
         let descriptor = variant.descriptor(&self.device);
-        let specialized = SpecializedPipeline::create(&self.device, descriptor);
+        let specialized = SpecializedPipeline::create(&self.device, descriptor, &mut self.shaders);
         let index = u32::try_from(self.variants.len()).expect("variant count fits in u32");
         self.variants.push(specialized);
         self.keys.insert(variant, index);
@@ -402,7 +416,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for RenderPipelineDesc {
     ///
     /// The borrowed wgpu descriptor is assembled and consumed inside this
     /// function, so the owned vecs it borrows never outlive the call.
-    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+    fn create(&self, device: &wgpu::Device, _cache: &mut ShaderCache) -> wgpu::RenderPipeline {
         let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = self
             .vertex
             .buffers
@@ -557,7 +571,7 @@ mod tests {
     type TestPipeline = u64;
 
     impl PipelineDescriptor<TestPipeline> for TestDescriptor {
-        fn create(&self, _device: &wgpu::Device) -> TestPipeline {
+        fn create(&self, _device: &wgpu::Device, _cache: &mut ShaderCache) -> TestPipeline {
             u64::from(self.rewritten)
         }
     }
@@ -692,7 +706,7 @@ fn main() {
 
         // The source descriptor and the slices it borrowed are gone; the owned
         // descriptor still creates a pipeline.
-        let _pipeline = owned.create(&device);
+        let _pipeline = owned.create(&device, &mut ShaderCache::new());
     }
 
     #[test]
@@ -736,7 +750,11 @@ fn main() {
         }
 
         impl PipelineDescriptor<wgpu::ComputePipeline> for ComputeDesc {
-            fn create(&self, device: &wgpu::Device) -> wgpu::ComputePipeline {
+            fn create(
+                &self,
+                device: &wgpu::Device,
+                _cache: &mut ShaderCache,
+            ) -> wgpu::ComputePipeline {
                 let module = crate::util::shader_module(device, COMPUTE_WGSL, "test::compute");
                 let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("test::compute::layout"),

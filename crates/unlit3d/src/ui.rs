@@ -40,6 +40,7 @@
 use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
+use unlit_wgpu::pipeline::ShaderCache;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -183,6 +184,10 @@ pub struct UiSource {
     /// The URLs every frame drawn this frame asked to open, gathered before
     /// they are published together, reused across frames.
     url_scratch: Vec<OpenUrl>,
+    /// The composed shader modules the targets' pipelines draw with, kept across
+    /// them so a second target reuses the first's, rather than composing the
+    /// same source again.
+    shaders: ShaderCache,
 }
 
 impl UiSource {
@@ -200,6 +205,7 @@ impl UiSource {
             frames: ExternalFrames::new(),
             screen: Snapshot::new(),
             url_scratch: Vec::new(),
+            shaders: ShaderCache::new(),
         }
     }
 
@@ -264,7 +270,7 @@ impl UiSource {
         // so the fragment converts to linear; the same call the winit path
         // makes for its swap chain.
         let variant = ui_variant(surface.color_format.has_srgb_suffix(), surface);
-        let pipeline = SpecializedPipeline::create(device, variant);
+        let pipeline = SpecializedPipeline::create(device, variant, &mut self.shaders);
         // The UI binds no array of its own: its group is the frame's three
         // uniforms alone, so the recipe reads them out of the registry and
         // nothing else.

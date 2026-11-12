@@ -1,35 +1,37 @@
 use super::*;
 
-/// A caller's own entry shader, composed in place of the built-in `lit.wesl`.
+/// A caller's own entry shader, composed in place of a built-in one.
 ///
-/// The source is one whole WESL module, mounted at the package path the built-in
-/// entry shader occupies. It imports the modules the built-in stages are built
-/// from — [`shader::lit_bindings`](crate::shader), `lit_vertex`, `lit_lighting`,
-/// `lit_fragment` — through `package::` paths, so it reaches the same bindings,
-/// the same vertex streams and the same helpers the built-in shader does, under
-/// the variant's conditional-compilation flags.
+/// The source is one whole WESL module, mounted at the package path a built-in
+/// entry shader occupies — `lit.wesl` for the lit pipeline, `line.wesl` for
+/// the line one. It imports the package modules that shader is built from
+/// through `package::` paths, so it reaches the same bindings, the same vertex
+/// streams and the same helpers the built-in shader does, under the variant's
+/// conditional-compilation flags.
 ///
-/// Two things stay the pipeline's rather than the shader's:
+/// Two things stay the variant's rather than the shader's:
 ///
-/// * The entry points must be named [`VS_MAIN`] and [`FS_MAIN`], because that is
-///   what the pipeline names when it creates the module. The built-in
-///   `lit.wesl` is a module of two entry points over the stage modules, and a
-///   caller's module takes its place, so it declares both itself.
+/// * The entry points must keep the names the built-in module declares, because
+///   that is what the pipeline names when it creates the module. A built-in
+///   entry shader is a module of two entry points over the package's stage
+///   modules, and a caller's module takes its place, so it declares both itself.
 /// * The layouts and the vertex streams stay the variant's: a shader changes
 ///   what a stage computes, not what it reads. A caller module that declares a
 ///   binding of its own therefore fails pipeline creation rather than drawing
-///   something else; one that reads the variant's bindings through
-///   [`shader::lit_bindings`](crate::shader) works.
+///   something else; one that reads the variant's bindings through the
+///   package's binding module works.
 ///
 /// The label names the shader: it is the shader module's label, and a
-/// composition error is reported under it.
+/// composition error is reported under it. It takes part in the variant's
+/// identity, so two shaders of equal source but different labels are two
+/// shaders.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct LitShader {
+pub struct Shader {
     label: Arc<str>,
     source: Arc<str>,
 }
 
-impl LitShader {
+impl Shader {
     /// A shader named `label` whose `source` is the whole WESL module composed
     /// in place of the built-in entry shader.
     pub fn new(label: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
@@ -50,11 +52,11 @@ impl LitShader {
     }
 }
 
-impl core::fmt::Debug for LitShader {
+impl core::fmt::Debug for Shader {
     /// Prints the label and the source's length rather than the source itself,
-    /// so an [`LitOptions`] dump stays readable.
+    /// so an options dump stays readable.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LitShader")
+        f.debug_struct("Shader")
             .field("label", &self.label)
             .field("source", &format_args!("{} bytes", self.source.len()))
             .finish()

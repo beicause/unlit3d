@@ -68,7 +68,7 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
 - `light` —— 本帧的光源以着色器读取的形式描述，以及把它们算成绘制所绑定的格子数组的
   CPU 聚类。见[光照](#光照前向聚簇的-lambert)。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、全局绑定组
-  布局构造函数，以及内置 lit 管线。
+  布局构造函数、内置 lit 管线，以及它的变体组合时使用的着色器缓存。
 - `util` —— 预先算好哈希的 `Hashed`，以及创建着色器模块的辅助函数。
 - `ui` —— egui 后端，在 `egui` feature 下提供。
 
@@ -87,7 +87,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
     SECONDARY_SLOT, SpecializedLitPipeline, LitOptions, LitVariant, LitVertexChannels,
-    VIEW_BINDING,
+    VIEW_BINDING, ShaderCache,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -146,7 +146,7 @@ impl Example {
             morph: false,
             strip_index_format: None,
         };
-        let pipeline = SpecializedPipeline::create(device, variant.clone());
+        let pipeline = SpecializedPipeline::create(device, variant.clone(), &mut ShaderCache::new());
 
         // 2. Compress the mesh. Positions and UVs become 16-bit normalized
         //    integers relative to a bounding box; the decode parameters go
@@ -331,6 +331,7 @@ impl Example {
         {
             let mut pass = attachments.begin_pass(
                 &mut encoder,
+                "scene",
                 color_clear(),
                 depth_clear(),
                 stencil_clear(),
@@ -448,9 +449,8 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 metadata 绑定」与「顶点阶段读它」成了同一个决定。
 
 若要编写自己的着色器，最近的一条路是 `pipeline::LitOptions::shader`，笔画则是
-[`LineOptions::shader`](line_shader::LineOptions::shader)：`pipeline::LitShader` 与
-[`LineShader`](line_shader::LineShader) 各自携带一整块 WESL 模块，它被挂到所替换的内置
-入口着色器所处的包路径上并在那里参与组合。因此调用者的模块自己写 `vs_main` 与 `fs_main`，
+[`LineOptions::shader`](line_shader::LineOptions::shader)：`pipeline::Shader` 携带一整块
+WESL 模块，它被挂到所替换的内置入口着色器所处的包路径上并在那里参与组合。因此调用者的模块自己写 `vs_main` 与 `fs_main`，
 import 它想要的阶段模块，并按它想要的顺序调用：`package::lit_vertex` 分别暴露
 `vertex_world` 与 `vertex_out`，供需要在其间改形几何的调用者使用；`lit_fragment` 把材质颜色、
 裁剪与目标编码逐项拆开；`lit_lighting` 把着色本身暴露出来，于是结果可以叠在光照之上，
@@ -592,6 +592,16 @@ for draw in scene.draws {
 **蓝图是语义描述，不是 wgpu 描述符的镜像。** 蓝图持有 `ShaderModule` 等需要用 device
 创建的句柄，因此 WESL 组合与真正的 wgpu 调用都留在蓝图的 `create` 里，蓝图在编译需要
 它时才被构造。
+
+**蓝图经着色器缓存组合，而不是每次重来。** wgpu 会池化管线的 bind-group layout，却不池化
+它的 shader module；而同一家族的变体差在管线状态——剔除模式、混合、写掩码、渲染目标——
+这些 WGSL 根本看不到。于是 `create` 接受一份
+[`ShaderCache`](pipeline::ShaderCache)，按
+[`ShaderRecipe`](pipeline::ShaderRecipe)（包模块、它的条件编译开关、调用者的替换源）向它
+要模块，只有未命中时才真正组合。内置 lit 家族因此为共享同一份源的全部变体只建一份模块，
+UI 则用第一个目标组合出的模块画其余每个目标。缓存属于一个 device，也属于在其上共享着色器
+的一方：[`Variants`](specialize::Variants) 为其家族留一份，蓝图自己不必再持有。模块固定的
+家族——调用者手写的管线——忽略这份缓存即可。
 
 **针对渲染目标特化是家族的事，不是框架的事。** 管线的颜色格式、采样数与深度格式必须与
 它所在 pass 的附件匹配，因此渲染进某个目标的变体会把该目标折进自身。

@@ -87,7 +87,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 /// shading is absent from the result.
 #[test]
 fn a_caller_module_replaces_the_built_in_entry_shader() {
-    let shader = LitShader::new(
+    let shader = Shader::new(
         "caller",
         "\
 import package::lit_bindings;
@@ -135,7 +135,7 @@ public fn fs_main() -> @location(0) vec4<f32> {
 /// between them, which is what a caller that only reshapes the geometry writes.
 #[test]
 fn a_caller_module_composes_the_built_in_stage_modules() {
-    let shader = LitShader::new(
+    let shader = Shader::new(
         "caller",
         "\
 import package::lit_fragment;

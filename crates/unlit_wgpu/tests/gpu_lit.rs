@@ -12,10 +12,11 @@ use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
     compress_indices, compress_positions, quantize_colors,
 };
+use unlit_wgpu::pipeline::ShaderCache;
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, LitOptions, LitShader, LitVariant, LitVertexChannels,
-    MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT, SECONDARY_SLOT, SpecializedLitPipeline,
+    GLOBAL_GROUP, INSTANCE_SLOT, LitOptions, LitVariant, LitVertexChannels, MATERIAL_GROUP,
+    MESH_METADATA_BINDING, PRIMARY_SLOT, SECONDARY_SLOT, Shader, SpecializedLitPipeline,
     VIEW_BINDING, supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::{

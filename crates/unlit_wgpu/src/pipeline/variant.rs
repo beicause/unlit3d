@@ -363,15 +363,17 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
     ///
     /// The entry shader is the built-in `lit.wesl`, or the options' own module
     /// ([`LitOptions::shader`]) in its place.
-    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+    fn create(&self, device: &wgpu::Device, cache: &mut ShaderCache) -> wgpu::RenderPipeline {
         let texel_arrays = !supports_storage_buffers(device);
-        let label = match &self.options.shader {
-            Some(shader) => shader.label(),
-            None => BUILT_IN_SHADER_LABEL,
-        };
-        let wgsl =
-            compose_shader(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"));
-        let module = crate::util::shader_module(device, &wgsl, label);
+        let shader = self.options.shader.as_ref();
+        let label = shader.map_or(BUILT_IN_SHADER_LABEL, Shader::label);
+        // The variant is finer than the module: two variants that differ only
+        // in pipeline state — a depth write, a blend — compose one module.
+        self.assert_consistent();
+        let key = ShaderRecipe::new(BUILT_IN_MODULE, &self.features(texel_arrays), shader);
+        let module = cache.get_or_create(device, &key, label, || {
+            compose_shader(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"))
+        });
 
         let layouts = self.bind_group_layouts(device);
         let layout_refs = [
@@ -450,41 +452,14 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
 ///
 /// # Panics
 ///
-/// If the variant contradicts itself: the base-color texture is sampled with a
-/// per-vertex UV that is not read, a deformation displaces a position that is
-/// not read, or a luminance layout expands a texel that is never sampled.
-///
-/// The per-vertex channels cannot contradict each other the way flags once
-/// could: an encoding is a property of the channel it encodes, so
-/// [`LitVertexChannels`] has no state in which a channel is uncompressed
-/// without being read. The per-instance fields cannot either: the instance
-/// stream is bound for every variant, so there is no state in which one is
-/// read without the stream that carries it.
+/// If the variant contradicts itself; see [`LitVariant::assert_consistent`],
+/// which runs here so a caller composing one directly — the tests do — is
+/// checked too.
 pub(super) fn compose_shader(
     variant: &LitVariant,
     texel_arrays: bool,
 ) -> Result<String, crate::compose::ComposeError> {
-    assert!(
-        !variant.base_color_texture || variant.channels.secondary.contains(SecondaryFlags::UV),
-        "the base-color texture is sampled with the per-vertex UV, so sampling one requires a UV channel"
-    );
-    assert!(
-        !variant.channels.position.joints || variant.channels.position.position.is_some(),
-        "the joint pair is part of the position stream, so a skinned variant needs a position to deform"
-    );
-    assert!(
-        !variant.morph || variant.channels.position.position.is_some(),
-        "a morph target displaces the position, so `MORPH_POSITIONS` requires a position channel"
-    );
-    assert!(
-        variant.options.base_color == BaseColorChannels::Rgba || variant.base_color_texture,
-        "the luminance flags describe how a sampled base-color texel expands, so `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` require a sampled base-color texture"
-    );
-    assert!(
-        !variant.options.expanded || variant.channels.secondary.contains(SecondaryFlags::NORMAL),
-        "an expanding variant pushes the vertex along its normal, so `EXPANDED` requires a normal channel"
-    );
-
+    variant.assert_consistent();
     let features = variant.features(texel_arrays);
     let replacement = variant
         .options
@@ -492,4 +467,45 @@ pub(super) fn compose_shader(
         .as_ref()
         .map(|shader| shader.source());
     crate::compose::compose(BUILT_IN_MODULE, &features, replacement)
+}
+
+impl LitVariant {
+    /// Panics if the variant contradicts itself: the base-color texture is
+    /// sampled with a per-vertex UV that is not read, a deformation displaces a
+    /// position that is not read, or a luminance layout expands a texel that is
+    /// never sampled.
+    ///
+    /// Checked before the module cache is consulted rather than while composing
+    /// one: a variant that reuses a module an earlier variant composed never
+    /// reaches the composition, and the contradiction is the variant's, not the
+    /// source's.
+    ///
+    /// The per-vertex channels cannot contradict each other the way flags once
+    /// could: an encoding is a property of the channel it encodes, so
+    /// [`LitVertexChannels`] has no state in which a channel is uncompressed
+    /// without being read. The per-instance fields cannot either: the instance
+    /// stream is bound for every variant, so there is no state in which one is
+    /// read without the stream that carries it.
+    fn assert_consistent(&self) {
+        assert!(
+            !self.base_color_texture || self.channels.secondary.contains(SecondaryFlags::UV),
+            "the base-color texture is sampled with the per-vertex UV, so sampling one requires a UV channel"
+        );
+        assert!(
+            !self.channels.position.joints || self.channels.position.position.is_some(),
+            "the joint pair is part of the position stream, so a skinned variant needs a position to deform"
+        );
+        assert!(
+            !self.morph || self.channels.position.position.is_some(),
+            "a morph target displaces the position, so `MORPH_POSITIONS` requires a position channel"
+        );
+        assert!(
+            self.options.base_color == BaseColorChannels::Rgba || self.base_color_texture,
+            "the luminance flags describe how a sampled base-color texel expands, so `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` require a sampled base-color texture"
+        );
+        assert!(
+            !self.options.expanded || self.channels.secondary.contains(SecondaryFlags::NORMAL),
+            "an expanding variant pushes the vertex along its normal, so `EXPANDED` requires a normal channel"
+        );
+    }
 }

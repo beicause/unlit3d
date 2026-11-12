@@ -152,7 +152,7 @@ pub(super) async fn a_caller_module_replaces_the_built_in_stages() {
     // the geometry arrives through the variant's own attributes, leaves the
     // vertex stage exactly where the built-in shader puts it, and is painted
     // over by a constant colour.
-    let shader = LitShader::new(
+    let shader = Shader::new(
         "test::flat",
         r#"
         import package::lit_fragment;

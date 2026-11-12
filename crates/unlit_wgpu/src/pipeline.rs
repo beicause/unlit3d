@@ -177,9 +177,10 @@ mod channels;
 mod layouts;
 mod options;
 mod shader;
+mod shader_cache;
 mod variant;
 
-pub use self::{channels::*, layouts::*, options::*, shader::*, variant::*};
+pub use self::{channels::*, layouts::*, options::*, shader::*, shader_cache::*, variant::*};
 
 #[cfg(test)]
 mod tests;

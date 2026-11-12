@@ -44,7 +44,7 @@ use super::{
     camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
-use unlit_wgpu::pipeline::LitShader;
+use unlit_wgpu::pipeline::Shader;
 use unlit3d::prelude::*;
 
 /// How far above the floor, and how far back, the camera sits.
@@ -191,7 +191,7 @@ fn build(
     // is part of the options a variant is compiled from, so the wall draws
     // through a second pipeline of the same family.
     let mut relief = options;
-    relief.shader = Some(LitShader::new("lit::wall_relief", wall_relief()));
+    relief.shader = Some(Shader::new("lit::wall_relief", wall_relief()));
     let relief_key = LitPipelineKey::new(relief);
 
     let source_entity = world

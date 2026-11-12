@@ -96,8 +96,8 @@ mechanisms behind them are in [Design](#design).
   that turns them into the cell array a draw binds. See
   [Lighting](#lighting-forward-clustered-lambert).
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
-  the crate draws with, the global bind-group layout builder, and the built-in
-  lit pipeline.
+  the crate draws with, the global bind-group layout builder, the built-in lit
+  pipeline, and the shader cache its variants compose through.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front, and the shader-module helper.
 - `ui` — the egui backend, under the `egui` feature.
@@ -118,7 +118,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, PRIMARY_SLOT,
     SECONDARY_SLOT, SpecializedLitPipeline, LitOptions, LitVariant, LitVertexChannels,
-    VIEW_BINDING,
+    VIEW_BINDING, ShaderCache,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
@@ -177,7 +177,7 @@ impl Example {
             morph: false,
             strip_index_format: None,
         };
-        let pipeline = SpecializedPipeline::create(device, variant.clone());
+        let pipeline = SpecializedPipeline::create(device, variant.clone(), &mut ShaderCache::new());
 
         // 2. Compress the mesh. Positions and UVs become 16-bit normalized
         //    integers relative to a bounding box; the decode parameters go
@@ -362,6 +362,7 @@ impl Example {
         {
             let mut pass = attachments.begin_pass(
                 &mut encoder,
+                "scene",
                 color_clear(),
                 depth_clear(),
                 stencil_clear(),
@@ -487,10 +488,9 @@ metadata binding and a vertex stage that reads it are then the same decision.
 
 A caller who wants their own shader has two ways to it. The closest is
 [`LitOptions::shader`](pipeline::LitOptions::shader) or, for a stroke,
-[`LineOptions::shader`](line_shader::LineOptions::shader): an
-[`LitShader`](pipeline::LitShader) or [`LineShader`](line_shader::LineShader)
-carries one whole WESL module, which is mounted at the package path of the built-in
-entry shader it replaces and composed there. So a caller's module writes its own
+[`LineOptions::shader`](line_shader::LineOptions::shader): a
+[`Shader`](pipeline::Shader) carries one whole WESL module, which is mounted at the
+package path of the built-in entry shader it replaces and composed there. So a caller's module writes its own
 `vs_main` and `fs_main` and imports whichever stage modules it wants, in
 whatever order: `package::lit_vertex` exposes `vertex_world` and `vertex_out`
 separately for a caller that reshapes geometry between them, `lit_fragment`
@@ -677,6 +677,20 @@ bounded-variant assumption.
 A blueprint holds handles like `ShaderModule` that need a device to create, so
 WESL composition and the actual wgpu calls both stay inside the blueprint's
 `create`, and the blueprint is built as late as the compile needs it.
+
+**A blueprint composes through a shader cache, not afresh.** wgpu pools a
+pipeline's bind-group layout but not its shader module, and a family's variants
+differ in pipeline state — cull mode, blend, write mask, the target — which its
+WGSL never sees. So `create` takes a
+[`ShaderCache`](pipeline::ShaderCache) and asks it for the module of a
+[`ShaderRecipe`](pipeline::ShaderRecipe) — the package module, its
+conditional-compilation flags and the caller's replacement source — whose
+composition runs only on a miss. The built-in lit family then builds one module
+for however many variants share its source, and the UI draws every target with
+the module the first target composed. A cache belongs to a device and to
+whatever shares shaders across it: [`Variants`](specialize::Variants) keeps one
+for its family, and a blueprint needs none of its own. A family whose module is
+fixed — a caller's hand-written pipeline — ignores the cache.
 
 **Handling a render target is a family's business, not the framework's.** A
 pipeline's color format, sample count and depth format have to match the

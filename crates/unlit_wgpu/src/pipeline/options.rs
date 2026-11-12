@@ -18,8 +18,8 @@ pub struct LitOptions {
     ///
     /// A caller's module composes the stages out of the same package modules the
     /// built-in one imports, and nothing else changes: the layouts, vertex
-    /// streams and entry-point names stay the variant's. See [`LitShader`].
-    pub shader: Option<LitShader>,
+    /// streams and entry-point names stay the variant's. See [`Shader`].
+    pub shader: Option<Shader>,
     /// Whether the fragment stage returns its base color unchanged instead of
     /// multiplying it by the frame's lights.
     ///

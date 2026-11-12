@@ -2,7 +2,7 @@
 
 use super::variant::compose_shader;
 use super::*;
-use crate::specialize::Variants;
+use crate::specialize::{PipelineDescriptor, Variants};
 
 mod compose;
 mod instance;

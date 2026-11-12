@@ -12,7 +12,7 @@ use super::{
     camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
-use unlit_wgpu::pipeline::LitShader;
+use unlit_wgpu::pipeline::Shader;
 use unlit3d::prelude::*;
 
 /// The frame's cluster grid, composited over the lighting.
@@ -108,7 +108,7 @@ fn build_clusters(
     };
     let mut options = super::default_options();
     options.unlit = false;
-    options.shader = Some(LitShader::new("lit::cluster_grid", cluster_grid()));
+    options.shader = Some(Shader::new("lit::cluster_grid", cluster_grid()));
     let key = LitPipelineKey::new(options);
 
     let source_entity = world

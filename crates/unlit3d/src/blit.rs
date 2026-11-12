@@ -13,6 +13,7 @@
 //! same source presents into a swap chain or into another offscreen target.
 
 use unlit_ecs::Scope;
+use unlit_wgpu::pipeline::{ShaderCache, ShaderRecipe};
 use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
@@ -96,8 +97,8 @@ impl PipelineVariant<wgpu::RenderPipeline> for BlitVariant {
 }
 
 impl PipelineDescriptor<wgpu::RenderPipeline> for BlitVariant {
-    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
-        pipeline(device, self.surface)
+    fn create(&self, device: &wgpu::Device, cache: &mut ShaderCache) -> wgpu::RenderPipeline {
+        pipeline(device, self.surface, cache)
     }
 }
 
@@ -322,14 +323,33 @@ fn bind_group_recipe(
 /// wgpu allows. The layout is built here rather than shared, because a
 /// variant's descriptor owns its whole pipeline and wgpu deduplicates
 /// identical layouts on its side.
-fn pipeline(device: &wgpu::Device, surface: SurfaceKey) -> wgpu::RenderPipeline {
-    let vertex_wgsl = unlit_wgpu::compose::compose(VERTEX_MODULE, &[], None)
-        .unwrap_or_else(|error| panic!("the blit vertex shader compiles: {error}"));
-    let vertex = unlit_wgpu::util::shader_module(device, &vertex_wgsl, "unlit3d::blit::vertex");
-    let fragment_wgsl = unlit_wgpu::compose::compose(FRAGMENT_MODULE, &[], None)
-        .unwrap_or_else(|error| panic!("the blit fragment shader compiles: {error}"));
-    let fragment =
-        unlit_wgpu::util::shader_module(device, &fragment_wgsl, "unlit3d::blit::fragment");
+fn pipeline(
+    device: &wgpu::Device,
+    surface: SurfaceKey,
+    cache: &mut ShaderCache,
+) -> wgpu::RenderPipeline {
+    // Neither stage takes a flag or a caller's source, so each composes once
+    // per device however many targets the blit is specialized on.
+    let vertex_label = "unlit3d::blit::vertex";
+    let vertex = cache.get_or_create(
+        device,
+        &ShaderRecipe::new(VERTEX_MODULE, &[], None),
+        vertex_label,
+        || {
+            unlit_wgpu::compose::compose(VERTEX_MODULE, &[], None)
+                .unwrap_or_else(|error| panic!("{vertex_label}: {error}"))
+        },
+    );
+    let fragment_label = "unlit3d::blit::fragment";
+    let fragment = cache.get_or_create(
+        device,
+        &ShaderRecipe::new(FRAGMENT_MODULE, &[], None),
+        fragment_label,
+        || {
+            unlit_wgpu::compose::compose(FRAGMENT_MODULE, &[], None)
+                .unwrap_or_else(|error| panic!("{fragment_label}: {error}"))
+        },
+    );
     let layout = bind_group_layout(device);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::blit::pipeline_layout"),
@@ -367,5 +387,5 @@ fn pipeline(device: &wgpu::Device, surface: SurfaceKey) -> wgpu::RenderPipeline 
         cache: None,
     };
     descriptor.set_surface(surface);
-    descriptor.create(device)
+    descriptor.create(device, cache)
 }

@@ -8,7 +8,7 @@
 //!
 //! ```rust
 //! # use unlit_wgpu::globals::Globals;
-//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, VIEW_BINDING};
+//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, VIEW_BINDING, ShaderCache};
 //! # use unlit_wgpu::resources::ResourceGraph;
 //! # use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 //! # use unlit_wgpu::ui::{
@@ -21,7 +21,7 @@
 //! // `screen_view`), a frame-globals uniform, the view `screen_viewport`
 //! // derives from the same points, and the bind group binding all three.
 //! let variant = ui_variant(/* the target encodes sRGB: */ true, surface);
-//! let pipeline = SpecializedPipeline::create(device, variant);
+//! let pipeline = SpecializedPipeline::create(device, variant, &mut ShaderCache::new());
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");
 //! let view = uniform_buffer(device, "ui::view");

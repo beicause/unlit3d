@@ -412,11 +412,11 @@ source 作用域里的每一盏加起来，场景添加、搬动或移除它与�
 自己的逐实例顶点数据。
 
 若想保留内置家族——它的布局、顶点流、逐实例记录——只换掉如何着色，则不必注册任何东西：
-把 `LitShader` 放进 `unlit_wgpu::pipeline::LitOptions::shader`，再构造
-`lit::LitPipelineKey` 即可。它装着三段 WESL 代码片段：一段拼在顶层，一段拼在顶点阶段
-末尾，一段拼在片段阶段末尾。内置阶段照旧做它的事——解码顶点、变换、着色、裁剪——而
-代码片段改变结果：顶层那段添加另两段要调用的函数或常量，顶点那段在被照亮之前重塑表面，
-片段阶段那段在之后重新给像素上色。布局仍由变体决定——这正是「只改一个字段」的原因。
+把 `unlit_wgpu::pipeline::Shader` 放进 `unlit_wgpu::pipeline::LitOptions::shader`，再构造
+`lit::LitPipelineKey` 即可。它装着整整一块 WESL 模块，组合时顶替内置的 `lit.wesl`：自己写
+`vs_main` 与 `fs_main`，import 想保留的阶段模块——`package::lit_vertex`、`lit_lighting`、
+`lit_fragment`、`lit_bindings`——于是内置步骤照旧做它们的事，它们之间与之外才是调用者的代码。
+布局仍由变体决定——这正是「只改一个字段」的原因。
 自己实现一个家族是另一条路，适用于着色之外还有别的东西要变的情况。
 
 ### 逐实例顶点数据

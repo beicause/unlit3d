@@ -7,7 +7,7 @@
 use crate::common::*;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{
-    CAMERA_BINDING, FRAME_BINDING, LitVariant, SpecializedLitPipeline, VIEW_BINDING,
+    CAMERA_BINDING, FRAME_BINDING, LitVariant, ShaderCache, SpecializedLitPipeline, VIEW_BINDING,
 };
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
@@ -108,7 +108,8 @@ fn render_ui_with(
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
     let ui_opts = ui_variant_for_target(&ctx.device);
-    let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
+    let pipeline =
+        SpecializedPipeline::create(&ctx.device, ui_opts.clone(), &mut ShaderCache::new());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
@@ -460,7 +461,8 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
     let globals_id = graph.insert(globals.clone(), None);
     let view_id = graph.insert(view.clone(), None);
     let ui_opts = ui_variant_for_target(&ctx.device);
-    let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
+    let pipeline =
+        SpecializedPipeline::create(&ctx.device, ui_opts.clone(), &mut ShaderCache::new());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
@@ -539,7 +541,8 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     let globals_id = graph.insert(globals.clone(), None);
     let view_id = graph.insert(view.clone(), None);
     let ui_opts = ui_variant_for_target(&ctx.device);
-    let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
+    let pipeline =
+        SpecializedPipeline::create(&ctx.device, ui_opts.clone(), &mut ShaderCache::new());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,

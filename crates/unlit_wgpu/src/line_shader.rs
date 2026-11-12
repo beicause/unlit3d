@@ -29,48 +29,13 @@
 //! The label names the shader: it is the shader module's label, and a
 //! composition error is reported under it.
 
-use std::sync::Arc;
-
+use crate::pipeline::{ShaderCache, ShaderRecipe};
 use crate::specialize::{PipelineDescriptor, SurfaceTarget};
 
-/// A caller's own entry shader, composed in place of the built-in `line.wesl`.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct LineShader {
-    label: Arc<str>,
-    source: Arc<str>,
-}
+/// Name of the WESL module the built-in stroke shader is composed from: the
+/// file `shaders/line.wesl` of this crate's package.
+const LINE_MODULE: &str = "line";
 
-impl LineShader {
-    /// A shader named `label` whose `source` is the whole WESL module composed
-    /// in place of the built-in entry shader.
-    pub fn new(label: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
-        Self {
-            label: label.into(),
-            source: source.into(),
-        }
-    }
-
-    /// The name this shader is reported under.
-    pub fn label(&self) -> &str {
-        &self.label
-    }
-
-    /// The WESL module composed in place of the built-in entry shader.
-    pub fn source(&self) -> &str {
-        &self.source
-    }
-}
-
-impl core::fmt::Debug for LineShader {
-    /// Prints the label and the source's length rather than the source itself,
-    /// so a [`LineOptions`] dump stays readable.
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LineShader")
-            .field("label", &self.label)
-            .field("source", &format_args!("{} bytes", self.source.len()))
-            .finish()
-    }
-}
 /// The byte width of one instance the line pipeline reads: the sum of the
 /// attribute sizes below.
 ///
@@ -175,13 +140,13 @@ pub struct LineOptions {
     ///
     /// A caller's module is composed in place of the built-in source and
     /// changes nothing else: the layouts, the instance record and the
-    /// entry-point names stay the variant's. See [`LineShader`].
+    /// entry-point names stay the variant's. See [`Shader`].
     ///
     /// The shader takes part in equality and hashing whole, label included:
     /// two options whose shaders differ at all — a name among the
     /// differences — build two pipelines, which is the observable
     /// difference.
-    pub shader: Option<LineShader>,
+    pub shader: Option<crate::pipeline::Shader>,
     /// Whether the fragment stage cuts a pixel whose coverage falls below
     /// one half instead of blending its partial colour.
     ///
@@ -334,27 +299,29 @@ impl crate::specialize::PipelineVariant<wgpu::RenderPipeline> for LineVariant {
 }
 
 impl crate::specialize::PipelineDescriptor<wgpu::RenderPipeline> for LineVariant {
-    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
-        pipeline(device, self)
+    fn create(&self, device: &wgpu::Device, cache: &mut ShaderCache) -> wgpu::RenderPipeline {
+        pipeline(device, self, cache)
     }
 }
 
 /// The pipeline a line variant draws with.
-fn pipeline(device: &wgpu::Device, variant: &LineVariant) -> wgpu::RenderPipeline {
-    let label = variant
-        .options
-        .shader
-        .as_ref()
-        .map_or("unlit_wgpu::line", |shader| shader.label());
+fn pipeline(
+    device: &wgpu::Device,
+    variant: &LineVariant,
+    cache: &mut ShaderCache,
+) -> wgpu::RenderPipeline {
+    let shader = variant.options.shader.as_ref();
+    let label = shader.map_or("unlit_wgpu::line", |shader| shader.label());
     let features = variant.features();
-    let replacement = variant
-        .options
-        .shader
-        .as_ref()
-        .map(|shader| shader.source());
-    let wgsl = crate::compose::compose("line", &features, replacement)
-        .unwrap_or_else(|error| panic!("{label}: {error}"));
-    let module = crate::util::shader_module(device, &wgsl, label);
+    // The stroke's shader is composed once per flag set, not once per variant:
+    // the blend, the write mask and the depth state a variant also carries do
+    // not reach the source.
+    let key = ShaderRecipe::new(LINE_MODULE, &features, shader);
+    let module = cache.get_or_create(device, &key, label, || {
+        let replacement = shader.map(|shader| shader.source());
+        crate::compose::compose(LINE_MODULE, &features, replacement)
+            .unwrap_or_else(|error| panic!("{label}: {error}"))
+    });
     let layout = crate::pipeline::global_bind_group_layout(
         device,
         crate::pipeline::GlobalBindings::default(),
@@ -417,5 +384,5 @@ fn pipeline(device: &wgpu::Device, variant: &LineVariant) -> wgpu::RenderPipelin
         cache: None,
     };
     descriptor.set_surface(variant.surface);
-    descriptor.create(device)
+    descriptor.create(device, cache)
 }
