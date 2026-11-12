@@ -206,15 +206,18 @@ without the tree changing.
   already produced. Merging them would force the graph to be read before the
   scene exists, leaving interior mutability to defer the borrow conflict to
   runtime, so the two phases stay for the compile-time guarantee.
-- **The graph is maintained once per frame, in the build phase.** `replace` only
-  marks; the source maintains exactly once, after its uploads and before it
-  assembles the frame, so the resources nothing holds any more are collected and
-  the dirty bind groups rebuilt in one pass. A source states that point with
-  `RenderContext::maintain_scope`, a guard that maintains the graph when it
-  drops: every early return a source takes when it has nothing to draw settles
-  the graph with no call to remember, and the source drops the guard explicitly
-  where the frame is assembled. A frame that draws nothing still maintains, and
-  the paths outside the scene — a surface resize, a swap-chain acquire — maintain
+- **Each source settles the graph once, in its build.** `replace` only
+  marks; each source maintains after its uploads and before it reads back the
+  bind groups it just rebuilt, so the resources nothing holds any more are
+  collected and the dirty ones rebuilt at one point of its own. A source states
+  that point with `RenderContext::maintain_scope`, a guard that maintains the
+  graph when it drops: every early return a source takes when it has nothing to
+  draw settles the graph with no call to remember, and the source drops the
+  guard explicitly where the frame is assembled. The sources of one frame each
+  maintain the graph they share, so a frame with several settles it several
+  times — a maintain is idempotent, and one with nothing to rebuild skips the
+  rebuild pass outright. A frame that draws nothing still settles, and the
+  paths outside the scene — a surface resize, a swap-chain acquire — maintain
   explicitly rather than holding the old resources until the next scene build.
 - A source's GPU resources live exactly as long as some handle names them, so
   despawning a source's entity drops its handles and the next `maintain`

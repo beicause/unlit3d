@@ -116,6 +116,38 @@ fn maintain_leaves_a_dirty_node_without_a_recipe_dirty() {
     assert_eq!(*order.borrow(), vec!["dependent"]);
 }
 
+/// Replacing the same resource twice between maintains marks it once, so the
+/// rebuild pass runs one recipe for it rather than two.
+#[test]
+fn a_resource_replaced_twice_between_maintains_rebuilds_once() {
+    let device = device();
+    let mut graph = ResourceGraph::new();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let id = rebuildable_buffer(&mut graph, &device, &order, "twice");
+
+    graph.replace(&id, buffer(&device, "one"));
+    graph.replace(&id, buffer(&device, "two"));
+    graph.maintain();
+
+    assert_eq!(*order.borrow(), vec!["twice"]);
+}
+
+/// A maintain with nothing dirty skips the rebuild pass altogether: the
+/// recipes of a graph that was never replaced do not run, and a second
+/// maintain after a settled one is free of them too.
+#[test]
+fn a_maintain_of_a_settled_graph_runs_no_recipe() {
+    let device = device();
+    let mut graph = ResourceGraph::new();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let _id = rebuildable_buffer(&mut graph, &device, &order, "idle");
+
+    graph.maintain();
+    graph.maintain();
+
+    assert!(order.borrow().is_empty());
+}
+
 /// The old handle is handed back in the id's own kind, so a caller
 /// replacing a buffer never sees another kind of resource.
 #[test]

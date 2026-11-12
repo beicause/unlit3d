@@ -222,7 +222,12 @@ impl ResourceGraph {
     fn replace_resource(&mut self, node: NodeId, resource: Resource) -> Option<Resource> {
         let previous = {
             let slot = self.graph.get_mut(node)?;
-            slot.dirty = true;
+            if !slot.dirty {
+                slot.dirty = true;
+                if slot.rebuild.is_some() {
+                    self.dirty_rebuilds += 1;
+                }
+            }
             core::mem::replace(&mut slot.resource, resource)
         };
         self.mark_dependents_dirty(node);
@@ -257,14 +262,37 @@ impl ResourceGraph {
     ///
     /// Collecting before rebuilding means a resource that is about to be
     /// collected is never rebuilt, and a dirty node without a recipe stays
-    /// dirty: the graph cannot build it again by itself.
+    /// dirty: the graph cannot build it again by itself. A pass with no dirty
+    /// node that carries a recipe — the common case for a caller that
+    /// maintains more often than it changes anything — skips the walk
+    /// entirely.
     pub fn maintain(&mut self) {
         while self
             .graph
             .remove_where_drop(|node| node.strong.strong_count() == 0)
             > 0
-        {}
-        self.rebuild_dirty();
+        {
+            // A collected node may have been one of the counted dirty ones;
+            // what remains is cheap to recount and only happens when something
+            // was actually collected.
+            self.recount_dirty_rebuilds();
+        }
+        if self.dirty_rebuilds > 0 {
+            self.rebuild_dirty();
+        }
+    }
+
+    /// Recount the dirty nodes that carry a rebuild recipe, from the graph.
+    ///
+    /// The count is kept incrementally as nodes are marked and rebuilt; this
+    /// is the fallback for the paths that remove nodes wholesale, where the
+    /// bookkeeping would otherwise have to hook the sweep.
+    fn recount_dirty_rebuilds(&mut self) {
+        self.dirty_rebuilds = self
+            .graph
+            .iter()
+            .filter(|(_, node)| node.dirty && node.rebuild.is_some())
+            .count();
     }
 
     /// The immediate dependencies recorded for `id`.
@@ -330,6 +358,7 @@ impl ResourceGraph {
             );
             slot.resource = rebuilt;
             slot.dirty = false;
+            self.dirty_rebuilds -= 1;
         }
         self.order = order;
     }
@@ -337,7 +366,12 @@ impl ResourceGraph {
     /// Mark `node` and every node built from it dirty.
     fn mark_dependents_dirty(&mut self, node: NodeId) {
         self.graph.for_each_dependent_mut(node, |slot| {
-            slot.dirty = true;
+            if !slot.dirty {
+                slot.dirty = true;
+                if slot.rebuild.is_some() {
+                    self.dirty_rebuilds += 1;
+                }
+            }
         });
     }
 }

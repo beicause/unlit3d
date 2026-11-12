@@ -762,4 +762,8 @@ pub struct ResourceGraph {
     /// Lifted out of the graph for the duration of a pass, because the recipes
     /// it names rebuild against the graph itself.
     order: Vec<NodeId>,
+    /// How many nodes are dirty and carry a rebuild recipe — the work
+    /// [`Self::maintain`]'s rebuild pass exists for. Kept beside the graph so
+    /// a pass with none can skip the topological walk entirely.
+    dirty_rebuilds: usize,
 }
