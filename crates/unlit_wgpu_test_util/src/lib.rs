@@ -5,7 +5,7 @@
 use std::sync::Once;
 
 pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
-use unlit_wgpu::context::{DeviceHealth, GpuContext, GpuRequestError};
+use unlit_wgpu::context::{DeviceHealth, GpuContext, GpuRequestError, RenderDevice};
 
 /// The logging facade the tests record through, re-exported so a test crate
 /// needs no `log` dependency of its own.
@@ -125,6 +125,22 @@ impl Ctx {
     /// [`block_on`].
     pub async fn headless() -> Ctx {
         Ctx::headless_for(DeviceTier::from_env()).await
+    }
+
+    /// The device as the value a render world is spawned from.
+    ///
+    /// A test that builds a world hands the device, its queue, its capabilities
+    /// and its health to `spawn_context` together, so they come back from a
+    /// test's context as one value rather than four fields read in an order
+    /// that has to match.
+    #[must_use]
+    pub fn render_device(&self) -> RenderDevice {
+        RenderDevice {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            capabilities: self.capabilities,
+            health: self.health.clone(),
+        }
     }
 
     /// Create a headless GPU context restricted to `tier`.

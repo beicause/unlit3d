@@ -32,10 +32,7 @@ pub(crate) fn present(world: &World, app: Entity) {
         Some(entity) => entity,
         None => {
             let (scene_world, scene) = Scene::new(
-                gpu.device.clone(),
-                gpu.queue.clone(),
-                gpu.capabilities,
-                gpu.health(),
+                RenderDevice::from(&gpu),
                 size,
                 scenes::SceneOptions {
                     ui: def.ui,

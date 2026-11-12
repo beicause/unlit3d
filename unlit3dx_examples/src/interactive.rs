@@ -272,14 +272,8 @@ pub fn scene_status(host: &World, worlds: &SceneHandles) -> SceneStatus {
 
 /// The settings one interactive run builds with.
 pub struct InteractiveConfig {
-    /// The GPU the scene renders with.
-    pub device: wgpu::Device,
-    /// The queue the scene's commands submit through.
-    pub queue: wgpu::Queue,
-    /// The limits and features the device was requested with.
-    pub capabilities: DeviceCapabilities,
-    /// Whether the device is still alive, from the context that made it.
-    pub health: DeviceHealth,
+    /// The GPU the scene renders with, and what was asked of it.
+    pub device: RenderDevice,
     /// The soundfont the synthesizer plays, as raw bytes; an empty slice
     /// silences the audio world the way the headless run's does.
     pub soundfont: Arc<[u8]>,
@@ -313,14 +307,7 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
         &input,
         false,
     );
-    let (renderer, pass) = setup_render_world(
-        &mut host,
-        render.entity,
-        &config.device,
-        &config.queue,
-        config.capabilities,
-        config.health,
-    );
+    let (renderer, pass) = setup_render_world(&mut host, render.entity, config.device.clone());
     mount_scene_content(&render, pass, Some(panels));
     let target = {
         let mut nested = host
@@ -338,7 +325,7 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
             world,
             context,
             pass.entity,
-            &config.device,
+            &config.device.device,
             WINDOW_SIZE,
             TargetConfig::default(),
         )
@@ -358,8 +345,8 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
         },
         samples: Vec::new(),
         recording: None,
-        device: config.device,
-        queue: config.queue,
+        device: config.device.device,
+        queue: config.device.queue,
     };
     // One frame is drawn before the caller takes over: a drawn frame is what
     // publishes the target the panels lay out against, so a run that never

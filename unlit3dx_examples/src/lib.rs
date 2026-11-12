@@ -209,14 +209,8 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
         // a screenshot reads back. A plain window draws into the swap chain.
         let offscreen = mcp;
         move |world, gpu| {
-            let (renderer, pass) = setup_render_world(
-                world,
-                render.entity,
-                &gpu.device,
-                &gpu.queue,
-                gpu.capabilities,
-                gpu.health(),
-            );
+            let (renderer, pass) =
+                setup_render_world(world, render.entity, RenderDevice::from(gpu));
             // The scene's own content — its camera, and the source that draws
             // whatever the gameplay world publishes — reaches the world it was
             // set up to draw as jobs. The panels themselves never leave the
@@ -429,13 +423,7 @@ fn run_headless(args: &Args) -> ExitCode {
         audio_sample_rate: headless::AUDIO_SAMPLE_RATE,
         soundfont: unlit3dx_asset_bytes::soundfont().into(),
     };
-    let output = headless::run(
-        &config,
-        &gpu.device,
-        &gpu.queue,
-        gpu.capabilities,
-        gpu.health(),
-    );
+    let output = headless::run(&config, RenderDevice::from(gpu));
     let out = std::path::Path::new(&args.out);
     if let Err(error) = std::fs::create_dir_all(out) {
         log::error!("could not create {}: {error}", out.display());

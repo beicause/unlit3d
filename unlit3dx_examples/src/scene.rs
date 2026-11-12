@@ -180,23 +180,13 @@ pub(super) const PUBLISH_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(200);
 pub fn setup_render_world(
     host: &mut World,
     render_world: Entity,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    capabilities: DeviceCapabilities,
-    health: DeviceHealth,
+    device: RenderDevice,
 ) -> (RemoteEntity, RemoteEntity) {
     let Ok(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
     let world = nested.get();
-    let context = spawn_context(
-        world,
-        device.clone(),
-        queue.clone(),
-        ResourceGraph::new(),
-        capabilities,
-        health,
-    );
+    let context = spawn_context(world, device, ResourceGraph::new());
     let renderer = world
         .root_scope_mut()
         .spawn(bundle![Renderer::new(context)]);

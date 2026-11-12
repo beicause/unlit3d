@@ -14,10 +14,8 @@
 //! let mut world = World::new();
 //! let _ctx = spawn_context(
 //!     &mut world,
-//!     device,
-//!     queue,
+//!     RenderDevice::unwatched(device, queue),
 //!     ResourceGraph::new(),
-//!     DeviceCapabilities::default(),
 //! );
 //!
 //! // The source, and one interface held as a behaviour component. More

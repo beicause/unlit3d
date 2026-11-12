@@ -142,11 +142,12 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   `MeshSource::allocate_lit_mesh` 是内置着色器对它的使用——由通道推导出流布局，再用
   `unlit_wgpu::mesh` 里的写入器打包。整块缓冲自有的 mesh（例如 UI 路径）改用
   `MeshSource::allocate_mesh` 分配。
-- GPU 状态——`wgpu::Device`、`wgpu::Queue` 与 `ResourceGraph`——作为资源组件存在于
-  world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址；
-  `RenderContext::of` 可以从它四个实体中的任意一个反查回整个上下文。
-  它还接收本帧的 `DeviceCapabilities`，由调用者从适配器推导——设备无法自述的信息
-  随帧一起传递，而不是让每个源各自重新发现。
+- GPU 状态——`wgpu::Device`、`wgpu::Queue`、`ResourceGraph` 以及设备的那些事实——
+  作为资源组件存在于 world 中，通过 `RenderContext` 寻址。`spawn_context` 把它们当作
+  一个 `RenderDevice`（device、queue、`DeviceCapabilities` 与 `DeviceHealth` 一起）
+  接收，生成后返回地址；`RenderContext::of` 可以从它四个实体中的任意一个反查回整个
+  上下文。能力随帧一起传递，因为调用者是拿适配器推导出来的：设备无法自述的信息不该让
+  每个源各自重新发现。
 - **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制
   阶段只读取已经产出的场景。合并两者就必须在场景产出之前读资源图，只剩内部可变性把
   借用冲突推到运行期，因此保留两阶段以换取编译期保证。
@@ -618,8 +619,8 @@ mesh 共用同一 pass 是常见情形），UI 管线仍须声明**相同的**�
 
 ## 示例
 
-下面的帧骨架假设 `device`/`queue` 由外部提供。`spawn_context` 把 GPU 状态放进
-world，`MeshSource` 作为源生成，`Renderer` 是帧驱动器：
+下面的帧骨架假设 device 由外部提供。`spawn_context` 把 GPU 状态放进 world，
+`MeshSource` 作为源生成，`Renderer` 是帧驱动器：
 
 ```rust
 use unlit3d::prelude::*;
@@ -632,15 +633,15 @@ let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
 //    frame driver, and register the built-in lit family.
-// `DeviceCapabilities` carries what the device cannot report about itself
-// (its `base_vertex` support). Derive it from the adapter when one is at
-// hand; `default()` is the WebGPU baseline, which is also what `noop` is.
+// `RenderDevice` is the device and what came with it: the queue, the
+// `DeviceCapabilities` it was requested with (what it cannot report about
+// itself, like `base_vertex` support), and its `DeviceHealth`. A context
+// made from an adapter answers all four; `unwatched` builds one from a bare
+// device and queue, as a test's `noop` device does.
 let ctx = spawn_context(
     &mut world,
-    device,
-    queue,
+    RenderDevice::unwatched(device, queue),
     ResourceGraph::new(),
-    DeviceCapabilities::default(),
 );
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_lit_family(&world.root_scope());

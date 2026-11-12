@@ -5,8 +5,7 @@ use std::path::Path;
 use unlit_ecs::bundle;
 
 use glam::Mat4;
-use unlit_wgpu::context::DeviceHealth;
-use unlit_wgpu::context::GpuContext;
+use unlit_wgpu::context::{GpuContext, RenderDevice};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::gltf::LitGltf;
 use unlit3d::prelude::*;
@@ -108,16 +107,9 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     )
     .await
     .map_err(|error| Error::Gpu(error.to_string()))?;
-    let (device, queue, capabilities) = (gpu.device.clone(), gpu.queue.clone(), gpu.capabilities);
-    let (world, target, renderer) = build_world(
-        config,
-        &device,
-        &queue,
-        capabilities,
-        gpu.health(),
-        output_size,
-        render_size,
-    )?;
+    let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
+    let (world, target, renderer) =
+        build_world(config, RenderDevice::from(gpu), output_size, render_size)?;
 
     world
         .root_scope()
@@ -144,22 +136,15 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
 /// Fails when a document or its animation cannot be read.
 pub fn build_world(
     config: &Config,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    capabilities: DeviceCapabilities,
-    health: DeviceHealth,
+    device: RenderDevice,
     output_size: (u32, u32),
     render_size: (u32, u32),
 ) -> Result<(World, wgpu::Texture, Entity), Error> {
     let mut world = World::new();
-    let context = spawn_context(
-        &mut world,
-        device.clone(),
-        queue.clone(),
-        ResourceGraph::new(),
-        capabilities,
-        health,
-    );
+    // The target and the glTF uploads want the device after the world has taken
+    // its own copy of it.
+    let handle = device.device.clone();
+    let context = spawn_context(&mut world, device, ResourceGraph::new());
     let renderer = world
         .root_scope_mut()
         .spawn(bundle![Renderer::new(context)]);
@@ -186,7 +171,7 @@ pub fn build_world(
         &world,
         context,
         pass,
-        device,
+        &handle,
         output_size,
         config.output.samples,
         config.output.depth,
@@ -262,23 +247,14 @@ pub fn build_world(
 /// draws into. Returns the world and the renderer entity.
 #[must_use]
 pub fn offscreen_world(
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    capabilities: DeviceCapabilities,
-    health: DeviceHealth,
+    device: RenderDevice,
     size: (u32, u32),
     samples: u32,
     depth: bool,
 ) -> (World, Entity) {
     let mut world = World::new();
-    let context = spawn_context(
-        &mut world,
-        device.clone(),
-        queue.clone(),
-        ResourceGraph::new(),
-        capabilities,
-        health,
-    );
+    let handle = device.device.clone();
+    let context = spawn_context(&mut world, device, ResourceGraph::new());
     let renderer = world
         .root_scope_mut()
         .spawn(bundle![Renderer::new(context)]);
@@ -300,7 +276,7 @@ pub fn offscreen_world(
         shared_view.spawn(InputFeed(input.clone()));
     }
 
-    bind_target(&world, context, pass, &device, size, samples, depth);
+    bind_target(&world, context, pass, &handle, size, samples, depth);
     // The camera sits in the source's own subtree, which is what it frames.
     world
         .scope_mut(source_entity)
@@ -354,12 +330,8 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
                     "unlit3d_cli",
                 )
                 .await?;
-                let health = gpu.health();
                 Ok::<_, unlit_wgpu::context::GpuRequestError>(offscreen_world(
-                    gpu.device,
-                    gpu.queue,
-                    gpu.capabilities,
-                    health,
+                    RenderDevice::from(gpu),
                     size,
                     samples,
                     depth,

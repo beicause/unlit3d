@@ -12,7 +12,6 @@
 
 use glam::{Quat, Vec3};
 use unlit_ecs::bundle;
-use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::pipeline::{BaseColorChannels, DepthStencilPolicy, LitOptions};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
@@ -52,11 +51,8 @@ impl Frame {
         let mut world = World::new();
         let context = spawn_context(
             &mut world,
-            device,
-            queue,
+            RenderDevice::unwatched(device, queue),
             ResourceGraph::new(),
-            DeviceCapabilities::default(),
-            DeviceHealth::unwatched(),
         );
         let mut source = MeshSource::new(&world.root_scope(), context);
 

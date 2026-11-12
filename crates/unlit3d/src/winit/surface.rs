@@ -38,7 +38,15 @@
 //!     .root_scope()
 //!     .query_one::<&mut Renderer>(renderer)
 //!     .map(|mut r| {
-//!         WindowSurface::new(world, r.get(), instance, adapter, window, surface)
+//!         WindowSurface::new(
+//!             world,
+//!             r.get(),
+//!             instance,
+//!             adapter,
+//!             window,
+//!             surface,
+//!             SurfaceOptions::default(),
+//!         )
 //!     })
 //!     .unwrap();
 //! // The depth and multisample attachments the frame draws with; `true` asks

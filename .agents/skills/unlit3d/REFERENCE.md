@@ -10,7 +10,7 @@
 
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
-| 建渲染上下文 | `spawn_context` 每 world 调一次，GPU 状态进 shared 子树 | `crates/unlit3d/src/source.rs` |
+| 建渲染上下文 | `spawn_context(&mut world, RenderDevice, ResourceGraph)` 每 world 调一次，GPU 状态进 shared 子树；`RenderDevice` 收 device/queue/capabilities/health | `crates/unlit3d/src/source.rs` |
 | 上下文句柄 | `RenderContext`，Copy。**六个字段都是 `pub(crate) Entity`，不是 GPU 句柄**，要从外部用只能走它的访问函数（`device` / `queue` / `capabilities` / `clock` / `try_graph` / `graph` / `uniforms` / `maintain_scope`，都吃 `Scope`）；只有 `of(world, anchor)` 是 pub | 同上，搜 `pub fn device` |
 | 根作用域 | `World` 的 `root_scope` / `root_scope_mut` / `scope` / `scope_mut` / `shared` / `is_shared` | `crates/unlit_ecs/src/world.rs` |
 | 作用域只读 | `Scope`：`entity` / `query` / `query_one` / `archetype_of` / `children` / `queue` 等 | `crates/unlit_ecs/src/view.rs` |

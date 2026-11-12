@@ -11,8 +11,10 @@ use unlit3d::prelude::*;
 use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::resources::ResourceGraph;
 
-// 一 world 一份：GPU 状态（device/queue/graph/capabilities）与 FrameClock 一起进 shared 子树。
-let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new(), DeviceCapabilities::default());
+// 一 world 一份：GPU 状态（device/queue/graph/capabilities/health）与 FrameClock 一起进 shared 子树。
+// RenderDevice 把 device 与随它而来的一切收成一个值；从适配器建的 GpuContext 可直接 From 进来，
+// 只有裸 device/queue 时用 RenderDevice::unwatched(device, queue)。
+let ctx = spawn_context(&mut world, RenderDevice::unwatched(device, queue), ResourceGraph::new());
 
 // 内建 lit family 只登记策略，不立刻编译 pipeline：首个 draw 才建。
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);

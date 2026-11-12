@@ -2,8 +2,7 @@ use super::*;
 use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 use unlit_ecs::bundle;
-use unlit_wgpu::capabilities::DeviceCapabilities;
-use unlit_wgpu::context::DeviceHealth;
+use unlit_wgpu::context::RenderDevice;
 
 use crate::input::{
     InputEvent, InputFeed, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent,
@@ -53,11 +52,8 @@ fn test_world() -> (World, RenderContext) {
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let ctx = spawn_context(
         &mut world,
-        device,
-        queue,
+        RenderDevice::unwatched(device, queue),
         unlit_wgpu::resources::ResourceGraph::new(),
-        DeviceCapabilities::default(),
-        DeviceHealth::unwatched(),
     );
     (world, ctx)
 }

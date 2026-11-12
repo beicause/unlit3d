@@ -195,10 +195,7 @@ fn scene_at(
     def: &'static scenes::SceneDef,
 ) -> (World, Scene) {
     Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        ctx.health.clone(),
+        ctx.render_device(),
         size,
         SceneOptions {
             ui: true,
@@ -219,10 +216,7 @@ fn scene_with_gpu_info(
     gpu_info: Option<egui::Rect>,
 ) -> (World, Scene) {
     Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        ctx.health.clone(),
+        ctx.render_device(),
         size,
         SceneOptions {
             ui: true,
@@ -239,10 +233,7 @@ fn scene_with_gpu_info(
 /// A scene with the selector mounted, opened at `initial`.
 fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Scene) {
     Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        ctx.health.clone(),
+        ctx.render_device(),
         size,
         SceneOptions {
             ui: true,

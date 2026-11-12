@@ -72,14 +72,7 @@ impl TestGpu {
     /// What a UI-only test needs: the frame must draw without the 3D path
     /// being present at all.
     pub fn frame_only(world: &mut World, ctx: &Ctx) -> Self {
-        let context = spawn_context(
-            world,
-            ctx.device.clone(),
-            ctx.queue.clone(),
-            ResourceGraph::new(),
-            ctx.capabilities,
-            ctx.health.clone(),
-        );
+        let context = spawn_context(world, ctx.render_device(), ResourceGraph::new());
         // The harness's default key reads the per-instance stream, which
         // carries the tint as well as the transform: the ECS tests tint their
         // entities, and a variant that read no instance stream would draw them

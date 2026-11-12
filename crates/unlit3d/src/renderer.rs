@@ -51,11 +51,8 @@ const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
 /// // The frame's GPU state, the built-in mesh source and the driver itself.
 /// let ctx = spawn_context(
 ///     &mut world,
-///     device,
-///     queue,
+///     RenderDevice::unwatched(device, queue),
 ///     ResourceGraph::new(),
-///     DeviceCapabilities::default(),
-///     DeviceHealth::unwatched(),
 /// );
 /// let source = MeshSource::new(&world.root_scope(), ctx);
 /// // One pass, drawing the mesh source under it.
@@ -540,8 +537,7 @@ mod tests {
     use crate::pass::{FramePassOrder, Pass};
     use crate::source::{FrameSource, spawn_context};
 
-    use unlit_wgpu::capabilities::DeviceCapabilities;
-    use unlit_wgpu::context::DeviceHealth;
+    use unlit_wgpu::context::RenderDevice;
 
     /// A source that draws nothing: placement is decided from the tree alone.
     struct Nowhere;
@@ -568,11 +564,8 @@ mod tests {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let ctx = spawn_context(
             &mut world,
-            device,
-            queue,
+            RenderDevice::unwatched(device, queue),
             unlit_wgpu::resources::ResourceGraph::new(),
-            DeviceCapabilities::default(),
-            DeviceHealth::unwatched(),
         );
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
         (world, Renderer::new(ctx), pass)

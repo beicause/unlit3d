@@ -25,11 +25,8 @@ fn test_context(world: &mut World) -> RenderContext {
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     spawn_context(
         world,
-        device,
-        queue,
+        RenderDevice::unwatched(device, queue),
         ResourceGraph::new(),
-        DeviceCapabilities::default(),
-        DeviceHealth::unwatched(),
     )
 }
 
@@ -126,13 +123,11 @@ fn record_order(world: &World) -> (Vec<Entity>, Vec<AmbiguousGroup<FrameSourceOr
 #[test]
 fn explicit_order_wins_over_spawn_order() {
     let mut world = World::new();
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     spawn_context(
         &mut world,
-        wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
-        wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
+        RenderDevice::unwatched(device, queue),
         ResourceGraph::new(),
-        DeviceCapabilities::default(),
-        DeviceHealth::unwatched(),
     );
 
     // Spawned overlay-first, so spawn order is the opposite of draw order.

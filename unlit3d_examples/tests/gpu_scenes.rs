@@ -222,10 +222,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     let size = def.size;
 
     let (mut world, mut scene) = Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        ctx.health.clone(),
+        ctx.render_device(),
         size,
         SceneOptions {
             ui: def.ui,
@@ -322,10 +319,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
     let ctx = Ctx::headless().await;
 
     let (mut world, mut scene) = Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        ctx.health.clone(),
+        ctx.render_device(),
         size,
         SceneOptions {
             ui: def.ui,
@@ -589,10 +583,7 @@ async fn custom_pipeline_animates_between_frames() {
     // The windowed path's options, minus the selector: the sequence step the
     // scene itself declares, and a run that accumulates real frame deltas.
     let (mut world, mut scene) = Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        ctx.health.clone(),
+        ctx.render_device(),
         def.size,
         SceneOptions {
             ui: false,

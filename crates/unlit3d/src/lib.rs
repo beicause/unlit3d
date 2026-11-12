@@ -124,8 +124,8 @@ pub mod prelude {
     pub use unlit_ecs::prelude::*;
     pub use unlit_ecs::{Command, Commands};
     pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
-    // Whether the device a world draws with is still alive, and why not.
-    pub use unlit_wgpu::context::{DeviceHealth, DeviceLost};
+    // The GPU a frame draws with, and whether it is still alive.
+    pub use unlit_wgpu::context::{DeviceHealth, DeviceLost, RenderDevice};
     // The grid a lit source clusters its lights into, which is a field of
     // `MeshSource` a caller sets.
     pub use unlit_wgpu::light::ClusterConfig;

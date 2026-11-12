@@ -1,5 +1,5 @@
 use super::*;
-use unlit_wgpu::context::DeviceHealth;
+use unlit_wgpu::context::RenderDevice;
 
 #[test]
 fn registering_a_family_compiles_nothing() {
@@ -7,11 +7,8 @@ fn registering_a_family_compiles_nothing() {
     let mut world = World::new();
     let ctx = spawn_context(
         &mut world,
-        device,
-        queue,
+        RenderDevice::unwatched(device, queue),
         ResourceGraph::new(),
-        DeviceCapabilities::default(),
-        DeviceHealth::unwatched(),
     );
     let mut source = MeshSource::new(&world.root_scope(), ctx);
 
@@ -29,11 +26,8 @@ fn a_source_starts_with_no_pipelines() {
     let mut world = World::new();
     let ctx = spawn_context(
         &mut world,
-        device,
-        queue,
+        RenderDevice::unwatched(device, queue),
         ResourceGraph::new(),
-        DeviceCapabilities::default(),
-        DeviceHealth::unwatched(),
     );
     let source = MeshSource::new(&world.root_scope(), ctx);
 

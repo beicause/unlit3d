@@ -27,7 +27,7 @@ use unlit_ecs::{
     Bundle, DynamicBundle, Entity, EntityAccessError, QueryOne, Scope, ScopeMut, World,
 };
 use unlit_wgpu::capabilities::DeviceCapabilities;
-use unlit_wgpu::context::DeviceHealth;
+use unlit_wgpu::context::{DeviceHealth, RenderDevice};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 
@@ -566,18 +566,22 @@ fn spawn_row<T: 'static>(
 /// holds its own reference to each; the graph is not `Sync` and moves into the
 /// world whole. Call this once per world.
 ///
-/// `health` says whether that device is still alive; pass
-/// [`GpuContext::health`](unlit_wgpu::context::GpuContext::health) to let the
-/// frame loop notice a device that went away, or [`DeviceHealth::unwatched`]
-/// for a device whose loss nobody reports.
+/// `render_device` carries the device and what a frame reads about it: the
+/// capabilities it was requested with, and whether it is still alive. Build one
+/// from the context that opened the device — `RenderDevice::from(&gpu)`, or
+/// `gpu.into()` for the last user of it — or state the device's facts directly
+/// for a device nobody opened through a [`GpuContext`](unlit_wgpu::context::GpuContext).
 pub fn spawn_context(
     world: &mut World,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    render_device: RenderDevice,
     graph_component: ResourceGraph,
-    capabilities: DeviceCapabilities,
-    health: DeviceHealth,
 ) -> RenderContext {
+    let RenderDevice {
+        device,
+        queue,
+        capabilities,
+        health,
+    } = render_device;
     // The graph entity is reserved first because the context names it, and
     // every one of the four entities carries the whole context: a reader handed
     // any single address can query the rest back instead of assuming the world

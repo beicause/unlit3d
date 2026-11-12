@@ -66,13 +66,7 @@ pub struct HeadlessOutput {
 ///
 /// A headless run has no way to recover a world that failed to come up,
 /// so a broken setup panics instead of returning a hole in the capture.
-pub fn run(
-    config: &HeadlessConfig,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    capabilities: DeviceCapabilities,
-    health: DeviceHealth,
-) -> HeadlessOutput {
+pub fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutput {
     // Every capture entry has to name a frame the run steps, and the entries
     // have to ascend: a frame is drawn where the steps left it, so the frames
     // come back in the order they were stepped. An index past the last frame
@@ -128,14 +122,7 @@ pub fn run(
         &input,
         true,
     );
-    let (renderer, pass) = setup_render_world(
-        &mut host,
-        render.entity,
-        device,
-        queue,
-        capabilities,
-        health,
-    );
+    let (renderer, pass) = setup_render_world(&mut host, render.entity, device.clone());
     // No control panel headless: nothing is there to click. The camera is
     // still the scene's, so it arrives as a job like the meshes do.
     mount_scene_content(&render, pass, None);
@@ -155,7 +142,7 @@ pub fn run(
             world,
             context,
             pass.entity,
-            device,
+            &device.device,
             config.size,
             TargetConfig::default(),
         )
@@ -249,7 +236,7 @@ pub fn run(
             };
             output
                 .frames
-                .push(readback_texture(device, queue, &texture));
+                .push(readback_texture(&device.device, &device.queue, &texture));
         }
     }
 

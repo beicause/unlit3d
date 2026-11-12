@@ -16,6 +16,7 @@ use unlit_ecs::mcp::{
 };
 use unlit_ecs::{World, bundle};
 use unlit_wgpu::capabilities::DeviceTier;
+use unlit_wgpu::context::RenderDevice;
 use unlit3d::winit::builtin::ExitRequest;
 use unlit3dx::mcp::{pump_mcp, serve_mcp};
 use unlit3dx::prelude::*;
@@ -30,12 +31,8 @@ pub fn run(soundfont: std::sync::Arc<[u8]>) {
         "unlit3dx_examples",
     ))
     .expect("the headless run opens a GPU");
-    let health = gpu.health();
     let (mut host, _input, interactive) = crate::interactive::run(InteractiveConfig {
-        device: gpu.device,
-        queue: gpu.queue,
-        capabilities: gpu.capabilities,
-        health,
+        device: RenderDevice::from(gpu),
         soundfont,
     });
     host.root_scope_mut().spawn(bundle![ExitRequest(false)]);

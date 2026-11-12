@@ -204,16 +204,19 @@ without the tree changing.
   own, the way the UI path does, allocates it with
   [`MeshSource::allocate_mesh`](mesh_source::MeshSource::allocate_mesh)
   instead.
-- The GPU state — the [`wgpu::Device`], the [`wgpu::Queue`] and the
-  [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph) — lives in the world as
-  resource components, addressed by a [`RenderContext`](source::RenderContext).
-  [`spawn_context`](source::spawn_context) spawns it and returns the addresses;
-  [`RenderContext::of`](source::RenderContext::of) resolves the context back
-  from any one of its four entities.
-  It also takes the frame's
-  [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities), which
-  the caller derives from the adapter — what the device cannot report about
-  itself travels with the frame rather than being rediscovered per source.
+- The GPU state — the [`wgpu::Device`], the [`wgpu::Queue`], the
+  [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph) and the facts about
+  the device it came with — lives in the world as resource components, addressed
+  by a [`RenderContext`](source::RenderContext).
+  [`spawn_context`](source::spawn_context) takes that state as one
+  [`RenderDevice`](unlit_wgpu::context::RenderDevice) — device, queue,
+  [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities) and
+  [`DeviceHealth`](unlit_wgpu::context::DeviceHealth) together — spawns it and
+  returns the addresses; [`RenderContext::of`](source::RenderContext::of)
+  resolves the context back from any one of its four entities.
+  The capabilities travel with the frame because the caller derives them from
+  the adapter: what the device cannot report about itself is not rediscovered
+  per source.
 - **Build and record are two phases.** A source registers resources in the graph
   and stages uploads during `build_scene`; recording only reads the scenes it
   already produced. Merging them would force the graph to be read before the
@@ -933,9 +936,9 @@ into a frame without one.
 
 ## Example
 
-The frame skeleton, with the `device`/`queue` pair passed in. `spawn_context`
-puts the GPU state in the world, `MeshSource` is mounted as a source, and
-`Renderer` is the frame driver:
+The frame skeleton, with the device passed in. `spawn_context` puts the GPU
+state in the world, `MeshSource` is mounted as a source, and `Renderer` is the
+frame driver:
 
 ```rust
 use unlit3d::prelude::*;
@@ -948,15 +951,15 @@ let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
 //    frame driver, and register the built-in lit family.
-// `DeviceCapabilities` carries what the device cannot report about itself
-// (its `base_vertex` support). Derive it from the adapter when one is at
-// hand; `default()` is the WebGPU baseline, which is also what `noop` is.
+// `RenderDevice` is the device and what came with it: the queue, the
+// `DeviceCapabilities` it was requested with (what it cannot report about
+// itself, like `base_vertex` support), and its `DeviceHealth`. A context
+// made from an adapter answers all four; `unwatched` builds one from a bare
+// device and queue, as a test's `noop` device does.
 let ctx = spawn_context(
     &mut world,
-    device,
-    queue,
+    RenderDevice::unwatched(device, queue),
     ResourceGraph::new(),
-    DeviceCapabilities::default(),
 );
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_lit_family(&world.root_scope());

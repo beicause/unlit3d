@@ -70,9 +70,13 @@ mechanisms behind them are in [Design](#design).
   captured while it is still alive, and
   [`DeviceTier`](capabilities::DeviceTier), how much of the baseline to request.
 - [`context`] — the GPU bootstrap every entry point here shares: an adapter,
-  a device at the tier's limits, and the capabilities the adapter reported. Both
-  entry points take the device's label, which is what names the device in a
-  validation message and in an API trace.
+  a device at the tier's limits, the capabilities the adapter reported, and the
+  [`DeviceHealth`](context::DeviceHealth) that records a lost device. Both entry
+  points take the device's label, which is what names the device in a validation
+  message and in an API trace. A
+  [`RenderDevice`](context::RenderDevice) is that device and the facts about it
+  as one value — queue, capabilities and health together — which is what a
+  renderer hands around instead of four parameters that always travel as a set.
 - [`scene`] — the declarative description of a frame: pipelines, their bind
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening

@@ -77,24 +77,14 @@ impl Scene {
     /// adds its sources, meshes, camera and entities, and returns the
     /// [`SceneControl`] that drives them.
     pub fn new(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        capabilities: DeviceCapabilities,
-        health: DeviceHealth,
+        device: RenderDevice,
         size: (u32, u32),
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
         panels: PanelRects,
     ) -> (World, Self) {
         let mut world = World::new();
-        let context = spawn_context(
-            &mut world,
-            device,
-            queue,
-            ResourceGraph::new(),
-            capabilities,
-            health,
-        );
+        let context = spawn_context(&mut world, device, ResourceGraph::new());
         let renderer = world
             .root_scope_mut()
             .spawn(bundle![Renderer::new(context)]);

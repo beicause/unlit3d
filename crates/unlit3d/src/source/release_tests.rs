@@ -94,13 +94,11 @@ impl FrameSource for EarlyReturnSource {
 }
 
 fn noop_context(world: &mut World) -> RenderContext {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     spawn_context(
         world,
-        wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
-        wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
+        RenderDevice::unwatched(device, queue),
         ResourceGraph::new(),
-        DeviceCapabilities::default(),
-        DeviceHealth::unwatched(),
     )
 }
 

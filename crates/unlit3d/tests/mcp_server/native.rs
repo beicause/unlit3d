@@ -57,14 +57,7 @@ const STACKS: u32 = 12;
 /// texture a screenshot can read back and as the view the pass draws into.
 fn offscreen_world(ctx: &Ctx) -> World {
     let mut world = World::new();
-    let context = spawn_context(
-        &mut world,
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ResourceGraph::new(),
-        ctx.capabilities,
-        ctx.health.clone(),
-    );
+    let context = spawn_context(&mut world, ctx.render_device(), ResourceGraph::new());
     // The pass carries the load ops the frame is opened with, so the MCP
     // client can patch them on the entity it finds them on.
     let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));

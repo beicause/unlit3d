@@ -53,9 +53,11 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
   数组](#读取本帧的数组storage-buffer-还是-texel)。
 - `capabilities` —— 适配器在 WebGPU 基线之外还能做什么，在适配器仍存活时采集；以及
   请求多少基线能力的 `DeviceTier`。
-- `context` —— 本仓库每个入口共用的 GPU 引导：适配器、按档位 limits 请求的设备，以及
-  适配器报告的能力。两个入口都接收设备 label——校验信息与 API 抓取里给设备命名
-  的就是它。
+- `context` —— 本仓库每个入口共用的 GPU 引导：适配器、按档位 limits 请求的设备、
+  适配器报告的能力，以及记录设备丢失的 `DeviceHealth`。两个入口都接收设备 label——
+  校验信息与 API 抓取里给设备命名的就是它。`RenderDevice` 把该设备与关于它的事实收成
+  一个值——queue、capabilities 与 health 一起——供渲染器传递，而不是每次都传四个总在
+  一起出现的参数。
 - `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏帧的
   `create_render_target`。

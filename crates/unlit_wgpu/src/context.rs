@@ -190,6 +190,80 @@ impl GpuContext {
     }
 }
 
+/// The GPU a frame draws with: the device, the queue its work is submitted
+/// through, and the two facts about that device a frame reads rather than asks
+/// it for.
+///
+/// A [`GpuContext`] carries the instance and the adapter too, because it is
+/// what opened the device. A frame needs neither, and everything that spawns a
+/// render world needs all four of these together, so they travel as one value:
+/// a caller no longer splits a context apart at every entry point, and no entry
+/// point takes four arguments that could be paired up wrongly.
+#[derive(Clone)]
+pub struct RenderDevice {
+    /// The device every buffer and pipeline belongs to.
+    pub device: wgpu::Device,
+    /// The queue frames are submitted to.
+    pub queue: wgpu::Queue,
+    /// What the device can do beyond the WebGPU baseline.
+    pub capabilities: DeviceCapabilities,
+    /// Whether the device has gone away, and why, when it has.
+    ///
+    /// A frame loop asks this before it submits: a lost device accepts no
+    /// further work and reports nothing on its own.
+    pub health: DeviceHealth,
+}
+
+impl RenderDevice {
+    /// A device with the WebGPU baseline's capabilities, whose loss nobody
+    /// reports.
+    ///
+    /// For a caller that built the device itself rather than through a
+    /// [`GpuContext`]: a test on wgpu's noop backend, or a benchmark that only
+    /// measures the frame's own work. Everything else rates the device as the
+    /// baseline and never hears that it went away.
+    #[must_use]
+    pub fn unwatched(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self {
+            device,
+            queue,
+            capabilities: DeviceCapabilities::default(),
+            health: DeviceHealth::unwatched(),
+        }
+    }
+}
+
+impl From<GpuContext> for RenderDevice {
+    /// Take the device out of the context that opened it.
+    ///
+    /// The instance and the adapter stay behind, which is what a caller that
+    /// will present later keeps; only what a frame draws with crosses into the
+    /// world.
+    fn from(context: GpuContext) -> Self {
+        Self {
+            device: context.device,
+            queue: context.queue,
+            capabilities: context.capabilities,
+            health: context.health,
+        }
+    }
+}
+
+impl From<&GpuContext> for RenderDevice {
+    /// Borrow the device out of the context, cloning the handles.
+    ///
+    /// For a caller that keeps presenting through the same context and only
+    /// hands the frame its own copy.
+    fn from(context: &GpuContext) -> Self {
+        Self {
+            device: context.device.clone(),
+            queue: context.queue.clone(),
+            capabilities: context.capabilities,
+            health: context.health.clone(),
+        }
+    }
+}
+
 /// Take `mutex`, ignoring poisoning.
 ///
 /// A panic while the lock was held leaves the lost state as some other
