@@ -43,6 +43,7 @@ fn test_target() -> PassInfo {
         width: 128,
         height: 96,
         viewport: None,
+        camera: None,
     }
 }
 

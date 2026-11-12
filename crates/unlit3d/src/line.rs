@@ -70,6 +70,7 @@ use unlit_wgpu::specialize::{SurfaceKey, Variants};
 use zerocopy::IntoBytes;
 
 use crate::components::{InstanceVisibility, Transform, frame_camera};
+use crate::components::Camera as SceneCamera;
 use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
 use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
@@ -420,9 +421,21 @@ impl FrameSource for LineSource {
         // drops, whatever that frame goes on to do.
         let maintain = ctx.maintain_scope(*scope);
 
-        // A scope with no active camera draws nothing, exactly as a mesh source
-        // with none does.
-        let Some((camera_entity, camera)) = frame_camera(scope) else {
+        // The line drawing follows the camera the pass states, or the first
+        // *active* camera the source reaches when it states none — the same
+        // fallback a mesh source makes, so the two agree by construction.
+        let camera = match info.camera {
+            Some(camera_entity) => scope
+                .query_one::<&SceneCamera>(camera_entity)
+                .ok()
+                .map(|mut row| {
+                    let camera = row.get().clone();
+                    (camera_entity, camera)
+                })
+                .or_else(|| frame_camera(scope)),
+            None => frame_camera(scope),
+        };
+        let Some((camera_entity, camera)) = camera else {
             return;
         };
 

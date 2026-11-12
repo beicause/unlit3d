@@ -338,13 +338,19 @@ origin. The order is the pass's composite, not the source's: the entry joins
 the depth-sorted pool every source contributes to, so it layers against
 blended meshes and depth-sorted strokes alike.
 
-A source is drawn through the first **active** [`Camera`](components::Camera) in
-its own scope — an entity whose
-[`Camera::active`](components::Camera::active) is `false` is skipped. A scope is
-the source's own subtree, so a world can hold several sources and each one
-frames what it owns; within one scope several cameras can live, and the caller
-switches between them by toggling that flag per frame. With no active camera the
-source is cleared and nothing is drawn.
+A source is drawn through the camera its pass states, when it states one:
+[`FramePass::with_camera`](pass::FramePass::with_camera) names the entity, and
+every source of the pass is told it through `PassInfo::camera` — one statement
+for the whole pass, which is how a split screen draws two passes with two
+cameras. A pass that names none falls back to the first **active**
+[`Camera`](components::Camera) in the source's own scope — an entity whose
+[`Camera::active`](components::Camera::active) is `false` is skipped, and the
+first one is whatever the world's rows happen to hold, so a caller who cares
+states the camera on the pass. A scope is the source's own subtree, so a world
+can hold several sources and each one frames what it owns; within one scope
+several cameras can live, and the caller switches between them by toggling that
+flag per frame. With no stated camera and no active camera in reach the source
+is cleared and nothing is drawn.
 
 The camera convention is the engine's own: a **right-handed**, **Y-up** view
 space projected into WebGPU's **`[0, 1]`** clip-space depth range and drawn

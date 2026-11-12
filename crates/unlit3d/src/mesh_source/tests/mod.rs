@@ -179,6 +179,7 @@ fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> PassInfo {
         width: TEST_SIZE,
         height: TEST_SIZE,
         viewport: None,
+        camera: None,
     }
 }
 

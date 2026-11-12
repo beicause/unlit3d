@@ -84,16 +84,19 @@ pub struct Camera {
     pub active: bool,
 }
 
-/// The camera a frame draws through: the first **active** [`Camera`] in the
+/// The camera a frame falls back to: the first **active** [`Camera`] in the
 /// view, copied out of its cell so the caller's borrow of the world does not
 /// block the accesses that follow.
 ///
-/// The view is the source's own scope, so a world may hold several sources and
-/// each one frames what it owns: a camera beside a source's instances is that
-/// source's camera, and a sibling's is not in reach. Within one scope several
-/// cameras may live — a caller switches between them by toggling
-/// [`Camera::active`] rather than by respawning. `None` means the scope has no
-/// active camera, and the source draws nothing.
+/// This is the fallback, not the primary path: a pass that states its camera
+/// with [`FramePass::with_camera`](crate::pass::FramePass::with_camera) is
+/// drawn through that one, and a source only reaches here when its pass names
+/// none. The view is the source's own scope, so a world may hold several
+/// sources and each one frames what it owns: a camera beside a source's
+/// instances is that source's camera, and a sibling's is not in reach. Within
+/// one scope several cameras may live — a caller switches between them by
+/// toggling [`Camera::active`] rather than by respawning. `None` means the
+/// scope has no active camera, and the source draws nothing.
 ///
 /// The entity comes back with the camera because the frame keys the camera's
 /// uniform by it: two passes through one camera share one upload, and the

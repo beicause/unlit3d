@@ -489,17 +489,37 @@ impl Renderer {
     /// What a pass tells its sources, or `None` when it has no attachment to
     /// draw into and so never records them.
     ///
+    /// The camera the pass names is checked here, once per frame rather than
+    /// once per source: a pass naming an entity that carries no `Camera` — or
+    /// a despawned one — is warned about and reported as no camera, so its
+    /// sources fall back to finding one themselves.
+    ///
     /// # Panics
     ///
     /// If one of the pass's views is gone from the graph, or if it is not a
     /// texture view.
     fn pass_info(&self, world: &World, pass: &FramePass) -> Option<PassInfo> {
         let attachments = pass.attachments(world, self.context)?;
+        let camera = pass.camera.filter(|camera| {
+            let has_camera = world
+                .root_scope()
+                .query_one::<&crate::components::Camera>(*camera)
+                .is_ok();
+            if !has_camera {
+                log::warn!(
+                    "the pass at {:?} names the camera {:?}, which is gone or carries no Camera, so its sources pick one themselves",
+                    pass.order,
+                    camera
+                );
+            }
+            has_camera
+        });
         Some(PassInfo {
             surface: attachments.surface_key(),
             width: attachments.width(),
             height: attachments.height(),
             viewport: pass.viewport,
+            camera,
         })
     }
 }

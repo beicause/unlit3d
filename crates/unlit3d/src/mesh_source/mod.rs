@@ -552,8 +552,21 @@ impl FrameSource for MeshSource {
             self.upload_metadata(world, encoder);
         }
 
-        // The frame is drawn from the first *active* camera in `world`.
-        let camera = frame_camera(world);
+        // The frame draws through the camera the pass states, or the first
+        // *active* camera the source reaches when it states none — a fallback
+        // that follows row order, so a caller who cares states the camera on
+        // the pass.
+        let camera = match info.camera {
+            Some(camera_entity) => world
+                .query_one::<&Camera>(camera_entity)
+                .ok()
+                .map(|mut row| {
+                    let camera = row.get().clone();
+                    (camera_entity, camera)
+                })
+                .or_else(|| frame_camera(world)),
+            None => frame_camera(world),
+        };
         let Some(camera) = camera else {
             // Even a frame that draws nothing has to settle the graph: meshes
             // allocated or removed since the last frame are waiting, and the

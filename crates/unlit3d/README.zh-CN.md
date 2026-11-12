@@ -229,10 +229,14 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 绘制的几何体排序，而不是按实体原点。这一顺序是 pass 的合成，不是源的：该条目加入
 所有源共同贡献的深度排序池，与混合网格、深度排序笔画一起分层。
 
-每个 source 通过**它自己 scope 内**第一个 **active** 的 `Camera` 绘制——`Camera::active` 为
-`false` 的实体会被跳过。因为 scope 就是该 source 自己的子树，一个世界可以持有多个
-source，各自取景自己拥有的内容；同一个 scope 内也可以有多个相机，逐帧切换该标志即可
-在它们之间切换。scope 内没有 active 相机时，该 source 被清空，什么都不绘制。
+source 通过它所在 pass 指定的相机绘制：[`FramePass::with_camera`](pass::FramePass::with_camera)
+指名相机实体，pass 的每个 source 都会经 `PassInfo::camera` 拿到它——整条 pass 一句话，
+分屏就是两趟 pass 各配一个相机。pass 没指名时才回退到该 source **自己 scope 内**第一个
+**active** 的 `Camera`——`Camera::active` 为 `false` 的实体会被跳过，而「第一个」取决于
+世界当前的行序，所以在意取景的调用者应当在 pass 上指名。因为 scope 就是该 source 自己的
+子树，一个世界可以持有多个 source，各自取景自己拥有的内容；同一个 scope 内也可以有多个
+相机，逐帧切换该标志即可在它们之间切换。pass 没指名、scope 内也没有 active 相机时，
+该 source 被清空，什么都不绘制。
 
 相机采用引擎自己的约定：**右手系**、**Y 轴向上**的视图空间，投影到 WebGPU 的
 **`[0, 1]`** 裁剪空间深度范围，并以 **reverse-Z** 绘制。相机把视图与投影分开保存：
