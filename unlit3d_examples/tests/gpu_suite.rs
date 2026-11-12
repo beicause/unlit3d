@@ -1,9 +1,9 @@
 //! The integration suite for `unlit3d_examples`: both GPU test files in one
 //! binary.
 //!
-//! Cargo links one binary per test target, and each of these files used to be a
-//! target of its own, so each paid for a link of the whole GPU stack. Here they
-//! are modules of a single target.
+//! The files below are modules of a single test target; the root README's
+//! `Tests and benchmarks` section explains why a crate's integration tests are
+//! one binary.
 
 #[path = "gpu_scenes.rs"]
 mod gpu_scenes;

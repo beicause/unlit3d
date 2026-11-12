@@ -2,20 +2,17 @@
 //!
 //! A scene is a [`SceneDef`]: the fixed size and frame count its snapshots
 //! were captured at, what offscreen target it draws into, and a
-//! [`build`](SceneDef::build) that populates an ECS world. The world it builds is the ordinary one every
-//! frame loop drives — the frame's context and [`Renderer`] are already in it
-//! — so the windowed run and the snapshot tests differ only in what they bind
-//! they do with the result.
+//! [`build`](SceneDef::build) that populates an ECS world. The world it builds
+//! is the ordinary one every frame loop drives — the frame's context and
+//! [`Renderer`] are already in it — so the windowed run and the snapshot tests
+//! differ only in what they do with the result.
 //!
 //! A scene's [`SceneControl`] carries the per-frame behaviour (an animated
-//! sequence, the orbit of the camera) and the snapshot each frame verifies
-//! against in the snapshot tests. Scenes without snapshots — the windowed
-//! example's own — report none.
+//! sequence, the orbit of the camera) and, for each frame it declares, the
+//! snapshot that frame is verified against.
 //!
-//! Every scene here is ported from a GPU snapshot test that used to live in
-//! `crates/unlit3d/tests`, which is why its size, frame count and content are
-//! exactly what that test froze: the stored snapshots in the
-//! `unlit3d_asset_files` submodule still verify them.
+//! A scene's size, frame count and content are pinned to the stored snapshots
+//! in the `unlit3d_asset_files` submodule, which verify them.
 
 pub mod animated;
 pub mod custom_pipeline;
@@ -68,8 +65,7 @@ pub struct SceneControl {
     pub advance: Advance,
     /// The snapshot the scene's test compares frame `frame` against, if any.
     ///
-    /// The name is relative to the snapshot directory, exactly as the test the
-    /// scene was ported from stored it.
+    /// The name is relative to the snapshot directory.
     pub snapshot: Snapshot,
 }
 
@@ -131,8 +127,8 @@ pub struct SceneDef {
     ///
     /// A scene whose snapshots were captured with the clock suppressed — the
     /// example's own, whose panels live in egui windows — declares `true`, so
-    /// the snapshot tests zero egui's animation time for it. The ported test
-    /// scenes were captured with the clock live, and declare `false`.
+    /// the snapshot tests zero egui's animation time for it. Every other scene
+    /// was captured with the clock live and declares `false`.
     pub reproducible_ui: bool,
     /// Build the scene's world content and return its per-frame behaviour.
     ///
@@ -147,8 +143,7 @@ pub struct SceneDef {
     pub build: Build,
 }
 
-/// Every selectable scene, in the order the GUI lists and `--scene all` runs
-/// them.
+/// Every selectable scene, in the order the GUI lists them.
 pub static SCENES: &[&SceneDef] = &[
     &spin_cube::SCENE,
     &ui_only::SCENE,
@@ -215,11 +210,10 @@ pub struct SceneOptions {
 // ---------------------------------------------------------------------------
 // Shared geometry and camera helpers
 //
-// These are the fixtures the ported tests shared, restated here because the
-// example cannot reach into a test crate.
+// The fixtures every scene shares.
 // ---------------------------------------------------------------------------
 
-/// The size the ported test scenes draw at, matching their snapshots.
+/// The size the scenes draw at, matching their snapshots.
 pub const TEST_SIZE: (u32, u32) = (256, 192);
 
 /// The aspect the windowed example keeps its 3D content to, as a reference
@@ -241,9 +235,9 @@ pub const TEST_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb
 /// Seconds each frame of a fixed-sequence scene stays on screen in the
 /// windowed loop.
 ///
-/// The ported test scenes froze an animation as a handful of frames, so
-/// playing them one per displayed frame would flash past in a fraction of a
-/// second. The snapshot tests ignore this and draw the frames back to back.
+/// A fixed-sequence scene draws its animation as a handful of frames, so
+/// playing one per displayed frame would flash past in a fraction of a second.
+/// The snapshot tests ignore this and draw the frames back to back.
 pub const SEQUENCE_STEP: f32 = 0.5;
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
@@ -539,7 +533,7 @@ pub fn aim_camera(
         .expect("the entity carries a camera");
 }
 
-/// Default options for the ported ECS scenes: per-instance transform and tint,
+/// Default options for the ECS scenes: per-instance transform and tint,
 /// no texture, no MSAA, with reverse-z depth.
 ///
 /// The options are pure policy, so they say nothing about the geometry a draw

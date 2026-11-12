@@ -1,7 +1,6 @@
 //! The mesh-and-UI scene: a cube and a rich egui panel in one pass.
 //!
-//! Ported from the `mesh_and_ui_in_one_frame` snapshot test: the frame where
-//! the mesh source and the UI source have to agree on record order, scissor
+//! The mesh source and the UI source have to agree on record order, scissor
 //! state and the frame's load ops. The snapshot `mesh_and_ui.webp` freezes the
 //! second frame.
 

@@ -1,8 +1,9 @@
 //! The example's own scene: a spinning, textured cube with two egui panels.
 //!
-//! This is the scene the windowed example always showed. Its snapshot test
-//! is the workspace's CI check against `spin_cube.webp`: 30 frames at the
-//! default window size, so a rendering regression fails the build.
+//! It is the default scene, and the one the narrow-aspect snapshot draws as
+//! well. Its own snapshot test renders 30 frames at the window's default size
+//! and compares the last against `spin_cube.webp`, so a rendering regression
+//! fails the build.
 
 use super::{BASELINE_SIZE, SceneControl, SceneDef, SceneOptions};
 use unlit_ecs::{Bundle, DynamicBundle, bundle};

@@ -1,10 +1,8 @@
 //! The UI-only scene: egui drawn into a frame with no mesh source and no
 //! camera.
 //!
-//! Ported from the `ui_only_draws_without_a_camera` snapshot test: the frame
-//! shape that used to produce nothing, because the renderer bailed out when
-//! the world held no camera. The snapshot `ui_only.webp` freezes the second
-//! frame — the first only warms egui's font atlas up.
+//! The snapshot `ui_only.webp` freezes the second frame — the first only
+//! warms egui's font atlas up.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit3d::prelude::*;

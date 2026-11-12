@@ -1,10 +1,9 @@
 //! The morphed-cube scene: a cube blended by two morph targets across six
 //! frames.
 //!
-//! Ported from the `ecs_morphed_cube_matches_snapshots` test. A cube with two
-//! morph targets is drawn over several frames while its target weights
-//! animate: the weights live in a [`MorphWeights`] component the CPU updates,
-//! and each frame is stored as its own snapshot.
+//! A cube with two morph targets is drawn over several frames while its target
+//! weights animate: the weights live in a [`MorphWeights`] component the CPU
+//! updates, and each frame is stored as its own snapshot.
 
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options, morph_deltas,

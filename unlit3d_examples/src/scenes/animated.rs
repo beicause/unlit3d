@@ -1,11 +1,10 @@
 //! The animated-grid scene: meshes allocated, recycled and moved across eight
 //! frames.
 //!
-//! Ported from the `ecs_animated_scene_matches_snapshots` test. One world is
-//! evolved over several frames: meshes are allocated, some are recycled, the
-//! moving ones translate and rotate, and the camera orbits the grid. Every
-//! frame is stored as its own snapshot, so the sequence shows what a wrong
-//! pooled range, a stale metadata entry or a mispacked instance looks like
+//! One world is evolved over several frames: meshes are allocated, some are
+//! recycled, the moving ones translate and rotate, and the camera orbits the
+//! grid. Every frame is stored as its own snapshot, so the sequence shows what a
+//! wrong pooled range, a stale metadata entry or a mispacked instance looks like
 //! from frame to frame.
 
 use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};

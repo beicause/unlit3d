@@ -1,8 +1,7 @@
 //! The instanced skin-and-morph scene: three entities sharing one deformed
 //! mesh.
 //!
-//! Ported from the `ecs_instanced_skinned_morphed_cubes_match_snapshots`
-//! test. Three entities share one skinned-and-morphed mesh. They draw the
+//! Three entities share one skinned-and-morphed mesh. They draw the
 //! same pipeline, bind the same mesh and material bind groups and read the
 //! same vertex and index buffers, so the source folds them into a single
 //! instanced draw; what keeps each instance distinct is the pose state the

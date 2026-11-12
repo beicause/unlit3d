@@ -1,9 +1,8 @@
 //! The skinned-cube scene: a mesh bent by two joints across six frames.
 //!
-//! Ported from the `ecs_skinned_cube_matches_snapshots` test. A skinned cube
-//! is drawn over several frames while its pose animates: the joint matrices
-//! live in a [`SkinPose`] component the CPU updates, and each frame is stored
-//! as its own snapshot.
+//! A skinned cube is drawn over several frames while its pose animates: the
+//! joint matrices live in a [`SkinPose`] component the CPU updates, and each
+//! frame is stored as its own snapshot.
 
 use super::{
     BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options,
