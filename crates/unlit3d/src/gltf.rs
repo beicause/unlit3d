@@ -59,9 +59,9 @@
 //! `primitives()`, `nodes()` and `animations()` iterators yield the ids a
 //! document carries.
 //!
-//! Spawning entities never spawns a camera: the renderer draws with the first
-//! [`Camera`](crate::components::Camera) in the world, so one belongs to the
-//! caller.
+//! Spawning entities never spawns a camera: a pass draws through the camera it
+//! states, or through the first active [`Camera`](crate::components::Camera) a
+//! source reaches, so one belongs to the caller.
 //!
 //! # Texture formats
 //!

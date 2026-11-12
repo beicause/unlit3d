@@ -17,24 +17,24 @@
 //!
 //! # Framing
 //!
-//! The source frames the segments it finds through the first active
-//! [Camera](crate::components::Camera) its scope sees, the rule
-//! [MeshSource](crate::mesh_source::MeshSource) follows for meshes. A source
-//! sees its own subtree plus the world shared subtree, so a world that draws
-//! meshes and lines together puts the camera in
+//! The source draws through the camera the pass states, and falls back to the
+//! first active [Camera](crate::components::Camera) its scope sees when the
+//! pass states none — the rule [MeshSource](crate::mesh_source::MeshSource)
+//! follows for meshes. A source sees its own subtree plus the world shared
+//! subtree, so a world that draws meshes and lines together puts the camera in
 //! [World::shared](unlit_ecs::World::shared) rather than beside one of them.
 //!
 //! # Policy
 //!
 //! What a stroke does to the frame is the caller's
 //! [LineOptions](unlit_wgpu::line_shader::LineOptions): the entry shader, the
-//! hard-edge cut, the depth-stencil policy, the blend and the write mask. [Line](crate::line::Line) carries one; two
-//! strokes with the same
-//! options draw together, and two with different options draw as separate
-//! draws, each specialized on its own policy and the target. The common
-//! strokes state themselves through [Line::opaque](crate::line::Line::opaque)
-//! and [Line::blended](crate::line::Line::blended), and `From<LineSegment>`
-//! is a blended one.
+//! hard-edge cut, the depth-stencil policy, the blend and the write mask.
+//! [Line](crate::line::Line) carries one; two strokes with the same options
+//! draw together, and two with different options draw as separate draws, each
+//! specialized on its own policy and the target. The common strokes state
+//! themselves through [Line::opaque](crate::line::Line::opaque) and
+//! [Line::blended](crate::line::Line::blended), and `From<LineSegment>` is a
+//! blended one.
 //!
 //! # Depth
 //!
@@ -359,7 +359,7 @@ impl LineSource {
     /// they all cover; a group that leaves the depth alone keeps its
     /// discovery order too, because the pass's composite sorts its draws
     /// against every other source's, and this source need not guess.
-    fn collect(&mut self, scope: &Scope<'_>, camera: &crate::components::Camera) {
+    fn collect(&mut self, scope: &Scope<'_>, camera: &SceneCamera) {
         self.records.clear();
         self.depths.clear();
         self.groups.clear();

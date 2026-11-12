@@ -107,6 +107,11 @@ impl LitVertexChannels {
 }
 
 /// How a sampled base-color texel expands into the fragment's color.
+///
+/// The built-in glTF upload always widens an image to four channels, so the
+/// glTF path always states [`Self::Rgba`]; the luminance variants are for a
+/// caller that uploads a one- or two-channel texture itself, which WebGPU
+/// cannot give an sRGB format and whose texel therefore arrives encoded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BaseColorChannels {
     /// The texel is a color in all four channels.

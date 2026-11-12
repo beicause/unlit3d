@@ -859,11 +859,12 @@ Every upload comes with a mip chain, averaged at load time rather than left
 to a sampler reading a texture that has only its base level: a minified texture
 with one level aliases whatever the sampler is set to. Each level is the box
 average of the one above it, taken in the representation that makes an average
-mean what it does to light — an sRGB image averages in linear light, a half-float
-one in single precision, and a single-precision one in its own texels. Averaging a stored
-encoding instead would shift the level's brightness, which is the error the chain
-exists to avoid. How much of the chain a document builds follows `MipChain`,
-set with `LitGltf::mip_chain`.
+mean what it does to light — an sRGB image averages in linear light, a
+half-float one in single precision, and a single-precision one in its own
+texels. Averaging a stored encoding instead would shift the level's
+brightness, which is the error the chain exists to avoid. How much of the
+chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
+
 ## UI
 
 `ui::UiPanel` is itself a behaviour component holding a closure, so
