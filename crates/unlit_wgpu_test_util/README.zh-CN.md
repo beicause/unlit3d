@@ -90,7 +90,7 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 
 `log` 被重导出，因此测试 crate 无需自备 `log` 依赖。
 
-## Feature
+## 功能一览
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
@@ -119,7 +119,7 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 
 - **原生平台**按名字在 `tests/snapshots` 下查找（相对于进程的工作目录），并在比较时
   读取，因此可以改写。该目录是指向
-  [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+  [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
   submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取。
   `--checkout` 是为了越过该 submodule 的 `update = none`——它让把本库当作 git 依赖的
   项目不必去拉取那些永远用不到的快照。

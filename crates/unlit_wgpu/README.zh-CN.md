@@ -16,7 +16,7 @@
 与 ECS 集成的 API 是
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)。
 
-## Feature
+## 功能一览
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
@@ -29,64 +29,46 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
 
 ## 内容概览
 
-- `resources` —— 一帧所用 GPU 资源的依赖追踪图。替换某个资源会把所有由它传递
-  构建出的资源标记为脏，每帧一次的 `maintain` 会回收已无任何句柄持有的资源并执行
-  重建配方；虚拟节点不持有任何句柄，用作聚合根。
-- `mesh` —— 顶点压缩（位置 `Snorm16x4`、UV `Snorm16x2`、顶点色 `Unorm8x4`、
-  八面体法线 `Snorm16x2`、骨骼索引 `Uint16x4`、骨骼权重 `Unorm16x4`）、让这些紧凑格式可在着色器中使用
-  `MeshMetadata` 解码参数，以及一个无需把各通道实体化即可打包的顶点流写入器。
-- `offset_allocator` —— 在一段连续区间上 O(1) 且不分配的次级分配器，采用
-  Aaltonen 的 `OffsetAllocator` 中的两级分离适配算法。
-- `buffer_pool` 与 `vertex_pool` —— 用上述分配器做次级分配的 GPU 缓冲，使许多网格
-  按种类或按顶点布局共享同一个缓冲。
-- `array_pool` —— 同样做次级分配的 [`Array`](texel_array::Array)，用于帧级数组承载
-  变长切片、而不是每个切片各占一个资源的情况。它保留一份字节的 CPU 镜像，因此可以
-  先写入多个切片，再一次性上传到 GPU。
-- `staging` —— 跨帧复用的 host 可见 staging 缓冲，而不是每次上传都让
-  `queue.write_buffer` 新分配一个。
-- `globals` —— 每条管线都绑定的三个 uniform：`Camera`，即 clip-from-world 与
-  view-from-world 矩阵以及眼点位置；`Globals`，即本帧的时刻、增量与帧序号；以及
-  `View`，即该 pass 所画视口在物理像素下的尺寸（着色器要把长度换算成像素就除以它；
-  它是视口自身的尺寸而非渲染目标的尺寸，因此被加了黑边的 pass 量的是它实际画进去的
-  那块）。三者的归属正是它们分开的理由：相机与帧 globals 属于帧，视图属于 pass，
-  同一台相机画进两个形状不同的视口就是两个视图。
-- `instance_stream` —— 按需增长、经 staging 池上传记录的逐实例顶点缓冲。调用者
-  自己的管线每个家族用一个，因此逐实例状态无需内置着色器给出任何特权。
-- `texel_array` —— 定长元素的平坦数组，既可以绑定为一个 storage buffer，也可以在
-  设备没有 storage buffer 时绑定为纹理、由着色器用 `textureLoad` 读取。两条路径
-  保持相同的字节与相同的绑定编号，因此调用者只需选一种句柄，无需按设备分支。
-- `capabilities` —— 适配器在 WebGPU 基线之外还能做什么；在适配器仍存活时采集，
-  随帧走到录制绘制之处。`DeviceCapabilities` 只装 `base_vertex`，是否具备 storage
-  buffer 已在设备自身的 limits 上。`DeviceTier` 是另一半——请求多少基线能力：从
-  WebGPU 基线（默认），到适配器自身的 limits，再到 WebGL2 的形态。
-- `context` —— 本仓库每个入口共用的 GPU 引导：请求适配器，再请求一个 limits 为
-  设备档位所定的设备，并留下适配器报告的能力。`GpuContext::headless` 自建
-  instance；`GpuContext::present_to` 接收调用者的 instance，并用一个窗口 surface
-  探测适配器，随后丢弃该 surface，因此上下文不持有任何 surface。两者都接收设备的
-  label——校验信息与 API 抓取里给设备命名的就是它。
-- `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制
-  区间。
-- `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏
-  帧的 `create_render_target`。
-- `readback` —— 把纹理或缓冲拷回主机：`readback_texture` 返回纹理 mip 0 的
-  紧凑行，`readback_buffer` 返回缓冲的一段切片。两者都会阻塞到拷贝完成，因此测试、截图或调试
-  工具可以检视 GPU 产出的内容。
-- `specialize` —— 变体缓存：`PipelineVariant` 构造出
-  `PipelineDescriptor`，`Variants` 则为每个变体编译并复用一个
-  `SpecializedPipeline`。
-- `light` —— 本帧的光源以着色器读取的形式描述：无论何种有界光源都是同一条记录、
-  携带环境项与方向光的 uniform、聚类网格的参数，以及把一帧的光源算成绘制所绑定的
-  格子数组的 CPU 聚类。深度首层吸收近端，其余在固定场景范围内按透视对数或正交线性
-  间隔划分。
-- `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、
-  `GlobalBindings` 描述以及每条管线绑定本帧共享输入所用的全局绑定组布局构造函数；
-  以及内置 lit 管线，它通过 `compose` 组合入口着色器。
-- `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
-  而不必遍历值本身；当每帧 key 的成员较大时，这让 key 保持廉价。哈希来自
-  `foldhash` 的定种子哈希器——hashbrown 自身的映射正是构建在这一族之上的。
-  更新值要走 `update`：它会在改写后重算哈希字，而不是让旧字失效。
-- `ui` —— egui 后端，在 `egui` feature 下提供。其顶点把位置打包为平面的
-  `Float32x2` 二元组；第三个零分量由着色器补上。
+各模块是调用者搭建任意管线都能用的通用设施；背后的机制见[设计](#设计)。
+
+- `resources` —— 一帧所用 GPU 资源的图：带类型的句柄、把「脏」传递给所有由某个资源
+  构建出的资源，以及每帧一次 `maintain`——回收已无任何持有的节点并重建其余。见
+  [资源](#资源一张依赖追踪图)。
+- `mesh` —— 顶点压缩（位置、UV、顶点色、八面体法线、骨骼索引与权重）、让紧凑格式可在
+  着色器中解读的 `MeshMetadata` 解码参数，以及一个无需把各通道实体化即可打包的顶点流
+  写入器。
+- `offset_allocator` —— 在一段连续区间上 O(1) 且不分配的次级分配器，即 Aaltonen 的
+  `OffsetAllocator` 所用的两级分离适配。
+- `buffer_pool`、`vertex_pool` 与 `array_pool` —— 上述分配器用在 GPU 缓冲与
+  [`Array`](texel_array::Array) 上，使许多网格、许多变长切片共享一份分配而不是各占
+  一个资源。
+- `staging` —— 跨帧复用的 host 可见缓冲，用于逐帧上传。见[逐帧上传](#逐帧上传池化的-staging-buffer)。
+- `globals` —— 每条管线都绑定的三个 uniform：`Camera`（该 pass 绘制所用的变换）、
+  `Globals`（本帧的时刻、增量与帧序号）与 `View`（视口在物理像素下的尺寸，属于 pass
+  而非帧）。
+- `instance_stream` —— 按需增长、经 staging 池上传记录的逐实例顶点缓冲。一个家族
+  拥有一个，因此逐实例状态无需内置着色器给出任何特权。
+- `texel_array` —— 定长元素的平坦数组，绑定为 storage buffer，或在设备没有 storage
+  buffer 时绑定为纹理、由着色器用 `textureLoad` 读取。见[读取本帧的
+  数组](#读取本帧的数组storage-buffer-还是-texel)。
+- `capabilities` —— 适配器在 WebGPU 基线之外还能做什么，在适配器仍存活时采集；以及
+  请求多少基线能力的 `DeviceTier`。
+- `context` —— 本仓库每个入口共用的 GPU 引导：适配器、按档位 limits 请求的设备，以及
+  适配器报告的能力。两个入口都接收设备 label——校验信息与 API 抓取里给设备命名
+  的就是它。
+- `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制区间。
+- `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏帧的
+  `create_render_target`。
+- `readback` —— 把纹理的 mip 0 或缓冲的一段切片拷回主机，阻塞到拷贝完成。
+- `specialize` —— 变体缓存：`PipelineVariant` 构造 `PipelineDescriptor`，
+  `Variants` 则为每个变体编译并复用一个 `SpecializedPipeline`。见
+  [管线特化](#管线特化一个变体一份蓝图一条缓存的管线)。
+- `light` —— 本帧的光源以着色器读取的形式描述，以及把它们算成绘制所绑定的格子数组的
+  CPU 聚类。见[光照](#光照前向聚簇的-lambert)。
+- `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、全局绑定组
+  布局构造函数，以及内置 lit 管线。
+- `util` —— 预先算好哈希的 `Hashed`，以及创建着色器模块的辅助函数。
+- `ui` —— egui 后端，在 `egui` feature 下提供。
 
 ## 示例
 
@@ -135,9 +117,9 @@ impl Example {
         //    caller's policy, the vertex channels the geometry actually has,
         //    whether a material and morph targets are bound, and the target
         //    the pipeline renders into. Equal variants share one compiled
-        //    pipeline, so the variant doubles as the cache key。绘制目标由调用方
-        //    说出:颜色格式、采样数、有没有深度附着,都是目标的事实,不是
-        //    策略的字段。
+        //    pipeline, so the variant doubles as the cache key. The target is
+        //    the caller's word: the color format, the sample count and the
+        //    depth attachment are facts about it, not fields of the policy.
         let mut options = LitOptions::standard();
         let surface = SurfaceKey {
             color_format: wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -457,20 +439,20 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 `View`，后者 lit 着色器声明却从不读取，因为笔画的宽度是像素数而非世界距离，于是
 `unlit3d` 的 `LineSource` 拿它对着这个包组合，并只绑定一个组，再按笔画的
 [`LineOptions`](line_shader::LineOptions) 特化它——入口着色器与拼进三个标记位置的
-调用者片段、硬边切割、深度模板策略、混合与写入掩码；切割只是一个和 lit 那些同类的
+调用者代码片段、硬边切割、深度模板策略、混合与写入掩码；切割只是一个和 lit 那些同类的
 WESL 条件编译开关，且在多采样目标上会让位于 alpha-to-coverage——它把切割会锯齿化的
 边缘重新平滑，所以变体只在单采样目标上设置它；选项与变体收在 [`line_shader`](line_shader) 模块里，拼接由 `compose` 完成。
 
 若要编写自己的着色器，有两条路。最近的一条是
-`pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段顶层、一段顶点、
-一段片段片段，分别拼进内置 `lit.wesl` 的三个标记位置。顶层那段落在顶层声明区，在 import
+`pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段模块、一段顶点与
+一段片段，分别拼进内置 `lit.wesl` 的三个标记位置。模块那段落在顶层声明区，在 import
 与绑定之后、第一个 struct 之前，于是它能在每个同形变体都已声明的绑定之上添加函数、类型与
 常量。顶点那段在实例变换之后、构造裁剪坐标之前，那里的顶点是 `var world`；片段那段在
-基础色完成裁剪与光照之后、目标编码之前，那里的颜色是 `var color`。片段仍是 WESL，
+基础色完成裁剪与光照之后、目标编码之前，那里的颜色是 `var color`。代码片段仍是 WESL，
 在模块还是 WESL、尚未编译时就拼进去，因此它看得见内置阶段所看见的全部绑定、开关与
 辅助函数，参与条件编译，并且决定后续阶段所要变换、光照与聚类的几何形状。布局与顶点流仍
-由变体决定：片段改变的是阶段算什么，不是它读什么，自己声明绑定的片段只会让管线创建失败，
-而不是画出别的东西。
+由变体决定：代码片段改变的是阶段算什么，不是它读什么，自己声明绑定的片段只会让管线
+创建失败，而不是画出别的东西。
 另一条是用
 [`wesl`](https://docs.rs/wesl) 直接组合：`shader` 是一个 WESL `StaticPackage`，因此
 `wesl::resolver::PackageResolver` 可以针对内置管线所用的同一批模块解析
@@ -718,7 +700,7 @@ staging buffer 上传，而不是逐次调用 `queue.write_buffer`：
 </details>
 
 逐帧上传对调用方透明：调用方只维护 CPU 侧数据，如分配或移除 mesh，渲染帧时自动把
-变更同步到 GPU，无需记住调用上传 API。这不同于[资源](#资源一张依赖追踪图)一节中依赖
+变更同步到 GPU，无需记住调用上传 API。这不同于[资源](#资源一张依赖追踪图) 一节中依赖
 图的延迟更新，后者在 buffer 等资源被替换或交出后，由用户每帧调用一次 `maintain`。
 
 一帧的上传与消费它们的 render pass 记录进同一个 encoder，因此一帧一次提交，这保持了
@@ -740,7 +722,7 @@ target 跳过，于是 suite 悄无声息地不在这一趟里，只有单元测
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
 SSIMULACRA2 感知指标比较。该目录是指向
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
 submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取，
 `--checkout` 是为了越过它的 `update = none`——那让 git 依赖方不必拉取永远用不到的快照。
 若确有意改动后要重新生成快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查

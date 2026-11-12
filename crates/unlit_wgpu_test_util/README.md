@@ -139,7 +139,7 @@ is what arranges it:
 - **Natively** the name is looked up under `tests/snapshots`, relative to the
   process's working directory, and read at comparison time so it can be
   rewritten. That directory is a symlink into the
-  [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+  [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
   submodule; clone it here with `git submodule update --init --checkout`. The
   `--checkout` is what gets past the submodule's `update = none`, which spares a
   project that depends on this one through git from fetching snapshots it never

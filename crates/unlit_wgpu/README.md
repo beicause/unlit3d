@@ -35,92 +35,67 @@ and CI checks that combination separately.
 
 ## What is in the box
 
-- [`resources`] — a dependency-tracked graph of the GPU resources a frame uses.
-  Resources are inserted, replaced and given up through it, and the graph
-  propagates "dirty" state to dependents so that derived resources (bind groups,
-  pipelines) are rebuilt lazily. Replacing a resource marks everything
-  transitively built from it dirty, and a single `maintain` pass per frame
-  collects the resources no handle holds any more and runs the rebuild recipes.
-  Virtual nodes own no handle and serve as aggregation roots.
-- [`mesh`] — vertex compression (`Snorm16x4` positions, `Snorm16x2` UVs,
-  `Unorm8x4` colors, `Snorm16x2` octahedral normals, `Uint16x4` joints,
-  `Unorm16x4` weights) and the
-  [`MeshMetadata`](mesh::MeshMetadata) decode parameters that make the compact formats usable in a
-  shader, plus a vertex-stream writer that packs channels without materializing
-  them.
+The modules are general facilities a caller builds any pipeline on top of; the
+mechanisms behind them are in [Design](#design).
+
+- [`resources`] — the graph of the GPU resources a frame uses: typed handles,
+  dirty propagation to everything built from a changed resource, and one
+  `maintain` pass per frame that collects what nothing holds and rebuilds the
+  rest. See [Resources](#resources-one-dependency-tracked-graph).
+- [`mesh`] — vertex compression (positions, UVs, colors, octahedral normals,
+  joints, weights), the [`MeshMetadata`](mesh::MeshMetadata) decode parameters
+  that make the compact formats readable in a shader, and a stream writer that
+  packs channels without materializing them.
 - [`offset_allocator`] — an O(1), allocation-free sub-allocator over one
-  contiguous range, using the two-level segregated fit from Aaltonen's
-  `OffsetAllocator`.
-- [`buffer_pool`] and [`vertex_pool`] — GPU buffers sub-allocated with it, so
-  many meshes share one buffer per kind or per vertex layout instead of each
-  owning its own.
-- [`array_pool`] — an [`Array`](texel_array::Array) sub-allocated the same way,
-  for variable-length slices a frame-wide array holds rather than one resource
-  each. It keeps a CPU mirror of the bytes, so several slices are written before
-  one upload reaches the GPU.
-- [`staging`] — host-visible staging buffers reused across frames instead of a
-  fresh `queue.write_buffer` allocation per upload.
+  contiguous range, the two-level segregated fit of Aaltonen's `OffsetAllocator`.
+- [`buffer_pool`], [`vertex_pool`] and [`array_pool`] — that allocator over
+  GPU buffers and over an [`Array`](texel_array::Array), so many meshes and
+  many variable-length slices share one allocation instead of owning one each.
+- [`staging`] — host-visible buffers reused across frames for per-frame
+  uploads. See [Per-frame uploads](#per-frame-uploads-pooled-staging-buffers).
 - [`globals`] — the three uniforms every pipeline binds:
-  [`Camera`](globals::Camera), the clip-from-world and view-from-world matrices
-  and the eye position; [`Globals`](globals::Globals), the frame's time, delta
-  and index; and [`View`](globals::View), the size of the viewport the pass
-  draws through in physical pixels (a shader turning a length into pixels
-  divides by it, and it is the viewport's own size rather than the target's, so
-  a letterboxed pass measures what it draws into). Who owns each value is what
-  separates them: the camera and the frame globals are the frame's, the view is
-  the pass's, so one camera drawn through two viewports is two views.
+  [`Camera`](globals::Camera) (the transforms a pass draws through),
+  [`Globals`](globals::Globals) (the frame's time, delta and index) and
+  [`View`](globals::View) (the viewport's size in physical pixels, which is the
+  pass's rather than the frame's).
 - [`instance_stream`] — a per-instance vertex buffer that grows as needed and
-  uploads its records through the staging pool. A caller's own pipeline uses one
-  per family, so per-instance state needs no privilege from the built-in shader.
-- [`texel_array`] — a flat array of fixed-size elements bound either as one
-  storage buffer or, where the device has none, as a texture the shader reads
-  with `textureLoad`. Both paths keep the same bytes and the same binding
-  numbers, so a caller picks one handle type and never branches on the device.
-- [`capabilities`] — what an adapter can do beyond the WebGPU baseline, captured
-  while the adapter is still alive and carried to where a frame is recorded.
-  `DeviceCapabilities` holds `base_vertex`; whether storage buffers exist is
-  already on the device's own limits. `DeviceTier` is the other half — how much
-  of the baseline to request, from the WebGPU baseline (the default) through
-  the adapter's own limits to WebGL2's shape.
-- [`context`] — the GPU bootstrap every entry point in this repository shares:
-  request an adapter, then a device whose limits are the device tier's, and keep
-  the capabilities the adapter reported.
-  [`GpuContext::headless`](context::GpuContext::headless) builds its own instance;
-  [`GpuContext::present_to`](context::GpuContext::present_to) takes the caller's
-  instance and probes the adapter with a surface for a window, which it drops
-  again so the context owns no surface. Both take the device's label, which is
-  what names the device in a validation message and in an API trace.
+  uploads through the staging pool. A family owns one, so per-instance state
+  needs no privilege from the built-in shader.
+- [`texel_array`] — a flat array of fixed-size elements bound either as a
+  storage buffer or, where the device has none, as a texture read with
+  `textureLoad`. See [Reading the frame's
+  arrays](#reading-the-frames-arrays-storage-buffers-or-texels).
+- [`capabilities`] — what an adapter can do beyond the WebGPU baseline,
+  captured while it is still alive, and
+  [`DeviceTier`](capabilities::DeviceTier), how much of the baseline to request.
+- [`context`] — the GPU bootstrap every entry point here shares: an adapter,
+  a device at the tier's limits, and the capabilities the adapter reported. Both
+  entry points take the device's label, which is what names the device in a
+  validation message and in an API trace.
 - [`scene`] — the declarative description of a frame: pipelines, their bind
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening
-  entry point, and [`create_render_target`](render_attachments::create_render_target) for an offscreen frame.
-- [`readback`] — copying a texture or a buffer back to the host:
-  [`readback_texture`](readback::readback_texture) returns a texture's whole mip
-  level 0 as tight rows, [`readback_buffer`](readback::readback_buffer) a buffer
-  slice. Both
-  block until the copy has run, so a test, a screenshot or a debug tool can
-  inspect what the GPU produced.
-- [`specialize`] — variant caching: a [`PipelineVariant`](specialize::PipelineVariant)
-  builds a [`PipelineDescriptor`](specialize::PipelineDescriptor), and
+  entry point, and
+  [`create_render_target`](render_attachments::create_render_target) for an
+  offscreen frame.
+- [`readback`] — copying a texture's mip level 0 or a buffer slice back to the
+  host, blocking until the copy has run.
+- [`specialize`] — variant caching: a
+  [`PipelineVariant`](specialize::PipelineVariant) builds a
+  [`PipelineDescriptor`](specialize::PipelineDescriptor), and
   [`Variants`](specialize::Variants) compiles and reuses one
-  [`SpecializedPipeline`](specialize::SpecializedPipeline) per variant.
-- [`light`] — the frame's lights as the shaders read them: one record per bounded
-  light whatever its kind, the uniform that carries the ambient term and the
-  directional lights, the cluster grid's parameters, and the CPU clustering that
-  turns a frame's lights into the cell array a draw binds.
+  [`SpecializedPipeline`](specialize::SpecializedPipeline) per variant. See
+  [Pipeline
+  specialization](#pipeline-specialization-a-variant-a-blueprint-a-cached-pipeline).
+- [`light`] — the frame's lights as the shaders read them, and the CPU clustering
+  that turns them into the cell array a draw binds. See
+  [Lighting](#lighting-forward-clustered-lambert).
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
-  the crate draws with, the `GlobalBindings` description and the global
-  bind-group layout builder every pipeline binds the frame's shared inputs
-  through, plus the built-in lit pipeline, which composes its entry shaders
-  through `compose`.
+  the crate draws with, the global bind-group layout builder, and the built-in
+  lit pipeline.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
-  front: hashing it writes the stored word instead of walking the value, which
-  keeps a per-frame key cheap when its members are large. The hash comes from
-  `foldhash`'s fixed-seed hasher, the same family hashbrown's own maps build on.
-  Mutating the value goes through [`update`](util::Hashed::update), which
-  recomputes the word rather than letting it go stale.
-- `ui` — the egui backend, under the `egui` feature. Its vertices pack their
-  positions as planar `Float32x2` pairs; the shader supplies the zero third.
+  front, and the shader-module helper.
+- `ui` — the egui backend, under the `egui` feature.
 
 ## Example
 
@@ -934,7 +909,7 @@ across a grow, which is where their unit tests can only inspect the bookkeeping.
 The GPU integration tests render meshes into offscreen textures, read them back
 and compare them against the snapshots under `tests/snapshots` with the
 SSIMULACRA2 perceptual metric. That directory is a symlink into the
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
 submodule; clone it here with `git submodule update --init --checkout`, which is
 what gets past the `update = none` that keeps a git dependency from fetching
 snapshots it never compares against. To re-bless a snapshot
