@@ -81,20 +81,27 @@ impl Bundle for Sprite {
     }
 }
 
-/// The identity of the particle family's pipeline, keyed on the compiled
-/// descriptor; [`Interned`] compares the allocation rather than the contents.
+/// The identity of the particle family's pipeline: the shader module and the
+/// material layout its descriptor is built from.
+///
+/// Both are wgpu handles, which [Hash] and compare by identity, so a lookup
+/// costs one pointer comparison per field. The descriptor itself is built on a
+/// cache miss, which is the only time anything compiles.
 #[derive(Clone)]
 pub(super) struct ParticleKey {
-    pub(super) descriptor: Interned<RenderPipelineDesc>,
+    pub(super) module: wgpu::ShaderModule,
+    pub(super) layout: wgpu::BindGroupLayout,
 }
 
 /// The particle family's blueprint, specialised for one render target.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ParticleVariant {
-    /// The pipeline as built, before the target is applied.
-    pub(super) descriptor: Interned<RenderPipelineDesc>,
+    /// The shader the descriptor is built from.
+    module: wgpu::ShaderModule,
+    /// The material layout the descriptor is built against.
+    layout: wgpu::BindGroupLayout,
     /// The target the pipeline is compiled for.
-    pub(super) surface: SurfaceKey,
+    surface: SurfaceKey,
 }
 
 impl RenderPipelineKey for ParticleKey {
@@ -102,7 +109,8 @@ impl RenderPipelineKey for ParticleKey {
 
     fn variant(&self, draw: &DrawContext<'_>) -> ParticleVariant {
         ParticleVariant {
-            descriptor: self.descriptor.clone(),
+            module: self.module.clone(),
+            layout: self.layout.clone(),
             surface: draw.surface,
         }
     }
@@ -111,8 +119,8 @@ impl RenderPipelineKey for ParticleKey {
 impl PipelineVariant<wgpu::RenderPipeline> for ParticleVariant {
     type Descriptor = RenderPipelineDesc;
 
-    fn descriptor(&self, _device: &wgpu::Device) -> RenderPipelineDesc {
-        let mut descriptor = (*self.descriptor).clone();
+    fn descriptor(&self, device: &wgpu::Device) -> RenderPipelineDesc {
+        let mut descriptor = particle_pipeline(device, &self.module, &self.layout);
         descriptor.set_surface(self.surface);
         descriptor
     }
@@ -208,12 +216,9 @@ pub(super) fn particle_material_layout(device: &wgpu::Device) -> wgpu::BindGroup
 /// and group 1 is the family's uniform block.
 pub(super) fn particle_pipeline(
     device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
     material: &wgpu::BindGroupLayout,
 ) -> RenderPipelineDesc {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("unlit3d_examples::custom_pipeline::particles"),
-        source: wgpu::ShaderSource::Wgsl(PARTICLE_SHADER.into()),
-    });
     let global = global_bind_group_layout(
         device,
         GlobalBindings::default(),
@@ -228,7 +233,7 @@ pub(super) fn particle_pipeline(
         label: Some("unlit3d_examples::custom_pipeline::particles"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &module,
+            module,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
             buffers: &[None, Some(particle_instance_layout())],
@@ -251,7 +256,7 @@ pub(super) fn particle_pipeline(
         }),
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &module,
+            module,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {

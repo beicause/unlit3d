@@ -7,8 +7,6 @@
 //! -- proving the per-instance stream is a general mechanism a caller drives,
 //! not a privilege of the built-in shader.
 
-use std::sync::Arc;
-
 use crate::common::*;
 use arrayvec::ArrayVec;
 use unlit_ecs::bundle;
@@ -142,11 +140,12 @@ fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
     }
 }
 
-fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("test::custom_instances::shader"),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-    });
+/// Build the pipeline descriptor for the family from `shader`.
+///
+/// Returning the descriptor rather than the compiled pipeline is what lets it
+/// be registered as a family: the family compiles it lazily through a
+/// [RenderPipelineFactory].
+fn custom_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule) -> RenderPipelineDesc {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("test::custom_instances::layout"),
         bind_group_layouts: &[],
@@ -156,7 +155,7 @@ fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
         label: Some("test::custom_instances::pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
             // Slot 0 is the mesh's vertices, slot 1 the family's instance
@@ -173,7 +172,7 @@ fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
         }),
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -188,73 +187,13 @@ fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
     RenderPipelineDesc::from_wgpu(&descriptor)
 }
 
-/// The family's key: one shared pipeline descriptor, identified by it.
+/// The family's key: the shader its variant compiles from.
+///
+/// A wgpu handle compares and hashes by identity, so the key needs no
+/// interning of its own to be cheap per frame.
 #[derive(Clone)]
 struct CustomInstanceKey {
-    descriptor: Arc<RenderPipelineDesc>,
-}
-
-impl CustomInstanceKey {
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
-        )
-    )]
-    fn new(descriptor: RenderPipelineDesc) -> Self {
-        Self {
-            descriptor: Arc::new(descriptor),
-        }
-    }
-}
-
-impl PartialEq for CustomInstanceKey {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.descriptor, &other.descriptor)
-    }
-}
-
-impl Eq for CustomInstanceKey {}
-
-impl core::hash::Hash for CustomInstanceKey {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        state.write_usize(Arc::as_ptr(&self.descriptor) as usize);
-    }
-}
-
-#[derive(Clone)]
-struct CustomInstanceVariant {
-    descriptor: Arc<RenderPipelineDesc>,
-    vertex_layout: VertexLayout,
-    index_format: Option<wgpu::IndexFormat>,
-}
-
-impl PartialEq for CustomInstanceVariant {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.descriptor, &other.descriptor)
-            && self.vertex_layout == other.vertex_layout
-            && self.index_format == other.index_format
-    }
-}
-
-impl Eq for CustomInstanceVariant {}
-
-impl core::hash::Hash for CustomInstanceVariant {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        state.write_usize(Arc::as_ptr(&self.descriptor) as usize);
-        self.vertex_layout.hash(state);
-        self.index_format.hash(state);
-    }
-}
-
-impl core::fmt::Debug for CustomInstanceVariant {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("CustomInstanceVariant")
-            .field("index_format", &self.index_format)
-            .finish_non_exhaustive()
-    }
+    shader: wgpu::ShaderModule,
 }
 
 impl RenderPipelineKey for CustomInstanceKey {
@@ -262,7 +201,7 @@ impl RenderPipelineKey for CustomInstanceKey {
 
     fn variant(&self, draw: &DrawContext<'_>) -> Self::Variant {
         CustomInstanceVariant {
-            descriptor: self.descriptor.clone(),
+            shader: self.shader.clone(),
             vertex_layout: draw.mesh.vertex_layout.clone(),
             index_format: draw
                 .mesh
@@ -274,11 +213,23 @@ impl RenderPipelineKey for CustomInstanceKey {
     }
 }
 
+/// The concrete pipeline a draw resolves to: the shader, the mesh's vertex
+/// layout and its index format.
+///
+/// The descriptor is rebuilt from these on a cache miss, which is the only time
+/// it is built.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CustomInstanceVariant {
+    shader: wgpu::ShaderModule,
+    vertex_layout: VertexLayout,
+    index_format: Option<wgpu::IndexFormat>,
+}
+
 impl PipelineVariant<wgpu::RenderPipeline> for CustomInstanceVariant {
     type Descriptor = RenderPipelineDesc;
 
-    fn descriptor(&self, _device: &wgpu::Device) -> RenderPipelineDesc {
-        self.descriptor.as_ref().clone()
+    fn descriptor(&self, device: &wgpu::Device) -> RenderPipelineDesc {
+        custom_pipeline(device, &self.shader)
     }
 }
 
@@ -369,7 +320,11 @@ async fn a_custom_family_owns_its_instance_stream() {
     let (pipeline, mesh) = gpu.with_mesh_source(&world, |source, world| {
         let device = source.device(world);
         let queue = source.queue(world);
-        let key = CustomInstanceKey::new(custom_pipeline(&device));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test::custom_instances::shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let key = CustomInstanceKey { shader };
         // The family owns its instance stream; nothing here touches the unlit
         // family's buffer or slot.
         source.register_family::<CustomInstanceKey, _, _>(world, NoBindingFactory, CustomInstances);

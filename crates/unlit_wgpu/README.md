@@ -658,11 +658,14 @@ everything its blueprint depends on, `Variants` needs neither a second level
 nor a normalization step: the first lookup is the only lookup. The blueprint
 itself is not the key: "memoize on a small key" is the whole point of these
 types, and a lookup meets the equal case every frame — exactly the case where
-comparing a whole blueprint field by field costs the most. A family whose
-options are cheap to compare keys on them through [`Hashed`](util::Hashed); one
-that builds its blueprint once and then only needs to name it keys on that
-blueprint's identity through [`Interned`](specialize::Interned). Variants are
-never evicted, matching the bounded-variant assumption.
+comparing a whole blueprint field by field costs the most. So a variant holds
+the **inputs** the blueprint is built from, not the blueprint: a wgpu handle
+compares and hashes by identity, which keeps the equal case cheap no matter how
+much state the blueprint behind it carries, and `descriptor` builds the
+blueprint from those inputs on the miss, which is the only time it is built. A
+family whose options are already cheap to compare keys on them through
+[`Hashed`](util::Hashed) instead. Variants are never evicted, matching the
+bounded-variant assumption.
 
 **A blueprint is a semantic description, not a mirror of a wgpu descriptor.**
 A blueprint holds handles like `ShaderModule` that need a device to create, so

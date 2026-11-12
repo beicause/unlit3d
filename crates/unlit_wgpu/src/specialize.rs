@@ -17,11 +17,22 @@
 //! There is no full-descriptor cache. A family has finitely many variants, and
 //! a lookup on a small key is cheaper than comparing whole descriptors -- a
 //! variant that is equal is the case a lookup meets every frame, and it is the
-//! one where comparing the descriptor costs the most. A family whose key is a
-//! descriptor itself therefore keys on that descriptor's identity, shared
-//! behind an [Interned]; a family whose options are cheap to compare keys on
-//! them through [Hashed]. Cached variants are never evicted, matching the
-//! bounded-variant assumption.
+//! one where comparing the descriptor costs the most. A key therefore carries
+//! only the cheap inputs its descriptor is built from, and
+//! [PipelineVariant::descriptor] builds the descriptor on the miss, where the
+//! cost lands once per variant.
+//!
+//! wgpu handles compare and hash by identity, so a family whose shader is fixed
+//! carries its [ShaderModule](wgpu::ShaderModule) and layout in the key and
+//! pays one pointer comparison per lookup; a family whose shader is generated
+//! per variant, like the built-in lit one, has nothing to share and builds the
+//! module on the miss along with the descriptor. Cached variants are never
+//! evicted, matching the bounded-variant assumption.
+//!
+//! A key must be able to rebuild its descriptor, because the descriptor is not
+//! stored beside it: anything the descriptor depends on that the key does not
+//! name makes two different pipelines resolve to one variant, and the second
+//! draw silently gets the first one's pipeline.
 //!
 //! [PipelineDescriptor] is generic over the pipeline it compiles, so one cache
 //! serves a render pipeline and a compute pipeline alike: the descriptor is the
@@ -248,68 +259,6 @@ impl core::ops::Deref for VertexLayout {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
-    }
-}
-
-/// A blueprint shared behind an [`Arc`], keyed by that allocation.
-///
-/// A [PipelineVariant] is the cache key a family specializes on, and a
-/// descriptor cannot always be hashed — a [RenderPipelineDesc] holds `f64`
-/// compilation constants — so a family that wants to key on a descriptor keys
-/// on the descriptor's identity instead: build the descriptor once, share it
-/// here, and every clone, comparison and hash of the key is a pointer. Two
-/// interned descriptors are the same variant exactly when they are the same
-/// allocation, so a caller that mutates a descriptor wraps the result anew.
-///
-/// Dereferences to the descriptor, so a variant built on one reads its fields
-/// as if the [`Arc`] were still there.
-pub struct Interned<A>(Arc<A>);
-
-impl<A> Interned<A> {
-    /// Share `value`.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "a wgpu handle is not Send on wasm32, and one Arc type everywhere is simpler than a second one that is Rc there"
-        )
-    )]
-    pub fn new(value: A) -> Self {
-        Self(Arc::new(value))
-    }
-}
-
-impl<A> Clone for Interned<A> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<A: core::fmt::Debug> core::fmt::Debug for Interned<A> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple("Interned").field(&self.0).finish()
-    }
-}
-
-impl<A> PartialEq for Interned<A> {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl<A> Eq for Interned<A> {}
-
-impl<A> Hash for Interned<A> {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        state.write_usize(Arc::as_ptr(&self.0) as usize);
-    }
-}
-
-impl<A> core::ops::Deref for Interned<A> {
-    type Target = A;
-
-    fn deref(&self) -> &A {
-        &self.0
     }
 }
 
@@ -883,44 +832,5 @@ fn main() {
             VertexLayout::default(),
             VertexLayout::new([(0, layout(12))])
         );
-    }
-
-    #[test]
-    fn an_interned_value_is_equal_to_its_own_clone() {
-        let value = Interned::new(TestDescriptor {
-            base: 1,
-            rewritten: 2,
-        });
-        let clone = value.clone();
-
-        assert_eq!(value, clone, "a clone names the same allocation");
-        assert_eq!(hash_of(&value), hash_of(&clone));
-    }
-
-    /// Two allocations holding the same value are different pipelines, which
-    /// is the whole difference between [`Interned`] and a value key.
-    #[test]
-    fn interned_values_are_not_equal_across_allocations() {
-        let one = Interned::new(TestDescriptor {
-            base: 1,
-            rewritten: 2,
-        });
-        let other = Interned::new(TestDescriptor {
-            base: 1,
-            rewritten: 2,
-        });
-
-        assert_ne!(one, other, "identity, not contents, is what a key compares");
-    }
-
-    #[test]
-    fn an_interned_value_reads_through_to_it() {
-        let value = Interned::new(TestDescriptor {
-            base: 3,
-            rewritten: 4,
-        });
-
-        assert_eq!(value.base, 3);
-        assert_eq!(value.rewritten, 4);
     }
 }

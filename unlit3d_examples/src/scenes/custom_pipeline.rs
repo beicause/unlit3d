@@ -33,7 +33,7 @@ use super::{
 use unlit_wgpu::pipeline::{GlobalBindings, global_bind_group_layout, supports_storage_buffers};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit_wgpu::specialize::{
-    Interned, PipelineVariant, RenderPipelineDesc, SpecializedPipeline, SurfaceKey, SurfaceTarget,
+    PipelineVariant, RenderPipelineDesc, SpecializedPipeline, SurfaceKey, SurfaceTarget,
 };
 use unlit3d::pipeline::{
     DrawContext, FamilyContext, GlobalRecipe, InstanceContext, InstanceData, InstanceStreamDesc,
@@ -207,8 +207,13 @@ fn build(
         },
         (),
     );
+    let sky_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("unlit3d_examples::custom_pipeline::sky"),
+        source: wgpu::ShaderSource::Wgsl(SKY_SHADER.into()),
+    });
     let sky_pipeline = GpuRenderPipeline::new(SkyKey {
-        descriptor: Interned::new(sky_pipeline(&device, &sky_layout)),
+        module: sky_module,
+        layout: sky_layout.clone(),
     });
     let sky_mesh = source.allocate_mesh(
         &world.root_scope(),
@@ -236,8 +241,13 @@ fn build(
         ParticleFactory,
         ParticleInstances,
     );
+    let particle_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("unlit3d_examples::custom_pipeline::particles"),
+        source: wgpu::ShaderSource::Wgsl(PARTICLE_SHADER.into()),
+    });
     let particle_pipeline = GpuRenderPipeline::new(ParticleKey {
-        descriptor: Interned::new(particle_pipeline(&device, &particle_layout)),
+        module: particle_module,
+        layout: particle_layout.clone(),
     });
     let particle_mesh = source.allocate_mesh(
         &world.root_scope(),

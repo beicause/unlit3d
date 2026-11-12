@@ -96,44 +96,18 @@ fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
     }
 }
 
-/// The pipeline key a custom family draws with: one shared
-/// [RenderPipelineDesc], identified by that shared descriptor.
+/// The pipeline key a custom family draws with.
 ///
-/// [RenderPipelineKey] requires [Hash] and [Eq], neither of which a
-/// [RenderPipelineDesc] can offer -- it carries a shader module and a pipeline
-/// layout -- so two keys are the same exactly when they share one descriptor.
+/// It names the inputs its descriptor is built from: the shader, and the
+/// material layout when the shader reads one. Both are wgpu handles, which
+/// [Hash](core::hash::Hash) and compare by identity, so a key costs a pointer
+/// comparison rather than a field-by-field walk of a [RenderPipelineDesc] --
+/// which would not even be possible, since a descriptor carries an `f64`
+/// compilation constant.
 #[derive(Clone)]
 struct CustomPipelineKey {
-    descriptor: std::sync::Arc<RenderPipelineDesc>,
-}
-
-impl CustomPipelineKey {
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
-        )
-    )]
-    fn new(descriptor: RenderPipelineDesc) -> Self {
-        Self {
-            descriptor: std::sync::Arc::new(descriptor),
-        }
-    }
-}
-
-impl PartialEq for CustomPipelineKey {
-    fn eq(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.descriptor, &other.descriptor)
-    }
-}
-
-impl Eq for CustomPipelineKey {}
-
-impl core::hash::Hash for CustomPipelineKey {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        core::hash::Hash::hash(&std::sync::Arc::as_ptr(&self.descriptor), state);
-    }
+    shader: wgpu::ShaderModule,
+    layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl RenderPipelineKey for CustomPipelineKey {
@@ -141,7 +115,8 @@ impl RenderPipelineKey for CustomPipelineKey {
 
     fn variant(&self, draw: &DrawContext<'_>) -> CustomVariant {
         CustomVariant {
-            descriptor: self.descriptor.clone(),
+            shader: self.shader.clone(),
+            layout: self.layout.clone(),
             vertex_layout: draw.mesh.vertex_layout.clone(),
             index_format: draw.mesh.parts.index_buffer.as_ref().map(|(_, f)| *f),
         }
@@ -150,76 +125,62 @@ impl RenderPipelineKey for CustomPipelineKey {
 
 /// The concrete pipeline a custom draw resolves to.
 ///
-/// It carries what the family itself decided to specialize on -- the shared
-/// descriptor, the mesh's vertex layout and its index format -- so the
-/// framework never has to know what a custom family cares about. The mesh
-/// layout is already part of the descriptor's [RenderPipelineDesc] pipeline
-/// layout, and the mesh bind group is bound per draw, so neither is a field
-/// here.
+/// It carries what the family itself decided to specialize on -- the shader,
+/// the layout and the mesh's vertex layout and index format -- so the framework
+/// never has to know what a custom family cares about. The mesh layout is
+/// already part of the descriptor's [RenderPipelineDesc] pipeline layout, and
+/// the mesh bind group is bound per draw, so neither is a field here.
 ///
-/// A variant has to be hashable, and a [RenderPipelineDesc] is not -- it
-/// carries a shader module and a pipeline layout -- so equality is identity on
-/// the shared descriptor, exactly as it is for the key.
-#[derive(Clone)]
+/// The descriptor is rebuilt from these on a cache miss, which is the only time
+/// it is ever built.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CustomVariant {
-    descriptor: std::sync::Arc<RenderPipelineDesc>,
+    shader: wgpu::ShaderModule,
+    layout: Option<wgpu::BindGroupLayout>,
     vertex_layout: VertexLayout,
     index_format: Option<wgpu::IndexFormat>,
-}
-
-impl PartialEq for CustomVariant {
-    fn eq(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.descriptor, &other.descriptor)
-            && self.vertex_layout == other.vertex_layout
-            && self.index_format == other.index_format
-    }
-}
-
-impl Eq for CustomVariant {}
-
-impl core::hash::Hash for CustomVariant {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        core::hash::Hash::hash(&std::sync::Arc::as_ptr(&self.descriptor), state);
-        core::hash::Hash::hash(&self.vertex_layout, state);
-        core::hash::Hash::hash(&self.index_format, state);
-    }
-}
-
-impl core::fmt::Debug for CustomVariant {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CustomVariant")
-            .field("vertex_layout", &self.vertex_layout)
-            .field("index_format", &self.index_format)
-            .finish_non_exhaustive()
-    }
 }
 
 impl PipelineVariant<wgpu::RenderPipeline> for CustomVariant {
     type Descriptor = RenderPipelineDesc;
 
-    fn descriptor(&self, _device: &wgpu::Device) -> RenderPipelineDesc {
-        self.descriptor.as_ref().clone()
+    fn descriptor(&self, device: &wgpu::Device) -> RenderPipelineDesc {
+        custom_pipeline(device, &self.shader, self.layout.as_ref())
     }
 }
 
-/// Build the custom pipeline descriptor: no bind groups, one interleaved
-/// vertex buffer.
+/// Build the custom pipeline descriptor from `shader`: one interleaved vertex
+/// buffer, and a mesh bind group at [MESH_GROUP] when `mesh_layout` names one.
 ///
 /// Returning the owned [RenderPipelineDesc] rather than the compiled pipeline
 /// is what lets it be registered as a family: the family compiles it lazily
 /// through a [RenderPipelineFactory].
-fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
+fn custom_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    mesh_layout: Option<&wgpu::BindGroupLayout>,
+) -> RenderPipelineDesc {
     // The renderer's attachments are multisampled and carry a stencil aspect,
     // so a pipeline that draws into them has to declare both.
     let format = COLOR_FORMAT;
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("test::custom::shader"),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-    });
 
+    // A fragment that reads a per-mesh uniform binds it at group [MESH_GROUP],
+    // below which sit the empty placeholders the renderer would fill with a
+    // global and a material group. A fragment that reads no group declares
+    // none.
+    let empty = mesh_layout.map(|_| {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("test::custom::empty::layout"),
+            entries: &[],
+        })
+    });
+    let layouts: Vec<Option<&wgpu::BindGroupLayout>> = match (&empty, mesh_layout) {
+        (Some(empty), Some(mesh_layout)) => vec![Some(empty), Some(empty), Some(mesh_layout)],
+        _ => Vec::new(),
+    };
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("test::custom::layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &layouts,
         immediate_size: 0,
     });
 
@@ -227,13 +188,13 @@ fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
         label: Some("test::custom::pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
             buffers: &[Some(vertex_layout())],
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -292,62 +253,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return input.color + tint;
 }"#;
 
-/// Build a pipeline descriptor whose fragment stage reads a per-mesh tint
-/// from `layout`.
-fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> RenderPipelineDesc {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("test::custom::tinted::shader"),
-        source: wgpu::ShaderSource::Wgsl(TINTED_SHADER.into()),
-    });
-
-    // The tint is bound at group 2, so the two groups below it are empty
-    // placeholders — the same slots the renderer would bind a global and a
-    // material group into.
-    let empty = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("test::custom::empty::layout"),
-        entries: &[],
-    });
-    let layouts = [Some(&empty), Some(&empty), Some(layout)];
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("test::custom::tinted::layout"),
-        bind_group_layouts: &layouts,
-        immediate_size: 0,
-    });
-
-    let descriptor = wgpu::RenderPipelineDescriptor {
-        label: Some("test::custom::tinted::pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[Some(vertex_layout())],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: COLOR_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: unlit_wgpu::render_attachments::default_depth_stencil_format(device),
-            depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Greater),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    };
-    RenderPipelineDesc::from_wgpu(&descriptor)
-}
-
 /// A factory for a pipeline that binds no group beyond its vertex buffers.
 struct NoBindingFactory;
 
@@ -381,7 +286,14 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
     let (pipeline, mesh) = gpu.with_mesh_source(&world, |source, world| {
         let device = source.device(world);
         let queue = source.queue(world);
-        let key = CustomPipelineKey::new(custom_pipeline(&device));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test::custom::shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let key = CustomPipelineKey {
+            shader,
+            layout: None,
+        };
         // This family reads no per-instance state, so it passes the unit type.
         source.register_family::<CustomPipelineKey, _, _>(world, NoBindingFactory, ());
         let pipeline = GpuRenderPipeline::new(key);
@@ -481,8 +393,14 @@ async fn one_pipeline_draws_many_meshes() {
         // NoBindingFactory returns the compiled pipeline as-is, so one
         // pipeline serves both meshes; the tint each draw reads comes from the
         // per-mesh bind group the mesh was allocated with.
-        let desc = tinted_pipeline(&device, &layout);
-        let key = CustomPipelineKey::new(desc);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test::custom::tinted::shader"),
+            source: wgpu::ShaderSource::Wgsl(TINTED_SHADER.into()),
+        });
+        let key = CustomPipelineKey {
+            shader,
+            layout: Some(layout.clone()),
+        };
         source.register_family::<CustomPipelineKey, _, _>(world, NoBindingFactory, ());
         let pipeline = GpuRenderPipeline::new(key);
 

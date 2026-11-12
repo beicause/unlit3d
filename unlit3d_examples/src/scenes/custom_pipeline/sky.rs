@@ -52,23 +52,28 @@ impl Bundle for Sky {
     }
 }
 
-/// The identity of the sky family's pipeline, keyed on the compiled descriptor.
+/// The identity of the sky family's pipeline: the shader module and layout its
+/// descriptor is built from.
 ///
-/// The descriptor is immutable once built, so two keys that share it are the
-/// same pipeline; [`Interned`] compares the allocation rather than the
-/// contents.
+/// Both are wgpu handles, which [Hash] and compare by identity, so a lookup
+/// costs one pointer comparison per field no matter how much the descriptor
+/// behind them holds. The descriptor itself is built on a cache miss, which is
+/// the only time anything compiles.
 #[derive(Clone)]
 pub(super) struct SkyKey {
-    pub(super) descriptor: Interned<RenderPipelineDesc>,
+    pub(super) module: wgpu::ShaderModule,
+    pub(super) layout: wgpu::BindGroupLayout,
 }
 
 /// The sky family's blueprint, specialised for one render target.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct SkyVariant {
-    /// The pipeline as built, before the target is applied.
-    pub(super) descriptor: Interned<RenderPipelineDesc>,
+    /// The shader the descriptor is built from.
+    module: wgpu::ShaderModule,
+    /// The layout the descriptor is built against.
+    layout: wgpu::BindGroupLayout,
     /// The target the pipeline is compiled for.
-    pub(super) surface: SurfaceKey,
+    surface: SurfaceKey,
 }
 
 impl RenderPipelineKey for SkyKey {
@@ -76,7 +81,8 @@ impl RenderPipelineKey for SkyKey {
 
     fn variant(&self, draw: &DrawContext<'_>) -> SkyVariant {
         SkyVariant {
-            descriptor: self.descriptor.clone(),
+            module: self.module.clone(),
+            layout: self.layout.clone(),
             surface: draw.surface,
         }
     }
@@ -85,11 +91,11 @@ impl RenderPipelineKey for SkyKey {
 impl PipelineVariant<wgpu::RenderPipeline> for SkyVariant {
     type Descriptor = RenderPipelineDesc;
 
-    fn descriptor(&self, _device: &wgpu::Device) -> RenderPipelineDesc {
-        // The stored descriptor carries the format the example draws its own
+    fn descriptor(&self, device: &wgpu::Device) -> RenderPipelineDesc {
+        // The built descriptor carries the format the example draws its own
         // captures with; rewriting the target here is what lets the same family
         // draw into a window's swap chain, whose colour format differs.
-        let mut descriptor = (*self.descriptor).clone();
+        let mut descriptor = sky_pipeline(device, &self.module, &self.layout);
         descriptor.set_surface(self.surface);
         descriptor
     }
@@ -200,15 +206,12 @@ pub(super) fn sky_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
     })
 }
 
-/// Compile the sky family's pipeline against the family's bind group layout.
+/// Build the sky family's pipeline descriptor from its shader and layout.
 pub(super) fn sky_pipeline(
     device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
     layout: &wgpu::BindGroupLayout,
 ) -> RenderPipelineDesc {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("unlit3d_examples::custom_pipeline::sky"),
-        source: wgpu::ShaderSource::Wgsl(SKY_SHADER.into()),
-    });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d_examples::custom_pipeline::sky"),
         bind_group_layouts: &[Some(layout)],
@@ -218,7 +221,7 @@ pub(super) fn sky_pipeline(
         label: Some("unlit3d_examples::custom_pipeline::sky"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &module,
+            module,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
             // The triangle is generated from the vertex index.
@@ -240,7 +243,7 @@ pub(super) fn sky_pipeline(
         }),
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &module,
+            module,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
