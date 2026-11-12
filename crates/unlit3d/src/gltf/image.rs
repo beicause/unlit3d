@@ -429,7 +429,12 @@ pub(super) fn encode_texel<'a>(
     let channel = source_channel_bytes(source);
     let wanted = format_channels(format);
     for slot in 0..wanted {
-        write_channel(format, slot, source_slot(source, channel, slot, pixel), scratch);
+        write_channel(
+            format,
+            slot,
+            source_slot(source, channel, slot, pixel),
+            scratch,
+        );
     }
     &scratch[..texel_bytes(format) as usize]
 }
@@ -747,7 +752,11 @@ mod tests {
     fn a_capped_chain_carries_only_its_levels() {
         use gltf::image::Format as F;
         let data = sized_image(F::R8G8B8A8, 4, 4, vec![0x40; 4 * 4 * 4]);
-        let chain = encode_mip_chain(&data, wgpu::TextureFormat::Rgba8UnormSrgb, MipChain::Levels(2));
+        let chain = encode_mip_chain(
+            &data,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            MipChain::Levels(2),
+        );
         assert_eq!(chain.len(), 2);
         let sizes = chain
             .iter()
