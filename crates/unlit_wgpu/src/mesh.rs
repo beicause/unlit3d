@@ -263,7 +263,7 @@ pub struct MeshMetadata {
 /// metadata index, alpha cutoff and inverted-hull width the built-in pipeline
 /// reads from its per-instance vertex buffer.
 ///
-/// This is the vertex stream of `lit.wesl`'s instance slot, so upload a
+/// This is the vertex stream of `lit_vertex`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
 /// columns with each column's `.w` holding the matching translation
 /// component, which is why it is stored as columns rather than a

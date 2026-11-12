@@ -107,7 +107,7 @@ gpu_tests! {
     lit_cube_matches_snapshot,
     instanced_cubes_match_snapshot,
     position_less_variant_draws_points_at_instance_origins,
-    a_caller_shader_splices_into_the_built_in_stages,
+    a_caller_module_replaces_the_built_in_stages,
     textured_cube_matches_snapshot,
     a_loaded_color_attachment_keeps_its_contents,
     resource_graph_rebuilds_a_dependent_after_a_resource_change,

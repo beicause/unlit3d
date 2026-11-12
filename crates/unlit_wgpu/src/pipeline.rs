@@ -158,9 +158,12 @@ pub mod location {
     pub const HULL_WIDTH: u32 = 14;
 }
 
-/// Entry point name of the built-in shader's vertex stage.
+/// Entry point name of a lit shader's vertex stage.
+///
+/// The pipeline names this entry point, so every lit entry shader — the built-in
+/// `lit.wesl` and a caller's module alike — declares it.
 pub const VS_MAIN: &str = "vs_main";
-/// Entry point name of the built-in shader's fragment stage.
+/// Entry point name of a lit shader's fragment stage.
 pub const FS_MAIN: &str = "fs_main";
 /// Label of the built-in entry shader: its shader module's label, and the name
 /// a composition error is reported under.

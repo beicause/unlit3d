@@ -2,7 +2,6 @@
 
 use super::variant::compose_shader;
 use super::*;
-use crate::compose::{FRAGMENT_HOOK, MODULE_HOOK, VERTEX_HOOK};
 use crate::specialize::Variants;
 
 mod compose;
@@ -10,20 +9,20 @@ mod instance;
 mod slots;
 mod variants;
 
-/// The non-blank lines of a composed module, in a fixed order.
+/// Whether `source` calls `call` with `wrapper` immediately before it.
 ///
-/// The order is not the module's: the composed declarations come out of a
-/// hash map, so two compilations of the same source can list them
-/// differently. Line sets compare what a snippet adds or takes away, which
-/// is the question here.
-fn code_lines(wgsl: &str) -> Vec<&str> {
-    let mut lines: Vec<&str> = wgsl
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    lines.sort_unstable();
-    lines
+/// Every name a module imports is mangled with the path it came from — a call to
+/// `srgb_to_linear` in `lit_fragment` composes as
+/// `_1unlit_wgpu__1lit_fragment__2srgb_to_linear` — so a test that reads the
+/// composed source for a shape rather than for a name steps back over the
+/// identifier's characters before comparing what precedes it.
+fn wrapped_in(source: &str, call: &str, wrapper: &str) -> bool {
+    source.match_indices(call).any(|(at, _)| {
+        let start = source[..at]
+            .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+            .len();
+        source[..start].ends_with(wrapper)
+    })
 }
 
 /// The render target the test variants are built for.

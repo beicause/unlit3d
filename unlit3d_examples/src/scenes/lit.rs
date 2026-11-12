@@ -32,12 +32,12 @@
 //! or shaded wrongly changes a hue rather than only a brightness.
 //!
 //! The wall is a relief rather than a plane, displaced out of its own plane by a
-//! vertex snippet the scene splices into the built-in lit stage — the same hook a
-//! caller uses to shape its own geometry. Being displaced, it is drawn from a
-//! mesh with no normal channel, so its fragments take the normal the displaced
-//! surface actually has from the world positions across the primitive; the floor
-//! in front of it is a plain plane and keeps its own flat normals, so one frame
-//! draws both normal sources.
+//! module of the scene's own that composes the built-in lit stages around the
+//! displacement — the same stage modules any caller builds its shader from.
+//! Being displaced, it is drawn from a mesh with no normal channel, so its
+//! fragments take the normal the displaced surface actually has from the world
+//! positions across the primitive; the floor in front of it is a plain plane and
+//! keeps its own flat normals, so one frame draws both normal sources.
 
 use super::{
     LitSurface, PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface,
@@ -191,7 +191,7 @@ fn build(
     // is part of the options a variant is compiled from, so the wall draws
     // through a second pipeline of the same family.
     let mut relief = options;
-    relief.shader = Some(LitShader::new("lit::wall_relief", "", wall_relief(), ""));
+    relief.shader = Some(LitShader::new("lit::wall_relief", wall_relief()));
     let relief_key = LitPipelineKey::new(relief);
 
     let source_entity = world
@@ -361,52 +361,75 @@ fn build(
         snapshot: Box::new(move |frame| (frame == 0).then(|| "lit.webp".to_owned())),
     }
 }
-/// The WESL the wall's vertex stage runs, spliced at the built-in stage's
-/// vertex hook.
+/// The WESL module the wall draws through: the built-in lit stages with the
+/// displacement between the vertex stage's two halves.
 ///
-/// `world` is the vertex the instance transform placed, and everything after
-/// the hook — the clip position, the world position the lights are addressed
-/// from and the cluster cell — follows the vertex this leaves. The relief fades
-/// out at the wall's borders, so the surface still meets the floor along its
-/// bottom edge and still fills the frame.
+/// It imports `lit_vertex` and `lit_fragment` — the modules the built-in
+/// `lit.wesl` is a pair of entry points over — and calls the same functions in
+/// the same order, so the only thing that differs from the built-in shader is
+/// the displacement in the middle. `vertex_world` hands back the vertex the
+/// instance transform placed and `vertex_out` finishes the stage from it, so
+/// the clip position, the world position the lights are addressed from and the
+/// normal all follow the displaced vertex. The relief fades out at the wall's
+/// borders, so the surface still meets the floor along its bottom edge and still
+/// fills the frame.
 ///
 /// The noise runs out of the wall along its own normal rather than along the
 /// world's up axis, which is what makes the wall a surface the lights cross
 /// rather than a backdrop they paint on: a fragment's normal comes from the
 /// displaced positions, so every rise and hollow shades by its own slope.
 ///
-/// The snippet runs per vertex, so the segments the wall is split into are the
-/// resolution the noise is sampled at; one lattice cell spans a few segments,
-/// which is what keeps a vertex displacement from turning the noise into flat
-/// facets.
+/// The displacement runs per vertex, so the segments the wall is split into are
+/// the resolution the noise is sampled at; one lattice cell spans a few
+/// segments, which is what keeps a vertex displacement from turning the noise
+/// into flat facets.
 fn wall_relief() -> String {
     let (amplitude, cell_x, cell_y) = RELIEF;
     let half_width = WALL.0 * 0.5;
     let half_height = WALL.1 * 0.5;
+    // The fragment half is the built-in one unchanged, so the module is the
+    // built-in pair of entry points with the displacement written between the
+    // vertex stage's two calls.
     format!(
         "\
-let lattice = vec2<f32>(world.x / {cell_x:.4}, world.y / {cell_y:.4});
-let cell = floor(lattice);
-let offset = fract(lattice);
-let weighted = (3.0 - 2.0 * offset) * offset * offset;
-// An integer hash, not `fract(sin(...))`: `sin` is only specified to a few
-// units in the last place, and the usual trick of multiplying it by a large
-// constant turns that into an unrelated lattice on another driver. Integer
-// arithmetic is exact, so every backend displaces the wall the same way.
-var corners = vec4<f32>(0.0);
-for (var corner = 0u; corner < 4u; corner += 1u) {{
-    let at = vec2<u32>(vec2<i32>(cell + vec2<f32>(f32(corner % 2u), f32(corner / 2u))));
-    var hash = at.x * 0x27d4eb2du + at.y * 0x165667b1u;
-    hash = (hash ^ (hash >> 15u)) * 0x2545f491u;
-    hash = hash ^ (hash >> 13u);
-    corners[corner] = f32(hash) * 2.3283064e-10;
-}}
-let top = mix(corners.x, corners.y, weighted.x);
-let bottom = mix(corners.z, corners.w, weighted.x);
-let rise = mix(top, bottom, weighted.y) * 2.0 - 1.0;
-let fade = (1.0 - smoothstep({x0:.4}, {x1:.4}, abs(world.x)))
-         * (1.0 - smoothstep({y0:.4}, {y1:.4}, abs(world.y - {center_height:.4})));
-world = world + vec3<f32>(0.0, 0.0, {amplitude:.4} * rise * fade);
+    import package::lit_fragment;
+    import package::lit_vertex;
+
+    @vertex
+    public fn vs_main(in: lit_vertex::VertexInput, @builtin(vertex_index) vertex_index: u32) -> lit_vertex::VertexOut {{
+        var vertex = lit_vertex::vertex_world(in, vertex_index);
+        // The lattice is sampled in the wall's own plane, so the noise is a
+        // function of where the vertex started rather than of where it ended up.
+        let world = vertex.world;
+        let lattice = vec2<f32>(world.x / {cell_x:.4}, world.y / {cell_y:.4});
+        let cell = floor(lattice);
+        let offset = fract(lattice);
+        let weighted = (3.0 - 2.0 * offset) * offset * offset;
+        // An integer hash, not `fract(sin(...))`: `sin` is only specified to a few
+        // units in the last place, and the usual trick of multiplying it by a large
+        // constant turns that into an unrelated lattice on another driver. Integer
+        // arithmetic is exact, so every backend displaces the wall the same way.
+        var corners = vec4<f32>(0.0);
+        for (var corner = 0u; corner < 4u; corner += 1u) {{
+            let at = vec2<u32>(vec2<i32>(cell + vec2<f32>(f32(corner % 2u), f32(corner / 2u))));
+            var hash = at.x * 0x27d4eb2du + at.y * 0x165667b1u;
+            hash = (hash ^ (hash >> 15u)) * 0x2545f491u;
+            hash = hash ^ (hash >> 13u);
+            corners[corner] = f32(hash) * 2.3283064e-10;
+        }}
+        let top = mix(corners.x, corners.y, weighted.x);
+        let bottom = mix(corners.z, corners.w, weighted.x);
+        let rise = mix(top, bottom, weighted.y) * 2.0 - 1.0;
+        let fade = (1.0 - smoothstep({x0:.4}, {x1:.4}, abs(world.x)))
+                 * (1.0 - smoothstep({y0:.4}, {y1:.4}, abs(world.y - {center_height:.4})));
+        vertex.world = world + vec3<f32>(0.0, 0.0, {amplitude:.4} * rise * fade);
+        return lit_vertex::vertex_out(in, vertex);
+    }}
+
+    @fragment
+    public fn fs_main(in: lit_vertex::VertexOut) -> @location(0) vec4<f32> {{
+        return lit_fragment::fs_stage(in);
+    }}
 ",
         x0 = half_width * 0.80,
         x1 = half_width * 0.99,

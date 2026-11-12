@@ -236,8 +236,11 @@ fn composes_each_variant_to_valid_wgsl() {
                 );
                 // Without a position stream the vertex input declares no position
                 // attribute, so the shader cannot read one.
+                // The struct is declared in `lit_vertex`, so its name is
+                // mangled with that module's path: the declaration is found by
+                // the members it carries, not by the name it was written with.
                 let vertex_input = wgsl
-                    .split_once("struct VertexInput {")
+                    .split_once("VertexInput {")
                     .expect("the variant declares vertex inputs")
                     .1;
                 let vertex_input = vertex_input

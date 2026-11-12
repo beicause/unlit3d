@@ -66,8 +66,8 @@ fn luminance_layouts_expand_a_sampled_texel() {
 
     let luma = composed(BaseColorChannels::Luminance);
     assert!(
-        luma.contains("vec3<f32>(srgb_to_linear(texel.r))"),
-        "a luminance texel feeds every color channel, decoded"
+        wrapped_in(&luma, "srgb_to_linear(texel.r)", "vec3<f32>("),
+        "a luminance texel feeds every color channel, decoded: {luma}"
     );
     assert!(
         luma.contains("texel.a"),
@@ -75,7 +75,11 @@ fn luminance_layouts_expand_a_sampled_texel() {
     );
 
     let luma_alpha = composed(BaseColorChannels::LuminanceAlpha);
-    assert!(luma_alpha.contains("vec3<f32>(srgb_to_linear(texel.r))"));
+    assert!(wrapped_in(
+        &luma_alpha,
+        "srgb_to_linear(texel.r)",
+        "vec3<f32>("
+    ));
     assert!(
         luma_alpha.contains("texel.g") && !luma_alpha.contains("texel.a"),
         "the second channel of a luminance-alpha texture is its alpha, and \

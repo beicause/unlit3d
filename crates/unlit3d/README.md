@@ -545,8 +545,8 @@ different questions:
   endpoints in world space, a colour at each end, a half width and whether
   either end is rounded, plus the drawing policy the record cannot carry:
   the [`LineOptions`](unlit_wgpu::line_shader::LineOptions) name the entry
-  shader and the snippets spliced into it, the hard-edge cut, the
-  depth-stencil policy, the blend and the write mask. [`Line::opaque`](line::Line::opaque)
+  shader, the hard-edge cut, the depth-stencil policy, the blend and the write
+  mask. [`Line::opaque`](line::Line::opaque)
   and [`Line::blended`](line::Line::blended) state the two common policies,
   and strokes wearing equal options draw together while different options
   draw as separate draws. Each segment becomes one instance; the vertex stage
@@ -627,15 +627,14 @@ A caller who wants the built-in family — its layouts, its vertex streams, its
 per-instance record — and only a different piece of shade does not register
 anything: they put an [`LitShader`](unlit_wgpu::pipeline::LitShader) in
 [`LitOptions::shader`](unlit_wgpu::pipeline::LitOptions::shader) before
-building the [`LitPipelineKey`](lit::LitPipelineKey). It holds three WESL
-snippets, spliced into the top level, the end of the vertex stage and the end of
-the fragment stage, so the built-in stages keep doing what they do — decoding
-the vertex, transforming it, lighting it, clipping it — and the snippet changes
-the result: a top-level snippet adds a function or a constant the other two call,
-a vertex snippet reshapes the surface before it is lit, a fragment snippet
-recolors a pixel after. The layouts stay the variant's, which is what makes it
-one field. A family of one's own is the other way, and the one to take
-when more than the shade differs.
+building the [`LitPipelineKey`](lit::LitPipelineKey). It holds one whole WESL
+module, composed in place of the built-in `lit.wesl`: it declares its own
+`vs_main` and `fs_main` and imports whichever stage modules it keeps —
+`package::lit_vertex`, `lit_lighting`, `lit_fragment`, `lit_bindings` — so
+the built-in steps it calls keep doing what they do, and the code between or
+around them is the caller's. The layouts stay the variant's, which is what makes
+it one field. A family of one's own is the other way, and the one to take when
+more than the shade differs.
 
 ### Per-instance vertex data
 

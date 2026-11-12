@@ -60,16 +60,27 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     assert!(wgsl.contains("decode_position"));
 }
 
-/// A snippet is spliced into the built-in entry shader rather than
-/// replacing it: the built-in stages still run, and the snippet's own
-/// statements are what the marks were replaced with.
+/// A caller's module stands in place of the built-in entry shader rather than
+/// being added to it: what it does not call is not composed, so the built-in
+/// shading is absent from the result.
 #[test]
-fn a_caller_shader_is_spliced_into_the_built_in_source() {
+fn a_caller_module_replaces_the_built_in_entry_shader() {
     let shader = LitShader::new(
         "caller",
-        "fn marker_module() -> f32 { return 0.5; }",
-        "let marker_vertex = marker_module() * 0.25; world = world + vec3<f32>(0.0, marker_vertex, 0.0);",
-        "let marker_fragment = 0.25; color = vec4<f32>(marker_fragment, color.g, color.b, color.a);",
+        "\
+import package::lit_bindings;
+import package::lit_vertex;
+
+@vertex
+public fn vs_main(in: lit_vertex::VertexInput) -> @builtin(position) vec4<f32> {
+    return lit_bindings::camera.clip_from_world * vec4<f32>(in.model_2.xyz, 1.0);
+}
+
+@fragment
+public fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+}
+",
     );
     let mut options = LitOptions::standard();
     options.shader = Some(shader);
@@ -84,35 +95,43 @@ fn a_caller_shader_is_spliced_into_the_built_in_source() {
         false,
     );
 
-    let wgsl = compose_shader(&candidate, false).expect("the caller's snippets compose");
-    // The built-in stages are still there: a snippet takes part in them
-    // rather than standing in for them.
+    let wgsl = compose_shader(&candidate, false).expect("the caller's module composes");
+    // The caller's own entry points are the module's, under the names the
+    // pipeline addresses.
     assert!(wgsl.contains("fn vs_main"));
     assert!(wgsl.contains("fn fs_main"));
-    // Each snippet landed in the place it belongs to -- module scope before
-    // either stage, the vertex stage before the fragment one -- and the
-    // marks are gone rather than left in the composed module. A module
-    // snippet declares what the stages call, which is the whole reason it
-    // exists: here the vertex snippet uses a function it declared.
-    let module_at = wgsl
-        .find("fn marker_module")
-        .expect("the module snippet spliced");
-    let vertex_at = wgsl
-        .find("marker_vertex")
-        .expect("the vertex snippet spliced");
-    let fragment_at = wgsl
-        .find("marker_fragment")
-        .expect("the fragment snippet spliced");
-    assert!(module_at < vertex_at);
-    assert!(vertex_at < fragment_at);
-    assert!(!wgsl.contains(MODULE_HOOK));
-    assert!(!wgsl.contains(VERTEX_HOOK));
-    assert!(!wgsl.contains(FRAGMENT_HOOK));
+    // The stages the caller did not call are not composed with it: the lighting
+    // helper and the built-in fragment stage are absent, which is what makes the
+    // module a replacement instead of an addition.
+    assert!(!wgsl.contains("lit_color"), "{wgsl}");
+    assert!(!wgsl.contains("fragment_normal"), "{wgsl}");
+    assert!(!wgsl.contains("fs_stage"), "{wgsl}");
 }
 
-/// An empty snippet leaves its stage exactly as the built-in shader has it.
+/// A caller's module composes the built-in stages out of the package modules:
+/// the same two calls the built-in entry shader makes, with a displacement
+/// between them, which is what a caller that only reshapes the geometry writes.
 #[test]
-fn an_empty_snippet_leaves_the_built_in_stage_alone() {
+fn a_caller_module_composes_the_built_in_stage_modules() {
+    let shader = LitShader::new(
+        "caller",
+        "\
+import package::lit_fragment;
+import package::lit_vertex;
+
+@vertex
+public fn vs_main(in: lit_vertex::VertexInput, @builtin(vertex_index) vertex_index: u32) -> lit_vertex::VertexOut {
+    var stage = lit_vertex::vertex_world(in, vertex_index);
+    stage.world = stage.world + vec3<f32>(0.0, 0.25, 0.0);
+    return lit_vertex::vertex_out(in, stage);
+}
+
+@fragment
+public fn fs_main(in: lit_vertex::VertexOut) -> @location(0) vec4<f32> {
+    return lit_fragment::fs_stage(in);
+}
+",
+    );
     let built_in = variant(
         LitOptions::standard(),
         channels(
@@ -124,8 +143,8 @@ fn an_empty_snippet_leaves_the_built_in_stage_alone() {
         false,
     );
     let mut options = LitOptions::standard();
-    options.shader = Some(LitShader::new("empty", "", "", ""));
-    let with_snippets = variant(
+    options.shader = Some(shader);
+    let candidate = variant(
         options,
         channels(
             Some(ChannelEncoding::UncompressedPosition),
@@ -136,9 +155,35 @@ fn an_empty_snippet_leaves_the_built_in_stage_alone() {
         false,
     );
 
-    assert_eq!(
-        code_lines(&compose_shader(&built_in, false).expect("the built-in shader composes")),
-        code_lines(&compose_shader(&with_snippets, false).expect("empty snippets compose")),
-        "an empty snippet adds nothing to either stage"
-    );
+    let built_in = compose_shader(&built_in, false).expect("the built-in shader composes");
+    let composed = compose_shader(&candidate, false).expect("the caller's module composes");
+    // The stage modules are the same ones the built-in entry shader imports, so
+    // the composed declarations are too: a caller that calls both halves in the
+    // built-in order gets the built-in shader.
+    // The entry points are the composed module's own and keep their names; the
+    // stage modules' items are imported, so wesl prefixes them with the path
+    // they came from and only the tail is what a test can look for.
+    for declaration in ["fn vs_main", "fn fs_main"] {
+        assert!(composed.contains(declaration), "{declaration} missing");
+        assert!(
+            built_in.contains(declaration),
+            "{declaration} missing from the built-in shader"
+        );
+    }
+    for declaration in [
+        "lit_vertex__1vertex_world(",
+        "lit_vertex__1vertex_out(",
+        "lit_fragment__1fs_stage(",
+        "lit_fragment__1fragment_color(",
+    ] {
+        assert!(composed.contains(declaration), "{declaration} missing");
+        assert!(
+            built_in.contains(declaration),
+            "{declaration} missing from the built-in shader"
+        );
+    }
+    // The displacement is the caller's alone, so it is the one statement the
+    // composed module carries that the built-in one does not.
+    assert!(composed.contains("0.25"));
+    assert!(!built_in.contains("0.25"));
 }

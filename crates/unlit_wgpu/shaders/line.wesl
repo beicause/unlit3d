@@ -1,307 +1,41 @@
-// line -- screen-space line segments of constant pixel width.
+// line -- the built-in stroke entry shader: one vertex stage, one fragment stage.
 //
-// One segment is one instance: the vertex stage derives the quad that covers
-// it from `@builtin(vertex_index)`, so the stream carries segments rather than
+// This module holds the two entry points and nothing else. The stages are
+// composed out of the rest of the package, so each part a caller might replace
+// is a module of its own and the caller assembles them rather than text being
+// inserted into a source it cannot see:
+//
+//   line_bindings   the camera and the viewport, the two uniforms the stages read
+//   line_vertex     VertexInput, VertexOutput and the quad one segment covers
+//   line_fragment   the coverage of a pixel, and what the stroke writes there
+//
+// A caller that wants its own geometry or its own compositing writes a module
+// that imports these and calls the parts it keeps, in the order this file runs
+// them, and passes it to LineOptions::shader. The entry-point names, the
+// instance record and the layouts stay the same either way, because they are the
+// pipeline's rather than the shader's.
+//
+// One segment is one instance: the vertex stage derives the quad that covers it
+// from `@builtin(vertex_index)`, so the stream carries segments rather than
 // vertices and a caller never expands a segment on the CPU. Both ends are
-// projected and measured in pixels against `view::View::viewport_size`, which
-// is what makes the width a pixel count rather than a world distance: a stroke
-// keeps its thickness at any distance from the camera and across any viewport
-// size.
+// projected and measured in pixels against the pass's viewport, which is what
+// makes the width a pixel count rather than a world distance: a stroke keeps its
+// thickness at any distance from the camera and across any viewport size.
 //
-// The fragment measures the distance from its own pixel to the segment's centre
-// line and turns it into coverage, so a line is antialiased without the
-// post-processing pass a rasterized edge would need. The two ends carry their
-// own half width and their own end shape, which is how a stroke tapers and how
-// a hand-drawn line gets round ends.
-//
-// With the `HARD_EDGE` feature set the coverage is applied as a threshold
-// instead: an antialiased edge on a target with no multisampling is a veil of
-// partial pixels, and an opaque stroke has no colour to veil the background
-// with, so it cuts cleanly at the pixel it covers and writes its depth there.
-// A multisampled target sets the feature aside rather than jags the edge: its
-// alpha-to-coverage mask spreads the same coverage, so the variant only sets
-// `HARD_EDGE` on a single-sampled one.
-//
-// A caller's own shader code rides in at three hook marks, each a comment
-// naming the place it sits: one at module scope, one at the end of the vertex
-// stage and one at the end of the fragment stage, where the output colour is
-// still a `var color` the snippet rewrites in place. See
-// `unlit_wgpu::line_shader::LineShader`.
+// Feature flags:
+//   HARD_EDGE  apply the coverage as a threshold instead of a blend; see
+//              line_fragment, and the variant, which sets it only on a
+//              single-sampled target
 
-import package::camera as camera_uniform;
-import package::view;
-
-// unlit_wgpu::hook module
-
-@group(0) @binding(0) var<uniform> camera: camera_uniform::Camera;
-// The pass's viewport. A stroke's width is a pixel count, so this is the one
-// uniform besides the camera that the vertex stage reads.
-@group(0) @binding(2) var<uniform> viewport: view::View;
-
-/// How far past the half width the quad reaches, in pixels.
-///
-/// Coverage falls off across one pixel either side of the line's edge, so the
-/// quad has to be wider than the line by that pixel; a fragment outside the
-/// quad is never rasterized and therefore never covered.
-const AA_RADIUS: f32 = 1.0;
-
-/// The pixel length below which a segment's ends project to the same pixel.
-///
-/// Such a segment has no direction of its own and draws as a dot. Both
-/// stages read the same threshold so they classify it the same way.
-const POINT_SPAN: f32 = 1.0e-6;
-
-/// The six corners of the quad, as (station, side).
-///
-/// `station` runs from the `a` end (zero) to the `b` end (one), `side` runs
-/// from one edge of the line to the other. Two triangles rather than a strip:
-/// the quad is the same six vertices either way, and a list keeps each segment
-/// independent of its neighbours.
-const CORNERS: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(1.0, -1.0),
-    vec2<f32>(1.0, 1.0),
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(1.0, 1.0),
-    vec2<f32>(0.0, 1.0),
-);
-
-/// One segment, as the instance stream carries it.
-///
-/// Mirrors `crate::line::LineSegment` on the Rust side.
-struct VertexInput {
-    /// Start and end of the segment, in world space.
-    @location(0) a: vec3<f32>,
-    @location(1) b: vec3<f32>,
-    /// Linear colour at each end; alpha is coverage.
-    @location(2) color_a: vec4<f32>,
-    @location(3) color_b: vec4<f32>,
-    /// Half the line's width at each end, in physical pixels.
-    @location(4) half_width: vec2<f32>,
-    /// Bit 0 rounds the `a` end, bit 1 the `b` end.
-    @location(5) caps: u32,
-};
-
-struct VertexOutput {
-    @builtin(position) clip: vec4<f32>,
-    /// Pixel offset from the `a` end, interpolated across the quad.
-    ///
-    /// The quad is emitted with `w` of one, so the rasterizer interpolates
-    /// this affinely and a fragment reads its true pixel offset; a
-    /// perspective-correct interpolation would bend the distance the fragment
-    /// is about to measure.
-    @location(0) offset: vec2<f32>,
-    /// Unit direction from `a` to `b`, in pixels.
-    @location(1) @interpolate(flat) direction: vec2<f32>,
-    /// The segment's length in pixels; zero for a segment that collapses to a
-    /// point, which draws as a dot.
-    @location(2) @interpolate(flat) span: f32,
-    /// Half the line's width here, in pixels.
-    ///
-    /// Interpolated from the two ends of the quad rather than re-derived by the
-    /// fragment from its own station: the quad may begin where the near plane
-    /// cut the segment, and a station measured on it is the caller's parameter
-    /// only when nothing was cut. The two ends of the quad carry the widths of
-    /// the caller's stations they were built at, so what the fragment reads is
-    /// the width of the point it covers.
-    @location(3) half_width: f32,
-    /// The end shapes, as `VertexInput::caps`.
-    @location(4) @interpolate(flat) caps: u32,
-    /// The colour, interpolated along the segment.
-    @location(5) color: vec4<f32>,
-};
-
-/// A segment after clipping, and whether any of it survived.
-struct Clipped {
-    a: vec4<f32>,
-    b: vec4<f32>,
-    /// Where the kept part begins and ends on the segment the caller stated,
-    /// from the `a` end (zero) to the `b` end (one).
-    ///
-    /// The width and the colour are stated at the caller's ends, while the
-    /// geometry runs between the kept ends. Remapping these back into the
-    /// caller's parameter is what keeps the two in step after a cut: a quad
-    /// corner at `station` carries the width and the colour of the point it
-    /// covers, so a taper is neither narrowed nor widened by a cut.
-    t0: f32,
-    t1: f32,
-    visible: bool,
-};
-
-/// Clip the segment against the near plane, where clip `w` has to stay
-/// positive.
-///
-/// The projection is infinite, so a point level with or behind the eye has no
-/// screen position: dividing by its `w` would put its pixel coordinates at
-/// infinity and the quad would sweep across the whole target. Cutting the
-/// segment where `w` reaches zero keeps the visible part, and dropping a
-/// segment whose both ends are behind the eye keeps the frame free of it.
-fn clip_near(a: vec4<f32>, b: vec4<f32>) -> Clipped {
-    let epsilon = 1.0e-5;
-    if (a.w > epsilon && b.w > epsilon) {
-        return Clipped(a, b, 0.0, 1.0, true);
-    }
-    if (a.w <= epsilon && b.w <= epsilon) {
-        // Nothing is drawn, so the stations say nothing and are left whole.
-        return Clipped(a, b, 0.0, 1.0, false);
-    }
-    let t = (epsilon - a.w) / (b.w - a.w);
-    let cut = mix(a, b, t);
-    if (a.w <= epsilon) {
-        return Clipped(cut, b, t, 1.0, true);
-    }
-    return Clipped(a, cut, 0.0, t, true);
-}
-
-/// The pixel position of a clip-space point, in the viewport's own pixels.
-///
-/// WebGPU's clip space has `y` up and its pixel space has `y` down, so the
-/// vertical axis flips here.
-fn pixel_of(clip: vec4<f32>, size: vec2<f32>) -> vec2<f32> {
-    let ndc = clip.xy / clip.w;
-    return vec2<f32>((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
-}
+import package::line_fragment;
+import package::line_vertex;
 
 @vertex
-fn vs_main(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutput {
-    let corner = CORNERS[index];
-    let station = corner.x;
-    let side = corner.y;
-
-    let clipped = clip_near(
-        camera.clip_from_world * vec4<f32>(input.a, 1.0),
-        camera.clip_from_world * vec4<f32>(input.b, 1.0),
-    );
-
-    let size = max(viewport.viewport_size, vec2<f32>(1.0, 1.0));
-    let start = pixel_of(clipped.a, size);
-    let end = pixel_of(clipped.b, size);
-    let delta = end - start;
-    let span = length(delta);
-    // A segment whose ends coincide has no direction of its own; one is named
-    // so the quad still spans the dot the cap draws.
-    let direction = select(
-        vec2<f32>(1.0, 0.0),
-        delta / max(span, 1.0e-6),
-        span > POINT_SPAN,
-    );
-    let normal = vec2<f32>(-direction.y, direction.x);
-
-    let round_a = (input.caps & 1u) != 0u;
-    let round_b = (input.caps & 2u) != 0u;
-    let half_width_a = max(input.half_width.x, 0.0);
-    let half_width_b = max(input.half_width.y, 0.0);
-    // The quad is built between the kept ends, but the width and the colour are
-    // stated at the caller's own ends: a near-plane cut moves the ends inward,
-    // and taking the corner's station straight would read the width and the
-    // colour of a point the quad no longer reaches.
-    let at = mix(clipped.t0, clipped.t1, station);
-    let half_width = mix(half_width_a, half_width_b, at);
-    // A round end reaches past its station by the cap's own radius; a flat one
-    // stops there and needs only the antialiasing margin. Only an end the near
-    // plane kept is a visible end, so a cut end draws no cap.
-    let cap_a = select(0.0, 1.0, round_a && clipped.t0 <= 0.0);
-    let cap_b = select(0.0, 1.0, round_b && clipped.t1 >= 1.0);
-    // A segment whose ends project to the same pixel draws as a disc of its
-    // own width: a dot states one width twice, and the discs a near-plane
-    // cut sweeps all land on the one pixel, so the widest visible end
-    // states the whole shape. The width, not a cap, then sets the reach —
-    // there is no axis left for a cap to measure along.
-    let dot = span <= POINT_SPAN;
-    let width = select(half_width, max(half_width_a, half_width_b), dot);
-    let reach_a = select(cap_a * half_width_a, width, dot) + AA_RADIUS;
-    let reach_b = select(cap_b * half_width_b, width, dot) + AA_RADIUS;
-
-    let centre = mix(start - direction * reach_a, end + direction * reach_b, station);
-    let offset = centre + normal * side * (width + AA_RADIUS);
-    let ndc = vec2<f32>(
-        offset.x / size.x * 2.0 - 1.0,
-        1.0 - offset.y / size.y * 2.0,
-    );
-    // Depth is mixed rather than divided: the quad is emitted with `w` of one
-    // so its varyings stay affine in pixel space, which leaves the depth
-    // interpolating linearly across the segment instead of in perspective. The
-    // error is bounded by the segment's own depth range, and a stroke is cut
-    // into segments short enough for it to vanish.
-    let depth = mix(clipped.a.z / clipped.a.w, clipped.b.z / clipped.b.w, station);
-
-    var out: VertexOutput;
-    // A segment the near plane removed entirely is put outside the clip volume,
-    // where the rasterizer drops it without a draw of its own.
-    out.clip = select(vec4<f32>(0.0, 0.0, -1.0, 1.0), vec4<f32>(ndc, clamp(depth, 0.0, 1.0), 1.0), clipped.visible);
-    out.offset = offset - start;
-    out.direction = direction;
-    out.span = span;
-    out.half_width = width;
-    out.caps = input.caps;
-    out.color = mix(input.color_a, input.color_b, at);
-    // unlit_wgpu::hook vertex
-    return out;
+public fn vs_main(input: line_vertex::VertexInput, @builtin(vertex_index) index: u32) -> line_vertex::VertexOutput {
+    return line_vertex::vertex_out(input, index);
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let direction = in.direction;
-    let along = dot(in.offset, direction);
-    // Distance from the infinite line the segment lies on.
-    let perpendicular = abs(in.offset.x * direction.y - in.offset.y * direction.x);
-    let half_width = in.half_width;
-
-    // The stroke is a signed distance field: `d` is zero at its edge,
-    // negative inside it, and the coverage ramps over the one pixel either
-    // side of the edge. The body is a band half a width either side of the
-    // axis.
-    var d = perpendicular - half_width;
-    if (in.span > POINT_SPAN) {
-        // Past an end the shape of the end decides what the edge is: a
-        // round one keeps the disc the body's band rolls into, and a flat
-        // one keeps the band but stops it at the station, which is the box
-        // the band and the end face bound. A pixel past both the face and
-        // the band measures to the corner they cut, so the end face and the
-        // side edge join smoothly.
-        if (along < 0.0) {
-            let round_a = (in.caps & 1u) != 0u;
-            let q = vec2<f32>(-along, perpendicular - half_width);
-            d = select(
-                length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0),
-                length(in.offset) - half_width,
-                round_a,
-            );
-        } else if (along > in.span) {
-            let round_b = (in.caps & 2u) != 0u;
-            let q = vec2<f32>(along - in.span, perpendicular - half_width);
-            d = select(
-                length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0),
-                length(in.offset - direction * in.span) - half_width,
-                round_b,
-            );
-        }
-    } else {
-        // The ends project to the same pixel, so there is no along
-        // direction to bound them with: the stroke draws as a dot of the
-        // width the stage stated for it — a dot's own, or the widest end
-        // a near-plane cut leaves in sight.
-        d = length(in.offset) - half_width;
-    }
-
-    // One pixel of coverage either side of the edge: a line is analytic rather
-    // than rasterized, so its own alpha is what antialiases it.
-    var coverage = clamp(0.5 - d, 0.0, 1.0);
-    // A line thinner than a pixel keeps its energy rather than flickering
-    // between covered and missed as it crosses the pixel grid.
-    if (half_width < 0.5) {
-        coverage = coverage * clamp(half_width * 2.0, 0.0, 1.0);
-    }
-    var color = vec4<f32>(in.color.rgb, in.color.a * coverage);
-    // unlit_wgpu::hook fragment
-    @if(HARD_EDGE) {
-        // An opaque stroke on a target with no multisampling: a partial pixel
-        // would blend the stroke's own colour over the background as if it
-        // were translucent, so the stroke cuts at the pixel it covers instead.
-        if (coverage < 0.5) {
-            discard;
-        }
-        return vec4<f32>(color.rgb, in.color.a);
-    }
-    return color;
+public fn fs_main(in: line_vertex::VertexOutput) -> @location(0) vec4<f32> {
+    return line_fragment::fs_stage(in);
 }

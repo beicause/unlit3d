@@ -27,9 +27,8 @@
 //! # Policy
 //!
 //! What a stroke does to the frame is the caller's
-//! [LineOptions](unlit_wgpu::line_shader::LineOptions): the entry shader and
-//! the snippets spliced into it, the hard-edge cut, the depth-stencil policy,
-//! the blend and the write mask. [Line](crate::line::Line) carries one; two
+//! [LineOptions](unlit_wgpu::line_shader::LineOptions): the entry shader, the
+//! hard-edge cut, the depth-stencil policy, the blend and the write mask. [Line](crate::line::Line) carries one; two
 //! strokes with the same
 //! options draw together, and two with different options draw as separate
 //! draws, each specialized on its own policy and the target. The common
@@ -200,9 +199,8 @@ const _: () = assert!(
 pub struct Line {
     /// The segment to draw.
     pub segment: LineSegment,
-    /// How the stroke draws: the entry shader and its snippets, the hard-edge
-    /// cut, the depth-stencil policy, the blend and the write mask. See
-    /// [LineOptions].
+    /// How the stroke draws: the entry shader, the hard-edge cut, the
+    /// depth-stencil policy, the blend and the write mask. See [LineOptions].
     #[cfg_attr(feature = "reflect", facet(skip))]
     pub options: LineOptions,
 }

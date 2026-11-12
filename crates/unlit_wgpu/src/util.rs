@@ -95,10 +95,10 @@ impl<V> Hash for Hashed<V> {
 /// The module goes through
 /// [`Device::create_shader_module`](wgpu::Device::create_shader_module), so
 /// wgpu's runtime checks — shader-side bounds checks, loop bounding and the
-/// like — all apply. The WGSL is composed at build time, but a caller splices
-/// a snippet of its own into the composition and `unlit3d` hands whole
-/// composed modules in, so the source being build-time is no reason to skip
-/// them: those checks are what keeps a caller's shader inside its bindings.
+/// like — all apply. The WGSL is composed at build time, but a caller composes a
+/// module of its own against the package and `unlit3d` hands whole composed
+/// modules in, so the source being build-time is no reason to skip them: those
+/// checks are what keeps a caller's shader inside its bindings.
 pub fn shader_module(device: &wgpu::Device, wgsl: &str, label: &str) -> wgpu::ShaderModule {
     let desc = wgpu::ShaderModuleDescriptor {
         label: Some(label),

@@ -12,10 +12,11 @@ The crate is layered: the modules below are general facilities a caller builds
 any pipeline on top of, and the built-in lit pipeline is an ordinary user of
 them. Nothing in the general modules knows about the built-in pipeline: it uses
 the same binding and slot conventions, the same vertex compression and the same
-resource tracking a caller's own pipeline would. WESL composition, including the
-splice of a caller's snippets into an entry shader's hook marks, is a public
-facility in [`compose`] rather than a private step of the built-in pipeline; the
-egui backend is the only optional part of the crate.
+resource tracking a caller's own pipeline would. WESL composition — composing a
+package module under a variant's conditional-compilation flags, and composing a
+caller's own module in place of a built-in entry shader — is a public facility in
+[`compose`] rather than a private step of the built-in pipeline; the egui backend
+is the only optional part of the crate.
 
 It is at an **early stage of development**; APIs change freely. It has no
 dependency on the ECS layer; the ECS-integrated API built on it is
@@ -460,47 +461,48 @@ The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
 caller binds (`camera`, `globals`, `view`, `mesh_metadata`, the `mesh_compression`
 decode functions, the light records, the cluster uniform and the polygon form
-factor), and the built-in `lit` entry shader. [`compose`] resolves it against the
-package with a variant's conditional-compilation flags and splices caller
-snippets into its hook marks; `SpecializedLitPipeline` uses it to compose `lit`
-with the [`LitVariant`](pipeline::LitVariant) a draw resolves. The package also carries
-`line`, the entry shader a screen-space stroke is drawn with; it reads the
-camera and the [`View`](globals::View) the lit shader declares but never reads,
-because a stroke's width is a pixel count rather than a world distance, so
-[`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
-`LineSource` composes it against the package and binds one group, specializing it
-per stroke's [`LineOptions`](line_shader::LineOptions) — the entry shader and the
-snippets spliced into it at its hook marks, the hard-edge cut, the depth-stencil
-policy, the blend and the write mask; the cut is a WESL
-conditional-compilation flag like the lit ones, and on a multisampled target
-it yields to alpha-to-coverage, which antialiases the edge the cut would jag,
-so the variant sets it on a single-sampled one alone; [`line_shader`](line_shader)
-holds the options and the variant; [`compose`] performs the splice. The `lit`
-entry shader in turn covers every lit variant: the differences are WESL
+factor), and the two built-in entry shaders, `lit` and `line`. An entry shader is
+a pair of entry points over stage modules and nothing else: `lit.wesl` calls
+`lit_vertex`, `lit_lighting` and `lit_fragment`, and `line.wesl` calls
+`line_vertex` and `line_fragment`, with `lit_bindings` and `line_bindings`
+declaring the uniforms they read. That is what makes a shader composable: the
+parts a caller wants to keep are modules it imports, not text it has to
+reproduce.
+
+[`compose`] resolves a module against the package under a variant's
+conditional-compilation flags; `SpecializedLitPipeline` uses it to compose `lit`
+with the [`LitVariant`](pipeline::LitVariant) a draw resolves, and
+[`line_shader`](line_shader) does the same for a stroke.
+
+Each entry shader covers every variant of its family: the differences are WESL
 conditional-compilation flags, so each composed variant holds one code path and
-declares only the bindings and attributes it uses.
+declares only the bindings and attributes it uses. The lit flags are listed in
+[`shader::lit`](crate::shader), and `COMPRESSED_CHANNEL_OR_MORPH` is derived by
+the variant rather than carried by the options: a layout that declares the mesh
+metadata binding and a vertex stage that reads it are then the same decision.
 
 A caller who wants their own shader has two ways to it. The closest is
-[`LitOptions::shader`](pipeline::LitOptions::shader): an
-[`LitShader`](pipeline::LitShader) names a module, a vertex and a fragment
-snippet, and each is spliced into the built-in `lit.wesl` at a marked point. The
-module one sits among the top-level declarations, after the imports and the
-bindings and before the first struct, so it can add functions, types and
-constants over the bindings every variant of that shape already declares. The
-vertex one sits after the instance transform, before the clip position is built,
-where the vertex is a `var world`. The fragment one sits after the base color is
-cut off and lit, before the target's encoding, where the color is a `var color`.
-A snippet is WESL, spliced while the module is still WESL and before anything
-compiles, so it sees every binding, flag and helper the built-in stage sees,
-takes part in the conditional compilation, and is what shapes the geometry the
-rest of the stage then transforms, lights and clusters. The layouts and the
-vertex streams stay the variant's: a snippet changes what a stage computes, not
-what it reads, and one that declares a binding of its own fails pipeline
-creation rather than drawing something else. The other way is to compose the
-shader directly with [`wesl`](https://docs.rs/wesl):
-[`shader`] is a WESL `StaticPackage`, so `wesl::resolver::PackageResolver` can
-resolve `import unlit_wgpu::mesh_compression;` against the same modules the
-built-in pipeline uses, which is what a caller's own family does.
+[`LitOptions::shader`](pipeline::LitOptions::shader) or, for a stroke,
+[`LineOptions::shader`](line_shader::LineOptions::shader): an
+[`LitShader`](pipeline::LitShader) or [`LineShader`](line_shader::LineShader)
+carries one whole WESL module, which is mounted at the package path of the built-in
+entry shader it replaces and composed there. So a caller's module writes its own
+`vs_main` and `fs_main` and imports whichever stage modules it wants, in
+whatever order: `package::lit_vertex` exposes `vertex_world` and `vertex_out`
+separately for a caller that reshapes geometry between them, `lit_fragment`
+exposes the material color, the cut-off and the target's encoding one by one, and
+`lit_lighting` exposes the shading so a result can be composited over the
+lighting or under it. `unlit3d_examples` has one scene of each shape: a wall
+displaced in the vertex stage, and a cluster grid drawn between the lighting and
+the encoding.
+
+The layouts and the vertex streams stay the variant's either way: a module changes
+what a stage computes, not what it reads, and one that declares a binding of its
+own fails pipeline creation rather than drawing something else. The other way is
+to compose the shader directly with [`wesl`](https://docs.rs/wesl): [`shader`] is
+a WESL `StaticPackage`, so `wesl::resolver::PackageResolver` can resolve
+`import unlit_wgpu::mesh_compression;` against the same modules the built-in
+pipeline uses, which is what a caller's own family does.
 
 The module creation the crate itself performs goes through
 [`util::shader_module`], a thin wrapper over
@@ -508,8 +510,8 @@ The module creation the crate itself performs goes through
 wgpu's runtime checks left on: the shader-side bounds checks, loop bounding and
 the like that wgpu injects around a module. Composed WGSL is not exempt from
 them. A module is composed from this package plus, when a caller has one, that
-caller's entry point — a caller's own source goes into the same composition —
-and a release build would otherwise hand the backend a shader nothing bounds.
+caller's own entry shader — its source goes into the same composition — and a
+release build would otherwise hand the backend a shader nothing bounds.
 
 ## Design
 

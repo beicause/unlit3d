@@ -108,7 +108,7 @@ fn build_clusters(
     };
     let mut options = super::default_options();
     options.unlit = false;
-    options.shader = Some(LitShader::new("lit::cluster_grid", "", "", cluster_grid()));
+    options.shader = Some(LitShader::new("lit::cluster_grid", cluster_grid()));
     let key = LitPipelineKey::new(options);
 
     let source_entity = world
@@ -245,12 +245,18 @@ fn build_clusters(
     }
 }
 
-/// The WESL the debug scene's fragment stage runs, spliced at the built-in
-/// stage's fragment hook.
+/// The WESL module the debug scene draws through: the built-in lit stages with
+/// the grid composited between the lighting and the target's encoding.
 ///
-/// The grid is composited over the lit color in the fragment hook: cell fills
-/// stay translucent so the original light pools remain visible, while borders
-/// and the directional-light mark are nearly opaque. Two things are drawn, each
+/// It imports the same stage modules `lit.wesl` is a pair of entry points over
+/// and runs the built-in steps in the built-in order, so the grid is the only
+/// difference: `lit_fragment::fragment_color` gives the material's color,
+/// `lit_lighting::lit_color` shades it, and `lit_fragment::encoded_output` is
+/// what the target receives. Standing between the last two is where a result is
+/// composited over the lighting rather than over the material.
+///
+/// The grid is translucent over the light pools rather than replacing them, so
+/// the original shading remains visible beneath it. Two things are drawn, each
 /// from the arithmetic the lookup itself runs, so a border is exactly where the
 /// lookup switches:
 ///
@@ -268,48 +274,65 @@ fn build_clusters(
 /// where a cell ends and where a slice ends stay separate readings.
 fn cluster_grid() -> String {
     r#"
-let grid_depth = view_depth(in.world);
-let grid_ndc = fragment_ndc(in.world);
-let grid_cell = fragment_cluster_index(grid_ndc, grid_depth);
-let grid_local_count = array_access::load_cell_word(grid_cell, 0u);
-// Fixed bands make equal colors mean equal counts. Red means the record is
-// full and further lights are being dropped.
-var grid = vec3<f32>(0.025, 0.035, 0.10);
-if grid_local_count > 0u { grid = vec3<f32>(0.04, 0.16, 0.48); }
-if grid_local_count > 2u { grid = vec3<f32>(0.02, 0.52, 0.56); }
-if grid_local_count > 4u { grid = vec3<f32>(0.12, 0.62, 0.20); }
-if grid_local_count > 6u { grid = vec3<f32>(0.82, 0.72, 0.08); }
-if grid_local_count > 8u { grid = vec3<f32>(0.95, 0.38, 0.035); }
-if grid_local_count >= cluster.dims.w { grid = vec3<f32>(0.92, 0.025, 0.025); }
-// The cell borders: the product the lookup floors, so a border is where its
-// floor changes. A border is measured in pixels, not in cells -- an edge's
-// distance to the nearest border divided by how much the lattice moves per
-// pixel -- so it stays the same width wherever the floor's depth changes fastest
-// and never thickens into a band.
-let grid_lattice = (grid_ndc * 0.5 + 0.5) * vec2<f32>(cluster.dims.xy);
-let grid_fract = fract(grid_lattice);
-let grid_edge = min(grid_fract, 1.0 - grid_fract);
-let grid_pixels = grid_edge / max(fwidth(grid_lattice), vec2<f32>(1e-6));
-let grid_border = 1.0 - smoothstep(0.5, 1.5, min(grid_pixels.x, grid_pixels.y));
-// The slice borders use the same continuous mapping as the actual lookup.
-let grid_slice = cluster_slice_coordinate(grid_depth);
-let grid_slice_fract = fract(grid_slice);
-let grid_slice_edge = min(grid_slice_fract, 1.0 - grid_slice_fract);
-let grid_slice_pixels = grid_slice_edge / max(fwidth(grid_slice), 1e-6);
-let grid_slice_border = 1.0 - smoothstep(0.5, 1.5, grid_slice_pixels);
-grid = mix(grid, vec3<f32>(0.0), grid_border * 0.9);
-grid = mix(grid, vec3<f32>(0.55), grid_slice_border * 0.7);
-var grid_opacity = 0.48;
-grid_opacity = max(grid_opacity, grid_border * 0.85);
-grid_opacity = max(grid_opacity, grid_slice_border * 0.7);
-// The frame's directional lights are outside the grid, so this edge mark counts
-// them from the uniform instead: one magenta line says the frame carries at
-// least one, and no line says it carries none.
-if lighting.directionals[0].color_intensity.w > 0.0 && grid_ndc.x < -0.985 {
-    grid = vec3<f32>(0.8, 0.08, 0.65);
-    grid_opacity = 0.85;
-}
-color = vec4<f32>(mix(color.rgb, grid, grid_opacity), color.a);
+    import package::array_access;
+    import package::lit_bindings;
+    import package::lit_fragment;
+    import package::lit_lighting;
+    import package::lit_vertex;
+
+    @vertex
+    public fn vs_main(in: lit_vertex::VertexInput, @builtin(vertex_index) vertex_index: u32) -> lit_vertex::VertexOut {
+        return lit_vertex::vs_stage(in, vertex_index);
+    }
+
+    @fragment
+    public fn fs_main(in: lit_vertex::VertexOut) -> @location(0) vec4<f32> {
+        var color = lit_fragment::fragment_color(in);
+        color = lit_lighting::lit_color(in, color);
+        let grid_depth = lit_lighting::view_depth(in.world);
+        let grid_ndc = lit_lighting::fragment_ndc(in.world);
+        let grid_cell = lit_lighting::fragment_cluster_index(grid_ndc, grid_depth);
+        let grid_local_count = array_access::load_cell_word(grid_cell, 0u);
+        // Fixed bands make equal colors mean equal counts. Red means the record
+        // is full and further lights are being dropped.
+        var grid = vec3<f32>(0.025, 0.035, 0.10);
+        if grid_local_count > 0u { grid = vec3<f32>(0.04, 0.16, 0.48); }
+        if grid_local_count > 2u { grid = vec3<f32>(0.02, 0.52, 0.56); }
+        if grid_local_count > 4u { grid = vec3<f32>(0.12, 0.62, 0.20); }
+        if grid_local_count > 6u { grid = vec3<f32>(0.82, 0.72, 0.08); }
+        if grid_local_count > 8u { grid = vec3<f32>(0.95, 0.38, 0.035); }
+        if grid_local_count >= lit_bindings::cluster.dims.w { grid = vec3<f32>(0.92, 0.025, 0.025); }
+        // The cell borders: the product the lookup floors, so a border is where
+        // its floor changes. A border is measured in pixels, not in cells -- an
+        // edge's distance to the nearest border divided by how much the lattice
+        // moves per pixel -- so it stays the same width wherever the floor's
+        // depth changes fastest and never thickens into a band.
+        let grid_lattice = (grid_ndc * 0.5 + 0.5) * vec2<f32>(lit_bindings::cluster.dims.xy);
+        let grid_fract = fract(grid_lattice);
+        let grid_edge = min(grid_fract, 1.0 - grid_fract);
+        let grid_pixels = grid_edge / max(fwidth(grid_lattice), vec2<f32>(1e-6));
+        let grid_border = 1.0 - smoothstep(0.5, 1.5, min(grid_pixels.x, grid_pixels.y));
+        // The slice borders use the same continuous mapping as the actual lookup.
+        let grid_slice = lit_lighting::cluster_slice_coordinate(grid_depth);
+        let grid_slice_fract = fract(grid_slice);
+        let grid_slice_edge = min(grid_slice_fract, 1.0 - grid_slice_fract);
+        let grid_slice_pixels = grid_slice_edge / max(fwidth(grid_slice), 1e-6);
+        let grid_slice_border = 1.0 - smoothstep(0.5, 1.5, grid_slice_pixels);
+        grid = mix(grid, vec3<f32>(0.0), grid_border * 0.9);
+        grid = mix(grid, vec3<f32>(0.55), grid_slice_border * 0.7);
+        var grid_opacity = 0.48;
+        grid_opacity = max(grid_opacity, grid_border * 0.85);
+        grid_opacity = max(grid_opacity, grid_slice_border * 0.7);
+        // The frame's directional lights are outside the grid, so this edge mark
+        // counts them from the uniform instead: one magenta line says the frame
+        // carries at least one, and no line says it carries none.
+        if lit_bindings::lighting.directionals[0].color_intensity.w > 0.0 && grid_ndc.x < -0.985 {
+            grid = vec3<f32>(0.8, 0.08, 0.65);
+            grid_opacity = 0.85;
+        }
+        color = vec4<f32>(mix(color.rgb, grid, grid_opacity), color.a);
+        return lit_fragment::encoded_output(color);
+    }
     "#
     .to_owned()
 }

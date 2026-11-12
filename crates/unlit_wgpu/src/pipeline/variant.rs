@@ -38,9 +38,15 @@ impl LitVariant {
     /// it contributes no names here: the built-in vertex stream always
     /// declares and binds an instance buffer.
     ///
+    /// `COMPRESSED_CHANNEL_OR_MORPH` is the one name derived rather than
+    /// copied: a variant reads the mesh metadata exactly when it has something
+    /// to decode or a morph to address, which is [`Self::needs_metadata`]. The
+    /// shader derives it the same way, so the binding the layout declares and
+    /// the binding the stage reads cannot disagree.
+    ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 17] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 18] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (
@@ -79,6 +85,7 @@ impl LitVariant {
             ("SRGB_TO_LINEAR_OUTPUT", self.options.srgb_to_linear_output),
             ("VERTEX_JOINTS", self.channels.position.joints),
             ("MORPH_POSITIONS", self.morph),
+            ("COMPRESSED_CHANNEL_OR_MORPH", self.needs_metadata()),
             ("TEXEL_ARRAY", texel_arrays),
             (
                 "BASE_COLOR_LUMINANCE",
@@ -354,8 +361,8 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
     /// compiles through the same [PipelineDescriptor] mechanism a caller's own
     /// descriptor does.
     ///
-    /// The entry shader is the built-in `lit.wesl`, with the options' own
-    /// snippets ([`LitOptions::shader`]) spliced into it at its marks.
+    /// The entry shader is the built-in `lit.wesl`, or the options' own module
+    /// ([`LitOptions::shader`]) in its place.
     fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
         let texel_arrays = !supports_storage_buffers(device);
         let label = match &self.options.shader {
@@ -432,11 +439,10 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
 
 /// Compose `variant`'s entry shader into one WGSL module.
 ///
-/// The main module is the built-in `lit.wesl`, with the options' snippets
-/// spliced into it at its hook marks. It is composed as the package's own
-/// `lit` module, so a snippet that names `package::light` or
-/// `unlit_wgpu::light` reaches the modules the shader around it imports, and
-/// sees the variant's flags.
+/// The main module is the built-in `lit.wesl`, or the options' own module
+/// ([`LitOptions::shader`]) composed in its place: that source is mounted at the
+/// package path `lit`, so it imports `package::lit_vertex` and `package::light`
+/// the way the built-in entry shader does, and sees the variant's flags.
 ///
 /// `texel_arrays` is the device answer rather than the variant one, so it is
 /// passed in from whoever read the device; it selects the shader array path
@@ -480,13 +486,10 @@ pub(super) fn compose_shader(
     );
 
     let features = variant.features(texel_arrays);
-    let replacement = variant.options.shader.as_ref().map(|shader| {
-        crate::compose::splice(
-            crate::shader::lit::MODULE.source,
-            shader.module(),
-            shader.vertex(),
-            shader.fragment(),
-        )
-    });
-    crate::compose::compose(BUILT_IN_MODULE, &features, replacement.as_deref())
+    let replacement = variant
+        .options
+        .shader
+        .as_ref()
+        .map(|shader| shader.source());
+    crate::compose::compose(BUILT_IN_MODULE, &features, replacement)
 }

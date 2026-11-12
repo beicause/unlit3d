@@ -143,20 +143,31 @@ pub(super) async fn position_less_variant_draws_points_at_instance_origins() {
     );
 }
 
-/// A caller's snippets are spliced into the built-in stages, while the
-/// variant's layouts and streams stay exactly what the built-in shader would
-/// have used: the same bind group, the same vertex buffers, one draw.
-pub(super) async fn a_caller_shader_splices_into_the_built_in_stages() {
+/// A caller's module replaces the built-in entry shader, while the variant's
+/// layouts and streams stay exactly what the built-in shader would have used:
+/// the same bind group, the same vertex buffers, one draw.
+pub(super) async fn a_caller_module_replaces_the_built_in_stages() {
     let ctx = Ctx::headless().await;
-    // The top-level snippet declares the colour, the vertex snippet is empty, so
-    // the geometry arrives at the built-in vertex stage's own attributes and
-    // leaves it exactly where the built-in shader puts it, and the fragment
-    // snippet repaints the result through the function the top level added.
+    // The module keeps the built-in vertex stage and replaces only the fragment:
+    // the geometry arrives through the variant's own attributes, leaves the
+    // vertex stage exactly where the built-in shader puts it, and is painted
+    // over by a constant colour.
     let shader = LitShader::new(
         "test::flat",
-        "fn test_flat_color() -> vec4<f32> { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }",
-        "",
-        "color = test_flat_color();",
+        r#"
+        import package::lit_fragment;
+        import package::lit_vertex;
+
+        @vertex
+        public fn vs_main(in: lit_vertex::VertexInput, @builtin(vertex_index) vertex_index: u32) -> lit_vertex::VertexOut {
+            return lit_vertex::vs_stage(in, vertex_index);
+        }
+
+        @fragment
+        public fn fs_main(in: lit_vertex::VertexOut) -> @location(0) vec4<f32> {
+            return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+        }
+        "#,
     );
     let mut options = LitOptions::standard();
     options.shader = Some(shader);
@@ -176,7 +187,7 @@ pub(super) async fn a_caller_shader_splices_into_the_built_in_stages() {
     let fixture = fixture(&ctx, &variant, 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 1.0, 1.0, 1.0])]);
 
-    // The snippet paints its own color, and it covers the same pixels the
+    // The module paints its own color, and it covers the same pixels the
     // built-in shader would have: the geometry reaches it through the very
     // attributes the built-in variant declares.
     let painted = frame

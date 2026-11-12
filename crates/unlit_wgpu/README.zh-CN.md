@@ -8,9 +8,9 @@
 
 本 crate 是分层的：下面这些模块是调用者搭建任意管线所用的通用设施，而内置 lit
 管线只是它们的普通使用者。通用模块完全不知道内置管线的存在：它使用与调用者自建
-管线完全相同的绑定槽位约定、顶点压缩与资源追踪。WESL 组合——包括把调用者片段拼进
-入口着色器标记位置——是 `compose` 里的公开设施，而非内置管线私有的步骤；egui
-后端是本 crate 唯一可选的部分。
+管线完全相同的绑定槽位约定、顶点压缩与资源追踪。WESL 组合——按变体的条件编译开关
+组合包内模块，以及用调用者自己的模块替换内置入口着色器——是 `compose` 里的公开
+设施，而非内置管线私有的步骤；egui 后端是本 crate 唯一可选的部分。
 
 本 crate 处于**极早期开发阶段**；API 会自由变动。它不依赖 ECS 层；构建在其上的
 与 ECS 集成的 API 是
@@ -430,39 +430,42 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
 调用者所绑定 Rust 类型的模块（`camera`、`globals`、`view`、`mesh_metadata`、`mesh_compression`
-解码函数、光源记录、聚类 uniform 与多边形形状因子），以及内置的 `lit` 入口着色器。
-`compose` 用变体的条件编译开关对着这个包解析入口着色器，并把调用者片段拼进它的
-标记位置；`pipeline::SpecializedLitPipeline` 借此把 `lit` 与一次绘制解析出的
-`pipeline::LitVariant` 组合起来。这一份入口着色器覆盖所有 lit 变体：
-差异都是 WESL 条件编译开关，于是每份组合出的变体只含一条代码路径，只声明它用到的
-绑定与顶点属性。包内还带有 `line`，即描绘屏幕空间笔画所用的入口着色器；它读相机与
-`View`，后者 lit 着色器声明却从不读取，因为笔画的宽度是像素数而非世界距离，于是
-`unlit3d` 的 `LineSource` 拿它对着这个包组合，并只绑定一个组，再按笔画的
-[`LineOptions`](line_shader::LineOptions) 特化它——入口着色器与拼进三个标记位置的
-调用者代码片段、硬边切割、深度模板策略、混合与写入掩码；切割只是一个和 lit 那些同类的
-WESL 条件编译开关，且在多采样目标上会让位于 alpha-to-coverage——它把切割会锯齿化的
-边缘重新平滑，所以变体只在单采样目标上设置它；选项与变体收在 [`line_shader`](line_shader) 模块里，拼接由 `compose` 完成。
+解码函数、光源记录、聚类 uniform 与多边形形状因子），以及两份内置入口着色器 `lit` 与
+`line`。入口着色器只是覆盖在阶段模块之上的一对入口点，别的什么都没有：`lit.wesl` 调用
+`lit_vertex`、`lit_lighting` 与 `lit_fragment`，`line.wesl` 调用 `line_vertex` 与
+`line_fragment`，而 `lit_bindings` 与 `line_bindings` 声明它们所读的 uniform。着色器因此
+可组合：调用者想保留的部分是它 import 的模块，而不是它必须重抄的文本。
 
-若要编写自己的着色器，有两条路。最近的一条是
-`pipeline::LitOptions::shader`：`pipeline::LitShader` 各给出一段模块、一段顶点与
-一段片段，分别拼进内置 `lit.wesl` 的三个标记位置。模块那段落在顶层声明区，在 import
-与绑定之后、第一个 struct 之前，于是它能在每个同形变体都已声明的绑定之上添加函数、类型与
-常量。顶点那段在实例变换之后、构造裁剪坐标之前，那里的顶点是 `var world`；片段那段在
-基础色完成裁剪与光照之后、目标编码之前，那里的颜色是 `var color`。代码片段仍是 WESL，
-在模块还是 WESL、尚未编译时就拼进去，因此它看得见内置阶段所看见的全部绑定、开关与
-辅助函数，参与条件编译，并且决定后续阶段所要变换、光照与聚类的几何形状。布局与顶点流仍
-由变体决定：代码片段改变的是阶段算什么，不是它读什么，自己声明绑定的片段只会让管线
-创建失败，而不是画出别的东西。
-另一条是用
+`compose` 按变体的条件编译开关对着包解析一个模块；`pipeline::SpecializedLitPipeline`
+借此把 `lit` 与一次绘制解析出的 `pipeline::LitVariant` 组合起来，`line_shader` 对笔画
+做同一件事。
+
+每份入口着色器覆盖其家族的全部变体：差异都是 WESL 条件编译开关，于是每份组合出的变体
+只含一条代码路径，只声明它用到的绑定与顶点属性。lit 的那些开关列在 `shader::lit` 里；
+其中 `COMPRESSED_CHANNEL_OR_MORPH` 由变体推导而非由选项携带，于是「布局声明 mesh
+metadata 绑定」与「顶点阶段读它」成了同一个决定。
+
+若要编写自己的着色器，最近的一条路是 `pipeline::LitOptions::shader`，笔画则是
+[`LineOptions::shader`](line_shader::LineOptions::shader)：`pipeline::LitShader` 与
+[`LineShader`](line_shader::LineShader) 各自携带一整块 WESL 模块，它被挂到所替换的内置
+入口着色器所处的包路径上并在那里参与组合。因此调用者的模块自己写 `vs_main` 与 `fs_main`，
+import 它想要的阶段模块，并按它想要的顺序调用：`package::lit_vertex` 分别暴露
+`vertex_world` 与 `vertex_out`，供需要在其间改形几何的调用者使用；`lit_fragment` 把材质颜色、
+裁剪与目标编码逐项拆开；`lit_lighting` 把着色本身暴露出来，于是结果可以叠在光照之上，
+也可以垫在它之下。`unlit3d_examples` 各有这样一例：在顶点阶段位移的墙，以及画在光照与
+编码之间的聚类网格。
+
+布局与顶点流在两种方式下都由变体决定：模块改变的是阶段算什么，不是它读什么，自己声明
+绑定的模块只会让管线创建失败，而不是画出别的东西。另一条是用
 [`wesl`](https://docs.rs/wesl) 直接组合：`shader` 是一个 WESL `StaticPackage`，因此
 `wesl::resolver::PackageResolver` 可以针对内置管线所用的同一批模块解析
 `import unlit_wgpu::mesh_compression;`，调用者自己的家族走的正是这条路。
 
 crate 自身创建着色器模块时走 `util::shader_module`，它是对 `Device::create_shader_module`
 的一层薄封装，wgpu 的运行时检查一概保留——着色器侧的边界检查、循环兜底等由 wgpu
-为每份模块注入。组合出的 WGSL 不因此豁免：模块由本包加上调用者自己的入口点组合而成，
-调用者的源码就在这份组合里，若跳过检查，release 构建交给后端的将是一份没有边界约束的
-着色器。
+为每份模块注入。组合出的 WGSL 不因此豁免：模块由本包加上调用者自己的入口着色器组合
+而成，调用者的源码就在这份组合里，若跳过检查，release 构建交给后端的将是一份没有边界
+约束的着色器。
 
 ## 设计
 

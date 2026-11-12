@@ -1,32 +1,28 @@
-//! The caller's own shader code, spliced into the built-in `line.wesl`.
+//! The caller's own entry shader, composed in place of the built-in `line.wesl`.
 //!
-//! The built-in entry shader keeps three marks, each a comment naming the
-//! place it sits: one at module scope, one at the end of the vertex stage and
-//! one at the end of the fragment stage. A shader is spliced in at those marks
-//! while the module is still WESL, before anything is compiled, so each
-//! snippet is ordinary WESL: it sees every binding, flag and helper the place
-//! it lands in sees, it takes part in the conditional compilation, and its
-//! diagnostics point at the line it was written on rather than at a fragment
-//! of generated WGSL.
+//! The built-in stroke shader is a pair of entry points over the package's stage
+//! modules, so a caller composes its own stroke rather than text being inserted
+//! into a source it cannot see: a module that imports
+//! [`shader::line_vertex`](crate::shader) and
+//! [`shader::line_fragment`](crate::shader) calls the parts it keeps and replaces
+//! the rest. It reaches the same bindings, the same instance record and the same
+//! helpers the built-in shader does, under the variant's conditional-compilation
+//! flags, and its diagnostics point at the line it was written on.
 //!
-//! The marks sit where the stages still have something left to do, which is
-//! what keeps a snippet short:
+//! The parts a stroke is built from, and what a caller does with each:
 //!
-//! * The module mark is after every built-in binding and helper, so a snippet
-//!   can declare the functions, types and constants the stages call.
-//! * The vertex mark is after the quad corner is built, before it is returned.
-//!   The output is a `var out` there, so a snippet can rewrite any varying —
-//!   the coverage color among them — in place.
-//! * The fragment mark is after the coverage is applied to the colour, before
-//!   the hard-edge cut and the return. The colour is a `var color` there, so
-//!   a snippet can rewrite it in place, and what it leaves is what the target
-//!   receives — a snippet of its own may return instead, which is how a
-//!   caller replaces the shading the stroke ends with.
+//! * `line_bindings` declares the camera and the viewport the stages read.
+//! * `line_vertex` carries `VertexInput`, `VertexOutput`, the near-plane cut and
+//!   the viewport mapping, and `vertex_out`, which places one corner of the quad
+//!   covering a segment.
+//! * `line_fragment` measures a pixel's `coverage` and turns it into the colour
+//!   the stroke writes, cutting at half coverage where the variant sets
+//!   `HARD_EDGE`.
 //!
 //! The layouts, the instance record and the entry-point names stay the
-//! variant's, exactly as they are for the built-in shader: a snippet changes
-//! what a stage computes, not what the pipeline reads. A snippet that declares
-//! a binding of its own therefore fails pipeline creation rather than drawing
+//! variant's, exactly as they are for the built-in shader: a shader changes what
+//! a stage computes, not what the pipeline reads. A module that declares a
+//! binding of its own therefore fails pipeline creation rather than drawing
 //! something else; one that declares functions, types or constants over the
 //! bindings every variant already declares works.
 //!
@@ -37,32 +33,20 @@ use std::sync::Arc;
 
 use crate::specialize::{PipelineDescriptor, SurfaceTarget};
 
-/// A caller's own shader code, spliced into the built-in `line.wesl`.
+/// A caller's own entry shader, composed in place of the built-in `line.wesl`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LineShader {
     label: Arc<str>,
-    module: Arc<str>,
-    vertex: Arc<str>,
-    fragment: Arc<str>,
+    source: Arc<str>,
 }
 
 impl LineShader {
-    /// A shader named `label` whose `module`, `vertex` and `fragment`
-    /// snippets are spliced into the built-in entry shader.
-    ///
-    /// Any snippet may be empty, which leaves its place exactly as the
-    /// built-in shader has it.
-    pub fn new(
-        label: impl Into<Arc<str>>,
-        module: impl Into<Arc<str>>,
-        vertex: impl Into<Arc<str>>,
-        fragment: impl Into<Arc<str>>,
-    ) -> Self {
+    /// A shader named `label` whose `source` is the whole WESL module composed
+    /// in place of the built-in entry shader.
+    pub fn new(label: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
         Self {
             label: label.into(),
-            module: module.into(),
-            vertex: vertex.into(),
-            fragment: fragment.into(),
+            source: source.into(),
         }
     }
 
@@ -71,35 +55,22 @@ impl LineShader {
         &self.label
     }
 
-    /// The WESL declarations spliced in at module scope.
-    pub fn module(&self) -> &str {
-        &self.module
-    }
-
-    /// The WESL statements spliced into the vertex stage.
-    pub fn vertex(&self) -> &str {
-        &self.vertex
-    }
-
-    /// The WESL statements spliced into the fragment stage.
-    pub fn fragment(&self) -> &str {
-        &self.fragment
+    /// The WESL module composed in place of the built-in entry shader.
+    pub fn source(&self) -> &str {
+        &self.source
     }
 }
 
 impl core::fmt::Debug for LineShader {
-    /// Prints the label and each snippet's length rather than the snippets
-    /// themselves, so a [`LineOptions`] dump stays readable.
+    /// Prints the label and the source's length rather than the source itself,
+    /// so a [`LineOptions`] dump stays readable.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LineShader")
             .field("label", &self.label)
-            .field("module", &format_args!("{} bytes", self.module.len()))
-            .field("vertex", &format_args!("{} bytes", self.vertex.len()))
-            .field("fragment", &format_args!("{} bytes", self.fragment.len()))
+            .field("source", &format_args!("{} bytes", self.source.len()))
             .finish()
     }
 }
-
 /// The byte width of one instance the line pipeline reads: the sum of the
 /// attribute sizes below.
 ///
@@ -202,9 +173,9 @@ pub struct LineOptions {
     /// The entry shader this policy draws with, or `None` for the built-in
     /// `line.wesl`.
     ///
-    /// A caller's snippets extend the built-in source and nothing else: the
-    /// layouts, the instance record and the entry-point names stay the
-    /// variant's. See [`LineShader`].
+    /// A caller's module is composed in place of the built-in source and
+    /// changes nothing else: the layouts, the instance record and the
+    /// entry-point names stay the variant's. See [`LineShader`].
     ///
     /// The shader takes part in equality and hashing whole, label included:
     /// two options whose shaders differ at all — a name among the
@@ -318,8 +289,8 @@ impl LineOptions {
 /// The pipeline variant a line draw resolves to.
 ///
 /// The target decides the surface, and the options decide the rest. Two
-/// options that differ only where the pipeline cannot see — the snippets'
-/// names among them — are two variants, because a pipeline built for one
+/// options that differ only where the pipeline cannot see — the shader's
+/// name among them — are two variants, because a pipeline built for one
 /// draws differently than one built for the other.
 ///
 /// A difference that would change nothing is folded instead: on a
@@ -376,15 +347,12 @@ fn pipeline(device: &wgpu::Device, variant: &LineVariant) -> wgpu::RenderPipelin
         .as_ref()
         .map_or("unlit_wgpu::line", |shader| shader.label());
     let features = variant.features();
-    let replacement = variant.options.shader.as_ref().map(|shader| {
-        crate::compose::splice(
-            crate::shader::line::MODULE.source,
-            shader.module(),
-            shader.vertex(),
-            shader.fragment(),
-        )
-    });
-    let wgsl = crate::compose::compose("line", &features, replacement.as_deref())
+    let replacement = variant
+        .options
+        .shader
+        .as_ref()
+        .map(|shader| shader.source());
+    let wgsl = crate::compose::compose("line", &features, replacement)
         .unwrap_or_else(|error| panic!("{label}: {error}"));
     let module = crate::util::shader_module(device, &wgsl, label);
     let layout = crate::pipeline::global_bind_group_layout(
