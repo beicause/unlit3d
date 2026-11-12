@@ -100,6 +100,7 @@ pub(crate) struct BuildPresenter {
     pub(crate) size: (u32, u32),
     pub(crate) surface: wgpu::Surface<'static>,
     pub(crate) path: PresentationPath,
+    pub(crate) surface_options: SurfaceOptions,
 }
 
 impl Command for BuildPresenter {
@@ -114,6 +115,7 @@ impl Command for BuildPresenter {
             &self.gpu.adapter,
             self.size,
             self.path,
+            self.surface_options,
         ) {
             Ok(presenter) => presenter,
             Err(error) => {

@@ -1252,6 +1252,20 @@ post-processing chain needs. The target's size is its own
 (`Scale(1.0)` follows it, `Scale(0.5)` renders at half the width and height)
 or a fixed pixel size.
 
+How the swap chain itself waits for the display is
+[`SurfaceOptions`](winit::SurfaceOptions), passed to
+[`build_presenter`](winit::presenter::build_presenter) and
+[`setup_presenter`](winit::presenter::setup_presenter). Its default --
+`Fifo` with two frames in flight -- ties every frame to a refresh, which is
+what a plain window wants. `Immediate` and `Mailbox` cut the wait at the
+cost of tearing or a frame of latency, and are how a game trades appearance
+for input lag. A surface does not offer every mode: WebGL2 and many mobile
+drivers offer `Fifo` alone, so a mode the surface lacks degrades to `Fifo`
+with a warning naming what was asked for and what was chosen. The frame
+latency is the number of refreshes a frame may wait in flight: `1` minimizes
+latency and leaves the CPU and the GPU no room to overlap, and higher values
+favor throughput.
+
 These are the primitives, and the presenter composes them; a caller
 assembling its own loop uses them directly:
 

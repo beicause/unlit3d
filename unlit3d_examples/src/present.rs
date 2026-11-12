@@ -110,6 +110,7 @@ pub(crate) fn present(world: &World, app: Entity) {
         size,
         surface,
         path,
+        surface_options: SurfaceOptions::default(),
     });
     window.request_redraw();
 }

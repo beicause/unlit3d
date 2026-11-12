@@ -49,4 +49,4 @@ pub use presenter::{
     build_presenter, present_frames, pump_presented, pump_presented_with, resize_presented,
     setup_presenter,
 };
-pub use surface::{Frame, WindowSurface};
+pub use surface::{Frame, SurfaceOptions, WindowSurface};

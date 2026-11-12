@@ -21,6 +21,7 @@ pub use unlit3d::winit::presenter::{
 
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame, dispatch_frame};
 use unlit3d::offscreen::{OFFSCREEN_SAMPLES, TargetConfig};
+use unlit3d::winit::SurfaceOptions;
 use unlit3d::winit::builtin::{Resumed, window};
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
 use unlit3d::winit::presenter::{PRESENT_ORDER, PresentationPath, pump_presented_with};
@@ -43,10 +44,16 @@ use crate::host::drain_sub_world;
 /// scene's pass draws straight into the swap chain -- one pass and one
 /// copy fewer, which is what a plain window wants.
 ///
+/// `surface_options` configures how the swap chain presents.
+///
 /// # Errors
 ///
 /// Returns an error when the host has no window, the surface cannot be
 /// built, or the render sub-world, its renderer or its targets are gone.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per scene fixture the host already holds"
+)]
 pub fn setup_presenter(
     world: &mut World,
     render: Entity,
@@ -55,6 +62,7 @@ pub fn setup_presenter(
     gpu: &Gpu,
     fallback_size: (u32, u32),
     offscreen: bool,
+    surface_options: SurfaceOptions,
 ) -> Result<(), PresenterError> {
     let surface = gpu
         .instance
@@ -77,6 +85,7 @@ pub fn setup_presenter(
         &gpu.adapter,
         fallback_size,
         path,
+        surface_options,
     )
     .map(|_| ())
 }

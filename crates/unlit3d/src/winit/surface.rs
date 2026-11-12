@@ -106,6 +106,44 @@ use crate::attachments::FrameAttachments;
 use crate::pass::FramePass;
 use crate::renderer::Renderer;
 
+/// How a window's swap chain presents its frames.
+///
+/// The present mode decides how a presented frame waits for the display:
+/// [`wgpu::PresentMode::Fifo`] ties every frame to a refresh and is what a
+/// plain window wants, while `Immediate` and `Mailbox` cut the wait at the
+/// cost of tearing or of a frame of latency. A surface does not offer every
+/// mode — WebGL2 and many mobile drivers offer only `Fifo` — so a requested
+/// mode the surface lacks degrades to `Fifo`, and a `Fifo` a surface lacks
+/// falls back to what it does offer; either way the surface logs which mode
+/// it settled on, in a warning.
+///
+/// `AutoVsync` and `AutoNoVsync` are passed through to wgpu, which resolves
+/// them against the same capabilities by its own rules.
+///
+/// The frame latency is the number of refreshes between acquiring a frame and
+/// presenting it — frames in flight. `1` minimizes latency and gives the CPU
+/// and the GPU no room to overlap; `2`, the default, lets each use a whole
+/// refresh; higher values favor throughput. The backend clamps it to the range
+/// it supports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceOptions {
+    /// The present mode to ask for.
+    pub present_mode: wgpu::PresentMode,
+    /// How many refreshes may pass between acquiring a frame and presenting
+    /// it.
+    pub desired_maximum_frame_latency: u32,
+}
+
+impl Default for SurfaceOptions {
+    /// A surface tied to the display: `Fifo` with two frames in flight.
+    fn default() -> Self {
+        Self {
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+        }
+    }
+}
+
 /// A winit window's swap chain, presented through a [`Renderer`].
 ///
 /// The surface is configured for the window's current size and keeps the
@@ -164,9 +202,10 @@ impl WindowSurface {
         adapter: &wgpu::Adapter,
         window: Arc<::winit::window::Window>,
         surface: wgpu::Surface<'static>,
+        options: SurfaceOptions,
     ) -> Self {
         let size = window.inner_size();
-        let config = surface_config(&surface, adapter, size.width, size.height);
+        let config = surface_config(&surface, adapter, size.width, size.height, options);
         let color_format = color_format(&config);
         let device = renderer
             .context()
@@ -480,6 +519,7 @@ fn surface_config(
     adapter: &wgpu::Adapter,
     width: u32,
     height: u32,
+    options: SurfaceOptions,
 ) -> wgpu::SurfaceConfiguration {
     let caps = surface.get_capabilities(adapter);
     let view_formats_supported = adapter
@@ -487,6 +527,20 @@ fn surface_config(
         .flags
         .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
     let (format, view_formats) = surface_format(&caps.formats, view_formats_supported);
+    let present_mode = resolve_present_mode(&caps.present_modes, options.present_mode);
+    if present_mode != options.present_mode
+        && !matches!(
+            options.present_mode,
+            wgpu::PresentMode::AutoVsync | wgpu::PresentMode::AutoNoVsync
+        )
+    {
+        log::warn!(
+            "the surface does not offer the requested present mode {:?}; presenting with \
+             {present_mode:?} instead (the surface offers {:?})",
+            options.present_mode,
+            caps.present_modes
+        );
+    }
     wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -494,25 +548,42 @@ fn surface_config(
         // A surface cannot be configured with a zero dimension.
         width: width.max(1),
         height: height.max(1),
-        // Fifo is the only present mode every backend guarantees, and it is
-        // the one that ties a frame to the display: prefer it over an adaptive
-        // or immediate mode a driver offers first.
-        present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
-            wgpu::PresentMode::Fifo
-        } else {
-            caps.present_modes
-                .first()
-                .copied()
-                .unwrap_or(wgpu::PresentMode::Fifo)
-        },
+        present_mode,
         alpha_mode: caps
             .alpha_modes
             .first()
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto),
         view_formats,
-        desired_maximum_frame_latency: 2,
+        desired_maximum_frame_latency: options.desired_maximum_frame_latency,
     }
+}
+
+/// The present mode to configure a surface that offers `available` with, when
+/// the caller asked for `requested`.
+///
+/// A surface that does not offer the requested mode is configured with
+/// `Fifo` instead: the alternative is whatever the driver happens to list
+/// first, which may be a mode that uncaps the framerate or tears, and neither
+/// is what a caller asking for a particular mode wants as a surprise. Only a
+/// surface that offers neither falls back to its first mode, because some mode
+/// has to be chosen. The automatic modes pass through — wgpu resolves them
+/// against the same capabilities.
+fn resolve_present_mode(
+    available: &[wgpu::PresentMode],
+    requested: wgpu::PresentMode,
+) -> wgpu::PresentMode {
+    use wgpu::PresentMode;
+    if matches!(requested, PresentMode::AutoVsync | PresentMode::AutoNoVsync) {
+        return requested;
+    }
+    if available.contains(&requested) {
+        return requested;
+    }
+    if available.contains(&PresentMode::Fifo) {
+        return PresentMode::Fifo;
+    }
+    available.first().copied().unwrap_or(PresentMode::Fifo)
 }
 
 /// The format to configure a surface whose capabilities offer `formats` with,
@@ -688,6 +759,61 @@ mod tests {
             let (format, views) = surface_format(&formats, supported);
             assert_eq!(format, wgpu::TextureFormat::Rgba16Float);
             assert!(views.is_empty(), "there is no sRGB view of an fp16 format");
+        }
+    }
+
+    #[test]
+    fn a_requested_present_mode_the_surface_offers_is_kept() {
+        use wgpu::PresentMode;
+
+        let offers_mailbox = [PresentMode::Fifo, PresentMode::Mailbox];
+        assert_eq!(
+            resolve_present_mode(&offers_mailbox, PresentMode::Mailbox),
+            PresentMode::Mailbox
+        );
+        // Fifo is kept even when the surface lists a mode with less waiting
+        // first: a caller that did not ask for it keeps the display's pace.
+        let mailbox_first = [PresentMode::Mailbox, PresentMode::Fifo];
+        assert_eq!(
+            resolve_present_mode(&mailbox_first, PresentMode::Fifo),
+            PresentMode::Fifo
+        );
+    }
+
+    #[test]
+    fn a_present_mode_the_surface_lacks_degrades_to_fifo() {
+        use wgpu::PresentMode;
+
+        // WebGL2 and many mobile drivers offer Fifo alone.
+        let fifo_only = [PresentMode::Fifo];
+        for requested in [PresentMode::Immediate, PresentMode::Mailbox] {
+            assert_eq!(
+                resolve_present_mode(&fifo_only, requested),
+                PresentMode::Fifo,
+                "{requested:?} is not offered, so the display's pace wins"
+            );
+        }
+    }
+
+    #[test]
+    fn a_surface_that_lacks_fifo_too_gets_the_first_mode_it_offers() {
+        use wgpu::PresentMode;
+
+        let no_fifo = [PresentMode::Immediate];
+        assert_eq!(
+            resolve_present_mode(&no_fifo, PresentMode::Mailbox),
+            PresentMode::Immediate
+        );
+    }
+
+    #[test]
+    fn the_automatic_present_modes_are_passed_to_wgpu() {
+        use wgpu::PresentMode;
+
+        // wgpu resolves these against the same capabilities, by its own rules.
+        let fifo_only = [PresentMode::Fifo];
+        for requested in [PresentMode::AutoVsync, PresentMode::AutoNoVsync] {
+            assert_eq!(resolve_present_mode(&fifo_only, requested), requested);
         }
     }
 }

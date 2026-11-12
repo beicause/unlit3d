@@ -137,6 +137,7 @@ impl Frame {
             width: 256,
             height: 192,
             viewport: None,
+            camera: None,
         };
 
         Self {

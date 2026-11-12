@@ -37,7 +37,7 @@ use crate::renderer::Renderer;
 use crate::source::Source;
 use crate::winit::builtin::{Resumed, window};
 use crate::winit::event::{OnAboutToWait, OnWindowEvent};
-use crate::winit::surface::WindowSurface;
+use crate::winit::surface::{SurfaceOptions, WindowSurface};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -310,7 +310,8 @@ impl Presenter {
 /// filled in. The window comes from `world`; when it has not reported a
 /// size yet, `fallback_size` stands in.
 ///
-/// `path` chooses direct presentation or an intermediate texture plus blit.
+/// `path` chooses direct presentation or an intermediate texture plus blit,
+/// and `surface_options` configures the surface itself.
 ///
 /// # Errors
 ///
@@ -330,6 +331,7 @@ pub fn build_presenter(
     adapter: &wgpu::Adapter,
     fallback_size: (u32, u32),
     path: PresentationPath,
+    surface_options: SurfaceOptions,
 ) -> Result<Presenter, PresenterError> {
     let window = window(world).ok_or(PresenterError::NoWindow)?;
     let raw_size = window.inner_size();
@@ -354,10 +356,20 @@ pub fn build_presenter(
                 surface,
                 size,
                 path,
+                surface_options,
             )?
         }
         None => build_in(
-            world, renderer, scene_pass, instance, adapter, window, surface, size, path,
+            world,
+            renderer,
+            scene_pass,
+            instance,
+            adapter,
+            window,
+            surface,
+            size,
+            path,
+            surface_options,
         )?,
     };
     Ok(Presenter {
@@ -391,6 +403,7 @@ fn build_in(
     surface: wgpu::Surface<'static>,
     size: (u32, u32),
     path: PresentationPath,
+    surface_options: SurfaceOptions,
 ) -> Result<
     (
         Option<Blit>,
@@ -453,7 +466,15 @@ fn build_in(
             .map_err(PresenterError::NoRenderer)?;
         let renderer = renderer_row.get();
         {
-            let surface = WindowSurface::new(world, renderer, instance, adapter, window, surface);
+            let surface = WindowSurface::new(
+                world,
+                renderer,
+                instance,
+                adapter,
+                window,
+                surface,
+                surface_options,
+            );
             let attachments = FrameAttachments::new(
                 world,
                 renderer.context(),
@@ -490,6 +511,7 @@ pub fn setup_presenter(
     adapter: &wgpu::Adapter,
     fallback_size: (u32, u32),
     path: PresentationPath,
+    surface_options: SurfaceOptions,
 ) -> Result<Entity, PresenterError> {
     let presenter = build_presenter(
         world,
@@ -501,6 +523,7 @@ pub fn setup_presenter(
         adapter,
         fallback_size,
         path,
+        surface_options,
     )?;
     let entity = world.root_scope_mut().spawn(bundle![presenter]);
     Ok(entity)

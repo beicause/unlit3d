@@ -424,7 +424,9 @@ scene's pass draw straight into the swap chain (`PresentationPath::Surface`),
 and with its offscreen path on builds
 `PresentationPath::Intermediate` instead — a persistent target plus a second
 pass in the same world that copies it over the surface, which keeps the frame
-long enough to read back, so screenshots and snapshot tests ask for it. `draw_presented`
+long enough to read back, so screenshots and snapshot tests ask for it. Both
+paths take a `SurfaceOptions`: the present mode and how many frames may be in
+flight, which decide whether the swap chain waits for the display. `draw_presented`
 is the per-frame behaviour that drains the sub-world, dispatches the
 frame and presents it, `pump_presented` keeps frames coming while the
 window lives, and `resize_presented` follows the window around. The render

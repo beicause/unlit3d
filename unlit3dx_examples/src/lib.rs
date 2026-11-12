@@ -231,6 +231,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 gpu,
                 WINDOW_SIZE,
                 offscreen,
+                SurfaceOptions::default(),
             );
             if let Err(error) = outcome {
                 log::error!("failed to build the presentation path: {error}");

@@ -320,7 +320,8 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 `setup_presenter` 默认让场景自己的 pass 直接画进交换链（`PresentationPath::Surface`）；
 打开离屏路径后改建 `PresentationPath::Intermediate`，即一张常驻目标加同一个 world 里
 的第二个 pass，把目标拷到表面——这让帧存活得足够久、可以读回，截图与快照测试就走
-这条路。`draw_presented` 是每帧排空
+这条路。两条路都收一个 `SurfaceOptions`：呈现模式与允许在途的帧数，它们决定交换链是否
+等显示器。`draw_presented` 是每帧排空
 子 world、分发帧并呈现的行为，`pump_presented` 在窗口
 存活期间让帧持续到来，`resize_presented` 跟随窗口变化。绘制 world 所需的 render
 桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`
