@@ -35,18 +35,12 @@ music depends on the balls: clearing the scene leaves the tracks playing.
 cargo run -p unlit3dx_examples
 ```
 
-The synthesizer plays a soundfont embedded into the binary at build time. It
-lives in [`asset_bytes`](asset_bytes/README.md), the crate that carries it:
-`build.rs` reads `assets/FluidR3Mono_GM.sf3`, which the repository keeps out
-of version control, and `include_bytes!` in that crate's `soundfont()` carries
-it in, so the same bytes run everywhere, wasm included. The bytes sit outside
-this crate because a constant holding them would copy fourteen megabytes into
-this crate's metadata and slow every rebuild. When the file is missing the
-build warns and the demo runs silent — unless `UNLIT3D_REQUIRE_SOUNDFONT` is
-set, which the workflows that publish the site and the APK do, and which turns
-that warning into a build failure. Drop any SF3 soundfont at that path and
-rebuild — for example
-[FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3).
+The synthesizer plays a soundfont embedded into the binary at build time by
+[`asset_bytes`](asset_bytes/README.md), the crate that carries it: the same
+bytes reach a window, a browser and an Android activity, and no file is needed
+at run time. That crate's README also covers why the bytes sit in a crate of
+their own and what a checkout without the gitignored
+`assets/FluidR3Mono_GM.sf3` does.
 
 The `--mcp` switch serves the worlds over the [Model Context
 Protocol](../crates/unlit_ecs/README.md) instead of exiting with the
@@ -77,10 +71,9 @@ time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes due, the
 synth fills as its sample rate does, and gameplay ticks once per frame with
 the duration the run gives it (`HEADLESS_HZ`). After `--frames` frames the
 run's last frame and its whole audio mix land in `--out` as
-`screenshot.png` and `audio.flac`. Because every frame is the same length
-and the spawn rolls are seeded, a run is reproducible, which is
-what the snapshot tests ([English](tests/headless.rs),
-[简体中文](tests/headless.rs)) build on: rendered frames compare against
+`screenshot.png` and `audio.flac`. Because every frame is the same length and
+the spawn rolls are seeded, a run is reproducible, which is what the
+[snapshot tests](tests/headless.rs) build on: rendered frames compare against
 webp baselines and the mix against a FLAC baseline, both kept in the
 [`unlit3d_asset_files`](../unlit3d_asset_files) submodule;
 `SNAPSHOT_UPDATE=1` re-stores them.
@@ -92,20 +85,19 @@ time. The scene renders into an offscreen texture the client reads with
 the MIDI sequence and the centre of every panel button, and `request_exit`
 stops the process. Automatic ball drops and the background track's autoplay
 are off in this mode, so every visible and audible change comes from the
-client. The `mcp_input` test ([English](tests/mcp_input/main.rs),
-[简体中文](tests/mcp_input/main.rs)) starts that binary and never touches its
-internals: it clicks the panel through `send_input`, captures three image
-snapshots, compares the mix it recorded while the sequence played against a
-fourth baseline, asserts that the mix recorded after the pause is silent
-without storing it, and asks the process to exit.
+client. The [`mcp_input` test](tests/mcp_input/main.rs) starts that binary and
+never touches its internals: it clicks the panel through `send_input`, captures
+three image snapshots, compares the mix it recorded while the sequence played
+against a fourth baseline, asserts that the mix recorded after the pause is
+silent without storing it, and asks the process to exit.
 
-The same story runs twice from one description ([tests/mcp_input/shared.rs](tests/mcp_input/shared.rs)).
-The [native driver](tests/mcp_input/native.rs) speaks MCP to that child
-process; the [wasm driver](tests/mcp_input/wasm.rs) assembles the identical
-host in-process through `Interactive` and pushes the same input events and
-frame counts itself, so the browser suite exercises the interactive run
-without a JSON-RPC transport, a socket or a second thread. Both compare
-against the same four baselines.
+The same story runs twice from the description in
+`tests/mcp_input/shared.rs`. The [native driver](tests/mcp_input/native.rs)
+speaks MCP to that child process; the [wasm driver](tests/mcp_input/wasm.rs)
+assembles the identical host in-process through `Interactive` and pushes the
+same input events and frame counts itself, so the browser suite exercises the
+interactive run without a JSON-RPC transport, a socket or a second thread.
+Both compare against the same four baselines.
 
 Both snapshot tests are modules of one test target,
 [tests/gpu_suite.rs](tests/gpu_suite.rs), so the GPU stack links once.
@@ -183,7 +175,6 @@ it is paced differs.
   render, physics and audio senders, the physics snapshot, and what each of
   those three worlds reports about itself, handed to every tick. An object
   that never talks to the audio world keeps no sender for it.
-
 
   The world ticks once per frame and takes that frame's measured duration,
   so gameplay runs as fast as the display drives it; the display's refresh

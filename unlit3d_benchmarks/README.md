@@ -57,13 +57,14 @@ apart:
 | `matched_per_entity` | the archetype lookup and the component-set test that decides whether it matches the query |
 | `query_one_three` | resolving the query's columns in that archetype and claiming the row — the `TypeId` search, the downcast, and the claim bookkeeping |
 
-`get_one` and `get_three` are one and three `Scope::query_one` calls per entity
-— the shape the resolve pass used to have — and `query` is a walk over the
-whole world, which resolves each component's column once per archetype instead
-of once per entity. The `ecs grouping` group then runs the per-entity shape
-against the same work in an order that defeats the entity table's cache and
-against the archetype-major walk, which is what makes the order, rather than
-the shape, the thing being measured.
+`get_one` and `get_three` are one and three `Scope::query_one` calls per
+entity, and `query` is a walk over the whole world, which resolves each
+component's column once per archetype instead of once per entity.
+
+The `ecs grouping` group then runs the per-entity shape against the same work
+in an order that defeats the entity table's cache and against the archetype-major
+walk, which is what makes the order, rather than the shape, the thing being
+measured.
 
 At 100,000 entities the ladder reads `location` 743 µs, `matched_per_entity`
 1.51 ms and `query_one_three` 9.96 ms, against `query`'s 579 µs: the claim per

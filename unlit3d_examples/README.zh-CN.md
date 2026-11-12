@@ -13,9 +13,9 @@
 
 ## 场景
 
-示例的场景就是原来 `crates/unlit3d/tests` 里 GPU 测试所画的那些快照场景：现在每一个
-都是可选择的场景，而 `tests/gpu_suite.rs` 正是取代那些测试的检查。窗口化循环显示
-命令行选中的场景，并在面板里列出所有场景，运行时即可切换。`--list-scenes` 打印场景表：
+一个场景会记下其快照被捕获时的目标尺寸、帧数与采样数，因此离屏那一趟能精确重现它。
+窗口化循环显示命令行选中的场景，并在面板里列出所有场景，运行时即可切换。
+`--list-scenes` 打印场景表：
 
 ```text
 Scenes:
@@ -27,7 +27,7 @@ Scenes:
   morphed                a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
   lit                    one relief surface under directional, point, spot and quad lights
-  lit_clusters           every light kind in a per-cell local-light-count heatmap
+  lit_clusters           a floor receding into the distance with the cluster grid drawn over it
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent            translucent panes composited back to front over opaque cubes
@@ -36,24 +36,23 @@ Scenes:
   outline_msaa           the outline scene on a four-sample target
 ```
 
-每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
-能验证它。`mesh_topologies` 与 `transparent` 是两个例外：它们并非从测试移植而
-来，而是补上移植场景所缺的覆盖——每种图元拓扑各画一次索引与非索引，以及重叠的半透明
-绘制，其合成结果同时取决于 z 排序与混合状态。`gltf` 是另一个例外：它通过 `LitGltf`
-绘制 `unlit3d_asset_files/assets` 下的 glTF 文档，因此加载器的蒙皮与形变目标动画是拿
-真实资产来检验的，而不是单元测试里手写的那些。示例经由承载这些文档的
+每个场景的世界、相机与帧序列就是其快照被捕获时的样子，因此捕获结果仍能验证它。
+`mesh_topologies` 与 `transparent` 补上其他场景所缺的覆盖——每种图元拓扑各画一次
+索引与非索引，以及重叠的半透明绘制，其合成结果同时取决于 z 排序与混合状态。`gltf`
+通过 `LitGltf` 绘制 `unlit3d_asset_files/assets` 下的 glTF 文档，因此加载器的蒙皮
+与形变目标动画是拿真实资产来检验的，而不是单元测试里手写的那些。示例经由承载这些文档的
 [`asset_bytes`](asset_bytes/README.zh-CN.md) crate 取得它们，于是二进制自带所画的模型，
 运行时不需要任何文件。
 
-`custom_pipeline` 是第三个例外：它注册了两个自己的 family，而不是走内置的 unlit
-family。天空 family 从当帧相机重建视线方向，采样一张程序化生成的 cubemap，并用示例
+`custom_pipeline` 注册了两个自己的 family，而不是走内置的 lit family。天空 family
+从当帧相机重建视线方向，采样一张程序化生成的 cubemap，并用示例
 每帧写入的 uniform 块混合渐变与太阳；粒子 family 的每实例记录来自普通的 world 组件，
 每个精灵的动画由一个示例自己推进的时钟驱动。两者的网格都不带任何顶点属性——天空的三个
 顶点与每个粒子的六个顶点都来自顶点索引——因此这个场景检验的正是：调用方可以拥有自己的
 管线、绑定组、顶点布局与实例流，同时仍能读到当帧相机。它也是示例里最长的动画场景，
 绕行八帧。
 
-`outline` 是第四个例外：它画出库提供的两种线条，并让同一张图替两者说话。三个本体戴着
+`outline` 画出库提供的两种线条，并让同一张图替两者说话。三个本体戴着
 翻转外壳的带子——每一个都是同一份 mesh 从一个缓冲画两遍，先受光着色，再沿自身法线外扩
 并剔除正面——所以带宽是世界单位，站得更靠后的本体带子更细。旁边由 `LineSource` 把轨道、
 刻度和一对浑天环画成屏幕空间笔画，宽度以物理像素计，于是环从近端到远端粗细不变。刻度
@@ -77,12 +76,13 @@ ECS world 渲染进去并呈现。窗口尺寸变化同时交给 surface 与帧�
 [`FrameAttachments`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)：
 前者重新配置交换链，后者按新尺寸重建它持有的深度与多重采样附件。
 
-绘制 3D 内容的场景会声明一个**基准宽高比**——960×720，即移植场景被捕获时的形状。
-窗口化路径会把这类场景画进渲染目标内该宽高比所能容纳的最大矩形，并把该矩形自身的尺寸
-交给场景，因此每个场景都按它真正被绘制进的那块区域来取相机宽高比。渲染目标只会给画面
-加上黑边：宽窗口与窄窗口看到的是同一个画面，只是更大，而不是看到更多，且任何情况下都
-不会拉伸变形。UI 仍然铺满整个渲染目标而不是那个矩形，因为面板本身没有宽高比。快照测试
-会关掉这个 letterbox，直接按场景自身尺寸绘制，因此捕获结果不变。
+绘制 3D 内容的场景会声明一个**基准宽高比**——960×720，即默认窗口的尺寸，也是每个
+场景快照所保持的 4:3 宽高比。窗口化路径会把这类场景画进渲染目标内该宽高比所能容纳的
+最大矩形，并把该矩形自身的尺寸交给场景，因此每个场景都按它真正被绘制进的那块区域来取
+相机宽高比。渲染目标只会给画面加上黑边：宽窗口与窄窗口看到的是同一个画面，只是更大，
+而不是看到更多，且任何情况下都不会拉伸变形。UI 仍然铺满整个渲染目标而不是那个矩形，
+因为面板本身没有宽高比。快照测试会关掉这个 letterbox，直接按场景自身尺寸绘制，因此
+捕获结果不变。
 
 窗口顶部居中的读数显示平滑后的帧率与帧耗时。场景选择器在右下角打开，其右下角距屏幕
 边缘留出一个边距，并可从那里拖到任意位置；离开时留下的矩形会在选择下一个场景时带过去。
@@ -160,7 +160,7 @@ cargo xtask run-wasm --app unlit3d
 没人加载的动态库。该库沿用本 crate 的名字，所以 activity 的 `android.app.lib_name`
 清单项无需改动。
 
-## Model Context Protocol
+## MCP
 
 `--mcp` 会把示例原本要渲染的那个场景经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。所选场景会先被构建——
@@ -241,11 +241,11 @@ cargo nextest run -p unlit3d_examples
 可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。
 
 自带时序的动画则不声明步长，而是按帧间隔推进，于是窗口按显示器刷新的节奏运行它，
-而不是被一段静止序列压成每秒两次的跳变。这里有两个这样的场景。`gltf` 让狐狸的
-`Walk` 与形变立方体的 `Pulse` 各自按自身时长实时循环播放，因此窗口展示的是文档在
-应用中的样子，而不是六帧序列。`custom_pipeline` 的动画是参数化的——绕行角度与粒子
-时钟都是时间的函数——所以它累加帧间隔并逐帧移动。快照捕获仍然走各场景自己的序列，
-因为存下的帧必须可复现。
+而不是被一段静止序列压成每秒两次的跳变。有三个这样的场景。`spin_cube` 按帧间隔转动
+立方体，所以拍下快照的那 30 帧之后它仍在转。`gltf` 让狐狸的 `Walk` 与形变立方体
+的 `Pulse` 各自按自身时长实时循环播放，因此窗口展示的是文档在应用中的样子，而不是
+六帧序列。`custom_pipeline` 的动画是参数化的——绕行角度与粒子时钟都是时间的函数——
+所以它累加帧间隔并逐帧移动。快照捕获仍然走各场景自己的序列，因为存下的帧必须可复现。
 
 ### 选择设备档位
 
@@ -288,14 +288,17 @@ tie-break 规则决定，API 把这件事留给实现。这样零星几个像素
 供人直接查看而不是只凭日志里的分数去猜。测试失败时 CI 会把这些目录作为 artifact 上传。
 
 确有意改动渲染结果后，要重新生成快照，用 `SNAPSHOT_UPDATE=1` 运行，然后在提交前审查
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
 中的图像差异。该 submodule 用 `git submodule update --init --checkout` 检出，
 `--checkout` 是为了越过它的 `update = none`。
 
 ## 测试
 
-本 crate 自己的测试覆盖命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`）
-与窗口浮层（`src/overlay.rs`），`tests/gpu_suite.rs` 则覆盖渲染。测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
+本 crate 自己的测试覆盖命令行（`src/cli.rs`）、场景切换与固定步长播放时钟
+（`src/tests.rs`）以及窗口浮层（`src/overlay/tests.rs`）；`tests/gpu_suite.rs` 覆盖
+渲染，`tests/selector_position.rs` 覆盖窗口外壳跨场景切换保留的浮动面板。
+
+测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
 [根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证

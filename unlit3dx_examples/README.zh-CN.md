@@ -28,15 +28,10 @@
 cargo run -p unlit3dx_examples
 ```
 
-合成器演奏的音色库在构建期嵌入二进制。它住在承载它的
-[`asset_bytes`](asset_bytes/README.zh-CN.md) crate 里：`build.rs` 读取
-`assets/FluidR3Mono_GM.sf3`（仓库不把它纳入版本控制），该 crate 的 `soundfont()`
-用 `include_bytes!` 把它带进二进制，同一份字节在任何平台都能用，wasm 也不例外。
-这些字节之所以不放在本 crate 里，是因为用常量装着它们会把这十四兆字节拷进本 crate 的
-元数据，拖慢每一次重新构建。文件缺失时构建发出警告，示例静音运行；但设置
-`UNLIT3D_REQUIRE_SOUNDFONT` 后这行警告变成构建失败，发布站点与 APK 的 workflow 就是这么做的。
-把任何 SF3 音色库放到该路径并重新构建即可换音色，例如
-[FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3)。
+合成器演奏的音色库在构建期由承载它的 [`asset_bytes`](asset_bytes/README.zh-CN.md)
+crate 嵌入二进制：同一份字节能到达窗口、浏览器与 Android activity，运行期不需要文件。
+「这些字节为什么单独放一个 crate」以及缺了被 gitignore 的
+`assets/FluidR3Mono_GM.sf3` 时会怎样，见该 crate 的 README。
 
 `--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit_ecs/README.zh-CN.md)
 对外服务，而不是随窗口一起退出：工具随后可以检视每个 world，为渲染 world 保存截图，
@@ -62,21 +57,19 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 （`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
 时长就是这个运行给定的 `HEADLESS_HZ`。走满 `--frames` 帧后，这一运行的最后一帧
 与整段混音写入 `--out` 下的 `screenshot.png` 与 `audio.flac`。每一帧长度都相同、
-生成骰子也是确定的，因此每次运行都可复现——快照测试（[English](tests/headless.rs)、
-[简体中文](tests/headless.rs)）正建立在此之上：渲染帧与 webp 基准比较，
-混音与 FLAC 基准比较，基准都保存在
+生成骰子也是确定的，因此每次运行都可复现——[快照测试](tests/headless.rs)正建立
+在此之上：渲染帧与 webp 基准比较，混音与 FLAC 基准比较，基准都保存在
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
 `SNAPSHOT_UPDATE=1` 重新保存基准。
 
 `--headless --mcp` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
 离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告帧号、球数、MIDI
 序列状态与每个面板按钮的中心，`request_exit` 让进程退出。该模式下自动掉球与背景自动播放
-均关闭，因此每个可见与可听的变化都来自客户端。`mcp_input` 集成测试（[English](tests/mcp_input/main.rs)、
-[简体中文](tests/mcp_input/main.rs)）启动这个二进制，只通过 MCP 的 `send_input` 点击面板、捕获三张图片
-快照、把序列播放期间录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，
-并请求进程正常退出。
+均关闭，因此每个可见与可听的变化都来自客户端。[`mcp_input` 集成测试](tests/mcp_input/main.rs)
+启动这个二进制，只通过 MCP 的 `send_input` 点击面板、捕获三张图片快照、把序列播放期间
+录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，并请求进程正常退出。
 
-同一段剧情由一份描述（[tests/mcp_input/shared.rs](tests/mcp_input/shared.rs)）跑两遍：
+同一段剧情由 `tests/mcp_input/shared.rs` 的一份描述跑两遍：
 [原生驱动](tests/mcp_input/native.rs) 通过 MCP 与那个子进程对话，
 [wasm 驱动](tests/mcp_input/wasm.rs) 则用 `Interactive` 在原地组装出同一个宿主，自己推送
 同样的输入事件与帧数，于是浏览器套件无需 JSON-RPC 传输、套接字或第二个线程就能跑到
@@ -133,7 +126,6 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   每个对象都通过一个 `Scene` 值触达其余 world：render、physics、audio 三个
   sender、物理快照，以及这三个 world 各自对自己状态的报告，交给每一次
   tick。从不对音频 world 说话的对象也就不会持有它的 sender。
-
 
   它每帧 tick 一次，时长取这一帧的实测值，因此玩法跑得像显示器驱动得那么快；
   显示器的刷新率只约束它的线程多久醒一次，从不决定时间前进多少。

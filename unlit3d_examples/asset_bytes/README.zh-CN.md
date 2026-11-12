@@ -4,7 +4,7 @@
 
 [`unlit3d_examples`](../README.zh-CN.md) 的 `gltf` 场景所绘制的 glTF 文档——一只带蒙皮的
 狐狸和一份形变目标压力测试——被带进二进制，因此场景运行时不需要任何文件。两者都来自
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
 子模块。
 
 这些字节单独成为一个 crate，只有一个原因：编译时间。

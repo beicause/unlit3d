@@ -50,9 +50,8 @@ Criterion 把报告写在 `target/criterion` 下，并把每次运行与上一�
 | `matched_per_entity` | archetype 查找，以及判定它是否匹配查询的组件集测试 |
 | `query_one_three` | 在该 archetype 中解析查询的列并认领该行——即 `TypeId` 查找、向下转型与认领记账 |
 
-`get_one` 与 `get_three` 是逐实体一次和三次 `Scope::query_one`——resolve 阶段原先的
-形态——`query` 则是对整个 world 的遍历，它按 archetype 只解析一次各组件的列，而不是
-逐实体解析一次。`ecs grouping` 组把逐实体形态与「同样的工作但顺序打乱、使实体表的缓存
+`get_one` 与 `get_three` 是逐实体一次和三次 `Scope::query_one`，`query` 则是
+对整个 world 的遍历，它按 archetype 只解析一次各组件的列，而不是逐实体解析一次。`ecs grouping` 组把逐实体形态与「同样的工作但顺序打乱、使实体表的缓存
 失效」以及按 archetype 的遍历对比，因此被测量的是顺序本身，而不是形态。
 
 在 100000 个实体时，这条阶梯读作 `location` 743 µs、`matched_per_entity` 1.51 ms、

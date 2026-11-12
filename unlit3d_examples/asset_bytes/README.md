@@ -5,7 +5,7 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3d_e
 The glTF documents [`unlit3d_examples`](../README.md)' `gltf` scene draws — a
 skinned fox and a morph stress test — carried inside the binary so the scene
 needs no file at run time. Both come from the
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
 submodule.
 
 The bytes are a crate of their own for one reason: compile time.

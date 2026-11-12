@@ -14,9 +14,8 @@ parts of them that are still under construction.
 
 ## Scenes
 
-The example's scenes are the snapshot scenes the GPU tests used to draw in
-`crates/unlit3d/tests`: every one of them is now a selectable scene, and
-`tests/gpu_suite.rs` is the check that replaced those tests. The windowed loop
+A scene records the target size, frame count and sample count its snapshots
+were captured at, so the offscreen run reproduces it exactly. The windowed loop
 shows the scene the command line selected and lists every scene in a panel, so
 one can be switched to at runtime. `--list-scenes` prints the table:
 
@@ -30,7 +29,7 @@ Scenes:
   morphed                a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
   lit                    one relief surface under directional, point, spot and quad lights
-  lit_clusters           every light kind in a per-cell local-light-count heatmap
+  lit_clusters           a floor receding into the distance with the cluster grid drawn over it
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent            translucent panes composited back to front over opaque cubes
@@ -39,21 +38,20 @@ Scenes:
   outline_msaa           the outline scene on a four-sample target
 ```
 
-Each scene reproduces exactly what its test froze: the same world, camera and
-frame sequence, so the stored snapshots still verify it. `mesh_topologies` and
-`transparent` are the exceptions: they are not ported from a test but
-add the coverage the ported scenes lack — every primitive topology drawn both
-indexed and non-indexed, and overlapping translucent draws whose composite
-depends on both the z-sort and the blend state. `gltf` is the other exception:
-it draws the glTF documents in `unlit3d_asset_files/assets` through
-`LitGltf`, so the loader's skinning and morph-target animation are checked
-against real assets rather than the hand-written ones the unit tests use. The
-example reaches those documents through
-[`asset_bytes`](asset_bytes/README.md), the crate that embeds them, so the
-binary carries the models it draws and needs no file at run time.
+Each scene's world, camera and frame sequence are the ones its snapshots were
+captured from, so a capture still verifies it. `mesh_topologies` and
+`transparent` add coverage the other scenes lack — every primitive topology
+drawn both indexed and non-indexed, and overlapping translucent draws whose
+composite depends on both the z-sort and the blend state. `gltf` draws the
+glTF documents in `unlit3d_asset_files/assets` through `LitGltf`, so the
+loader's skinning and morph-target animation are checked against real assets
+rather than the hand-written ones the unit tests use. The example reaches those
+documents through [`asset_bytes`](asset_bytes/README.md), the crate that
+embeds them, so the binary carries the models it draws and needs no file at run
+time.
 
-`custom_pipeline` is the third: it registers two families of its own rather than
-drawing through the built-in lit one. A sky family reconstructs a view ray
+`custom_pipeline` registers two families of its own rather than drawing
+through the built-in lit one. A sky family reconstructs a view ray
 from the frame's camera, samples a procedurally generated cube map and blends a
 gradient and a sun from a uniform block the example writes every frame; a
 particle family takes its per-instance records from an ordinary world component
@@ -64,8 +62,8 @@ its bind groups, its vertex layout and its instance stream, and still read the
 frame's camera. It is also the example's longest animated scene, at eight frames
 of an orbit.
 
-`outline` is the fourth: it draws two kinds of line the library offers and lets
-one picture argue for both. Three bodies wear an inverted-hull band — each is one
+`outline` draws two kinds of line the library offers and lets one picture
+argue for both. Three bodies wear an inverted-hull band — each is one
 mesh drawn twice from one buffer, lit and then spread along its own normals with
 its front faces culled — so the band is a width in world units and the bodies
 standing further back wear a thinner one. Beside them a `LineSource` draws the
@@ -101,12 +99,13 @@ which rebuilds the depth-stencil and multisample attachments it holds at the
 new size.
 
 A scene that draws 3D content declares a **baseline aspect** — 960×720, the
-shape the ported scenes were captured at. The windowed path draws such a scene
-through the largest rectangle of that aspect the target fits, and hands the
-scene that rectangle's own size, so every scene takes its camera aspect from the
-region it is actually drawn into. The target only ever adds bars around the
-picture: a wide window shows the same view a narrow one does, larger, rather
-than more of it, and nothing is ever stretched. The UI is drawn over the whole
+default window's size and the 4:3 aspect every scene's snapshots keep. The
+windowed path draws such a scene through the largest rectangle of that aspect
+the target fits, and hands the scene that rectangle's own size, so every scene
+takes its camera aspect from the region it is actually drawn into. The target
+only ever adds bars around the picture: a wide window shows the same view a
+narrow one does, larger, rather than more of it, and nothing is ever stretched.
+The UI is drawn over the whole
 target rather than the letterboxed region, because a panel has no aspect of its
 own. The snapshot tests turn the letterbox off and draw at the scene's own size,
 so a capture is unchanged.
@@ -318,13 +317,15 @@ windowed frame, so a stall does not skip frames.
 A scene whose animation carries its own timing declares no step at all and
 advances from the frame delta instead, so the window runs it at the pace the
 display refreshes rather than in the two steps a second a held sequence gives.
-Two scenes do this. `gltf` plays the fox's `Walk` and the morph cube's `Pulse`
-at each clip's own duration, looping in real time, so the window shows the
-documents as an application would rather than through a six-frame sequence.
-`custom_pipeline` is parametric — the orbit angle and the particle clock are
-both functions of time — so it accumulates the frame delta and moves every
-frame. The snapshot capture still walks each scene's sequence, because a
-stored frame has to be reproducible.
+Three scenes do this. `spin_cube` turns the cube by the delta, so it keeps
+turning after the 30 frames its snapshot was taken from. `gltf` plays the
+fox's `Walk` and the morph cube's `Pulse` at each clip's own duration,
+looping in real time, so the window shows the documents as an application
+would rather than through a six-frame sequence. `custom_pipeline` is
+parametric — the orbit angle and the particle clock are both functions of
+time — so it accumulates the frame delta and moves every frame. The snapshot
+capture still walks each scene's sequence, because a stored frame has to be
+reproducible.
 
 ### Choosing a device tier
 
@@ -385,16 +386,19 @@ fails.
 
 To re-bless a snapshot after an intentional rendering change, run with
 `SNAPSHOT_UPDATE=1`, then review the image diffs in
-[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
 before committing them. That submodule is checked out with
 `git submodule update --init --checkout`, which is what gets past its
 `update = none`.
 
 ## Tests
 
-The crate's own tests cover the command line (`src/cli.rs`), the fixed-step
-playback clock (`src/lib.rs`) and the window overlays (`src/overlay.rs`), and
-`tests/gpu_suite.rs` covers the rendering.
+The crate's own tests cover the command line (`src/cli.rs`), the scene
+switch and the fixed-step playback clock (`src/tests.rs`), and the window
+overlays (`src/overlay/tests.rs`); `tests/gpu_suite.rs` covers the
+rendering, and `tests/selector_position.rs` the dragged panels the window
+shell keeps across a scene switch.
+
 Where each test layer sits across the workspace, and what CI runs, is in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 

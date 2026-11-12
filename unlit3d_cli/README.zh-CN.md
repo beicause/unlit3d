@@ -101,7 +101,7 @@ cargo nextest run -p unlit3d_cli
 快照比较使用 SSIMULACRA2。快照不存在时，它会用该帧写出一份而不是失败，`SNAPSHOT_UPDATE=1`
 则重写已存在的那份。
 
-## Model Context Protocol
+## MCP
 
 `--mcp` 会把一个无头 world 经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。该模式下不需要
