@@ -5,7 +5,7 @@
 
 绕过它的那段代码旁留有一行注释指回这里。
 
-[English version](WORKAROUND.md)
+[English](WORKAROUND.md) | 简体中文
 
 ## DX12 上对向量做动态下标，读出的 lane 全是 0
 

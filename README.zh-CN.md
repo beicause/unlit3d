@@ -10,29 +10,12 @@
 构建在 `wgpu` 上的紧凑、可拓展的、有主见的 3D 渲染器，以及构建在其上的
 ECS 层。内置 **Lambert** 管线——由平行光、点光、聚光与多边形光给出的简单漫反射光照——
 移动端优先；跑在 WebGPU 与 WebGL2 基线上。
-它直接使用并暴露 `wgpu` 资源，允许底层控制和拓展，带有很少的CPU端的高级封装。
+它直接使用并暴露 `wgpu` 资源，允许底层控制和拓展，带有很少的 CPU 端高级封装。
 
 它主要面向拥有图形渲染知识的开发者和编程智能体。与主流的面向大众用户的游戏引擎不同，
-它不做高级别的封装，你需要有 WebGPU 知识才能较好地运用它。
+它不做高级别的封装，你需要有 WebGPU 知识才能较好地运用它。它的依赖很少，编译也快。
 
 项目处于**极早期开发阶段**。API 会自由变动；请把每个 crate 都视为进行中的产物。
-
-<details>
-<summary>本项目优化什么，以及有意舍弃什么</summary>
-
-- **轻量、可自定义。** 没有繁重的依赖，较快的编译时间，对 AI Agent 友好。精简 ECS
-  范式并借鉴 OOP，更多地使用行为组件替代系统，将关注点放在对象上。
-- **移动和 Web 优化。** 默认瞬态 MSAA 纹理、瞬态深度纹理，顶点属性压缩，简单的
-  漫反射光照，以及少量显式的渲染 pass。没有对移动端较为昂贵的 prepass、PBR 光照、
-  阴影与后处理，没有使用计算着色器。
-- **底层。** 直接使用 `wgpu` 资源，允许直接操作缓冲。渲染资源跨帧保留，资源图管理使得
-  资源只在必要时重建。
-- **确定性的渲染。** 一流的无头渲染、CI 自动化快照测试。
-
-不支持：阴影、基于物理的材质与后处理。光照是方向光、点光、聚光与多边形面光下的
-Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备也走同一条路径。
-
-</details>
 
 ## 功能一览
 
@@ -47,15 +30,15 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
 - **由调用者组合的场景。** 一帧是一串 pass，每个 pass 都是普通实体，携带自己绘入的
   view；每个 pass 录制其下的帧源，这些帧源各自贡献绘制并声明自己在该 pass 中的位置。
   内置网格渲染、egui 叠加层与调用者自己的源权限完全相同。
-- **精简的 ECS。** 借鉴 OPP 重视对象状态，实体原型不可变，系统由外部驱动而非内置，
+- **精简的 ECS。** 借鉴 OOP 重视对象状态，实体原型不可变，系统由外部驱动而非内置，
   行为是持有闭包的组件而非 system，参见[unlit_ecs](./crates/unlit_ecs/README.zh-CN.md)。
   可渲染实体把网格、材质与管线作为组件携带，游戏逻辑与绘制共用同一套模型。
 - **按变体组合的 lit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
   逐实例变换与颜色、基础色纹理、蒙皮、形变目标——并针对本帧的渲染目标特化。
-- **Lambert 光照，前向聚类。** 方向光、点光、聚光与凸多边形面光在与无光绘制同一个
-  前向 pass 里着色：光照只是同一个变体的又一个开关，顶点流与 mesh 组都不变。本帧的
-  光源在 CPU 上聚类成屏幕瓦片与对数深度切片的网格，于是片元只读一个格子，着色器
-  不需要计算着色器。没有阴影。
+- **Lambert 光照，前向聚类。** 受光绘制与无光绘制是同一个变体，只差一个开关，顶点流
+  与 mesh 组都不变。聚类在 CPU 上完成，着色器因此不需要计算着色器，WebGL2 也走同一条
+  路径。没有阴影。机制见
+  [`unlit_wgpu` 的「光照」一节](crates/unlit_wgpu/README.zh-CN.md#光照前向聚簇的-lambert)。
 - **自定义着色器与逐实例数据。** 调用者自己的家族通过与内置家族同一个调用注册，用自己的
   管线绘制——手写的 `wgpu` 管线，或用本库公开着色器包组合出的 WESL 模块——并拥有
   自己的逐实例顶点流，由内置 lit 家族所实现的同一个 `InstanceData` trait 描述。
@@ -71,11 +54,11 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
   实例化绘制。
 - **egui 与可移植输入。** egui 可叠加于渲染之上，也可渲染到单独纹理；输入统一，由
   类似 OOP 风格的回调驱动。
-- **确定性渲染，CI 快照测试。** 同一场景离屏渲染的结果每次都完全相同。三个桌面平台上
-  各自 lint、构建与测试，再把示例的每个场景渲染出来并与存储图像做 SSIMULACRA2 比对；
-  wasm 与 Android 构建是另外两个独立 job。
-- **内置MCP支持。** 可将MCP服务器嵌入应用程序，让AI Agent读写组件、截图。服务器不携带任何
-  引擎知识：每个 crate 各自注册作用于它所定义类型的工具。
+- **确定性渲染，CI 快照测试。** 同一场景离屏渲染的结果每次都完全相同。CI 会把示例的
+  每个场景渲染出来并与存储图像做 SSIMULACRA2 比对；两档 job 的划分见
+  [持续集成](#持续集成)。
+- **内置 MCP 支持。** 可将 MCP 服务器嵌入应用程序，让 AI Agent 读写组件、截图。服务器不携带
+  任何引擎知识：每个 crate 各自注册作用于它所定义类型的工具。
 
 ## Crate 一览
 
@@ -109,12 +92,11 @@ Lambert 着色，聚类在 CPU 上完成，因此没有计算着色器的设备�
 
 ## 编码原则
 
-- **尽量采用通用方法而不是给内置功能特权**，要考虑功能的通用性，便于用户使用本库进行
-  自定义和拓展。本库的一些内置实现（如 lit 渲染）不应该拥有特权和内部专用实现，
-  内部实现应该挪到外部以保证本库的可自定义性和可拓展性。
-- **在出问题的那一处绕开后端 bug，并把原因写下来。**驱动把合法代码编错时，就在绊到它
-  的代码处绕开，并把症状、成因与代价记进 [`WORKAROUND.zh-CN.md`](WORKAROUND.zh-CN.md)，
-  后来的人才能分清那是刻意的怪写法还是笔误。
+- **优先用通用机制，不给内置功能特权。** 设计面向通用性，让用户可以自定义与拓展本库；
+  内置实现（如 lit 渲染）不应有特权或内部专用路径，内部实现应向外移，以保持可定制与可拓展。
+- **在出问题的那一处绕开后端 bug，并写下原因。** 驱动把合法代码编错时，就在绊到它的代码处
+  绕开，把症状、成因与代价记进 [`WORKAROUND.zh-CN.md`](WORKAROUND.zh-CN.md)，
+  让后来的人能分清那是刻意的怪写法还是笔误。
 
 `cargo xtask` 的各任务及其参数见 [`xtask/README.zh-CN.md`](xtask/README.zh-CN.md)。
 
@@ -148,11 +130,11 @@ target 就意味着同一份代码按文件各链接一次——此前整个工�
 都带着同一套运行时。二进制的名字就是 crate 的名字，其 `required-features` 是它的用例
 所需的功能，因此若某个 suite 用到了可选功能，该功能打开时它才会运行。
 
-快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
-中。它被标记为 `update = none`：把本库当作 git 依赖的项目不会去拉取用不到的快照；
-而这里测试确实要用，所以在本仓库用 `git submodule update --init --checkout` 拉取。
-改动渲染结果后重新生成对应快照，并审查图像差异再提交。由于基线来自同一套 GPU 栈，
-换一个平台的驱动就可能让某个场景低于阈值
+快照基线都在 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
+这个 git submodule 中。它被标记为 `update = none`：把本库当作 git 依赖的项目不会去拉取
+用不到的快照；而这里测试确实要用，所以在本仓库用
+`git submodule update --init --checkout` 拉取。改动渲染结果后重新生成对应快照，并审查
+图像差异再提交。由于基线来自同一套 GPU 栈，换一个平台的驱动就可能让某个场景低于阈值
 而并没有出错；因此不匹配的帧会在测试失败前被写下（每一趟各写进 `target/` 下的一个
 目录），CI 再把这些目录作为 artifact 上传。
 
@@ -190,9 +172,8 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 |-------|----------------|
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令，以及 MCP 服务器的 ECS 工具。 |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
-| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。一个端到端 MCP 测试在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。其多帧快照覆盖位于 `unlit3d_examples`。 |
-| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`）、窗口浮层（`src/overlay.rs`），以及 `tests/gpu_suite.rs` 的渲染快照。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素，其中有一个端到端 MCP 测试，用一对流把 world 服务出去并用 JSON-RPC 与它对话。其多帧快照覆盖位于 `unlit3d_examples`。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、场景切换与固定步长播放时钟（`src/tests.rs`）、窗口浮层（`src/overlay/tests.rs`），以及 `tests/gpu_suite.rs` 的渲染快照；`tests/selector_position.rs` 覆盖窗口外壳跨场景切换保留的面板。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 抵达目标 world、快照与流订阅、world 对自己状态的发布、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
@@ -213,10 +194,9 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 上述检查以及各 lint 关卡分成两档，并拆到两个 workflow 里，好让两档共有的任务只写一遍：
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 是轻量档，
 [`.github/workflows/ci-main.yml`](.github/workflows/ci-main.yml) 是整份，它带上 `full` 调用
-轻量档的任务，再补上只有发行才需要的部分。跑哪一档由这一次运行所在的 ref 决定，
-而不由是谁触发的决定：`main` 与合并队列（不论 ref 写成什么，那都是一次 `main` 的运行）
-跑整份，其余分支跑轻量档。因此，从分支开出的 pull request 算在内，没开 pull request、
-只是推上去的分支也算在内——推上去就够了，开 PR 并不是启动构建的那个动作。
+轻量档的任务，再补上只有发行才需要的部分。分档跟着提交落到哪里走：`main` 以外任何分支
+上的推送、以及任何 pull request，都跑轻量档；同一分支的推送与由它开出的 pull request 共用
+一个并发槽位，pull request 不会再起一次。推送到 `main`、合并队列的运行与手动运行跑整份。
 
 轻量档跑的是改动自己就能弄坏的东西，并且要落在审阅者读这一遍代码的时间里：只跑一个平台，
 web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的由 `main` 跑，那是证明一份
@@ -227,9 +207,12 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 - **lint** —— 对全部文件跑 `typos`；对 TOML 跑 `tombi lint --error-on-warnings` 与
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
 - **build**（Linux）—— 带默认 features、完全不带 features 与带全部 features 的
-  clippy、`cargo xtask test`、带 `-D warnings` 的 `cargo doc`，以及工作区的
-  快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，一遍把所有离屏设备收窄到
-  WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa 以提供 `lavapipe`。
+  clippy，然后 `cargo xtask test` 与带 `-D warnings` 的 `cargo doc`。快照比较在
+  `cargo xtask test` 里跑两遍：一遍用 WebGPU 基线的 limits，一遍把所有离屏设备收窄到
+  WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa 以提供 `lavapipe`，并取来示例
+  音色库，好让音频基线比较的是真实声音。
+- **miri** —— `cargo xtask miri`：把 `unlit_ecs` 的测试放到 Miri 下解释执行，这是
+  唯一能看见「经 `&World` 发出引用的那套存储」里未定义行为的检查。其他 crate 都不跑。
 - **check-wasm** —— 为 `wasm32-unknown-unknown` 对工作区、四个库（关闭默认
   features）与测试二进制各跑一遍 clippy。它排除 `xtask`：那是只在宿主机上运行的
   任务运行器，其 HTTP 服务器无法为该目标编译。
@@ -240,12 +223,11 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 `main` 上——每次推送到它、合并队列的一次运行，以及从它手动触发的运行，都是整份：
 
 - **build** 除 Linux 外还在 macOS 与 Windows 上跑。
-- **build-wasm** —— 对 `wasm32-unknown-unknown` 构建跑同样的三遍 clippy，然后把
-  每个 wasm 测试二进制 bindgen 成页面，在真实浏览器中驱动。既然这里已经 lint 了这些
-  构建，`main` 上就不必再跑 `check-wasm`。
-- **build-android** —— 先跑 `aarch64-linux-android` 的两遍 clippy，再交叉构建动态库，
-  并在其外套上 Gradle 得到 APK。它自己就跑了这两遍，所以 `main` 上同样不必再跑
-  `check-android`。
+- **build-wasm** —— 先跑 `check-wasm` 的那三遍 clippy，然后把每个 wasm 测试二进制
+  bindgen 成页面，在真实浏览器中驱动，软件 WebGL2 也在内。既然这里已经 lint 了这些构建，
+  `main` 上就不必再跑 `check-wasm`。
+- **build-android** —— 先跑 `check-android` 的两遍 clippy，再交叉构建动态库，并在其外套上
+  Gradle 得到 APK。它自己就跑了这两遍，所以 `main` 上同样不必再跑 `check-android`。
 
 两个 `check-*` 任务各自与 `main` 上做同一件事的任务共用一个缓存
 （Swatinem/rust-cache 的 `shared-key`），因此轻量档编译出来的东西，合并后是
@@ -254,22 +236,17 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 缓存拆成两份。每个任务即便失败也会保存它的缓存（`cache-on-failure`），因此在
 失败的分支上迭代时，下一次运行仍比冷启动要暖和。
 
-快照比较正是让渲染回归会失败而不是悄然通过的那道检查，这也是示例的场景承担它的原因。
-它的第二遍通过设置 `UNLIT3D_DEVICE_TIER=webgl2`（而不是为 Web 构建）来触达 WebGL2
-路径，即便 runner 自身的适配器有 storage buffer 与 `base_vertex`。`build-wasm` 则用
-同一批测试体，在真实浏览器中跑同样的比较。
-
-比较失败的帧会在测试失败前被写下，因此 CI 中失败的运行会把它留在 `target/` 下各自
-的目录里，由任务作为 artifact 上传。不匹配往往反映的是平台差异而非回归，所以拿到这
+失败运行留下的帧按各趟分别上传，各来自自己的目录：`build` 的
+`target/snapshot-mismatches` 与 `target/snapshot-mismatches-webgl2`，`build-wasm` 的
+`target/snapshot-mismatches-wasm`。不匹配往往反映的是平台差异而非回归，所以拿到这
 一帧，才能让人直接查看差异，而不是从分数去推断。
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次推送到 `main` 时
 把站点发布到 GitHub Pages：根目录是一个首页，链接两个 web 示例与 API 文档，每个示例
-各占旁边的一个目录，工作区的 rustdoc 放在 `docs/` 下；`unlit3d` 示例的页角也链接到这些
-文档。文档用 nightly 构建，因为列出各 crate 的索引页与 `doc(cfg(...))`
-标签都只存在于 nightly；`ci.yml` 仍在 stable 上检查文档，好让问题在分支上
-就被发现，而不是等到发布时。让文档警告弄挂构建的正是这道检查——发布这一侧只要它产出的
-页面，因为一个链接坏掉的页面也比被它挡下、什么都没发出去的站点有价值。
+各占旁边的一个目录，工作区的 rustdoc 放在 `docs/` 下，`unlit3d` 示例的页角也链接到这些
+文档。发布这一侧用 nightly 构建文档，因为列出各 crate 的索引页与 `doc(cfg(...))` 标签都
+只存在于 nightly，并且容忍那里的文档警告：一个链接坏掉的页面，胜过被它挡下、什么都没
+发出去的站点。让文档警告弄挂构建的是 `ci.yml`，那是在分支上，而不是等到发布时。
 
 ## 工作区结构
 

@@ -7,7 +7,7 @@ symptom first.
 
 The code that works around one carries a comment pointing here.
 
-[中文版](WORKAROUND.zh-CN.md)
+English | [简体中文](WORKAROUND.zh-CN.md)
 
 ## A dynamic subscript of a vector reads zero lanes on DX12
 

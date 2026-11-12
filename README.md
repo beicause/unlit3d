@@ -16,32 +16,11 @@ extension, with very little high-level CPU-side abstraction.
 
 It targets developers and coding agents who know graphics rendering. Unlike
 mainstream engines aimed at a mass audience, it does not wrap things at a high
-level: you need WebGPU knowledge to use it well.
+level: you need WebGPU knowledge to use it well. It has few dependencies and
+compiles quickly.
 
 The project is at an **early stage of development**. The APIs change freely;
 treat every crate as work in progress.
-
-<details>
-<summary>What this project optimizes for, and what it deliberately leaves out</summary>
-
-- **Lightweight and customizable.** No heavy dependencies, fast compile times,
-  friendly to AI agents. A streamlined ECS paradigm borrowing from OOP, using
-  behavior components more than systems and putting the focus on objects.
-- **Mobile and web optimized.** Transient MSAA and depth textures by default,
-  compressed vertex attributes, simple diffuse lighting, and a short,
-  explicit list of render passes. None of the prepass, PBR lighting, shadows or
-  post-processing that are expensive on mobile, and no compute shaders.
-- **Low-level.** `wgpu` resources used directly, buffers manipulated directly.
-  Render resources persist across frames, and a resource graph rebuilds them only
-  when necessary.
-- **Deterministic rendering.** First-class headless rendering and automated CI
-  snapshot tests.
-
-Not supported: shadows, physically based materials and post-processing. Lighting
-is Lambert shading under directional, point, spot and polygon lights, clustered
-on the CPU so that the same path runs on a device with no compute shaders.
-
-</details>
 
 ## Features
 
@@ -73,12 +52,11 @@ on the CPU so that the same path runs on a device with no compute shaders.
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
-- **Lambert lighting, forward clustered.** A directional, point, spot or convex
-  polygon light shades the same forward pass as the unlit one: lighting is one
-  more flag of the same variant, over the same vertex streams and the same mesh
-  group. The frame's lights are clustered on the CPU into a grid of screen
-  tiles and logarithmic depth slices, so a fragment reads one cell and the
-  shader needs no compute. No shadows.
+- **Lambert lighting, forward clustered.** A lit draw and an unlit one are the
+  same variant with one flag set or cleared, over the same vertex streams and the
+  same mesh group. The clusters are built on the CPU, so the shader needs no
+  compute and WebGL2 runs the same path. No shadows. The mechanism is in
+  [`unlit_wgpu`'s lighting section](crates/unlit_wgpu/README.md#lighting-forward-clustered-lambert).
 - **Custom shaders and per-instance data.** A caller's own family registers
   through the same call as the built-in one, draws with its own pipeline — a
   hand-written `wgpu` one or a WESL module composed against the crate's public
@@ -101,10 +79,9 @@ on the CPU so that the same path runs on a device with no compute shaders.
 - **egui and portable input.** egui can be overlaid on the render or drawn into
   a texture of its own; input is unified and driven by OOP-style callbacks.
 - **Deterministic and snapshot-tested in CI.** Rendering the same scene offscreen
-  produces the same frame every time. Each desktop platform lints, builds and
-  tests the workspace, then renders every example scene and compares it against
-  its stored image with SSIMULACRA2; the wasm and Android builds are two more
-  jobs.
+  produces the same frame every time. CI renders every example scene and compares
+  it against its stored image with SSIMULACRA2; see
+  [Continuous integration](#continuous-integration) for the two tiers of jobs.
 - **Built-in MCP support.** An MCP server can be embedded into an application,
   letting AI agents read and write components and take screenshots. The server
   carries no knowledge of the engine: every crate registers the tools that act
@@ -201,12 +178,12 @@ its cases need, so a crate whose suite needs an optional feature runs it only
 when that feature is on.
 
 All snapshot baselines therefore live in
-[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule. It is
-marked `update = none`, so a project that depends on this one through git fetches
-no snapshots it would never compare against; clone it here, where the tests do use
-it, with `git submodule update --init --checkout`. After an intentional rendering
-change, re-bless the affected snapshots and review the image diff before
-committing.
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md),
+a git submodule. It is marked `update = none`, so a project that depends on this
+one through git fetches no snapshots it would never compare against; clone it
+here, where the tests do use it, with
+`git submodule update --init --checkout`. After an intentional rendering change,
+re-bless the affected snapshots and review the image diff before committing.
 Because the baselines come from one GPU stack, another platform's driver can
 score a scene below the threshold with nothing wrong; a frame that does not match
 is therefore written before the test fails, and CI uploads those directories as
@@ -250,9 +227,8 @@ Per-crate notes:
 |-------|----------------------|
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour, deferred commands, and the MCP server's ECS tools. |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
-| [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. An end-to-end MCP test builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
-| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the fixed-step playback clock (`src/lib.rs`) and the window overlays (`src/overlay.rs`). Its rendering output is snapshotted by `tests/gpu_suite.rs`. |
+| [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back, including an end-to-end MCP test that serves a world over a pair of streams and speaks JSON-RPC to it. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the scene switch and the fixed-step playback clock (`src/tests.rs`), and the window overlays (`src/overlay/tests.rs`). Its rendering output is snapshotted by `tests/gpu_suite.rs`, and `tests/selector_position.rs` covers the panels the window shell keeps across a scene switch. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: jobs reaching their world, snapshot and stream subscriptions, the state a world publishes about itself, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
 | [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |
@@ -279,12 +255,11 @@ so that the jobs they share are written once:
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the light tier, and
 [`.github/workflows/ci-main.yml`](.github/workflows/ci-main.yml) is the full one,
 which calls the light tier's jobs with `full` set and adds what only a release
-needs. Which tier a run gets is decided by the ref it runs on, not by what
-started it: `main` and the merge queue, a `main` run whatever ref it names, take
-the whole thing, and every other branch takes the light one. That covers a pull
-request from the branch and also a branch pushed with no pull request at all, so
-pushing is enough to have a change compiled and tested; opening the pull request
-is not what starts the build.
+needs. Which tier a commit gets follows from where it lands: a push to any branch
+other than `main`, and any pull request, take the light tier, so pushing is
+enough to have a change compiled and tested. A push and the pull request opened
+from the same branch share one concurrency slot, so the pull request starts no
+second run. Pushes to `main`, merge-queue runs and manual runs take the full one.
 
 The light tier runs what a change can break on its own, within the time a
 reviewer spends reading it: one platform, and for the web and for Android the
@@ -297,10 +272,14 @@ request:
 - **lint** — `typos`, `tombi lint --error-on-warnings` and `tombi format
   --check` over the TOML, and `cargo fmt --all -- --check`.
 - **build** (Linux) — clippy with default features, with no features at all and
-  with every feature, `cargo xtask test`, `cargo doc` with `-D warnings`, and
-  the workspace's snapshot comparisons twice: once at the WebGPU baseline's
-  limits, once with every offscreen device narrowed to WebGL2's shape. Linux
-  installs Mesa for `lavapipe`, since the runners have no GPU.
+  with every feature, then `cargo xtask test` and `cargo doc` with `-D warnings`.
+  The test task is where the workspace's snapshot comparisons run, twice: once at
+  the WebGPU baseline's limits, once with every offscreen device narrowed to
+  WebGL2's shape. Linux installs Mesa for `lavapipe`, since the runners have no
+  GPU, and fetches the demo soundfont so the audio baselines compare real sound.
+- **miri** — `cargo xtask miri`: the `unlit_ecs` tests interpreted under Miri,
+  which is the only check that sees undefined behaviour in the storage that hands
+  out references through `&World`. No other crate runs under it.
 - **check-wasm** — clippy for `wasm32-unknown-unknown` over the workspace, over
   the four libraries without their default features and over the test binaries.
   It excludes `xtask`, a host-only task runner whose HTTP server does not
@@ -312,12 +291,13 @@ request:
 `main` — every push to it, a merge queue run, and a manual run from it:
 
 - **build** runs on macOS and Windows as well as Linux.
-- **build-wasm** — the same three clippy passes over the `wasm32-unknown-unknown`
-  build, then every wasm test binary bindgen'd into a page driven through a real
-  browser. Linting those builds here is why `check-wasm` does not run on `main`.
-- **build-android** — both `aarch64-linux-android` clippy passes, then the
-  cross-build of the shared libraries and Gradle around it for the APK. It runs
-  those passes itself, so `check-android` does not run on `main` either.
+- **build-wasm** — the three `check-wasm` clippy passes, then every wasm test
+  binary bindgen'd into a page and driven through a real browser, software WebGL2
+  included. Linting those builds here is why `check-wasm` does not run on
+  `main`.
+- **build-android** — both `check-android` clippy passes, then the cross-build of
+  the shared libraries and Gradle around it for the APK. It runs those passes
+  itself, so `check-android` does not run on `main` either.
 
 Each `check-*` job shares its cache with the job that does the same subject on
 `main` (`shared-key` on Swatinem/rust-cache), so what the light tier compiles is
@@ -328,29 +308,22 @@ the cache it was meant to share. Every job also saves its caches even when it
 fails (`cache-on-failure`), so an iteration on a red branch still leaves the next
 run warmer than a cold one would be.
 
-The snapshot comparisons are the check that makes a rendering regression fail
-rather than pass unnoticed, which is why the example's scenes carry them. Their
-second run is what reaches the WebGL2 paths on a runner whose own adapter has
-storage buffers and `base_vertex`, by setting `UNLIT3D_DEVICE_TIER=webgl2`
-rather than by building for the web. `build-wasm` runs the same comparisons in a
-real browser, through the same test bodies.
-
-A frame that fails a comparison is written before the test fails, so a CI run
-that fails leaves it behind: each pass writes its own directory under
-`target/`, and the jobs upload them as artifacts. A mismatch is often the
-platform showing through rather than a regression, so having the frame is what
-makes the difference something to look at rather than to infer from a score.
+The frames a failed run leaves behind are uploaded per pass, each from its own
+directory: `target/snapshot-mismatches` and `target/snapshot-mismatches-webgl2`
+from `build`, and `target/snapshot-mismatches-wasm` from `build-wasm`. A
+mismatch is often the platform showing through rather than a regression, so
+having the frame is what makes the difference something to look at rather than to
+infer from a score.
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes the site
 to GitHub Pages on every push to `main`: a landing page at the root linking the
 two web examples and the API docs, each example in a directory of its own
-beside it, and the workspace's rustdoc under `docs/`. The `unlit3d` example's
-corner links to those docs as well. The docs build on nightly, because the
-page listing the crates and the `doc(cfg(...))` labels are nightly-only;
-`ci.yml` keeps checking them on stable so a break is caught on the branch
-rather than at the deploy. That check is where a doc warning fails a build — the
-deploy publishes the pages it has, since a page with a broken link is worth more
-than a site held back by it.
+beside it, and the workspace's rustdoc under `docs/`, which the `unlit3d`
+example's corner links to as well. The deploy builds the docs on nightly, since
+the page listing the crates and the `doc(cfg(...))` labels are nightly-only,
+and tolerates doc warnings there: a published page with a broken link beats a
+site held back by it. `ci.yml` is where a doc warning fails a build, on the
+branch rather than at the deploy.
 
 ## Workspace layout
 
