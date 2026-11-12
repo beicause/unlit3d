@@ -18,7 +18,7 @@ use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{CreateMesh, EncodedImage, Output};
 use unlit_ecs::{DynamicBundle, Entity, Scope, World};
 use unlit_wgpu::pipeline::LitOptions;
-use unlit_wgpu::readback::{readback_buffer, readback_texture};
+use unlit_wgpu::readback::{try_readback_buffer, try_readback_texture};
 use unlit_wgpu::resources::{
     ResId, Resource, ResourceGraph, ResourceGraphInfo, ResourceGraphMaintain,
 };
@@ -265,7 +265,8 @@ fn read_buffer_bytes(
     let size = size.unwrap_or(total - offset).min(total - offset);
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
-    let bytes = readback_buffer(&device, &queue, &buffer, offset, size);
+    let bytes = try_readback_buffer(&device, &queue, &buffer, offset, size)
+        .map_err(|error| format!("failed to read the buffer back: {error}"))?;
     Ok((offset, bytes))
 }
 
@@ -432,7 +433,8 @@ fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Resu
     };
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
-    let bytes = readback_texture(&device, &queue, &texture);
+    let bytes = try_readback_texture(&device, &queue, &texture)
+        .map_err(|error| format!("failed to read the texture back: {error}"))?;
     Ok(Frame {
         bytes,
         width: texture.width(),
@@ -739,7 +741,8 @@ fn screenshot_frame(
     render_frame(world, renderer)?;
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
-    let bytes = readback_texture(&device, &queue, &texture);
+    let bytes = try_readback_texture(&device, &queue, &texture)
+        .map_err(|error| format!("failed to read the texture back: {error}"))?;
     Ok(Frame {
         bytes,
         width: texture.width(),
