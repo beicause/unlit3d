@@ -656,11 +656,13 @@ Automating "compile once per configuration, then reuse" needs two concepts:
 **The cache is one map, with no canonical form.** Because a variant carries
 everything its blueprint depends on, `Variants` needs neither a second level
 nor a normalization step: the first lookup is the only lookup. The blueprint
-itself is not the key because a blueprint cannot be hashed (its compilation
-constants hold `f64`), and because "memoize on a small key" is the whole point
-of these types: a family has finitely many variants, and a lookup is cheaper
-than comparing a whole blueprint field by field. Variants are never evicted,
-matching the bounded-variant assumption.
+itself is not the key: "memoize on a small key" is the whole point of these
+types, and a lookup meets the equal case every frame — exactly the case where
+comparing a whole blueprint field by field costs the most. A family whose
+options are cheap to compare keys on them through [`Hashed`](util::Hashed); one
+that builds its blueprint once and then only needs to name it keys on that
+blueprint's identity through [`Interned`](specialize::Interned). Variants are
+never evicted, matching the bounded-variant assumption.
 
 **A blueprint is a semantic description, not a mirror of a wgpu descriptor.**
 A blueprint holds handles like `ShaderModule` that need a device to create, so

@@ -81,48 +81,20 @@ impl Bundle for Sprite {
     }
 }
 
-/// The identity of the particle family's pipeline.
+/// The identity of the particle family's pipeline, keyed on the compiled
+/// descriptor; [`Interned`] compares the allocation rather than the contents.
 #[derive(Clone)]
 pub(super) struct ParticleKey {
-    pub(super) descriptor: Arc<RenderPipelineDesc>,
-}
-
-impl PartialEq for ParticleKey {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.descriptor, &other.descriptor)
-    }
-}
-
-impl Eq for ParticleKey {}
-
-impl core::hash::Hash for ParticleKey {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        state.write_usize(Arc::as_ptr(&self.descriptor) as usize);
-    }
+    pub(super) descriptor: Interned<RenderPipelineDesc>,
 }
 
 /// The particle family's blueprint, specialised for one render target.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ParticleVariant {
     /// The pipeline as built, before the target is applied.
-    pub(super) descriptor: Arc<RenderPipelineDesc>,
+    pub(super) descriptor: Interned<RenderPipelineDesc>,
     /// The target the pipeline is compiled for.
     pub(super) surface: SurfaceKey,
-}
-
-impl PartialEq for ParticleVariant {
-    fn eq(&self, other: &Self) -> bool {
-        self.surface == other.surface && Arc::ptr_eq(&self.descriptor, &other.descriptor)
-    }
-}
-
-impl Eq for ParticleVariant {}
-
-impl core::hash::Hash for ParticleVariant {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.surface.hash(state);
-        state.write_usize(Arc::as_ptr(&self.descriptor) as usize);
-    }
 }
 
 impl RenderPipelineKey for ParticleKey {
@@ -140,7 +112,7 @@ impl PipelineVariant<wgpu::RenderPipeline> for ParticleVariant {
     type Descriptor = RenderPipelineDesc;
 
     fn descriptor(&self, _device: &wgpu::Device) -> RenderPipelineDesc {
-        let mut descriptor = self.descriptor.as_ref().clone();
+        let mut descriptor = (*self.descriptor).clone();
         descriptor.set_surface(self.surface);
         descriptor
     }

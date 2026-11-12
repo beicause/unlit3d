@@ -40,6 +40,7 @@
 | --- | --- | --- |
 | 建 | `MeshSource::new(&Scope, ctx)` + `device` / `queue` / `capabilities` / `context` | `crates/unlit3d/src/mesh_source/`（入口 `mod.rs`） |
 | 注册管线族 | `register_family::<K, F, I>`；同一 key 类型重复注册会 panic | 同上，`families.rs` |
+| 自定义管线 key | `RenderPipelineKey` 只要求 `variant()`，变体须 `Clone + Hash + Eq`（每可见实体每帧查一次）。选项小且可哈希（如 `LitOptions`）就 `Hashed<选项>`；要按份描述符建一次、之后只比身份，就用 `unlit_wgpu::specialize::Interned<RenderPipelineDesc>`，变体可 `derive` 全套 | `crates/unlit_wgpu/src/specialize.rs`、`crates/unlit_wgpu/src/util.rs` |
 | 建 mesh | `allocate_mesh` + `MeshDesc { vertex_buffers, index_buffer, count, indexed, aabb, bind_group, morph_deltas }`（`MeshDesc` 定义在 `crates/unlit3d/src/mesh.rs`，与 `MorphDeltas` 同处） | 同上；`MeshDesc` 搜 `crates/unlit3d/src/mesh.rs` |
 | 建纹理 | `register_texture_and_default_view` 返回 (纹理, 视图) 两个句柄 | 同上 |
 | 建采样器 | `register_sampler` | 同上 |

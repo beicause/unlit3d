@@ -25,7 +25,6 @@
 //! look is deliberately flat: banded colours, hard-edged sprites and a
 //! hard-edged sun rather than any attempt at a photographic sky.
 
-use std::sync::Arc;
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 
 use super::{
@@ -34,7 +33,7 @@ use super::{
 use unlit_wgpu::pipeline::{GlobalBindings, global_bind_group_layout, supports_storage_buffers};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit_wgpu::specialize::{
-    PipelineVariant, RenderPipelineDesc, SpecializedPipeline, SurfaceKey, SurfaceTarget,
+    Interned, PipelineVariant, RenderPipelineDesc, SpecializedPipeline, SurfaceKey, SurfaceTarget,
 };
 use unlit3d::pipeline::{
     DrawContext, FamilyContext, GlobalRecipe, InstanceContext, InstanceData, InstanceStreamDesc,
@@ -208,15 +207,8 @@ fn build(
         },
         (),
     );
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
-        )
-    )]
     let sky_pipeline = GpuRenderPipeline::new(SkyKey {
-        descriptor: Arc::new(sky_pipeline(&device, &sky_layout)),
+        descriptor: Interned::new(sky_pipeline(&device, &sky_layout)),
     });
     let sky_mesh = source.allocate_mesh(
         &world.root_scope(),
@@ -244,15 +236,8 @@ fn build(
         ParticleFactory,
         ParticleInstances,
     );
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
-        )
-    )]
     let particle_pipeline = GpuRenderPipeline::new(ParticleKey {
-        descriptor: Arc::new(particle_pipeline(&device, &particle_layout)),
+        descriptor: Interned::new(particle_pipeline(&device, &particle_layout)),
     });
     let particle_mesh = source.allocate_mesh(
         &world.root_scope(),
