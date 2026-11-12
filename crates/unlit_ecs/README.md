@@ -82,12 +82,9 @@ It is at an **early stage of development** and its API changes freely.
   [`ArchetypeAccessError`] instead. `Option` stays where absence is not a
   failed access — a query item `Option<&C>` is absent for an entity that
   merely lacks `C`.
-- **Two entities are scaffolding.** `World::new` creates [`World::root`] — its
-  own scope, and the one the root scope opens — and [`World::shared`], whose
-  subtree every scope sees. Both can carry components
-  and be opened as scopes; neither is counted, queried, despawned or relinked.
-  They keep the first two rows of their archetype, so a query steps over them
-  once per archetype instead of testing the identity of every row.
+- **Two entities are scaffolding.** [`World::root`] and [`World::shared`]
+  belong to the tree, not to its content: neither is counted, queried, despawned
+  or relinked. [Scopes](#scopes) says what they are and what they cost.
 
 ## Scopes
 
@@ -118,10 +115,11 @@ assert_eq!(world.root_scope().len(), 3);
 
 Two entities are scaffolding rather than content. [`World::root`] is the scope
 the root scope opens, and lives in itself; [`World::shared`] is its child, and
-every scope reaches that subtree. Both can carry components and be
-opened as scopes, so a resource belongs on either one — but neither is counted,
-queried, despawned or relinked, which is why an empty world counts zero rather
-than two.
+every scope reaches that subtree. Both can carry components and be opened as
+scopes, so a resource belongs on either one — but neither is counted, queried,
+despawned or relinked, which is why an empty world counts zero rather than two.
+They keep the first two rows of their archetype, so a query steps over them once
+per archetype instead of testing the identity of every row.
 
 **What a scope sees.** A scope of `caller` sees `candidate` when `candidate`
 is alive and one of these holds:
@@ -187,24 +185,26 @@ tripping the borrow check; a callback that panics stays on the row it was
 spawned with.
 
 **Cost.** Whether a query row is visible costs one array read: an archetype
-records the scope of every row beside its entities, so filtering no longer walks
-the tree. Asking whether two entities are related still walks the parent chain,
-bounded by the number of nodes, so a malformed tree cannot hang it. The relation
-is kept in one place — the world's tree — rather than in a component: visibility
-is answered on every access, and a component would have to be borrowed to answer
-it, so holding one entity's component exclusively would make the visibility
-check of another entity panic. One copy also means nothing to keep in agreement:
-only [`ScopeMut::link`] and [`ScopeMut::unlink`] write the tree, and they need
-`&mut World`,
-so a borrow taken through a shared world can never race them. A read from a [`Scope`] pays one lookup in the tree per entity it asks
-about, which is what [`Scope::entity_info`] reports as `scope`. Queries and counts skip the rows a scope
-cannot see; [`Scope::archetype`] fails for an empty archetype and for one the
-scope only partly sees, [`Scope::archetypes`] yields only the non-empty
-archetypes the scope sees in full, and [`Scope::archetype_infos`] reports the
-visible length of each. [`Scope::archetype_of`] is the per-row counterpart of
-[`Scope::archetype`]: it asks about the one row an entity occupies and skips
-the whole-archetype test, so it answers where [`Scope::archetype`] cannot —
-two scopes sharing an archetype are the case that needs it.
+records the scope of every row beside its entities, so filtering never walks the
+tree. Asking whether two entities are related does walk the parent chain, bounded
+by the number of nodes so that a malformed tree cannot hang it. The relation
+lives in the world's tree rather than in a component because visibility is
+answered on every access: a component would have to be borrowed to answer it, so
+holding one entity's component exclusively would make another entity's
+visibility check panic. One copy also has nothing to keep in agreement — only
+[`ScopeMut::link`] and [`ScopeMut::unlink`] write the tree, and both need
+`&mut World`, so a borrow through a shared world can never race them. A read
+from a [`Scope`] pays one tree lookup per entity it asks about, which
+[`Scope::entity_info`] reports as `scope`.
+
+Queries and counts skip the rows a scope cannot see. [`Scope::archetype`] fails
+for an empty archetype and for one the scope only partly sees,
+[`Scope::archetypes`] yields only the non-empty archetypes the scope sees in
+full, and [`Scope::archetype_infos`] reports the visible length of each.
+[`Scope::archetype_of`] is the per-row counterpart of [`Scope::archetype`]: it
+asks about the one row the entity occupies and skips the whole-archetype test, so
+it answers where [`Scope::archetype`] cannot — two scopes sharing an archetype
+is the case that needs it.
 
 **Naming a component without the world.** An [`Archetype`] carries the names of
 its own components, so a reader holding one can describe it without going back
@@ -476,7 +476,7 @@ crate submits a `crate::reflect::ComponentEntry` to the same kind of link-time
 table, so `get_component` and `set_component` can encode and decode a value the
 ECS itself has never heard of.
 
-## The MCP server, and what it cannot reach
+### The boundary it crosses
 
 The transport thread is not the world's thread. It reads the protocol, turns a
 call into a `crate::mcp::McpCommand`, and posts it through a channel the host
@@ -488,52 +488,35 @@ Which world a tool names is the client's to say: `crate::mcp::WorldId` is
 world a host entity carries. A host that wants its other worlds addressable
 answers `list_worlds` itself, because only it knows which entities carry one.
 
-
 ## Why the ECS is this small
 
-<details>
-<summary>The omissions are deliberate, and each has a substitute</summary>
+The omissions are deliberate, and each has a substitute.
 
 - **No change detection.** In OOP an object maintains its own state internally;
   tracking what changed is the caller's business.
-- **One relation, the scope, and no other.** A `Children` or `ChildOf` component would be a
-  reference the caller keeps up to date; the scope is the one that cannot be,
-  because visibility is decided on every access. Anything else stays a plain
-  entity in a component.
-- **Lifecycle callbacks run on the entity, not on the world.** `OnSpawn` and
-  `OnDespawn` are ordinary components holding a callback, so a world with no
-  lifecycle components pays nothing for the feature and a caller can write its own
-  runner instead.
-- **No events or observers.** As a substitute, call a component's method
-  directly or use a behaviour component. A *behaviour component* holds a
-  function pointer or closure that can run accesses to the world inside it, just
-  like a system or an observer, and the function inside it can also be async.
-  Callbacks like a Godot node's per-frame update, fixed-interval update and
-  keyboard/mouse/touch input are then behaviour components on entities, and an
-  external caller visits the world and calls them — such features are
-  implemented compositionally.
-- **No resources.** An entity that wants to be accessed from anywhere is an
-  ordinary entity and the caller keeps its `Entity` handle; a resource reference
-  is an entity reference, and the library provides no dedicated marker or
-  mechanism.
-- **An entity's archetype is immutable.** In OOP a class/object's state and
-  behavior are immutable, and an immutable archetype also gives state retention
-  a mandatory character, avoiding the `RemovedComponents` and component-leak
-  pitfalls of change-tracking designs.
+- **No events or observers.** Call a component's method directly, or use a
+  behaviour component. A *behaviour component* holds a function pointer or
+  closure that can run accesses to the world inside it, just like a system or
+  an observer, and the function inside it can also be async. Callbacks like a
+  Godot node's per-frame update, fixed-interval update and keyboard/mouse/touch
+  input are then behaviour components on entities, and an external caller
+  visits the world and calls them — such features are implemented
+  compositionally.
 - **No systems** (borrowed from [`hecs`](https://docs.rs/hecs)). A system is
   only an external caller's access to the world, or a component holding behavior
-  (a closure). So there is no need for complex analysis of system parallelism —
-  dependencies, access conflicts — or a multi-threaded scheduler: the external
-  caller decides which thread to run on.
-- **The world is `!Send`.** GPU resources and the renderer are `!Send`, and on
-  `wasm32` they are not even `Send` behind a feature flag, so a world that could
-  cross threads would buy nothing there. A `Send` world was tried and removed;
-  the storage a world shares is not the thing that makes its work
-  partitionable.
+  (a closure), so nothing has to analyse system parallelism — dependencies,
+  access conflicts — or schedule across threads: the external caller decides
+  which thread to run on.
+- **Lifecycle callbacks run on the entity, not on the world.** `OnSpawn` and
+  `OnDespawn` are ordinary components holding a callback, so a world with no
+  lifecycle components pays nothing for the feature and a caller can write its
+  own runner instead.
 - **Nothing is added until something uses it.** A feature that is not currently
   needed does not go in.
 
-</details>
+The other three omissions — no resources, an immutable archetype, a `!Send`
+world — and the single relation the world does keep are stated with their
+reasons under [Model](#model).
 
 ## Tests
 

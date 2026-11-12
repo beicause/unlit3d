@@ -52,10 +52,9 @@
   它不匹配该查询、它未被预留，或者它不属于调用者去搬动。按 id 问 archetype 则回答
   `ArchetypeAccessError`。`Option` 只留在「缺席本身不算访问失败」的地方——查询项
   `Option<&C>` 对缺 `C` 的实体就是缺席。
-- **有两个实体是脚手架。** `World::new` 创建 `World::root`——它就在自己的 scope 里，
-  根 scope 打开的就是它——和 `World::shared`，后者的子树每个 scope 都看得见。两者都能
-  携带组件、都能被当作 scope 打开；但它们都不被计数、不被查询、不可 despawn、不可重挂。
-  它们占据所在 archetype 的最前两行，于是查询每个 archetype 只跨过一次，不必逐行判断身份。
+- **有两个实体是脚手架。** `World::root` 与 `World::shared` 属于树而不是树的内容：
+  两者都不被计数、不被查询、不可 despawn、不可重挂。[scope](#scope) 一节说明它们是什么、
+  代价落在哪里。
 
 ## scope
 
@@ -86,7 +85,8 @@ assert_eq!(world.root_scope().len(), 3);
 有两个实体是脚手架而不是内容。`World::root` 是根 scope 所打开的 scope，它就在自己的
 scope 里；`World::shared` 是它的子实体，每个 scope 都看得见那棵子树。两者都能携带组件、
 都能被当作 scope 指名，所以资源挂在哪一个上都行——但它们都不被计数、不被查询、不可
-despawn、不可重挂，正因如此空 world 计数是零而不是二。
+despawn、不可重挂，正因如此空 world 计数是零而不是二。它们占据所在 archetype 的最前两行，
+于是查询每个 archetype 只跨过一次，不必逐行判断身份。
 
 **scope 看得见什么。** 当 `candidate` 存活，且满足下列之一时，`caller` 的 scope 看得见它：
 
@@ -133,19 +133,18 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 而不是撞上借用检查；回调 panic 时，它仍然留在当初 spawn 的那一行上。
 
 **开销。** 查询的一行可见不可见，代价是一次数组读：archetype 在实体数组旁记下每一行的
-scope，所以过滤不再走树。问两个实体是否相关仍要沿父链走，走查以节点数为上界，所以畸形的树
-也不会把它拖死。这条关系只有 world 的树里
-一份，而不放在组件里：可见性每次访问都要判定，而组件要被借用来回答它，于是独占借用
-某个实体的组件就会让另一个实体的可见性检查 panic。只有一份也意味着没有东西需要对账：
-只有 `ScopeMut::link` 与 `ScopeMut::unlink` 会写这棵树，而它们需要 `&mut World`，所以经共享
-world 拿到的借用永远不可能与它们相撞。从 `Scope` 读取时，每问一个实体就在树里查一次，
-`Scope::entity_info` 把它报告为 `scope`。
-查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
-看得见一部分的 archetype 都报错，`Scope::archetypes` 只给出非空且完整可见的
-archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::archetype_of` 是
+scope，所以过滤从不必走树。问两个实体是否相关则要沿父链走，走查以节点数为上界，所以畸形的
+树也拖不死它。这条关系住在 world 的树里而不是组件里，因为可见性每次访问都要判定：组件必须
+被借用来回答它，于是独占借用某个实体的组件就会让另一个实体的可见性检查 panic。只有一份也
+没有东西需要对账——只有 `ScopeMut::link` 与 `ScopeMut::unlink` 会写这棵树，而它们需要
+`&mut World`，所以经共享 world 拿到的借用永远不可能与它们相撞。从 `Scope` 读取时，每问
+一个实体就在树里查一次，`Scope::entity_info` 把它报告为 `scope`。
+
+查询与计数会跳过 scope 看不见的行。`Scope::archetype` 对空 archetype 和只看得到一部分的
+archetype 都报错，`Scope::archetypes` 只给出非空且完整可见的 archetype，
+`Scope::archetype_infos` 则报告各自的可见长度。`Scope::archetype_of` 是
 `Scope::archetype` 的逐行版本：它只问实体所在的那一行，不做整原型判断，所以在
-`Scope::archetype` 无法作答处作答——两个 scope 共用一个 archetype 时正是它派上用场
-的场合。
+`Scope::archetype` 无法作答处作答——两个 scope 共用一个 archetype 时正是它派上用场的场合。
 
 **不经过 world 也能命名组件。** `Archetype` 自带其组件名字，所以持有它的读取者不必
 回到 `World::type_name` 就能描述它。world 每个名字只存一份，不随实体数增长：
@@ -164,7 +163,7 @@ use unlit_ecs::{World, bundle};
 
 let mut world = World::new();
 let cube = world.root_scope_mut().spawn(bundle![0u32]);
-assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
+assert!(!cube.name().is_empty(), "bundle names the entity it builds");
 ```
 
 运行时拼出来的动态 bundle 没有这样的位置可言，所以由 `DynamicBundle::named`
@@ -341,7 +340,7 @@ assert!(scope.query_one::<Has<f32>>(entity).unwrap().get());
 ## MCP 服务器
 
 `mcp` feature（默认关闭，仅原生目标）把本 crate 变成一个经 stdio 由客户端驱动的
-[模型上下文协议](https://modelcontextprotocol.io)服务器。它放在这里，是因为协议的
+[模型上下文协议](https://modelcontextprotocol.io) 服务器。它放在这里，是因为协议的
 传输侧必须指名一个 `World` 并把工作交给它：`crate::mcp::McpCommand` 携带着一个 job，由拥有该
 world 的线程运行。桥接层不在这个边界上借用任何东西，也没有别的 crate 拥有传输所需的类型。
 
@@ -378,7 +377,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
 同一种链接期表，于是 `get_component` 与 `set_component` 能编解码一个 ECS 自己
 从未听说过的值。
 
-## MCP 服务器够不到什么
+### 越过的边界
 
 传输线程不是 world 的线程。它读取协议，把一次调用变成一个 `crate::mcp::McpCommand`，再经一条
 宿主负责排空的 channel 投递；拥有该 world 的一方运行 job，并在命令自带的 channel 上作答。
@@ -390,34 +389,24 @@ world，为 `{"Handle": bits}` 时指某个宿主实体所携带的 world。想�
 
 ## 为什么 ECS 这么小
 
-<details>
-<summary>这些省略是有意为之的，每一条都有替代方案</summary>
+这些省略是有意为之的，每一条都有替代方案。
 
 - **没有变化检测。** 在 OOP 中对象自身状态在内部维护；追踪什么变了是调用者的事。
-- **只有一个关系，即 scope，别无其他。** `Children`、`ChildOf` 这类组件是调用者
-  自己维护的引用；scope 是唯一不能那样维护的关系，因为每次访问都要判定可见性。
-  其他引用仍然是组件里的普通实体。
-- **生命周期回调挂在实体上，而不是 world 上。** `OnSpawn` 与 `OnDespawn` 就是
-  持有一个回调的普通组件，因此没有生命周期组件的 world 不为该特性付出任何代价，
-  调用者也可以自己写一个驱动。
-- **没有事件和观察者。** 作为替代，可以直接调用组件的方法或使用行为组件。*行为组件*
+- **没有事件和观察者。** 可以直接调用组件的方法，或使用行为组件。*行为组件*
   指包含函数指针或闭包的组件，并且该函数中能运行对 world 的访问，就像系统或观察者
   一样，其中的函数也可以是 async 的。于是类似 Godot 节点的帧更新、固定间隔更新、
   按键鼠标触摸输入等回调都可以视作实体上的行为组件，由外部调用者访问 world 调用
   它们——由此通过组合的方式实现此类功能。
-- **没有资源。** 想被随处访问的实体就是普通实体，调用者自行保存其 `Entity` 句柄；
-  资源引用就是实体引用，库不提供任何专用标记或机制。
-- **实体的原型不可变。** 在 OOP 中类/对象的状态和行为是不可变的，不可变的原型也使得
-  状态保留有强制性，避免变化检测设计的 `RemovedComponents` 和组件泄漏的坑。
 - **没有系统**（借鉴自 [`hecs`](https://docs.rs/hecs)）。系统只是外部调用者对世界的
-  访问，或是包含行为（闭包函数）的组件。因此不用做复杂的系统并行性（依赖、访问冲突
-  等）分析、多线程调度器：让外部调用者自行决定运行的线程。
-- **world 是 `!Send` 的。** GPU 资源和渲染器是 `!Send` 组件，在 `wasm32` 上即使开启
-  特性开关也不是 `Send`，所以一个能跨线程的 world 在那里毫无收益。`Send` 世界曾存在过
-  又被删除：world 所共享的存储，并不是让它上面的工作可切分的东西。
+  访问，或是包含行为（闭包函数）的组件，因此不必分析系统并行性（依赖、访问冲突
+  等），也不需要多线程调度器：由外部调用者自行决定在哪个线程上运行。
+- **生命周期回调挂在实体上，而不是 world 上。** `OnSpawn` 与 `OnDespawn` 就是
+  持有一个回调的普通组件，因此没有生命周期组件的 world 不为该特性付出任何代价，
+  调用者也可以自己写一个驱动。
 - **没有用到的功能绝不添加。**
 
-</details>
+其余三项省略——没有资源、原型不可变、world 是 `!Send`——以及 world 唯一维护的那条
+关系，都在[模型](#模型)一节连同理由一并说明。
 
 ## 测试
 

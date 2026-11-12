@@ -330,12 +330,12 @@ The bridges:
   clock egui animates against is the frames' own time, summed from each
   frame's duration rather than read off the wall clock: an animation is at the
   same point at the same frame however long the run took, so a frame captured
-  for comparison does not depend on how busy the machine was. They
-  keep separate contexts: sharing
-  one would have both worlds writing the same memory and font atlas, and egui
-  treats one `run_ui` call as one whole frame. Their texture ids both start
-  at zero, so a frame keeps the ids it was laid out with and the GPU
-  integration keys textures by origin and id — nothing renumbers them.
+  for comparison does not depend on how busy the machine was. The two sides
+  keep separate contexts: sharing one would have both worlds writing the same
+  memory and font atlas, and egui treats one `run_ui` call as one whole frame.
+  Their texture ids both start at zero, so a frame keeps the ids it was laid
+  out with and the GPU integration keys textures by origin and id — nothing
+  renumbers them.
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
   over the
@@ -362,7 +362,7 @@ The bridges:
 
 ## Best practices
 
-Two rules keep a scene's worlds independent, and they are what make one
+Three rules keep a scene's worlds independent, and they are what make one
 portable: the same scene runs on threads or stepped, in a window or
 headless, because no mode ever reaches into another world's data.
 
@@ -384,10 +384,9 @@ headless, because no mode ever reaches into another world's data.
    state *out* of a world, and the world that reads it decides what
    that means; what another world's content *becomes* is a job, so a pose
    gameplay derived from a physics snapshot is sent to the render world
-   rather than left in a mailbox for it to apply.
-
-The test is whether a line of setup could belong to another scene: if it
-names something the game calls a thing, it belongs in a job.
+   rather than left in a mailbox for it to apply. The test is whether a line
+   of setup could belong to another scene: if it names something the game
+   calls a thing, it belongs in a job.
 3. **A scene holds one port per world it talks to.** A world's address is a
    `JobSender` and the subscriptions it made, so the scene keeps those in one
    value of its own — the demo's `Scene` carries the render, physics and audio
@@ -446,7 +445,8 @@ collector that answers nothing leaving the newest in place, a dropped reader
 pruning its subscription, and a full queue refusing one — thread stop and
 panic reporting, a threaded world's sent jobs running, and the same for a
 stepped world — its jobs run on the step, a tick past the end finishes it,
-and stepping an entity that carries no stepped world does nothing. The
+and stepping an entity that names no stepped world, or one that drives
+itself on a thread, is refused with a `StepError` rather than skipped. The
 integration tests add the bridges: a physics world dropping a ball onto a
 floor and reporting the contact, a subscriber queueing the contacts of two
 separate landings that a mailbox would have collapsed into one, the audio
