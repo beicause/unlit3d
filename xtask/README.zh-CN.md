@@ -17,7 +17,7 @@ cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 do
 cargo xtask line-count     # 打印每个 Rust 文件的行数，标记达到 1000 行的
 cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备（两个档位各一份）
 cargo xtask miri           # 在 Miri 下跑 ECS 的测试，那是校验其 unsafe 的门禁
-cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
+cargo xtask test-wasm      # 经由 wasm，在浏览器的两个 GPU 后端上各跑一遍 GPU 测试
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
 cargo xtask build-android  # 构建 Android 动态库及其 APK
 cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crates.io
@@ -119,8 +119,10 @@ panic，普通测试看不见它：release 构建读的字节和 debug 的一模
 ### `cargo xtask test-wasm`
 
 跑的是 `cargo xtask test` 所跑的同一批 GPU 测试，但在真实浏览器里、构建到
-`wasm32-unknown-unknown` 上运行，随后还会启动示例本身。wasm 二进制没有进程可以启动、
-也没有退出码可以交回，所以这一趟是*搭*出来的而不是直接跑的：
+`wasm32-unknown-unknown` 上运行，随后还会启动示例本身。测试会跑两遍，浏览器的一个
+GPU 后端各一遍：wasm 二进制自己先请求 WebGPU、不支持时回退到 WebGL2，所以一趟覆盖哪个
+后端，由 runner 启动浏览器时的命令行参数决定。wasm 二进制没有进程可以启动、也没有退出码
+可以交回，所以这一趟是*搭*出来的而不是直接跑的：
 
 1. 先把整个工作区构建到 wasm——用默认 feature，也就是浏览器与 APK 实际发布的那个，
    并用 `wasm-release` 这个 cargo profile——这样某个改动若弄坏了该 target 上的示例或库，
@@ -133,10 +135,12 @@ panic，普通测试看不见它：release 构建读的字节和 debug 的一模
    `wasm_paths.json`，把模块名映射到脚本名。
 5. 一个 Node runner 提供该目录，并让每个测试在一个全新的浏览器上下文里各开一个页面。
    与其快照不匹配的帧在浏览器中编码——页面没有文件系统——并交给这个 runner，由它写到
-   `target/snapshot-mismatches-wasm` 供 CI 上传。
+   `target/snapshot-mismatches-wasm` 供 CI 上传；WebGL2 那一趟写到
+   `target/snapshot-mismatches-wasm-webgl2`。
 6. *同一批*原生测试二进制在设置了 `UNLIT3D_WASM_TEST` 后变成代理而不是测试套件：
    `cargo nextest` 驱动它们，每个 trial 请求 runner 在浏览器里跑那个测试。于是
-   nextest 的列出、筛选、报告与退出码都和普通套件一样可用。
+   nextest 的列出、筛选、报告与退出码都和普通套件一样可用。每个后端各有自己的 runner
+   与自己的 nextest 那一趟，因为浏览器的后端在启动那一刻就定下了。
 
 结果通过 `sessionStorage` 传递，因为浏览器没有退出码，而 panic 的测试会让其实例 trap
 而不是 unwind——这也是 `#[should_panic]` 由 panic hook 判定、而不是靠捕获 panic 的
@@ -146,10 +150,19 @@ panic，普通测试看不见它：release 构建读的字节和 debug 的一模
 启动它们——并检查它能启动、能选到后端、并在画布上留下带明暗的画面而不是一片空白。它们用
 的正是 `run-wasm` 所提供的同一批页面、由同一份代码构建，因此两者不会走样。
 
+这项画布检查也正是 WebGPU 那一趟要 headed 运行的原因：无头浏览器根本不做合成，
+WebGPU 画布于是画得出来、回读却全是透明，无论启动参数怎么设。runner 给这一趟一个窗口
+——Linux 上没有现成显示可用时自起一台私有 Xvfb，把 `DISPLAY` 指过去，并删掉
+`WAYLAND_DISPLAY` 以免 Chrome 改走 Wayland。GPU 测试本身读的是离屏纹理，无头也能过；
+只有示例检查需要这个窗口。机制与配套参数见 WORKAROUND.md 的
+「在 headless 浏览器里读 WebGPU 画布，读出来全是透明」。
+
 runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 指定现成的浏览器可
-免于下载，`--show` 打开可见窗口以观察失败。nextest 那一趟使用的 profile 是 `wasm`，
-定义在 `.config/nextest.toml` 中；那是 nextest 的 profile，与构建自身所用的
-`wasm-release` 这个 cargo profile 是两回事。
+免于下载。`--show` 让这一趟带窗口跑而不是无头，好让人看着失败发生；只有 WebGL2 那一趟
+吃这个开关，WebGPU 那一趟本来就是 headed。无论哪种，窗口都落在 runner 手上那块显示上，
+而它自起的那块没有任何人在看。nextest 那一趟使用的 profile 是 `wasm`，定义在
+`.config/nextest.toml` 中；那是 nextest 的 profile，与构建自身所用的 `wasm-release`
+这个 cargo profile 是两回事。
 
 该任务为 `wasm32-unknown-unknown` 编译的一切都走 `wasm-release`，与 `run-wasm` 相同。
 为该 target 做的每个构建都会启用 `simd128` target feature——它由 `.cargo/config.toml`

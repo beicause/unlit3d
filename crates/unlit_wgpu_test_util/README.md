@@ -86,8 +86,10 @@ sets it.
   [`Ctx::headless`] reads the tier from `UNLIT3D_DEVICE_TIER`, which is how the
   suite is run a second time against WebGL2's shape; unset, it asks for the
   WebGPU baseline rather than the adapter's own limits. On the web the device is
-  created from a canvas and the `GL` backend, since that is what a browser
-  offers in place of a native API.
+  created from a canvas and the browser's own backends: WebGPU when the browser
+  offers it, else WebGL2, which is the fallback wgpu's instance detection makes.
+  Which one a run gets is the browser's launch flags, so `cargo xtask test-wasm`
+  runs the suite once per backend.
 - [`init_logging`] — the logger backend on its own, for tests that never build a
   [`Ctx`]. Natively it is `env_logger` reading `RUST_LOG`; on the web,
   `console_log` forwards to the browser console. The default level is `warn`.

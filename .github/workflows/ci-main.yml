@@ -47,9 +47,10 @@ jobs:
   build-wasm:
     name: Build and test wasm
     # The runner installs a browser, builds the workspace and every wasm test
-    # binary, and then drives one browser page per test. Software WebGL2 is what
-    # makes the last part slow rather than the build.
-    timeout-minutes: 25
+    # binary, and then drives one browser page per test on each of the two GPU
+    # backends. Software rendering is what makes the last part slow rather than
+    # the build, and running it twice is what sets this budget.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     # The same variables `check-wasm` in `ci.yml` sets, byte for byte, for their
     # shared cache to hit. The browser build gets the wasm target's flags, whose
@@ -101,11 +102,13 @@ jobs:
 
       # The wasm side links nothing native, but `cargo xtask test-wasm` also
       # builds the host test binaries it drives the browser through, and those
-      # take `--all-features`, where cpal links ALSA on Linux.
-      - name: Install ALSA headers
+      # take `--all-features`, where cpal links ALSA on Linux. The WebGPU pass
+      # draws in a window, which needs an X server the runner has none of, so
+      # the same install brings Xvfb for the pass to start its own.
+      - name: Install ALSA headers and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libasound2-dev
+          sudo apt-get install --yes libasound2-dev xvfb
 
       # One cache for the whole job: its three builds share this key, and the
       # features they differ in are the only reason there are more than one.
@@ -165,15 +168,18 @@ jobs:
 
       # The page has no filesystem, so a frame that fails a comparison is
       # encoded in the browser and handed to the Node runner, which writes it
-      # under the wasm pass's own directory. A real WebGL2 rasterizer is a
-      # different implementation from any device tier, so this is where a frame
-      # is most likely to differ for reasons that are not a regression.
+      # under the directory of the pass it failed in. Both browser backends are
+      # rasterizers of their own, unlike any device the snapshots were captured
+      # on, so this is where a frame is most likely to differ for reasons that
+      # are not a regression.
       - name: Upload the mismatched snapshot frames
         if: ${{ failure() && steps.test-wasm.outcome == 'failure' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: snapshot-mismatches-wasm
-          path: target/snapshot-mismatches-wasm
+          path: |
+            target/snapshot-mismatches-wasm
+            target/snapshot-mismatches-wasm-webgl2
           if-no-files-found: ignore
 
   # What the light tier checks about the Android build is that the code behind

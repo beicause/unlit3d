@@ -156,11 +156,12 @@ suite 二进制要求它的用例所需的功能，因此不带这些功能单�
 所以两者不会脱节。
 
 `cargo xtask test-wasm` 把渲染 crate 的 GPU 测试再跑一遍：构建到
-`wasm32-unknown-unknown`，经由 WebGL2 在真实浏览器中运行。测试文件是同一批：suite
-那个 target 本身就是 wasm 模块，suite 根部唯一的一次 `gpu_test_main!` 给它生成页面要
-调用的导出。浏览器提供的是无头设备给不了的东西——一个真实的 WebGL2 实现，带着它自己的
-limits、自己的着色器翻译和自己的光栅化器。由于该光栅化器并不是采集快照时所用的那个，
-`Tolerance` 可以指定一帧允许相差多少；立方体快照正是这么用的，并附有其阈值的实测依据。
+`wasm32-unknown-unknown`，在真实浏览器中运行，浏览器的两个 GPU 后端各跑一趟。测试
+文件是同一批：suite 那个 target 本身就是 wasm 模块，suite 根部唯一的一次
+`gpu_test_main!` 给它生成页面要调用的导出。浏览器提供的是无头设备给不了的东西——
+一个带着自己的 limits、自己的着色器翻译和自己的光栅化器的实现。由于该光栅化器并不是
+采集快照时所用的那个，`Tolerance` 可以指定一帧允许相差多少；立方体快照正是这么用的，
+并附有其阈值的实测依据。
 
 它还会在浏览器里启动每个示例，并检查画布上留下的是一幅有明暗的画面、而不是一片空白。
 GPU 测试从不会启动示例，因此没有这一步的话，某个「能编过、但页面仍是空的」改动会照样
@@ -179,7 +180,10 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
-`lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。
+`lavapipe` 作为软件 Vulkan 实现。wasm 那几趟不需要 GPU：浏览器以 SwiftShader 启动，
+两个后端用的都是软件设备——Chrome 自带的软件 Vulkan，以及其后的软件 WebGL。那台软件
+Vulkan 设备撑不起 WebGPU 画布呈现所用的 shared image，所以 WebGPU 那一趟给浏览器一个
+窗口来画：机器没有显示服务时，runner 自己起一台 Xvfb；WebGL2 那一趟则保持无头。
 
 ## 基准测试
 
@@ -224,8 +228,8 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 
 - **build** 除 Linux 外还在 macOS 与 Windows 上跑。
 - **build-wasm** —— 先跑 `check-wasm` 的那三遍 clippy，然后把每个 wasm 测试二进制
-  bindgen 成页面，在真实浏览器中驱动，软件 WebGL2 也在内。既然这里已经 lint 了这些构建，
-  `main` 上就不必再跑 `check-wasm`。
+  bindgen 成页面，在真实浏览器中驱动：WebGPU 一趟、WebGL2 一趟，两趟都是软件设备。
+  既然这里已经 lint 了这些构建，`main` 上就不必再跑 `check-wasm`。
 - **build-android** —— 先跑 `check-android` 的两遍 clippy，再交叉构建动态库，并在其外套上
   Gradle 得到 APK。它自己就跑了这两遍，所以 `main` 上同样不必再跑 `check-android`。
 
@@ -238,8 +242,9 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 
 失败运行留下的帧按各趟分别上传，各来自自己的目录：`build` 的
 `target/snapshot-mismatches` 与 `target/snapshot-mismatches-webgl2`，`build-wasm` 的
-`target/snapshot-mismatches-wasm`。不匹配往往反映的是平台差异而非回归，所以拿到这
-一帧，才能让人直接查看差异，而不是从分数去推断。
+`target/snapshot-mismatches-wasm` 与 `target/snapshot-mismatches-wasm-webgl2`。不匹配
+往往反映的是平台差异而非回归，所以拿到这一帧，才能让人直接查看差异，而不是从分数去
+推断。
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次推送到 `main` 时
 把站点发布到 GitHub Pages：根目录是一个首页，链接两个 web 示例与 API 文档，每个示例

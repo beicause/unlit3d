@@ -62,12 +62,30 @@ const RUNNER: &str = "tests/wasm/runner";
 /// separate crate that does not depend on the harness.
 const MISMATCH_DIR_ENV: &str = "UNLIT3D_SNAPSHOT_MISMATCH_DIR";
 
-/// Where this pass collects the frames that failed their comparison.
+/// Where the frames that failed their comparison in the first pass go.
 ///
 /// A directory of its own, so a browser run's frames are not mixed in with the
 /// host run's: the two can legitimately differ, and telling them apart is the
-/// first thing a reader wants to do.
+/// first thing a reader wants to do. The later passes' directories are named
+/// after their backend; [`mismatch_dir`] decides which is which.
 const MISMATCH_DIR: &str = "target/snapshot-mismatches-wasm";
+
+/// The environment variable that names the browser backend the runner serves.
+///
+/// Read by the Node runner, which picks its launch flags from it. Defined as a
+/// literal here for the same reason as the two above.
+const BACKEND_ENV: &str = "UNLIT3D_WASM_BACKEND";
+
+/// The browser backends every run covers, in the order the passes happen.
+///
+/// The wasm binary asks for WebGPU and falls back to WebGL2 on its own, so
+/// these names reach the browser as launch flags and as nothing else. Both are
+/// run because they are different implementations rather than two settings of
+/// one: WebGPU has its own shader translation, its own limits and its own
+/// rasterization path, so a green WebGL2 pass says nothing about it. The first
+/// one keeps the unsuffixed mismatch directory, since it is the pass a reader
+/// is most likely to go looking for.
+const BACKENDS: &[&str] = &["webgpu", "webgl2"];
 
 /// The environment variable that puts a test binary in proxy mode.
 ///
@@ -114,25 +132,65 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
     println!("==> assembling the test page ({} modules)", modules.len());
     write_page(&modules)?;
 
-    println!("==> starting the browser runner");
-    let mut runner = Runner::start(args.show)?;
-    runner.wait_until_listening()?;
-
-    println!("==> describing the device the browser draws with");
-    print_browser_gpu(&modules)?;
-
-    println!("==> running the examples in the browser");
-    check_examples()?;
-
-    println!("==> running the tests in the browser");
-    let result = run_through_nextest();
-    runner.stop();
-
-    match &result {
-        Ok(()) => println!("==> all wasm tests passed in {:?}", started.elapsed()),
-        Err(_) => eprintln!("==> wasm tests failed after {:?}", started.elapsed()),
+    // Every backend is attempted even after one has failed. They share the
+    // built page and nothing else, so one backend's failure says nothing about
+    // whether the other would have passed, and stopping at the first would cost
+    // another full run to learn what this one could already have said.
+    let mut failures = Vec::new();
+    for &backend in BACKENDS {
+        if let Err(error) = run_pass(&modules, backend, args.show) {
+            eprintln!("==> {backend}: {error}");
+            failures.push(format!("{backend}: {error}"));
+        }
     }
+
+    if failures.is_empty() {
+        println!("==> all wasm tests passed in {:?}", started.elapsed());
+        Ok(())
+    } else {
+        eprintln!("==> wasm tests failed after {:?}", started.elapsed());
+        Err(failures.join("\n"))
+    }
+}
+
+/// Run one backend's pass: its runner, the device it draws with, its examples,
+/// and then the tests.
+///
+/// A pass gets a runner of its own because the backend is fixed when the browser
+/// launches; one runner cannot serve both. The runner is stopped however the
+/// pass ends, so a failed backend leaves no browser behind to contend with the
+/// next one.
+fn run_pass(modules: &[String], backend: &str, show: bool) -> Result<(), String> {
+    println!("==> {backend}: starting the browser runner");
+    let mut runner = Runner::start(show, backend)?;
+
+    let result = (|| {
+        runner.wait_until_listening()?;
+
+        println!("==> {backend}: describing the device the browser draws with");
+        print_browser_gpu(modules, backend)?;
+
+        println!("==> {backend}: running the examples in the browser");
+        check_examples()?;
+
+        println!("==> {backend}: running the tests in the browser");
+        run_through_nextest(backend)
+    })();
+
+    runner.stop();
     result
+}
+
+/// Where one backend's pass collects the frames that failed their comparison.
+///
+/// The first backend keeps [`MISMATCH_DIR`] so its frames are where the
+/// documentation says they are; every later one appends its name, as the host
+/// pass does for its second tier.
+fn mismatch_dir(backend: &str) -> String {
+    match BACKENDS.first() {
+        Some(first) if *first == backend => MISMATCH_DIR.to_owned(),
+        _ => format!("{MISMATCH_DIR}-{backend}"),
+    }
 }
 
 /// Install the runner's JS dependencies, and a browser to drive.
@@ -431,11 +489,14 @@ fn check_examples() -> Result<(), String> {
 
 /// Print the device the browser draws with, as the page describes it.
 ///
-/// The browser is a backend the host pass cannot report on — a WebGL2 adapter
-/// only exists inside the page — so this is the browser's half of what
+/// The browser is a backend the host pass cannot report on — its adapter exists
+/// only inside the page — so this is the browser's half of what
 /// `cargo xtask print-gpu` prints for the host. Any test module answers, since
 /// the description comes from the harness rather than from the test.
-fn print_browser_gpu(modules: &[String]) -> Result<(), String> {
+///
+/// The backend is named on the line above the description: each pass prints one,
+/// and two descriptions one after the other would name no backend at all.
+fn print_browser_gpu(modules: &[String], backend: &str) -> Result<(), String> {
     let Some(module) = modules.first() else {
         return Err("no wasm test binary was built to ask for the device".to_owned());
     };
@@ -465,7 +526,7 @@ fn print_browser_gpu(modules: &[String]) -> Result<(), String> {
     if body.is_empty() {
         return Err("the browser described no device".to_owned());
     }
-    println!("{body}");
+    println!("==> {backend}: {body}");
     Ok(())
 }
 
@@ -497,26 +558,34 @@ fn check_example(example: &crate::run_wasm::Example) -> Result<(), String> {
 }
 
 /// Run the tests through the proxy, so nextest reports the browser's results.
-fn run_through_nextest() -> Result<(), String> {
+///
+/// One full nextest run per backend, because nextest is what names the tests and
+/// carries their verdicts out; the backend only decides which browser answers.
+fn run_through_nextest(backend: &str) -> Result<(), String> {
     let mut nextest = Command::new("cargo");
     nextest
         .args(["nextest", "run", "--profile", "wasm"])
         .args(PACKAGES.iter().flat_map(|package| ["-p", package]))
         .args(["--tests", "--all-features"])
         .env(WASM_TEST_ENV, "1");
-    step::run(&mut nextest, "the wasm tests in the browser")
+    step::run(
+        &mut nextest,
+        &format!("the wasm tests in the {backend} browser"),
+    )
 }
 
 /// The Playwright runner, stopped when the run is over.
 struct Runner(Child);
 
 impl Runner {
-    /// Start the runner, with a visible window when `--show` was asked for.
-    fn start(show: bool) -> Result<Self, String> {
+    /// Start the runner for one backend, with a visible window when `--show`
+    /// was asked for.
+    fn start(show: bool, backend: &str) -> Result<Self, String> {
         let mut child = Command::new("node")
             .arg(Path::new(RUNNER).join("index.js"))
             .args(if show { &["--show"][..] } else { &[][..] })
-            .env(MISMATCH_DIR_ENV, MISMATCH_DIR)
+            .env(MISMATCH_DIR_ENV, mismatch_dir(backend))
+            .env(BACKEND_ENV, backend)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
@@ -537,9 +606,9 @@ impl Runner {
 
     /// Wait for the runner to accept a connection.
     fn wait_until_listening(&mut self) -> Result<(), String> {
-        // Hold the port's own lock while probing it. A connect that succeeds
-        // only means *something* is listening, and a stale runner from an
-        // earlier run would answer the requests with a stale page.
+        // The child is checked before the port: a connect that succeeds only
+        // means *something* is listening, and a stale runner from an earlier
+        // run would answer the requests with a stale page.
         let start = Instant::now();
         loop {
             if let Some(status) = self

@@ -207,15 +207,14 @@ unit tests and skip the GPU suite, which needs `gltf`, `mcp` and `ui`.
 substitute for the task, and CI runs the task so the two cannot drift.
 
 `cargo xtask test-wasm` runs the rendering crates' GPU tests a second time, on
-`wasm32-unknown-unknown` in a real browser through WebGL2. The test files are the
-same ones: the suite target is itself the wasm module, and the single
-`gpu_test_main!` at the suite's root gives it the export the page calls. What the
-browser presents is
-the part no headless device can — a real WebGL2 implementation, with its own
-limits, its own shader translation and its own rasterizer. Because that
-rasterizer is not the one the snapshots were captured on, a `Tolerance` can name
-how far a frame may differ; the cube snapshots use it, and carry the
-measurements behind their bound.
+`wasm32-unknown-unknown` in a real browser, on both of the browser's GPU
+backends. The test files are the same ones: the suite target is itself the wasm
+module, and the single `gpu_test_main!` at the suite's root gives it the export
+the page calls. What the browser presents is the part no headless device can —
+an implementation with its own limits, its own shader translation and its own
+rasterizer. Because that rasterizer is not the one the snapshots were captured
+on, a `Tolerance` can name how far a frame may differ; the cube snapshots use
+it, and carry the measurements behind their bound.
 
 It also starts each example in the browser and checks that it drew a shaded
 image rather than a blank canvas. The GPU tests never start them, so without
@@ -235,8 +234,12 @@ Per-crate notes:
 
 A GPU is needed for the rendering crates' integration tests and for the example.
 On a headless CI runner, Mesa's `lavapipe` serves as the software Vulkan
-implementation. The wasm pass needs none: the browser falls back to software
-WebGL2.
+implementation. The wasm pass needs none: the browser is launched with
+SwiftShader for both backends, the software Vulkan device Chrome ships and the
+software WebGL one behind it. That Vulkan device cannot back the shared image a
+WebGPU canvas is presented through, so the WebGPU pass gives the browser a
+window to draw in — an Xvfb the runner starts itself when the machine has no
+display — while the WebGL2 pass stays headless.
 
 ## Benchmarks
 
@@ -292,9 +295,9 @@ request:
 
 - **build** runs on macOS and Windows as well as Linux.
 - **build-wasm** — the three `check-wasm` clippy passes, then every wasm test
-  binary bindgen'd into a page and driven through a real browser, software WebGL2
-  included. Linting those builds here is why `check-wasm` does not run on
-  `main`.
+  binary bindgen'd into a page and driven through a real browser, once on WebGPU
+  and once on WebGL2, both on software devices. Linting those builds here is why
+  `check-wasm` does not run on `main`.
 - **build-android** — both `check-android` clippy passes, then the cross-build of
   the shared libraries and Gradle around it for the APK. It runs those passes
   itself, so `check-android` does not run on `main` either.
@@ -310,7 +313,8 @@ run warmer than a cold one would be.
 
 The frames a failed run leaves behind are uploaded per pass, each from its own
 directory: `target/snapshot-mismatches` and `target/snapshot-mismatches-webgl2`
-from `build`, and `target/snapshot-mismatches-wasm` from `build-wasm`. A
+from `build`, and `target/snapshot-mismatches-wasm` and
+`target/snapshot-mismatches-wasm-webgl2` from `build-wasm`. A
 mismatch is often the platform showing through rather than a regression, so
 having the frame is what makes the difference something to look at rather than to
 infer from a score.

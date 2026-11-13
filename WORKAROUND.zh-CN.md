@@ -97,4 +97,76 @@ var geometric = cross(world_dx, world_dy);
 
 **代价：**每个受光片元多取两次导数，即使答案由顶点法线定了、它们被丢弃。导数是对已在寄存器里的值做一次跨四像素的减法，比它挪到前面的那个分支还便宜。
 
-**规矩：**导数内建函数要在函数里任何分支之前调用，否则就别调用。着色器树里只有这两处调用，保持下去。
+**规矩：**导数内建函数要在函数里任何分支之前调用，否则就别调用。着色器树里只有这两处调用，保持下去。没有任何测试看住这一条：各套件把每个变体都组合出来、用 naga 校验，而 naga 恰恰是不问这个问题的那个校验器。只有浏览器的 WebGPU 后端会用 Tint 编译着色器，而只有 lit 的那些测试才走得够远，能把「编译失败」和「设备没了」区分开。
+
+## headed 浏览器的 GPU watchdog 会在负载下杀掉 GPU 进程
+
+**位置：**[`tests/wasm/runner/index.js`](tests/wasm/runner/index.js) 的 `BACKEND_ARGS.webgpu` 里那个 `--disable-gpu-watchdog`。
+
+**症状：**WebGPU 那趟每次跑都有几个示例快照测试失败，而且每次都不一样——118 个里四到七个，每个都在十九到二十八秒之后报 `the staging buffer could not be mapped: A valid external Instance reference no longer exists`。这些用例单独跑都过。失败开始的那一刻，Chrome 自己的 stderr 是：
+
+```text
+ERROR:command_buffer_proxy_impl.cc:476] GPU state invalid after WaitForGetOffsetInRange.
+ERROR:command_buffer_proxy_impl.cc:277] ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer.
+ERROR:gpu_process_host.cc:1042] GPU process exited unexpectedly: exit_code=512
+ERROR:… Message N rejected by interface blink.mojom.WidgetHost
+```
+
+**成因：**这里的 `exit_code` 是 `base::Process::GetTerminationStatus` 交回的原始 wait status——`base/process/kill_posix.cc` 把 `waitpid` 的状态原样存下、不做右移——所以 `512 >> 8` 得 2，即 `RESULT_CODE_HUNG`。GPU 进程不是崩了，是被 Chrome 的 GPU watchdog 因为长时间没有进展而杀掉的：
+
+```text
+gpu/ipc/common/gpu_watchdog_timeout.h: kGpuWatchdogTimeout = Seconds(15), kSoftwareRenderingFactor = 2
+gpu/ipc/service/gpu_init.cc: bool enable_watchdog = !gpu_preferences_.disable_gpu_watchdog
+                                                    && !command_line->HasSwitch(switches::kHeadless);
+```
+
+SwiftShader 的 Vulkan 设备慢到这个程度：同时画十六个页面——浏览器套件的默认并行度——足以让 GPU 主线程在两次出帧之间停过软件渲染拿到的三十秒。进程一死，浏览器里所有设备跟着死，于是正在画的那些测试都在下一次映射时报错，作决定的并不是浏览器自己。
+
+headless 豁免正是只有这一趟中招的原因：WebGL2 那趟是 headless，从来没有 watchdog。
+
+**绕法：**对需要窗口的那一趟关掉 watchdog：
+
+```js
+const BACKEND_ARGS = {
+  webgpu: [ …, "--disable-gpu-watchdog" ],
+  webgl2: [],
+};
+```
+
+**代价：**GPU 进程真的卡死时，浏览器不再在它自己的超时里杀掉并重启它，改由 harness 的每测试超时（五分钟，`TIMEOUT_MS`）来判这一页失败。除此之外没有别的东西看住 GPU 进程，靠超时发现卡死的代价是整页失败，而不是那一个测试失败。
+
+**规矩：**headed 那趟都要传 `--disable-gpu-watchdog`。headless 的不需要，headless 浏览器根本不会起 watchdog。
+
+## 在 headless 浏览器里读 WebGPU 画布，读出来全是透明
+
+**位置：**[`tests/wasm/runner/index.js`](tests/wasm/runner/index.js) 的 `BACKENDS_NEEDING_A_WINDOW`，以及 runner 为这个集合里的后端起的那台私有 Xvfb。
+
+**症状：**WebGPU 那趟的示例检查——唯一一处读示例页画布的检查——一直等到超时，而页面报告这一帧已经画出来了。画布仍是透明的：`drawImage`、`toDataURL`、`page.screenshot` 一律返回 `rgba(0, 0, 0, 0)`。页面还报 `A valid external Instance reference no longer exists`，设备丢失。
+
+**成因：**WebGPU 画布是靠一块 shared image 送到合成器的，而 headless Chrome 为它造不出 backing：
+
+```text
+ERROR:shared_image_factory.cc: Could not find SharedImageBackingFactory with params:
+  usage: …|WebgpuSwapChainTexture|…, format: RGBA_8888, gmb_type: empty
+ERROR:shared_image_stub.cc: SharedImageStub: Unable to create shared image
+```
+
+接下来把画布纹理当拷贝源就会报上面那条消息，Chrome 于是把设备判为失效，页面余下的时间都不可用。没有任何参数能救：同一块画布在 Chrome 154 与 157 上、在 headless 下，无论加不加 `--enable-unsafe-webgpu`、SwiftShader 那三个 Vulkan 参数、`--use-webgpu-adapter`、`--ozone-platform=x11`、ANGLE、Skia Graphite 与那组合成开关，试过的组合都是透明的。
+
+测试本身不受影响，因为它们从不读画布：它们画进一张离屏纹理，拷进 buffer 再映射出来，而那条路径在 headless Chrome 上是正确的。
+
+**绕法：**给这一趟一个窗口，并把 Vulkan 作为 feature 打开。runner 以 headed 加 `--ozone-platform=x11` 与 `--enable-features=Vulkan` 启动，并删掉 `WAYLAND_DISPLAY` 以免 Chrome 改挑一个 Wayland socket。在 Linux 上它还会自起一台 Xvfb，用 `DISPLAY` 把浏览器指过去——刻意自起而不是借现成的，因为现成的那台可能是某个 Wayland 会话的 Xwayland；唯一例外是 `--show` 且当前已设 `DISPLAY`，那时窗口要落在开发者自己的屏幕上：
+
+```js
+const server = spawn("Xvfb",
+  ["-displayfd", "1", "-screen", "0", "1280x1024x24", "-nolisten", "tcp"],
+  { stdio: ["ignore", "pipe", "pipe"] });
+```
+
+`-displayfd` 让 Xvfb 自己挑一个空闲的 display 号并报到 stdout，于是同一台机器上两趟运行不会撞号。它自己的 stderr 在转发时加上 `xvfb:` 前缀，免得服务器端的抱怨被当成浏览器的。
+
+两半缺一不可，这也是它要靠一轮参数矩阵才定位的原因：不加 `--enable-features=Vulkan`，WebGPU 也照样能连上 SwiftShader Vulkan，adapter 看着是对的、测试也照样过，但只有 headed 且开着这个 feature 的浏览器才会把画布合成出来。headed 但不开这个 feature 读出来是透明，headless 无论开不开都是透明。
+
+**代价：**WebGPU 那趟变成 headed，机器上得装 `Xvfb`，而且读画布要经合成器，不再是一次纹理拷贝。WebGL2 那趟保持 headless 启动，因为它的画布确实能到得了 headless 的合成器。
+
+**规矩：**只有读画布的检查才需要窗口，而示例检查是唯一一处。GPU 测试从离屏纹理读它那一帧——若有测试改成读画布，它在任何没有显示器的机器上都会挂。

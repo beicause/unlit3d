@@ -181,7 +181,7 @@ async fn context(tier: DeviceTier) -> Result<GpuContext, GpuRequestError> {
     #[cfg(target_arch = "wasm32")]
     {
         GpuContext::present_to(
-            new_instance(),
+            new_instance().await,
             wgpu::SurfaceTarget::Canvas(create_canvas()),
             tier,
             wgpu::PowerPreference::default(),
@@ -202,20 +202,32 @@ async fn context(tier: DeviceTier) -> Result<GpuContext, GpuRequestError> {
 
 /// The instance a browser's context comes from.
 ///
-/// A browser has no environment to read, and WebGL2 is what the wasm suite is
-/// for, so the backend is named rather than discovered.
+/// A browser has no environment to read and no adapter without a canvas, so
+/// the backends are named rather than discovered — but both are named, because
+/// which one a page gets is the harness's choice, not the page's: the runner
+/// launches a WebGPU browser or a WebGL2 one, and the same wasm binary runs on
+/// either.
+///
+/// `new_instance_with_webgpu_detection` is what makes that work. Asking for
+/// `BROWSER_WEBGPU` is exclusive — an instance that requests it and finds
+/// `navigator.gpu` present builds a WebGPU backend and nothing else, without
+/// looking for a fallback — so the check has to happen before the instance
+/// exists, which is what the detection helper's own adapter request is for.
+/// Without `navigator.gpu`, the bit is dropped and the GL bit that is left is
+/// WebGL2, which every browser has.
 #[cfg(target_arch = "wasm32")]
-fn new_instance() -> wgpu::Instance {
+async fn new_instance() -> wgpu::Instance {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    descriptor.backends = wgpu::Backends::GL;
+    descriptor.backends = wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL;
     // WebGL cannot report a fence as done on its own, so a `poll(Wait)` would
     // never resolve: `AutoFinish` is what makes the backend finish the fence
     // itself and let a readback complete. See wgpu#4589.
     descriptor.backend_options.gl.fence_behavior = wgpu::GlFenceBehavior::AutoFinish;
-    wgpu::Instance::new(descriptor)
+    wgpu::util::new_instance_with_webgpu_detection(descriptor).await
 }
 
-/// A canvas for the browser to make a WebGL context from.
+/// A canvas for the browser to make a GPU context from, whichever backend it
+/// ends up with.
 ///
 /// The canvas is never attached to the document and never sized: the context
 /// is what the adapter request needs, not the drawing surface.

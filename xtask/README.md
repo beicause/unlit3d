@@ -19,7 +19,7 @@ cargo xtask test           # nextest over unit and integration tests, then the d
 cargo xtask line-count     # print every Rust file's line count, marking the ones at 1000 lines
 cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
 cargo xtask miri           # run the ECS's tests under Miri, which is what checks its unsafe
-cargo xtask test-wasm      # run the GPU tests in a browser, through wasm and WebGL2
+cargo xtask test-wasm      # run the GPU tests in a browser, on WebGPU and on WebGL2
 cargo xtask run-wasm       # build the web examples and serve them for a browser
 cargo xtask build-android  # build the Android library and the APK around it
 cargo xtask publish        # publish the workspace's crates to crates.io, in dependency order
@@ -148,9 +148,12 @@ hash so a toolchain bump rebuilds the sysroot instead of reusing a stale one.
 ### `cargo xtask test-wasm`
 
 Runs the same GPU tests `cargo xtask test` does, but on
-`wasm32-unknown-unknown` in a real browser, and then starts the example itself. A
-wasm binary has no process to start and no exit code to hand back, so the pass is
-assembled rather than run:
+`wasm32-unknown-unknown` in a real browser, and then starts the example itself.
+The tests run twice, once per browser GPU backend: the wasm binary asks for
+WebGPU and falls back to WebGL2 by itself, so what a pass covers is decided by
+the launch flags the runner's browser is started with. A wasm binary has no
+process to start and no exit code to hand back, so the pass is assembled rather
+than run:
 
 1. The workspace is built for wasm — under the default features, which is what
    the browser and the APK ship, and under the `wasm-release` cargo profile — so a
@@ -165,11 +168,14 @@ assembled rather than run:
 5. A Node runner serves that directory and opens the page once per test in a
    fresh browser context. A frame that fails its comparison is encoded in the
    browser — the page has no filesystem — and handed to this runner, which
-   writes it under `target/snapshot-mismatches-wasm` for CI to upload.
+   writes it under `target/snapshot-mismatches-wasm` for CI to upload, or
+   `target/snapshot-mismatches-wasm-webgl2` for the WebGL2 pass.
 6. The *same* native test binaries, with `UNLIT3D_WASM_TEST` set, become a proxy
    instead of a test suite: `cargo nextest` drives them, and each trial asks the
    runner to run that test in the browser. Nextest's listing, filtering,
-   reporting and exit code then all work as they do for an ordinary suite.
+   reporting and exit code then all work as they do for an ordinary suite. Each
+   backend gets its own runner as well as its own nextest run, because a
+   browser's backend is fixed when it launches.
 
 The verdict travels through `sessionStorage`, because a browser has no exit code
 and a panicking test traps its wasm instance rather than unwinding — which is
@@ -182,12 +188,25 @@ a backend and leaves a shaded image on its canvas rather than a blank one. They
 are the same pages `run-wasm` serves, built by the same code, so the two cannot
 drift.
 
+That canvas check is also why the WebGPU pass runs headed: a headless browser
+composites no WebGPU canvas at all, so the frame is drawn and then read back as
+transparency however the launch flags are set. The runner gives that pass a
+window — a private Xvfb on Linux when there is no display to borrow, `DISPLAY`
+pointed at it and `WAYLAND_DISPLAY` dropped so Chrome cannot take the Wayland
+route instead. The GPU tests themselves read their frames from offscreen
+textures and would pass headless; only the example check needs the window. See
+WORKAROUND.md, "A WebGPU canvas reads back transparent in a headless browser",
+for the mechanism and the flags that go with it.
+
 The runner's JS dependencies and a browser are installed on the first run;
-`CHROME_PATH` names an existing browser to reuse instead of downloading one, and
-`--show` opens a visible window to watch a failure happen. The profile the
-nextest pass uses is `wasm`, defined in `.config/nextest.toml`; that is a nextest
-profile, and separate from the `wasm-release` cargo profile the builds themselves
-use.
+`CHROME_PATH` names an existing browser to reuse instead of downloading one.
+`--show` runs a pass with a window rather than headless, so a failure can be
+watched as it happens; only the WebGL2 pass takes the hint, since the WebGPU one
+is headed regardless. Either way the window lands on whichever display the
+runner has, and one it started itself is on no screen anyone is looking at. The
+profile the nextest pass uses is `wasm`, defined in `.config/nextest.toml`; that
+is a nextest profile, and separate from the `wasm-release` cargo profile the
+builds themselves use.
 
 Everything this task compiles for `wasm32-unknown-unknown` goes through
 `wasm-release`, as `run-wasm` does. Every build for the target also enables the

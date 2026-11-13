@@ -151,4 +151,129 @@ moved above.
 
 **Rule:** a derivative built-in is called before anything in the function
 branches, or not at all. There are only these two calls in the shader tree; keep
-it that way.
+it that way. Nothing tests this: the suites compose every variant and validate
+it with naga, which is the validator that never asks the question. Only a
+browser's WebGPU backend compiles a shader with Tint, and only the lit tests get
+far enough for one to be told apart from a device that went away.
+
+## A headed browser's GPU watchdog kills the GPU process under load
+
+**Where:** [`tests/wasm/runner/index.js`](tests/wasm/runner/index.js), the
+`--disable-gpu-watchdog` in `BACKEND_ARGS.webgpu`.
+
+**Symptom:** the WebGPU pass fails a different handful of the examples' snapshot
+tests on every run — four to seven of the 118 — each after nineteen to
+twenty-eight seconds, with `the staging buffer could not be mapped: A valid
+external Instance reference no longer exists`. Every one of them passes when run
+alone. Chrome's own stderr, at the point the failures start, says:
+
+```text
+ERROR:command_buffer_proxy_impl.cc:476] GPU state invalid after WaitForGetOffsetInRange.
+ERROR:command_buffer_proxy_impl.cc:277] ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer.
+ERROR:gpu_process_host.cc:1042] GPU process exited unexpectedly: exit_code=512
+ERROR:… Message N rejected by interface blink.mojom.WidgetHost
+```
+
+**Cause:** `exit_code` there is the raw wait status `base::Process::GetTerminationStatus`
+returns — `base/process/kill_posix.cc` stores `waitpid`'s status without shifting
+it — so `512 >> 8` is 2, which is `RESULT_CODE_HUNG`. The GPU process did not
+crash: Chrome's GPU watchdog killed it for making no progress:
+
+```text
+gpu/ipc/common/gpu_watchdog_timeout.h: kGpuWatchdogTimeout = Seconds(15), kSoftwareRenderingFactor = 2
+gpu/ipc/service/gpu_init.cc: bool enable_watchdog = !gpu_preferences_.disable_gpu_watchdog
+                                                    && !command_line->HasSwitch(switches::kHeadless);
+```
+
+A SwiftShader Vulkan device is slow enough that sixteen pages drawn at once — the
+browser suite's default parallelism — leave the GPU main thread between two
+frames past the thirty seconds software rendering gets. Once the process dies
+every device in the browser dies with it, so the tests that were mid-frame all
+fail at their next map, and the browser is not the one that decided to stop.
+
+That headless is exempt is why only this pass is affected: the WebGL2 pass runs
+headless and never had a watchdog.
+
+**Workaround:** turn the watchdog off for the pass that needs a window:
+
+```js
+const BACKEND_ARGS = {
+  webgpu: [ …, "--disable-gpu-watchdog" ],
+  webgl2: [],
+};
+```
+
+**Cost:** a browser whose GPU process really does wedge is no longer killed and
+restarted inside its own timeout; the harness's per-test timeout (five minutes,
+`TIMEOUT_MS`) is what fails the page instead. Nothing else keeps the GPU
+process in check, and a pass that watched for hangs by timing out would fail a
+whole page rather than the one test.
+
+**Rule:** a headed pass passes `--disable-gpu-watchdog`. A headless one needs
+nothing, since a headless browser never starts the watchdog.
+
+## A WebGPU canvas reads back transparent in a headless browser
+
+**Where:** [`tests/wasm/runner/index.js`](tests/wasm/runner/index.js),
+`BACKENDS_NEEDING_A_WINDOW` and the private Xvfb the runner starts for a backend
+in that set.
+
+**Symptom:** the WebGPU pass's example check — the one check that reads the
+example page's canvas — waits out its whole timeout while the page reports the
+frame was drawn. The canvas stays transparent: `drawImage`, `toDataURL` and
+`page.screenshot` all come back `rgba(0, 0, 0, 0)`. The page also logs
+`A valid external Instance reference no longer exists`, and the device is lost.
+
+**Cause:** a WebGPU canvas reaches the compositor through a shared image, and
+headless Chrome cannot produce a backing for it:
+
+```text
+ERROR:shared_image_factory.cc: Could not find SharedImageBackingFactory with params:
+  usage: …|WebgpuSwapChainTexture|…, format: RGBA_8888, gmb_type: empty
+ERROR:shared_image_stub.cc: SharedImageStub: Unable to create shared image
+```
+
+Reading the canvas texture as a copy source then fails with the message above,
+and Chrome invalidates the device for the rest of the page. No flag helps: the
+same canvas was transparent on Chrome 154 and 157, headless, with and without
+every combination tried of `--enable-unsafe-webgpu`, the SwiftShader Vulkan trio,
+`--use-webgpu-adapter`, `--ozone-platform=x11`, ANGLE, Skia Graphite and the
+compositing switches.
+
+The tests are unaffected because they never read the canvas: they draw into an
+offscreen texture, copy that to a buffer and map it, and that path is correct in
+headless Chrome.
+
+**Workaround:** give the pass a window, and turn Vulkan on as a feature. The
+runner launches headed with `--ozone-platform=x11` and
+`--enable-features=Vulkan`, and drops `WAYLAND_DISPLAY` so Chrome cannot pick a
+Wayland socket instead. On Linux it also starts its own Xvfb and points the
+browser at it with `DISPLAY` — a private one rather than the host's, which may
+be a Wayland session's Xwayland; `--show` with a `DISPLAY` already set is the
+exception, since a window the developer watches has to be on their own display:
+
+```js
+const server = spawn("Xvfb",
+  ["-displayfd", "1", "-screen", "0", "1280x1024x24", "-nolisten", "tcp"],
+  { stdio: ["ignore", "pipe", "pipe"] });
+```
+
+`-displayfd` makes Xvfb pick a free display number and report it on stdout, so
+two runs on one machine cannot collide. Its own stderr is tagged `xvfb:` as it
+is forwarded, so a complaint from the server is not read as the browser's.
+
+Both halves are needed, which is what made this take a matrix of runs to pin
+down: WebGPU itself reaches SwiftShader Vulkan without `--enable-features=Vulkan`,
+so the adapter looks right and the tests pass, but only a headed browser with
+that feature enabled composites a canvas at all. Headed without the feature
+reads back transparency, and headless reads back transparency with or without
+it.
+
+**Cost:** the WebGPU pass is headed, needs `Xvfb` installed, and reads a canvas
+through the compositor rather than through a texture copy. The WebGL2 pass keeps
+its headless launch, since its canvas does reach a headless compositor.
+
+**Rule:** only a check that reads a canvas needs a window, and the example check
+is the only one that does. A GPU test reads its frame from an offscreen texture —
+a test that started reading the canvas would fail on any machine without a
+display.

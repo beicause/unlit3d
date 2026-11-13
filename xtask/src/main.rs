@@ -64,7 +64,8 @@ enum Task {
     Check(CheckArgs),
     /// Run the workspace's tests.
     Test(TestArgs),
-    /// Run the GPU tests in a real browser, through wasm and WebGL2.
+    /// Run the GPU tests in a real browser, through wasm, on each of its GPU
+    /// backends.
     TestWasm(TestWasmArgs),
     /// Run the ECS's tests under Miri, which is what checks its `unsafe`.
     Miri(MiriArgs),
@@ -112,7 +113,7 @@ struct TestArgs {
 #[argh(
     subcommand,
     name = "test-wasm",
-    description = "run the GPU tests in a real browser through wasm and WebGL2"
+    description = "run the GPU tests in a real browser through wasm, on WebGPU and WebGL2"
 )]
 struct TestWasmArgs {
     /// show the browser window, to watch a failure happen.

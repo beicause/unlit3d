@@ -74,7 +74,9 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
   较弱的平台所能提供的样子，于是测试可以在并非该平台的硬件上触达该平台所走的路径。
   `Ctx::headless()` 从 `UNLIT3D_DEVICE_TIER` 读取档位，测试套件正是借此再跑一遍
   WebGL2 的形态；不设置时请求的是 WebGPU 基线，而不是适配器自身的 limits。在 web
-  上设备由 canvas 与 `GL` 后端创建，因为这是浏览器用来代替原生 API 的东西。
+  上设备由 canvas 与浏览器自己的后端创建：浏览器提供 WebGPU 就用 WebGPU，否则用
+  WebGL2，回落由 wgpu 的实例探测完成。一趟拿到哪个后端取决于浏览器的启动参数，因此
+  `cargo xtask test-wasm` 会把套件在每个后端上各跑一遍。
 - `init_logging()` —— 单独的日志后端，供从不创建 `Ctx` 的测试使用。原生平台上是读取
   `RUST_LOG` 的 `env_logger`；web 上是转发到浏览器控制台的 `console_log`。默认级别
   为 `warn`。
