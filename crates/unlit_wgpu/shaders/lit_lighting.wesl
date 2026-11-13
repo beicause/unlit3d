@@ -27,6 +27,13 @@ import package::polygon;
 /// turned toward the eye, which is the side a back-face culled draw presents.
 @if(LIT)
 public fn fragment_normal(in: lit_vertex::VertexOut) -> vec3<f32> {
+    // Both derivatives are taken before the branch below decides anything,
+    // because a derivative built-in may only be called from uniform control
+    // flow: a per-fragment condition would put the call in non-uniform control
+    // flow, which the browser's validator rejects outright while naga lets it
+    // through. See WORKAROUND.md, "A derivative inside a per-fragment branch".
+    let world_dx = dpdx(in.world);
+    let world_dy = dpdy(in.world);
     @if(VERTEX_NORMAL) {
         // A zero-length normal is a mesh that had no valid normal to give:
         // fall through to the geometric one rather than dividing by nothing.
@@ -35,7 +42,7 @@ public fn fragment_normal(in: lit_vertex::VertexOut) -> vec3<f32> {
             return in.normal * inverseSqrt(length_squared);
         }
     }
-    var geometric = cross(dpdx(in.world), dpdy(in.world));
+    var geometric = cross(world_dx, world_dy);
     // Named apart from the vertex normal's length above: an inline WESL
     // conditional lays its declarations into the surrounding scope rather
     // than opening one of its own.

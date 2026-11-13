@@ -61,3 +61,40 @@ render_pass.set_scissor_rect(0, 0, attachments.width(), attachments.height());
 **代价：**每个 pass 多一次冗余的状态设置。
 
 **规矩：**只要一个 pass 里画过带裁剪的东西，结束前就用整个目标盖掉裁剪矩形。回归测试是 [`crates/unlit3d/tests/gpu_ui_source.rs`](crates/unlit3d/tests/gpu_ui_source.rs) 里的 `a_clipped_panel_does_not_clip_the_resolve`。
+
+## 导数写在逐片元分支里，在 WebGPU 上编不过
+
+**位置：**[`crates/unlit_wgpu/shaders/lit_lighting.wesl`](crates/unlit_wgpu/shaders/lit_lighting.wesl)
+的 `fragment_normal`，它在后面那个分支之前先取好两个导数。
+
+**症状：**浏览器 WebGPU 后端上所有 lit 测试全挂，且只在这个后端上挂。页面日志是
+
+```text
+Error while parsing WGSL: :162:43 error: 'dpdy' must only be called from uniform control flow
+```
+
+随后 `ShaderModule`、`RenderPipeline`、`CommandBuffer` 接连无效，这一帧什么都没画出来，断言在一片 0 的画布上失败。
+
+**成因：**WGSL 要求导数内建函数——`dpdx`、`dpdy`、`fwidth`——只能从 uniform 控制流里调用。原来的着色器先定下法线，然后才取几何法线：
+
+```wgsl
+if length_squared > 1.0e-8 { return in.normal * inverseSqrt(length_squared); }
+var geometric = cross(dpdx(in.world), dpdy(in.world)); // 非 uniform 控制流
+```
+
+`length_squared` 是逐片元插值出来的，于是这个分支是非 uniform 的，它之后的代码也一样。只有浏览器 WebGPU 背后的校验器 Tint 会做 uniform 性分析，naga 不做，所以宿主上一个后端都没拒过这个模块，这个错误直到浏览器编译它才现身。这个缺口记在 [wgpu#4369](https://github.com/gfx-rs/wgpu/issues/4369) 里：naga 对片元阶段的 uniform 性要求被 `naga/src/valid/analyzer.rs` 里的一个 `DISABLE_UNIFORMITY_REQ_FOR_FRAGMENT_STAGE` 常量编译掉了，`DERIVATIVE` 与 `IMPLICIT_LEVEL` 两位因此归零，导数在宿主上从不做 uniform 性检查。那个分支在 `@if(VERTEX_NORMAL)` 里，因此只有带顶点法线的着色器受影响。
+
+**绕法：**先取导数，再分支：
+
+```wgsl
+let world_dx = dpdx(in.world);
+let world_dy = dpdy(in.world);
+@if(VERTEX_NORMAL) { … }
+var geometric = cross(world_dx, world_dy);
+```
+
+这也正是规范要求的形状，所以没有剩下任何需要检测的东西：模块在每个后端上都合法。
+
+**代价：**每个受光片元多取两次导数，即使答案由顶点法线定了、它们被丢弃。导数是对已在寄存器里的值做一次跨四像素的减法，比它挪到前面的那个分支还便宜。
+
+**规矩：**导数内建函数要在函数里任何分支之前调用，否则就别调用。着色器树里只有这两处调用，保持下去。没有任何测试看住这一条：各套件把每个变体都组合出来、用 naga 校验，而 naga 恰恰是不问这个问题的那个校验器。只有浏览器的 WebGPU 后端会用 Tint 编译着色器，而只有 lit 的那些测试才走得够远，能把「编译失败」和「设备没了」区分开。

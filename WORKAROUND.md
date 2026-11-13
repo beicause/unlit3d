@@ -94,3 +94,64 @@ whole target — because the pass no longer depends on any draw having set one.
 **Rule:** a pass that draws anything clipped covers the whole target before it
 ends. The regression test is `a_clipped_panel_does_not_clip_the_resolve` in
 [`crates/unlit3d/tests/gpu_ui_source.rs`](crates/unlit3d/tests/gpu_ui_source.rs).
+
+## A derivative inside a per-fragment branch fails to compile on WebGPU
+
+**Where:** [`crates/unlit_wgpu/shaders/lit_lighting.wesl`](crates/unlit_wgpu/shaders/lit_lighting.wesl)
+`fragment_normal`, which takes both derivatives before the branch that follows
+them.
+
+**Symptom:** every lit test fails on the browser's WebGPU backend, and only
+there. The page logs
+
+```text
+Error while parsing WGSL: :162:43 error: 'dpdy' must only be called from uniform control flow
+```
+
+followed by an invalid `ShaderModule`, an invalid `RenderPipeline` and an
+invalid `CommandBuffer`, so the frame draws nothing and the assertion fails on a
+canvas of zeroes.
+
+**Cause:** WGSL requires a derivative built-in — `dpdx`, `dpdy`, `fwidth` — to be
+called from uniform control flow. The shader decided the normal first and only
+then asked for the geometric normal:
+
+```wgsl
+if length_squared > 1.0e-8 { return in.normal * inverseSqrt(length_squared); }
+var geometric = cross(dpdx(in.world), dpdy(in.world)); // non-uniform control flow
+```
+
+`length_squared` is interpolated per fragment, so the branch is non-uniform and
+so is everything after it. Only Tint, the validator behind the browser's WebGPU,
+runs the uniformity analysis; naga does not, so no host backend ever rejected the
+module and the mistake was invisible until a browser compiled it. That gap is
+tracked in [wgpu#4369](https://github.com/gfx-rs/wgpu/issues/4369): naga's
+fragment-stage uniformity requirement is compiled out by a
+`DISABLE_UNIFORMITY_REQ_FOR_FRAGMENT_STAGE` const in `naga/src/valid/analyzer.rs`,
+which zeroes the `DERIVATIVE` and `IMPLICIT_LEVEL` bits, so derivatives are never
+checked for uniformity on the host. The branch is behind `@if(VERTEX_NORMAL)`, so
+only the shaders that carry vertex normals are affected.
+
+**Workaround:** take the derivatives first, and branch afterwards:
+
+```wgsl
+let world_dx = dpdx(in.world);
+let world_dy = dpdy(in.world);
+@if(VERTEX_NORMAL) { … }
+var geometric = cross(world_dx, world_dy);
+```
+
+This is also the shape the spec asks for, so there is nothing left to detect:
+the module is valid on every backend.
+
+**Cost:** two derivative readings per lit fragment are taken even when the vertex
+normal decides the answer and they are thrown away. A derivative is a quad-wide
+subtract on values already in registers, so this costs less than the branch it
+moved above.
+
+**Rule:** a derivative built-in is called before anything in the function
+branches, or not at all. There are only these two calls in the shader tree; keep
+it that way. Nothing tests this: the suites compose every variant and validate
+it with naga, which is the validator that never asks the question. Only a
+browser's WebGPU backend compiles a shader with Tint, and only the lit tests get
+far enough for one to be told apart from a device that went away.
