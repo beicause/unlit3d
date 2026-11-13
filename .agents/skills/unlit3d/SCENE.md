@@ -38,7 +38,7 @@ world.root_scope().query_one::<&mut FramePass>(pass).unwrap()
 world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
 ```
 
-想直接出图：颜色附件用 `create_color_target` 建，渲染完用 `unlit_wgpu::readback::readback_texture(device, queue, &texture)` 取像素（按纹理格式返回该格式本身的字节，行对齐 padding 已剥掉）。
+想直接出图：颜色附件用 `create_color_target` 建，渲染完 `unlit_wgpu::readback::readback_texture(device, queue, &texture).await` 取像素（按纹理格式返回该格式本身的字节，行对齐 padding 已剥掉）。它是 future：await 就是在等拷贝落地，同步上下文里用 `pollster::block_on` 驱动。
 
 ## 状态怎么放
 

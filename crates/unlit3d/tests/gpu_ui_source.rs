@@ -226,9 +226,9 @@ fn pixel_of(point: egui::Pos2, pixels_per_point: f32) -> (u32, u32) {
 }
 
 /// Read a frame back out of `target`.
-fn read(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
+async fn read(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
     Frame {
-        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, target),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, target).await,
         width: WIDTH,
         height: HEIGHT,
     }
@@ -344,7 +344,7 @@ async fn ui_only_with_two_panels() {
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     let (lx, ly) = pixel_of(left.centre(), 1.0);
     let (rx, ry) = pixel_of(right.centre(), 1.0);
@@ -389,7 +389,7 @@ async fn ui_only_clears_to_load_ops() {
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     // A corner is outside the panel and keeps the clear colour.
     let corner = frame.pixel_u8(2, HEIGHT - 3);
@@ -422,7 +422,7 @@ async fn ui_only_multisampled_and_srgb() {
 
     let target = gpu.bind_offscreen_target_with(&world, SAMPLES, false);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     let (x, y) = pixel_of(rect.centre(), 1.0);
     let centre = frame.pixel_u8(x, y);
@@ -459,7 +459,7 @@ async fn ui_only_at_high_pixel_density() {
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     let (cx, cy) = pixel_of(rect.centre(), PPP);
     assert!(
@@ -521,7 +521,7 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
 ///
 /// The `panel` is the UI, and `ui_first` decides whether it is recorded before
 /// or after the mesh.
-fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPanel) -> Frame {
+async fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPanel) -> Frame {
     let gpu = mesh_world(ctx, world);
     spawn_load_ops(world, &gpu);
 
@@ -540,7 +540,7 @@ fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPane
 
     let target = gpu.bind_offscreen_target_with(world, 1, true);
     gpu.render_frames(world, 2);
-    read(ctx, &target)
+    read(ctx, &target).await
 }
 
 /// A pixel inside the band that the cube also covers.
@@ -560,10 +560,11 @@ async fn ui_draws_over_the_mesh_in_any_source_order() {
 
     let ctx = Ctx::headless().await;
     let mut ui_last = World::new();
-    let frame_ui_last = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE));
+    let frame_ui_last = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE)).await;
 
     let mut ui_first = World::new();
-    let frame_ui_first = mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE));
+    let frame_ui_first =
+        mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE)).await;
 
     // The overlap lies over the cube, and the panel wins it either way: the
     // composite tiers its draws behind the sequenced mesh.
@@ -614,7 +615,7 @@ async fn ui_does_not_clip_the_mesh() {
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     // The cube sits around the middle of the frame, well outside the clip
     // region, so any cube pixel there proves the clip did not reach it.
@@ -668,7 +669,7 @@ async fn a_clipped_panel_does_not_clip_the_resolve() {
 
     let target = gpu.bind_offscreen_target_with(&world, SAMPLES, false);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     // The panel is inside its clip, which proves the clipped draw ran.
     let (x, y) = pixel_of(rect.centre(), 1.0);
@@ -714,9 +715,9 @@ async fn mesh_and_ui_survive_a_second_frame() {
     // One frame warms egui up, then two are compared.
     gpu.render(&world);
     gpu.render(&world);
-    let first = read(&ctx, &target);
+    let first = read(&ctx, &target).await;
     gpu.render(&world);
-    let second = read(&ctx, &target);
+    let second = read(&ctx, &target).await;
 
     assert_eq!(
         first.rgba, second.rgba,
@@ -764,7 +765,7 @@ fn burst_panel(extra: Entity) -> UiPanel {
 /// it never shrinks, so the second frame's own geometry sits in a buffer with
 /// room to spare. How much geometry a frame holds must not change where its
 /// vertices are read from.
-fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
+async fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, ctx);
     spawn_load_ops(&world, &gpu);
@@ -783,7 +784,7 @@ fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
             burst.0 = 0
         });
     gpu.render(&world);
-    read(ctx, &target)
+    read(ctx, &target).await
 }
 
 /// A frame whose geometry buffer has room to spare draws the same picture as
@@ -797,8 +798,8 @@ fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
 /// garbled but correctly-placed interface.
 async fn a_frame_with_spare_geometry_buffer_room_draws_the_same_picture() {
     let ctx = Ctx::headless().await;
-    let grown = frame_after_burst(&ctx, 64);
-    let filled = frame_after_burst(&ctx, 0);
+    let grown = frame_after_burst(&ctx, 64).await;
+    let filled = frame_after_burst(&ctx, 0).await;
 
     // Both frames paint the same red rectangle once the burst is gone.
     let (x, y) = pixel_of(FIXED.centre(), 1.0);
@@ -892,7 +893,7 @@ async fn a_patched_texture_shows_the_patch() {
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
+    let frame = read(&ctx, &target).await;
 
     // The patch covers the middle of the image, which the draw maps to the
     // middle of the rectangle.

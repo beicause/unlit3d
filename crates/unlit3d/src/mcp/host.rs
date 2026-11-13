@@ -265,7 +265,9 @@ fn read_buffer_bytes(
     let size = size.unwrap_or(total - offset).min(total - offset);
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
-    let bytes = try_readback_buffer(&device, &queue, &buffer, offset, size)
+    // The tool runs inside a synchronous closure on the world's thread, so the
+    // readback's future is driven to completion here rather than awaited.
+    let bytes = pollster::block_on(try_readback_buffer(&device, &queue, &buffer, offset, size))
         .map_err(|error| format!("failed to read the buffer back: {error}"))?;
     Ok((offset, bytes))
 }
@@ -433,7 +435,7 @@ fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Resu
     };
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
-    let bytes = try_readback_texture(&device, &queue, &texture)
+    let bytes = pollster::block_on(try_readback_texture(&device, &queue, &texture))
         .map_err(|error| format!("failed to read the texture back: {error}"))?;
     Ok(Frame {
         bytes,
@@ -741,7 +743,7 @@ fn screenshot_frame(
     render_frame(world, renderer)?;
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
-    let bytes = try_readback_texture(&device, &queue, &texture)
+    let bytes = pollster::block_on(try_readback_texture(&device, &queue, &texture))
         .map_err(|error| format!("failed to read the texture back: {error}"))?;
     Ok(Frame {
         bytes,

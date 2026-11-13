@@ -154,7 +154,9 @@ use unlit_wgpu_test_util::Ctx;
 let ctx = unlit_wgpu_test_util::block_on(Ctx::headless());
 let target = unlit_wgpu_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
 // ... render into target.view ...
-let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
+let bytes = unlit_wgpu_test_util::block_on(async {
+    unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture).await
+});
 
 #[cfg(feature = "snapshot")]
 unlit_wgpu_test_util::assert_image_snapshot(

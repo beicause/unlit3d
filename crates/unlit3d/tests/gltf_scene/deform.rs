@@ -54,11 +54,11 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_morphed");
 
-    let read = |gpu: &TestGpu| {
+    let read = async |gpu: &TestGpu| {
         gpu.render(&world);
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };
-    let undeformed = read(&gpu);
+    let undeformed = read(&gpu).await;
     let red = count_colour(&undeformed, [255, 0, 0], 4);
     assert!(
         red > (WIDTH * HEIGHT * 85 / 100) as usize,
@@ -73,7 +73,7 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
         .expect("the weight entity carries a `MorphWeights`")
         .get()
         .weights = vec![1.0, 0.0];
-    let collapsed = read(&gpu);
+    let collapsed = read(&gpu).await;
     assert_eq!(
         count_colour(&collapsed, [255, 0, 0], 4),
         0,
@@ -89,7 +89,7 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
         .expect("the weight entity carries a `MorphWeights`")
         .get()
         .weights = vec![0.0, 1.0];
-    let displaced = read(&gpu);
+    let displaced = read(&gpu).await;
     assert_eq!(
         count_colour(&displaced, [255, 0, 0], 4),
         0,
@@ -123,13 +123,13 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
-    let read = |gpu: &TestGpu, time: f32| {
+    let read = async |gpu: &TestGpu, time: f32| {
         gltf.apply_animation(&world.root_scope(), AnimationId::new(0), time, &nodes);
         gpu.render(&world);
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };
 
-    let rest = read(&gpu, 0.0);
+    let rest = read(&gpu, 0.0).await;
     let red = count_colour(&rest, [255, 0, 0], 4);
     assert!(
         red > (WIDTH * HEIGHT * 85 / 100) as usize,
@@ -138,7 +138,7 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
 
     // The joint's second keyframe takes it past the viewport's edge, so the
     // quad it skins follows it out of the frame.
-    let moved = read(&gpu, 2.0);
+    let moved = read(&gpu, 2.0).await;
     assert_eq!(
         count_colour(&moved, [255, 0, 0], 4),
         0,
@@ -205,11 +205,11 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_skinned");
 
-    let read = |gpu: &TestGpu| {
+    let read = async |gpu: &TestGpu| {
         gpu.render(&world);
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };
-    let before = read(&gpu);
+    let before = read(&gpu).await;
     let red = count_colour(&before, [255, 0, 0], 4);
     assert!(
         red > (WIDTH * HEIGHT * 85 / 100) as usize,
@@ -227,7 +227,7 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
             -5.0, 0.0, 0.0,
         ))],
     };
-    let after = read(&gpu);
+    let after = read(&gpu).await;
     let red_after = count_colour(&after, [255, 0, 0], 4);
     assert!(
         red_after < red,

@@ -66,7 +66,7 @@ pub async fn run() {
         Some(true),
         "dropping does not play the sequence"
     );
-    let first = interactive.render_frame(&host);
+    let first = interactive.render_frame(&host).await;
     assert_image_snapshot_with_tolerance(
         snapshot!("unlit3dx/mcp_input_1.webp"),
         &first,
@@ -88,7 +88,7 @@ pub async fn run() {
         Some(false),
         "the sequence plays"
     );
-    let second = interactive.render_frame(&host);
+    let second = interactive.render_frame(&host).await;
     assert_image_snapshot_with_tolerance(
         snapshot!("unlit3dx/mcp_input_2.webp"),
         &second,
@@ -135,7 +135,7 @@ pub async fn run() {
         paused.samples.iter().all(|sample| sample.abs() == 0.0),
         "a paused sequence records silence",
     );
-    let third = interactive.render_frame(&host);
+    let third = interactive.render_frame(&host).await;
     assert_image_snapshot_with_tolerance(
         snapshot!("unlit3dx/mcp_input_3.webp"),
         &third,

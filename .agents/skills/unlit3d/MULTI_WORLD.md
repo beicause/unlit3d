@@ -71,7 +71,8 @@ for index in 0..frames {
         .graph(&world.root_scope()).get()
         .get(&target.texture).cloned()
         .expect("the target texture is a resource node");
-    let pixels = readback_texture(device, queue, &texture);
+    // 读回是 future，同步驱动；放进 async 里的话直接 .await。
+    let pixels = pollster::block_on(readback_texture(device, queue, &texture));
 }
 ```
 

@@ -44,12 +44,9 @@ pub(super) async fn a_loaded_color_attachment_keeps_its_contents() {
         Scene::new().record(&mut pass, None);
     }
     ctx.queue.submit([encoder.finish()]);
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
 
     let frame = Frame {
-        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await,
         width: WIDTH,
         height: HEIGHT,
     };
@@ -154,7 +151,7 @@ pub(super) async fn a_color_only_target_draws_a_cube() {
     );
 
     let fixture = fixture(&ctx, &variant, 4);
-    let frame = render(&ctx, &fixture, &[placed_cube([1.0; 4])]);
+    let frame = render(&ctx, &fixture, &[placed_cube([1.0; 4])]).await;
 
     // The cube reached the frame: some pixel is brighter than the clear color.
     let clear_sum = ((CLEAR[0] + CLEAR[1] + CLEAR[2]) * 255.0) as u16;

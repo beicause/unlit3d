@@ -88,10 +88,11 @@ fn floor(ctx: &Ctx) -> Floor {
 
 impl Floor {
     /// Draw one frame and read it back.
-    fn frame(&self, ctx: &Ctx) -> Frame {
+    async fn frame(&self, ctx: &Ctx) -> Frame {
         self.gpu.render(&self.world);
         Frame {
-            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &self.target),
+            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &self.target)
+                .await,
             width: WIDTH,
             height: HEIGHT,
         }
@@ -213,7 +214,7 @@ fn luma(pixel: [u8; 4]) -> i32 {
 async fn a_directional_light_lifts_every_lit_pixel() {
     let ctx = Ctx::headless().await;
     let mut scene = floor(&ctx);
-    let baseline = scene.frame(&ctx);
+    let baseline = scene.frame(&ctx).await;
     let lit = scene.lit_pixels(&baseline);
 
     scene.place(
@@ -224,7 +225,7 @@ async fn a_directional_light_lifts_every_lit_pixel() {
         glam::Vec3::ZERO,
         glam::Vec3::ONE,
     );
-    let after = scene.frame(&ctx);
+    let after = scene.frame(&ctx).await;
     let (lifted, kept) = lift(&baseline, &after);
 
     assert!(
@@ -239,7 +240,7 @@ async fn a_directional_light_lifts_every_lit_pixel() {
 async fn a_point_light_lifts_only_the_patch_it_reaches() {
     let ctx = Ctx::headless().await;
     let mut scene = floor(&ctx);
-    let baseline = scene.frame(&ctx);
+    let baseline = scene.frame(&ctx).await;
     let lit = scene.lit_pixels(&baseline);
 
     scene.place(
@@ -251,7 +252,7 @@ async fn a_point_light_lifts_only_the_patch_it_reaches() {
         glam::Vec3::new(0.0, 1.2, 0.0),
         glam::Vec3::ONE,
     );
-    let after = scene.frame(&ctx);
+    let after = scene.frame(&ctx).await;
     let (lifted, kept) = lift(&baseline, &after);
 
     assert!(
@@ -271,7 +272,7 @@ async fn a_point_light_lifts_only_the_patch_it_reaches() {
 async fn a_hard_edged_spot_light_still_shines() {
     let ctx = Ctx::headless().await;
     let mut scene = floor(&ctx);
-    let baseline = scene.frame(&ctx);
+    let baseline = scene.frame(&ctx).await;
 
     scene.place(
         SpotLight {
@@ -284,7 +285,7 @@ async fn a_hard_edged_spot_light_still_shines() {
         glam::Vec3::new(0.0, 2.0, 0.0),
         glam::Vec3::ONE,
     );
-    let after = scene.frame(&ctx);
+    let after = scene.frame(&ctx).await;
     let (lifted, _) = lift(&baseline, &after);
 
     assert!(
@@ -299,7 +300,7 @@ async fn a_hard_edged_spot_light_still_shines() {
 async fn a_mirrored_quad_light_still_shines() {
     let ctx = Ctx::headless().await;
     let mut scene = floor(&ctx);
-    let baseline = scene.frame(&ctx);
+    let baseline = scene.frame(&ctx).await;
 
     scene.place(
         QuadLight::rect(glam::Vec4::ONE, 1.0, 6.0, 2.0, 2.0),
@@ -308,7 +309,7 @@ async fn a_mirrored_quad_light_still_shines() {
         // transform a caller mirroring a whole object gets for free.
         glam::Vec3::new(-1.0, 1.0, 1.0),
     );
-    let after = scene.frame(&ctx);
+    let after = scene.frame(&ctx).await;
     let (lifted, _) = lift(&baseline, &after);
 
     assert!(
@@ -322,11 +323,11 @@ async fn a_mirrored_quad_light_still_shines() {
 async fn the_ambient_term_reaches_every_lit_pixel() {
     let ctx = Ctx::headless().await;
     let mut scene = floor(&ctx);
-    let dim = scene.frame(&ctx);
+    let dim = scene.frame(&ctx).await;
     let lit = scene.lit_pixels(&dim);
 
     scene.set_ambient(glam::Vec4::new(0.3, 0.3, 0.3, 0.0));
-    let bright = scene.frame(&ctx);
+    let bright = scene.frame(&ctx).await;
     let (lifted, kept) = lift(&dim, &bright);
 
     assert!(

@@ -151,7 +151,4 @@ moved above.
 
 **Rule:** a derivative built-in is called before anything in the function
 branches, or not at all. There are only these two calls in the shader tree; keep
-it that way. Nothing tests this: the suites compose every variant and validate
-it with naga, which is the validator that never asks the question. Only a
-browser's WebGPU backend compiles a shader with Tint, and only the lit tests get
-far enough for one to be told apart from a device that went away.
+it that way.

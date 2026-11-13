@@ -146,7 +146,8 @@ async fn frames_match_the_baselines() {
     let output = run(
         &config(soundfont, FRAMES, CAPTURE.to_vec()),
         ctx.render_device(),
-    );
+    )
+    .await;
     assert_eq!(output.frames.len(), CAPTURE.len());
     let frames: [&[u8]; CAPTURE.len()] = [
         &output.frames[0],
@@ -187,11 +188,13 @@ async fn an_undrawn_frame_matches_a_drawn_one() {
     let alone = run(
         &config(soundfont.clone(), frames, vec![last]),
         ctx.render_device(),
-    );
+    )
+    .await;
     let surrounded = run(
         &config(soundfont, frames, captured.to_vec()),
         ctx.render_device(),
-    );
+    )
+    .await;
     assert_eq!(alone.frames.len(), 1);
     assert_eq!(surrounded.frames.len(), captured.len());
     let drawn_late = &alone.frames[0];
@@ -229,7 +232,8 @@ async fn audio_matches_the_baseline() {
     let output = run(
         &config(soundfont, AUDIO_FRAMES, Vec::new()),
         ctx.render_device(),
-    );
+    )
+    .await;
 
     let samples = support::to_samples(&output.audio);
     let loudest = samples

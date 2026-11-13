@@ -38,7 +38,7 @@ pub(super) async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     ctx.queue.submit([encoder.finish()]);
 
     let frame = Frame {
-        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &ft.color),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &ft.color).await,
         width: WIDTH,
         height: HEIGHT,
     };
@@ -107,7 +107,7 @@ pub(super) async fn the_readback_module_returns_a_texture_as_tight_rows() {
     }
     ctx.queue.submit([encoder.finish()]);
 
-    let pixels = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &ft.color);
+    let pixels = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &ft.color).await;
     assert_eq!(
         pixels.len(),
         (WIDTH * HEIGHT * 4) as usize,
@@ -161,7 +161,8 @@ pub(super) async fn the_readback_module_returns_a_buffer_slice() {
         &source,
         element * 4,
         element * 3,
-    );
+    )
+    .await;
     let expected: Vec<u8> = values[4..7]
         .iter()
         .flat_map(|value| value.to_ne_bytes())

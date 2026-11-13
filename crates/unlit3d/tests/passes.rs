@@ -102,8 +102,12 @@ fn bind_target(
 }
 
 /// The RGBA of `target`'s centre pixel.
-fn centre_pixel(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture) -> [u8; 4] {
-    let rgba = unlit_wgpu::readback::readback_texture(device, queue, target);
+async fn centre_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+) -> [u8; 4] {
+    let rgba = unlit_wgpu::readback::readback_texture(device, queue, target).await;
     let width = WIDTH as usize;
     let offset = ((HEIGHT as usize / 2) * width + width / 2) * 4;
     rgba[offset..offset + 4].try_into().expect("four channels")
@@ -172,12 +176,12 @@ async fn two_passes_draw_their_own_sources() {
     gpu.render(&world);
 
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &first_target),
+        centre_pixel(&ctx.device, &ctx.queue, &first_target).await,
         FIRST,
         "the first pass should draw its own source"
     );
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &second_target),
+        centre_pixel(&ctx.device, &ctx.queue, &second_target).await,
         SECOND,
         "the second pass should draw its own source, not the first pass's"
     );
@@ -245,7 +249,7 @@ async fn a_source_no_pass_reaches_draws_nowhere() {
         0,
         "a source beside the passes is reached by none of them"
     );
-    let rgba = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let rgba = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
     assert!(
         rgba.as_chunks::<4>()
             .0
@@ -304,13 +308,14 @@ async fn a_parked_pass_draws_nothing() {
         .expect("the pass entity exists");
     gpu.render(&world);
 
-    let untouched = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_b);
+    let untouched =
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_b).await;
     assert!(
         untouched.iter().all(|&channel| channel == 0),
         "a parked pass should not be opened, so it neither draws nor clears"
     );
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &target_a),
+        centre_pixel(&ctx.device, &ctx.queue, &target_a).await,
         [0, 0, 0, 255],
         "the other pass still records, and has no source to draw"
     );
@@ -338,12 +343,12 @@ async fn a_shared_source_draws_into_every_pass() {
     gpu.render(&world);
 
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &first_target),
+        centre_pixel(&ctx.device, &ctx.queue, &first_target).await,
         COLOR,
         "the first pass should draw the shared source"
     );
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &second_target),
+        centre_pixel(&ctx.device, &ctx.queue, &second_target).await,
         COLOR,
         "the second pass should draw the shared source too"
     );

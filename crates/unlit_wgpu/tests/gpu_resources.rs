@@ -159,7 +159,7 @@ async fn a_buffer_pool_keeps_each_range_at_its_own_offset() {
     ctx.queue
         .write_buffer(pool.buffer(), u64::from(second.allocation.offset), &two);
 
-    let bytes = readback_buffer(&ctx.device, &ctx.queue, pool.buffer(), 0, pool.size());
+    let bytes = readback_buffer(&ctx.device, &ctx.queue, pool.buffer(), 0, pool.size()).await;
     let at = |range: &unlit_wgpu::buffer_pool::BufferRange| {
         let start = range.allocation.offset as usize;
         &bytes[start..start + range.size as usize]
@@ -194,7 +194,7 @@ async fn growing_a_buffer_pool_carries_the_contents_across() {
         .expect("the pool grows for a range that does not fit");
     assert!(pool.size() > before, "the pool grew");
 
-    let bytes = readback_buffer(&ctx.device, &ctx.queue, pool.buffer(), 0, pool.size());
+    let bytes = readback_buffer(&ctx.device, &ctx.queue, pool.buffer(), 0, pool.size()).await;
     let start = first.allocation.offset as usize;
     assert_eq!(
         &bytes[start..start + written.len()],
@@ -206,7 +206,7 @@ async fn growing_a_buffer_pool_carries_the_contents_across() {
     let fresh = [0xCDu8; 512];
     ctx.queue
         .write_buffer(pool.buffer(), u64::from(grown.allocation.offset), &fresh);
-    let bytes = readback_buffer(&ctx.device, &ctx.queue, pool.buffer(), 0, pool.size());
+    let bytes = readback_buffer(&ctx.device, &ctx.queue, pool.buffer(), 0, pool.size()).await;
     let start = grown.allocation.offset as usize;
     assert_eq!(&bytes[start..start + fresh.len()], &fresh[..]);
 }
@@ -253,7 +253,7 @@ async fn a_vertex_pool_writes_each_element_at_its_stride() {
     }
 
     let size = buffer.size();
-    let bytes = readback_buffer(&ctx.device, &ctx.queue, buffer, 0, size);
+    let bytes = readback_buffer(&ctx.device, &ctx.queue, buffer, 0, size).await;
     for (index, value) in values.iter().enumerate() {
         let element = allocation.allocation.offset as usize + index;
         let start = element * 12;
@@ -291,7 +291,7 @@ async fn growing_a_vertex_stream_keeps_its_elements() {
     let buffer = pool.buffer(&layout).expect("the layout kept its buffer");
     assert!(buffer.size() > before, "the stream grew");
 
-    let bytes = readback_buffer(&ctx.device, &ctx.queue, buffer, 0, buffer.size());
+    let bytes = readback_buffer(&ctx.device, &ctx.queue, buffer, 0, buffer.size()).await;
     let start = first.allocation.offset as usize * 12;
     assert_eq!(
         &bytes[start..start + written.len()],
@@ -452,12 +452,9 @@ async fn a_texel_array_reads_back_the_elements_it_was_given() {
         pass.draw(0..3, 0..1);
     }
     ctx.queue.submit([encoder.finish()]);
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
 
     let frame = Frame {
-        rgba: readback_texture(&ctx.device, &ctx.queue, &target),
+        rgba: readback_texture(&ctx.device, &ctx.queue, &target).await,
         width: ELEMENTS,
         height: 1,
     };

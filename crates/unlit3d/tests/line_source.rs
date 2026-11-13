@@ -66,9 +66,9 @@ fn column_height(frame: &Frame, column: u32) -> Option<u32> {
 }
 
 /// The frame `target` was rendered into, read back from the GPU.
-fn read_frame(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
+async fn read_frame(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
     Frame {
-        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, target),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, target).await,
         width: WIDTH,
         height: HEIGHT,
     }
@@ -113,7 +113,7 @@ async fn a_stroke_keeps_its_pixel_width_at_any_distance() {
     for eye in [EYE, EYE * 2.0] {
         let (world, gpu, target) = segment_world(&ctx, eye, Line::from(along_x()));
         gpu.render(&world);
-        let frame = read_frame(&ctx, &target);
+        let frame = read_frame(&ctx, &target).await;
         let (first, last) = drawn_rows(&frame).expect("the stroke is drawn");
         heights.push((eye.z, last - first + 1));
     }
@@ -143,7 +143,7 @@ async fn a_wider_stroke_covers_more_pixels() {
         let segment = along_x().with_half_width(half_width);
         let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
-        let frame = read_frame(&ctx, &target);
+        let frame = read_frame(&ctx, &target).await;
         let (first, last) = drawn_rows(&frame).expect("the stroke is drawn");
         covered.push((half_width, last - first + 1));
     }
@@ -181,7 +181,7 @@ async fn a_round_cap_reaches_past_its_station_and_a_flat_one_does_not() {
         segment.caps = caps;
         let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
-        let frame = read_frame(&ctx, &target);
+        let frame = read_frame(&ctx, &target).await;
         let (first, last) =
             columns(&frame).unwrap_or_else(|| panic!("the {label} stroke is drawn"));
         widths.push((label, last - first + 1));
@@ -266,7 +266,7 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source::occlusion");
     gpu.render(&world);
-    let frame = read_frame(&ctx, &target);
+    let frame = read_frame(&ctx, &target).await;
 
     // The stroke's row: the one the cube does not cover at the frame's edge.
     let edge = (0..frame.height)
@@ -312,7 +312,7 @@ async fn a_tapering_stroke_is_narrower_at_its_narrow_end() {
         segment.half_width = ends;
         let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
-        let frame = read_frame(&ctx, &target);
+        let frame = read_frame(&ctx, &target).await;
 
         let (first, last) = columns(&frame).expect("the stroke is drawn");
         // Three columns in from each end: the outermost columns carry the
@@ -374,7 +374,7 @@ async fn a_stroke_the_near_plane_cuts_keeps_its_width() {
     segment.half_width = [0.0, HALF_WIDTH];
     let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
     gpu.render(&world);
-    let frame = read_frame(&ctx, &target);
+    let frame = read_frame(&ctx, &target).await;
 
     // A segment drawn along the view axis adds no height of its own, so the
     // rows it covers are the widening its width adds around that line.
@@ -417,7 +417,7 @@ async fn a_dot_draws_as_a_disc_whatever_caps_state() {
         segment.caps = caps;
         let (world, gpu, target) = segment_world(&ctx, EYE, Line::from(segment));
         gpu.render(&world);
-        let frame = read_frame(&ctx, &target);
+        let frame = read_frame(&ctx, &target).await;
         let (first, last) = drawn_rows(&frame).expect("a degenerate stroke still draws its disc");
         heights.push((caps, last - first + 1));
     }
@@ -452,7 +452,7 @@ async fn an_opaque_stroke_cuts_sharp_at_half_coverage() {
     for (stroke, label, sharp) in [(stroke, "opaque", true), (blended, "blended", false)] {
         let (world, gpu, target) = segment_world(&ctx, EYE, stroke);
         gpu.render(&world);
-        let frame = read_frame(&ctx, &target);
+        let frame = read_frame(&ctx, &target).await;
 
         // Every pixel the stroke reaches is its own colour or a part-way
         // shade of the background; the last kind is what an antialiased edge
@@ -521,7 +521,7 @@ async fn a_blended_stroke_passing_behind_an_opaque_one_is_hidden_by_it() {
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source::opaque_hides");
     gpu.render(&world);
-    let frame = read_frame(&ctx, &target);
+    let frame = read_frame(&ctx, &target).await;
 
     // The crossing sits at the frame's centre, where the blended stroke
     // passed behind the opaque one: the pixel there is the opaque stroke's

@@ -293,7 +293,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         );
 
         let texture = target_texture(&world, &scene, &target);
-        let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &texture);
+        let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &texture).await;
         assert_image_snapshot_with_tolerance(*snapshot, &bytes, size.0, size.1, tolerance);
         compared += 1;
     }
@@ -365,7 +365,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
     }
 
     let texture = target_texture(&world, &scene, &target);
-    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &texture);
+    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &texture).await;
     assert_image_snapshot_with_tolerance(snapshot, &bytes, size.0, size.1, LETTERBOX_TOLERANCE);
 }
 

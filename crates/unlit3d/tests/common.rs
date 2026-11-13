@@ -444,7 +444,7 @@ impl TestGpu {
     ///
     /// What a test of the frame's own fitting needs: the target's shape is the
     /// input, so it cannot come from the harness's default size.
-    pub fn render_to_offscreen_sized(
+    pub async fn render_to_offscreen_sized(
         &self,
         ctx: &Ctx,
         world: &World,
@@ -453,7 +453,7 @@ impl TestGpu {
     ) -> Frame {
         let target = self.bind_offscreen_target_sized(world, size, 1, true);
         self.render(world);
-        let rgba = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+        let rgba = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
         Frame {
             rgba,
             width: size.0,

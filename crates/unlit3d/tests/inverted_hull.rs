@@ -134,10 +134,11 @@ fn hull(ctx: &Ctx, width: f32) -> Hull {
 
 impl Hull {
     /// Draw the scene once and read the frame back.
-    fn frame(&self, ctx: &Ctx) -> Frame {
+    async fn frame(&self, ctx: &Ctx) -> Frame {
         self.gpu.render(&self.world);
         Frame {
-            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &self.target),
+            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &self.target)
+                .await,
             width: WIDTH,
             height: HEIGHT,
         }
@@ -181,7 +182,7 @@ fn row(frame: &Frame, y: u32) -> Vec<Mark> {
 async fn the_shell_shows_as_a_band_outside_the_body() {
     let ctx = Ctx::headless().await;
     let scene = hull(&ctx, SPREAD);
-    let frame = scene.frame(&ctx);
+    let frame = scene.frame(&ctx).await;
 
     let body = count(&frame, Mark::Body);
     let ink = count(&frame, Mark::Ink);
@@ -212,9 +213,9 @@ async fn the_shell_shows_as_a_band_outside_the_body() {
 async fn a_wider_hull_draws_a_wider_band() {
     let ctx = Ctx::headless().await;
     let narrow = hull(&ctx, SPREAD);
-    let narrow = narrow.frame(&ctx);
+    let narrow = narrow.frame(&ctx).await;
     let wide = hull(&ctx, WIDE_SPREAD);
-    let wide = wide.frame(&ctx);
+    let wide = wide.frame(&ctx).await;
 
     let span = |frame: &Frame| {
         let (first, last) = columns(frame, Mark::Ink).expect("the band is drawn");
@@ -242,7 +243,7 @@ async fn a_wider_hull_draws_a_wider_band() {
 async fn the_body_covers_the_shell_where_they_overlap() {
     let ctx = Ctx::headless().await;
     let scene = hull(&ctx, SPREAD);
-    let frame = scene.frame(&ctx);
+    let frame = scene.frame(&ctx).await;
 
     let middle = row(&frame, HEIGHT / 2);
     let centre = middle[WIDTH as usize / 2];

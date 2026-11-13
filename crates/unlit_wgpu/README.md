@@ -84,7 +84,8 @@ mechanisms behind them are in [Design](#design).
   [`create_render_target`](render_attachments::create_render_target) for an
   offscreen frame.
 - [`readback`] — copying a texture's mip level 0 or a buffer slice back to the
-  host, blocking until the copy has run.
+  host, awaiting the copy: every backend completes it on its own terms, and a
+  browser's WebGPU backend cannot be made to wait synchronously at all.
 - [`specialize`] — variant caching: a
   [`PipelineVariant`](specialize::PipelineVariant) builds a
   [`PipelineDescriptor`](specialize::PipelineDescriptor), and

@@ -66,7 +66,7 @@ pub struct HeadlessOutput {
 ///
 /// A headless run has no way to recover a world that failed to come up,
 /// so a broken setup panics instead of returning a hole in the capture.
-pub fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutput {
+pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutput {
     // Every capture entry has to name a frame the run steps, and the entries
     // have to ascend: a frame is drawn where the steps left it, so the frames
     // come back in the order they were stepped. An index past the last frame
@@ -236,7 +236,7 @@ pub fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutput {
             };
             output
                 .frames
-                .push(readback_texture(&device.device, &device.queue, &texture));
+                .push(readback_texture(&device.device, &device.queue, &texture).await);
         }
     }
 

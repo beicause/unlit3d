@@ -76,6 +76,9 @@ wgpu = { workspace = true, features = ["noop"] }
 # Only the MCP tools encode pixels or write files; a browser build never does.
 base64 = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
+# The MCP tools read GPU resources back from a synchronous closure, and a
+# readback is a future, so one of them has to drive it.
+pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen.workspace = true
@@ -94,6 +97,7 @@ gltf = ["dep:draco-core", "dep:fast_image_resize", "dep:gltf", "dep:half"]
 mcp = [
   "dep:base64",
   "dep:image",
+  "dep:pollster",
   "gltf",
   "reflect",
   "unlit_ecs/mcp",

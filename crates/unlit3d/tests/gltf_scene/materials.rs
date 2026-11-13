@@ -41,7 +41,7 @@ pub(super) async fn a_double_sided_material_draws_back_faces() {
 
             let target = gpu.bind_offscreen_target(&world, "test::gltf_double_sided");
             gpu.render(&world);
-            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
+            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
         }
     };
 
@@ -110,7 +110,7 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_blended_quad");
     gpu.render(&world);
-    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
 
     let quarter = (WIDTH * HEIGHT / 4) as usize;
     // Half-opaque white over the background: almost no texel reaches fully
@@ -165,14 +165,14 @@ pub(super) async fn a_blended_material_writes_no_depth() {
     gpu.spawn(&mut world, bundle![camera()]);
     let single = gpu.bind_offscreen_target(&world, "test::gltf_blend_single");
     gpu.render(&world);
-    let one = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &single);
+    let one = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &single).await;
 
     // A second draw of the same surface lands on exactly the depth the first
     // one left, so it either composites or is discarded there.
     spawn_scene(&gpu, &mut world, &gltf, &resources);
     let doubled = gpu.bind_offscreen_target(&world, "test::gltf_blend_doubled");
     gpu.render(&world);
-    let two = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &doubled);
+    let two = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &doubled).await;
 
     // The quad fills the frame, so one texel of it says what the whole surface
     // does: half-opaque white over black once, three quarters of it twice.
@@ -193,7 +193,7 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
 
-    let mut render_with_cutoff = |cutoff: f32| -> Vec<u8> {
+    let mut render_with_cutoff = async |cutoff: f32| -> Vec<u8> {
         let gltf = LitGltf::from_bytes(&quad_document(&QuadDoc {
             translation: [0.0, 0.0, 0.0],
             textured: true,
@@ -234,7 +234,8 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_masked_quad");
         gpu.spawn(&mut world, bundle![camera()]);
         gpu.render(&world);
-        let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
+        let px =
+            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle).await;
         for node in entities {
             for entity in node.entities {
                 gpu.despawn(&mut world, entity);
@@ -248,14 +249,14 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
 
     // The material's factor is half opaque, so a cutoff above it discards the
     // whole quad and one below it keeps every fragment.
-    let drawn = render_with_cutoff(0.25);
+    let drawn = render_with_cutoff(0.25).await;
     let quarter = (WIDTH * HEIGHT / 4) as usize;
     let red = count_colour(&drawn, [255, 0, 0], 0);
     assert!(
         red > quarter - 1_024 && red < quarter + 1_024,
         "a cutoff below the quad's alpha keeps the red quarter: {red} texels"
     );
-    let discarded = render_with_cutoff(0.75);
+    let discarded = render_with_cutoff(0.75).await;
     // The frame clears to black with no `RenderLoadOps` in the world, so a
     // quad that drew nothing leaves the whole frame on the background.
     assert_eq!(

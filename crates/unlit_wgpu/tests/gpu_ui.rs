@@ -71,15 +71,15 @@ fn input(points: [f32; 2], pixels_per_point: f32) -> egui::RawInput {
 ///
 /// The first frame only knows the default font sizes, so it is run and
 /// discarded; the measured frame is the second one.
-fn render_ui(ctx: &Ctx, pixels_per_point: f32) -> Frame {
-    render_ui_with(ctx, pixels_per_point, ui_contents)
+async fn render_ui(ctx: &Ctx, pixels_per_point: f32) -> Frame {
+    render_ui_with(ctx, pixels_per_point, ui_contents).await
 }
 
 /// Like [`render_ui`], drawing the caller's own `contents`.
 ///
 /// The closure runs before each frame, so it can build and register egui
 /// textures once and reuse them across the warm-up and the measured frame.
-fn render_ui_with(
+async fn render_ui_with(
     ctx: &Ctx,
     pixels_per_point: f32,
     mut contents: impl FnMut(&mut egui::Ui),
@@ -175,12 +175,9 @@ fn render_ui_with(
         scene.record(&mut pass, None);
     }
     ctx.queue.submit([encoder.finish()]);
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
 
     Frame {
-        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await,
         width,
         height,
     }
@@ -256,7 +253,7 @@ fn global_group(
 
 async fn text_and_button_render_over_the_clear() {
     let ctx = Ctx::headless().await;
-    let frame = render_ui(&ctx, 1.0);
+    let frame = render_ui(&ctx, 1.0).await;
 
     // Text in the top-left region: the glyphs use egui's light default color,
     // so at least some pixels there are clearly brighter than the clear.
@@ -277,7 +274,7 @@ async fn text_and_button_render_over_the_clear() {
 
 async fn opaque_rect_reaches_full_red() {
     let ctx = Ctx::headless().await;
-    let frame = render_ui(&ctx, 1.0);
+    let frame = render_ui(&ctx, 1.0).await;
 
     // Centre of the opaque red rect (16,120)-(112,168).
     let centre = frame.pixel_u8(64, 144);
@@ -289,7 +286,7 @@ async fn opaque_rect_reaches_full_red() {
 
 async fn translucent_rect_blends_over_the_clear() {
     let ctx = Ctx::headless().await;
-    let frame = render_ui(&ctx, 1.0);
+    let frame = render_ui(&ctx, 1.0).await;
 
     // Centre of the translucent blue rect (128,120)-(224,168): premultiplied
     // half-alpha blue over the dark clear — clearly blue, but not full blue.
@@ -310,8 +307,8 @@ async fn translucent_rect_blends_over_the_clear() {
 /// correctly, but an unscaled clip would cut the rectangle off partway.
 async fn ui_lands_in_the_same_place_at_any_pixel_density() {
     let ctx = Ctx::headless().await;
-    let low = render_ui(&ctx, 1.0);
-    let high = render_ui(&ctx, 2.0);
+    let low = render_ui(&ctx, 1.0).await;
+    let high = render_ui(&ctx, 2.0).await;
 
     // The opaque red rect is (16,120)-(112,168) in points, so its centre
     // is at (64,144) points in both frames — (128,288) pixels at 2x.
@@ -348,7 +345,8 @@ async fn nearest_sampling_options_reach_the_texture() {
     let frame = render_ui_with(&ctx, 1.0, |ui| {
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
-    });
+    })
+    .await;
 
     // The image is drawn over (16,16)-(144,80) points from a 2x1 source.
     // Nearest sampling holds the left texel across the left half, so a
@@ -376,7 +374,8 @@ async fn ui_matches_snapshot() {
         ui_contents(ui);
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
-    });
+    })
+    .await;
     assert_image_snapshot(snapshot!("egui_ui.webp"), &frame, frame.width, frame.height);
 }
 
@@ -417,7 +416,8 @@ async fn user_image_uploads_and_renders() {
         ui.label("hello");
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
-    });
+    })
+    .await;
 
     // The left half of the drawn image is magenta (255,0,255): at its centre
     // the red and blue channels are strong and green is absent.

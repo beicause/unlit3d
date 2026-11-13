@@ -58,8 +58,12 @@ fn solid_texture(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> w
 }
 
 /// The RGBA of the target's centre pixel.
-fn centre_pixel(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture) -> [u8; 4] {
-    let rgba = unlit_wgpu::readback::readback_texture(device, queue, target);
+async fn centre_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+) -> [u8; 4] {
+    let rgba = unlit_wgpu::readback::readback_texture(device, queue, target).await;
     let width = WIDTH as usize;
     let offset = ((HEIGHT as usize / 2) * width + width / 2) * 4;
     rgba[offset..offset + 4].try_into().expect("four channels")
@@ -92,7 +96,7 @@ async fn blit_copies_the_source_texture() {
     // target share a format, so the fragment shader's linear sample is
     // re-encoded exactly back to the byte that was written.
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &target),
+        centre_pixel(&ctx.device, &ctx.queue, &target).await,
         COLOR,
         "the blit should copy the source texture to the target"
     );
@@ -108,7 +112,7 @@ async fn a_new_view_changes_what_the_frame_shows() {
 
     gpu.render(&world);
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &target),
+        centre_pixel(&ctx.device, &ctx.queue, &target).await,
         FIRST,
         "the first texture should reach the frame"
     );
@@ -133,7 +137,7 @@ async fn a_new_view_changes_what_the_frame_shows() {
     gpu.render(&world);
 
     assert_eq!(
-        centre_pixel(&ctx.device, &ctx.queue, &target),
+        centre_pixel(&ctx.device, &ctx.queue, &target).await,
         SECOND,
         "the second texture should reach the frame"
     );

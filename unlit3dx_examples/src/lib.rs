@@ -423,7 +423,7 @@ fn run_headless(args: &Args) -> ExitCode {
         audio_sample_rate: headless::AUDIO_SAMPLE_RATE,
         soundfont: unlit3dx_asset_bytes::soundfont().into(),
     };
-    let output = headless::run(&config, RenderDevice::from(gpu));
+    let output = pollster::block_on(headless::run(&config, RenderDevice::from(gpu)));
     let out = std::path::Path::new(&args.out);
     if let Err(error) = std::fs::create_dir_all(out) {
         log::error!("could not create {}: {error}", out.display());

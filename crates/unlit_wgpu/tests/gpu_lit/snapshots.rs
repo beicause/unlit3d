@@ -6,7 +6,7 @@ use super::*;
 pub(super) async fn lit_cube_matches_snapshot() {
     let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_variant(&ctx), 4);
-    let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
+    let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]).await;
     assert_image_snapshot(
         snapshot!("lit_cube.webp"),
         &frame,
@@ -33,7 +33,7 @@ pub(super) async fn instanced_cubes_match_snapshot() {
     .map(|(x, z, color)| placed(0.55, 0.6, glam::Vec3::new(x, 0.0, z), color))
     .collect();
 
-    let frame = render(&ctx, &fixture, &instances);
+    let frame = render(&ctx, &fixture, &instances).await;
 
     // The per-instance transform must separate the cubes horizontally, in the
     // order the instances were declared, and each must be tinted by its own
@@ -114,7 +114,7 @@ pub(super) async fn position_less_variant_draws_points_at_instance_origins() {
         glam::Vec3::new(1.0, 0.0, 0.0),
         [0.0, 1.0, 0.0, 1.0],
     );
-    let frame = render(&ctx, &fixture, &[origin, right]);
+    let frame = render(&ctx, &fixture, &[origin, right]).await;
 
     // Count lit pixels on each side of the centre column: the points must
     // land apart, which only holds if the position came from the instance
@@ -185,7 +185,7 @@ pub(super) async fn a_caller_module_replaces_the_built_in_stages() {
         false,
     );
     let fixture = fixture(&ctx, &variant, 4);
-    let frame = render(&ctx, &fixture, &[placed_cube([1.0, 1.0, 1.0, 1.0])]);
+    let frame = render(&ctx, &fixture, &[placed_cube([1.0, 1.0, 1.0, 1.0])]).await;
 
     // The module paints its own color, and it covers the same pixels the
     // built-in shader would have: the geometry reaches it through the very
@@ -220,7 +220,7 @@ pub(super) async fn textured_cube_matches_snapshot() {
     );
     let fixture = fixture(&ctx, &variant, 4);
     let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
-    let frame = render(&ctx, &fixture, &[instance]);
+    let frame = render(&ctx, &fixture, &[instance]).await;
     assert_image_snapshot_with_tolerance(
         snapshot!("lit_cube_textured.webp"),
         &frame,

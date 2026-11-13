@@ -117,10 +117,10 @@ impl Interactive {
 
     /// Draw the frame where the scene stands and read its pixels back.
     ///
-    /// The readback blocks until the copy lands. Drawing is what publishes the
-    /// target the panels lay out against, so nothing is laid out until one
-    /// frame has been drawn.
-    pub fn render_frame(&self, host: &World) -> Vec<u8> {
+    /// The await is the readback: the pixels cannot exist before the copy
+    /// lands. Drawing is what publishes the target the panels lay out against,
+    /// so nothing is laid out until one frame has been drawn.
+    pub async fn render_frame(&self, host: &World) -> Vec<u8> {
         self.draw(host);
         let texture = {
             let mut nested = host
@@ -143,7 +143,7 @@ impl Interactive {
                 .cloned()
                 .expect("the target texture is a resource node")
         };
-        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &texture)
+        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &texture).await
     }
 
     /// Draw the frame where the scene stands, into the offscreen texture.

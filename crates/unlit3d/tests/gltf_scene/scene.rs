@@ -25,7 +25,7 @@ pub(super) async fn textured_quad_renders_four_colours() {
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_textured_quad");
     gpu.render(&world);
-    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
 
     let quarter = (WIDTH * HEIGHT / 4) as usize;
     for (colour, name) in [
@@ -58,7 +58,7 @@ pub(super) async fn node_hierarchy_translates_the_quad() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
 
-    let mut render = |translation: [f32; 3]| -> Vec<u8> {
+    let mut render = async |translation: [f32; 3]| -> Vec<u8> {
         let gltf = LitGltf::from_bytes(&quad_document(&QuadDoc {
             translation,
             textured: true,
@@ -73,7 +73,8 @@ pub(super) async fn node_hierarchy_translates_the_quad() {
         let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
         gpu.spawn(&mut world, bundle![camera()]);
         gpu.render(&world);
-        let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
+        let px =
+            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle).await;
         // Drop what the document added and despawn its entities, so the next
         // closure starts from the same empty world.
         for node in entities {
@@ -87,8 +88,8 @@ pub(super) async fn node_hierarchy_translates_the_quad() {
         px
     };
 
-    let centred = render([0.0, 0.0, 0.0]);
-    let shifted = render([-0.9, 0.0, 0.0]);
+    let centred = render([0.0, 0.0, 0.0]).await;
+    let shifted = render([-0.9, 0.0, 0.0]).await;
     assert_ne!(centred, shifted, "a parent translation must move the quad");
     // The frame clears to black by default, so the shifted quad's exposed
     // background is what separates the two counts.
@@ -126,7 +127,7 @@ pub(super) async fn untextured_material_draws_flat() {
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_flat_quad");
     gpu.render(&world);
-    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
 
     // baseColorFactor [1,1,1,1] on the default white material: everything the
     // quad covers is white, and the frame has no other colour in it.
@@ -162,7 +163,7 @@ pub(super) async fn unload_empties_the_frame() {
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_before");
     gpu.render(&world);
-    let before = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let before = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
     assert!(
         count_pixels_off_background(&before, CLEAR, 2) > (WIDTH * HEIGHT * 85 / 100) as usize,
         "the quad draws before unloading"
@@ -179,7 +180,7 @@ pub(super) async fn unload_empties_the_frame() {
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_after");
     gpu.render(&world);
-    let after = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let after = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
     // The frame clears to black with no `RenderLoadOps` in the world, so an
     // empty frame reads back black everywhere.
     let breakdown = [

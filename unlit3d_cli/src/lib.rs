@@ -117,7 +117,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         .map(|mut renderer| renderer.get().render(&world))
         .expect("the renderer entity exists");
 
-    let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target);
+    let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target).await;
     Ok(Frame {
         rgba,
         width: output_size.0,

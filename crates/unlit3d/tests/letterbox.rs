@@ -143,8 +143,9 @@ async fn a_letterboxed_frame_keeps_the_baseline_picture_and_bars_the_rest() {
     // The reference: the baseline drawn into a target of its own shape, so its
     // content region is the whole frame and nothing is letterboxed.
     let (world, gpu) = cube_world(&ctx, BASELINE, None);
-    let reference =
-        gpu.render_to_offscreen_sized(&ctx, &world, BASELINE, "test::letterbox::reference");
+    let reference = gpu
+        .render_to_offscreen_sized(&ctx, &world, BASELINE, "test::letterbox::reference")
+        .await;
     let (ref_left, ref_right) = content_columns(&reference).expect("the cube is visible");
     let (ref_top, ref_bottom) = content_rows(&reference).expect("the cube is visible");
 
@@ -155,7 +156,9 @@ async fn a_letterboxed_frame_keeps_the_baseline_picture_and_bars_the_rest() {
         let viewport = baseline_viewport(BASELINE, target);
         let content = content_size(BASELINE, target);
         let (world, gpu) = cube_world(&ctx, content, Some(viewport));
-        let frame = gpu.render_to_offscreen_sized(&ctx, &world, target, label);
+        let frame = gpu
+            .render_to_offscreen_sized(&ctx, &world, target, label)
+            .await;
 
         // Map the baseline's content box into this target through the region
         // the letterbox fitted, which is where the picture should have gone.
@@ -225,7 +228,9 @@ async fn the_same_baseline_content_fills_its_region_on_any_target_shape() {
         let viewport = baseline_viewport(BASELINE, target);
         let content = content_size(BASELINE, target);
         let (world, gpu) = cube_world(&ctx, content, Some(viewport));
-        let frame = gpu.render_to_offscreen_sized(&ctx, &world, target, label);
+        let frame = gpu
+            .render_to_offscreen_sized(&ctx, &world, target, label)
+            .await;
 
         let (left, right) = content_columns(&frame).expect("the cube is visible");
         let (top, bottom) = content_rows(&frame).expect("the cube is visible");

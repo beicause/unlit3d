@@ -6,7 +6,7 @@ use super::*;
 pub(super) async fn renders_a_cube_over_the_clear_color() {
     let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_variant(&ctx), 4);
-    let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
+    let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]).await;
 
     assert_eq!(frame.width, WIDTH);
     assert_eq!(frame.height, HEIGHT);
@@ -36,23 +36,24 @@ pub(super) async fn base_color_reaches_the_frame() {
     let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_variant(&ctx), 4);
 
-    let brightest = |base_color: [f32; 4]| {
-        let frame = render(&ctx, &fixture, &[placed_cube(base_color)]);
-        frame
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|p| p[0] as u16 + p[1] as u16 + p[2] as u16)
-            .max()
-            .expect("a pixel")
-    };
-
-    let bright = brightest([1.0, 1.0, 1.0, 1.0]);
-    let dim = brightest([0.1, 0.1, 0.1, 1.0]);
+    let bright = brightest(&ctx, &fixture, [1.0, 1.0, 1.0, 1.0]).await;
+    let dim = brightest(&ctx, &fixture, [0.1, 0.1, 0.1, 1.0]).await;
     assert!(
         bright > dim + 60,
         "a white base color should be much brighter than a dark one: {bright} vs {dim}"
     );
+}
+
+/// The brightest channel sum in a frame drawn with `base_color`.
+async fn brightest(ctx: &Ctx, fixture: &SceneFixture, base_color: [f32; 4]) -> u16 {
+    let frame = render(ctx, fixture, &[placed_cube(base_color)]).await;
+    frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[0] as u16 + p[1] as u16 + p[2] as u16)
+        .max()
+        .expect("a pixel")
 }
 
 pub(super) async fn depth_ordering_hides_the_far_instance() {
@@ -73,7 +74,7 @@ pub(super) async fn depth_ordering_hides_the_far_instance() {
         glam::Vec3::new(0.0, 0.2, 0.6),
         [0.0, 1.0, 0.0, 1.0],
     );
-    let frame = render(&ctx, &fixture, &[far, near]);
+    let frame = render(&ctx, &fixture, &[far, near]).await;
 
     let centre = frame.pixel_u8(WIDTH / 2, HEIGHT / 2);
     assert!(
@@ -86,26 +87,26 @@ pub(super) async fn msaa_produces_more_partial_coverage_than_no_msaa() {
     let ctx = Ctx::headless().await;
     let instance = placed(0.9, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
 
-    // Pixels that are neither fully clear nor fully covered: the
-    // antialiased silhouette, which a single-sample render cannot produce.
-    let partial = |sample_count: u32| {
-        let fixture = fixture(&ctx, &vertex_color_variant(&ctx), sample_count);
-        let frame = render(&ctx, &fixture, std::slice::from_ref(&instance));
-        frame
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|p| {
-                let luma = 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
-                (30.0..200.0).contains(&luma)
-            })
-            .count()
-    };
-
-    let without = partial(1);
-    let with = partial(4);
+    let without = partial_coverage(&ctx, &instance, 1).await;
+    let with = partial_coverage(&ctx, &instance, 4).await;
     assert!(
         with > without,
         "MSAA should produce more partial-coverage pixels: {with} vs {without}"
     );
+}
+
+/// Pixels that are neither fully clear nor fully covered: the antialiased
+/// silhouette, which a single-sample render cannot produce.
+async fn partial_coverage(ctx: &Ctx, instance: &MeshInstance, sample_count: u32) -> usize {
+    let fixture = fixture(ctx, &vertex_color_variant(ctx), sample_count);
+    let frame = render(ctx, &fixture, std::slice::from_ref(instance)).await;
+    frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| {
+            let luma = 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
+            (30.0..200.0).contains(&luma)
+        })
+        .count()
 }

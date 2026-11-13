@@ -129,18 +129,18 @@ async fn meshes_can_share_one_morph_weights() {
     // Zero weights and a blended pose must render differently: if the source
     // packed one pose per mesh rather than one per instance, the shared entity
     // would reach only one of them.
-    let read = |gpu: &TestGpu| {
+    let read = async |gpu: &TestGpu| {
         gpu.render(&world);
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };
-    let unweighted = read(&gpu);
+    let unweighted = read(&gpu).await;
     world
         .root_scope()
         .query_one::<&mut MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
         .get()
         .weights = vec![1.0, 0.0];
-    let blended = read(&gpu);
+    let blended = read(&gpu).await;
 
     assert_ne!(
         unweighted, blended,

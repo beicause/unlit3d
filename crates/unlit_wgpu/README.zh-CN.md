@@ -61,7 +61,8 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
 - `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏帧的
   `create_render_target`。
-- `readback` —— 把纹理的 mip 0 或缓冲的一段切片拷回主机，阻塞到拷贝完成。
+- `readback` —— 把纹理的 mip 0 或缓冲的一段切片拷回主机，等待拷贝完成：每个后端
+  按自己的方式完成它，而浏览器的 WebGPU 后端根本无法被同步等待。
 - `specialize` —— 变体缓存：`PipelineVariant` 构造 `PipelineDescriptor`，
   `Variants` 则为每个变体编译并复用一个 `SpecializedPipeline`。见
   [管线特化](#管线特化一个变体一份蓝图一条缓存的管线)。

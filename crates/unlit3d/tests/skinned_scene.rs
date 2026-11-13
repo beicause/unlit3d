@@ -78,11 +78,11 @@ async fn meshes_can_share_one_skin_pose() {
     // The rest pose and a bent one must render differently: if the source
     // packed one pose per mesh rather than one per instance, the shared entity
     // would reach only one of them.
-    let read = |gpu: &TestGpu| {
+    let read = async |gpu: &TestGpu| {
         gpu.render(&world);
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };
-    let rest = read(&gpu);
+    let rest = read(&gpu).await;
     let mut bent = skin;
     bent.set_angle(0.6);
     let pose = bent.pose();
@@ -91,7 +91,7 @@ async fn meshes_can_share_one_skin_pose() {
         .query_one::<&mut SkinPose>(pose_entity)
         .expect("the pose entity carries a `SkinPose`")
         .get() = pose;
-    let deformed = read(&gpu);
+    let deformed = read(&gpu).await;
 
     assert_ne!(rest, deformed, "the shared pose must reach both meshes");
 }
