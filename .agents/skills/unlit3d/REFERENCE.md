@@ -146,10 +146,13 @@
 
 | 项 | 是什么 |
 | --- | --- |
-| source | `BlitzSource::new(html)`、`set_html(html)`——换标记后下一帧重绘 |
-| 布局与绘制 | 用 Blitz 布局、Vello 的 CPU 后端光栅化，位图以 `Rgba8Unorm` 纹理上传后由共享的全屏合成贴上目标；只重绘标记、视口、目标尺寸变化或文档有动画时 |
+| source | `BlitzSource::new()`——无参；绘制自己作用域里携带的第一个 `BlitzDocument`，没有就不画 |
+| 页面 | `BlitzDocument::new(markup)`、`set_markup(markup)`、`set_base_url(base)`、`insert_resource(path, bytes)`——**挂在 source 实体之下**，否则 source 看不见 |
+| 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `name()`（"click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（会冒泡经过的节点链）、`data()`、`document()` / `document_mut()`、`prevent_default()` / `stop_propagation()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `name()` 过滤 |
+| 输入 | 帧输入自动驱动文档：指针、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持 |
+| 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供；没人提供的路径让元素留空，不卡帧 |
+| 布局与绘制 | 用 Blitz 布局、Vello 的 CPU 后端光栅化，位图以 `Rgba8Unorm` 纹理上传后由共享的全屏合成贴上目标；重绘时机 = 标记/视口/尺寸变化、输入或回调要求、文档有动画 |
 | 字体 | 只有 egui 的默认字体（`epaint_default_fonts::HACK_REGULAR`），系统字体关闭，各平台字形一致 |
-| 不接的东西 | 没有网络加载、没有指针/键盘/IME/剪贴板；文档只由标记描述 |
 
 ## winit 桥
 

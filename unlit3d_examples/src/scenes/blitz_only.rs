@@ -5,7 +5,7 @@
 //! freezes the second frame, like every other overlay scene: the first frame of
 //! a source is the one that builds its document.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, spawn_in};
 use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
@@ -41,11 +41,18 @@ pub static SCENE: SceneDef = SceneDef {
 
 /// The page the scene paints.
 ///
-/// It is written to exercise the paths a document goes through rather than to
-/// look like a web site: block flow with margins and padding, an inline run of
-/// text, a rounded box, a gradient, a positioned box and a border. Every one of
-/// them takes a different branch of the paint tree, so a frame that loses one
-/// changes the picture.
+/// It exercises the paths a document goes through rather than looking like a
+/// web site: block flow with margins and padding, a run of text, a rounded box,
+/// a gradient, a positioned box and a border. Each takes a different branch of
+/// the paint tree, so a frame that loses one changes the picture.
+///
+/// It also carries the parts of a page that need more than markup: an image
+/// decoded from its `data:` URL, a checkbox, a group of radios with one checked,
+/// and a text field with a value. Nothing in the snapshot test drives them, so
+/// they are painted in the state the markup states; the windowed run does, and
+/// the status line the callback writes is what shows it. Every control is
+/// positioned rather than flowed, so the layout does not depend on how an
+/// inline-block baseline sorts them.
 const PAGE: &str = r#"<!doctype html>
 <html>
 <head>
@@ -61,46 +68,55 @@ const PAGE: &str = r#"<!doctype html>
   }
   h1 { margin: 8px 10px 2px; font-size: 17px; color: #16324f; }
   p { margin: 0 10px 8px; line-height: 16px; }
-  .row { margin: 0 10px; }
-  .card {
+  .row { position: absolute; left: 10px; top: 48px; }
+  .block {
     display: inline-block;
     width: 64px;
     height: 40px;
     margin-right: 8px;
     border-radius: 10px;
-    background: #d9524a;
   }
-  .gradient {
-    display: inline-block;
-    width: 64px;
-    height: 40px;
-    border-radius: 10px;
-    background: linear-gradient(90deg, #2f7d6b, #8ec9a8);
+  .card { background: #d9524a; }
+  .gradient { background: linear-gradient(90deg, #2f7d6b, #8ec9a8); }
+  .outlined { border: 2px solid #24405e; box-sizing: border-box; }
+  .chip {
+    position: absolute;
+    left: 10px;
+    top: 96px;
+    width: 72px;
+    height: 30px;
+    border-radius: 6px;
   }
-  .outlined {
-    display: inline-block;
-    width: 64px;
-    height: 40px;
-    margin-right: 8px;
-    border: 2px solid #24405e;
-    box-sizing: border-box;
-  }
+  .at { position: absolute; font-size: 12px; }
   .strip {
     position: absolute;
     left: 10px;
-    top: 150px;
+    top: 164px;
     width: 236px;
-    height: 22px;
-    border-radius: 11px;
+    height: 20px;
+    border-radius: 10px;
     background: #e8b04b;
+    padding-left: 8px;
+    box-sizing: border-box;
+    font-size: 11px;
+    line-height: 20px;
+    color: #3a2a10;
   }
 </style>
 </head>
 <body>
   <h1>unlit3d</h1>
   <p>a frame source painted by Blitz</p>
-  <div class="row"><div class="card"></div><div class="gradient"></div><div class="outlined"></div></div>
-  <div class="strip"></div>
+  <div class="row"><div class="block card"></div><div class="block gradient"></div><div class="block outlined"></div></div>
+  <img class="chip" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAQ0lEQVR42mPQr802bcq3bi926in3mFjtN60+dHZz9IL2xKXdGav689ZPLtkyvXrn7MZ989sPL+47uYJhVMOohuGrAQAtoYngerfVgwAAAABJRU5ErkJggg==">
+  <input id="box" class="at" type="checkbox" checked style="left: 90px; top: 100px">
+  <label class="at" for="box" style="left: 114px; top: 99px">box</label>
+  <input id="a" class="at" type="radio" name="pick" checked style="left: 150px; top: 100px">
+  <label class="at" for="a" style="left: 174px; top: 99px">one</label>
+  <input id="b" class="at" type="radio" name="pick" style="left: 200px; top: 100px">
+  <label class="at" for="b" style="left: 224px; top: 99px">two</label>
+  <input id="field" class="at" type="text" value="type here" style="left: 10px; top: 136px; width: 120px">
+  <div class="strip" id="status">no events yet</div>
 </body>
 </html>"#;
 
@@ -113,10 +129,37 @@ fn build(
     _size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    world
+    let source = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(BlitzSource::new(PAGE))]);
+        .spawn(bundle![Source::new(BlitzSource::new())]);
+
+    spawn_in(world, source, bundle![BlitzDocument::new(PAGE)]);
+
+    // The page reacts to nothing on its own: a click, a keystroke or a tick has
+    // no handler inside it, and writing the event name into the status line is
+    // the smallest thing the callback can do that shows it arrived.
+    spawn_in(
+        world,
+        source,
+        bundle![OnBlitzEvent::new(|_scope, _entity, event| {
+            let name = event.name();
+            let document = event.document();
+            let Some(status) = document.get_element_by_id("status") else {
+                return;
+            };
+            let Some(&text) = document
+                .get_node(status)
+                .and_then(|node| node.children.first())
+            else {
+                return;
+            };
+            event
+                .document_mut()
+                .mutate()
+                .set_node_text(text, &format!("last event: {name}"));
+        })],
+    );
 
     SceneControl {
         // The page is static: it is laid out and rasterized once, and the frames

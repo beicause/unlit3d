@@ -106,10 +106,11 @@ fn build(
     // card, which is translucent so the cube and the overlay's band all show
     // through it: the frame proves the three sources share one pass and stack
     // in the order their sources declare.
-    world
+    let page_source = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(BlitzSource::new(PAGE))]);
+        .spawn(bundle![Source::new(BlitzSource::new())]);
+    super::spawn_in(world, page_source, bundle![BlitzDocument::new(PAGE)]);
 
     if options.egui {
         super::spawn_in(

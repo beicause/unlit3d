@@ -874,6 +874,12 @@ chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
 backend of Vello, then composites the result over the frame. It is the
 counterpart of [`EguiSource`](egui::EguiSource) for pages rather than widgets.
 
+The page is not the source's own: it is a [`BlitzDocument`](blitz::BlitzDocument)
+component, and the source draws the first one its scope carries. Spawn a page
+under the source that draws it, exactly as a panel hangs under the egui source.
+The markup therefore lives in the world like any other behaviour, and the code
+that owns the entity can replace it while the frame keeps drawing.
+
 The page is rasterized on the CPU because every GPU backend of Vello builds an
 adapter of its own, and a frame source is handed nothing but the frame's device,
 queue and graph. The pixmap therefore reaches the frame as an upload of an
@@ -886,20 +892,33 @@ A page is a whole document rather than an attachment laid over a scene, and it
 covers the target, so it records at [`FrameSourceOrder::BLITZ`](source::FrameSourceOrder::BLITZ) —
 over the meshes and under the overlay, which stays readable on top of it.
 
-The document is described by its markup alone: nothing reaches it from the
-network, the pointer or the keyboard, and `BlitzSource::set_html` replaces the
-markup for the next frame. Its only font is egui's default font, registered as
-the document's single font with the system fonts left off, so the same markup
-paints the same glyphs on every target rather than whatever the host has
-installed.
+The page is driven, not photographed. The frame's input reaches its document as
+the pointer, wheel, key, text and IME events Blitz expects, in CSS pixels rather
+than the physical pixels an input reports, so hover, focus, scrolling, text
+editing and the checked state of form controls are Blitz's own. It has no
+script, though: what a page should do about an event is Rust's decision, and
+[`OnBlitzEvent`](blitz::OnBlitzEvent) is where it is made — a behaviour
+component that runs for every DOM event Blitz dispatches, with the node chain it
+would bubble through and the document it targets.
+
+Bytes come from the page itself: nothing reaches the network. A `data:` URL is
+decoded on the spot, and anything else is served by
+[`BlitzDocument::insert_resource`](blitz::BlitzDocument::insert_resource) from
+the bytes the entity registered for that path. A path nothing serves leaves the
+element empty rather than holding the frame.
+
+Its only font is egui's default font, registered as the document's single font
+with the system fonts left off, so the same markup paints the same glyphs on
+every target rather than whatever the host has installed.
 
 A page is laid out at the target's pixel size and repainted when its markup, its
-viewport or that size changed — and otherwise only while the document animates.
-A static page is therefore rasterized once, and the frames after it reuse its
-texture. Time comes from the frame clock, so a recorded sequence of frames paints
-the same animations at the same times whatever the wall clock reads. A source
-several passes reach keeps one uploaded page per page size, since the size is all
-that tells two uploads apart.
+viewport or that size changed, when its input or a callback asked for it — and
+otherwise only while the document animates. A static page is therefore
+rasterized once and the frames after it reuse its texture, but a page that
+handles input repaints as it is clicked. Time comes from the frame clock, so a
+recorded sequence of frames paints the same animations at the same times
+whatever the wall clock reads. A source several passes reach keeps one uploaded
+page per page size, since the size is all that tells two uploads apart.
 
 ## egui
 

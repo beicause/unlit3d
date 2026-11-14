@@ -53,7 +53,11 @@ time. `blitz_only` and `mesh_and_egui` draw HTML pages through
 [`BlitzSource`](../crates/unlit3d/README.md): the first one a page and nothing
 else, so the whole frame is Blitz's output; the second one a translucent card
 between the cube's mesh and the egui overlay, so one frame shows the three
-sources stacked in the order they declare.
+sources stacked in the order they declare. The page `blitz_only` draws carries
+an image and the controls a form has — a checkbox, a group of radios and a text
+field — and its `OnBlitzEvent` callback writes the name of every DOM event the
+page dispatches into its status line, so running the scene in a window shows the
+clicks and keystrokes reaching Rust.
 
 `custom_pipeline` registers two families of its own rather than drawing
 through the built-in lit one. A sky family reconstructs a view ray

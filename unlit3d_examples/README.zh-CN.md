@@ -46,7 +46,9 @@ Scenes:
 运行时不需要任何文件。`blitz_only` 与 `mesh_and_egui` 通过
 [`BlitzSource`](../crates/unlit3d/README.zh-CN.md) 绘制 HTML 页面：前者整帧只有一页，
 所以画面全是 Blitz 的输出；后者把一张半透明卡片放在立方体的网格与 egui 叠加层之间，
-于是一帧里三个源按各自声明的顺序叠在一起。
+于是一帧里三个源按各自声明的顺序叠在一起。`blitz_only` 画的页面带一张图像与表单该有的
+控件——复选框、一组单选框与一个文本框——它的 `OnBlitzEvent` 回调把页面派发的每个 DOM
+事件名写进状态行，于是在窗口里跑这个场景就能看到点击与按键抵达 Rust。
 
 `custom_pipeline` 注册了两个自己的 family，而不是走内置的 lit family。天空 family
 从当帧相机重建视线方向，采样一张程序化生成的 cubemap，并用示例

@@ -25,7 +25,7 @@
 | `spin_cube`                                                 | 纹理立方体 + 两块 egui 面板 + 键盘与拖拽；默认场景，也是窄宽高比快照的取样对象 |
 | `egui_only`                                                   | 没有 mesh source、没有相机也能出一帧 egui                          |
 | `mesh_and_egui`                                             | mesh、blitz、egui 三个 source 同帧叠放的顺序、scissor、load ops   |
-| `blitz_only`                                                | 没有 mesh source、没有相机，整帧只有一张 Blitz 布局的 HTML 页       |
+| `blitz_only`                                                | 没有 mesh source、没有相机，整帧只有一张 Blitz 布局的 HTML 页；页里有图像、checkbox、radio 与文本框，`OnBlitzEvent` 把事件名写进状态行 |
 | `transparent`                                               | 透明 + `ZSortedDrawing` + blend                                  |
 | `animated`                                                  | 八帧内 mesh 的分配、回收、平移旋转                               |
 | `skinned` / `morphed` / `instanced_skinned_morph`           | 蒙皮、morph，以及共享一个 mesh 的实例合并                        |
@@ -51,7 +51,7 @@
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。
 - 输入：`crates/unlit3d/src/input.rs`（`input/` 目录下：事件词汇在 `event.rs`，状态在 `state.rs`，帧循环的接线在 `input.rs` 本身）。
 - egui：`crates/unlit3d/src/egui.rs`。
-- blitz：`crates/unlit3d/src/blitz.rs`（Blitz 页面源）；全屏合成 `crates/unlit3d/src/screen.rs` 由它和 `crates/unlit3d/src/blit.rs` 共用。
+- blitz：`crates/unlit3d/src/blitz.rs`（Blitz 页面源）；页面组件与资源在 `crates/unlit3d/src/blitz/document.rs`，输入换算与 `OnBlitzEvent` 在 `crates/unlit3d/src/blitz/events.rs`；全屏合成 `crates/unlit3d/src/screen.rs` 由它和 `crates/unlit3d/src/blit.rs` 共用。
 - winit 桥与内置行为：`crates/unlit3d/src/winit/` 下的 `event.rs` / `builtin.rs` / `surface.rs`。
 
 ### 多 world
