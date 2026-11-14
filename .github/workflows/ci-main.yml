@@ -105,10 +105,17 @@ jobs:
       # take `--all-features`, where cpal links ALSA on Linux. The WebGPU pass
       # draws in a window, which needs an X server the runner has none of, so
       # the same install brings Xvfb for the pass to start its own.
-      - name: Install ALSA headers and Xvfb
+      #
+      # Mesa's Vulkan driver is what the browser's OpenGL context has to be built
+      # on for a WebGPU canvas to reach the screen: with the browser left to
+      # render OpenGL through its own SwiftShader, Chromium turns off the
+      # OpenGL-Vulkan interop its canvas swap chain needs, and the canvas then
+      # reads back transparent however the tests draw into it. The loader comes
+      # with it because Chromium loads the ICD through it, not directly.
+      - name: Install ALSA headers, Xvfb and Mesa's Vulkan driver
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libasound2-dev xvfb
+          sudo apt-get install --yes libasound2-dev xvfb libvulkan1 mesa-vulkan-drivers
 
       # One cache for the whole job: its three builds share this key, and the
       # features they differ in are the only reason there are more than one.
