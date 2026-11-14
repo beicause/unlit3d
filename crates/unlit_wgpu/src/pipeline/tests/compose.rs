@@ -6,15 +6,16 @@ use super::*;
 /// state its flags can take.
 ///
 /// The lit variants are covered by the slot suite, which composes every one of
-/// them; this covers the others — the strokes under both states of their one
-/// flag, and the stages that take no flags at all — because a slot enumerates
-/// lit variants only.
+/// them; this covers the others — the strokes and the composites under both
+/// states of their one flag, and the stage that takes no flags at all — because
+/// a slot enumerates lit variants only.
 #[test]
 fn every_built_in_module_composes_to_valid_wgsl() {
-    let cases: [(&str, &[(&'static str, bool)]); 4] = [
+    let cases: [(&str, &[(&'static str, bool)]); 5] = [
         ("line", &[("HARD_EDGE", false)]),
         ("line", &[("HARD_EDGE", true)]),
-        ("blit", &[]),
+        ("blit_fragment", &[("SRGB_TO_LINEAR_OUTPUT", false)]),
+        ("blit_fragment", &[("SRGB_TO_LINEAR_OUTPUT", true)]),
         ("fullscreen_vertex", &[]),
     ];
     for (module, features) in cases {

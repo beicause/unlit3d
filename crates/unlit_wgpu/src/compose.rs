@@ -1,6 +1,7 @@
 //! Composing a WESL module of the built-in shader package into WGSL.
 //!
-//! Every built-in entry shader — `lit`, `line`, `blit`, `fullscreen_vertex` —
+//! Every built-in entry shader — `lit`, `line`, `blit_fragment`,
+//! `fullscreen_vertex` —
 //! is a module of the package generated at build time from `shaders/*.wesl`.
 //! This module is the one place that turns one of them into a WGSL string: it
 //! sets the conditional-compilation flags, keeps the module's own entry points,
@@ -17,7 +18,8 @@
 
 /// Compose `module` of the built-in WESL package into one WGSL module.
 ///
-/// `module` names a top-level module of the package (`lit`, `line`, `blit`, …).
+/// `module` names a top-level module of the package (`lit`, `line`,
+/// `blit_fragment`, …).
 /// `features` are the conditional-compilation flags set before composing; the
 /// module's own declarations — its entry points among them — stay under their
 /// own names, so a pipeline can address them.
@@ -87,7 +89,7 @@ mod tests {
             compose("fullscreen_vertex", &[], None).expect("the fullscreen vertex composes");
         assert!(vertex.contains("fn fullscreen_vertex_shader"));
 
-        let fragment = compose("blit", &[], None).expect("the blit fragment composes");
+        let fragment = compose("blit_fragment", &[], None).expect("the blit fragment composes");
         assert!(fragment.contains("fn fs_main"));
 
         let line = compose("line", &[], None).expect("the line module composes");

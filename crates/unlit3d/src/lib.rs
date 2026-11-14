@@ -65,6 +65,8 @@ pub mod reflect;
 pub mod relay;
 pub mod renderer;
 pub mod scene;
+/// The fullscreen composite a frame source shows one texture with.
+mod screen;
 pub mod source;
 #[cfg(feature = "winit")]
 #[cfg_attr(docsrs, doc(cfg(feature = "winit")))]

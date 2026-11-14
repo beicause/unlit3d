@@ -249,7 +249,7 @@ scene, so each pass records exactly the draws its own target asked for. The
 slots outlive the frame so a steady scene reuses their allocations, and a pair
 the world no longer reaches gives its buffers back at the end of the frame. A
 source that keeps GPU state per target — the egui source's pipeline and material
-table, the blit source's bind group — keys it on
+table, a screen composite's pipeline — keys it on
 [`SurfaceKey`](unlit_wgpu::specialize::SurfaceKey), so alternating passes reuse
 their own entry instead of rebuilding it every frame. The "main 3D scene" is
 just the scene the first recorded source produced, not a special case of the
