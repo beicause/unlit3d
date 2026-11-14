@@ -50,6 +50,10 @@ const_shader_layout = { version = "0.5.1", default-features = false, features = 
 # ring buffer bridges the audio thread that fills it and the stream's
 # callback that drains it.
 cpal = { version = "0.18.2", default-features = false }
+# Decodes the inline images a page carries as `data:` URLs. Nothing else reads
+# one: a page is served bytes by path, and this is the one scheme it decodes
+# itself.
+data-url = { version = "0.3.2", default-features = false, features = ["std"] }
 # The glTF loader decompresses KHR_draco_mesh_compression primitives with
 # this bitstream decoder. Only the decoder direction is built; the encoder is
 # a dev dependency for the tests that synthesise streams in memory.
@@ -98,6 +102,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # crate that defines its own components registers them without a call into
 # anything: the entries are collected from wherever they are written.
 inventory = { version = "0.3", default-features = false }
+# The key names and modifiers a Blitz event states. blitz-traits takes them in
+# its own public signatures but does not re-export them, so the crate that hands
+# a page an event names them itself; it is pinned to the version underneath.
+keyboard-types = { version = "0.8.0", default-features = false, features = ["std"] }
 # The native half of the wasm test harness: `libtest-mimic` runs the shared
 # registry as a libtest-compatible binary, and `ureq` is the HTTP client the
 # proxy sends each test to the browser's runner with.

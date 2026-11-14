@@ -1,0 +1,674 @@
+//! The input a page receives, and the callbacks that watch it.
+//!
+//! A [`BlitzSource`](crate::blitz::BlitzSource) turns the frame's
+//! [`InputEvent`]s into the [`UiEvent`]s Blitz dispatches, in the coordinates a
+//! document lays out in, and runs each one through Blitz's event driver. Blitz
+//! does what a browser does without a script: hover, focus, scrolling, text
+//! editing, and the checked state of every form control.
+//!
+//! [`OnBlitzEvent`] is the way back out. Blitz has no scripting engine, so the
+//! only reaction a document can have to an event besides Blitz's own is one a
+//! Rust callback states: it sees every DOM event, along with the page it was
+//! dispatched into, and may read and change the document there.
+//!
+//! # Units
+//!
+//! The crate reports pointer positions in physical pixels; a document lays out
+//! in CSS pixels, so every position here is divided by the scale factor and is
+//! already in the space Blitz expects.
+//!
+//! # Duplicates
+//!
+//! One physical action arrives more than once. The crate reports a mouse as
+//! [`MouseEvent`]s and the same action again as a [`PointerEvent`], and the
+//! pointer a document hovers with is fed from the first that exists for the
+//! device — the mouse for a mouse, the touch for a finger — so the coarser
+//! duplicate neither scrolls the page twice nor leaves a stale hover behind.
+//!
+//! A dispatch reaches a callback more than once for the same reason: Blitz
+//! synthesises the mouse and touch compatibility events a browser would, so a
+//! click is reported as `pointerup`, `mouseup` and `click`. A callback that
+//! reacts to one of them filters on [`BlitzEvent::name`].
+
+use blitz_dom::{BaseDocument, Document, EventDriver, EventHandler, NodeId};
+use blitz_traits::SmolStr;
+use blitz_traits::events::{
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
+    BlitzWheelEvent, DomEvent, DomEventData, EventState, KeyState, MouseEventButton,
+    MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
+};
+use blitz_traits::shell::ShellProvider as _;
+use keyboard_types::{Code, Key as DomKey, Location, Modifiers, NamedKey};
+use unlit_ecs::{Entity, Scope};
+
+use crate::input::{
+    ImeEvent, ImeKind, InputEvent, Key, KeyEvent, MouseButton, MouseEvent, PointerAction,
+    PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit,
+};
+
+use super::document::BlitzShell;
+
+/// A callback that runs for every DOM event a page dispatches.
+type EventCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)>;
+
+/// A callback run for every DOM event a page dispatches.
+///
+/// Blitz has no scripting engine: this is how a document's events reach Rust
+/// code. Spawn one under the [`BlitzSource`](crate::blitz::BlitzSource) that
+/// draws the page, beside the [`BlitzDocument`](super::BlitzDocument); the
+/// source runs every callback its scope carries, in query order, for every event
+/// the document dispatches.
+///
+/// # What a callback may do
+///
+/// It is handed a [`BlitzEvent`], which reads the event and the node it targets
+/// and reaches the document, so a click can read a form field or change the
+/// page. It may also read the world through its [`Scope`] and queue structural
+/// changes for the frame loop to apply.
+///
+/// It must not reach for its own [`OnBlitzEvent`], nor for the page's
+/// [`BlitzDocument`](super::BlitzDocument): both are borrowed while it runs, and
+/// asking for either is a borrow panic rather than a compile error.
+///
+/// # What it is called for
+///
+/// Every event the document dispatches, which for one physical action is more
+/// than one: Blitz reports a click as pointer, mouse and click events, and a key
+/// press as a key event and the text it produced. A callback that reacts once
+/// filters on [`BlitzEvent::name`].
+pub struct OnBlitzEvent(pub EventCallback);
+
+impl OnBlitzEvent {
+    /// Wrap `f` as an [`OnBlitzEvent`].
+    pub fn new(f: impl FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>) + 'static) -> Self {
+        Self(Box::new(f))
+    }
+
+    /// Run this callback for `entity`, on `event`.
+    pub fn run(&mut self, scope: Scope<'_>, entity: Entity, event: &mut BlitzEvent<'_>) {
+        (self.0)(scope, entity, event)
+    }
+}
+
+/// One DOM event, with the page it was dispatched into.
+///
+/// A view of the dispatch rather than a value of its own: it lives for the call
+/// it was handed to, and the document behind it is the one the page is laid out
+/// from.
+pub struct BlitzEvent<'a> {
+    event: &'a DomEvent,
+    chain: &'a [NodeId],
+    document: &'a mut BaseDocument,
+    state: &'a mut EventState,
+}
+
+impl BlitzEvent<'_> {
+    /// The event's DOM name, such as `click`, `input` or `keydown`.
+    pub fn name(&self) -> &'static str {
+        self.event.name()
+    }
+
+    /// The event's payload.
+    ///
+    /// A pointer action is reported as a pointer event and again as the mouse or
+    /// touch event a browser would synthesise for it, so this is also how a
+    /// callback tells the two apart.
+    pub fn data(&self) -> &DomEventData {
+        &self.event.data
+    }
+
+    /// The node the event was dispatched to.
+    pub fn target(&self) -> NodeId {
+        self.event.target
+    }
+
+    /// The target and the ancestors the event bubbles through, target first.
+    pub fn chain(&self) -> &[NodeId] {
+        self.chain
+    }
+
+    /// The page the event was dispatched into.
+    pub fn document(&self) -> &BaseDocument {
+        self.document
+    }
+
+    /// The page the event was dispatched into, to change.
+    ///
+    /// A change is recorded by the document and laid out once the event has been
+    /// dispatched, so a callback may change the page it is reacting to without
+    /// the dispatch reading a half-changed document.
+    pub fn document_mut(&mut self) -> &mut BaseDocument {
+        self.document
+    }
+
+    /// Stop Blitz's own reaction to the event.
+    pub fn prevent_default(&mut self) {
+        self.state.prevent_default();
+    }
+
+    /// Stop the event bubbling to the target's ancestors.
+    pub fn stop_propagation(&mut self) {
+        self.state.stop_propagation();
+    }
+
+    /// Ask for another frame.
+    pub fn request_redraw(&mut self) {
+        self.state.request_redraw();
+    }
+}
+
+/// Runs a page's callbacks as Blitz dispatches its events.
+pub(crate) struct BlitzHandler<'a> {
+    /// The scope of the source that draws the page, whose callbacks are run.
+    scope: Scope<'a>,
+    /// What the page asks of the frame, for a callback that asks for one.
+    shell: &'a BlitzShell,
+}
+
+impl<'a> BlitzHandler<'a> {
+    /// Run the callbacks `scope` carries for the events `page` dispatches.
+    pub(crate) fn new(scope: Scope<'a>, shell: &'a BlitzShell) -> Self {
+        Self { scope, shell }
+    }
+
+    /// Dispatch one event to the page's callbacks.
+    pub(crate) fn dispatch(&mut self, document: &mut BaseDocument, event: &UiEvent) {
+        let mut driver = EventDriver::new(
+            document,
+            Self {
+                scope: self.scope,
+                shell: self.shell,
+            },
+        );
+        driver.handle_ui_event(event.clone());
+    }
+}
+
+impl EventHandler for BlitzHandler<'_> {
+    fn handle_event(
+        &mut self,
+        chain: &[NodeId],
+        event: &mut DomEvent,
+        doc: &mut dyn Document,
+        state: &mut EventState,
+    ) {
+        {
+            let mut document = doc.inner_mut();
+            for (callback, entity) in self.scope.query::<(&mut OnBlitzEvent, Entity)>().iter() {
+                let mut view = BlitzEvent {
+                    event: &*event,
+                    chain,
+                    document: &mut document,
+                    state: &mut *state,
+                };
+                callback.run(self.scope, entity, &mut view);
+            }
+        }
+        if event.request_redraw || state.redraw_is_requested() {
+            self.shell.request_redraw();
+        }
+    }
+}
+
+/// Translates a frame's input into the events a document dispatches.
+///
+/// Kept between frames: the pointer's last position, the buttons and modifiers
+/// held, and the buffer the events are collected in all carry over, so a click
+/// whose press and release fall in different frames still names the button that
+/// is down.
+#[derive(Default)]
+pub(crate) struct Translator {
+    /// Physical pixels per CSS pixel.
+    scale: f32,
+    /// The pointer's last position, in physical pixels.
+    position: [f32; 2],
+    /// The modifier keys held.
+    modifiers: crate::input::Modifiers,
+    /// The buttons held.
+    buttons: MouseEventButtons,
+    /// The translated events, kept between frames.
+    pending: Vec<UiEvent>,
+}
+
+/// What one frame states to a [`Translator`].
+#[derive(Clone, Copy)]
+pub(crate) struct Frame<'a> {
+    /// The frame's events, in the order they arrived.
+    pub(crate) batch: &'a [InputEvent],
+    /// Physical pixels per CSS pixel.
+    pub(crate) scale: f32,
+    /// Where the pointer was at the end of the frame before.
+    pub(crate) cursor: Option<[f32; 2]>,
+    /// The buttons held at the end of the frame before.
+    pub(crate) buttons: crate::input::MouseButtons,
+    /// How far the document is scrolled, which turns a client position into the
+    /// page position a document hovers with.
+    pub(crate) scroll: [f64; 2],
+}
+
+impl Translator {
+    /// Translate the frame's events, returning them in dispatch order.
+    pub(crate) fn translate(&mut self, frame: Frame<'_>) -> &[UiEvent] {
+        self.scale = if frame.scale > 0.0 { frame.scale } else { 1.0 };
+        if let Some(cursor) = frame.cursor {
+            self.position = cursor;
+        }
+        self.buttons = buttons_of(frame.buttons);
+        self.pending.clear();
+        for event in frame.batch {
+            self.event(event, frame.scroll);
+        }
+        &self.pending
+    }
+
+    /// Translate one event, appending what it stands for.
+    fn event(&mut self, event: &InputEvent, scroll: [f64; 2]) {
+        match event {
+            InputEvent::Mouse(event) => self.mouse(event, scroll),
+            InputEvent::Pointer(event) => self.pointer(event, scroll),
+            InputEvent::Touch(event) => self.touch(event, scroll),
+            InputEvent::Key(event) => self.key(event),
+            InputEvent::Text(event) => self.text(event),
+            InputEvent::Ime(ImeEvent { kind }) => self.pending.push(UiEvent::Ime(ime_event(kind))),
+            InputEvent::ModifiersChanged(modifiers) => self.modifiers = *modifiers,
+            // A page has no window of its own: it is laid out at the size the
+            // source states, and it holds no focus besides the one its markup
+            // gives it, so neither a resize nor the window's focus is an event
+            // it can react to.
+            InputEvent::FocusChanged(_)
+            | InputEvent::Resized { .. }
+            | InputEvent::ScaleFactorChanged { .. } => {}
+        }
+    }
+
+    /// Translate a mouse event.
+    fn mouse(&mut self, event: &MouseEvent, scroll: [f64; 2]) {
+        match event {
+            MouseEvent::Moved { position } => {
+                self.position = *position;
+                let coords = self.coords(scroll);
+                let pointer =
+                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords);
+                self.pending.push(UiEvent::PointerMove(pointer));
+            }
+            MouseEvent::Button {
+                position,
+                button,
+                pressed,
+                modifiers,
+            } => {
+                self.position = *position;
+                self.modifiers = *modifiers;
+                let button = button_of(*button);
+                self.buttons.set(MouseEventButtons::from(button), *pressed);
+                let coords = self.coords(scroll);
+                let pointer = self.pointer_event(BlitzPointerId::Mouse, button, coords);
+                self.pending.push(if *pressed {
+                    UiEvent::PointerDown(pointer)
+                } else {
+                    UiEvent::PointerUp(pointer)
+                });
+            }
+            MouseEvent::Left => {
+                let coords = self.coords(scroll);
+                let pointer =
+                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords);
+                self.pending.push(UiEvent::PointerLeave(pointer));
+            }
+            MouseEvent::Wheel { delta, unit, .. } => {
+                let delta = match unit {
+                    WheelUnit::Pixel => BlitzWheelDelta::Pixels(
+                        f64::from(delta[0]) / f64::from(self.scale),
+                        f64::from(delta[1]) / f64::from(self.scale),
+                    ),
+                    // A page step is counted as one line: Blitz multiplies a line
+                    // by a distance of its own and has no third unit, so a page
+                    // would otherwise scroll by a single line.
+                    WheelUnit::Line | WheelUnit::Page => {
+                        BlitzWheelDelta::Lines(f64::from(delta[0]), f64::from(delta[1]))
+                    }
+                };
+                let coords = self.coords(scroll);
+                self.pending.push(UiEvent::Wheel(BlitzWheelEvent {
+                    delta,
+                    coords,
+                    buttons: self.buttons,
+                    mods: modifiers_of(self.modifiers),
+                    element: Point::default(),
+                }));
+            }
+        }
+    }
+
+    /// Translate a pointer event.
+    ///
+    /// A mouse and a finger already report their actions as [`MouseEvent`]s and
+    /// [`TouchEvent`]s, which carry more than a pointer event does; only a pen,
+    /// which has no category of its own, is fed from here.
+    fn pointer(&mut self, event: &PointerEvent, scroll: [f64; 2]) {
+        if !matches!(event.kind, PointerKind::Pen | PointerKind::Other) {
+            return;
+        }
+        let Some(position) = event.position else {
+            return;
+        };
+        self.position = position;
+        self.modifiers = event.modifiers;
+        let coords = self.coords(scroll);
+        let pointer = self.pointer_event(BlitzPointerId::Pen, MouseEventButton::Main, coords);
+        match event.action {
+            PointerAction::Moved => self.pending.push(UiEvent::PointerMove(pointer)),
+            PointerAction::Pressed => {
+                self.buttons.insert(MouseEventButtons::Primary);
+                self.pending.push(UiEvent::PointerDown(pointer));
+            }
+            PointerAction::Released { cancelled } => {
+                self.buttons.remove(MouseEventButtons::Primary);
+                self.pending.push(if cancelled {
+                    UiEvent::PointerCancel(pointer)
+                } else {
+                    UiEvent::PointerUp(pointer)
+                });
+            }
+            PointerAction::Left => self.pending.push(UiEvent::PointerLeave(pointer)),
+            // A pinch and a rotation are gestures a document has no use for:
+            // it scrolls, but it does not zoom or turn.
+            PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
+        }
+    }
+
+    /// Translate a touch event.
+    fn touch(&mut self, event: &TouchEvent, scroll: [f64; 2]) {
+        self.position = event.position;
+        let coords = self.coords(scroll);
+        let mut pointer = self.pointer_event(
+            BlitzPointerId::Finger(event.id),
+            MouseEventButton::Main,
+            coords,
+        );
+        pointer.details.pressure = f64::from(event.force.unwrap_or(0.0));
+        match event.phase {
+            TouchPhase::Started => {
+                self.buttons.insert(MouseEventButtons::Primary);
+                self.pending.push(UiEvent::PointerDown(pointer));
+            }
+            TouchPhase::Moved => self.pending.push(UiEvent::PointerMove(pointer)),
+            TouchPhase::Ended => {
+                self.buttons.remove(MouseEventButtons::Primary);
+                self.pending.push(UiEvent::PointerUp(pointer));
+            }
+            TouchPhase::Cancelled => {
+                self.buttons.remove(MouseEventButtons::Primary);
+                self.pending.push(UiEvent::PointerCancel(pointer));
+            }
+        }
+    }
+
+    /// Translate a key event.
+    ///
+    /// A character key arrives again as the [`InputEvent::Text`] it produced,
+    /// and that is the event a text field inserts from, so a character is only
+    /// dispatched as a key while a command modifier is held: that is the
+    /// shortcut a document reacts to, and the platform produces no text for it.
+    fn key(&mut self, event: &KeyEvent) {
+        self.modifiers = event.modifiers;
+        let key = key_of(event.key);
+        if !event.modifiers.command && matches!(key, DomKey::Character(_)) {
+            return;
+        }
+        self.pending
+            .push(self.key_event(key, event.pressed, event.repeat));
+    }
+
+    /// Translate the text a key produced, or a paste, which inserts the same
+    /// way.
+    fn text(&mut self, event: &TextEvent) {
+        let mut key = self.key_event(DomKey::Character(event.0.clone()), true, false);
+        if let UiEvent::KeyDown(key) = &mut key {
+            key.text = Some(SmolStr::new(event.0.as_str()));
+        }
+        self.pending.push(key);
+    }
+
+    /// Wrap `key` as the event a document dispatches for it.
+    fn key_event(&self, key: DomKey, pressed: bool, repeat: bool) -> UiEvent {
+        let event = BlitzKeyEvent {
+            key,
+            // The crate reports the physical key as a code of its own, and a
+            // document reads the logical key alone: a code would be a second
+            // spelling of the same information, and no page asks for one.
+            code: Code::Unidentified,
+            modifiers: modifiers_of(self.modifiers),
+            location: Location::Standard,
+            is_auto_repeating: repeat,
+            is_composing: false,
+            state: if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            },
+            text: None,
+        };
+        if pressed {
+            UiEvent::KeyDown(event)
+        } else {
+            UiEvent::KeyUp(event)
+        }
+    }
+
+    /// The pointer position, in the page coordinates a dispatch hovers with.
+    fn coords(&self, scroll: [f64; 2]) -> PointerCoords {
+        let x = self.position[0] / self.scale;
+        let y = self.position[1] / self.scale;
+        PointerCoords {
+            page_x: x + scroll[0] as f32,
+            page_y: y + scroll[1] as f32,
+            screen_x: x,
+            screen_y: y,
+            client_x: x,
+            client_y: y,
+        }
+    }
+
+    /// The pointer event a document dispatches for `id`.
+    fn pointer_event(
+        &self,
+        id: BlitzPointerId,
+        button: MouseEventButton,
+        coords: PointerCoords,
+    ) -> BlitzPointerEvent {
+        BlitzPointerEvent {
+            id,
+            is_primary: true,
+            coords,
+            button,
+            buttons: self.buttons,
+            mods: modifiers_of(self.modifiers),
+            details: PointerDetails::default(),
+            element: Point::default(),
+            // The contacts a drag is built from are tracked by the driver that
+            // needs them; a dispatch here states one action at a time, so the
+            // list it carries is empty.
+            active_pointers: Default::default(),
+        }
+    }
+}
+
+/// The buttons a document reports as held.
+fn buttons_of(buttons: crate::input::MouseButtons) -> MouseEventButtons {
+    let mut event = MouseEventButtons::None;
+    for (button, flag) in [
+        (
+            crate::input::MouseButtons::PRIMARY,
+            MouseEventButtons::Primary,
+        ),
+        (
+            crate::input::MouseButtons::SECONDARY,
+            MouseEventButtons::Secondary,
+        ),
+        (
+            crate::input::MouseButtons::MIDDLE,
+            MouseEventButtons::Auxiliary,
+        ),
+        (crate::input::MouseButtons::BACK, MouseEventButtons::Fourth),
+        (
+            crate::input::MouseButtons::FORWARD,
+            MouseEventButtons::Fifth,
+        ),
+    ] {
+        event.set(flag, buttons.contains(button));
+    }
+    event
+}
+
+/// The button a document reports a crate button as.
+fn button_of(button: MouseButton) -> MouseEventButton {
+    match button {
+        MouseButton::Primary | MouseButton::Other(_) => MouseEventButton::Main,
+        MouseButton::Secondary => MouseEventButton::Secondary,
+        MouseButton::Middle => MouseEventButton::Auxiliary,
+        MouseButton::Back => MouseEventButton::Fourth,
+        MouseButton::Forward => MouseEventButton::Fifth,
+    }
+}
+
+/// The modifier keys a document reports as held.
+fn modifiers_of(modifiers: crate::input::Modifiers) -> Modifiers {
+    let mut event = Modifiers::empty();
+    event.set(Modifiers::ALT, modifiers.alt);
+    event.set(Modifiers::CONTROL, modifiers.ctrl);
+    event.set(Modifiers::SHIFT, modifiers.shift);
+    event.set(Modifiers::META, modifiers.mac_cmd);
+    event
+}
+
+/// The key a document names the crate's key by.
+fn key_of(key: Key) -> DomKey {
+    match character_of(key) {
+        Some(character) => DomKey::Character(character.to_owned()),
+        None => DomKey::Named(named_key_of(key)),
+    }
+}
+
+/// The character the crate's key types, if it types one.
+///
+/// The character is what the key is laid out as, which is what a document
+/// matches a shortcut against; a text field inserts from the text event
+/// instead, so the two never disagree about the text a press produced.
+fn character_of(key: Key) -> Option<&'static str> {
+    Some(match key {
+        Key::Space => " ",
+        Key::A => "a",
+        Key::B => "b",
+        Key::C => "c",
+        Key::D => "d",
+        Key::E => "e",
+        Key::F => "f",
+        Key::G => "g",
+        Key::H => "h",
+        Key::I => "i",
+        Key::J => "j",
+        Key::K => "k",
+        Key::L => "l",
+        Key::M => "m",
+        Key::N => "n",
+        Key::O => "o",
+        Key::P => "p",
+        Key::Q => "q",
+        Key::R => "r",
+        Key::S => "s",
+        Key::T => "t",
+        Key::U => "u",
+        Key::V => "v",
+        Key::W => "w",
+        Key::X => "x",
+        Key::Y => "y",
+        Key::Z => "z",
+        Key::Num0 => "0",
+        Key::Num1 => "1",
+        Key::Num2 => "2",
+        Key::Num3 => "3",
+        Key::Num4 => "4",
+        Key::Num5 => "5",
+        Key::Num6 => "6",
+        Key::Num7 => "7",
+        Key::Num8 => "8",
+        Key::Num9 => "9",
+        _ => return None,
+    })
+}
+
+/// The name a document knows the crate's key by.
+///
+/// A key the crate has no name of its own for is still dispatched, unnamed,
+/// rather than dropped: a page can react to the press even if neither side
+/// knows what the key is called.
+fn named_key_of(key: Key) -> NamedKey {
+    match key {
+        Key::Enter => NamedKey::Enter,
+        Key::Tab => NamedKey::Tab,
+        Key::Backspace => NamedKey::Backspace,
+        Key::Delete => NamedKey::Delete,
+        Key::Escape => NamedKey::Escape,
+        Key::ArrowUp => NamedKey::ArrowUp,
+        Key::ArrowDown => NamedKey::ArrowDown,
+        Key::ArrowLeft => NamedKey::ArrowLeft,
+        Key::ArrowRight => NamedKey::ArrowRight,
+        Key::Home => NamedKey::Home,
+        Key::End => NamedKey::End,
+        Key::PageUp => NamedKey::PageUp,
+        Key::PageDown => NamedKey::PageDown,
+        Key::F1 => NamedKey::F1,
+        Key::F2 => NamedKey::F2,
+        Key::F3 => NamedKey::F3,
+        Key::F4 => NamedKey::F4,
+        Key::F5 => NamedKey::F5,
+        Key::F6 => NamedKey::F6,
+        Key::F7 => NamedKey::F7,
+        Key::F8 => NamedKey::F8,
+        Key::F9 => NamedKey::F9,
+        Key::F10 => NamedKey::F10,
+        Key::F11 => NamedKey::F11,
+        Key::F12 => NamedKey::F12,
+        Key::F13 => NamedKey::F13,
+        Key::F14 => NamedKey::F14,
+        Key::F15 => NamedKey::F15,
+        Key::F16 => NamedKey::F16,
+        Key::F17 => NamedKey::F17,
+        Key::F18 => NamedKey::F18,
+        Key::F19 => NamedKey::F19,
+        Key::F20 => NamedKey::F20,
+        Key::F21 => NamedKey::F21,
+        Key::F22 => NamedKey::F22,
+        Key::F23 => NamedKey::F23,
+        Key::F24 => NamedKey::F24,
+        Key::F25 => NamedKey::F25,
+        Key::F26 => NamedKey::F26,
+        Key::F27 => NamedKey::F27,
+        Key::F28 => NamedKey::F28,
+        Key::F29 => NamedKey::F29,
+        Key::F30 => NamedKey::F30,
+        Key::F31 => NamedKey::F31,
+        Key::F32 => NamedKey::F32,
+        Key::F33 => NamedKey::F33,
+        Key::F34 => NamedKey::F34,
+        Key::F35 => NamedKey::F35,
+        _ => NamedKey::Unidentified,
+    }
+}
+
+/// The input-method event a document dispatches for the crate's.
+fn ime_event(kind: &ImeKind) -> BlitzImeEvent {
+    match kind {
+        ImeKind::Preedit { text, active_range } => {
+            BlitzImeEvent::Preedit(text.clone(), active_range.clone().map(|r| (r.start, r.end)))
+        }
+        ImeKind::Commit(text) => BlitzImeEvent::Commit(text.clone()),
+        ImeKind::DeleteSurrounding { before, after } => BlitzImeEvent::DeleteSurrounding {
+            before_bytes: *before,
+            after_bytes: *after,
+        },
+        ImeKind::Enabled => BlitzImeEvent::Enabled,
+        ImeKind::Disabled => BlitzImeEvent::Disabled,
+    }
+}

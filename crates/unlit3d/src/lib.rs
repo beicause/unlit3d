@@ -78,7 +78,7 @@ pub mod winit;
 /// The types most callers need for typical usage.
 pub mod prelude {
     #[cfg(feature = "blitz")]
-    pub use crate::blitz::BlitzSource;
+    pub use crate::blitz::{BlitzDocument, BlitzEvent, BlitzSource, OnBlitzEvent};
     #[cfg(feature = "egui")]
     pub use crate::egui::{EguiPanel, EguiSource};
     pub use crate::light::{

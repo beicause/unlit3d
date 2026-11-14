@@ -46,6 +46,7 @@ blitz-html = { workspace = true, optional = true }
 blitz-paint = { workspace = true, optional = true }
 blitz-traits = { workspace = true, optional = true }
 const_shader_layout.workspace = true
+data-url = { workspace = true, optional = true }
 draco-core = { workspace = true, optional = true }
 egui = { workspace = true, optional = true }
 epaint_default_fonts = { workspace = true, optional = true }
@@ -57,6 +58,7 @@ gltf = { workspace = true, optional = true }
 half = { workspace = true, optional = true }
 hashbrown.workspace = true
 inventory = { workspace = true, optional = true }
+keyboard-types = { workspace = true, optional = true }
 log.workspace = true
 profiling.workspace = true
 thiserror.workspace = true
@@ -117,8 +119,9 @@ mcp = [
 ## by default because it is only the bridge that needs it; the engine itself
 ## never reads the reflection.
 reflect = ["dep:facet", "dep:facet-json", "dep:inventory", "unlit_ecs/reflect"]
-## The [`blitz`](crate::blitz) module: an HTML document laid out by
-## [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source. It
+## The [`blitz`](crate::blitz) module: HTML documents laid out by
+## [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source, with
+## the frame's pointer, wheel, key, text and IME input driving them. It
 ## rasterizes the page on the CPU, because every GPU backend of Vello builds a
 ## device of its own and a frame source is only handed the running one.
 blitz = [
@@ -128,7 +131,9 @@ blitz = [
   "dep:blitz-html",
   "dep:blitz-paint",
   "dep:blitz-traits",
+  "dep:data-url",
   "dep:epaint_default_fonts",
+  "dep:keyboard-types",
 ]
 ## The [`egui`](crate::egui) module: an egui overlay drawn as a frame source, and
 ## the [`unlit_wgpu`] egui backend it draws with. The overlay's frame clock
