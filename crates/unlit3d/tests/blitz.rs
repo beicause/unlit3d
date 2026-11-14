@@ -167,6 +167,24 @@ fn click(position: [f32; 2]) -> [InputEvent; 2] {
     ]
 }
 
+/// Bind a target to the given pass, so the frame opens it and builds what it reaches.
+fn bind_target(gpu: &TestGpu, world: &World, pass: Entity) -> wgpu::Texture {
+    let device = gpu
+        .context
+        .device(&world.root_scope())
+        .expect("the context device");
+    let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
+    let (_, color_view) = gpu.register_texture(world, color.clone());
+    let attachments =
+        FrameAttachments::new(world, gpu.context, COLOR_FORMAT, (WIDTH, HEIGHT), 1, false);
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(pass)
+        .map(|mut pass| pass.get().set_attachments(&attachments, color_view))
+        .expect("the pass entity exists");
+    color
+}
+
 /// A page is rasterized in sRGB and composited into an sRGB target, so its own
 /// colours survive: the two conversions cancel instead of compounding.
 async fn a_page_paints_its_own_colours() {
@@ -337,13 +355,80 @@ async fn a_click_toggles_a_checkbox() {
     );
 }
 
-/// A page whose stylesheet never arrives draws nothing rather than failing the
-/// frame: Blitz holds rendering until its critical resources are in, so the
-/// source has no pixels to upload yet.
-async fn a_page_waiting_for_a_stylesheet_draws_nothing() {
+/// A page blocks on a stylesheet until the answer to it arrives, so a request
+/// nothing serves has to be answered too: the page then loads it as an empty
+/// sheet and paints, instead of waiting for a reply that never comes.
+async fn a_page_loads_a_stylesheet_nobody_serves() {
     let ctx = Ctx::headless().await;
     let html = r#"<html><head><link rel="stylesheet" href="missing.css"></head>
         <body style="margin: 0; background: #808080"></body></html>"#;
+    let (world, gpu, target, _source, _page) = render_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+
+    let centre = centre_pixel(&ctx.device, &ctx.queue, &target).await;
+    assert!(
+        centre[0].abs_diff(GREY) <= 2,
+        "a page whose stylesheet nobody serves should still paint, got {centre:?}"
+    );
+}
+
+/// A page that asks for a stylesheet the host serves loads it: the sheet is one
+/// of the bytes the document answers with, not something it reaches for.
+async fn a_page_loads_a_stylesheet_it_serves() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html><head><link rel="stylesheet" href="page.css"></head>
+        <body style="margin: 0"></body></html>"#;
+    let (world, gpu, target, _source, page) = render_page(&ctx, html);
+    world
+        .root_scope()
+        .query_one::<&BlitzDocument>(page)
+        .map(|mut row| {
+            row.get()
+                .insert_resource("page.css", "html { background: #808080 }")
+        })
+        .expect("the page entity exists");
+
+    gpu.render_frames(&world, 2);
+
+    let centre = centre_pixel(&ctx.device, &ctx.queue, &target).await;
+    assert!(
+        centre[0].abs_diff(GREY) <= 2 && centre[1].abs_diff(GREY) <= 2,
+        "the served stylesheet should paint the page grey, got {centre:?}"
+    );
+}
+
+/// A path is served at the address the base gives it, so changing the base
+/// serves the same bytes where the new markup looks for them.
+async fn a_new_base_still_serves_the_registered_bytes() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <img src="solid.png" style="display: block; width: 64px; height: 64px">
+    </body></html>"#;
+    let (world, gpu, target, _source, page) = render_page(&ctx, html);
+    world
+        .root_scope()
+        .query_one::<&mut BlitzDocument>(page)
+        .map(|mut row| {
+            let page = row.get();
+            page.insert_resource("solid.png", RED_PNG);
+            page.set_base_url("https://example.test/images/");
+        })
+        .expect("the page entity exists");
+
+    gpu.render_frames(&world, 2);
+
+    let inside = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
+    assert!(
+        inside[0].abs_diff(255) <= 2 && inside[1] <= 2 && inside[2] <= 2,
+        "the image should load at its address under the new base, got {inside:?}"
+    );
+}
+
+/// A page that replaced its markup does not keep showing the one it replaced:
+/// the older document does not paint the newer page.
+async fn a_replaced_page_is_not_drawn_from_the_old_pixels() {
+    let ctx = Ctx::headless().await;
     let mut empty = World::new();
     let empty_gpu = TestGpu::frame_only(&mut empty, &ctx);
     let empty_target = empty_gpu.bind_offscreen_target_with(&empty, 1, false);
@@ -351,13 +436,144 @@ async fn a_page_waiting_for_a_stylesheet_draws_nothing() {
     let without_page =
         unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &empty_target).await;
 
-    let (world, gpu, target, _source, _page) = render_page(&ctx, html);
-    gpu.render(&world);
-    let with_page = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
+    let (world, gpu, target, _source, page) = render_page(&ctx, GREY_PAGE);
+    gpu.render_frames(&world, 2);
+    world
+        .root_scope()
+        .query_one::<&mut BlitzDocument>(page)
+        .map(|mut row| {
+            row.get()
+                .set_markup(r#"<html><head><link rel="stylesheet" href="later.css"></head></html>"#)
+        })
+        .expect("the page entity exists");
 
+    gpu.render_frames(&world, 2);
+
+    let with_page = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
     assert_eq!(
         with_page, without_page,
-        "a page that is waiting for a stylesheet should not be composed at all"
+        "a page that has replaced its markup should leave nothing of the old one"
+    );
+}
+
+/// One tick's input reaches a page once, however many passes draw that page:
+/// every pass builds the page's source, and every build reads the same batch.
+async fn one_tick_reaches_a_shared_page_once() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let outer = gpu.pass();
+    // A pass inside the outer one, so both of them reach the page's source.
+    let nested = world
+        .scope_mut(outer)
+        .expect("the pass entity is its own scope")
+        .spawn(Pass::new(FramePassOrder(1)));
+
+    // Both passes draw, so both reach the source under the nested one.
+    gpu.bind_offscreen_target_with(&world, 1, false);
+    bind_target(&gpu, &world, nested);
+
+    let (input, events) = spawn_input(&mut world);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
+        </div>
+    </body></html>"#;
+    let source = world
+        .scope_mut(nested)
+        .expect("the nested pass entity is its own scope")
+        .spawn(bundle![Source::new(BlitzSource::new())]);
+    world
+        .scope_mut(source)
+        .expect("the source entity is its own scope")
+        .spawn(bundle![
+            BlitzDocument::new(html),
+            OnBlitzEvent::new(move |_scope, _entity, event| {
+                log.lock().expect("the log is not poisoned").push(Seen {
+                    name: event.name().to_owned(),
+                    value: String::new(),
+                    checked: None,
+                });
+            }),
+        ]);
+
+    gpu.render_frames(&world, 2);
+    feed(&input, &events, click([20.0, 20.0]));
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let clicks = seen.iter().filter(|event| event.name == "click").count();
+    assert_eq!(
+        clicks, 1,
+        "two passes drawing one page should dispatch the click once, got {seen:?}"
+    );
+}
+
+/// A window that loses focus takes the page's focus with it, so a field the user
+/// left stops taking text.
+async fn losing_focus_leaves_the_text_field() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <input type="text" id="box"
+               style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    feed(&input, &events, click([40.0, 20.0]));
+    gpu.render(&world);
+    feed(&input, &events, [InputEvent::FocusChanged(false)]);
+    gpu.render(&world);
+    feed(
+        &input,
+        &events,
+        [InputEvent::Text(TextEvent("no".to_owned()))],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    assert!(
+        !seen.iter().any(|event| event.value == "no"),
+        "a field in a window that lost focus should not take text, got {seen:?}"
+    );
+}
+
+/// A key press that a shortcut does not consume reports its release too, so a
+/// page that watches one sees the key go up.
+async fn a_key_release_reaches_the_page() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
+        </div>
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    feed(
+        &input,
+        &events,
+        [
+            InputEvent::Key(KeyEvent {
+                key: Key::Enter,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }),
+            InputEvent::Key(KeyEvent {
+                key: Key::Enter,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    assert!(
+        seen.iter().any(|event| event.name == "keyup"),
+        "the key's release should reach the page, got {seen:?}"
     );
 }
 
@@ -430,5 +646,11 @@ gpu_tests! {
     a_click_toggles_a_checkbox,
     typing_reaches_a_text_field,
     input_is_dispatched_once,
-    a_page_waiting_for_a_stylesheet_draws_nothing,
+    a_page_loads_a_stylesheet_nobody_serves,
+    a_page_loads_a_stylesheet_it_serves,
+    a_new_base_still_serves_the_registered_bytes,
+    a_replaced_page_is_not_drawn_from_the_old_pixels,
+    one_tick_reaches_a_shared_page_once,
+    losing_focus_leaves_the_text_field,
+    a_key_release_reaches_the_page,
 }

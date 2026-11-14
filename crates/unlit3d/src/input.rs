@@ -71,6 +71,7 @@
 //! State a callback needs across events belongs in a sibling component. Two
 //! different behaviour types on the same entity are fine: they are different
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::relay::{Stream, StreamReader};
@@ -116,6 +117,8 @@ pub struct InputEvents {
     events: StreamReader<InputEvent>,
     /// The state the events so far left behind.
     state: Arc<RwLock<InputState>>,
+    /// How many ticks this world has taken.
+    ticks: Arc<AtomicU64>,
 }
 
 impl InputEvents {
@@ -144,6 +147,16 @@ impl InputEvents {
         self.events.copy_into(out);
     }
 
+    /// Which tick the batch belongs to.
+    ///
+    /// Every refresh is one tick, so a reader that would hand the same batch to
+    /// something twice — a source built once per pass, say — remembers the tick
+    /// it was last given to it, rather than the batch, which stays readable
+    /// until the next one replaces it.
+    pub fn tick(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
+    }
+
     /// Start this world's input tick: take everything queued as the batch, and
     /// fold it into the state.
     ///
@@ -152,6 +165,7 @@ impl InputEvents {
     /// input without dispatching anything calls it itself, once per tick,
     /// before anything reads the batch.
     pub fn refresh(&self) {
+        self.ticks.fetch_add(1, Ordering::Relaxed);
         self.events.pump();
         // The batch is out of its lock before the closure runs, so folding
         // the events into the state is the only lock held here.
@@ -208,6 +222,7 @@ impl InputWriter {
         InputEvents {
             events: self.0.subscribe(),
             state: Arc::new(RwLock::new(InputState::default())),
+            ticks: Arc::default(),
         }
     }
 }

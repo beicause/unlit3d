@@ -29,6 +29,15 @@
 //! synthesises the mouse and touch compatibility events a browser would, so a
 //! click is reported as `pointerup`, `mouseup` and `click`. A callback that
 //! reacts to one of them filters on [`BlitzEvent::name`].
+//!
+//! # Keys
+//!
+//! The crate reports a key by its physical position, and a document names a key
+//! by the character it types. The two agree for an unshifted US layout and part
+//! way for a shifted one -- `Shift+1` is `!`, and a letter is upper-cased --
+//! but a key that produces something else through the layout reaches the
+//! document only through its text, which is what a text field inserts from
+//! anyway.
 
 use blitz_dom::{BaseDocument, Document, EventDriver, EventHandler, NodeId};
 use blitz_traits::SmolStr;
@@ -123,6 +132,9 @@ impl BlitzEvent<'_> {
     }
 
     /// The target and the ancestors the event bubbles through, target first.
+    ///
+    /// Every callback of the page is run once for the whole chain, rather than
+    /// once per node: an event is delivered to all of them together.
     pub fn chain(&self) -> &[NodeId] {
         self.chain
     }
@@ -142,13 +154,11 @@ impl BlitzEvent<'_> {
     }
 
     /// Stop Blitz's own reaction to the event.
+    ///
+    /// A cancelled click does not check the box it landed on, and a cancelled
+    /// key press does not insert its character or scroll a text field.
     pub fn prevent_default(&mut self) {
         self.state.prevent_default();
-    }
-
-    /// Stop the event bubbling to the target's ancestors.
-    pub fn stop_propagation(&mut self) {
-        self.state.stop_propagation();
     }
 
     /// Ask for another frame.
@@ -299,7 +309,12 @@ impl Translator {
             } => {
                 self.position = *position;
                 self.modifiers = *modifiers;
-                let button = button_of(*button);
+                // A button neither side has a name for is not pressed on the
+                // page: the mouse of a platform with more buttons than a
+                // document has is not the primary button by default.
+                let Some(button) = button_of(*button) else {
+                    return;
+                };
                 self.buttons.set(MouseEventButtons::from(button), *pressed);
                 let coords = self.coords(scroll);
                 let pointer = self.pointer_event(BlitzPointerId::Mouse, button, coords);
@@ -412,8 +427,12 @@ impl Translator {
     /// shortcut a document reacts to, and the platform produces no text for it.
     fn key(&mut self, event: &KeyEvent) {
         self.modifiers = event.modifiers;
-        let key = key_of(event.key);
-        if !event.modifiers.command && matches!(key, DomKey::Character(_)) {
+        let key = key_of(event.key, event.modifiers.shift);
+        // A character that is typed without a command modifier arrives again as
+        // the text it produced, and the text is what a field inserts. The press
+        // alone is dropped; the release still goes out, so a page that watches
+        // for one sees a key it saw pressed.
+        if event.pressed && !event.modifiers.command && matches!(key, DomKey::Character(_)) {
             return;
         }
         self.pending
@@ -522,14 +541,18 @@ fn buttons_of(buttons: crate::input::MouseButtons) -> MouseEventButtons {
 }
 
 /// The button a document reports a crate button as.
-fn button_of(button: MouseButton) -> MouseEventButton {
-    match button {
-        MouseButton::Primary | MouseButton::Other(_) => MouseEventButton::Main,
+///
+/// `None` for a button the document has no name for, which it therefore never
+/// sees pressed.
+fn button_of(button: MouseButton) -> Option<MouseEventButton> {
+    Some(match button {
+        MouseButton::Primary => MouseEventButton::Main,
         MouseButton::Secondary => MouseEventButton::Secondary,
         MouseButton::Middle => MouseEventButton::Auxiliary,
         MouseButton::Back => MouseEventButton::Fourth,
         MouseButton::Forward => MouseEventButton::Fifth,
-    }
+        MouseButton::Other(_) => return None,
+    })
 }
 
 /// The modifier keys a document reports as held.
@@ -543,8 +566,8 @@ fn modifiers_of(modifiers: crate::input::Modifiers) -> Modifiers {
 }
 
 /// The key a document names the crate's key by.
-fn key_of(key: Key) -> DomKey {
-    match character_of(key) {
+fn key_of(key: Key, shift: bool) -> DomKey {
+    match character_of(key, shift) {
         Some(character) => DomKey::Character(character.to_owned()),
         None => DomKey::Named(named_key_of(key)),
     }
@@ -552,48 +575,87 @@ fn key_of(key: Key) -> DomKey {
 
 /// The character the crate's key types, if it types one.
 ///
-/// The character is what the key is laid out as, which is what a document
+/// The character is what the key types on a US layout, which is what a document
 /// matches a shortcut against; a text field inserts from the text event
-/// instead, so the two never disagree about the text a press produced.
-fn character_of(key: Key) -> Option<&'static str> {
-    Some(match key {
-        Key::Space => " ",
-        Key::A => "a",
-        Key::B => "b",
-        Key::C => "c",
-        Key::D => "d",
-        Key::E => "e",
-        Key::F => "f",
-        Key::G => "g",
-        Key::H => "h",
-        Key::I => "i",
-        Key::J => "j",
-        Key::K => "k",
-        Key::L => "l",
-        Key::M => "m",
-        Key::N => "n",
-        Key::O => "o",
-        Key::P => "p",
-        Key::Q => "q",
-        Key::R => "r",
-        Key::S => "s",
-        Key::T => "t",
-        Key::U => "u",
-        Key::V => "v",
-        Key::W => "w",
-        Key::X => "x",
-        Key::Y => "y",
-        Key::Z => "z",
-        Key::Num0 => "0",
-        Key::Num1 => "1",
-        Key::Num2 => "2",
-        Key::Num3 => "3",
-        Key::Num4 => "4",
-        Key::Num5 => "5",
-        Key::Num6 => "6",
-        Key::Num7 => "7",
-        Key::Num8 => "8",
-        Key::Num9 => "9",
+/// instead, so the two never disagree about the text a press produced. A layout
+/// that types something else for the key still reaches the document through
+/// that text: the key's physical position says nothing about what it means on
+/// the keyboard in front of the user.
+fn character_of(key: Key, shift: bool) -> Option<&'static str> {
+    Some(match (key, shift) {
+        (Key::Space, _) => " ",
+        (Key::A, false) => "a",
+        (Key::A, true) => "A",
+        (Key::B, false) => "b",
+        (Key::B, true) => "B",
+        (Key::C, false) => "c",
+        (Key::C, true) => "C",
+        (Key::D, false) => "d",
+        (Key::D, true) => "D",
+        (Key::E, false) => "e",
+        (Key::E, true) => "E",
+        (Key::F, false) => "f",
+        (Key::F, true) => "F",
+        (Key::G, false) => "g",
+        (Key::G, true) => "G",
+        (Key::H, false) => "h",
+        (Key::H, true) => "H",
+        (Key::I, false) => "i",
+        (Key::I, true) => "I",
+        (Key::J, false) => "j",
+        (Key::J, true) => "J",
+        (Key::K, false) => "k",
+        (Key::K, true) => "K",
+        (Key::L, false) => "l",
+        (Key::L, true) => "L",
+        (Key::M, false) => "m",
+        (Key::M, true) => "M",
+        (Key::N, false) => "n",
+        (Key::N, true) => "N",
+        (Key::O, false) => "o",
+        (Key::O, true) => "O",
+        (Key::P, false) => "p",
+        (Key::P, true) => "P",
+        (Key::Q, false) => "q",
+        (Key::Q, true) => "Q",
+        (Key::R, false) => "r",
+        (Key::R, true) => "R",
+        (Key::S, false) => "s",
+        (Key::S, true) => "S",
+        (Key::T, false) => "t",
+        (Key::T, true) => "T",
+        (Key::U, false) => "u",
+        (Key::U, true) => "U",
+        (Key::V, false) => "v",
+        (Key::V, true) => "V",
+        (Key::W, false) => "w",
+        (Key::W, true) => "W",
+        (Key::X, false) => "x",
+        (Key::X, true) => "X",
+        (Key::Y, false) => "y",
+        (Key::Y, true) => "Y",
+        (Key::Z, false) => "z",
+        (Key::Z, true) => "Z",
+        (Key::Num0, false) => "0",
+        (Key::Num0, true) => ")",
+        (Key::Num1, false) => "1",
+        (Key::Num1, true) => "!",
+        (Key::Num2, false) => "2",
+        (Key::Num2, true) => "@",
+        (Key::Num3, false) => "3",
+        (Key::Num3, true) => "#",
+        (Key::Num4, false) => "4",
+        (Key::Num4, true) => "$",
+        (Key::Num5, false) => "5",
+        (Key::Num5, true) => "%",
+        (Key::Num6, false) => "6",
+        (Key::Num6, true) => "^",
+        (Key::Num7, false) => "7",
+        (Key::Num7, true) => "&",
+        (Key::Num8, false) => "8",
+        (Key::Num8, true) => "*",
+        (Key::Num9, false) => "9",
+        (Key::Num9, true) => "(",
         _ => return None,
     })
 }

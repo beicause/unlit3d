@@ -904,8 +904,13 @@ would bubble through and the document it targets.
 Bytes come from the page itself: nothing reaches the network. A `data:` URL is
 decoded on the spot, and anything else is served by
 [`BlitzDocument::insert_resource`](blitz::BlitzDocument::insert_resource) from
-the bytes the entity registered for that path. A path nothing serves leaves the
-element empty rather than holding the frame.
+the bytes the entity registered for that path. A path resolves against the page
+base when the page loads it, so
+[`BlitzDocument::set_base_url`](blitz::BlitzDocument::set_base_url) moves the
+same registration to the addresses the new base gives it. A path nothing serves
+is answered with empty bytes, which a stylesheet reads as an empty sheet and an
+image as a failed load that leaves a hole: every request is answered, because a
+page that blocks on a stylesheet nobody replies to would never paint at all.
 
 Its only font is egui's default font, registered as the document's single font
 with the system fonts left off, so the same markup paints the same glyphs on
@@ -917,8 +922,16 @@ otherwise only while the document animates. A static page is therefore
 rasterized once and the frames after it reuse its texture, but a page that
 handles input repaints as it is clicked. Time comes from the frame clock, so a
 recorded sequence of frames paints the same animations at the same times
-whatever the wall clock reads. A source several passes reach keeps one uploaded
-page per page size, since the size is all that tells two uploads apart.
+whatever the wall clock reads. A source several passes reach takes a tick of
+input once, so a click is dispatched once, and keeps one uploaded page per page
+size, since the size is all that tells two uploads apart. A page belongs under
+the source that draws it: one the source cannot see is not drawn at all, and one
+two sources both see would take every event through both.
+
+The page asks the host for one thing only: another frame. Cursor shape, IME and
+the clipboard are not plumbed through, so a page never asks for them, and Rust
+decides what a click or a keystroke means through
+[`OnBlitzEvent`](blitz::OnBlitzEvent) instead.
 
 ## egui
 

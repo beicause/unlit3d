@@ -1,17 +1,22 @@
 //! The page a [`BlitzSource`](crate::blitz::BlitzSource) draws, and the bytes it loads.
 //!
 //! A page is a component rather than a field of the source. The source is only
-//! its driver: it draws the first document its scope carries, so the markup
-//! lives in the world like any other behaviour, and the code that owns the
-//! entity can replace it or serve what it loads.
+//! its driver: it draws a document its own subtree carries, so the markup lives
+//! in the world like any other behaviour, and the code that owns the entity can
+//! replace it or serve what it loads.
 //!
 //! # Bytes
 //!
 //! Nothing reaches the network. A page loads what its markup carries inline, a
 //! `data:` URL decoded on the spot, and whatever
-//! [`BlitzDocument::insert_resource`] serves for the path it asks for. A
-//! request for anything else fails to load, which the page lives with: a
-//! missing image leaves a hole rather than holding the frame.
+//! [`BlitzDocument::insert_resource`] serves for the path it asks for.
+//!
+//! Every request is answered, including one nothing serves: a stylesheet the
+//! page blocks on would otherwise stay pending, and a page waiting on it never
+//! paints. An unserved path therefore arrives as empty bytes, which a stylesheet
+//! reads as an empty sheet and an image as a load failure that leaves a hole.
+//! The cost of the choice is that the page caches the answer, so bytes
+//! registered afterwards are not loaded until the markup is set again.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -33,10 +38,13 @@ const DEFAULT_BASE: &str = "https://page.invalid/";
 
 /// A page: its markup, the document laid out from it, and the bytes it loads.
 ///
-/// Spawn a page under the [`BlitzSource`](crate::blitz::BlitzSource) that draws
-/// it. The source lays it out at the size of the pass it is drawn in, and lays
-/// it out again only when the markup, the base, the size or the scale changes,
-/// or while the page animates.
+/// Spawn a page inside the subtree of the [`BlitzSource`](crate::blitz::BlitzSource)
+/// that draws it — the source draws the first page of its own subtree, so a page
+/// it cannot see is never drawn, and one page is drawn by one source.
+///
+/// The source lays it out at the size of the pass it is drawn in, and lays it
+/// out again only when the markup, the base, the size or the scale changes, or
+/// while the page animates.
 ///
 /// # Inspecting and changing the page
 ///
@@ -48,16 +56,22 @@ const DEFAULT_BASE: &str = "https://page.invalid/";
 pub struct BlitzDocument {
     /// The markup the document is laid out from.
     markup: String,
-    /// The base a relative reference resolves against.
-    base_url: Url,
     /// The viewport the document was last laid out at.
     viewport: Option<Viewport>,
     /// The laid-out document, once a source has asked for it.
     document: Option<BaseDocument>,
-    /// The bytes served for the paths the page loads.
+    /// The bytes served for the paths the page loads, and the base they resolve
+    /// against.
     resources: Arc<BlitzResources>,
     /// What the page asks of the frame it is drawn in.
-    shell: Arc<BlitzShell>,
+    pub(crate) shell: Arc<BlitzShell>,
+    /// Which page this is, counted up whenever the document is replaced.
+    ///
+    /// A target that was drawn from an older page is not composed, so replacing
+    /// the markup never shows the page before it.
+    pub(crate) generation: u64,
+    /// The tick whose input this page has already taken.
+    fed: Option<u64>,
 }
 
 impl BlitzDocument {
@@ -69,13 +83,12 @@ impl BlitzDocument {
     pub fn new(markup: impl Into<String>) -> Self {
         Self {
             markup: markup.into(),
-            base_url: DEFAULT_BASE
-                .parse()
-                .expect("the default page base URL is valid"),
             viewport: None,
             document: None,
             resources: Arc::default(),
             shell: Arc::default(),
+            generation: 0,
+            fed: None,
         }
     }
 
@@ -86,14 +99,16 @@ impl BlitzDocument {
     pub fn set_markup(&mut self, markup: impl Into<String>) {
         self.markup = markup.into();
         self.document = None;
+        self.generation += 1;
         self.shell.request_redraw();
     }
 
     /// Set the base a relative reference in the markup resolves against.
     ///
-    /// A path served through [`Self::insert_resource`] resolves against the
-    /// same base, so a page based at `https://example.test/page/` that asks for
-    /// `logo.png` is served the bytes registered under that name.
+    /// A path served through [`Self::insert_resource`] is resolved against the
+    /// base in force when the page loads it, not when it was registered, so
+    /// changing the base serves the same bytes at the addresses the new base
+    /// gives them.
     ///
     /// A value that is not an absolute URL is logged and ignored, and the base
     /// stays what it was: a page whose references cannot resolve would panic
@@ -101,8 +116,9 @@ impl BlitzDocument {
     pub fn set_base_url(&mut self, base_url: impl AsRef<str>) {
         match Url::parse(base_url.as_ref()) {
             Ok(url) => {
-                self.base_url = url;
+                *sync::write(&self.resources.base) = url;
                 self.document = None;
+                self.generation += 1;
                 self.shell.request_redraw();
             }
             Err(error) => log::warn!("a page base URL that is not absolute: {error}"),
@@ -120,29 +136,31 @@ impl BlitzDocument {
     /// what drops a failed load from the page's cache.
     pub fn insert_resource(&self, path: impl AsRef<str>, bytes: impl AsRef<[u8]>) {
         let path = path.as_ref();
-        let Ok(url) = self.base_url.join(path) else {
-            log::warn!(
-                "a page resource path that does not resolve against {}: {path}",
-                self.base_url
-            );
-            return;
-        };
         let bytes = Bytes::copy_from_slice(bytes.as_ref());
-        sync::write(&self.resources.files).insert(url.to_string(), bytes);
+        sync::write(&self.resources.files).insert(path.to_owned(), bytes);
     }
 
-    /// What the page asks of the frame it is drawn in.
-    pub(crate) fn shell(&self) -> &Arc<BlitzShell> {
-        &self.shell
+    /// Whether this page still has to take input from the tick `tick`.
+    ///
+    /// One page is built by every source and pass that see it, and each of them
+    /// reads the same batch. The page takes a tick's events once, so a click is
+    /// dispatched once however many times the frame draws what it changed.
+    pub(crate) fn feeds_input(&mut self, tick: u64) -> bool {
+        if self.fed == Some(tick) {
+            return false;
+        }
+        self.fed = Some(tick);
+        true
     }
 
     /// The laid-out document, at `viewport`, building or re-laying it out when
     /// either the markup or the viewport changed.
     pub(crate) fn document(&mut self, viewport: Viewport) -> &mut BaseDocument {
+        let base = sync::read(&self.resources.base).clone();
         if self.document.is_none() {
             let config = DocumentConfig {
                 viewport: Some(viewport.clone()),
-                base_url: Some(self.base_url.to_string()),
+                base_url: Some(base.to_string()),
                 net_provider: Some(Arc::clone(&self.resources) as Arc<dyn NetProvider>),
                 shell_provider: Some(Arc::clone(&self.shell) as Arc<dyn ShellProvider>),
                 font_ctx: Some(build_single_font_ctx(epaint_default_fonts::HACK_REGULAR)),
@@ -167,35 +185,56 @@ impl BlitzDocument {
     }
 }
 
-/// The bytes a page loads, keyed by the URL it asks for.
+/// The bytes a page loads, and the base its paths resolve against.
 ///
 /// A page asks for whatever a `src` or a stylesheet `href` names, already
-/// resolved against the page's base URL, and this answers from the table or
-/// decodes a `data:` URL. Anything else is dropped, so a page that asks for a
-/// host is no different from one that asks for a path nobody served.
-#[derive(Default)]
+/// resolved against the page's base URL. This keeps the paths as the caller
+/// spelled them and resolves them against the base at load time, which is what
+/// makes a base change move the served bytes with it; a `data:` URL is decoded
+/// here, and anything else is answered with nothing.
 pub(crate) struct BlitzResources {
+    /// The bytes served for a path, keyed by the path as it was registered.
     files: RwLock<HashMap<String, Bytes>>,
+    /// The base a path resolves against.
+    base: RwLock<Url>,
+}
+
+impl Default for BlitzResources {
+    fn default() -> Self {
+        Self {
+            files: RwLock::default(),
+            base: RwLock::new(
+                DEFAULT_BASE
+                    .parse()
+                    .expect("the default page base URL is valid"),
+            ),
+        }
+    }
 }
 
 impl NetProvider for BlitzResources {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url = request.url.to_string();
-        let served = sync::read(&self.files).get(&url).cloned();
+        let base = sync::read(&self.base).clone();
+        let served = sync::read(&self.files)
+            .iter()
+            .find(|(path, _)| base.join(path).is_ok_and(|served| served == request.url))
+            .map(|(_, bytes)| bytes.clone());
         if let Some(bytes) = served {
             handler.bytes(url, bytes);
             return;
         }
-        if request.url.scheme() != "data" {
+        if request.url.scheme() == "data"
+            && let Ok(data) = DataUrl::process(&url)
+            && let Ok((bytes, _fragment)) = data.decode_to_vec()
+        {
+            handler.bytes(url, Bytes::from(bytes));
             return;
         }
-        let Ok(data) = DataUrl::process(&url) else {
-            return;
-        };
-        let Ok((bytes, _fragment)) = data.decode_to_vec() else {
-            return;
-        };
-        handler.bytes(url, Bytes::from(bytes));
+        // Nothing served it, but the request still has to be answered: a
+        // stylesheet the page blocks on stays pending until it is, and the page
+        // never paints while one is.
+        handler.bytes(url, Bytes::new());
     }
 }
 
@@ -204,8 +243,8 @@ impl NetProvider for BlitzResources {
 /// A page has one thing to ask of a frame source: another frame. The document
 /// reports that it scrolled, that a resource landed, or that a callback changed
 /// it, and the source paints again the next time it is built. The rest of a
-/// shell -- the cursor, the window title, the clipboard -- has no counterpart
-/// here, so the defaults answer them.
+/// shell -- the cursor, the window title, the clipboard, the input method --
+/// has no counterpart here, so the defaults answer them.
 #[derive(Default)]
 pub(crate) struct BlitzShell {
     redraw: AtomicBool,
