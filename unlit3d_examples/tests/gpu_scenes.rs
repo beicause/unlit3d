@@ -469,6 +469,22 @@ async fn mesh_and_egui_matches_its_snapshot() {
     .await;
 }
 
+/// The scene whose whole picture is a document Blitz lays out and paints.
+///
+/// Its page is rasterized on the CPU, so the frame is the same on every backend
+/// down to the glyph antialiasing; only the composite into the target is the
+/// GPU's. A regression that stops the page resolving, stops its paint tree
+/// reaching the texture, or loses the premultiplied blend changes whole boxes of
+/// the frame, not a scatter of edges.
+async fn blitz_only_matches_its_snapshot() {
+    compare_scene(
+        &scenes::blitz_only::SCENE,
+        SCENE_TOLERANCE,
+        &snapshots!["blitz_only.webp"],
+    )
+    .await;
+}
+
 async fn egui_only_matches_its_snapshot() {
     compare_scene(
         &scenes::egui_only::SCENE,
@@ -638,6 +654,7 @@ gpu_tests! {
     gltf_matches_its_snapshots,
     spin_cube_matches_its_snapshot,
     mesh_and_egui_matches_its_snapshot,
+    blitz_only_matches_its_snapshot,
     egui_only_matches_its_snapshot,
     transparent_matches_its_snapshot,
     lit_matches_its_snapshot,

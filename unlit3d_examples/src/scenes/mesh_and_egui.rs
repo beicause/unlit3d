@@ -1,8 +1,10 @@
-//! The mesh-and-egui scene: a cube and a rich egui panel in one pass.
+//! The mesh-and-egui scene: a cube, a Blitz page and a rich egui panel in one
+//! pass.
 //!
-//! The mesh source and the egui source have to agree on record order, scissor
-//! state and the frame's load ops. The snapshot `mesh_and_egui.webp` freezes the
-//! second frame.
+//! The three sources share the pass and have to agree on record order, scissor
+//! state and the frame's load ops: the meshes come first, then the page, which
+//! composes over them, then the overlay. The snapshot `mesh_and_egui.webp`
+//! freezes the second frame.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, default_options};
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
@@ -42,8 +44,8 @@ impl Bundle for TiltedCube {
 /// The scene: a cube with the same rich interface over it.
 pub static SCENE: SceneDef = SceneDef {
     id: "mesh_and_egui",
-    title: "Mesh and egui",
-    description: "a cube with the rich egui panel over it, one pass",
+    title: "Mesh, Blitz and egui",
+    description: "a cube, a Blitz page and the rich egui panel in one pass",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
     clear: Some(CLEAR_COLOR),
@@ -98,6 +100,17 @@ fn build(
         },
     );
 
+    // The page is a whole document, so it is a source of its own rather than a
+    // panel: it is laid out and rasterized on the CPU and composited into the
+    // same pass, under the overlay. Its markup is transparent except for the
+    // card, which is translucent so the cube and the overlay's band all show
+    // through it: the frame proves the three sources share one pass and stack
+    // in the order their sources declare.
+    world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle![Source::new(BlitzSource::new(PAGE))]);
+
     if options.egui {
         super::spawn_in(
             world,
@@ -122,6 +135,42 @@ fn build(
         snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_egui.webp".to_owned())),
     }
 }
+
+/// The page the scene composites between the cube and the overlay.
+///
+/// It covers the same band the overlay's translucent strip does, so the frame
+/// shows all three sources in one region: the mesh behind, the page's own card
+/// over it, and the overlay's red band over the card. The card's background is
+/// translucent and its text is not, so a frame that dropped the page, drew it
+/// over the overlay instead of under it, or stopped blending it would differ.
+///
+/// The rest of the document is left transparent: the window is the page's
+/// viewport, so an opaque body would hide the cube the scene exists to show.
+const PAGE: &str = r#"<!doctype html>
+<html>
+<head>
+<style>
+  html, body { margin: 0; background: transparent; }
+  .card {
+    position: absolute;
+    left: 8px;
+    top: 136px;
+    width: 240px;
+    height: 40px;
+    box-sizing: border-box;
+    padding: 5px 10px;
+    border: 2px solid rgba(22, 50, 79, 0.8);
+    border-radius: 12px;
+    background: rgba(232, 176, 75, 0.55);
+    color: #16324f;
+    font: 12px monospace;
+  }
+</style>
+</head>
+<body>
+  <div class="card">blitz page</div>
+</body>
+</html>"#;
 
 // The panel the mesh shows through is the overlay-only scene's own rich interface:
 // the two scenes share one panel, and only the world behind it differs.

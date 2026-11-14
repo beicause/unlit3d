@@ -15,6 +15,7 @@
 //! in the `unlit3d_asset_files` submodule, which verify them.
 
 pub mod animated;
+pub mod blitz_only;
 pub mod custom_pipeline;
 pub mod egui_only;
 pub mod gltf;
@@ -148,6 +149,7 @@ pub static SCENES: &[&SceneDef] = &[
     &spin_cube::SCENE,
     &egui_only::SCENE,
     &mesh_and_egui::SCENE,
+    &blitz_only::SCENE,
     &animated::SCENE,
     &skinned::SCENE,
     &morphed::SCENE,
