@@ -54,7 +54,7 @@ pub const EXAMPLES: &[Example] = &[
         dir: "unlit3d",
         title: "unlit3d + winit",
         label: "unlit3d",
-        description: "The single-world example: glTF scenes, a mesh selector and the built-in UI.",
+        description: "The single-world example: glTF scenes, a mesh selector and the built-in egui.",
     },
     Example {
         crate_name: "unlit3dx_examples",

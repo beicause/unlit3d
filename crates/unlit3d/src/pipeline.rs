@@ -279,7 +279,7 @@ impl GlobalResources {
 /// They come first because both [GlobalResources::bind_group] and the frame's
 /// own recipes name the same three, and a group's entries have to be in
 /// binding order. A source with no arrays of its own -- the line source, the
-/// UI -- builds its group from these alone.
+/// egui -- builds its group from these alone.
 pub(crate) fn uniform_entries<'a>(
     graph: &'a ResourceGraph,
     uniforms: &FrameUniforms,

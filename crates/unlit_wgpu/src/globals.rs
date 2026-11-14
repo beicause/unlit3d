@@ -63,7 +63,7 @@ impl Camera {
     /// Build a camera from a world-to-clip matrix alone.
     ///
     /// For a caller whose matrix is synthesised and has no separate view and
-    /// projection — the UI's screen-space mapping is one — the view matrix is
+    /// projection — the overlay's screen-space mapping is one — the view matrix is
     /// left at the identity, so `view_from_world` says nothing and only
     /// `clip_from_world` should be read.
     pub fn from_clip_from_world(clip_from_world: glam::Mat4, camera_position: glam::Vec3) -> Self {

@@ -25,10 +25,10 @@ use cli::{Args, Parsed};
 use scenes::{Advance, SceneControl};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::ViewportRect;
+use unlit3d::egui::{EguiSource, egui};
 use unlit3d::frame::Frame;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
-use unlit3d::ui::{UiSource, egui};
 use unlit3d::winit::builtin::{
     DisplayHandle, ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, WinitProxy,
     request_redraw_while_foreground, window, winit_input_behaviour,

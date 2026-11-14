@@ -46,7 +46,7 @@ clippy 跑两趟，因为每一趟编译的代码集合不同：
    也正是那个假的可选 feature（依赖它的地方其实从没在没有它的情况下编过）编不过的
    组合。这些 crate 逐个点名而不用 `--workspace`：`--no-default-features` 只作用
    于命令点名的包，其余包的 features 来自抵达它的依赖边，feature 统一会把它们全应用
-   上去。应用层的 crate 每个都向 `unlit3d` 要 `ui` 与 `winit`，因此工作区范围的
+   上去。应用层的 crate 每个都向 `unlit3d` 要 `egui` 与 `winit`，因此工作区范围的
    那一趟会正好带着这一趟要排除的后端去编库。
 2. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
 

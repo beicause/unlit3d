@@ -35,7 +35,7 @@ pub(crate) fn present(world: &World, app: Entity) {
                 RenderDevice::from(&gpu),
                 size,
                 scenes::SceneOptions {
-                    ui: def.ui,
+                    egui: def.egui,
                     selector: true,
                     reproducible: false,
                     letterbox: true,

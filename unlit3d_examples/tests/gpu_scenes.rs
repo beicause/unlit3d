@@ -106,14 +106,14 @@ const GLTF_TOLERANCE: Tolerance = Tolerance {
 ///
 /// | frame | SSIMULACRA2 | pixels past a channel difference of 8 |
 /// |-------|-------------|---------------------------------------|
-/// | `mesh_and_ui`, over a real WebGL2 pass | 82.46 | 1.41% |
-/// | `ui_only`, over the same pass | 86.68 | 1.41% |
+/// | `mesh_and_egui`, over a real WebGL2 pass | 82.46 | 1.41% |
+/// | `egui_only`, over the same pass | 86.68 | 1.41% |
 /// | `spin_cube`, over the same pass | 87.19 | 0.63% |
 ///
 /// 2% leaves that scatter room while still failing a frame a change moved: a
 /// regression that shifts the geometry behind a panel or the panel itself moves
 /// whole regions, not one glyph edge.
-const UI_TOLERANCE: Tolerance = Tolerance {
+const EGUI_TOLERANCE: Tolerance = Tolerance {
     min_score: Some(75.0),
     max_outliers: Some(0.02),
     channel_delta: 8,
@@ -172,7 +172,7 @@ const OUTLINE_TOLERANCE: Tolerance = Tolerance {
 
 /// The tolerance the letterbox comparison is judged with.
 ///
-/// This is [`UI_TOLERANCE`] with a lower score bound, for a reason the other
+/// This is [`EGUI_TOLERANCE`] with a lower score bound, for a reason the other
 /// tests do not have: the narrow capture the comparison judges against was
 /// rendered at a different aspect than the scene's own snapshots, and it scales
 /// the scene's full content — cube, panel, and every anti-aliased edge between
@@ -225,7 +225,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         ctx.render_device(),
         size,
         SceneOptions {
-            ui: def.ui,
+            egui: def.egui,
             selector: false,
             reproducible: true,
             letterbox: false,
@@ -322,7 +322,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         ctx.render_device(),
         size,
         SceneOptions {
-            ui: def.ui,
+            egui: def.egui,
             selector: false,
             reproducible: true,
             letterbox: true,
@@ -454,26 +454,26 @@ async fn gltf_matches_its_snapshots() {
 async fn spin_cube_matches_its_snapshot() {
     compare_scene(
         &scenes::spin_cube::SCENE,
-        UI_TOLERANCE,
+        EGUI_TOLERANCE,
         &snapshots!["spin_cube.webp"],
     )
     .await;
 }
 
-async fn mesh_and_ui_matches_its_snapshot() {
+async fn mesh_and_egui_matches_its_snapshot() {
     compare_scene(
-        &scenes::mesh_and_ui::SCENE,
-        UI_TOLERANCE,
-        &snapshots!["mesh_and_ui.webp"],
+        &scenes::mesh_and_egui::SCENE,
+        EGUI_TOLERANCE,
+        &snapshots!["mesh_and_egui.webp"],
     )
     .await;
 }
 
-async fn ui_only_matches_its_snapshot() {
+async fn egui_only_matches_its_snapshot() {
     compare_scene(
-        &scenes::ui_only::SCENE,
-        UI_TOLERANCE,
-        &snapshots!["ui_only.webp"],
+        &scenes::egui_only::SCENE,
+        EGUI_TOLERANCE,
+        &snapshots!["egui_only.webp"],
     )
     .await;
 }
@@ -586,7 +586,7 @@ async fn custom_pipeline_animates_between_frames() {
         ctx.render_device(),
         def.size,
         SceneOptions {
-            ui: false,
+            egui: false,
             selector: false,
             reproducible: false,
             letterbox: false,
@@ -637,8 +637,8 @@ gpu_tests! {
     instanced_skinned_morph_matches_its_snapshots,
     gltf_matches_its_snapshots,
     spin_cube_matches_its_snapshot,
-    mesh_and_ui_matches_its_snapshot,
-    ui_only_matches_its_snapshot,
+    mesh_and_egui_matches_its_snapshot,
+    egui_only_matches_its_snapshot,
     transparent_matches_its_snapshot,
     lit_matches_its_snapshot,
     lit_clusters_matches_its_snapshot,

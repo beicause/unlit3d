@@ -1,9 +1,9 @@
-//! The control panel: the scene's UI, drawn over the frame.
+//! The control panel: the scene's egui, drawn over the frame.
 //!
 //! The panel lives in the gameplay world with the rest of the scene's objects,
-//! and the render world draws it. A [`UiPanel`] can only be built where its
+//! and the render world draws it. A [`EguiPanel`] can only be built where its
 //! egui context runs, so the gameplay world lays the panel out on its own tick
-//! and sends the frame to the render world, whose [`UiSource`] holds and draws
+//! and sends the frame to the render world, whose [`EguiSource`] holds and draws
 //! it.
 //!
 //! Everything the panel decides is decided here, beside the objects it acts
@@ -15,8 +15,8 @@
 
 use unlit_ecs::bundle;
 use unlit_ecs::{RemoteEntity, World};
+use unlit3d::egui::{EguiPanel, EguiSource, egui};
 use unlit3d::prelude::*;
-use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
 
 use super::{PanelLayout, PanelSlots, Scene, SceneTracks, Track, clear_balls_in, drop_ball_in};
@@ -176,7 +176,7 @@ pub fn mount_controls(world: &mut World) {
         .spawn(bundle![PanelLayout::default()]);
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
             let mut layouts = world.query::<&mut PanelLayout>();
             let Some(layout) = layouts.iter().next() else {
                 return;
@@ -248,7 +248,7 @@ pub fn mount_controls(world: &mut World) {
 /// it, so a source spawned anywhere else would never reach the frame.
 pub fn control_panel_job(panels: PanelSlots, pass: RemoteEntity) -> Job {
     Box::new(move |world: &mut World| {
-        let mut source = UiSource::new();
+        let mut source = EguiSource::new();
         source.publish_target(panels.target);
         world
             .scope_mut(pass.entity)

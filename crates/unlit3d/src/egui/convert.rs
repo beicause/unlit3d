@@ -1,7 +1,7 @@
 //! Translating the crate's portable input events into egui's.
 //!
-//! [`crate::input`] keeps input free of any windowing library or UI toolkit;
-//! this module is the one place the two meet, so the rest of the UI code never
+//! [`crate::input`] keeps input free of any windowing library or egui toolkit;
+//! this module is the one place the two meet, so the rest of the overlay code never
 //! handles an egui event directly and the crate's events stay usable by game
 //! logic on their own.
 //!
@@ -395,7 +395,7 @@ fn to_touch_phase(phase: TouchPhase) -> EguiTouchPhase {
 
 /// The crate's key as egui's, or `None` for a key egui cannot name.
 ///
-/// Every key the crate names has an egui counterpart, so this is a plain
+/// Every key the crate names has an overlay counterpart, so this is a plain
 /// rename except for [`Key::Other`]: egui's key space is closed and has no
 /// "some other key" variant, so a platform key stays untranslatable.
 fn to_key(key: Key) -> Option<egui::Key> {

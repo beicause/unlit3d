@@ -469,7 +469,7 @@ impl Renderer {
                 // The scissor is pass state too, and unlike the viewport it has
                 // a survivor: the multisample resolve that ends this pass is a
                 // blit on the GL backend, and a blit there is clipped by the
-                // scissor. A clipped draw left last — the UI window, say — would
+                // scissor. A clipped draw left last — the egui window, say — would
                 // resolve only that rectangle and leave the rest of the frame
                 // stale. Cover the whole target so the pass ends unclipped.
                 // See WORKAROUND.md for why the GL backend behaves this way.

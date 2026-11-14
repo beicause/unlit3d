@@ -31,7 +31,7 @@ fn a_scene_switch_drops_the_presentation_path() {
         SceneEntity(Some(old_scene)),
     ]);
 
-    let next = scenes::by_id("ui_only").expect("the example ships a UI-only scene");
+    let next = scenes::by_id("egui_only").expect("the example ships an overlay-only scene");
     switch_scene(&world, app, next);
     world.apply().unwrap();
 
@@ -61,7 +61,7 @@ fn a_scene_switch_drops_the_presentation_path() {
             .get()
             .0
             .id,
-        "ui_only"
+        "egui_only"
     );
 }
 
@@ -112,7 +112,7 @@ fn only_a_scene_with_a_baseline_and_a_window_letterboxes() {
     );
 
     // A scene with no aspect of its own draws into the whole target, which
-    // is what a UI-only scene wants at any size.
+    // is what an overlay-only scene wants at any size.
     assert_eq!(letterbox(None, (1600, 600), true), (None, (1600, 600)));
 
     // A target of the baseline's own shape needs no bars.

@@ -304,7 +304,7 @@ jobs:
       # Two passes, as on the host: every feature and no features at all. The
       # second names the four libraries one by one, because
       # `--no-default-features` reaches only the packages named, and the
-      # application crates ask `unlit3d` for `ui` and `winit` over their
+      # application crates ask `unlit3d` for `egui` and `winit` over their
       # dependency edges.
       - name: Clippy (Android target, all features)
         run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings

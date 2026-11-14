@@ -266,8 +266,8 @@ pub static SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: 1,
     depth: true,
-    ui: false,
-    reproducible_ui: false,
+    egui: false,
+    reproducible_egui: false,
     build,
 };
 
@@ -289,8 +289,8 @@ pub static MSAA_SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: 4,
     depth: true,
-    ui: false,
-    reproducible_ui: false,
+    egui: false,
+    reproducible_egui: false,
     build: build_msaa,
 };
 

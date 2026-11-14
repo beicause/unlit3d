@@ -1,7 +1,7 @@
-//! The mesh-and-UI scene: a cube and a rich egui panel in one pass.
+//! The mesh-and-egui scene: a cube and a rich egui panel in one pass.
 //!
-//! The mesh source and the UI source have to agree on record order, scissor
-//! state and the frame's load ops. The snapshot `mesh_and_ui.webp` freezes the
+//! The mesh source and the egui source have to agree on record order, scissor
+//! state and the frame's load ops. The snapshot `mesh_and_egui.webp` freezes the
 //! second frame.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, default_options};
@@ -41,8 +41,8 @@ impl Bundle for TiltedCube {
 
 /// The scene: a cube with the same rich interface over it.
 pub static SCENE: SceneDef = SceneDef {
-    id: "mesh_and_ui",
-    title: "Mesh and UI",
+    id: "mesh_and_egui",
+    title: "Mesh and egui",
     description: "a cube with the rich egui panel over it, one pass",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
@@ -51,12 +51,12 @@ pub static SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: 1,
     depth: true,
-    ui: true,
-    reproducible_ui: false,
+    egui: true,
+    reproducible_egui: false,
     build,
 };
 
-/// Build the mesh-and-UI scene's world content.
+/// Build the mesh-and-egui scene's world content.
 fn build(
     world: &mut World,
     context: RenderContext,
@@ -98,11 +98,11 @@ fn build(
         },
     );
 
-    if options.ui {
+    if options.egui {
         super::spawn_in(
             world,
-            ui.expect("the UI source was mounted"),
-            bundle![super::ui_only::rich_panel()],
+            ui.expect("the egui source was mounted"),
+            bundle![super::egui_only::rich_panel()],
         );
     }
 
@@ -119,9 +119,9 @@ fn build(
                 frame_size,
             );
         }),
-        snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_ui.webp".to_owned())),
+        snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_egui.webp".to_owned())),
     }
 }
 
-// The panel the mesh shows through is the UI-only scene's own rich interface:
+// The panel the mesh shows through is the overlay-only scene's own rich interface:
 // the two scenes share one panel, and only the world behind it differs.

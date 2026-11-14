@@ -71,7 +71,7 @@ dynamic vector subscript left in the shader tree; keep it that way.
 the end of `record_pass`, after every source has recorded.
 
 **Symptom:** with MSAA on the GL backend, a scene whose last draw was clipped —
-a UI window, say — resolved only that rectangle and left the rest of the frame
+an egui window, say — resolved only that rectangle and left the rest of the frame
 holding the previous frame's pixels.
 
 **Cause:** the scissor rectangle is pass state, and unlike the viewport wgpu
@@ -93,7 +93,7 @@ whole target — because the pass no longer depends on any draw having set one.
 
 **Rule:** a pass that draws anything clipped covers the whole target before it
 ends. The regression test is `a_clipped_panel_does_not_clip_the_resolve` in
-[`crates/unlit3d/tests/gpu_ui_source.rs`](crates/unlit3d/tests/gpu_ui_source.rs).
+[`crates/unlit3d/tests/gpu_egui_source.rs`](crates/unlit3d/tests/gpu_egui_source.rs).
 
 ## A derivative inside a per-fragment branch fails to compile on WebGPU
 

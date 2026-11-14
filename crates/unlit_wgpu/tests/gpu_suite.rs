@@ -10,13 +10,13 @@
 
 mod common;
 
+mod gpu_egui;
 mod gpu_lit;
 mod gpu_resources;
-mod gpu_ui;
 
 unlit_wgpu_test_util::gpu_test_main!(
     [
-        gpu_ui::all_tests(),
+        gpu_egui::all_tests(),
         gpu_lit::all_tests(),
         gpu_resources::all_tests()
     ]

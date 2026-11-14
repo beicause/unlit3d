@@ -1,12 +1,12 @@
-//! The UI-only scene: egui drawn into a frame with no mesh source and no
+//! The overlay-only scene: egui drawn into a frame with no mesh source and no
 //! camera.
 //!
-//! The snapshot `ui_only.webp` freezes the second frame — the first only
+//! The snapshot `egui_only.webp` freezes the second frame — the first only
 //! warms egui's font atlas up.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use unlit3d::egui::egui;
 use unlit3d::prelude::*;
-use unlit3d::ui::egui;
 
 /// The colour the scene clears to, distinguishable from every panel.
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -18,8 +18,8 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 
 /// The scene: a rich egui interface and nothing else.
 pub static SCENE: SceneDef = SceneDef {
-    id: "ui_only",
-    title: "UI only",
+    id: "egui_only",
+    title: "egui only",
     description: "a rich egui panel, no mesh source and no camera",
     size: TEST_SIZE,
     baseline: None,
@@ -28,12 +28,12 @@ pub static SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: 1,
     depth: false,
-    ui: true,
-    reproducible_ui: false,
+    egui: true,
+    reproducible_egui: false,
     build,
 };
 
-/// Build the UI-only scene's world content.
+/// Build the overlay-only scene's world content.
 fn build(
     world: &mut World,
     _context: RenderContext,
@@ -42,21 +42,21 @@ fn build(
     _size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    if options.ui {
+    if options.egui {
         super::spawn_in(
             world,
-            ui.expect("the UI source was mounted"),
+            ui.expect("the egui source was mounted"),
             bundle![rich_panel()],
         );
     }
 
     SceneControl {
-        // The interface is static: egui needs no per-frame advance. The UI
+        // The interface is static: egui needs no per-frame advance. The overlay
         // source lays it out at the frame's own size, so a resize needs
         // nothing from the scene.
         advance: Box::new(|_world, _frame, _delta, _size| {}),
         // The second frame is the first with the font metrics laid out.
-        snapshot: Box::new(|frame| (frame == 1).then(|| "ui_only.webp".to_owned())),
+        snapshot: Box::new(|frame| (frame == 1).then(|| "egui_only.webp".to_owned())),
     }
 }
 
@@ -74,11 +74,11 @@ pub(crate) const LIGHT_GREEN: egui::Color32 = egui::Color32::from_rgb(96, 255, 9
 /// Everything sits at a fixed place, and nothing here reads the clock or reacts
 /// to layout feedback, so two frames of the same world come out identical —
 /// which is what lets it stand as a snapshot. The blend band is translucent so
-/// that it shows the UI blending over whatever was drawn before it rather than
+/// that it shows the overlay blending over whatever was drawn before it rather than
 /// replacing it.
 ///
-/// Shared with the mesh-and-UI scene, which draws the same panel over a cube.
-pub(crate) fn rich_panel() -> UiPanel {
+/// Shared with the mesh-and-egui scene, which draws the same panel over a cube.
+pub(crate) fn rich_panel() -> EguiPanel {
     // The texture is registered inside the closure because it needs a context,
     // and cached so the passes egui runs in one frame share one handle. The
     // switch and the slider keep their state between frames for the same
@@ -87,7 +87,7 @@ pub(crate) fn rich_panel() -> UiPanel {
     let mut spin = true;
     let mut blend = 0.5f32;
 
-    UiPanel::new(move |_world, _entity, ui| {
+    EguiPanel::new(move |_world, _entity, ui| {
         let image = image.get_or_insert_with(|| {
             ui.ctx().load_texture(
                 "unlit3d::test-image",
@@ -96,7 +96,7 @@ pub(crate) fn rich_panel() -> UiPanel {
             )
         });
 
-        // The widgets go into a child ui pinned to a fixed rectangle, so their
+        // The widgets go into a child interface pinned to a fixed rectangle, so their
         // layout does not depend on how much room the other panels took.
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -104,7 +104,7 @@ pub(crate) fn rich_panel() -> UiPanel {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
             |ui| {
                 ui.heading("unlit3d");
-                ui.label("frame source UI");
+                ui.label("frame source egui");
                 ui.separator();
                 ui.checkbox(&mut spin, "spin");
                 ui.add(egui::Slider::new(&mut blend, 0.0..=1.0));

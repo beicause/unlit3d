@@ -46,7 +46,7 @@ use zerocopy::{Immutable, IntoBytes};
 pub enum CameraKey {
     /// The camera the entity carries.
     Entity(Entity),
-    /// A mapping the source synthesised, which no entity carries: a UI
+    /// A mapping the source synthesised, which no entity carries: an overlay
     /// projects its own points into clip space instead of through a camera
     /// component.
     ///

@@ -26,7 +26,7 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws |
+| `egui` | no | the `egui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws |
 
 The WESL package, the [`compose`] facilities and the built-in `lit` and `line`
 entry shaders are always available: they are general facilities a caller's own
@@ -101,7 +101,7 @@ mechanisms behind them are in [Design](#design).
   pipeline, and the shader cache its variants compose through.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front, and the shader-module helper.
-- `ui` — the egui backend, under the `egui` feature.
+- `egui` — the egui backend, under the `egui` feature.
 
 ## Example
 
@@ -687,7 +687,7 @@ WGSL never sees. So `create` takes a
 [`ShaderRecipe`](pipeline::ShaderRecipe) — the package module, its
 conditional-compilation flags and the caller's replacement source — whose
 composition runs only on a miss. The built-in lit family then builds one module
-for however many variants share its source, and the UI draws every target with
+for however many variants share its source, and the overlay draws every target with
 the module the first target composed. A cache belongs to a device and to
 whatever shares shaders across it: [`Variants`](specialize::Variants) keeps one
 for its family, and a blueprint needs none of its own. A family whose module is

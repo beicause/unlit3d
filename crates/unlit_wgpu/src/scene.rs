@@ -278,7 +278,7 @@ pub enum DrawOrder {
     /// which places it relative to the finite depths by the sign bit its
     /// payload carries; the order is total, so it cannot poison the sort.
     Sorted(f32),
-    /// Draw in sequence, behind the sorted pool: UI and overlays that sit
+    /// Draw in sequence, behind the sorted pool: egui and overlays that sit
     /// above the sorted draws whatever their depth. Clipped draws belong
     /// here too, where nothing unclipped follows them — see
     /// [`DrawEntry::scissor`].
@@ -586,7 +586,7 @@ fn record_composited_into<'a, P: RenderPassInterface<'a>>(
         record_draw(pass, state, sorted.draw);
     }
 
-    // The trailing draws last, in scene order: UI and overlays sit above the
+    // The trailing draws last, in scene order: egui and overlays sit above the
     // sorted pool whatever their depth, and a clipped draw recorded here is
     // followed by nothing its rectangle could leak into.
     for scene in scenes {

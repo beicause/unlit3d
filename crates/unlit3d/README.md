@@ -16,7 +16,7 @@ directly, and you are expected to know WebGPU to use it well.
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
+| `egui` | yes | the `egui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into a `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
@@ -129,8 +129,8 @@ world root                              the root scope sees every entity
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
 │   ├── Source(LineSource)                    strokes; blended ones composite with the meshes by depth
-│   └── Source(UiSource)
-│       └── UiPanel
+│   └── Source(EguiSource)
+│       └── EguiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
 │   └── Source(BlitSource)                    samples the pass above's offscreen target
 └── Renderer                                  draws nothing; it walks the passes
@@ -201,7 +201,7 @@ without the tree changing.
   is the built-in shader's use of it — it derives the streams its channels
   imply and packs them with the writers in
   [`unlit_wgpu::mesh`](unlit_wgpu::mesh). A mesh that owns whole buffers of its
-  own, the way the UI path does, allocates it with
+  own, the way the overlay path does, allocates it with
   [`MeshSource::allocate_mesh`](mesh_source::MeshSource::allocate_mesh)
   instead.
 - The GPU state — the [`wgpu::Device`], the [`wgpu::Queue`], the
@@ -240,7 +240,7 @@ without the tree changing.
   collects what that leaves. There is no release call to remember.
 
 **A source carries its own state; the frame carries the scenes.** egui's
-`Context`, font atlas and the UI's own UBO belong to the UI source; the 3D
+`Context`, font atlas and the overlay's own UBO belong to the egui source; the 3D
 pipelines, mesh pools, metadata and culling caches belong to the mesh source. A
 `Scene`, by contrast, belongs to a *(pass, source)* pair and is held by the
 renderer, because it is the frame's temporary product rather than the source's
@@ -248,7 +248,7 @@ state: a source several passes see is built once per pass, into that pass's own
 scene, so each pass records exactly the draws its own target asked for. The
 slots outlive the frame so a steady scene reuses their allocations, and a pair
 the world no longer reaches gives its buffers back at the end of the frame. A
-source that keeps GPU state per target — the UI source's pipeline and material
+source that keeps GPU state per target — the egui source's pipeline and material
 table, the blit source's bind group — keys it on
 [`SurfaceKey`](unlit_wgpu::specialize::SurfaceKey), so alternating passes reuse
 their own entry instead of rebuilding it every frame. The "main 3D scene" is
@@ -293,7 +293,7 @@ is not guaranteed stable and is disturbed when components are removed.
 Within a scene, the ordering a source produces (its visible entries, its
 instance runs) is unchanged. The ordering among sources is not a hard
 constraint forced by pass-level state — a scene carries the pass state it
-needs and resets it while recording — but semantics like "UI composites over
+needs and resets it while recording — but semantics like "egui composites over
 3D" no longer rest on it alone:
 [`Scene::record_composited`](unlit_wgpu::scene::Scene::record_composited)
 composites the sources' scenes into one draw list per pass — sequenced draws
@@ -865,21 +865,21 @@ texels. Averaging a stored encoding instead would shift the level's
 brightness, which is the error the chain exists to avoid. How much of the
 chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
 
-## UI
+## egui
 
-`ui::UiPanel` is itself a behaviour component holding a closure, so
+`egui::EguiPanel` is itself a behaviour component holding a closure, so
 an interface is an entity — a frame can hold as many panels as entities, and the
-`ui::UiSource` driver runs whatever panels the world carries, in
+`egui::EguiSource` driver runs whatever panels the world carries, in
 query order.
 
 A panel can only be built where its egui context runs, because the callback is
-handed a `&mut egui::Ui` that belongs to the pass building it. A UI whose
+handed a `&mut egui::Ui` that belongs to the pass building it. An overlay whose
 panels live in one world and whose drawing belongs to another therefore crosses
-that boundary as data: `ui::lay_out` runs a world's panels against a context
-the caller owns and returns an `ui::ExternalFrame` — tessellated primitives,
+that boundary as data: `egui::lay_out` runs a world's panels against a context
+the caller owns and returns an `egui::ExternalFrame` — tessellated primitives,
 texture updates and the platform output, all plain owned values. The frame
 then crosses as whatever the two worlds agree on: it lands in the
-`ui::ExternalFrame` slots a `ui::UiSource` owns, so the slots stay on the
+`egui::ExternalFrame` slots a `egui::EguiSource` owns, so the slots stay on the
 thread that draws them, and the target the drawing side measures comes back
 through a `relay::Snapshot` the panel's world reads when it lays the next
 frame out. The two contexts stay
@@ -888,7 +888,7 @@ atlas, and egui treats one `run_ui` call as one whole frame. Their texture ids
 are never rewritten, though both contexts allocate from zero: a frame keeps the
 ids its context gave it and the GPU integration keys textures by (origin, id),
 so a published frame is drawn from the same tessellation until a newer one
-replaces it. `unlit3dx` builds the cross-world plumbing — a `UiPanelHost` in the
+replaces it. `unlit3dx` builds the cross-world plumbing — a `EguiPanelHost` in the
 panel's world, sending frames as jobs on that world's own tick — on these
 pieces.
 
@@ -914,17 +914,17 @@ for multi-pass layout, so a panel must be idempotent or decide what to do based
 on the pass number; that is egui's existing semantics, the same in every
 backend.
 
-UI itself needs only a color attachment and no depth attachment, but a
+egui itself needs only a color attachment and no depth attachment, but a
 pipeline's depth state must **exactly match** the pass's attachments (wgpu
 validates strictly by format, ignoring the write and compare settings). In a
-pass that has a depth attachment — UI and meshes sharing one pass is the common
-case — the UI pipeline must still declare the **same** depth format and avoid
+pass that has a depth attachment — egui and meshes sharing one pass is the common
+case — the egui pipeline must still declare the **same** depth format and avoid
 disturbing the meshes' depth only by not writing depth and not depth-testing:
 "needs no depth" is not the same as "declares no depth". "The target has no
 depth attachment" is also legal, which is why a pipeline's depth state is
 optional; that optional depth state serves the case where the target itself has
 no depth attachment, and then every pipeline in the pass must declare no depth,
-which is not specific to UI: a frame a [`BlitSource`](blit::BlitSource) draws
+which is not specific to egui: a frame a [`BlitSource`](blit::BlitSource) draws
 alone has no depth attachment either. This matches egui's official backend: by
 default it carries no depth state, but when given a depth format it still builds
 a state with that same format, no depth writes, and a compare function of
@@ -1067,19 +1067,19 @@ world
     .unwrap();
 ```
 
-A UI panel is a behaviour component, so mounting an interface is an ordinary
+An egui panel is a behaviour component, so mounting an interface is an ordinary
 spawn:
 
 ```rust
-# #[cfg(feature = "ui")]
+# #[cfg(feature = "egui")]
 # {
 use unlit3d::prelude::*;
 
 let mut world = World::new();
-// The panels of a UI source live under it: a frame hands the source its own
+// The panels of an egui source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
-let ui = world.root_scope_mut().spawn(bundle![Source::new(UiSource::new())]);
-world.scope_mut(ui).unwrap().spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);
 # }
@@ -1106,7 +1106,7 @@ reads input without dispatching anything calls
 [`refresh_input`](input::refresh_input) once per tick instead, before
 anything reads the batch. Translation
 from a windowing library's events lives behind the corresponding feature:
-`input::winit::WinitInput` forwards `WindowEvent`s, and `ui::convert` turns the
+`input::winit::WinitInput` forwards `WindowEvent`s, and `egui::convert` turns the
 crate's events into egui's.
 
 <details>
@@ -1114,7 +1114,7 @@ crate's events into egui's.
 
 - **Event types depend on neither winit nor egui**: the core types stand alone,
   and the winit and egui conversions sit behind their respective features. Game
-  logic and UI thus share one event stream and need no two sets of events.
+  logic and egui thus share one event stream and need no two sets of events.
 - **Event callbacks are behaviour components**, isomorphic to the ECS's existing
   behaviour-component paradigm: all matching behaviour components are called per
   event category. `OnInput` receives every event, while
@@ -1158,11 +1158,11 @@ crate's events into egui's.
   re-enter a dispatch of the same kind; state is kept in sibling components
   instead.
 
-Whether the UI wants the pointer or the keyboard is **egui's own answer**, not
+Whether the overlay wants the pointer or the keyboard is **egui's own answer**, not
 one the source republishes: after a frame is laid out, `egui_wants_pointer_input`
 and `egui_wants_keyboard_input` on the source's context describe what the frame
 claimed. A caller reaches that context through the world's `Source` value —
-`source.as_ref::<UiSource>()` — the same way it reaches any other source's
+`source.as_ref::<EguiSource>()` — the same way it reaches any other source's
 state, and game logic reads it to decide whether to respond. Typed access is a
 `Result`, so a source of another type names itself in the error. By egui's
 semantics the answer describes the frame just laid out. Nothing is
@@ -1316,7 +1316,7 @@ cargo nextest run -p unlit3d --all-features  # just this crate
 ```
 
 The integration tests are one binary, and its `required-features` are `gltf`,
-`mcp` and `ui` — the features its cases reach. A run without them does not fail:
+`mcp` and `egui` — the features its cases reach. A run without them does not fail:
 Cargo skips the target whole, so `cargo nextest run -p unlit3d` reports the unit
 tests and nothing else. `--all-features` (or naming all three) is what puts the
 suite in the run.

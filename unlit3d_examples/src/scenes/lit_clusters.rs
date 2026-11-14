@@ -37,8 +37,8 @@ pub static CLUSTER_SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: 1,
     depth: true,
-    ui: false,
-    reproducible_ui: false,
+    egui: false,
+    reproducible_egui: false,
     build: build_clusters,
 };
 

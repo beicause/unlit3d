@@ -270,7 +270,7 @@ public fn vertex_world(in: VertexInput, vertex_index: u32) -> VertexStage {
     }
 
     // The instance transform always places the vertex, so a screen-space draw
-    // such as a UI pass binds the identity record and the transform is a no-op.
+    // such as an overlay pass binds the identity record and the transform is a no-op.
     //
     // Mutable rather than a `let` because it is handed back: a caller may
     // displace it between this call and `vertex_out`, and everything after that
@@ -311,7 +311,7 @@ public fn vertex_world(in: VertexInput, vertex_index: u32) -> VertexStage {
 /// Finish the vertex stage from the vertex `vertex_world` placed.
 ///
 /// The instance transform always places the vertex, so a screen-space draw such
-/// as a UI pass binds the identity record and the transform is a no-op.
+/// as an overlay pass binds the identity record and the transform is a no-op.
 public fn vertex_out(in: VertexInput, stage: VertexStage) -> VertexOut {
     var out: VertexOut;
     out.clip = lit_bindings::camera.clip_from_world * vec4<f32>(stage.world, 1.0);

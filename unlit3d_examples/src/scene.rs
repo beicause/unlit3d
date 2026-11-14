@@ -89,7 +89,7 @@ impl Scene {
             .root_scope_mut()
             .spawn(bundle![Renderer::new(context)]);
         // The pass the scene draws in. Everything the scene builds hangs under
-        // it — its sources, and the UI source mounted below — because a pass
+        // it — its sources, and the egui source mounted below — because a pass
         // records the sources in its own scope: the pass a source sits under is
         // the pass its drawing lands in. Its order is the first of the frame,
         // so a presenting pass mounted later draws after it.
@@ -120,32 +120,32 @@ impl Scene {
             .map(|mut pass| pass.get().viewport = viewport)
             .expect("the pass was just spawned");
 
-        // The UI source is mounted before the scene is built, so a scene's own
+        // The egui source is mounted before the scene is built, so a scene's own
         // panels hang in the scope it draws: a source renders its own subtree,
         // and a panel spawned beside it would never be shown.
-        let ui = (options.ui || options.selector).then(|| {
-            let mut source_ui = UiSource::new();
-            if options.reproducible && def.reproducible_ui {
+        let ui = (options.egui || options.selector).then(|| {
+            let mut source_egui = EguiSource::new();
+            if options.reproducible && def.reproducible_egui {
                 // egui fades a window in over the first frames and animates
                 // widget transitions, all measured against the clock it is
                 // handed. With no animation time every one of them is already
                 // over, so the first frame is fully drawn and does not depend
                 // on when it was taken.
-                source_ui
+                source_egui
                     .context_mut()
                     .all_styles_mut(|style| style.animation_time = 0.0);
             }
             world
                 .scope_mut(pass)
                 .expect("the pass was just spawned")
-                .spawn(bundle![Source::new(source_ui)])
+                .spawn(bundle![Source::new(source_egui)])
         });
         let control = (def.build)(&mut world, context, pass, ui, content, options);
         let SceneControl { advance, snapshot } = control;
 
         // The shell's own state — the selector's switch, the fullscreen
         // request and its state, the frame-rate reading — lives in the shared
-        // subtree. A panel reads and writes it from the UI source's scope,
+        // subtree. A panel reads and writes it from the egui source's scope,
         // which reaches the shared subtree and nothing beside it.
         let shared = world.shared();
         let (switch, fullscreen, fullscreen_active, frame_rate) = {
@@ -288,7 +288,7 @@ impl Scene {
 
     /// The rectangle egui remembers for the window with `id`.
     ///
-    /// Several sources share the world; only the UI one holds egui's window
+    /// Several sources share the world; only the overlay one holds egui's window
     /// memory, so skip every other source's entity.
     fn panel_rect(&self, world: &World, id: &str) -> Option<egui::Rect> {
         world
@@ -296,7 +296,7 @@ impl Scene {
             .query::<(Entity, &Source)>()
             .iter()
             .find_map(|(_, source)| {
-                let ui = source.as_ref::<UiSource>().ok()?;
+                let ui = source.as_ref::<EguiSource>().ok()?;
                 ui.context()
                     .memory(|memory| memory.area_rect(egui::Id::unique(id)))
             })
@@ -346,7 +346,7 @@ impl Scene {
 /// for, for a `target`-pixel render target.
 ///
 /// `baseline` is the aspect to keep, or `None` for a scene with no aspect of
-/// its own — a UI-only one — which draws into the whole target. `letterbox`
+/// its own — an overlay-only one — which draws into the whole target. `letterbox`
 /// turns the whole mechanism off, which is what a capture wants: its
 /// captures are the scene's own size and must stay comparable with the stored
 /// snapshots.

@@ -2,7 +2,7 @@
 //! draw order.
 //!
 //! The other scenes draw opaque geometry, so the only blending they exercise is
-//! the UI's own. This scene is the one that pins the unlit pipeline's
+//! the overlay's own. This scene is the one that pins the unlit pipeline's
 //! transparent path: three translucent panes overlap, and what the middle of
 //! that overlap looks like depends on two things at once — that the draws are
 //! ordered back to front, and that the blend state frames the shader's
@@ -115,8 +115,8 @@ pub static SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: 1,
     depth: true,
-    ui: false,
-    reproducible_ui: false,
+    egui: false,
+    reproducible_egui: false,
     build,
 };
 

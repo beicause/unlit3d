@@ -33,7 +33,7 @@ pub struct TestGpu {
     pub renderer: Entity,
     /// The frame's only pass, which every source of the harness hangs under.
     pass: Entity,
-    /// The built-in mesh source, or `None` in a UI-only world.
+    /// The built-in mesh source, or `None` in an overlay-only world.
     source: Option<Entity>,
     /// The built-in lit family's key; every renderable entity carries an
     /// [`GpuRenderPipeline`] built from it. Meaningless without a mesh source.
@@ -69,7 +69,7 @@ impl TestGpu {
 
     /// Spawn only the frame's context and driver, with no mesh source.
     ///
-    /// What a UI-only test needs: the frame must draw without the 3D path
+    /// What an overlay-only test needs: the frame must draw without the 3D path
     /// being present at all.
     pub fn frame_only(world: &mut World, ctx: &Ctx) -> Self {
         let context = spawn_context(world, ctx.render_device(), ResourceGraph::new());
@@ -468,7 +468,7 @@ impl TestGpu {
 
     /// Render `count` frames.
     ///
-    /// A UI test needs two: egui only learns its font metrics on the second,
+    /// An overlay test needs two: egui only learns its font metrics on the second,
     /// so the first is drawn and discarded.
     pub fn render_frames(&self, world: &World, count: u32) {
         for _ in 0..count {

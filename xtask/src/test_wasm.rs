@@ -300,7 +300,7 @@ fn build_workspace() -> Result<(), String> {
     // The MCP server speaks the Model Context Protocol over a native stdio
     // pipe, and rmcp's server side pulls `uuid` v4, whose wasm randomness
     // source nothing asks for. Its module is switched off on this target, so a
-    // browser drives the world through the example's own UI, not the protocol.
+    // browser drives the world through the example's own egui, not the protocol.
     //
     // `unlit3dx_examples` runs its worlds inline on this target: the library
     // spawns them through its stepped runner, so the host carries the same

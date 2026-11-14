@@ -10,7 +10,7 @@
 //! the registry through libtest-mimic natively, and exports the `run_test`
 //! entry point a browser calls for the wasm suite.
 //!
-//! The manifest states the features this binary needs (`gltf`, `mcp`, `ui`)
+//! The manifest states the features this binary needs (`gltf`, `mcp`, `egui`)
 //! rather than the modules repeating `#[cfg(feature = ...)]`: a target whose
 //! required features are off is skipped whole.
 
@@ -23,7 +23,7 @@ mod custom_instances;
 mod custom_pipeline;
 mod gltf_scene;
 mod gpu_ecs;
-mod gpu_ui_source;
+mod gpu_egui_source;
 mod inverted_hull;
 mod letterbox;
 mod line_source;
@@ -40,7 +40,7 @@ unlit_wgpu_test_util::gpu_test_main!(
         custom_pipeline::all_tests(),
         gltf_scene::all_tests(),
         gpu_ecs::all_tests(),
-        gpu_ui_source::all_tests(),
+        gpu_egui_source::all_tests(),
         inverted_hull::all_tests(),
         letterbox::all_tests(),
         line_source::all_tests(),

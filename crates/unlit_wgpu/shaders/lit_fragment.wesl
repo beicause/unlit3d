@@ -28,7 +28,7 @@ public fn srgb_to_linear(channel: f32) -> f32 {
 /// The color of one fragment, before the target's encoding.
 ///
 /// `in.color` and the base-color texel carry whatever alpha convention the
-/// caller's blend state expects — premultiplied for the UI, straight for
+/// caller's blend state expects — premultiplied for the overlay, straight for
 /// meshes — and multiplying two RGBA values preserves it, so they combine
 /// directly.
 ///

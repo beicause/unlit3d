@@ -38,7 +38,7 @@ const FRAGMENT_ENTRY: &str = "fs_main";
 /// The view the source samples is the caller's, registered in the frame's
 /// [`ResourceGraph`], so a world may hand over a different one through the
 /// [`view`](BlitSource::view) field. The pipeline is built on the first frame that
-/// knows its target, the way [`UiSource`](crate::ui::UiSource) specializes its
+/// knows its target, the way [`EguiSource`](crate::egui::EguiSource) specializes its
 /// own.
 ///
 /// The blit covers the whole target, so it records at

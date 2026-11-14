@@ -20,7 +20,7 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端 |
+| `egui` | 否 | `egui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端 |
 
 WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色器始终可用：它们是
 调用者自建管线所组合的通用设施，而不是藏在 feature 后面的特权内置管线。使用
@@ -71,7 +71,7 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、全局绑定组
   布局构造函数、内置 lit 管线，以及它的变体组合时使用的着色器缓存。
 - `util` —— 预先算好哈希的 `Hashed`，以及创建着色器模块的辅助函数。
-- `ui` —— egui 后端，在 `egui` feature 下提供。
+- `egui` —— egui 后端，在 `egui` feature 下提供。
 
 ## 示例
 
@@ -600,7 +600,7 @@ for draw in scene.draws {
 [`ShaderCache`](pipeline::ShaderCache)，按
 [`ShaderRecipe`](pipeline::ShaderRecipe)（包模块、它的条件编译开关、调用者的替换源）向它
 要模块，只有未命中时才真正组合。内置 lit 家族因此为共享同一份源的全部变体只建一份模块，
-UI 则用第一个目标组合出的模块画其余每个目标。缓存属于一个 device，也属于在其上共享着色器
+egui 则用第一个目标组合出的模块画其余每个目标。缓存属于一个 device，也属于在其上共享着色器
 的一方：[`Variants`](specialize::Variants) 为其家族留一份，蓝图自己不必再持有。模块固定的
 家族——调用者手写的管线——忽略这份缓存即可。
 

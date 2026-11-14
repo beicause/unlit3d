@@ -46,7 +46,7 @@ return lanes.x * select(0u, 1u, lane == 0u)
 
 **位置：**[`crates/unlit3d/src/renderer.rs`](crates/unlit3d/src/renderer.rs) 的 `record_pass` 末尾，所有源都录完之后。
 
-**症状：**在 GL 后端开着 MSAA 时，以带裁剪的绘制收尾的场景（比如 UI 窗口）只解析了那一小块矩形，画面其余部分留着上一帧的像素。
+**症状：**在 GL 后端开着 MSAA 时，以带裁剪的绘制收尾的场景（比如 egui 窗口）只解析了那一小块矩形，画面其余部分留着上一帧的像素。
 
 **成因：**裁剪矩形是 pass 状态，而视口不同，wgpu 没有把它重置的调用。GL 后端上结束一个 pass 的多重采样解析是一次 blit，而 blit 受 pass 结束时生效的裁剪矩形限制。于是最后一次绘制的裁剪范围决定了整帧解析多少。
 
@@ -60,7 +60,7 @@ render_pass.set_scissor_rect(0, 0, attachments.width(), attachments.height());
 
 **代价：**每个 pass 多一次冗余的状态设置。
 
-**规矩：**只要一个 pass 里画过带裁剪的东西，结束前就用整个目标盖掉裁剪矩形。回归测试是 [`crates/unlit3d/tests/gpu_ui_source.rs`](crates/unlit3d/tests/gpu_ui_source.rs) 里的 `a_clipped_panel_does_not_clip_the_resolve`。
+**规矩：**只要一个 pass 里画过带裁剪的东西，结束前就用整个目标盖掉裁剪矩形。回归测试是 [`crates/unlit3d/tests/gpu_egui_source.rs`](crates/unlit3d/tests/gpu_egui_source.rs) 里的 `a_clipped_panel_does_not_clip_the_resolve`。
 
 ## 导数写在逐片元分支里，在 WebGPU 上编不过
 

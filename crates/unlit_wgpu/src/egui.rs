@@ -3,7 +3,7 @@
 //! [`EguiIntegration`] takes what egui produces each frame — tessellated, clipped
 //! meshes plus a set of texture updates — and draws it with the built-in
 //! pipeline as ordinary screen-space geometry. Nothing in the shader knows
-//! about egui: the UI is premultiplied, textured, screen-space vertices, and
+//! about egui: the overlay is premultiplied, textured, screen-space vertices, and
 //! egui's clip rectangles become scissor rectangles.
 //!
 //! ```rust
@@ -11,8 +11,8 @@
 //! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, VIEW_BINDING, ShaderCache};
 //! # use unlit_wgpu::resources::ResourceGraph;
 //! # use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
-//! # use unlit_wgpu::ui::{
-//! #     EguiIntegration, ScreenDescriptor, screen_view, screen_viewport, ui_variant,
+//! # use unlit_wgpu::egui::{
+//! #     EguiIntegration, ScreenDescriptor, screen_view, screen_viewport, egui_variant,
 //! # };
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
@@ -20,13 +20,13 @@
 //! // The caller owns the globals: a camera uniform (written every frame with
 //! // `screen_view`), a frame-globals uniform, the view `screen_viewport`
 //! // derives from the same points, and the bind group binding all three.
-//! let variant = ui_variant(/* the target encodes sRGB: */ true, surface);
+//! let variant = egui_variant(/* the target encodes sRGB: */ true, surface);
 //! let pipeline = SpecializedPipeline::create(device, variant, &mut ShaderCache::new());
-//! let camera = uniform_buffer(device, "ui::camera");
-//! let globals = uniform_buffer(device, "ui::globals");
-//! let view = uniform_buffer(device, "ui::view");
+//! let camera = uniform_buffer(device, "egui::camera");
+//! let globals = uniform_buffer(device, "egui::globals");
+//! let view = uniform_buffer(device, "egui::view");
 //! let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-//!     label: Some("ui::globals"),
+//!     label: Some("egui::globals"),
 //!     layout: &pipeline.descriptor().bind_group_layouts(device).global,
 //!     entries: &[
 //!         wgpu::BindGroupEntry {
@@ -44,13 +44,13 @@
 //!     ],
 //! });
 //!
-//! // The camera and the view are written every frame; the UI reads no clock,
+//! // The camera and the view are written every frame; the overlay reads no clock,
 //! // so its frame globals stay at their default.
 //! queue.write_buffer(&camera, 0, screen_view([256.0, 192.0]).as_bytes());
 //! queue.write_buffer(&view, 0, screen_viewport([256.0, 192.0]).as_bytes());
 //! queue.write_buffer(&globals, 0, Globals::default().as_bytes());
 //!
-//! // The UI's per-texture resources join the caller's ledger.
+//! // The overlay's per-texture resources join the caller's ledger.
 //! let mut graph = ResourceGraph::new();
 //! let camera_id = graph.insert(camera, None);
 //! let globals_id = graph.insert(globals, None);
@@ -69,7 +69,7 @@
 //! let output = ctx.run_ui(input, |ui| {
 //!     ui.label("hello world");
 //! });
-//! // The frame's encoder carries both the UI's staged vertex and index
+//! // The frame's encoder carries both the overlay's staged vertex and index
 //! // uploads and the pass that reads them; `scene` is recorded into it
 //! // after this call.
 //! let mut encoder = device.create_command_encoder(&Default::default());
@@ -122,7 +122,7 @@ const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Bytes one planar-position vertex occupies.
 ///
-/// The UI writes positions at full precision and in the plane, so this is
+/// The overlay writes positions at full precision and in the plane, so this is
 /// [`ChannelEncoding::PlanarPosition`]'s format: two components, with the
 /// zero third supplied by the shader rather than stored.
 const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x2.size() as usize;
@@ -131,7 +131,7 @@ const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x2.size() as usize;
 const SECONDARY_STRIDE: usize =
     wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
 
-/// The target a UI frame is drawn into and the density it is drawn at.
+/// The target an overlay frame is drawn into and the density it is drawn at.
 ///
 /// The two are needed together and in opposite units, which is the easiest
 /// thing to get wrong here: egui tessellates in **logical points**, so the
@@ -146,7 +146,7 @@ pub struct ScreenDescriptor {
 }
 
 impl ScreenDescriptor {
-    /// The target's size in logical points, which is what the UI's projection
+    /// The target's size in logical points, which is what the overlay's projection
     /// and its `RawInput::screen_rect` are expressed in.
     pub fn size_in_points(self) -> [f32; 2] {
         [
@@ -160,7 +160,7 @@ impl ScreenDescriptor {
 ///
 /// egui positions its vertices in logical points with the origin at the top
 /// left and Y growing downwards, so the Y coefficient is negated; Z collapses
-/// to zero, since everything the UI draws sits at one depth. The physical
+/// to zero, since everything the overlay draws sits at one depth. The physical
 /// density never enters: the target's format already encodes its pixels.
 ///
 /// The caller writes this into their camera uniform, since the camera buffer
@@ -198,37 +198,37 @@ pub fn screen_viewport(viewport_points: [f32; 2]) -> View {
     View::new(viewport_points[0], viewport_points[1])
 }
 
-/// The pipeline variant a UI is drawn with.
+/// The pipeline variant an overlay is drawn with.
 ///
 /// `srgb_to_linear_output` is the caller's call, not this function's: it
 /// depends on the target's format, which this function never sees. Set it
 /// when the target encodes sRGB.
 ///
-/// Every UI draw has the same shape: full-precision screen-space vertices
+/// Every egui draw has the same shape: full-precision screen-space vertices
 /// carrying a premultiplied color and a texture coordinate, no skinning and no
 /// morph target, and a base-color texture sampled through a material group.
 /// What changes with the target is the surface the variant carries, so this is
-/// the only place a UI variant is built.
-pub fn ui_variant(srgb_to_linear_output: bool, surface: SurfaceKey) -> LitVariant {
+/// the only place an egui variant is built.
+pub fn egui_variant(srgb_to_linear_output: bool, surface: SurfaceKey) -> LitVariant {
     let mut options = LitOptions::standard();
-    apply_ui_settings(&mut options, srgb_to_linear_output);
+    apply_egui_settings(&mut options, srgb_to_linear_output);
     LitVariant {
         options: Hashed::new(options),
         surface,
-        channels: ui_channels(),
+        channels: egui_channels(),
         base_color_texture: true,
         morph: false,
         strip_index_format: None,
     }
 }
 
-/// The per-vertex channels a UI mesh is packed with.
+/// The per-vertex channels an overlay mesh is packed with.
 ///
-/// The UI writes positions at full precision and in the plane — two components,
+/// The overlay writes positions at full precision and in the plane — two components,
 /// with the shader supplying the zero third — and needs no skinning, and every
 /// vertex carries a texture coordinate and a premultiplied color. A caller
-/// packing a UI mesh builds its streams to match this.
-pub fn ui_channels() -> LitVertexChannels {
+/// packing an overlay mesh builds its streams to match this.
+pub fn egui_channels() -> LitVertexChannels {
     LitVertexChannels {
         position: PositionStreamChannels {
             position: Some(ChannelEncoding::PlanarPosition),
@@ -238,20 +238,20 @@ pub fn ui_channels() -> LitVertexChannels {
     }
 }
 
-/// Apply the UI's device-independent policy — the output conversion, culling,
+/// Apply the overlay's device-independent policy — the output conversion, culling,
 /// blending and the overlaid depth behavior — to a standard options set.
 ///
-/// The geometry the UI draws with is not policy and lives in
-/// [`ui_channels`] and the variant: an encoding, a skin or a morph target is
+/// The geometry the overlay draws with is not policy and lives in
+/// [`egui_channels`] and the variant: an encoding, a skin or a morph target is
 /// a property of the mesh, not of what the caller picked.
-fn apply_ui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
+fn apply_egui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
     options.srgb_to_linear_output = srgb_to_linear_output;
-    // A UI fragment composites what egui tessellated and shades nothing: the
+    // An overlay fragment composites what egui tessellated and shades nothing: the
     // overlay is drawn after the scene, so a light would tint text.
     options.unlit = true;
     // No culling: egui does not guarantee a consistent winding order across
     // the primitives it emits, so neither face can be discarded safely.
-    // (`LitOptions::standard` culls back faces for closed meshes; the UI is
+    // (`LitOptions::standard` culls back faces for closed meshes; the overlay is
     // flat, overlay geometry with no inside to hide.)
     options.primitive.cull_mode = None;
     // egui tessellates premultiplied colors, so the source's RGB is added to
@@ -268,7 +268,7 @@ fn apply_ui_settings(options: &mut LitOptions, srgb_to_linear_output: bool) {
             operation: wgpu::BlendOperation::Add,
         },
     });
-    // The UI overlays whatever the pass holds, so it neither tests nor writes
+    // The egui overlays whatever the pass holds, so it neither tests nor writes
     // depth. Whether the target has a depth attachment at all is decided by
     // the surface the variant carries; the policy only says what a target
     // with one would run.
@@ -319,7 +319,7 @@ fn pack_geometry<'a>(
     counts: GeometryCounts,
     vertices: &mut Vec<u8>,
     indices: &mut Vec<u8>,
-    draws: &mut Vec<UiDraw>,
+    draws: &mut Vec<EguiDraw>,
 ) {
     // The split between the two streams is the frame's own vertex count, which
     // is what `scene` reads back. It is *not* the buffer's capacity: that is
@@ -352,7 +352,7 @@ fn pack_geometry<'a>(
 
         for vertex in &mesh.vertices {
             let position = vertex_cursor * POSITION_STRIDE;
-            // The UI is flat: two components, the shader supplies the zero
+            // The overlay is flat: two components, the shader supplies the zero
             // third.
             vertices[position..position + POSITION_STRIDE]
                 .copy_from_slice([vertex.pos.x, vertex.pos.y].as_bytes());
@@ -387,7 +387,7 @@ fn pack_geometry<'a>(
             source,
             id: mesh.texture_id,
         };
-        draws.push(UiDraw {
+        draws.push(EguiDraw {
             indices: first_index..index_cursor as u32,
             texture,
             // The texture's own sampling options, not a default: a texture egui
@@ -402,7 +402,7 @@ fn pack_geometry<'a>(
 
 /// One uploaded primitive: where its indices sit, what it samples and how it
 /// is clipped.
-struct UiDraw {
+struct EguiDraw {
     /// Index range into the index buffer, counting indices.
     ///
     /// The indices themselves already name the primitive's vertices in the
@@ -432,7 +432,7 @@ struct TextureSlot {
 
 /// Draws tessellated egui output with the built-in lit pipeline.
 ///
-/// The UI's GPU resources are registered in a [`ResourceGraph`] the caller
+/// The overlay's GPU resources are registered in a [`ResourceGraph`] the caller
 /// supplies — normally the one kept alongside the
 /// [`RenderAttachments`](crate::render_attachments::RenderAttachments) — so
 /// the whole frame shares one ledger. Every method that touches the graph
@@ -471,7 +471,7 @@ pub struct EguiIntegration {
     /// One default [`MeshInstance`], bound at [`INSTANCE_SLOT`] by every
     /// draw.
     ///
-    /// The built-in pipeline always declares the instance stream, and a UI
+    /// The built-in pipeline always declares the instance stream, and an overlay
     /// draw reads no instance state, so one identity record serves every draw.
     /// It never changes, so it needs no graph node.
     instance: wgpu::Buffer,
@@ -489,9 +489,9 @@ pub struct EguiIntegration {
     /// Staging buffer for the per-frame index uploads, reused across frames.
     index_staging: StagingBuffer,
     /// Layout of the frame most recently uploaded.
-    draws: Vec<UiDraw>,
+    draws: Vec<EguiDraw>,
     /// Packing scratch for the vertex stream — positions then interleaved UVs
-    /// and colors — kept so a steady UI reuses one allocation instead of taking
+    /// and colors — kept so a steady egui reuses one allocation instead of taking
     /// a fresh one every frame.
     packed_vertices: Vec<u8>,
     /// Packing scratch for the index stream, reused the same way.
@@ -501,7 +501,7 @@ pub struct EguiIntegration {
 /// Which context a texture belongs to.
 ///
 /// Every egui context allocates its texture ids from zero, so one id names
-/// different images in different contexts. A UI drawn from several contexts —
+/// different images in different contexts. An overlay drawn from several contexts —
 /// the world's own panels plus a frame laid out in another world — therefore
 /// keys its textures by this pair rather than by the id alone, which is what
 /// keeps two contexts' atlases apart without rewriting the ids a frame
@@ -539,7 +539,7 @@ struct TextureKey {
 /// one is dropped unapplied — while the primitives are borrowed: a frame laid
 /// out in another world is drawn again on every drawn frame until that world
 /// publishes a newer one, so its tessellation has to outlive the upload.
-pub struct UiFrame<'a> {
+pub struct EguiFrame<'a> {
     /// Which context this contribution came from.
     pub source: Source,
     /// The context's texture updates for this frame.
@@ -558,13 +558,13 @@ struct MaterialKey {
 /// A one-element buffer holding the identity [`MeshInstance`].
 ///
 /// The built-in lit pipeline declares the instance stream for every variant,
-/// so a draw that binds nothing at [`INSTANCE_SLOT`] is rejected. A UI draw
+/// so a draw that binds nothing at [`INSTANCE_SLOT`] is rejected. An overlay draw
 /// reads no instance state — its vertices are already in screen space — so one
 /// default record satisfies the slot for every draw the integration records.
 fn default_instance(device: &wgpu::Device) -> wgpu::Buffer {
     let instance = MeshInstance::default();
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("ui::instance"),
+        label: Some("egui::instance"),
         size: size_of::<MeshInstance>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: true,

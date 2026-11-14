@@ -88,7 +88,7 @@ pub struct FramePass {
     /// records into it is told about it through [`PassInfo::viewport`] — so
     /// the content is scaled uniformly and the same picture appears on any
     /// target shape. A source that composes over the content rather than being
-    /// part of it, a UI overlay for instance, ignores it and covers the whole
+    /// part of it, an egui overlay for instance, ignores it and covers the whole
     /// target.
     pub viewport: Option<ViewportRect>,
     /// The camera the pass draws through, or `None` to let each source pick
@@ -98,7 +98,7 @@ pub struct FramePass {
     /// through, in [`PassInfo::camera`]: one statement for the whole pass,
     /// rather than each source searching the world for an active one. A source
     /// that draws text or chrome rather than the scene may still ignore it and
-    /// state its own mapping — a UI source draws through a screen camera
+    /// state its own mapping — an egui source draws through a screen camera
     /// whatever the pass says.
     ///
     /// `None` keeps the old behavior: a source falls back to the first

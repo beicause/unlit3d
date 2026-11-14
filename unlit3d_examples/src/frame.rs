@@ -94,9 +94,9 @@ pub(crate) fn ensure_presented(app: Entity) -> OnFrame {
     })
 }
 
-/// Open a URL the UI asked for, in a new tab when it asked for one.
+/// Open a URL the overlay asked for, in a new tab when it asked for one.
 ///
-/// The UI cannot open it itself: a panel runs while the world is borrowed and
+/// The overlay cannot open it itself: a panel runs while the world is borrowed and
 /// has no page to reach, so it publishes the request in the world and the frame
 /// loop serves it here — the same split the fullscreen request follows. One
 /// call covers every platform the example builds for.
@@ -114,7 +114,7 @@ pub(crate) fn open_url(url: &OpenUrl) {
     }
 }
 
-/// Serve the scene selector, the fullscreen button and the UI's URL requests.
+/// Serve the scene selector, the fullscreen button and the overlay's URL requests.
 ///
 /// A scene switch drops the scene's world, so nothing may still be borrowed
 /// from it when the switch is served: the control state is read in one block
@@ -174,7 +174,7 @@ pub(crate) fn serve_scene_controls(app: Entity) -> OnFrame {
         if fullscreen && let Some(window) = window(world) {
             fullscreen::toggle(&window);
         }
-        // The UI publishes the URLs it was asked to open in the scene's own
+        // The overlay publishes the URLs it was asked to open in the scene's own
         // world, so it is drained there rather than here in the host.
         if let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) {
             for url in drain_open_urls(nested.get()) {

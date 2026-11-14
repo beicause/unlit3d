@@ -22,8 +22,8 @@ struct Runs(u32);
 /// The target a frame is laid out against in these tests: the same size
 /// the source was built for, so its clip rectangles are packed in pixels
 /// that agree.
-fn test_ui_target() -> UiTarget {
-    UiTarget {
+fn test_egui_target() -> EguiTarget {
+    EguiTarget {
         screen: ScreenDescriptor {
             size_in_pixels: [128, 96],
             pixels_per_point: 1.0,
@@ -77,7 +77,7 @@ fn each_panel_runs_once_and_may_write_a_sibling() {
         let runs = Rc::clone(&runs);
         world.root_scope_mut().spawn(bundle![
             Runs(0),
-            UiPanel::new(move |world, entity, ui| {
+            EguiPanel::new(move |world, entity, ui| {
                 runs.set(runs.get() + 1);
                 // Read the sibling, then write it back advanced by one.
                 let seen = world
@@ -94,7 +94,7 @@ fn each_panel_runs_once_and_may_write_a_sibling() {
         ]);
     }
 
-    let source = UiSource::new();
+    let source = EguiSource::new();
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -109,9 +109,9 @@ fn each_panel_runs_once_and_may_write_a_sibling() {
 
     let panels: Vec<Entity> = world
         .root_scope()
-        .query::<(&UiPanel, Entity)>()
+        .query::<(&EguiPanel, Entity)>()
         .iter()
-        .map(|(_ui_panel, entity)| entity)
+        .map(|(_egui_panel, entity)| entity)
         .collect();
     assert_eq!(panels.len(), 2, "both panels are driven by one query");
     for entity in panels {
@@ -137,7 +137,7 @@ fn a_panel_is_driven_by_the_source() {
     let target = test_target();
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             // A plain rectangle, so the frame's contents do not depend on the
             // font atlas being ready on the first pass.
             ui.painter().rect_filled(
@@ -147,7 +147,7 @@ fn a_panel_is_driven_by_the_source() {
             );
         }),]);
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     let mut encoder = encoder(&world, ctx);
     let mut scene = Scene::new();
     source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
@@ -161,8 +161,8 @@ fn a_panel_is_driven_by_the_source() {
 /// The source is constructed with no arguments and records over the meshes.
 #[test]
 fn a_fresh_source_declares_the_overlay_order() {
-    let source = UiSource::new();
-    assert_eq!(source.order(), FrameSourceOrder::UI);
+    let source = EguiSource::new();
+    assert_eq!(source.order(), FrameSourceOrder::EGUI);
 }
 
 /// A panel's queued spawn lands once the frame loop applies the queue.
@@ -175,14 +175,14 @@ fn a_panel_may_queue_a_spawn() {
     struct Spawned;
 
     let world = World::new();
-    let source = UiSource::new();
+    let source = EguiSource::new();
     let world = Rc::new(RefCell::new(world));
     {
         let world = Rc::clone(&world);
         world
             .borrow_mut()
             .root_scope_mut()
-            .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
+            .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
                 if world.query::<&Spawned>().iter().next().is_none() {
                     world.queue().spawn(bundle![Spawned]);
                 }
@@ -255,12 +255,12 @@ fn every_pass_drives_every_panel() {
         let runs = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn(bundle![UiPanel::new(move |_world, _entity, _ui| {
+            .spawn(bundle![EguiPanel::new(move |_world, _entity, _egui| {
                 runs.set(runs.get() + 1);
             }),]);
     }
 
-    let source = UiSource::new();
+    let source = EguiSource::new();
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -296,12 +296,13 @@ fn a_filter_selects_which_panels_a_caller_collects() {
     struct Foreground;
 
     let mut world = World::new();
+    world.root_scope_mut().spawn(bundle![
+        Foreground,
+        EguiPanel::new(|_world, _entity, _egui| {})
+    ]);
     world
         .root_scope_mut()
-        .spawn(bundle![Foreground, UiPanel::new(|_world, _entity, _ui| {})]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, _ui| {})]);
+        .spawn(bundle![EguiPanel::new(|_world, _entity, _egui| {})]);
 
     let foreground: Vec<Entity> = world
         .root_scope()
@@ -313,9 +314,9 @@ fn a_filter_selects_which_panels_a_caller_collects() {
 
     let all: Vec<Entity> = world
         .root_scope()
-        .query::<(&UiPanel, Entity)>()
+        .query::<(&EguiPanel, Entity)>()
         .iter()
-        .map(|(_ui_panel, e)| e)
+        .map(|(_egui_panel, e)| e)
         .collect();
     assert_eq!(all.len(), 2, "the unfiltered query sees both");
     assert!(
@@ -337,7 +338,7 @@ fn the_frame_events_reach_the_panels() {
     let recorded = Rc::clone(&seen);
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(move |_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(move |_world, _entity, ui| {
             // egui's own input state is what a widget reads; the raw events are
             // not exposed to a panel, so this asserts on the effect instead: a
             // typed character must land in the text a focused field sees.
@@ -361,7 +362,7 @@ fn the_frame_events_reach_the_panels() {
     input.push(InputEvent::Resized { size_px: (128, 96) });
     refresh_input(&world);
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     let mut encoder = encoder(&world, ctx);
     let mut scene = Scene::new();
     // egui only lays a text field out once it knows its fonts, so the
@@ -395,7 +396,7 @@ fn a_mouse_click_reaches_a_widget() {
     let flag = Rc::clone(&clicked);
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(move |_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(move |_world, _entity, ui| {
             // A real widget, so the click has to come through egui's own hit
             // testing rather than a hand-rolled rectangle test.
             let response = ui.allocate_rect(button(), egui::Sense::click());
@@ -409,7 +410,7 @@ fn a_mouse_click_reaches_a_widget() {
     input.push(InputEvent::Resized { size_px: (128, 96) });
     refresh_input(&world);
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     let mut encoder = encoder(&world, ctx);
     let mut scene = Scene::new();
     // The first frame lays the widget out and knows its fonts; nothing is
@@ -450,7 +451,7 @@ fn a_mouse_click_reaches_a_widget() {
 }
 
 /// A published frame is drawn on every frame it is the newest one, not
-/// just the frame it arrived: a settled UI is neither laid out nor
+/// just the frame it arrived: a settled egui is neither laid out nor
 /// published again, so the drawing side has to keep what it was given.
 #[test]
 fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
@@ -461,14 +462,14 @@ fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
     let mut other = World::new();
     other
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                 0.0,
                 egui::Color32::RED,
             );
         }),]);
-    let target = test_ui_target();
+    let target = test_egui_target();
     let frame = lay_out(
         &other,
         &egui::Context::default(),
@@ -476,7 +477,7 @@ fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
         target.screen,
     );
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     source.frames.publish(0, frame);
     let mut encoder = encoder(&world, ctx);
     let mut scene = Scene::new();
@@ -511,10 +512,10 @@ fn a_displaced_frame_hands_its_textures_to_its_successor() {
     let mut other = World::new();
     other
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             ui.label("a panel with text");
         }),]);
-    let target = test_ui_target();
+    let target = test_egui_target();
     let run = |time: f64| {
         lay_out(
             &other,
@@ -534,7 +535,7 @@ fn a_displaced_frame_hands_its_textures_to_its_successor() {
         "the second pass writes nothing new"
     );
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     source.frames.publish(0, first);
     source.frames.publish(0, second);
     let mut encoder = encoder(&world, ctx);
@@ -553,11 +554,11 @@ fn a_displaced_frame_hands_its_textures_to_its_successor() {
 #[test]
 fn a_frame_laid_out_at_another_size_hands_its_textures_over() {
     let (world, ctx) = test_world();
-    let target = test_ui_target();
+    let target = test_egui_target();
     let mut other = World::new();
     other
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             ui.label("a panel with text");
         }),]);
     let frame = lay_out(
@@ -571,7 +572,7 @@ fn a_frame_laid_out_at_another_size_hands_its_textures_over() {
         "the first pass writes the font atlas"
     );
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     source.frames.publish(0, frame);
     let mut encoder = encoder(&world, ctx);
     let mut scene = Scene::new();
@@ -616,14 +617,14 @@ fn a_frame_laid_out_at_another_size_hands_its_textures_over() {
 /// publisher's atlas and the drawing world's own do not collide.
 #[test]
 fn two_contexts_keep_their_textures_apart() {
-    let target = test_ui_target();
+    let target = test_egui_target();
 
     // A separate world, with a context whose ids start at zero like any
     // other, paints the frame that gets published.
     let mut other = World::new();
     other
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                 0.0,
@@ -648,7 +649,7 @@ fn two_contexts_keep_their_textures_apart() {
 
     // The ids are whatever its context allocated: publishing rewrites
     // nothing, because the drawing side keys by (source, id).
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     source.frames.publish(0, frame);
     let drawn = source.frames.with_frames(|slots| {
         slots[0]
@@ -664,14 +665,14 @@ fn two_contexts_keep_their_textures_apart() {
     });
     assert_eq!(ids, drawn, "publishing leaves the ids alone");
 }
-/// Without an event source the UI still draws, with an idle frame.
+/// Without an event source the overlay still draws, with an idle frame.
 #[test]
 fn a_world_without_input_state_draws_an_idle_frame() {
     let (mut world, ctx) = test_world();
     let target = test_target();
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                 0.0,
@@ -679,7 +680,7 @@ fn a_world_without_input_state_draws_an_idle_frame() {
             );
         }),]);
 
-    let mut source = UiSource::new();
+    let mut source = EguiSource::new();
     let mut encoder = encoder(&world, ctx);
     let mut scene = Scene::new();
     source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);

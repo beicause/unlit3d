@@ -9,7 +9,7 @@
 3. 相机每帧按 `frame.size` 重建 aspect；viewport 宽高比与相机一致？
 4. 一个 mesh 多份实例用 `InstanceColor` / `InstanceCutoff`，没有为每种颜色重建 mesh？
 5. 透明物件用了第二个 key（blend + 不写深度 + 仍测深度 + 背面剔除）+ `ZSortedDrawing`？
-6. UI source 在场景构建之前挂到 pass 下，面板在它的子树里？可复现截图把 egui style 的 `animation_time` 设 0 了（`context_mut().all_styles_mut(..)`）？
+6. egui source 在场景构建之前挂到 pass 下，面板在它的子树里？可复现截图把 egui style 的 `animation_time` 设 0 了（`context_mut().all_styles_mut(..)`）？
 7. 行为回调里没有再取自己这个组件类型；结构变更走 `queue` + `apply`；帧行为有依赖时两端都声明了 `with_order`？
 8. `spawn_context` 每个 world 只调一次；同一 key 类型只注册一次 family？
 9. 跨 world 通信只用 job + `watch` / `subscribe` / `Pending`；`send` 的 `Full` / `Closed` 没被 unwrap 掉；跨 world 实体用 newtype 包了？
@@ -32,10 +32,10 @@
 | `allocate_lit_mesh` panic                                   | slice 为空、通道长度不一致、joints/weights 只给一边、morph 数量不对                                                                                                                      |
 | 透明面发黑 / 错位                                           | 没开 blend、`depth_write_enabled` 没关，或没加 `ZSortedDrawing`                                                                                                                          |
 | 画面拉伸                                                    | viewport 的宽高比与相机的不一致                                                                                                                                                       |
-| 面板看不见                                                  | `UiPanel` 不在 `UiSource` 子树里，或 UI source 挂在场景构建之后                                                                                                                         |
+| 面板看不见                                                  | `EguiPanel` 不在 `EguiSource` 子树里，或 egui source 挂在场景构建之后                                                                                                                         |
 | 有画面但整块纯色、没有明暗                                   | key 的 `unlit` 还是 `true`（示例的 `default_options()` 就是），或灯没 spawn 在画它的 source 子树里，或 `intensity` 为 0、朝向背了                                                  |
 
-### 帧、输入、UI
+### 帧、输入、egui
 
 | 现象                             | 检查什么                                                                                                                                                     |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |

@@ -129,7 +129,7 @@ jobs:
       # page that lists the crates only with `--enable-index-page`, and the
       # crates' `doc(cfg(...))` labels appear only under `--cfg docsrs`; both are
       # nightly-only, so this is the one step that uses nightly. `--all-features`
-      # shows the optional modules — glTF, reflection, UI and winit — rather than
+      # shows the optional modules — glTF, reflection, egui and winit — rather than
       # the default set alone.
       #
       # Warnings are left alone here: a published page with a broken link is

@@ -49,7 +49,7 @@ impl FrameSource for OwningSource {
     }
 
     fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::UI
+        FrameSourceOrder::EGUI
     }
 }
 

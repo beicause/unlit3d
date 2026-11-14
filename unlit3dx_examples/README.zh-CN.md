@@ -132,10 +132,10 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
 控制面板是第五个对象，和其余对象一样住在**玩法 world** 里。面板只能在它自己的
 egui context 所运行的地方构建，所以由这个 world 负责布局并发布帧，渲染 world 负责绘制
-槽位里存着的那一帧：面板实体携带 `UiPanel`，而生成在它旁边的 `UiPanelHost` 承载
+槽位里存着的那一帧：面板实体携带 `EguiPanel`，而生成在它旁边的 `EguiPanelHost` 承载
 那个 context 并替它发布。它的传送按钮直接写这个 world 拥有的序列——播放、暂停、
 倒回就是往被点那一行的 `MidiSequencer` 上写字段。渲染 world 只持有一个挂上那些槽位的
-`UiSource`，负责上传并记录它在槽位里找到的帧。
+`EguiSource`，负责上传并记录它在槽位里找到的帧。
 
 两侧各持有一个 egui context。共用会让两个 world 同时写同一份 memory 与字体图集，而
 egui 把一次 `run_ui` 调用当作一个完整帧，两个 world 对同一个 context 跑它就会把两帧

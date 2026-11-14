@@ -1,6 +1,6 @@
 ---
 name: unlit3d
-description: 用 unlit3d（单 world 渲染库）与 unlit3dx（多 world 运行时）写场景，并用 MCP 调试运行中的 world。涵盖搭 world、挂 source、加几何体与材质、打光、接 UI 与输入、拆多 world，以及读写组件、抓帧截图、注入输入、无窗口按帧驱动。当需要新增或修改场景、扩展 unlit3d/unlit3dx、判断渲染代码该放哪一层、排查画面异常，或观察与操纵运行中的示例时使用。
+description: 用 unlit3d（单 world 渲染库）与 unlit3dx（多 world 运行时）写场景，并用 MCP 调试运行中的 world。涵盖搭 world、挂 source、加几何体与材质、打光、接 egui 与输入、拆多 world，以及读写组件、抓帧截图、注入输入、无窗口按帧驱动。当需要新增或修改场景、扩展 unlit3d/unlit3dx、判断渲染代码该放哪一层、排查画面异常，或观察与操纵运行中的示例时使用。
 ---
 
 # unlit3d / unlit3dx
@@ -9,7 +9,7 @@ description: 用 unlit3d（单 world 渲染库）与 unlit3dx（多 world 运行
 
 | 我要…                                                        | 读                                    |
 | ------------------------------------------------------------ | ------------------------------------- |
-| 写新场景 / 改渲染代码：world、mesh、材质、光照、相机、UI、输入、帧行为 | [SCENE.md](SCENE.md)                  |
+| 写新场景 / 改渲染代码：world、mesh、材质、光照、相机、egui、输入、帧行为 | [SCENE.md](SCENE.md)                  |
 | 拆多 world、判断代码该放哪层、跨 world 通信                 | [MULTI_WORLD.md](MULTI_WORLD.md)      |
 | 调试运行中的 world：MCP 宿主、工具、按帧驱动、录音           | [MCP.md](MCP.md)                      |
 | 画面或行为不对，找原因                                       | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |

@@ -163,7 +163,7 @@ impl LitVariant {
     /// outright by a device without them, so the failure is caught here with the
     /// reason rather than left to wgpu's validation.
     ///
-    /// A variant that declares no array binding at all — the UI's, which reads
+    /// A variant that declares no array binding at all — the overlay's, which reads
     /// only full-precision vertex attributes — has nothing to serve either way,
     /// so it is not asked to pick a path.
     ///

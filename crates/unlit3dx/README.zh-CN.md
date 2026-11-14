@@ -241,15 +241,15 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `midi_file`（定时的 `MidiEventKind`，在这里排序，故调用方不必先排好）。文件自带的循环标记
   会设定循环点；文件从未标记过的段落，也可以直接写 `loop_point` 让它重复。示例里的
   `install_synth` 把整个安装收进一个函数，作为 job 排给音频 world，并回传音色的实体。
-- **ui**（随 `render` 开启）：把 `ui::UiPanelHost` 生成在面板旁边，它把一个 world 的
-  `UiPanel` 布局给另一个 world 里的 `UiSource` 绘制。面板只能在它自己的 egui context
+- **egui**（随 `render` 开启）：把 `egui::EguiPanelHost` 生成在面板旁边，它把一个 world 的
+  `EguiPanel` 布局给另一个 world 里的 `EguiSource` 绘制。面板只能在它自己的 egui context
   所运行的地方构建——回调拿到的是正在构建它的那一趟 pass 的 `&mut egui::Ui`——所以面板
   所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录回来的结果。它持有通向绘制
   world 的 sender，以及绘制侧报回的屏幕尺寸所经的 `unlit3d::relay::SnapshotReader`；绘制
-  侧的 source 用 `unlit3d::ui::UiSource::publish_target` 接收目标，槽位由它自己持有。帧以
+  侧的 source 用 `unlit3d::egui::EguiSource::publish_target` 接收目标，槽位由它自己持有。帧以
   job 的形式过去，槽位因此留在绘制它的那条线程上；绘制侧量出的目标反向以快照回来，因为
   布局永远只需要最新的那一个。无事可画的一 tick——面板静止、没有输入、目标未变、没有到期
-  的重绘——什么都不发，所以静止的 UI 零开销；已有的那一帧会一直被绘制，直到更新的一帧
+  的重绘——什么都不发，所以静止的 egui 零开销；已有的那一帧会一直被绘制，直到更新的一帧
   取代它。绘制 world 的队列拒收的帧会再次发送，而不是被当作已送达，因此队列满只会推迟
   画面，不会丢帧。egui 的动画时钟走的是各帧时长累加出来的帧时间，而不是墙钟：同一串帧
   里动画在同样的帧上走到同样的位置，与这一趟实际跑了多久无关，为此截下的帧也就不取决于

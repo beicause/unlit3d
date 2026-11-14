@@ -47,7 +47,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
 - **bundle 是对象，组件是数据**。一个「对象」= 数据组件 + 它的 tick（行为组件），一个 bundle 一次 spawn：加对象就是 spawn 实体，删对象就是 despawn。不要另立一份 `Vec<MyObject>` 或 `GameState` 大结构体再手动与 world 同步——实体就是对象，组件就是它的字段，query 就是遍历。
 - 组件是数据；行为放行为组件（`OnFrame` / `OnInput` / `OnAudioFill`）或由调用方驱动。unlit_ecs 没有 systems 也没有 resources：要全局可达的状态就 spawn 一个实体（放 `world.shared()`），caller 手里留一个 `Entity` 句柄。
 - 按数据归属拆组件，不做一个塞下一切的巨大组件，也不用一个大 enum 状态机统筹流程：一个实体的不同侧面各是一个组件；跨事件的标志用兄弟组件（回调里取不到自己这个组件类型），「这一帧跳过」就是一例。
-- scope 按「谁看得到」拆：pass / source 是 scope，UI source 与 mesh source 互相看不见，两边都要读写的状态放 `world.shared()`；实体的组件集合在 spawn 时固定，要换集合就 despawn 重 spawn，不要造一个 `Option<Everything>` 组件模拟可变结构。
+- scope 按「谁看得到」拆：pass / source 是 scope，egui source 与 mesh source 互相看不见，两边都要读写的状态放 `world.shared()`；实体的组件集合在 spawn 时固定，要换集合就 despawn 重 spawn，不要造一个 `Option<Everything>` 组件模拟可变结构。
 
 ## 加几何体
 
@@ -96,20 +96,20 @@ world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
 - 多相机靠 `active` 切换，不要 respawn。
 - letterbox：把 `ViewportRect` 设在**场景自己的 pass** 上（`ViewportRect::new(w, h).at(x, y)` 或 `ViewportRect::fit_aspect(aspect, w, h)`），相机按内容尺寸的宽高比建，窗口变大只加黑边。
 
-## UI
+## egui
 
 **可直接抄结构**：
 
 ```rust
-let ui = world.root_scope_mut().spawn(bundle![Source::new(UiSource::new())]);
-world.scope_mut(ui).unwrap().spawn(bundle![UiPanel::new(|_scope, _entity, ui| {
+let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_scope, _entity, ui| {
     ui.label("hello");
 })]);
 ```
 
-- `UiPanel` 的回调第一个参数是 `Scope<'_>`，不是 `&World`。
-- 面板必须挂在 `UiSource` 的子树里；UI source 与 mesh source 各自的作用域互相看不见，两边都要读写状态就放 `world.shared()`。
-- UI source 要在**场景构建之前**挂到 pass 下，场景自己的面板才落在它画的 scope 里。
+- `EguiPanel` 的回调第一个参数是 `Scope<'_>`，不是 `&World`。
+- 面板必须挂在 `EguiSource` 的子树里；egui source 与 mesh source 各自的作用域互相看不见，两边都要读写状态就放 `world.shared()`。
+- egui source 要在**场景构建之前**挂到 pass 下，场景自己的面板才落在它画的 scope 里。
 - egui 窗口显式给 id（`egui::Window::new("x").id(egui::Id::new("x"))`），否则 id 由标题派生，别处按 id 找 rect 会找不到。
 - 想做可复现截图，把 egui style 的 `animation_time` 设 0（`context_mut().all_styles_mut(|style| style.animation_time = 0.0)`；它是 style 的字段，不是 `Context` 的），否则首帧的淡入取决于取帧时刻。
 
@@ -131,7 +131,7 @@ world.apply().expect("the queue is drained");
 - 回调里不能取自己这个组件类型（运行时已借用 → panic），跨事件状态放**兄弟组件**。
 - 结构变更走 `Scope::queue`，`World::apply` 落地；回调只拿 `&World`。
 - 指针优先用 `OnPointer`（触摸也走它），只在需要悬停语义时用 `OnMouse`。
-- 面板要先看 `UiSource` 的 `context().egui_wants_pointer_input()` 再决定是否吃事件，否则拖窗口会同时拖场景。
+- 面板要先看 `EguiSource` 的 `context().egui_wants_pointer_input()` 再决定是否吃事件，否则拖窗口会同时拖场景。
 
 ## 帧行为与顺序
 

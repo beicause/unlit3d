@@ -7,7 +7,7 @@
 //!
 //! - A **snapshot** keeps the newest value only. Publishing replaces the
 //!   slot, so a reader that skips a tick misses history, never the present.
-//!   That is the shape state wants: poses, a playback position, the size a UI
+//!   That is the shape state wants: poses, a playback position, the size an overlay
 //!   is laid out at.
 //! - A **stream** keeps every value, once per reader. The collector appends
 //!   what it found to each reader's queue, and the reader folds that queue

@@ -103,7 +103,7 @@ impl MeshSource {
         //
         // The streams are always packed in their compressed encodings: a
         // caller that wants to upload full-precision vertices builds its own
-        // buffers and its own variant instead, the way the UI path does.
+        // buffers and its own variant instead, the way the overlay path does.
         assert_eq!(
             joints.is_some(),
             weights.is_some(),

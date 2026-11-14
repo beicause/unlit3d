@@ -20,8 +20,8 @@
 ```text
 Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
-  ui_only                a rich egui panel, no mesh source and no camera
-  mesh_and_ui            a cube with the rich egui panel over it, one pass
+  egui_only                a rich egui panel, no mesh source and no camera
+  mesh_and_egui            a cube with the rich egui panel over it, one pass
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
   morphed                a cube blended by two morph targets over six frames
@@ -80,7 +80,7 @@ ECS world 渲染进去并呈现。窗口尺寸变化同时交给 surface 与帧�
 场景快照所保持的 4:3 宽高比。窗口化路径会把这类场景画进渲染目标内该宽高比所能容纳的
 最大矩形，并把该矩形自身的尺寸交给场景，因此每个场景都按它真正被绘制进的那块区域来取
 相机宽高比。渲染目标只会给画面加上黑边：宽窗口与窄窗口看到的是同一个画面，只是更大，
-而不是看到更多，且任何情况下都不会拉伸变形。UI 仍然铺满整个渲染目标而不是那个矩形，
+而不是看到更多，且任何情况下都不会拉伸变形。egui 仍然铺满整个渲染目标而不是那个矩形，
 因为面板本身没有宽高比。快照测试会关掉这个 letterbox，直接按场景自身尺寸绘制，因此
 捕获结果不变。
 

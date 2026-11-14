@@ -69,7 +69,7 @@ cargo xtask test-wasm            # the GPU tests again, in a browser
 
 A suite binary requires the features its cases need, so a crate run without them
 builds it out: `cargo nextest run -p unlit3d` on its own would run the crate's
-unit tests and skip the GPU suite, which needs `gltf`, `mcp` and `ui`.
+unit tests and skip the GPU suite, which needs `gltf`, `mcp` and `egui`.
 
 `nextest` does not run doctests, so `cargo xtask test` follows it with
 `cargo test --doc`. Filtering with `cargo nextest run` is for iterating; it is no

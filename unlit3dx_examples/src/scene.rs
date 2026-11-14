@@ -19,11 +19,11 @@
 //!   world the messages that came due.
 //! - [`mount_controls`] is the panel. It lives here with the rest, and the
 //!   render world draws it: the panel's egui context runs in this world, which
-//!   lays it out, and the render world's `UiSource` holds and draws every frame
+//!   lays it out, and the render world's `EguiSource` holds and draws every frame
 //!   it is sent.
 //!
 //! The panel is the one object whose drawing happens in another world: it
-//! carries a `UiPanel`, and the `UiPanelHost` spawned beside it holds the
+//! carries a `EguiPanel`, and the `EguiPanelHost` spawned beside it holds the
 //! context its interface is built in, laying a frame out each tick and sending
 //! it to the render world as a job. It reads input like any other object, from
 //! this world's own buffer, so the events that move it are the ones this
@@ -45,12 +45,12 @@ use unlit_ecs::bundle;
 use unlit_ecs::{Entity, RemoteEntity, World};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::components::Transform;
+use unlit3d::egui::EguiTarget;
 use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
-use unlit3d::ui::UiTarget;
+use unlit3dx::egui::EguiPanelHost;
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
-use unlit3dx::ui::UiPanelHost;
 
 use crate::render::{camera_looking_at, mesh_source};
 
@@ -60,6 +60,7 @@ use self::shared::SceneBuild;
 
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
 pub use balls::{Ball, BallPhase, Balls};
+pub use egui::{control_panel_job, mount_controls};
 pub use floor::{
     GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
     checker_ground, spawn_floor,
@@ -70,16 +71,15 @@ pub use shapes::{
     shape_kind, shape_mesh,
 };
 pub use shared::{SceneAssets, SceneState};
-pub use ui::{control_panel_job, mount_controls};
 
 mod audio;
 mod balls;
+mod egui;
 mod floor;
 mod music;
 mod shapes;
 mod shared;
 mod tick;
-mod ui;
 
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
@@ -175,7 +175,7 @@ pub(super) const PUBLISH_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(200);
 /// This is the whole of what a render world needs before it can draw, and
 /// none of it is this scene's: no camera, no shape, no panel. Everything
 /// the scene puts in the world — meshes, materials, instances, poses,
-/// camera, UI — arrives as a job, through the sub-world's drain in the
+/// camera, egui — arrives as a job, through the sub-world's drain in the
 /// draw behaviour.
 pub fn setup_render_world(
     host: &mut World,
@@ -251,7 +251,7 @@ pub fn camera_job() -> Job {
 }
 
 /// Queue this scene's own content on the render world: its camera, and —
-/// where there is a panel to draw — the UI source that draws it.
+/// where there is a panel to draw — the egui source that draws it.
 ///
 /// `pass` is the pass returned by [`setup_render_world`], where the panel's
 /// source belongs.
@@ -413,7 +413,7 @@ const PANEL_SLOT: usize = 0;
 #[derive(Clone, Default)]
 pub struct PanelSlots {
     /// The target the drawing side measures every frame it draws.
-    pub target: Snapshot<UiTarget>,
+    pub target: Snapshot<EguiTarget>,
 }
 
 /// The clickable rectangles the control panel laid out most recently.
@@ -423,7 +423,7 @@ pub struct PanelSlots {
 #[derive(Default)]
 pub struct PanelLayout {
     /// The button rectangles, keyed by their visible labels.
-    pub buttons: HashMap<&'static str, unlit3d::ui::egui::Rect>,
+    pub buttons: HashMap<&'static str, unlit3d::egui::egui::Rect>,
 }
 
 /// Build the scene's worlds with the runner `R`: on their own threads, or
@@ -533,7 +533,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 // together. Publishing states an order after every object,
                 // since the panel shows what they wrote this frame, and the
                 // render world draws whatever is there.
-                world.root_scope_mut().spawn(bundle![UiPanelHost::new(
+                world.root_scope_mut().spawn(bundle![EguiPanelHost::new(
                     render.sender.clone(),
                     panels.target.reader(),
                     PANEL_SLOT,
@@ -598,7 +598,7 @@ pub fn spawn_scene<R: WorldRunner>(
 fn publish_panels(world: &World, frame: &Frame) {
     if let Some((_, host)) = world
         .root_scope()
-        .query::<(Entity, &mut UiPanelHost)>()
+        .query::<(Entity, &mut EguiPanelHost)>()
         .iter()
         .next()
     {
@@ -717,15 +717,15 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use unlit_wgpu::ui::ScreenDescriptor;
-    use unlit3d::ui::{UiPanel, egui};
+    use unlit_wgpu::egui::ScreenDescriptor;
+    use unlit3d::egui::{EguiPanel, egui};
 
     /// The target a drawing side publishes once it has measured its pass.
     ///
     /// These tests drive only the gameplay world, so nothing draws and
     /// nothing would otherwise report a size to lay a frame out at.
-    fn measured_target() -> UiTarget {
-        UiTarget {
+    fn measured_target() -> EguiTarget {
+        EguiTarget {
             screen: ScreenDescriptor {
                 size_in_pixels: [WINDOW_SIZE.0, WINDOW_SIZE.1],
                 pixels_per_point: 1.0,
@@ -756,7 +756,7 @@ mod tests {
             .gameplay
             .sender
             .send(Box::new(move |world: &mut World| {
-                world.root_scope_mut().spawn(bundle![UiPanel::new(
+                world.root_scope_mut().spawn(bundle![EguiPanel::new(
                     move |_, _, _ui: &mut egui::Ui| {
                         counted.fetch_add(1, Ordering::Relaxed);
                     },
@@ -816,7 +816,7 @@ mod tests {
             .gameplay
             .sender
             .send(Box::new(move |world: &mut World| {
-                world.root_scope_mut().spawn(bundle![UiPanel::new(
+                world.root_scope_mut().spawn(bundle![EguiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
                         if let Some((_, events)) =
                             world.query::<(Entity, &InputEvents)>().iter().next()

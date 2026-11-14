@@ -14,7 +14,7 @@
 //! Positions pass through as winit reports them: physical pixels with the
 //! origin at the window's top-left corner. Window pixels are what game logic
 //! wants, because a click maps to the pixel under the cursor; a consumer that
-//! needs logical points, UI layout for instance, divides by
+//! needs logical points, egui layout for instance, divides by
 //! [`InputState::scale_factor`](super::InputState::scale_factor) itself, which is
 //! why the state carries that
 //! factor.

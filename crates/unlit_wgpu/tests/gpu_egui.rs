@@ -1,10 +1,13 @@
 //! End-to-end GPU tests for the egui backend.
 //!
-//! These draw a real egui frame through [`UiRenderer`] and inspect the pixels
+//! These draw a real egui frame through [`EguiIntegration`] and inspect the pixels
 //! that come back, so a broken projection, a wrong blend or a missing texture
 //! shows up as a wrong frame rather than as a passing unit test.
 
 use crate::common::*;
+use unlit_wgpu::egui::{
+    EguiIntegration, ScreenDescriptor, egui_variant, screen_view, screen_viewport,
+};
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, FRAME_BINDING, LitVariant, ShaderCache, SpecializedLitPipeline, VIEW_BINDING,
@@ -14,24 +17,23 @@ use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, screen_viewport, ui_variant};
 use unlit_wgpu_test_util::{gpu_tests, snapshot};
 
-/// The UI's logical layout, in points. The physical target scales with the
+/// The overlay's logical layout, in points. The physical target scales with the
 /// pixel density, so this stays fixed across densities.
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-/// Clear color (linear), matching what a 3D scene behind the UI would leave.
+/// Clear color (linear), matching what a 3D scene behind the overlay would leave.
 const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
 /// MSAA sample count shared by the pipeline and the renderer. The renderer
 /// resolves into its target through the MSAA attachment, so a count of 1 would
 /// discard everything.
 const SAMPLES: u32 = 4;
 
-/// The UI: text, a button, an opaque red rectangle and a translucent blue
+/// The egui frame: text, a button, an opaque red rectangle and a translucent blue
 /// rectangle, all at deterministic positions.
-fn ui_contents(ui: &mut egui::Ui) {
+fn egui_contents(ui: &mut egui::Ui) {
     ui.label("hello world");
     let _ = ui.button("press me");
     ui.painter().rect_filled(
@@ -71,15 +73,15 @@ fn input(points: [f32; 2], pixels_per_point: f32) -> egui::RawInput {
 ///
 /// The first frame only knows the default font sizes, so it is run and
 /// discarded; the measured frame is the second one.
-async fn render_ui(ctx: &Ctx, pixels_per_point: f32) -> Frame {
-    render_ui_with(ctx, pixels_per_point, ui_contents).await
+async fn render_egui(ctx: &Ctx, pixels_per_point: f32) -> Frame {
+    render_egui_with(ctx, pixels_per_point, egui_contents).await
 }
 
-/// Like [`render_ui`], drawing the caller's own `contents`.
+/// Like [`render_egui`], drawing the caller's own `contents`.
 ///
 /// The closure runs before each frame, so it can build and register egui
 /// textures once and reuse them across the warm-up and the measured frame.
-async fn render_ui_with(
+async fn render_egui_with(
     ctx: &Ctx,
     pixels_per_point: f32,
     mut contents: impl FnMut(&mut egui::Ui),
@@ -97,19 +99,19 @@ async fn render_ui_with(
     };
     // The caller owns the globals: camera, frame and view buffers, registered
     // in the shared ledger, and the bind group binding them.
-    let camera = uniform_buffer(&ctx.device, "ui::camera", camera_size());
-    let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
-    let view = uniform_buffer(&ctx.device, "ui::view", view_size());
+    let camera = uniform_buffer(&ctx.device, "egui::camera", camera_size());
+    let globals = uniform_buffer(&ctx.device, "egui::globals", globals_size());
+    let view = uniform_buffer(&ctx.device, "egui::view", view_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
     let view_id = graph.insert(view.clone(), None);
-    // The test target is sRGB: the UI converts its output to linear light.
+    // The test target is sRGB: the overlay converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
-    // from its layout, and the UI draws with it.
-    let ui_opts = ui_variant_for_target(&ctx.device);
+    // from its layout, and the overlay draws with it.
+    let egui_opts = egui_variant_for_target(&ctx.device);
     let pipeline =
-        SpecializedPipeline::create(&ctx.device, ui_opts.clone(), &mut ShaderCache::new());
+        SpecializedPipeline::create(&ctx.device, egui_opts.clone(), &mut ShaderCache::new());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
@@ -184,9 +186,9 @@ async fn render_ui_with(
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
-/// The UI variant the tests build, for the test's render target.
-fn ui_variant_for_target(device: &wgpu::Device) -> LitVariant {
-    ui_variant(
+/// The egui variant the tests build, for the test's render target.
+fn egui_variant_for_target(device: &wgpu::Device) -> LitVariant {
+    egui_variant(
         true,
         SurfaceKey {
             color_format: COLOR_FORMAT,
@@ -220,10 +222,10 @@ fn globals_size() -> u64 {
     <Globals as const_shader_layout::ShaderLayout>::SIZE.get()
 }
 
-/// The UI's global bind group: camera, frame-globals and view uniforms.
+/// The overlay's global bind group: camera, frame-globals and view uniforms.
 ///
-/// The layout is the built-in UI pipeline's global layout, so the bind group
-/// is created from the shared pipeline ahead of the UI that draws with it.
+/// The layout is the built-in egui pipeline's global layout, so the bind group
+/// is created from the shared pipeline ahead of the overlay that draws with it.
 fn global_group(
     device: &wgpu::Device,
     pipeline: &SpecializedLitPipeline,
@@ -232,7 +234,7 @@ fn global_group(
     view: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("ui::globals"),
+        label: Some("egui::globals"),
         layout: &pipeline.descriptor().bind_group_layouts(device).global,
         entries: &[
             wgpu::BindGroupEntry {
@@ -253,7 +255,7 @@ fn global_group(
 
 async fn text_and_button_render_over_the_clear() {
     let ctx = Ctx::headless().await;
-    let frame = render_ui(&ctx, 1.0).await;
+    let frame = render_egui(&ctx, 1.0).await;
 
     // Text in the top-left region: the glyphs use egui's light default color,
     // so at least some pixels there are clearly brighter than the clear.
@@ -274,7 +276,7 @@ async fn text_and_button_render_over_the_clear() {
 
 async fn opaque_rect_reaches_full_red() {
     let ctx = Ctx::headless().await;
-    let frame = render_ui(&ctx, 1.0).await;
+    let frame = render_egui(&ctx, 1.0).await;
 
     // Centre of the opaque red rect (16,120)-(112,168).
     let centre = frame.pixel_u8(64, 144);
@@ -286,7 +288,7 @@ async fn opaque_rect_reaches_full_red() {
 
 async fn translucent_rect_blends_over_the_clear() {
     let ctx = Ctx::headless().await;
-    let frame = render_ui(&ctx, 1.0).await;
+    let frame = render_egui(&ctx, 1.0).await;
 
     // Centre of the translucent blue rect (128,120)-(224,168): premultiplied
     // half-alpha blue over the dark clear — clearly blue, but not full blue.
@@ -297,7 +299,7 @@ async fn translucent_rect_blends_over_the_clear() {
     );
 }
 
-/// The UI must land in the same place whatever the pixel density, and its
+/// The overlay must land in the same place whatever the pixel density, and its
 /// clip rectangles must cover the same physical area.
 ///
 /// At a density above one the target is larger, so the same logical layout
@@ -305,10 +307,10 @@ async fn translucent_rect_blends_over_the_clear() {
 /// corner** is what makes this catch a scissor rectangle stated in points
 /// instead of pixels: the projection would still place the geometry
 /// correctly, but an unscaled clip would cut the rectangle off partway.
-async fn ui_lands_in_the_same_place_at_any_pixel_density() {
+async fn egui_lands_in_the_same_place_at_any_pixel_density() {
     let ctx = Ctx::headless().await;
-    let low = render_ui(&ctx, 1.0).await;
-    let high = render_ui(&ctx, 2.0).await;
+    let low = render_egui(&ctx, 1.0).await;
+    let high = render_egui(&ctx, 2.0).await;
 
     // The opaque red rect is (16,120)-(112,168) in points, so its centre
     // is at (64,144) points in both frames — (128,288) pixels at 2x.
@@ -342,7 +344,7 @@ async fn ui_lands_in_the_same_place_at_any_pixel_density() {
 async fn nearest_sampling_options_reach_the_texture() {
     let ctx = Ctx::headless().await;
     let mut image: Option<egui::TextureHandle> = None;
-    let frame = render_ui_with(&ctx, 1.0, |ui| {
+    let frame = render_egui_with(&ctx, 1.0, |ui| {
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
     })
@@ -365,18 +367,18 @@ async fn nearest_sampling_options_reach_the_texture() {
     );
 }
 
-async fn ui_matches_snapshot() {
+async fn egui_matches_snapshot() {
     let ctx = Ctx::headless().await;
     // The image texture is registered once and reused, so the measured frame
     // redraws the same texture rather than reallocating it.
     let mut image: Option<egui::TextureHandle> = None;
-    let frame = render_ui_with(&ctx, 1.0, |ui| {
-        ui_contents(ui);
+    let frame = render_egui_with(&ctx, 1.0, |ui| {
+        egui_contents(ui);
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
     })
     .await;
-    assert_image_snapshot(snapshot!("egui_ui.webp"), &frame, frame.width, frame.height);
+    assert_image_snapshot(snapshot!("egui.webp"), &frame, frame.width, frame.height);
 }
 
 /// A magenta-and-white 2x1 image registered with egui: the left half is
@@ -412,7 +414,7 @@ async fn user_image_uploads_and_renders() {
     let ctx = Ctx::headless().await;
     let mut image: Option<egui::TextureHandle> = None;
 
-    let frame = render_ui_with(&ctx, 1.0, |ui| {
+    let frame = render_egui_with(&ctx, 1.0, |ui| {
         ui.label("hello");
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
@@ -453,16 +455,16 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
         size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
     };
-    let camera = uniform_buffer(&ctx.device, "ui::camera", camera_size());
-    let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
-    let view = uniform_buffer(&ctx.device, "ui::view", view_size());
+    let camera = uniform_buffer(&ctx.device, "egui::camera", camera_size());
+    let globals = uniform_buffer(&ctx.device, "egui::globals", globals_size());
+    let view = uniform_buffer(&ctx.device, "egui::view", view_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
     let view_id = graph.insert(view.clone(), None);
-    let ui_opts = ui_variant_for_target(&ctx.device);
+    let egui_opts = egui_variant_for_target(&ctx.device);
     let pipeline =
-        SpecializedPipeline::create(&ctx.device, ui_opts.clone(), &mut ShaderCache::new());
+        SpecializedPipeline::create(&ctx.device, egui_opts.clone(), &mut ShaderCache::new());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
@@ -533,16 +535,16 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
         size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
     };
-    let camera = uniform_buffer(&ctx.device, "ui::camera", camera_size());
-    let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
-    let view = uniform_buffer(&ctx.device, "ui::view", view_size());
+    let camera = uniform_buffer(&ctx.device, "egui::camera", camera_size());
+    let globals = uniform_buffer(&ctx.device, "egui::globals", globals_size());
+    let view = uniform_buffer(&ctx.device, "egui::view", view_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
     let view_id = graph.insert(view.clone(), None);
-    let ui_opts = ui_variant_for_target(&ctx.device);
+    let egui_opts = egui_variant_for_target(&ctx.device);
     let pipeline =
-        SpecializedPipeline::create(&ctx.device, ui_opts.clone(), &mut ShaderCache::new());
+        SpecializedPipeline::create(&ctx.device, egui_opts.clone(), &mut ShaderCache::new());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals, &view),
         None,
@@ -603,9 +605,9 @@ gpu_tests! {
     text_and_button_render_over_the_clear,
     opaque_rect_reaches_full_red,
     translucent_rect_blends_over_the_clear,
-    ui_lands_in_the_same_place_at_any_pixel_density,
+    egui_lands_in_the_same_place_at_any_pixel_density,
     nearest_sampling_options_reach_the_texture,
-    ui_matches_snapshot,
+    egui_matches_snapshot,
     user_image_uploads_and_renders,
     freeing_a_texture_releases_its_graph_nodes,
     releasing_the_integration_returns_its_graph_nodes,

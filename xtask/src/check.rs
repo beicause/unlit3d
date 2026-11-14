@@ -30,7 +30,7 @@ use crate::step;
 /// `--workspace`, because `--no-default-features` reaches only the packages
 /// the command names: for every other package the features come from the
 /// dependency edges that reach it, and feature unification applies all of
-/// them. Every application crate asks `unlit3d` for `ui` and `winit`, so a
+/// them. Every application crate asks `unlit3d` for `egui` and `winit`, so a
 /// workspace-wide run would compile the libraries with exactly the backends
 /// this pass exists to leave out.
 ///
@@ -115,7 +115,7 @@ pub fn run(release: bool) -> Result<(), String> {
 /// facilities have to compile and lint on their own, without the backends a
 /// caller may leave out. Naming them keeps the feature graph to the edges
 /// between the four, which ask for nothing, because the application crates
-/// are left out — each of them asks `unlit3d` for `ui` and `winit`, and
+/// are left out — each of them asks `unlit3d` for `egui` and `winit`, and
 /// feature unification would hand those to the libraries too. The same reason
 /// rules out `--workspace`: `--no-default-features` does not follow a
 /// dependency edge.

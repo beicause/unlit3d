@@ -8,8 +8,8 @@
 use super::{BASELINE_SIZE, SceneControl, SceneDef, SceneOptions};
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit_wgpu::pipeline::LitOptions;
+use unlit3d::egui::{EguiSource, egui};
 use unlit3d::prelude::*;
-use unlit3d::ui::{UiSource, egui};
 
 /// The number of samples every frame is rendered with.
 pub const SAMPLE_COUNT: u32 = 4;
@@ -39,8 +39,8 @@ pub static SCENE: SceneDef = SceneDef {
     step_seconds: None,
     samples: SAMPLE_COUNT,
     depth: true,
-    ui: true,
-    reproducible_ui: true,
+    egui: true,
+    reproducible_egui: true,
     build,
 };
 
@@ -53,7 +53,7 @@ fn build(
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let SceneOptions { ui: panels, .. } = options;
+    let SceneOptions { egui: panels, .. } = options;
 
     // The built-in mesh source and the frame driver, as resource entities.
     let mut source = MeshSource::new(&world.root_scope(), context);
@@ -117,7 +117,7 @@ fn build(
         source_entity,
         bundle![orbit_camera(size, 0.6, ORBIT_ELEVATION)],
     );
-    // The panel is drawn by the UI source and the cube by the mesh source, and
+    // The panel is drawn by the egui source and the cube by the mesh source, and
     // one source's scope reaches nothing of the other's. The state both of them
     // touch therefore lives in the shared subtree, which every scope reaches: the
     // spin the panel drives, the frame count it reads, the drag the pointer
@@ -149,7 +149,7 @@ fn build(
     );
 
     if panels {
-        let panel = UiPanel::new(move |world, _entity, ui| {
+        let panel = EguiPanel::new(move |world, _entity, ui| {
             // The id is set explicitly: `Window::new` derives it from the
             // title's `Atoms` text, whose hash differs from a plain string
             // id, so other panels could not find this window's rect.
@@ -191,7 +191,7 @@ fn build(
                     }
 
                     // The world's input state, read out under the panel's own
-                    // controls: what makes the events visible next to the UI
+                    // controls: what makes the events visible next to the overlay
                     // they also drive. One window, so no second title bar can
                     // ever sit on top of this one and be painted as the window
                     // the user is working in.
@@ -216,12 +216,12 @@ fn build(
         });
         super::spawn_in(
             world,
-            ui.expect("the UI source was mounted"),
+            ui.expect("the egui source was mounted"),
             bundle![panel],
         );
     }
     // The second panel shows the world's input state, which is what makes the
-    // events visible next to the UI they also drive.
+    // events visible next to the overlay they also drive.
     // A key behaviour: space toggles the spin, and it reads the state the
     // panel's checkbox also writes.
     world
@@ -255,23 +255,23 @@ fn build(
             };
 
             // A press or drag over one of the panels drives the panel, not the
-            // camera: the UI's context knows what it claimed of the frame it laid
+            // camera: the overlay's context knows what it claimed of the frame it laid
             // out, and a pointer behaviour yields to it. The claim is broad — it
             // is `true` whenever the pointer hangs over a panel, let alone drags
             // one — so a gesture that started on the scene keeps working even when
             // it sweeps over a panel. The contact is dropped here too, so a press
-            // that ends over a UI never leaves a drag behind for the scene.
-            let over_ui =
+            // that ends over an overlay never leaves a drag behind for the scene.
+            let over_egui =
                 world
                     .root_scope()
                     .query::<(Entity, &Source)>()
                     .iter()
                     .any(|(_, source)| {
                         source
-                            .as_ref::<UiSource>()
+                            .as_ref::<EguiSource>()
                             .is_ok_and(|ui| ui.context().egui_wants_pointer_input())
                     });
-            if over_ui {
+            if over_egui {
                 let _ = world
                     .root_scope()
                     .query_one::<&mut DragFrom>(spin)

@@ -22,8 +22,8 @@ one can be switched to at runtime. `--list-scenes` prints the table:
 ```text
 Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
-  ui_only                a rich egui panel, no mesh source and no camera
-  mesh_and_ui            a cube with the rich egui panel over it, one pass
+  egui_only                a rich egui panel, no mesh source and no camera
+  mesh_and_egui            a cube with the rich egui panel over it, one pass
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
   morphed                a cube blended by two morph targets over six frames
@@ -105,7 +105,7 @@ the target fits, and hands the scene that rectangle's own size, so every scene
 takes its camera aspect from the region it is actually drawn into. The target
 only ever adds bars around the picture: a wide window shows the same view a
 narrow one does, larger, rather than more of it, and nothing is ever stretched.
-The UI is drawn over the whole
+The overlay is drawn over the whole
 target rather than the letterboxed region, because a panel has no aspect of its
 own. The snapshot tests turn the letterbox off and draw at the scene's own size,
 so a capture is unchanged.

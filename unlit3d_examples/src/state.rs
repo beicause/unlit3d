@@ -59,7 +59,7 @@ pub(crate) struct SceneSwitch(pub(crate) Option<&'static scenes::SceneDef>);
 /// A flag rather than the state to move to: the button asks for the window to
 /// change, and which way it changes is read from the window itself at the
 /// moment the request is served. A panel runs while the world is borrowed to
-/// lay the UI out, so it can only record the click; the frame loop owns the
+/// lay the overlay out, so it can only record the click; the frame loop owns the
 /// window the request is served on. See [`fullscreen`].
 pub(crate) struct FullscreenRequest(pub(crate) bool);
 

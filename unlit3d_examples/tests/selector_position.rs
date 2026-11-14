@@ -1,7 +1,7 @@
 //! The floating panels keep their dragged rectangles across a scene switch and
 //! follow the corners they belong to when the screen changes shape.
 //!
-//! A scene switch rebuilds the whole scene — world, renderer, and the egui
+//! A scene switch rebuilds the whole scene — world, renderer, and the overlay
 //! context the window's position lives in — so the shell reads each window's
 //! last rectangle before dropping the old scene and hands it to the new one as
 //! its opening position. These tests pin both halves of that hand-off, for the
@@ -12,8 +12,8 @@
 //! natively and as the module a wasm test page loads.
 
 use unlit_wgpu_test_util::{Ctx, gpu_tests};
+use unlit3d::egui::egui;
 use unlit3d::prelude::*;
-use unlit3d::ui::egui;
 use unlit3d_examples::scenes::{self, SceneOptions};
 use unlit3d_examples::{FIXED_STEP, PanelRects, Scene};
 
@@ -182,7 +182,7 @@ fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
         .query::<(Entity, &Source)>()
         .iter()
         .find_map(|(_, source)| {
-            let ui = source.as_ref::<UiSource>().ok()?;
+            let ui = source.as_ref::<EguiSource>().ok()?;
             ui.context()
                 .memory(|memory| memory.area_rect(egui::Id::unique(id)))
         })
@@ -198,7 +198,7 @@ fn scene_at(
         ctx.render_device(),
         size,
         SceneOptions {
-            ui: true,
+            egui: true,
             selector: true,
             reproducible: true,
             letterbox: false,
@@ -219,7 +219,7 @@ fn scene_with_gpu_info(
         ctx.render_device(),
         size,
         SceneOptions {
-            ui: true,
+            egui: true,
             selector: true,
             reproducible: true,
             letterbox: false,
@@ -236,7 +236,7 @@ fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Sc
         ctx.render_device(),
         size,
         SceneOptions {
-            ui: true,
+            egui: true,
             selector: true,
             reproducible: true,
             letterbox: false,

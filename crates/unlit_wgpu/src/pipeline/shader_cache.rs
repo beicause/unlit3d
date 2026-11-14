@@ -83,7 +83,7 @@ impl core::fmt::Debug for ShaderRecipe {
 /// Who holds the cache decides how far that reaches. A
 /// [`Variants`](crate::specialize::Variants) family
 /// holds one, so every variant of that family shares its modules; a source that
-/// builds pipelines outside a family — the UI, whose targets each bring their
+/// builds pipelines outside a family — the overlay, whose targets each bring their
 /// own pipeline — holds one of its own across them. Two holders do not share
 /// modules, so a module two of them both draw with is composed once per holder.
 ///
@@ -218,7 +218,7 @@ mod tests {
         };
 
         modules.get_or_create(&device, &key, "unlit_wgpu::lit", compose);
-        modules.get_or_create(&device, &key, "unlit3d::ui", compose);
+        modules.get_or_create(&device, &key, "unlit3d::egui", compose);
         assert_eq!(
             composes.get(),
             1,

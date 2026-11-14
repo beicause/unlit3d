@@ -23,8 +23,8 @@
 | 场景                                                        | 演示什么                                                       |
 | ----------------------------------------------------------- | -------------------------------------------------------------- |
 | `spin_cube`                                                 | 纹理立方体 + 两块 egui 面板 + 键盘与拖拽；默认场景，也是窄宽高比快照的取样对象 |
-| `ui_only`                                                   | 没有 mesh source、没有相机也能出一帧 UI                          |
-| `mesh_and_ui`                                               | mesh source 与 UI source 同帧的记录顺序、scissor、load ops       |
+| `egui_only`                                                   | 没有 mesh source、没有相机也能出一帧 egui                          |
+| `mesh_and_egui`                                               | mesh source 与 egui source 同帧的记录顺序、scissor、load ops       |
 | `transparent`                                               | 透明 + `ZSortedDrawing` + blend                                  |
 | `animated`                                                  | 八帧内 mesh 的分配、回收、平移旋转                               |
 | `skinned` / `morphed` / `instanced_skinned_morph`           | 蒙皮、morph，以及共享一个 mesh 的实例合并                        |
@@ -34,7 +34,7 @@
 | `lit`                                                       | Lambert 光照：共 8 盏（2 方向 + 3 点 + 1 聚光 + 1 矩形 + 1 三角面光），`unlit: false` 的 key |
 | `lit_clusters`                                              | 光照分簇，改 `ClusterConfig` 的切片距离与远平面                  |
 | `outline` / `outline_msaa`                                  | inverted-hull 描边壳；后者跑在 4x MSAA 目标上                    |
-| `unlit3dx_examples`（另一个二进制，不是场景 id）              | 多 world：render / physics / audio / gameplay 分工，跨 world UI，MIDI |
+| `unlit3dx_examples`（另一个二进制，不是场景 id）              | 多 world：render / physics / audio / gameplay 分工，跨 world egui，MIDI |
 
 ## 在源码里的位置
 
@@ -49,7 +49,7 @@
 - 目标特化：`crates/unlit_wgpu/src/specialize.rs`（`SurfaceKey` / `SurfaceTarget::set_surface`）。
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。
 - 输入：`crates/unlit3d/src/input.rs`（`input/` 目录下：事件词汇在 `event.rs`，状态在 `state.rs`，帧循环的接线在 `input.rs` 本身）。
-- UI：`crates/unlit3d/src/ui.rs`。
+- egui：`crates/unlit3d/src/egui.rs`。
 - winit 桥与内置行为：`crates/unlit3d/src/winit/` 下的 `event.rs` / `builtin.rs` / `surface.rs`。
 
 ### 多 world

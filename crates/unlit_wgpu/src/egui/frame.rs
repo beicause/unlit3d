@@ -1,19 +1,19 @@
 use super::*;
 
 impl EguiIntegration {
-    /// Build the UI integration around a caller-supplied `pipeline`,
-    /// registering the UI's per-texture resources in `graph`.
+    /// Build the overlay integration around a caller-supplied `pipeline`,
+    /// registering the overlay's per-texture resources in `graph`.
     ///
-    /// `pipeline` is the built-in lit pipeline the UI draws with, configured
+    /// `pipeline` is the built-in lit pipeline the overlay draws with, configured
     /// for the target the pass renders into — its color format, sample count
-    /// and blend state. The caller builds it up front, so the UI does not
+    /// and blend state. The caller builds it up front, so the overlay does not
     /// compile a pipeline of its own.
     ///
     /// The global bind group — the camera, the frame globals and the view —
     /// is the caller's, and it is handed to [`Self::scene`] rather than kept
     /// here: the frame owns the uniforms and builds one group per camera and
-    /// viewport its draws name, so a source can draw the same UI through two
-    /// cameras without owning either group. Everything else the UI overlays is
+    /// viewport its draws name, so a source can draw the same interface through two
+    /// cameras without owning either group. Everything else the overlay draws is
     /// the caller's too: the integration owns only egui's textures and the
     /// geometry they are drawn with. Sharing the caller's graph — usually the
     /// one kept alongside the
@@ -70,7 +70,7 @@ impl EguiIntegration {
     ) {
         let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
         let textures = core::mem::take(&mut output.textures_delta);
-        let mut sources = [UiFrame {
+        let mut sources = [EguiFrame {
             source: Source::LOCAL,
             textures,
             primitives: &primitives,
@@ -82,7 +82,7 @@ impl EguiIntegration {
     /// for [`Self::scene`].
     ///
     /// Tessellation needs the [`egui::Context`] that produced the shapes — its
-    /// font atlas and tessellation options — so a UI laid out in one world and
+    /// font atlas and tessellation options — so an overlay laid out in one world and
     /// drawn in another cannot be tessellated by the drawing side. Such a
     /// caller tessellates where each context lives and hands each result over
     /// with the [`Source`] it came from.
@@ -103,7 +103,7 @@ impl EguiIntegration {
         graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        sources: &mut [UiFrame<'_>],
+        sources: &mut [EguiFrame<'_>],
         screen: ScreenDescriptor,
     ) {
         for frame in sources.iter_mut() {
@@ -193,7 +193,7 @@ impl EguiIntegration {
     ) {
         // The scratch buffers are taken out of `self` for the duration, so the
         // draw list can be filled while they are written, then put back: a
-        // steady UI reuses one allocation per stream rather than taking fresh
+        // steady egui reuses one allocation per stream rather than taking fresh
         // ones every frame.
         let mut vertices = core::mem::take(&mut self.packed_vertices);
         let mut indices = core::mem::take(&mut self.packed_indices);
@@ -228,7 +228,7 @@ impl EguiIntegration {
     /// shared with whatever else the frame is drawing.
     ///
     /// `global` is the caller's global bind group for the camera, the frame
-    /// globals and the view this frame draws through; the UI binds it at
+    /// globals and the view this frame draws through; the overlay binds it at
     /// [`GLOBAL_GROUP`] for every draw.
     pub fn scene(&self, graph: &ResourceGraph, global: &wgpu::BindGroup) -> Scene {
         if self.vertices.is_none() || self.indices.is_none() || self.draws.is_empty() {
@@ -260,7 +260,7 @@ impl EguiIntegration {
             // already name its vertices pool-globally, so the draw needs no
             // base vertex: one range addresses the position, the UV and the
             // color together.
-            // The trailing tier of the composite: the UI sits above the
+            // The trailing tier of the composite: the overlay sits above the
             // depth-sorted pool whatever its depth, and a clipped draw here
             // is followed by nothing its rectangle could leak into.
             let entry = DrawEntry::new(pipeline, DrawRange::indexed(draw.indices.clone()))
@@ -285,14 +285,14 @@ impl EguiIntegration {
     /// new buffer in `graph`.
     fn reserve(&mut self, graph: &mut ResourceGraph, counts: GeometryCounts) {
         let GeometryCounts { vertices, indices } = counts;
-        // Grow geometrically so a UI that grows over a few frames does not
+        // Grow geometrically so an overlay that grows over a few frames does not
         // reallocate every frame.
         if self.vertices.is_none() || self.vertex_capacity < vertices {
             self.vertex_capacity = vertices
                 .max(self.vertex_capacity + self.vertex_capacity / 2)
                 .max(1);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("ui::vertices"),
+                label: Some("egui::vertices"),
                 size: (self.vertex_capacity * (POSITION_STRIDE + SECONDARY_STRIDE)) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -315,7 +315,7 @@ impl EguiIntegration {
                 .max(self.index_capacity + self.index_capacity / 2)
                 .max(1);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("ui::indices"),
+                label: Some("egui::indices"),
                 size: (self.index_capacity * size_of::<u32>()) as u64,
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,

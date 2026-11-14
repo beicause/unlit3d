@@ -67,6 +67,10 @@ pub mod request;
 // run, which captures a mix on the web too, where the tools are not built. Its
 // format is public wherever it is compiled: the headless run encodes its mix
 // through it rather than carrying an encoder of its own.
+/// egui panels laid out in one world and drawn in another.
+#[cfg(feature = "render")]
+#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
+pub mod egui;
 #[cfg(feature = "audio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "audio")))]
 pub mod record;
@@ -75,10 +79,6 @@ pub mod record;
 pub mod synth;
 /// World threads and their pacing.
 pub mod thread;
-/// UI panels laid out in one world and drawn in another.
-#[cfg(feature = "render")]
-#[cfg_attr(docsrs, doc(cfg(feature = "render")))]
-pub mod ui;
 /// Threaded worlds, which run on their own thread.
 pub mod world;
 

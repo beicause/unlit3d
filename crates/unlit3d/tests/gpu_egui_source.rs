@@ -1,9 +1,9 @@
-//! End-to-end GPU tests for [`UiSource`] as a frame source.
+//! End-to-end GPU tests for [`EguiSource`] as a frame source.
 //!
-//! Two groups. The first draws UI with no `MeshSource` and no camera at all;
-//! the second draws a mesh and a UI in one pass, which is where the two sources
+//! Two groups. The first draws egui with no `MeshSource` and no camera at all;
+//! the second draws a mesh and an overlay in one pass, which is where the two sources
 //! have to agree on record order, scissor state and the frame's load ops.
-//! Snapshots of these frames are verified by the `ui_only` and `mesh_and_ui`
+//! Snapshots of these frames are verified by the `egui_only` and `mesh_and_egui`
 //! scenes in `unlit3d_examples`. Every test renders one frame to warm egui up
 //! — the first frame does not know the font metrics — and asserts on the
 //! second. Nothing here reads the clock or the layout feedback, so a frame is
@@ -14,7 +14,7 @@ use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
-/// The colour a UI-only test clears to, distinguishable from every panel.
+/// The colour an overlay-only test clears to, distinguishable from every panel.
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.02,
     g: 0.02,
@@ -42,7 +42,7 @@ const RED: egui::Color32 = egui::Color32::from_rgb(255, 0, 0);
 /// The second panel's colour, chosen so a pixel tells the two apart.
 const GREEN: egui::Color32 = egui::Color32::from_rgb(0, 255, 0);
 
-/// A translucent red: the UI's red at half alpha, for the rich panel's band.
+/// A translucent red: the overlay's red at half alpha, for the rich panel's band.
 const TRANSLUCENT_RED: egui::Color32 = egui::Color32::from_rgba_premultiplied(128, 0, 0, 128);
 
 /// Where a panel paints, in logical points.
@@ -82,8 +82,8 @@ impl Rect {
 }
 
 /// A panel that paints `rect` in `color`.
-fn paint(rect: Rect, color: egui::Color32) -> UiPanel {
-    UiPanel::new(move |_world, _entity, ui| {
+fn paint(rect: Rect, color: egui::Color32) -> EguiPanel {
+    EguiPanel::new(move |_world, _entity, ui| {
         ui.painter().rect_filled(rect.egui(), 0.0, color);
     })
 }
@@ -132,9 +132,9 @@ const BAND: Rect = Rect::new(8.0, 136.0, 240.0, 40.0);
 /// Everything sits at a fixed place, and nothing here reads the clock or reacts
 /// to layout feedback, so two frames of the same world come out identical —
 /// which is what lets it stand as a snapshot. The blend band is translucent so
-/// that it shows the UI blending over whatever was drawn before it rather than
+/// that it shows the overlay blending over whatever was drawn before it rather than
 /// replacing it.
-fn rich_panel() -> UiPanel {
+fn rich_panel() -> EguiPanel {
     // The texture is registered inside the closure because it needs a context,
     // and cached so the passes egui runs in one frame share one handle. The
     // switch and the slider keep their state between frames for the same
@@ -143,7 +143,7 @@ fn rich_panel() -> UiPanel {
     let mut spin = true;
     let mut blend = 0.5f32;
 
-    UiPanel::new(move |_world, _entity, ui| {
+    EguiPanel::new(move |_world, _entity, ui| {
         let image = image.get_or_insert_with(|| {
             ui.ctx().load_texture(
                 "unlit3d::test-image",
@@ -152,7 +152,7 @@ fn rich_panel() -> UiPanel {
             )
         });
 
-        // The widgets go into a child ui pinned to a fixed rectangle, so their
+        // The widgets go into a child interface pinned to a fixed rectangle, so their
         // layout does not depend on how much room the other panels took.
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -160,7 +160,7 @@ fn rich_panel() -> UiPanel {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
             |ui| {
                 ui.heading("unlit3d");
-                ui.label("frame source UI");
+                ui.label("frame source egui");
                 ui.separator();
                 ui.checkbox(&mut spin, "spin");
                 ui.add(egui::Slider::new(&mut blend, 0.0..=1.0));
@@ -210,10 +210,10 @@ fn rich_panel() -> UiPanel {
 
 /// A panel that paints the band in `color`, opaque or not.
 ///
-/// The band is the part of the panel that covers a mesh behind the UI, so a
+/// The band is the part of the panel that covers a mesh behind the overlay, so a
 /// test that measures how an order or a blend resolves uses this rather than
 /// the full panel.
-fn band_panel(color: egui::Color32) -> UiPanel {
+fn band_panel(color: egui::Color32) -> EguiPanel {
     paint(BAND, color)
 }
 
@@ -266,22 +266,22 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
     count
 }
 
-/// A UI-only world: a frame context, a renderer and a `UiSource`, with no
+/// An overlay-only world: a frame context, a renderer and a `EguiSource`, with no
 /// `MeshSource` and no camera.
-fn ui_only_world(world: &mut World, ctx: &Ctx) -> (TestGpu, Entity) {
+fn egui_only_world(world: &mut World, ctx: &Ctx) -> (TestGpu, Entity) {
     let gpu = TestGpu::frame_only(world, ctx);
-    let ui = mount_ui_source(world, &gpu);
+    let ui = mount_egui_source(world, &gpu);
     (gpu, ui)
 }
 
-/// Mount a `UiSource` and answer its entity: a panel spawned under it is what
+/// Mount a `EguiSource` and answer its entity: a panel spawned under it is what
 /// the source runs.
-fn mount_ui_source(world: &mut World, gpu: &TestGpu) -> Entity {
-    gpu.spawn_source(world, UiSource::new())
+fn mount_egui_source(world: &mut World, gpu: &TestGpu) -> Entity {
+    gpu.spawn_source(world, EguiSource::new())
 }
 
-/// Spawn `panel` under the UI source, which is the scope it runs.
-fn spawn_panel(world: &mut World, ui: Entity, panel: UiPanel) -> Entity {
+/// Spawn `panel` under the egui source, which is the scope it runs.
+fn spawn_panel(world: &mut World, ui: Entity, panel: EguiPanel) -> Entity {
     world
         .scope_mut(ui)
         .expect("a source entity is its own scope")
@@ -290,7 +290,7 @@ fn spawn_panel(world: &mut World, ui: Entity, panel: UiPanel) -> Entity {
 
 /// Spawn an input buffer stating the window's size and density.
 ///
-/// The UI reads both from it, so this is how a test sets the pixel density.
+/// The overlay reads both from it, so this is how a test sets the pixel density.
 fn spawn_input(world: &mut World, scale_factor: f32) {
     let input = InputWriter::new();
     let events = input.subscribe();
@@ -307,7 +307,7 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
     events.refresh();
 }
 
-/// State the load ops every UI test opens its pass with.
+/// State the load ops every egui test opens its pass with.
 fn spawn_load_ops(world: &World, gpu: &TestGpu) {
     // The load ops belong to the pass that opens the target, not to any one of
     // the sources recorded into it.
@@ -324,17 +324,17 @@ fn spawn_load_ops(world: &World, gpu: &TestGpu) {
 }
 
 // ---------------------------------------------------------------------------
-// A. UI only — no mesh source, no camera
+// A. egui only — no mesh source, no camera
 // ---------------------------------------------------------------------------
 
 /// Two panels are both driven, and each paints its own region.
 ///
 /// Panels are entities, so the source has to run every one of them rather than
 /// a single interface.
-async fn ui_only_with_two_panels() {
+async fn egui_only_with_two_panels() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    let (gpu, ui) = egui_only_world(&mut world, &ctx);
     spawn_load_ops(&world, &gpu);
 
     let left = Rect::new(16.0, 40.0, 72.0, 72.0);
@@ -374,14 +374,14 @@ async fn ui_only_with_two_panels() {
     );
 }
 
-/// The pass still opens with the frame's load ops; the UI draws on top.
+/// The pass still opens with the frame's load ops; the overlay draws on top.
 ///
-/// A UI is an overlay, so a pixel no panel covers must still be the clear
+/// An overlay is an overlay, so a pixel no panel covers must still be the clear
 /// colour the `RenderLoadOps` asked for.
-async fn ui_only_clears_to_load_ops() {
+async fn egui_only_clears_to_load_ops() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    let (gpu, ui) = egui_only_world(&mut world, &ctx);
     spawn_load_ops(&world, &gpu);
 
     let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
@@ -405,16 +405,16 @@ async fn ui_only_clears_to_load_ops() {
     );
 }
 
-/// The UI draws correctly into a multisampled sRGB target.
+/// The overlay draws correctly into a multisampled sRGB target.
 ///
 /// The pipeline is specialized for the target's sample count and color
 /// format, so a mismatch would be a validation error, and an sRGB mistake
 /// would show up as an inverted or darkened colour.
-async fn ui_only_multisampled_and_srgb() {
+async fn egui_only_multisampled_and_srgb() {
     const SAMPLES: u32 = 4;
     let ctx = Ctx::headless().await;
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    let (gpu, ui) = egui_only_world(&mut world, &ctx);
     spawn_load_ops(&world, &gpu);
 
     let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
@@ -445,11 +445,11 @@ async fn ui_only_multisampled_and_srgb() {
 /// physical pixels. This samples the rectangle's far corner because a clip
 /// that forgot to scale by the density would cut the panel short there while
 /// leaving its centre intact.
-async fn ui_only_at_high_pixel_density() {
+async fn egui_only_at_high_pixel_density() {
     const PPP: f32 = 2.0;
     let ctx = Ctx::headless().await;
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    let (gpu, ui) = egui_only_world(&mut world, &ctx);
     spawn_load_ops(&world, &gpu);
     spawn_input(&mut world, PPP);
 
@@ -493,7 +493,7 @@ async fn ui_only_at_high_pixel_density() {
 }
 
 // ---------------------------------------------------------------------------
-// B. Mesh and UI in one frame
+// B. Mesh and egui in one frame
 // ---------------------------------------------------------------------------
 
 /// A world with a cube drawn through the mesh source.
@@ -517,17 +517,22 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
     gpu
 }
 
-/// Render a mesh+UI frame and return the pixels.
+/// Render a mesh+egui frame and return the pixels.
 ///
-/// The `panel` is the UI, and `ui_first` decides whether it is recorded before
+/// The `panel` is the overlay, and `egui_first` decides whether it is recorded before
 /// or after the mesh.
-async fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPanel) -> Frame {
+async fn mesh_and_egui_frame(
+    ctx: &Ctx,
+    world: &mut World,
+    egui_first: bool,
+    panel: EguiPanel,
+) -> Frame {
     let gpu = mesh_world(ctx, world);
     spawn_load_ops(world, &gpu);
 
-    let ui = mount_ui_source(world, &gpu);
+    let ui = mount_egui_source(world, &gpu);
     spawn_panel(world, ui, panel);
-    if ui_first {
+    if egui_first {
         let _ = world
             .root_scope()
             .query_one::<&mut Source>(ui)
@@ -548,27 +553,28 @@ const OVERLAP_PIXEL: (u32, u32) = (128, 144);
 /// A pixel inside the band that the cube does not cover.
 const PANEL_PIXEL: (u32, u32) = (16, 144);
 
-/// The UI paints over the mesh whatever the source record order is.
+/// The overlay paints over the mesh whatever the source record order is.
 ///
-/// Every UI draw carries `DrawOrder::After`, so the pass composite tiers the
-/// UI behind the sequenced geometry regardless of where `FrameSourceOrder`
-/// puts the `UiSource`: the record order only shapes the sequence tier, and
+/// Every egui draw carries `DrawOrder::After`, so the pass composite tiers the
+/// egui behind the sequenced geometry regardless of where `FrameSourceOrder`
+/// puts the `EguiSource`: the record order only shapes the sequence tier, and
 /// the mesh is its only member here, so both frames come out identical.
-async fn ui_draws_over_the_mesh_in_any_source_order() {
+async fn egui_draws_over_the_mesh_in_any_source_order() {
     /// An opaque panel, so the topmost draw decides the overlap pixel.
     const OPAQUE_BLUE: egui::Color32 = egui::Color32::from_rgb(0, 0, 255);
 
     let ctx = Ctx::headless().await;
-    let mut ui_last = World::new();
-    let frame_ui_last = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE)).await;
+    let mut egui_last = World::new();
+    let frame_egui_last =
+        mesh_and_egui_frame(&ctx, &mut egui_last, false, band_panel(OPAQUE_BLUE)).await;
 
-    let mut ui_first = World::new();
-    let frame_ui_first =
-        mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE)).await;
+    let mut egui_first = World::new();
+    let frame_egui_first =
+        mesh_and_egui_frame(&ctx, &mut egui_first, true, band_panel(OPAQUE_BLUE)).await;
 
     // The overlap lies over the cube, and the panel wins it either way: the
     // composite tiers its draws behind the sequenced mesh.
-    let overlap = frame_ui_last.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
+    let overlap = frame_egui_last.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
     assert!(
         near(overlap, OPAQUE_BLUE, 8),
         "the panel is tiered last, so its colour must win the overlap, got {overlap:?}"
@@ -577,23 +583,23 @@ async fn ui_draws_over_the_mesh_in_any_source_order() {
     // The record order only reshuffles the sequence tier, and the mesh is the
     // only sequenced source here, so the composited frames are identical.
     assert_eq!(
-        frame_ui_last.rgba, frame_ui_first.rgba,
+        frame_egui_last.rgba, frame_egui_first.rgba,
         "the record order must not change the composited frame"
     );
 
     // And the panel away from the cube is drawn, not scissored away.
-    let panel = frame_ui_last.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1);
+    let panel = frame_egui_last.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1);
     assert!(
         near(panel, OPAQUE_BLUE, 8),
         "the panel is drawn where nothing overlaps it, got {panel:?}"
     );
 }
 
-/// The UI's clip rectangle must not clip the mesh drawn before it.
+/// The overlay's clip rectangle must not clip the mesh drawn before it.
 ///
 /// A panel's clip is its own draws' scissor, and every draw sets one before it
 /// draws, so the 3D draws recorded earlier keep the whole target.
-async fn ui_does_not_clip_the_mesh() {
+async fn egui_does_not_clip_the_mesh() {
     /// A clip region in one corner, far from the cube.
     const CLIP: f32 = 32.0;
     let ctx = Ctx::headless().await;
@@ -603,7 +609,7 @@ async fn ui_does_not_clip_the_mesh() {
 
     world
         .root_scope_mut()
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP));
             ui.painter().with_clip_rect(clip).rect_filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP)),
@@ -611,7 +617,7 @@ async fn ui_does_not_clip_the_mesh() {
                 RED,
             );
         }),]);
-    gpu.spawn_source(&mut world, UiSource::new());
+    gpu.spawn_source(&mut world, EguiSource::new());
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -632,7 +638,7 @@ async fn ui_does_not_clip_the_mesh() {
     }
     assert!(
         cube_pixels > counted / 4,
-        "the cube must survive the UI's clip rectangle: {cube_pixels}/{counted} \
+        "the cube must survive the overlay's clip rectangle: {cube_pixels}/{counted} \
          pixels drawn outside the clip region"
     );
 }
@@ -644,7 +650,7 @@ async fn ui_does_not_clip_the_mesh() {
 /// still holds when it ends. A panel is the last source recorded and every one
 /// of its draws sets a scissor, so a clipped panel would resolve its own
 /// rectangle alone and leave the rest of the target as it was, which is a
-/// frame that only repaints where the UI window sits. Covering the whole
+/// frame that only repaints where the egui window sits. Covering the whole
 /// target once the sources are recorded is what keeps the resolve whole.
 async fn a_clipped_panel_does_not_clip_the_resolve() {
     const SAMPLES: u32 = 4;
@@ -653,14 +659,14 @@ async fn a_clipped_panel_does_not_clip_the_resolve() {
 
     let ctx = Ctx::headless().await;
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    let (gpu, ui) = egui_only_world(&mut world, &ctx);
     spawn_load_ops(&world, &gpu);
 
     let rect = Rect::new(0.0, 0.0, CLIP, CLIP);
     spawn_panel(
         &mut world,
         ui,
-        UiPanel::new(move |_world, _entity, ui| {
+        EguiPanel::new(move |_world, _entity, ui| {
             ui.painter()
                 .with_clip_rect(rect.egui())
                 .rect_filled(rect.egui(), 0.0, RED);
@@ -702,13 +708,13 @@ async fn a_clipped_panel_does_not_clip_the_resolve() {
 /// scene — leaked from one frame into the next. The rich panel is what makes
 /// this worth checking: it registers a texture on its first frame, and every
 /// later frame has to reuse it rather than re-upload or lose it.
-async fn mesh_and_ui_survive_a_second_frame() {
+async fn mesh_and_egui_survive_a_second_frame() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&world, &gpu);
 
-    gpu.spawn_source(&mut world, UiSource::new());
+    gpu.spawn_source(&mut world, EguiSource::new());
     world.root_scope_mut().spawn(bundle![rich_panel()]);
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
@@ -737,8 +743,8 @@ struct Burst(usize);
 /// The extras exist only to change how much geometry a frame holds: the
 /// geometry buffer grows geometrically and never shrinks, so a frame that once
 /// held many of them leaves the buffer with room to spare for every later one.
-fn burst_panel(extra: Entity) -> UiPanel {
-    UiPanel::new(move |world, _entity, ui| {
+fn burst_panel(extra: Entity) -> EguiPanel {
+    EguiPanel::new(move |world, _entity, ui| {
         let burst = world
             .query_one::<&Burst>(extra)
             .map_or(0, |mut burst| burst.get().0);
@@ -767,7 +773,7 @@ fn burst_panel(extra: Entity) -> UiPanel {
 /// vertices are read from.
 async fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, ctx);
+    let (gpu, ui) = egui_only_world(&mut world, ctx);
     spawn_load_ops(&world, &gpu);
 
     let extra = world.root_scope_mut().spawn(bundle![Burst(burst)]);
@@ -831,7 +837,7 @@ const PATCHED: Rect = Rect::new(136.0, 96.0, 64.0, 64.0);
 /// The whole image is uploaded on the first pass, so the patch in the second
 /// pass is the only thing that can put red in the middle — which is what makes
 /// this a test of the partial-update path rather than of textures in general.
-fn patched_texture() -> UiPanel {
+fn patched_texture() -> EguiPanel {
     /// The texel the patch is filled with.
     const RED_TEXEL: egui::Color32 = egui::Color32::from_rgb(255, 0, 0);
     /// The surrounding texels, chosen so only the patch can be red.
@@ -840,7 +846,7 @@ fn patched_texture() -> UiPanel {
     let mut handle: Option<egui::TextureHandle> = None;
     let mut patched = false;
 
-    UiPanel::new(move |_world, _entity, ui| {
+    EguiPanel::new(move |_world, _entity, ui| {
         let handle = handle.get_or_insert_with(|| {
             let blank = egui::ColorImage::new(
                 [PATCHED_SIDE, PATCHED_SIDE],
@@ -886,7 +892,7 @@ fn patched_texture() -> UiPanel {
 async fn a_patched_texture_shows_the_patch() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
-    let (gpu, ui) = ui_only_world(&mut world, &ctx);
+    let (gpu, ui) = egui_only_world(&mut world, &ctx);
     spawn_load_ops(&world, &gpu);
 
     spawn_panel(&mut world, ui, patched_texture());
@@ -910,14 +916,14 @@ async fn a_patched_texture_shows_the_patch() {
 // it with its siblings', and `gpu_test_main!` there runs the result under
 // `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
-    ui_only_with_two_panels,
-    ui_only_clears_to_load_ops,
-    ui_only_multisampled_and_srgb,
-    ui_only_at_high_pixel_density,
-    ui_draws_over_the_mesh_in_any_source_order,
-    ui_does_not_clip_the_mesh,
+    egui_only_with_two_panels,
+    egui_only_clears_to_load_ops,
+    egui_only_multisampled_and_srgb,
+    egui_only_at_high_pixel_density,
+    egui_draws_over_the_mesh_in_any_source_order,
+    egui_does_not_clip_the_mesh,
     a_clipped_panel_does_not_clip_the_resolve,
-    mesh_and_ui_survive_a_second_frame,
+    mesh_and_egui_survive_a_second_frame,
     a_frame_with_spare_geometry_buffer_room_draws_the_same_picture,
     a_patched_texture_shows_the_patch,
 }

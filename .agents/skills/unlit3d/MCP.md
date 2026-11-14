@@ -38,7 +38,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | ---------------- | --------------------------------------------------------------------------------- | ------------------------------------------ |
 | 多 world 示例    | `cargo run -p unlit3dx_examples --bin unlit3dx-examples -- --mcp`                 | 渲染/物理/音频/玩法各自成 world            |
 | 多 world 无窗口  | `cargo run -p unlit3dx_examples --bin unlit3dx-examples -- --headless --mcp`      | 无 winit，按帧驱动，多两个工具，见下节     |
-| 单 world 示例    | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube` | glTF 场景与内建 UI                         |
+| 单 world 示例    | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube` | glTF 场景与内建 egui                         |
 | CLI              | `cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp`                             | 一个空的离屏 world：固定 960×720、4 采样、带深度，其余选项一律忽略 |
 
 ## 必须知道的行为

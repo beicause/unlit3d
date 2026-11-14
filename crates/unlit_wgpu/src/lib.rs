@@ -30,6 +30,9 @@ pub mod capabilities;
 pub mod compose;
 pub mod context;
 mod dag;
+#[cfg(feature = "egui")]
+#[cfg_attr(docsrs, doc(cfg(feature = "egui")))]
+pub mod egui;
 pub mod globals;
 pub mod instance_stream;
 pub mod light;
@@ -44,8 +47,5 @@ pub mod scene;
 pub mod specialize;
 pub mod staging;
 pub mod texel_array;
-#[cfg(feature = "egui")]
-#[cfg_attr(docsrs, doc(cfg(feature = "egui")))]
-pub mod ui;
 pub mod util;
 pub mod vertex_pool;

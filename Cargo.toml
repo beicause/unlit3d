@@ -121,7 +121,7 @@ web-sys = { version = "0.3.105", default-features = false }
 # `std::time::Instant` panics on `wasm32-unknown-unknown`; this reads the
 # browser's clock there and re-exports `std::time` on every other target.
 web-time = { version = "1.1.0", default-features = false }
-# Opening a URL the UI asked for: one call covers the desktop, Android and the
+# Opening a URL the overlay asked for: one call covers the desktop, Android and the
 # browser, so the example keeps no platform branch of its own for it.
 webbrowser = "1.2.4"
 wesl = { version = "0.6.0", default-features = false }

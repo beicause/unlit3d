@@ -184,11 +184,11 @@ it is paced differs.
 The control panel is the fifth object, and it lives in the **gameplay world**
 with the rest. A panel can only be built where its egui context runs, so this
 world lays it out and publishes the frame, and the render world draws whatever
-the slots hold: the panel's entity carries the `UiPanel`, while the
-`UiPanelHost` spawned beside it holds the context they are built in and
+the slots hold: the panel's entity carries the `EguiPanel`, while the
+`EguiPanelHost` spawned beside it holds the context they are built in and
 publishes for it. Its transport buttons write the sequences this world owns —
 a play, a pause, a rewind is a field write on the `MidiSequencer` of the row
-that was clicked. The render world holds only a `UiSource` with those slots
+that was clicked. The render world holds only a `EguiSource` with those slots
 attached, which uploads and records what it finds there.
 
 The two sides keep separate egui contexts. Sharing one would have both worlds

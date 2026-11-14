@@ -5,7 +5,7 @@
 //! [`FrameSource`]s below it: every source builds its own [`Scene`] from the
 //! world, and the pass records it. A source's place in the entity tree is
 //! therefore what chooses its pass. The built-in mesh rendering is one such
-//! source ([`MeshSource`](crate::mesh_source::MeshSource)) and a UI overlay is
+//! source ([`MeshSource`](crate::mesh_source::MeshSource)) and an egui overlay is
 //! another; a caller's own pass over the frame is a third, with no more
 //! privilege than the built-in ones.
 //!
@@ -58,8 +58,8 @@ impl FrameSourceOrder {
     /// pool, sorting against every source's blended draws. See
     /// [`DrawOrder`](unlit_wgpu::scene::DrawOrder).
     pub const LINE: Self = Self(50);
-    /// A source that composes over the meshes, such as the UI.
-    pub const UI: Self = Self(100);
+    /// A source that composes over the meshes, such as the overlay.
+    pub const EGUI: Self = Self(100);
 }
 
 impl OrderKey for FrameSourceOrder {
@@ -400,7 +400,7 @@ pub trait FrameSource: 'static {
     ///
     /// Required, not defaulted: a source that stayed silent would be ordered
     /// by entity alone, which is the implicit behaviour this exists to
-    /// replace. Use [`FrameSourceOrder::MESH`], [`FrameSourceOrder::UI`], or a value
+    /// replace. Use [`FrameSourceOrder::MESH`], [`FrameSourceOrder::EGUI`], or a value
     /// of your own.
     ///
     /// A [`Source`] may override this per entity with [`Source::with_order`],

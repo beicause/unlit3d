@@ -97,7 +97,7 @@ render = [
   "dep:wasm-bindgen-futures",
   "dep:wgpu",
   "dep:winit",
-  "unlit3d/ui",
+  "unlit3d/egui",
   "unlit3d/winit",
 ]
 ## Soundfont-backed `OnFill` sources for the audio world.

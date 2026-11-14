@@ -55,7 +55,7 @@ Clippy runs twice, because each compiles a different set of code:
    `--workspace`, because `--no-default-features` reaches only the packages the
    command names: for every other package the features come from the dependency
    edges that reach it, and feature unification applies all of them. Every
-   application crate asks `unlit3d` for `ui` and `winit`, so a workspace-wide
+   application crate asks `unlit3d` for `egui` and `winit`, so a workspace-wide
    run would compile the libraries with exactly the backends this pass exists to
    leave out.
 2. The workspace with every feature, which the doc build and the full test run

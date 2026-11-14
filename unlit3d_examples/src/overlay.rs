@@ -1,7 +1,7 @@
 //! The windowed shell's overlays: the scene selector, the frame-rate readout,
 //! the GPU-info panel and the two corner buttons.
 //!
-//! Every one of them is a UI panel or the free function a panel draws, kept out
+//! Every one of them is an egui panel or the free function a panel draws, kept out
 //! of the shell proper so the widget trees can be driven against a bare
 //! [`egui::Context`] in a test: what they have to get right — where a panel
 //! opens, how wide it takes from its facts, whether the corners collide — is a
@@ -10,8 +10,8 @@
 use std::collections::VecDeque;
 
 use unlit_ecs::bundle;
-use unlit3d::prelude::{Entity, UiPanel, World};
-use unlit3d::ui::egui;
+use unlit3d::egui::egui;
+use unlit3d::prelude::{EguiPanel, Entity, World};
 
 use crate::scenes;
 use crate::{FullscreenActive, FullscreenRequest, SceneSwitch};
@@ -102,8 +102,8 @@ pub(crate) fn mount_selector(
 ) {
     world
         .scope_mut(ui)
-        .expect("the UI source is alive")
-        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
+        .expect("the egui source is alive")
+        .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
             // The id is set explicitly: `Window::new` derives it from the title's
             // `Atoms` text, whose hash differs from a plain string id, so the
             // shell's read of the remembered rect would never match.
@@ -154,7 +154,7 @@ pub(crate) fn mount_selector(
 /// It lives in the world like any other behaviour state rather than being
 /// captured by the panel's closure: a panel may run several times in one frame
 /// when egui redoes a layout, and a panel must not reach for its own
-/// [`UiPanel`], so the measurement belongs in a sibling component.
+/// [`EguiPanel`], so the measurement belongs in a sibling component.
 #[derive(Default)]
 pub(crate) struct FrameRate {
     /// The frames measured so far, capped at [`FrameRate::WINDOW`].
@@ -300,8 +300,8 @@ const GPU_INFO_HEIGHT_FRACTION: f32 = 0.6;
 pub(crate) fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
     world
         .scope_mut(ui)
-        .expect("the UI source is alive")
-        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
+        .expect("the egui source is alive")
+        .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
             let text = world
                 .query_one::<&FrameRate>(rate)
                 .map(|mut rate| rate.get().text())
@@ -311,7 +311,7 @@ pub(crate) fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
 }
 
 /// Draw the frame-rate readout, showing `text`, centred along the top edge of
-/// `ui`'s screen.
+/// `egui`'s screen.
 ///
 /// The label is set to [`egui::Label::extend`], so the readout grows to fit its
 /// text instead of wrapping it. An anchored area lays its contents out against
@@ -479,8 +479,8 @@ pub(crate) fn mount_gpu_info(
     let info = GpuInfo::read(&device);
     world
         .scope_mut(ui)
-        .expect("the UI source is alive")
-        .spawn(bundle![UiPanel::new(move |_world, _entity, ui| {
+        .expect("the egui source is alive")
+        .spawn(bundle![EguiPanel::new(move |_world, _entity, ui| {
             gpu_info_panel(ui, &info, initial);
         },),]);
 }
@@ -593,7 +593,7 @@ fn gpu_info_width(ui: &egui::Ui, lines: &[GpuInfoLine]) -> f32 {
 }
 
 /// Draw the GPU-info panel for `info`, seeded at `initial` or the bottom-left
-/// corner of `ui`'s screen.
+/// corner of `egui`'s screen.
 ///
 /// A free function rather than the body of the panel's closure so a test can
 /// drive it against a bare [`egui::Context`]: what it has to get right — where
@@ -693,8 +693,8 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
 pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entity) {
     world
         .scope_mut(ui)
-        .expect("the UI source is alive")
-        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
+        .expect("the egui source is alive")
+        .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
             let active = world
                 .query_one::<&FullscreenActive>(state)
                 .is_ok_and(|mut state| state.get().0);
@@ -708,7 +708,7 @@ pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, s
 
 /// Mount the link to the API docs in the window's top-right corner.
 ///
-/// The link lives in the UI rather than in the page so the two corner overlays
+/// The link lives in the overlay rather than in the page so the two corner overlays
 /// are laid out by the same code and cannot collide: the page's own link knew
 /// nothing about the button, which is what put the two on top of each other.
 /// Mounted after [`mount_fullscreen`], because the link is placed under the
@@ -721,8 +721,8 @@ pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, s
 pub(crate) fn mount_api_docs(world: &mut World, ui: Entity) {
     world
         .scope_mut(ui)
-        .expect("the UI source is alive")
-        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+        .expect("the egui source is alive")
+        .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             api_docs_button(ui);
         }),]);
 }
@@ -819,7 +819,7 @@ fn fullscreen_button(ui: &mut egui::Ui, active: bool) -> bool {
 /// Draw the API-docs link under the fullscreen button, and report whether it
 /// was pressed.
 ///
-/// The click becomes egui's own URL command, which the UI source publishes in
+/// The click becomes egui's own URL command, which the egui source publishes in
 /// the world for the frame loop to serve, rather than opening the page here: a
 /// panel runs while the world is borrowed and cannot wait on one.
 fn api_docs_button(ui: &mut egui::Ui) -> bool {

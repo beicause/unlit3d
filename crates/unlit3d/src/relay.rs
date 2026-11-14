@@ -9,7 +9,7 @@
 //! - A [`Snapshot`](crate::relay::Snapshot) holds one value. Publishing
 //!   replaces it, so a reader that misses a publish never learns what was
 //!   there, and that is exactly right for state: poses, a playback position,
-//!   the size a UI is laid out at. A reader is not a queue consumer, so a
+//!   the size an overlay is laid out at. A reader is not a queue consumer, so a
 //!   slow one cannot fall behind, and one that subscribes late still sees the
 //!   newest publish.
 //! - A [`Stream`](crate::relay::Stream) holds every value, once per reader.

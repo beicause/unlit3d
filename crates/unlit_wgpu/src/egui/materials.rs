@@ -41,7 +41,7 @@ impl EguiIntegration {
             .descriptor()
             .bind_group_layouts(&self.device)
             .material
-            .expect("the UI variant always samples a base-color texture");
+            .expect("the egui variant always samples a base-color texture");
         let device = self.device.clone();
         let view_id = slot.view.clone();
         let sampler_for_build = sampler_id.clone();
@@ -56,7 +56,7 @@ impl EguiIntegration {
                 .expect("the sampler is in the graph")
                 .clone();
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ui::material"),
+                label: Some("egui::material"),
                 layout: &layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -88,7 +88,7 @@ impl EguiIntegration {
             return id.clone();
         }
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("ui::sampler"),
+            label: Some("egui::sampler"),
             address_mode_u: address_mode(options.wrap_mode),
             address_mode_v: address_mode(options.wrap_mode),
             mag_filter: texture_filter(options.magnification),
@@ -187,7 +187,7 @@ impl EguiIntegration {
             }
             None => {
                 let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("ui::texture"),
+                    label: Some("egui::texture"),
                     size,
                     mip_level_count: 1,
                     sample_count: 1,

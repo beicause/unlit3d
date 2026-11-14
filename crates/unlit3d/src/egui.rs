@@ -1,8 +1,8 @@
-//! An egui UI overlay, drawn as a frame source.
+//! An egui overlay, drawn as a frame source.
 //!
-//! [`UiSource`] is a [`FrameSource`] that renders the world's egui interfaces
+//! [`EguiSource`] is a [`FrameSource`] that renders the world's egui interfaces
 //! over whatever the frame already holds. The interfaces themselves are
-//! [`UiPanel`] behaviour components: the source is only their driver, and it
+//! [`EguiPanel`] behaviour components: the source is only their driver, and it
 //! runs whatever panels its own scope carries, in query order.
 //!
 //! ```rust
@@ -21,15 +21,15 @@
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities under the same source, each with its own
 //! // sibling state.
-//! let ui = world.root_scope_mut().spawn(bundle![Source::new(UiSource::new())]);
+//! let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
 //! world.scope_mut(ui).unwrap().spawn(bundle![
-//!     UiPanel::new(|_world, _entity, ui| {
+//!     EguiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
 //!     }),
 //! ]);
 //! ```
 //!
-//! The UI draws with the same built-in lit pipeline as everything else and
+//! The overlay draws with the same built-in lit pipeline as everything else and
 //! binds the frame's uniforms rather than records of its own: it synthesises a
 //! camera that maps its points onto clip space and states the point size as the
 //! view its pass covers, and asks the frame's registry for those records. The
@@ -40,11 +40,13 @@
 use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
+use unlit_wgpu::egui::{
+    EguiFrame, EguiIntegration, ScreenDescriptor, Source, egui_variant, screen_view,
+};
 use unlit_wgpu::pipeline::ShaderCache;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, ui_variant};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
@@ -58,7 +60,7 @@ use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::relay::Snapshot;
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
-/// egui, re-exported because a [`UiPanel`] is written against its types.
+/// egui, re-exported because a [`EguiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
 /// widgets, so a caller needs the crate that defines them. Re-exporting it
@@ -69,16 +71,16 @@ pub use egui;
 pub mod convert;
 
 /// A callback that may read and write the world, and receives the entity it
-/// runs for together with the UI surface its interface is built in.
+/// runs for together with the overlay surface its interface is built in.
 type PanelCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut egui::Ui)>;
 
-/// A UI panel: one interface, held as a behaviour component.
+/// An egui panel: one interface, held as a behaviour component.
 ///
 /// A panel is the interface itself — the closure egui runs to build it — and
 /// not a field on the source, so an interface lives in the world like any
 /// other behaviour: multiple panels are multiple entities, each free to carry
 /// its own sibling state, and a third party can define its own panel component
-/// for a [`UiSource`] to drive.
+/// for a [`EguiSource`] to drive.
 ///
 /// # What a panel must not assume
 ///
@@ -88,28 +90,28 @@ type PanelCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut egui::Ui)>;
 /// that must advance once per frame belongs in a **sibling component**, which
 /// is also where a panel's own state belongs: a behaviour component is
 /// borrowed while it runs, so a panel must not reach for its own
-/// [`UiPanel`] — that is a borrow panic, not a compile error.
+/// [`EguiPanel`] — that is a borrow panic, not a compile error.
 ///
 /// A panel may otherwise read and write the world freely through the
 /// [`Scope`] it is handed: `get`, `query` and structural changes queued
 /// for the frame loop to apply are all available while it runs. The scope is the
 /// one of the source that draws the panel, so a panel sees the subtree that
 /// source owns and the shared resources, not every entity in the world.
-pub struct UiPanel(pub PanelCallback);
+pub struct EguiPanel(pub PanelCallback);
 
-impl UiPanel {
-    /// Wrap `f` as a [`UiPanel`].
+impl EguiPanel {
+    /// Wrap `f` as a [`EguiPanel`].
     pub fn new(f: impl FnMut(Scope<'_>, Entity, &mut egui::Ui) + 'static) -> Self {
         Self(Box::new(f))
     }
 
-    /// Run this panel for `entity`, building its interface in `ui`.
+    /// Run this panel for `entity`, building its interface in `egui`.
     pub fn run(&mut self, scope: Scope<'_>, entity: Entity, ui: &mut egui::Ui) {
         (self.0)(scope, entity, ui)
     }
 }
 
-/// The GPU state of a [`UiSource`], built for one [`SurfaceKey`].
+/// The GPU state of a [`EguiSource`], built for one [`SurfaceKey`].
 ///
 /// One entry per target the source has been asked to draw into: a source may be
 /// recorded by several passes, and the passes of one frame need not share a
@@ -125,7 +127,7 @@ struct Gpu {
     /// per [`UniformsKey`](crate::global_uniforms::UniformsKey) the frame
     /// draws the target through.
     ///
-    /// The UI has no camera entity: it synthesises a
+    /// The overlay has no camera entity: it synthesises a
     /// [`Camera`](unlit_wgpu::globals::Camera) mapping its points onto clip
     /// space and states the point size as the [`View`](unlit_wgpu::globals::View) its
     /// pass covers, so the frame's uniform registry holds those records rather
@@ -151,21 +153,21 @@ struct Target {
 /// A frame source that draws the world's egui interfaces as an overlay.
 ///
 /// The source owns egui's [`Context`](egui::Context) — its font atlas and
-/// memory survive across frames — and drives every [`UiPanel`] in the world.
+/// memory survive across frames — and drives every [`EguiPanel`] in the world.
 /// Spawn it like any other source ([`Source::new`](crate::source::Source::new));
 /// it declares
-/// [`FrameSourceOrder::UI`], so it records after the meshes.
+/// [`FrameSourceOrder::EGUI`], so it records after the meshes.
 ///
 /// Nothing is built until the first frame: the source's pipeline is
 /// specialized on the frame's target, which is only known in
 /// [`FrameSource::build_scene`]. The pipeline and its bind groups are built
 /// then, and rebuilt when the target's [`SurfaceKey`] changes.
 ///
-/// The UI binds uniforms of the frame's own registry: its projection maps
+/// The overlay binds uniforms of the frame's own registry: its projection maps
 /// logical points onto clip space rather than world space, so it names a camera
 /// of its own — the screen mapping — and a view of its own, and the frame keeps
 /// one record and one buffer per distinct pair rather than one per source.
-pub struct UiSource {
+pub struct EguiSource {
     /// egui's state — fonts, memory, style — kept across frames.
     ctx: egui::Context,
     /// When the source was created, the origin of egui's frame clock.
@@ -180,7 +182,7 @@ pub struct UiSource {
     pub frames: ExternalFrames,
     /// The size and density this source draws at, published for the worlds
     /// laying frames out.
-    screen: Snapshot<UiTarget>,
+    screen: Snapshot<EguiTarget>,
     /// The URLs every frame drawn this frame asked to open, gathered before
     /// they are published together, reused across frames.
     url_scratch: Vec<OpenUrl>,
@@ -190,8 +192,8 @@ pub struct UiSource {
     shaders: ShaderCache,
 }
 
-impl UiSource {
-    /// Create a UI source.
+impl EguiSource {
+    /// Create an egui source.
     ///
     /// No GPU state is built here: the pipeline is specialized on the frame's
     /// target, which is not known until the first frame. Everything is built
@@ -211,7 +213,7 @@ impl UiSource {
 
     /// Publish this source's target for the worlds laying frames out.
     ///
-    /// This is the seam for a UI that lives in another world: a panel can only
+    /// This is the seam for an overlay that lives in another world: a panel can only
     /// be built where its egui context runs, so the world holding it lays the
     /// frame out against this target and sends it here, where it is drawn.
     ///
@@ -222,14 +224,14 @@ impl UiSource {
     /// the descriptor back from here rather than deriving one of its own. It
     /// is published on every frame drawn, so a resize or a density change
     /// reaches the layout one frame later rather than never.
-    pub fn publish_target(&mut self, screen: Snapshot<UiTarget>) -> &mut Self {
+    pub fn publish_target(&mut self, screen: Snapshot<EguiTarget>) -> &mut Self {
         self.screen = screen;
         self
     }
 
     /// egui's context, for reading its style or memory.
     ///
-    /// Restyling the UI goes through here rather than through a new source:
+    /// Restyling the overlay goes through here rather than through a new source:
     /// the context is the source's state, and replacing the source would throw
     /// away the font atlas with it.
     pub fn context(&self) -> &egui::Context {
@@ -241,15 +243,15 @@ impl UiSource {
         &mut self.ctx
     }
 
-    /// Run every entity that carries a [`UiPanel`], in query order.
+    /// Run every entity that carries a [`EguiPanel`], in query order.
     ///
     /// The query is rebuilt from scratch on every pass egui runs, which is what
     /// a multi-pass layout needs.
     fn run_panels(&self, scope: &Scope<'_>, input: egui::RawInput) -> egui::FullOutput {
         let root = *scope;
         self.ctx.run_ui(input, |ui| {
-            for (ui_panel, entity) in root.query::<(&mut UiPanel, Entity)>().iter() {
-                ui_panel.run(root, entity, ui);
+            for (egui_panel, entity) in root.query::<(&mut EguiPanel, Entity)>().iter() {
+                egui_panel.run(root, entity, ui);
             }
         })
     }
@@ -266,18 +268,18 @@ impl UiSource {
         if let Some(index) = self.targets.iter().position(|target| target.key == surface) {
             return index;
         }
-        // A UI drawn into an sRGB target encodes its own output in gamma space,
+        // An overlay drawn into an sRGB target encodes its own output in gamma space,
         // so the fragment converts to linear; the same call the winit path
         // makes for its swap chain.
-        let variant = ui_variant(surface.color_format.is_srgb(), surface);
+        let variant = egui_variant(surface.color_format.is_srgb(), surface);
         let pipeline = SpecializedPipeline::create(device, variant, &mut self.shaders);
-        // The UI binds no array of its own: its group is the frame's three
+        // The overlay binds no array of its own: its group is the frame's three
         // uniforms alone, so the recipe reads them out of the registry and
         // nothing else.
         let layout = pipeline.descriptor().bind_group_layouts(device).global;
         let recipe = GlobalRecipe::new(move |device: &wgpu::Device, graph, uniforms| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("unlit3d::ui::globals"),
+                label: Some("unlit3d::egui::globals"),
                 layout: &layout,
                 entries: &uniform_entries(graph, uniforms),
             })
@@ -294,13 +296,13 @@ impl UiSource {
     }
 }
 
-impl Default for UiSource {
+impl Default for EguiSource {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl FrameSource for UiSource {
+impl FrameSource for EguiSource {
     fn build_scene(
         &mut self,
         scope: &Scope<'_>,
@@ -329,8 +331,8 @@ impl FrameSource for UiSource {
 
         // Input arrives as world resources: the world's own [`InputEvents`] is
         // both the state and what arrived for this tick. It is shared with
-        // everything else in the world — the UI reads this tick's batch, it
-        // does not take it. A world without one is not an error: the UI still
+        // everything else in the world — the overlay reads this tick's batch, it
+        // does not take it. A world without one is not an error: the overlay still
         // lays out at the target's own size, unfeed.
         let state = input_events_rows.iter().next().map(|input_events| {
             input_events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
@@ -340,7 +342,7 @@ impl FrameSource for UiSource {
             None => (1.0, (target.width, target.height), true),
         };
         // A caller that has not learned the window's size yet leaves `size_px`
-        // at zero; the target's own pixel size lays the UI out correctly, where
+        // at zero; the target's own pixel size lays the overlay out correctly, where
         // a zero-sized screen would lay out nothing.
         let size_px = if size_px == (0, 0) {
             (target.width, target.height)
@@ -368,7 +370,7 @@ impl FrameSource for UiSource {
             size_in_pixels: [size_px.0, size_px.1],
             pixels_per_point,
         };
-        let target_screen = UiTarget {
+        let target_screen = EguiTarget {
             screen,
             max_texture_side: device.limits().max_texture_dimension_2d,
         };
@@ -380,7 +382,7 @@ impl FrameSource for UiSource {
         let index = self.target_index(&device, target.surface);
 
         // The events reached egui's own types while the world's `InputEvents`
-        // were read, and they stay in the world afterwards: the UI reads them,
+        // were read, and they stay in the world afterwards: the overlay reads them,
         // it does not consume them, so a game behaviour sees the same tick.
         let input = raw_input(
             target_screen,
@@ -441,11 +443,11 @@ impl FrameSource for UiSource {
         let own_textures = core::mem::take(&mut output.textures_delta);
         // What a frame contributes in geometry when its slice is left empty.
         const NO_PRIMITIVES: [egui::ClippedPrimitive; 0] = [];
-        // The UI draws through a mapping of its own rather than through a
+        // The overlay draws through a mapping of its own rather than through a
         // camera entity: `screen_view` maps egui's points onto clip space and
         // the pass's view is the same point size, so the frame's registry keys
         // both by the screen size. The frame globals are the frame's own — the
-        // UI reads no clock — and were advanced before any source built.
+        // egui reads no clock — and were advanced before any source built.
         let points = screen.size_in_points();
         let mut graph_holder = ctx.graph(scope);
         let uniforms = {
@@ -478,7 +480,7 @@ impl FrameSource for UiSource {
         let gpu = &mut self.targets[index].gpu;
         self.frames.with_frames(|slots| {
             let mut sources = Vec::with_capacity(slots.len() + 1);
-            sources.push(UiFrame {
+            sources.push(EguiFrame {
                 source: Source::LOCAL,
                 textures: own_textures,
                 primitives: &own,
@@ -499,7 +501,7 @@ impl FrameSource for UiSource {
                 } else {
                     &NO_PRIMITIVES[..]
                 };
-                sources.push(UiFrame {
+                sources.push(EguiFrame {
                     source: Source::published(index),
                     textures: core::mem::take(&mut frame.textures),
                     primitives,
@@ -521,12 +523,12 @@ impl FrameSource for UiSource {
         let graph = graph_holder.get();
 
         let bind_group = graph.get(&global).expect("the group exists");
-        let mut ui_scene = gpu.integration.scene(graph, bind_group);
-        scene.draws.append(&mut ui_scene.draws);
+        let mut egui_scene = gpu.integration.scene(graph, bind_group);
+        scene.draws.append(&mut egui_scene.draws);
     }
 
     fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::UI
+        FrameSourceOrder::EGUI
     }
 }
 
@@ -551,7 +553,7 @@ fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '
 ///
 /// The resource is looked up by type, so a world gets one from `spawn_context`
 /// — the frame's own setup — and a caller never has to create it. A world
-/// without one is not an error: the UI still draws, and the request is simply
+/// without one is not an error: the overlay still draws, and the request is simply
 /// dropped. The queue is replaced rather than appended to, so a request that
 /// a previous frame left behind cannot be served twice; `urls` is emptied
 /// either way, so its allocation is reused by the next frame.
@@ -569,13 +571,13 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
     });
 }
 
-/// A frame of UI that was laid out somewhere other than the world drawing it.
+/// A frame of egui that was laid out somewhere other than the world drawing it.
 ///
-/// A [`UiPanel`] callback takes a `&mut egui::Ui`, which belongs to the egui
+/// A [`EguiPanel`] callback takes a `&mut egui::Ui`, which belongs to the overlay
 /// pass running it, so a panel can only be built where its own context lives.
-/// A UI that lives in one world and is drawn in another therefore splits the
+/// An overlay that lives in one world and is drawn in another therefore splits the
 /// work: the world holding the panels lays them out and tessellates them —
-/// [`lay_out`] does that — and the world holding the [`UiSource`] uploads and
+/// [`lay_out`] does that — and the world holding the [`EguiSource`] uploads and
 /// draws what comes back.
 ///
 /// Everything here is plain owned data, which is what lets it cross the
@@ -619,12 +621,12 @@ impl Drop for ExternalFrame {
     }
 }
 
-/// The slots frames are published into, drawn by a [`UiSource`].
+/// The slots frames are published into, drawn by a [`EguiSource`].
 ///
 /// Each slot holds the newest frame published to it. The frames belong to the
 /// source's own world: a job sent to that world writes a slot, and this map is
 /// what keeps it across frames. A slot that has not been written since the
-/// last frame draws the frame it already holds, so a settled UI costs nothing
+/// last frame draws the frame it already holds, so a settled egui costs nothing
 /// on the wire.
 ///
 /// The slots are numbered rather than named so a publisher needs no identity:
@@ -689,7 +691,7 @@ impl ExternalFrames {
 /// laying-out side decides how large they may grow. A world laying frames out
 /// has no device of its own to ask.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UiTarget {
+pub struct EguiTarget {
     /// The target the frame is drawn into, and the density it is drawn at.
     pub screen: ScreenDescriptor,
     /// The largest texture the drawing side's device can hold, on either side.
@@ -707,7 +709,7 @@ pub struct UiTarget {
 /// `events` is taken by value so a caller can hand over a buffer it keeps
 /// across frames; it reaches egui as this frame's events.
 pub fn raw_input(
-    target: UiTarget,
+    target: EguiTarget,
     time: Option<f64>,
     focused: bool,
     events: Vec<egui::Event>,
@@ -735,8 +737,8 @@ pub fn raw_input(
 /// Lay out the world's panels and tessellate them, without drawing them.
 ///
 /// The caller owns `ctx` — its font atlas, memory and style — and keeps it
-/// across frames; this runs the world's [`UiPanel`]s against it and returns
-/// what a [`UiSource`] would have drawn.
+/// across frames; this runs the world's [`EguiPanel`]s against it and returns
+/// what a [`EguiSource`] would have drawn.
 ///
 /// `screen` is the descriptor the frame is laid out at, which travels with
 /// the frame: the drawing side packs its clip rectangles with that descriptor
@@ -751,8 +753,8 @@ pub fn lay_out(
 ) -> ExternalFrame {
     let scope = world.root_scope();
     let mut output = ctx.run_ui(input, |ui| {
-        for (ui_panel, entity) in scope.query::<(&mut UiPanel, Entity)>().iter() {
-            ui_panel.run(scope, entity, ui);
+        for (egui_panel, entity) in scope.query::<(&mut EguiPanel, Entity)>().iter() {
+            egui_panel.run(scope, entity, ui);
         }
     });
     // Read before the pass's other output is taken apart: the request only

@@ -96,7 +96,7 @@ impl Interactive {
     pub fn panel_buttons(
         host: &World,
         worlds: &SceneHandles,
-    ) -> Vec<(&'static str, unlit3d::ui::egui::Rect)> {
+    ) -> Vec<(&'static str, unlit3d::egui::egui::Rect)> {
         with_stepped_world(host, worlds.gameplay.entity, |world| {
             world
                 .root_scope()

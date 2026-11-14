@@ -13,7 +13,7 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
+| `egui` | 是 | `egui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；`presenter`，建在它之上的现成窗口循环；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档（含 `KHR_draco_mesh_compression` 压缩的 primitive）加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
@@ -96,8 +96,8 @@ world root                              根 scope 看得见所有实体
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
 │   ├── Source(LineSource)                    笔画；混合的与网格按深度合成
-│   └── Source(UiSource)
-│       └── UiPanel
+│   └── Source(EguiSource)
+│       └── EguiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
 │   └── Source(BlitSource)                    采样上面那个 pass 的离屏目标
 └── Renderer                                  自身不绘制，只遍历各个 pass
@@ -140,7 +140,7 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   也是它：调用者声明自己的 mesh 占用哪几条流并填充它们，源负责分配顶点与索引区段、
   在设备没有 `base_vertex` 时把池偏移烘进索引，并交回一个完整的 `GpuMesh`。
   `MeshSource::allocate_lit_mesh` 是内置着色器对它的使用——由通道推导出流布局，再用
-  `unlit_wgpu::mesh` 里的写入器打包。整块缓冲自有的 mesh（例如 UI 路径）改用
+  `unlit_wgpu::mesh` 里的写入器打包。整块缓冲自有的 mesh（例如 egui 路径）改用
   `MeshSource::allocate_mesh` 分配。
 - GPU 状态——`wgpu::Device`、`wgpu::Queue`、`ResourceGraph` 以及设备的那些事实——
   作为资源组件存在于 world 中，通过 `RenderContext` 寻址。`spawn_context` 把它们当作
@@ -161,12 +161,12 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 - 源的 GPU 资源恰好在还有句柄指名它时存活，因此销毁源实体即丢弃其句柄，下一次
   `maintain` 回收余下部分。无需记住任何释放调用。
 
-**源自带状态，场景归帧所有。** egui 的 `Context`、字体图集、UI 自己的 UBO 都归 UI 源
+**源自带状态，场景归帧所有。** egui 的 `Context`、字体图集、egui 自己的 UBO 都归 egui 源
 所有；3D 的管线、网格池、元数据、剔除缓存都归 mesh 源所有。`Scene` 则属于某个
 *(pass, source)* 对，由渲染器持有：它是本帧的临时产物，而不是源的状态。一个被多个 pass
 看见的源会按 pass 各构建一次，各自填进那个 pass 自己的场景，于是每个 pass 只录制自己
 目标所要求的绘制。这些槽位跨帧保留以便稳定场景复用分配，而世界已够不到的配对会在帧末
-交还缓冲。按目标保留 GPU 状态的源——UI 源的管线与材质表、blit 源的绑定组——以
+交还缓冲。按目标保留 GPU 状态的源——egui 源的管线与材质表、blit 源的绑定组——以
 `SurfaceKey` 为键，于是交替的 pass 各自复用条目，而不是每帧重建。「3D 主场景」只是
 第一个被录制的源产出的场景，而不是渲染器的特例。
 
@@ -196,7 +196,7 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 
 单个场景之内，源产出的顺序（它的可见条目、它的实例 run）不变。源之间的
 顺序不是被 pass 级状态逼出来的硬约束——`Scene` 已携带必要的 pass 状态信息，在录制时
-都会重设 pass 状态——但「UI 要合成在 3D 之上」等类似语义不再只靠它：
+都会重设 pass 状态——但「egui 要合成在 3D 之上」等类似语义不再只靠它：
 [`Scene::record_composited`](unlit_wgpu::scene::Scene::record_composited) 把各源的
 场景合成每 pass 一份绘制清单——按场景顺序先录顺次绘制，再合并所有场景的深度排序池，
 最后是压尾绘制——由各源以
@@ -573,22 +573,22 @@ impl InstanceContext<'_> {
 图像就在自己的 texel 里平均。改为对存储编码平均会让该级亮度发生偏移，而 mip 链存在的意义正是
 避免这个误差。文档构建多长的链由 `MipChain` 决定，用 `LitGltf::mip_chain` 设置。
 
-## UI
+## egui
 
-`ui::UiPanel` 本身就是一个持有闭包的行为组件，所以一个界面就是一个实体——一帧可以有
-与实体数量相同的面板，`ui::UiSource` 驱动器会按查询顺序运行 world 携带的所有面板。
+`egui::EguiPanel` 本身就是一个持有闭包的行为组件，所以一个界面就是一个实体——一帧可以有
+与实体数量相同的面板，`egui::EguiSource` 驱动器会按查询顺序运行 world 携带的所有面板。
 
 面板只能在它自己的 egui context 所运行的地方构建，因为回调拿到的是属于正在构建它的那一趟
-pass 的 `&mut egui::Ui`。因此「面板住在一个 world、绘制属于另一个 world」的 UI 以**数据**
-的形式跨越这条边界：`ui::lay_out` 用调用方持有的 context 运行一个 world 的面板，返回
-`ui::ExternalFrame`——三角化后的图元、纹理更新与平台输出，全是普通的自有值。之后帧按两个
-world 约定好的方式跨越边界：它落进 `ui::UiSource` 自己持有的
-`ui::ExternalFrame` 槽位，槽位因此留在负责绘制的那条线程上；绘制侧量出的目标则通过
+pass 的 `&mut egui::Ui`。因此「面板住在一个 world、绘制属于另一个 world」的 egui 以**数据**
+的形式跨越这条边界：`egui::lay_out` 用调用方持有的 context 运行一个 world 的面板，返回
+`egui::ExternalFrame`——三角化后的图元、纹理更新与平台输出，全是普通的自有值。之后帧按两个
+world 约定好的方式跨越边界：它落进 `egui::EguiSource` 自己持有的
+`egui::ExternalFrame` 槽位，槽位因此留在负责绘制的那条线程上；绘制侧量出的目标则通过
 `relay::Snapshot` 回来，面板所在的 world 在布局下一帧时读取它。两侧的 context 保持独立：共用会让两个 world 同时写同一份 memory 与字体图集，而 egui 把一次
 `run_ui` 当作一个完整帧。纹理 id 则完全不改写：帧保留它那个 context 分配的 id，GPU 集成按
 （来源, id）建键，于是两侧都从零分配也不会撞车；一帧在其槽位被更新之前一直由同一份三角化
 结果绘制。`unlit3dx` 就在这两块之上搭建跨 world 的管线——面板所在 world 里的
-`UiPanelHost`，它在该 world 自己的 tick 上以 job 的形式发送帧。
+`EguiPanelHost`，它在该 world 自己的 tick 上以 job 的形式发送帧。
 
 <details>
 <summary>为什么面板是组件，以及最容易出错的单位约定</summary>
@@ -604,12 +604,12 @@ world 约定好的方式跨越边界：它落进 `ui::UiSource` 自己持有的
 两者单位相反。此外 egui 为多趟布局会**多次**调用面板闭包，因此面板必须幂等，或按趟数
 判断该做什么；这是 egui 的既有语义，所有后端都一样。
 
-UI 本身只需要 color 附件，不需要深度附件，但是管线的深度状态必须与 pass 的附件
-**完全一致**（wgpu 按格式强校验，不看写入与比较设置）。在带深度附件的 pass 里（UI 与
-mesh 共用同一 pass 是常见情形），UI 管线仍须声明**相同的**深度格式，只靠「不写入深度、
+egui 本身只需要 color 附件，不需要深度附件，但是管线的深度状态必须与 pass 的附件
+**完全一致**（wgpu 按格式强校验，不看写入与比较设置）。在带深度附件的 pass 里（egui 与
+mesh 共用同一 pass 是常见情形），egui 管线仍须声明**相同的**深度格式，只靠「不写入深度、
 不深度测试」来避免干扰 mesh 的深度——「不需要深度」不等于「不声明深度」。「目标没有
 深度附件」也是合法用法，因此管线的深度状态是可选的；可选的深度状态服务于**目标本身
-没有深度附件**的情形，那时 pass 里的所有管线都必须不声明深度，并非 UI 独有：只由
+没有深度附件**的情形，那时 pass 里的所有管线都必须不声明深度，并非 egui 独有：只由
 [`BlitSource`](blit::BlitSource) 绘制的一帧同样没有深度附件。这一点与 egui 官方后端
 一致：它默认不带深度状态，但在被给予深度格式时，仍会建出同一格式、不写深度、比较函数
 为 `Always` 的状态。帧究竟带不带深度附件由调用方决定：
@@ -749,18 +749,18 @@ world
     .unwrap();
 ```
 
-UI 面板是行为组件，所以装配一个界面就是一次普通的 spawn：
+egui 面板是行为组件，所以装配一个界面就是一次普通的 spawn：
 
 ```rust
-# #[cfg(feature = "ui")]
+# #[cfg(feature = "egui")]
 # {
 use unlit3d::prelude::*;
 
 let mut world = World::new();
-// The panels of a UI source live under it: a frame hands the source its own
+// The panels of an egui source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
-let ui = world.root_scope_mut().spawn(bundle![Source::new(UiSource::new())]);
-world.scope_mut(ui).unwrap().spawn(bundle![UiPanel::new(|_world, _entity, ui| {
+let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);
 # }
@@ -778,14 +778,14 @@ tick 频率低于输入到达频率的世界依然按顺序读到每一条，之
 全部世界，而每个世界各建自己的状态；不在这个层级里的世界——由 runner 作为兄弟世界
 启动的那个——则在自己的初始化里自行订阅。只读输入而完全不分发的世界改为每 tick 调用
 一次 `refresh_input`，在任何读者读批次之前。来自窗口库的事件转换位于相应 feature 之后：
-`input::winit::WinitInput` 转发 `WindowEvent`，`ui::convert` 把本 crate 的事件转成
+`input::winit::WinitInput` 转发 `WindowEvent`，`egui::convert` 把本 crate 的事件转成
 egui 的事件。
 
 <details>
 <summary>命名规则，以及为什么分发要显式调用</summary>
 
 - **事件类型不依赖 winit，也不依赖 egui**：核心类型自持，winit 与 egui 的转换放在各自
-  feature 之后。这样游戏逻辑与 UI 共用同一条事件流，不需要两套事件。
+  feature 之后。这样游戏逻辑与 egui 共用同一条事件流，不需要两套事件。
 - **事件回调是行为组件**，与 ECS 既有的行为组件范式同构：按事件类别调用所有对应行为
   组件。`OnInput` 收到全部事件，`OnKey`/`OnMouse`/`OnPointer`/`OnTouch`/`OnText`/
   `OnIme` 各收一类。鼠标族一律以 `Mouse` 命名（`MouseEvent`/`MouseButton`/
@@ -813,11 +813,11 @@ egui 的事件。
   互不冲突。真正的限制来自 ECS 自身有意为之的取舍——回调不能重入借用自己那个组件，
   也不能重入同类分发；要保留状态就放到兄弟组件上。
 
-UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回世界：一帧布局完成后，源
+egui 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回世界：一帧布局完成后，源
 那个 context 上的 `egui_wants_pointer_input` 与 `egui_wants_keyboard_input`
 就描述了这一帧的声明。调用方通过世界里的 `Source` 值拿到那个 context——
-`source.as_ref::<UiSource>()`——和取其它源的内部状态一样，游戏逻辑读它决定是否
-响应。类型化访问返回 `Result`，源不是 `UiSource` 时错误会指出它实际持有的类型。
+`source.as_ref::<EguiSource>()`——和取其它源的内部状态一样，游戏逻辑读它决定是否
+响应。类型化访问返回 `Result`，源不是 `EguiSource` 时错误会指出它实际持有的类型。
 按 egui 的语义，这个答案描述的是刚布局完的那一帧。不做任何自动拦截。
 
 </details>
@@ -929,7 +929,7 @@ cargo xtask test                          # 整个工作区
 cargo nextest run -p unlit3d --all-features  # 只跑本 crate
 ```
 
-集成测试是一个二进制，它的 `required-features` 是 `gltf`、`mcp` 与 `ui`——其用例会用到的
+集成测试是一个二进制，它的 `required-features` 是 `gltf`、`mcp` 与 `egui`——其用例会用到的
 功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
 `cargo nextest run -p unlit3d` 只报单元测试。要把 suite 放进这一趟，得加
 `--all-features`（或把这三项都点名）。

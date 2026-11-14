@@ -22,6 +22,9 @@ pub mod blit;
 pub mod bounds;
 pub mod components;
 pub mod culling;
+#[cfg(feature = "egui")]
+#[cfg_attr(docsrs, doc(cfg(feature = "egui")))]
+pub mod egui;
 pub mod frame;
 /// The frame's shared uniform records: one camera, one globals and one view
 /// buffer per distinct record, uploaded once however many draws read them.
@@ -63,15 +66,14 @@ pub mod relay;
 pub mod renderer;
 pub mod scene;
 pub mod source;
-#[cfg(feature = "ui")]
-#[cfg_attr(docsrs, doc(cfg(feature = "ui")))]
-pub mod ui;
 #[cfg(feature = "winit")]
 #[cfg_attr(docsrs, doc(cfg(feature = "winit")))]
 pub mod winit;
 
 /// The types most callers need for typical usage.
 pub mod prelude {
+    #[cfg(feature = "egui")]
+    pub use crate::egui::{EguiPanel, EguiSource};
     pub use crate::light::{
         AmbientLight, DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource,
         PointLight, QuadLight, SpotLight,
@@ -79,8 +81,6 @@ pub mod prelude {
     pub use crate::lit::{
         InstanceColor, InstanceCutoff, InstanceHullWidth, LitInstance, LitMeshDesc, LitPipelineKey,
     };
-    #[cfg(feature = "ui")]
-    pub use crate::ui::{UiPanel, UiSource};
     #[cfg(feature = "winit")]
     pub use crate::winit::SurfaceOptions;
     #[cfg(feature = "winit")]

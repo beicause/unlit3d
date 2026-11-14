@@ -462,7 +462,7 @@ fn a_composite_orders_before_sorted_and_after() {
         ],
         ..Scene::default()
     };
-    // UI: a trailing widget.
+    // egui: a trailing widget.
     let ui = Scene {
         draws: vec![
             draw(DrawRange::vertices(0..4).with_instances(5..6)).with_order(DrawOrder::After),
@@ -599,7 +599,7 @@ fn a_composite_draws_into_each_scenes_own_region() {
     );
 
     assert_eq!(pass.draws.len(), 3);
-    // The mesh scene states its own region; the line and UI scenes state
+    // The mesh scene states its own region; the line and egui scenes state
     // none, so they draw into the fallback — stated once, the second
     // being a repeat the pass already holds.
     assert_eq!(pass.viewports, vec![letter, whole]);

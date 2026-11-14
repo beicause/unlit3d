@@ -549,7 +549,7 @@ fn the_corner_overlays_do_not_cover_each_other() {
 
 #[test]
 fn the_docs_button_asks_for_the_api_docs() {
-    // The docs link goes through egui's own URL command, which the UI
+    // The docs link goes through egui's own URL command, which the overlay
     // source publishes in the world; nothing here opens a page.
     let ctx = egui::Context::default();
     let screen = (800.0, 600.0);

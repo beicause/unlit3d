@@ -1,25 +1,25 @@
 use super::*;
 
-/// The UI options for a device-free test. Only the policy these tests
+/// The overlay options for a device-free test. Only the policy these tests
 /// assert on matters, so the depth-stencil format is the
 /// device-independent placeholder.
-fn ui_options_for_tests(srgb_to_linear_output: bool) -> LitOptions {
+fn egui_options_for_tests(srgb_to_linear_output: bool) -> LitOptions {
     let mut options = LitOptions::standard();
-    apply_ui_settings(&mut options, srgb_to_linear_output);
+    apply_egui_settings(&mut options, srgb_to_linear_output);
     options
 }
 
-/// A UI variant over the device-free options, for tests that assert on
+/// An egui variant over the device-free options, for tests that assert on
 /// what a variant derives rather than on a compiled pipeline.
-fn ui_variant_for_tests(srgb_to_linear_output: bool) -> LitVariant {
+fn egui_variant_for_tests(srgb_to_linear_output: bool) -> LitVariant {
     LitVariant {
-        options: Hashed::new(ui_options_for_tests(srgb_to_linear_output)),
+        options: Hashed::new(egui_options_for_tests(srgb_to_linear_output)),
         surface: SurfaceKey {
             color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
             depth_stencil_format: None,
             sample_count: 1,
         },
-        channels: ui_channels(),
+        channels: egui_channels(),
         base_color_texture: true,
         morph: false,
         strip_index_format: None,
@@ -27,26 +27,29 @@ fn ui_variant_for_tests(srgb_to_linear_output: bool) -> LitVariant {
 }
 
 #[test]
-fn ui_variant_is_screen_space_and_uncompressed() {
-    let variant = ui_variant_for_tests(false);
+fn egui_variant_is_screen_space_and_uncompressed() {
+    let variant = egui_variant_for_tests(false);
     let channels = variant.channels;
     assert_eq!(
         channels.position.position,
         Some(ChannelEncoding::PlanarPosition),
         "screen-space vertices are written at full precision and in the plane"
     );
-    assert!(!channels.position.joints, "a UI mesh is never skinned");
+    assert!(
+        !channels.position.joints,
+        "an overlay mesh is never skinned"
+    );
     assert_eq!(
         channels.secondary,
         SecondaryFlags::UV | SecondaryFlags::UNCOMPRESSED_UV | SecondaryFlags::COLOR
     );
     assert!(variant.base_color_texture);
     // Nothing is compressed, so no draw decodes through a metadata index:
-    // the instance stream carries no per-mesh state the UI would read.
+    // the instance stream carries no per-mesh state the overlay would read.
     assert!(!variant.needs_metadata());
     assert!(!variant.needs_joints());
     assert!(!variant.needs_morphs());
-    // The instance stream is declared for every unlit variant, so a UI
+    // The instance stream is declared for every unlit variant, so an overlay
     // draw binds the default record.
     assert!(variant.vertex_buffer_layouts()[INSTANCE_SLOT as usize].is_some());
     let options = &variant.options;
@@ -59,17 +62,17 @@ fn ui_variant_is_screen_space_and_uncompressed() {
         wgpu::CompareFunction::Always
     );
     // egui's colors premultiply their own alpha.
-    let blend = options.blend.expect("the UI variant blends");
+    let blend = options.blend.expect("the egui variant blends");
     assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
     assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
 }
 
 /// The conversion flag follows the parameter, since it depends on the
-/// target's format, not the UI.
+/// target's format, not the overlay.
 #[test]
 fn srgb_flag_follows_the_parameter() {
-    assert!(!ui_options_for_tests(false).srgb_to_linear_output);
-    assert!(ui_options_for_tests(true).srgb_to_linear_output);
+    assert!(!egui_options_for_tests(false).srgb_to_linear_output);
+    assert!(egui_options_for_tests(true).srgb_to_linear_output);
 }
 
 /// The projection maps the viewport's corners onto clip space, with Y
@@ -119,7 +122,7 @@ fn scissor_rect_clamps_to_the_target() {
 
 /// A clip rectangle is stated in logical points, so at a density above one
 /// it must cover that many physical pixels — the conversion egui-wgpu
-/// performs. Getting it wrong clips the UI short of its own bounds.
+/// performs. Getting it wrong clips the overlay short of its own bounds.
 #[test]
 fn scissor_rect_scales_points_to_physical_pixels() {
     let screen = ScreenDescriptor {

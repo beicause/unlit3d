@@ -54,7 +54,7 @@ cargo xtask test-wasm            # 同一批 GPU 测试，再在浏览器里跑�
 
 suite 二进制要求它的用例所需的功能，因此不带这些功能单跑一个 crate 会把它整个编掉：
 只跑 `cargo nextest run -p unlit3d` 跑的是该 crate 的单元测试，跳过 GPU suite，因为后者
-需要 `gltf`、`mcp` 与 `ui`。
+需要 `gltf`、`mcp` 与 `egui`。
 
 `nextest` 不跑 doctest，因此 `cargo xtask test` 会在其后追加 `cargo test --doc`。
 用 `cargo nextest run` 筛选只适合迭代时用，它不能替代该任务；CI 跑的就是该任务，

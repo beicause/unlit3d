@@ -310,20 +310,20 @@ The bridges:
   can still repeat by writing `loop_point` by hand. The demo's
   `install_synth` shows the whole install as one function, queued to the audio
   world as a job that answers the voice's entity.
-- **ui** (on with `render`): [`ui::UiPanelHost`] lays a world's
-  `unlit3d::ui::UiPanel`s out for a `unlit3d::ui::UiSource` in another
+- **egui** (on with `render`): [`egui::EguiPanelHost`] lays a world's
+  `unlit3d::egui::EguiPanel`s out for a `unlit3d::egui::EguiSource` in another
   world. A panel can only be built where its egui context runs — its callback
   is handed a `&mut egui::Ui` from the pass building it — so the panel's
   world lays the frame out and tessellates it, and the drawing world uploads
-  and records what comes back. Spawn a [`ui::UiPanelHost`] beside the panels;
+  and records what comes back. Spawn a [`egui::EguiPanelHost`] beside the panels;
   it holds a sender to the drawing world and the
   [`unlit3d::relay::SnapshotReader`] the target comes back through, and the
-  source is set up with [`unlit3d::ui::UiSource::publish_target`] to keep the
+  source is set up with [`unlit3d::egui::EguiSource::publish_target`] to keep the
   slots frames land in. A frame travels as a job, so the slots stay on the
   thread that draws them; the target the drawing side measures travels the
   other way as a snapshot, since a layout only ever needs the newest one. A
   tick that could not change the picture — a settled panel, no input, the same
-  target, no repaint due — sends nothing, so a still UI costs nothing, and the
+  target, no repaint due — sends nothing, so a still egui costs nothing, and the
   frame already there is drawn until a newer one replaces it. A frame the
   drawing world's queue refused is sent again rather than counted as
   delivered, so a full queue delays the picture instead of losing it. The

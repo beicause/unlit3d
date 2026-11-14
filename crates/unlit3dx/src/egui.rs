@@ -1,15 +1,15 @@
-//! UI panels laid out in one world and drawn in another.
+//! egui panels laid out in one world and drawn in another.
 //!
-//! A `unlit3d::ui::UiPanel` can only be built where its `egui::Context` runs: the
+//! A `unlit3d::egui::EguiPanel` can only be built where its `egui::Context` runs: the
 //! callback is handed a `&mut egui::Ui`, which belongs to the pass building it,
-//! so it cannot be carried to another thread. A UI whose panels belong to one
+//! so it cannot be carried to another thread. An overlay whose panels belong to one
 //! world and whose drawing belongs to another therefore crosses the boundary as
 //! **data**: the panel's world lays the frame out and tessellates it, and the
 //! drawing world uploads and records what comes back.
 //!
 //! The handover is one way: the panel world sends a job carrying an
-//! [`unlit3d::ui::ExternalFrame`] to the world holding the
-//! [`unlit3d::ui::UiSource`], which keeps it in a slot and draws it. A settled
+//! [`unlit3d::egui::ExternalFrame`] to the world holding the
+//! [`unlit3d::egui::EguiSource`], which keeps it in a slot and draws it. A settled
 //! panel sends nothing, so the frame already there keeps being drawn. What comes
 //! back is the target the drawing side draws at, published from the source into
 //! a [`Snapshot`](unlit3d::relay::Snapshot) the panel world subscribes to, so a
@@ -30,11 +30,11 @@ use core::time::Duration;
 
 use crate::job::{Job, JobSender, SendError};
 use unlit_ecs::World;
+use unlit3d::egui::{EguiSource, EguiTarget, ExternalFrame, egui, lay_out, raw_input};
 use unlit3d::frame::Frame;
 use unlit3d::input::{InputEvent, InputEvents};
 use unlit3d::relay::SnapshotReader;
 use unlit3d::source::Source;
-use unlit3d::ui::{ExternalFrame, UiSource, UiTarget, egui, lay_out, raw_input};
 
 /// A world's panel publishing: the context its panels are built in, where its
 /// frames are sent and the target it lays out against.
@@ -43,12 +43,12 @@ use unlit3d::ui::{ExternalFrame, UiSource, UiTarget, egui, lay_out, raw_input};
 /// the world ticks it, the way it ticks any other behaviour, and each tick that
 /// produced a frame sends it to the drawing world. A tick that could not change
 /// the picture — a settled panel, no input, the same target — sends nothing, so
-/// an idle UI costs nothing.
+/// an idle egui costs nothing.
 ///
 /// The context, its font atlas and its memory belong to this world and stay
 /// there: what crosses to the drawing side is the laid-out frame, which carries
 /// no borrow of any of them.
-pub struct UiPanelHost {
+pub struct EguiPanelHost {
     /// The context the panels in this world are built in.
     ctx: egui::Context,
     /// The frame time this host has been driven through, in seconds.
@@ -61,7 +61,7 @@ pub struct UiPanelHost {
     /// The queue of the world that draws the frames.
     render: JobSender,
     /// The target the drawing side last drew at.
-    screen: SnapshotReader<UiTarget>,
+    screen: SnapshotReader<EguiTarget>,
     /// Which slot this world's frames go in.
     slot: usize,
     /// The events of the frame being laid out, reclaimed from egui once the
@@ -78,18 +78,18 @@ pub struct UiPanelHost {
     /// side drops a frame laid out at another size, and this is what replaces
     /// it. A frame the drawing world's queue refused leaves this behind, so
     /// the next tick sends it again.
-    laid_out_at: Option<UiTarget>,
+    laid_out_at: Option<EguiTarget>,
     /// The moment, in this host's own [time](Self::time), at which the last
     /// frame laid out asked to be laid out again: a frame that named a moment
     /// rather than asking for the next possible pass.
     repaint_at: Option<f64>,
 }
 
-impl UiPanelHost {
+impl EguiPanelHost {
     /// Publish `world`'s panels into slot `slot` of the world behind
     /// `render`, against the target `screen` carries.
     #[must_use]
-    pub fn new(render: JobSender, screen: SnapshotReader<UiTarget>, slot: usize) -> Self {
+    pub fn new(render: JobSender, screen: SnapshotReader<EguiTarget>, slot: usize) -> Self {
         Self {
             ctx: egui::Context::default(),
             time: 0.0,
@@ -164,7 +164,7 @@ impl UiPanelHost {
         // The events this world received are in its own types; egui wants its
         // own, translated at the target's density so a click lands where the
         // pointer is in logical points.
-        unlit3d::ui::convert::to_egui_events_into(
+        unlit3d::egui::convert::to_egui_events_into(
             &events,
             target.screen.pixels_per_point,
             &mut scratch,
@@ -208,15 +208,15 @@ impl UiPanelHost {
     }
 }
 
-/// Hand `frame` to the UI source of the world this job runs in.
+/// Hand `frame` to the egui source of the world this job runs in.
 ///
 /// The job walks the world's frame sources and publishes into the first
-/// [`UiSource`] it finds, which draws that slot from then on. A world with no
+/// [`EguiSource`] it finds, which draws that slot from then on. A world with no
 /// source drops the frame, and dropping it clears its texture deltas.
 pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job {
     Box::new(move |world: &mut World| {
         for source in world.root_scope().query::<&mut Source>().iter() {
-            if let Ok(ui) = source.as_mut::<UiSource>() {
+            if let Ok(ui) = source.as_mut::<EguiSource>() {
                 ui.frames.publish(slot, frame);
                 return;
             }
@@ -230,10 +230,10 @@ mod tests {
     use core::cell::Cell;
     use std::rc::Rc;
     use unlit_ecs::bundle;
-    use unlit_wgpu::ui::ScreenDescriptor;
+    use unlit_wgpu::egui::ScreenDescriptor;
+    use unlit3d::egui::EguiPanel;
     use unlit3d::input::{InputWriter, Modifiers, refresh_input};
     use unlit3d::relay::Snapshot;
-    use unlit3d::ui::UiPanel;
 
     /// The worlds a panel is split across: the one holding it, and the one
     /// that draws what it sends.
@@ -244,9 +244,9 @@ mod tests {
         jobs: async_channel::Receiver<Job>,
         /// The drawing world's end of that queue.
         sender: async_channel::Sender<Job>,
-        host: UiPanelHost,
+        host: EguiPanelHost,
         /// The target the drawing side publishes at.
-        target: Snapshot<UiTarget>,
+        target: Snapshot<EguiTarget>,
     }
 
     impl TestUi {
@@ -266,10 +266,10 @@ mod tests {
             let mut render = World::new();
             render
                 .root_scope_mut()
-                .spawn(bundle![Source::new(UiSource::new())]);
+                .spawn(bundle![Source::new(EguiSource::new())]);
             let (sender, jobs) = async_channel::bounded(capacity);
             let target = Snapshot::new();
-            let host = UiPanelHost::new(JobSender::new(sender.clone()), target.reader(), 0);
+            let host = EguiPanelHost::new(JobSender::new(sender.clone()), target.reader(), 0);
             Self {
                 render,
                 jobs,
@@ -298,11 +298,11 @@ mod tests {
 
         fn frames<R>(&mut self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
             for source in self.render.root_scope().query::<&mut Source>().iter() {
-                if let Ok(ui) = source.as_mut::<UiSource>() {
+                if let Ok(ui) = source.as_mut::<EguiSource>() {
                     return ui.frames.with_frames(f);
                 }
             }
-            panic!("the drawing world holds a UI source");
+            panic!("the drawing world holds an egui source");
         }
     }
 
@@ -316,8 +316,8 @@ mod tests {
     }
 
     /// The target the drawing side draws at in these tests.
-    fn test_target() -> UiTarget {
-        UiTarget {
+    fn test_target() -> EguiTarget {
+        EguiTarget {
             screen: ScreenDescriptor {
                 size_in_pixels: [128, 96],
                 pixels_per_point: 1.0,
@@ -336,7 +336,7 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn(bundle![UiPanel::new(move |_, _, ui: &mut egui::Ui| {
+            .spawn(bundle![EguiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.label("hello");
             }),]);
@@ -415,7 +415,7 @@ mod tests {
         settle(&mut test, &world);
 
         let settled = runs.get();
-        let resized = UiTarget {
+        let resized = EguiTarget {
             screen: ScreenDescriptor {
                 size_in_pixels: [256, 192],
                 pixels_per_point: 2.0,
@@ -444,7 +444,7 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn(bundle![UiPanel::new(move |_, _, ui: &mut egui::Ui| {
+            .spawn(bundle![EguiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.ctx()
                     .request_repaint_after(core::time::Duration::from_millis(50));

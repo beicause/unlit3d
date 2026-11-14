@@ -16,18 +16,18 @@
 
 pub mod animated;
 pub mod custom_pipeline;
+pub mod egui_only;
 pub mod gltf;
 pub mod instanced_skinned_morph;
 pub mod lit;
 pub mod lit_clusters;
-pub mod mesh_and_ui;
+pub mod mesh_and_egui;
 pub mod mesh_topologies;
 pub mod morphed;
 pub mod outline;
 pub mod skinned;
 pub mod spin_cube;
 pub mod transparent;
-pub mod ui_only;
 
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit_wgpu::pipeline::{DepthStencilPolicy, LitOptions};
@@ -95,7 +95,7 @@ pub struct SceneDef {
     /// more. The snapshot tests ignore this and draw at [`Self::size`], which
     /// the snapshots were captured at.
     ///
-    /// A UI-only scene declares none: an interface belongs on the whole window,
+    /// An overlay-only scene declares none: an interface belongs on the whole window,
     /// and letterboxing it would put bars around a panel that has no aspect of
     /// its own.
     pub baseline: Option<(u32, u32)>,
@@ -118,25 +118,25 @@ pub struct SceneDef {
     pub samples: u32,
     /// Whether that offscreen target carries a depth-stencil attachment.
     pub depth: bool,
-    /// Whether the scene draws UI panels of its own.
+    /// Whether the scene draws egui panels of its own.
     ///
-    /// The snapshot tests mount a UI source to drive them; the windowed path
+    /// The snapshot tests mount an egui source to drive them; the windowed path
     /// always mounts one, for the scene selector.
-    pub ui: bool,
-    /// Whether the scene's UI animates against egui's clock.
+    pub egui: bool,
+    /// Whether the scene's egui animates against egui's clock.
     ///
     /// A scene whose snapshots were captured with the clock suppressed — the
     /// example's own, whose panels live in egui windows — declares `true`, so
     /// the snapshot tests zero egui's animation time for it. Every other scene
     /// was captured with the clock live and declares `false`.
-    pub reproducible_ui: bool,
+    pub reproducible_egui: bool,
     /// Build the scene's world content and return its per-frame behaviour.
     ///
     /// The world already holds the frame's context, the renderer resource
     /// entity and the pass the scene draws through; the scene spawns its
     /// sources, meshes, camera and entities, sources inside the pass.
     ///
-    /// The entity is the UI source the shell mounted for the scene, when the
+    /// The entity is the egui source the shell mounted for the scene, when the
     /// run has one: a panel the scene draws hangs in that source's scope, so
     /// the scene spawns it there rather than at the root — a source draws the
     /// subtree it owns and nothing beside it.
@@ -146,8 +146,8 @@ pub struct SceneDef {
 /// Every selectable scene, in the order the GUI lists them.
 pub static SCENES: &[&SceneDef] = &[
     &spin_cube::SCENE,
-    &ui_only::SCENE,
-    &mesh_and_ui::SCENE,
+    &egui_only::SCENE,
+    &mesh_and_egui::SCENE,
     &animated::SCENE,
     &skinned::SCENE,
     &morphed::SCENE,
@@ -184,8 +184,8 @@ pub fn list_text() -> String {
 /// What a scene is built with.
 #[derive(Clone, Copy)]
 pub struct SceneOptions {
-    /// Mount the scene's own UI panels.
-    pub ui: bool,
+    /// Mount the scene's own egui panels.
+    pub egui: bool,
     /// Mount the windowed shell's scene-selector panel.
     pub selector: bool,
     /// Suppress everything egui animates against the clock, so a captured
