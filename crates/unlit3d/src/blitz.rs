@@ -116,6 +116,12 @@ struct TextureTarget {
     view: ResHandle<TextureView>,
     /// The last frame this target was drawn in.
     frame: u32,
+    /// Whether a painted page has been uploaded into it.
+    ///
+    /// A page that is still waiting for the bytes it blocks on paints nothing,
+    /// so its texture is left as it was created -- all zeroes, which is a
+    /// transparent page -- and is not composed until it holds one.
+    painted: bool,
 }
 
 impl BlitzSource {
@@ -304,6 +310,7 @@ impl FrameSource for BlitzSource {
                     texture,
                     view,
                     frame,
+                    painted: false,
                 });
                 self.targets.len() - 1
             }
@@ -312,11 +319,20 @@ impl FrameSource for BlitzSource {
         target.frame = frame;
         // The target is created only for a size the painter was just resized or
         // freshly built for, which is a repaint: an existing one is rewritten
-        // only when the page itself is.
-        if repaint && let Some(texture) = graph.get().get(&target.texture) {
+        // only when the page itself is. The pixel buffer is the buffer the last
+        // repaint filled, so it describes this frame only if it is this frame's
+        // size: a page that grew while it could not be painted still holds the
+        // smaller one.
+        let pixels = (self.pixels.len() == size.0 as usize * size.1 as usize * 4)
+            .then_some(self.pixels.as_slice());
+        if repaint
+            && let Some(pixels) = pixels
+            && let Some(texture) = graph.get().get(&target.texture)
+        {
+            target.painted = true;
             queue.write_texture(
                 texture.as_image_copy(),
-                &self.pixels,
+                pixels,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(size.0 * 4),
@@ -330,7 +346,11 @@ impl FrameSource for BlitzSource {
             );
         }
         let view = self.targets[index].view.clone();
+        let painted = self.targets[index].painted;
         drop(graph);
+        if !painted {
+            return;
+        }
 
         self.screen.record(
             scope,

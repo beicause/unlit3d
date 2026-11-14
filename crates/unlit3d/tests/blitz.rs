@@ -337,6 +337,30 @@ async fn a_click_toggles_a_checkbox() {
     );
 }
 
+/// A page whose stylesheet never arrives draws nothing rather than failing the
+/// frame: Blitz holds rendering until its critical resources are in, so the
+/// source has no pixels to upload yet.
+async fn a_page_waiting_for_a_stylesheet_draws_nothing() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html><head><link rel="stylesheet" href="missing.css"></head>
+        <body style="margin: 0; background: #808080"></body></html>"#;
+    let mut empty = World::new();
+    let empty_gpu = TestGpu::frame_only(&mut empty, &ctx);
+    let empty_target = empty_gpu.bind_offscreen_target_with(&empty, 1, false);
+    empty_gpu.render(&empty);
+    let without_page =
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &empty_target).await;
+
+    let (world, gpu, target, _source, _page) = render_page(&ctx, html);
+    gpu.render(&world);
+    let with_page = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
+
+    assert_eq!(
+        with_page, without_page,
+        "a page that is waiting for a stylesheet should not be composed at all"
+    );
+}
+
 /// Input belongs to the frame that read it: a click dispatched once is not
 /// dispatched again by the frames that follow it.
 async fn input_is_dispatched_once() {
@@ -406,4 +430,5 @@ gpu_tests! {
     a_click_toggles_a_checkbox,
     typing_reaches_a_text_field,
     input_is_dispatched_once,
+    a_page_waiting_for_a_stylesheet_draws_nothing,
 }
