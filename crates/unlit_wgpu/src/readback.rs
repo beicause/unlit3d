@@ -19,18 +19,17 @@
 //! which is already a future, awaits it.
 //!
 //! A blocking implementation is not an option, because one backend cannot
-//! block: the browser's WebGPU backend reports `PollError::CantWait` rather
-//! than waiting, and finishes the copy on its own event loop, where only a
-//! future waiting across tasks can see it. Every other backend would let a
-//! `poll(Wait)` do the waiting inside one call, but a readback that works on
-//! some backends and panics on others would be a trap for the tests that run on
-//! both.
+//! block: the browser's WebGPU backend polls the device automatically and
+//! finishes the copy on its own event loop, where only a future waiting across
+//! tasks can see it. Every other backend would let a `poll(Wait)` do the
+//! waiting inside one call, but a readback that works on some backends and
+//! panics on others would be a trap for the tests that run on both.
 //!
 //! Natively the wait is bounded by [`READBACK_TIMEOUT`]: a device that has
 //! stopped making progress ends the call with an error instead of hanging it.
 //! A browser's event loop has no such bound to offer — the poll that would
-//! carry the deadline is the one that cannot wait — so the harness's own
-//! per-test timeout is what fails a page whose device wedged.
+//! carry the deadline returns at once — so the harness's own per-test timeout
+//! is what fails a page whose device wedged.
 //!
 //! Each call comes in two forms: [`readback_buffer`] and
 //! [`readback_texture`] return the bytes and panic if there are none, which
@@ -240,7 +239,7 @@ async fn copy_and_map(
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
     encode(&mut encoder);
-    let submission = queue.submit([encoder.finish()]);
+    let submission = Some(queue.submit([encoder.finish()]));
 
     let slice = staging.slice(..);
     // The callback hands the result over once, from whichever thread the
@@ -325,8 +324,8 @@ impl MapFuture<'_> {
     ///
     /// A wasm build has no clock to read, so it cannot tell how much of the
     /// budget is left; each poll gets the whole of it instead. The WebGPU
-    /// backend there refuses to wait before any timeout matters, so this bounds
-    /// only the WebGL2 path, where the fence returns by itself.
+    /// backend there returns without waiting before any timeout matters, so
+    /// this bounds only the WebGL2 path, where the fence returns by itself.
     #[cfg(target_arch = "wasm32")]
     fn budget(&self) -> Option<Duration> {
         Some(READBACK_TIMEOUT)
@@ -361,9 +360,6 @@ impl Future for MapFuture<'_> {
             timeout: this.budget(),
         }) {
             Ok(_) => {}
-            // A backend that finishes copies on its own event loop refuses to
-            // wait; the callback's wake is what resumes this future.
-            Err(wgpu::PollError::CantWait) => {}
             Err(wgpu::PollError::Timeout) => {
                 let error = this.fail(ReadbackError::Timeout(READBACK_TIMEOUT));
                 return Poll::Ready(Err(error));

@@ -618,10 +618,7 @@ fn surface_format(
     formats: &[wgpu::TextureFormat],
     view_formats_supported: bool,
 ) -> (wgpu::TextureFormat, Vec<wgpu::TextureFormat>) {
-    let srgb = formats
-        .iter()
-        .copied()
-        .find(wgpu::TextureFormat::has_srgb_suffix);
+    let srgb = formats.iter().copied().find(wgpu::TextureFormat::is_srgb);
     let format = srgb
         .or_else(|| {
             // A format that has an sRGB counterpart, so the frames can still be
@@ -641,7 +638,7 @@ fn surface_format(
     // A format that already encodes sRGB needs no view, nor does one whose
     // backend cannot be given a view at all. `add_srgb_suffix` returns the
     // format itself when it has no counterpart, which the filter drops.
-    let view_formats = (view_formats_supported && !format.has_srgb_suffix())
+    let view_formats = (view_formats_supported && !format.is_srgb())
         .then(|| format.add_srgb_suffix())
         .filter(|srgb| *srgb != format)
         .into_iter()
@@ -664,7 +661,7 @@ fn surface_format(
 /// the built-in shaders write, and why this falls back to `config.format`
 /// rather than refusing to pick one.
 fn color_format(config: &wgpu::SurfaceConfiguration) -> wgpu::TextureFormat {
-    if config.format.has_srgb_suffix() {
+    if config.format.is_srgb() {
         return config.format;
     }
     config
