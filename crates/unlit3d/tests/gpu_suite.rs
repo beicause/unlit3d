@@ -2,8 +2,8 @@
 //! binary.
 //!
 //! The files below are modules of a single test target, sharing one
-//! compilation of [common]; the root README's `Tests and benchmarks` section
-//! explains why a crate's integration tests are one binary.
+//! compilation of [common]; the repository's `TESTING.md`, in its `Test layers`
+//! section, explains why a crate's integration tests are one binary.
 //!
 //! The registry each module builds with `gpu_tests!` is concatenated below and
 //! handed to the runner once. The runner itself is `gpu_test_main!`: it drives

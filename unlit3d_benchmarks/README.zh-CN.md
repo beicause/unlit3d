@@ -12,7 +12,7 @@
 
 本 crate 不属于测试运行：基准二进制没有测试 harness，因此 `cargo xtask test` 把它
 排除在外，改由 `cargo bench` 驱动。工作区的测试覆盖什么见
-[根 README](../README.zh-CN.md#测试与基准)。
+[`TESTING.zh-CN.md`](../TESTING.zh-CN.md)。
 
 ## `frame` —— 有多快
 

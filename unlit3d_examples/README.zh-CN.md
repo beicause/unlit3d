@@ -299,7 +299,7 @@ tie-break 规则决定，API 把这件事留给实现。这样零星几个像素
 渲染，`tests/selector_position.rs` 覆盖窗口外壳跨场景切换保留的浮动面板。
 
 测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
-[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
+[`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 
 ## 许可证
 

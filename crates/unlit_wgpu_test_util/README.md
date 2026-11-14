@@ -204,7 +204,7 @@ This crate's own tests cover the harness's internals, such as how an outlier is
 counted. The workspace's GPU tests live beside the crates they exercise, and
 `cargo xtask test` runs them on the host while `cargo xtask test-wasm` runs the
 same tests in a browser. Both are described in the
-[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
+[`TESTING.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.md).
 
 ## License
 

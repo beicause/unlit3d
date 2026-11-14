@@ -13,7 +13,7 @@ costs, and `profile` for a frame's phase breakdown.
 
 The crate is not part of the test run: a benchmark binary has no test harness, so
 `cargo xtask test` excludes it and `cargo bench` drives it instead. What the
-workspace's tests cover is in the [root README](../README.md#tests-and-benchmarks).
+workspace's tests cover is in [`TESTING.md`](../TESTING.md).
 
 ## `frame` — how fast
 

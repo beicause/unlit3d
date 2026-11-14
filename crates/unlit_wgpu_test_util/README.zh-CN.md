@@ -174,7 +174,7 @@ unlit_wgpu_test_util::assert_image_snapshot(
 本 crate 自身的测试覆盖骨架的内部实现，例如离群像素如何计数。工作区的 GPU 测试放在
 它们所验证的 crate 旁边，`cargo xtask test` 在宿主机上运行它们，`cargo xtask test-wasm`
 则在浏览器里运行同一批测试。两者都见
-[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
+[`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 
 ## 许可证
 

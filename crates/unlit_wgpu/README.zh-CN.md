@@ -750,7 +750,7 @@ submodule 的软链接；在本仓库用 `git submodule update --init --checkout
 
 单元测试位于 `src/` 内，覆盖私有纯逻辑；`tests/` 下的集成测试只经公开 API 使用本
 crate。各测试层在整个工作区中的位置，以及 CI 所跑的内容，见
-[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
+[`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 
 ## 另见
 

@@ -451,7 +451,7 @@ cargo xtask test                 # 整个工作区
 ```
 
 测试覆盖 world 与查询行为、延迟命令。测试各层作为整体，以及 CI 所跑的内容，见
-[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
+[`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 
 本 crate 的访问路径由 [`unlit3d_benchmarks`](../../unlit3d_benchmarks/README.zh-CN.md)
 的 `ecs` 目标做基准测试，`World::get` 与「一次性解析整个 archetype 的列」两种取法的

@@ -400,7 +400,7 @@ rendering, and `tests/selector_position.rs` the dragged panels the window
 shell keeps across a scene switch.
 
 Where each test layer sits across the workspace, and what CI runs, is in the
-[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
+[`TESTING.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.md).
 
 ## License
 

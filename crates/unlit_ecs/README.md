@@ -569,7 +569,7 @@ cargo xtask test                 # the whole workspace
 
 The tests cover world and query behaviour and deferred commands. The test
 layers as a whole, and what CI runs, are described in the
-[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
+[`TESTING.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.md).
 
 This crate's access paths are benchmarked by
 [`unlit3d_benchmarks`](../../unlit3d_benchmarks/README.md)'s `ecs` target, which

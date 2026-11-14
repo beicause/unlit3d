@@ -945,7 +945,7 @@ review the image diff before committing it.
 The unit tests live inside `src/` and cover the private pure logic; the
 integration tests in `tests/` reach the crate through its public API only. Where
 each layer sits across the workspace, and what CI runs, is in the
-[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
+[`TESTING.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.md).
 
 ## See also
 

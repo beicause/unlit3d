@@ -1334,7 +1334,7 @@ what gets past its `update = none`; re-bless intentional
 changes with `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` and review
 the image diff. Where each test layer sits across the workspace, and what CI
 runs, is in the
-[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
+[`TESTING.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.md).
 
 ## See also
 
