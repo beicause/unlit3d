@@ -311,7 +311,7 @@ fn aligned_allocations_are_contiguous_and_aligned() {
     assert_eq!(allocator.allocation_size(c), 4);
 
     for allocation in [a, b, c] {
-        assert_eq!(allocation.offset % COPY_ALIGNMENT.get(), 0);
+        assert_eq!(allocation.offset % COPY_ALIGNMENT, 0);
     }
 
     // Freeing in a different order still merges everything back into one
@@ -344,7 +344,7 @@ fn min_allocator_size_holds_aligned_objects() {
         let allocation = allocator
             .allocate(needed_object_size)
             .unwrap_or_else(|| panic!("{needed_object_size} units must fit in {allocator_size}"));
-        assert_eq!(allocation.offset % COPY_ALIGNMENT.get(), 0);
+        assert_eq!(allocation.offset % COPY_ALIGNMENT, 0);
         assert!(allocator.allocation_size(allocation) >= needed_object_size);
     }
 }
@@ -394,9 +394,9 @@ fn every_offset_stays_aligned_under_churn() {
         let charged = allocator.allocation_size(allocation);
 
         // The offset is aligned, and the charge covers the request.
-        assert_eq!(allocation.offset % alignment.get(), 0);
+        assert_eq!(allocation.offset % alignment, 0);
         assert!(charged >= size);
-        assert_eq!(charged % alignment.get(), 0);
+        assert_eq!(charged % alignment, 0);
 
         // The new range overlaps no live one.
         let end = allocation.offset + charged;
@@ -564,8 +564,8 @@ proptest::proptest! {
             };
 
             let charged = allocator.allocation_size(allocation);
-            prop_assert_eq!(allocation.offset % alignment.get(), 0);
-            prop_assert_eq!(charged % alignment.get(), 0);
+            prop_assert_eq!(allocation.offset % alignment, 0);
+            prop_assert_eq!(charged % alignment, 0);
             prop_assert!(charged >= requested, "{} charged for {}", charged, requested);
 
             let end = allocation.offset + charged;

@@ -321,7 +321,7 @@ mod tests {
             let range = pool
                 .allocate(&device, &queue, size)
                 .expect("the pool has room");
-            assert_eq!(range.allocation.offset % ALIGNMENT.get(), 0);
+            assert_eq!(range.allocation.offset % ALIGNMENT, 0);
             assert!(range.size >= size);
             ranges.push((range.allocation.offset, range.size));
         }

@@ -132,9 +132,8 @@ fn a_global_group_is_keyed_by_the_pipeline_and_the_uniforms() {
     // the same pipeline for the same records twice costs a lookup: the
     // second call hands back the group the first one registered.
     let mut ids = Vec::new();
-    let loops = h.source.pipelines.len();
-    for index in 0..loops {
-        let recipe = h.source.pipelines[index]
+    for (index, pipeline) in h.source.pipelines.iter_mut().enumerate() {
+        let recipe = pipeline
             .global
             .as_ref()
             .expect("has a recipe")
@@ -142,11 +141,7 @@ fn a_global_group_is_keyed_by_the_pipeline_and_the_uniforms() {
             .clone();
         let mut graph_holder = ctx.graph(&root);
         let graph = graph_holder.get();
-        let groups = &mut h.source.pipelines[index]
-            .global
-            .as_mut()
-            .expect("has a recipe")
-            .groups;
+        let groups = &mut pipeline.global.as_mut().expect("has a recipe").groups;
         let first = groups.group(graph, uniforms.key(), uniforms.frame, |graph| {
             recipe.insert(&device, graph, &uniforms)
         });
