@@ -137,13 +137,25 @@ const BACKEND_ARGS = {
 
 **规矩：**headed 那趟都要传 `--disable-gpu-watchdog`。headless 的不需要，headless 浏览器根本不会起 watchdog。
 
-## 在 headless 浏览器里读 WebGPU 画布，读出来全是透明
+## 没有窗口、系统又没有 GL 驱动时，WebGPU 画布读出来全是透明
 
-**位置：**[`tests/wasm/runner/index.js`](tests/wasm/runner/index.js) 的 `BACKENDS_NEEDING_A_WINDOW`，以及 runner 为这个集合里的后端起的那台私有 Xvfb。
+**位置：**[`tests/wasm/runner/index.js`](tests/wasm/runner/index.js) 的 `BACKENDS_NEEDING_A_WINDOW`，以及 runner 为这个集合里的后端起的那台私有 Xvfb；还有 [`.github/workflows/ci-main.yml`](.github/workflows/ci-main.yml)，它在一张裸镜像上装好画布所需的 OpenGL 实现。
 
-**症状：**WebGPU 那趟的示例检查——唯一一处读示例页画布的检查——一直等到超时，而页面报告这一帧已经画出来了。画布仍是透明的：`drawImage`、`toDataURL`、`page.screenshot` 一律返回 `rgba(0, 0, 0, 0)`。页面还报 `A valid external Instance reference no longer exists`，设备丢失。
+**症状：**WebGPU 那趟的示例检查——唯一一处读画布的检查——一直等到超时，而页面报告这一帧已经画出来了。画布仍是透明的：`drawImage`、`toDataURL`、`page.screenshot` 一律返回 `rgba(0, 0, 0, 0)`。页面还报 `A valid external Instance reference no longer exists`，设备丢失。
 
-**成因：**WebGPU 画布是靠一块 shared image 送到合成器的，而 headless Chrome 为它造不出 backing：
+**成因：**帧确实画了，只是没送到合成器：WebGPU 画布要靠一块 shared image 呈现，而 Chrome 找不到能为它造出 backing 的工厂。涉及的几个名词分属三层：
+
+| 名字 | 所处层 | 是什么 |
+| --- | --- | --- |
+| WebGL2、WebGPU | 网页调用的接口 | 浏览器的两代 GPU 接口 |
+| ANGLE、Dawn | 把接口调用落到实处的实现 | ANGLE 把 WebGL2 翻给 Vulkan、桌面 GL 或某个软件后端；Dawn 实现 WebGPU |
+| SwiftShader | Chrome 自带的软件设备 | 一台软件 Vulkan 设备，外加一个 ANGLE 可以建上下文的软件 GL 实现 |
+| Mesa | Linux 系统可能带的软件设备 | 软件 Vulkan 叫 `lavapipe`，软件 OpenGL 叫 `llvmpipe` |
+| `libvulkan1`、ICD 文件 | Vulkan 实现的查找方式 | loader，以及登记「可以加载哪些实现」的 JSON 文件 |
+
+让画布没有 backing 的是两个彼此独立的条件，任一条件单独成立都会得到同一片透明。
+
+*没有窗口。*无头 Chrome 根本不合成 WebGPU 画布，加什么参数都一样：
 
 ```text
 ERROR:shared_image_factory.cc: Could not find SharedImageBackingFactory with params:
@@ -151,11 +163,28 @@ ERROR:shared_image_factory.cc: Could not find SharedImageBackingFactory with par
 ERROR:shared_image_stub.cc: SharedImageStub: Unable to create shared image
 ```
 
-接下来把画布纹理当拷贝源就会报上面那条消息，Chrome 于是把设备判为失效，页面余下的时间都不可用。没有任何参数能救：同一块画布在 Chrome 154 与 157 上、在 headless 下，无论加不加 `--enable-unsafe-webgpu`、SwiftShader 那三个 Vulkan 参数、`--use-webgpu-adapter`、`--ozone-platform=x11`、ANGLE、Skia Graphite 与那组合成开关，试过的组合都是透明的。
+接下来把画布纹理当拷贝源就会报错，Chrome 于是把设备判为失效，页面余下的时间都不可用。没有任何参数能救：在 Chrome 154 与 157 上，无论加不加 `--enable-unsafe-webgpu`、SwiftShader 那三个 Vulkan 参数、`--use-webgpu-adapter`、`--ozone-platform=x11`、ANGLE、Skia Graphite 与那组合成开关，试过的组合都是透明的。
 
-测试本身不受影响，因为它们从不读画布：它们画进一张离屏纹理，拷进 buffer 再映射出来，而那条路径在 headless Chrome 上是正确的。
+*系统没有自己的 GL 驱动。*headed 浏览器若其 OpenGL 上下文落在 SwiftShader 上，回读出来依旧是同一片透明，而 CI runner 正是这个状态：镜像里既没有 OpenGL 也没有 Vulkan 实现，浏览器只能用它自带的 SwiftShader。于是 Chromium 拒绝画布交换链所依赖的那条 interop，判断条件就卡在「OpenGL 上下文不是 SwiftShader 的」上：
 
-**绕法：**给这一趟一个窗口，并把 Vulkan 作为 feature 打开。runner 以 headed 加 `--ozone-platform=x11` 与 `--enable-features=Vulkan` 启动，并删掉 `WAYLAND_DISPLAY` 以免 Chrome 改挑一个 Wayland socket。在 Linux 上它还会自起一台 Xvfb，用 `DISPLAY` 把浏览器指过去——刻意自起而不是借现成的，因为现成的那台可能是某个 Wayland 会话的 Xwayland；唯一例外是 `--show` 且当前已设 `DISPLAY`，那时窗口要落在开发者自己的屏幕上：
+```text
+if (use_swift_shader || gpu_preferences.gr_context_type != GrContextType::kGL)
+  return kGpuFeatureStatusDisabled;              // GetWebGPUOnVulkanViaGLInterop()
+```
+
+interop 一关，`ExternalVkImageBackingFactory` 就不会注册——Linux 上只有它接受 `WEBGPU_SWAP_CHAIN_TEXTURE` 用途，而它只在 `gr_context_type_ == GrContextType::kVulkan || enable_webgpu_on_vk_via_gl_interop` 时才被加进工厂表（chromium 的 `gpu/command_buffer/service/shared_image/shared_image_factory.cc`）。画布于是没有 backing，理由与 headless 时相同，报的也是那两条同样的消息。
+
+**绕法：**把浏览器按下面几样凑齐。参数是 [agent-browser 的 WebGPU 说明](https://agent-browser.dev/webgpu)为 Linux 列出的那套，外加一个本仓库自己的 watchdog 开关：
+
+| 需要 | 由什么提供 | 为什么 |
+| --- | --- | --- |
+| 没有显卡也能跑 WebGPU | `--enable-unsafe-webgpu`，加上 `--use-angle=vulkan --use-vulkan=swiftshader --use-webgpu-adapter=swiftshader --disable-vulkan-surface` | 这四个把 ANGLE 与 WebGPU 都钉在 Chrome 自带的 SwiftShader Vulkan 上，于是不需要显卡，也不会悄悄换成别的 adapter |
+| 画布会被合成 | headed，加上 `--enable-features=Vulkan` | headed 且开着这个 feature 才会合成；headed 但不开、以及 headless 无论开不开，读出来都是透明，而 adapter 与测试看着都正常 |
+| 一块显示 | 私有 Xvfb，`DISPLAY` 指过去，删掉 `WAYLAND_DISPLAY` | 机器没有显示服务时由 Xvfb 提供；刻意自起而不借现成的，因为现成的那台可能是某个 Wayland 会话的 Xwayland——唯一例外是 `--show` 且已设 `DISPLAY`，那时窗口要落在开发者自己屏幕上 |
+| X 而不是 Wayland | `--ozone-platform=x11` | Wayland 通往合成器的那条路要 DRM 设备，软件 Vulkan 设备不是 |
+| 不被 watchdog 杀掉 | `--disable-gpu-watchdog` | headed 浏览器在软件渲染卡住 GPU 线程时会杀掉 GPU 进程，见上一条 |
+| 一个不是 SwiftShader 的 OpenGL 上下文 | `sudo apt-get install --yes xvfb libvulkan1 mesa-vulkan-drivers` | `mesa-vulkan-drivers` 给 ANGLE 一个可以建的 OpenGL 上下文，`libvulkan1` 是它找到该 ICD 所经的 loader；底下给 WebGPU 用的仍是 Chrome 自带的 SwiftShader Vulkan，所以这些包只决定画布会不会被合成，不改变测试跑在什么设备上 |
+| 容器的环境 | `--no-sandbox`、`--disable-dev-shm-usage`、`--enable-unsafe-swiftshader` | 容器的沙箱与过小的 `/dev/shm`，以及两个后端的软件渲染 |
 
 ```js
 const server = spawn("Xvfb",
@@ -163,10 +192,8 @@ const server = spawn("Xvfb",
   { stdio: ["ignore", "pipe", "pipe"] });
 ```
 
-`-displayfd` 让 Xvfb 自己挑一个空闲的 display 号并报到 stdout，于是同一台机器上两趟运行不会撞号。它自己的 stderr 在转发时加上 `xvfb:` 前缀，免得服务器端的抱怨被当成浏览器的。
+`-displayfd` 让 Xvfb 自己挑一个空闲的 display 号并报到 stdout，于是同一台机器上两趟运行不会撞号；它自己的 stderr 在转发时加上 `xvfb:` 前缀，免得服务器端的抱怨被当成浏览器的。
 
-两半缺一不可，这也是它要靠一轮参数矩阵才定位的原因：不加 `--enable-features=Vulkan`，WebGPU 也照样能连上 SwiftShader Vulkan，adapter 看着是对的、测试也照样过，但只有 headed 且开着这个 feature 的浏览器才会把画布合成出来。headed 但不开这个 feature 读出来是透明，headless 无论开不开都是透明。
+**代价：**WebGPU 那趟变成 headed，读画布要经合成器，不再是一次纹理拷贝；WebGL2 那趟保持 headless 启动，因为它的画布确实能到得了 headless 的合成器。本来就在跑桌面的机器自带 OpenGL 实现，所以只有裸的 CI 镜像才需要装。
 
-**代价：**WebGPU 那趟变成 headed，机器上得装 `Xvfb`，而且读画布要经合成器，不再是一次纹理拷贝。WebGL2 那趟保持 headless 启动，因为它的画布确实能到得了 headless 的合成器。
-
-**规矩：**只有读画布的检查才需要窗口，而示例检查是唯一一处。GPU 测试从离屏纹理读它那一帧——若有测试改成读画布，它在任何没有显示器的机器上都会挂。
+**规矩：**只有读画布的检查才需要这一套，而示例检查是唯一一处。GPU 测试从离屏纹理读它那一帧——若有测试改成读画布，它在任何没有显示器的机器上都会挂。

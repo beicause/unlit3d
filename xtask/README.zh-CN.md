@@ -150,12 +150,11 @@ GPU 后端各一遍：wasm 二进制自己先请求 WebGPU、不支持时回退�
 启动它们——并检查它能启动、能选到后端、并在画布上留下带明暗的画面而不是一片空白。它们用
 的正是 `run-wasm` 所提供的同一批页面、由同一份代码构建，因此两者不会走样。
 
-这项画布检查也正是 WebGPU 那一趟要 headed 运行的原因：无头浏览器根本不做合成，
-WebGPU 画布于是画得出来、回读却全是透明，无论启动参数怎么设。runner 给这一趟一个窗口
-——Linux 上没有现成显示可用时自起一台私有 Xvfb，把 `DISPLAY` 指过去，并删掉
-`WAYLAND_DISPLAY` 以免 Chrome 改走 Wayland。GPU 测试本身读的是离屏纹理，无头也能过；
-只有示例检查需要这个窗口。机制与配套参数见 WORKAROUND.md 的
-「在 headless 浏览器里读 WebGPU 画布，读出来全是透明」。
+这项画布检查也正是 WebGPU 那一趟要 headed 运行、以及裸镜像要装 Mesa 的 Vulkan 驱动的
+原因：整趟里只有它读画布，而 GPU 测试读的是离屏纹理，不需要任何窗口去合成。runner 给这一趟
+一个窗口——Linux 上没有现成显示可用时自起一台私有 Xvfb，把 `DISPLAY` 指过去，并删掉
+`WAYLAND_DISPLAY` 以免 Chrome 改走 Wayland。哪项条件要哪一样、为什么，见 WORKAROUND.md 的
+「没有窗口、系统又没有 GL 驱动时，WebGPU 画布读出来全是透明」。
 
 runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 指定现成的浏览器可
 免于下载。`--show` 让这一趟带窗口跑而不是无头，好让人看着失败发生；只有 WebGL2 那一趟

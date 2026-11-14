@@ -212,20 +212,36 @@ whole page rather than the one test.
 **Rule:** a headed pass passes `--disable-gpu-watchdog`. A headless one needs
 nothing, since a headless browser never starts the watchdog.
 
-## A WebGPU canvas reads back transparent in a headless browser
+## A WebGPU canvas reads back transparent without a window and a GL driver
 
 **Where:** [`tests/wasm/runner/index.js`](tests/wasm/runner/index.js),
 `BACKENDS_NEEDING_A_WINDOW` and the private Xvfb the runner starts for a backend
-in that set.
+in that set; [`.github/workflows/ci-main.yml`](.github/workflows/ci-main.yml),
+which installs the OpenGL implementation the canvas needs on a bare image.
 
-**Symptom:** the WebGPU pass's example check — the one check that reads the
-example page's canvas — waits out its whole timeout while the page reports the
-frame was drawn. The canvas stays transparent: `drawImage`, `toDataURL` and
-`page.screenshot` all come back `rgba(0, 0, 0, 0)`. The page also logs
-`A valid external Instance reference no longer exists`, and the device is lost.
+**Symptom:** the WebGPU pass's example check — the one check that reads a
+canvas — waits out its whole timeout while the page reports the frame was drawn.
+The canvas stays transparent: `drawImage`, `toDataURL` and `page.screenshot` all
+come back `rgba(0, 0, 0, 0)`. The page also logs a lost device, with
+`A valid external Instance reference no longer exists`.
 
-**Cause:** a WebGPU canvas reaches the compositor through a shared image, and
-headless Chrome cannot produce a backing for it:
+**Cause:** the frame is drawn but never reaches the compositor. A WebGPU canvas
+is presented through a *shared image*, and Chrome finds no factory able to back
+one. The names involved sit at three layers:
+
+| Name | Layer | What it is |
+| --- | --- | --- |
+| WebGL2, WebGPU | the interface a page calls | the browser's two GPU APIs |
+| ANGLE, Dawn | what carries those calls out | ANGLE translates WebGL2 to Vulkan, desktop GL or a software backend; Dawn implements WebGPU |
+| SwiftShader | a software device Chrome ships | a software Vulkan device, plus a software GL implementation ANGLE can build a context on |
+| Mesa | a software device a Linux system may carry | `lavapipe` for Vulkan, `llvmpipe` for OpenGL |
+| `libvulkan1`, ICD files | how a Vulkan implementation is found | the loader, and the JSON files naming what it may load |
+
+Either of two independent conditions leaves the canvas without a backing, and
+either alone produces the same transparency.
+
+*No window.* Headless Chrome composites no WebGPU canvas at all, whatever the
+flags:
 
 ```text
 ERROR:shared_image_factory.cc: Could not find SharedImageBackingFactory with params:
@@ -233,24 +249,45 @@ ERROR:shared_image_factory.cc: Could not find SharedImageBackingFactory with par
 ERROR:shared_image_stub.cc: SharedImageStub: Unable to create shared image
 ```
 
-Reading the canvas texture as a copy source then fails with the message above,
-and Chrome invalidates the device for the rest of the page. No flag helps: the
-same canvas was transparent on Chrome 154 and 157, headless, with and without
-every combination tried of `--enable-unsafe-webgpu`, the SwiftShader Vulkan trio,
-`--use-webgpu-adapter`, `--ozone-platform=x11`, ANGLE, Skia Graphite and the
-compositing switches.
+Reading the canvas texture as a copy source then fails, and Chrome invalidates
+the device for the rest of the page. No flag helps: the canvas stayed
+transparent on Chrome 154 and 157 with every combination tried of
+`--enable-unsafe-webgpu`, the SwiftShader Vulkan trio, `--use-webgpu-adapter`,
+`--ozone-platform=x11`, ANGLE, Skia Graphite and the compositing switches.
 
-The tests are unaffected because they never read the canvas: they draw into an
-offscreen texture, copy that to a buffer and map it, and that path is correct in
-headless Chrome.
+*No GL driver of its own.* A headed browser whose OpenGL context comes from
+SwiftShader reads back the same transparency, which is the state of a CI runner:
+the image carries no OpenGL or Vulkan implementation, so the browser falls back
+to the SwiftShader it ships. Chromium then refuses the interop the swap chain is
+built through, because that interop is gated on the OpenGL context not coming
+from SwiftShader:
 
-**Workaround:** give the pass a window, and turn Vulkan on as a feature. The
-runner launches headed with `--ozone-platform=x11` and
-`--enable-features=Vulkan`, and drops `WAYLAND_DISPLAY` so Chrome cannot pick a
-Wayland socket instead. On Linux it also starts its own Xvfb and points the
-browser at it with `DISPLAY` — a private one rather than the host's, which may
-be a Wayland session's Xwayland; `--show` with a `DISPLAY` already set is the
-exception, since a window the developer watches has to be on their own display:
+```text
+if (use_swift_shader || gpu_preferences.gr_context_type != GrContextType::kGL)
+  return kGpuFeatureStatusDisabled;              // GetWebGPUOnVulkanViaGLInterop()
+```
+
+With the interop off, `ExternalVkImageBackingFactory` — the only factory on Linux
+accepting `WEBGPU_SWAP_CHAIN_TEXTURE` — is never registered, since it is added
+only when `gr_context_type_ == GrContextType::kVulkan ||
+enable_webgpu_on_vk_via_gl_interop` (chromium,
+`gpu/command_buffer/service/shared_image/shared_image_factory.cc`). The canvas
+then has no backing for the same reason as in a headless browser, and the same
+two messages appear.
+
+**Workaround:** compose the browser out of the pieces below. The flags are the set
+[agent-browser's WebGPU notes](https://agent-browser.dev/webgpu) documents for
+Linux, plus a watchdog switch of this repository's own:
+
+| Needs | Provided by | Why |
+| --- | --- | --- |
+| WebGPU without a GPU | `--enable-unsafe-webgpu`, plus `--use-angle=vulkan --use-vulkan=swiftshader --use-webgpu-adapter=swiftshader --disable-vulkan-surface` | the four pin ANGLE and WebGPU to the SwiftShader Vulkan Chrome ships, so no GPU is needed and no other adapter is quietly picked |
+| a composited canvas | headed, plus `--enable-features=Vulkan` | headed with the feature composites; headed without it, and headless either way, read back transparency while the adapter and the tests look fine |
+| a display | a private Xvfb, `DISPLAY` pointed at it, `WAYLAND_DISPLAY` dropped | Xvfb supplies a display on a machine with none; private rather than the host's, which may be a Wayland session's Xwayland — `--show` with a `DISPLAY` already set is the exception, since a window the developer watches belongs on their own screen |
+| X rather than Wayland | `--ozone-platform=x11` | Wayland's route to the compositor needs a DRM device, which a software Vulkan device is not |
+| no watchdog kill | `--disable-gpu-watchdog` | a headed browser kills the GPU process when software rendering stalls it under load; see the entry above |
+| an OpenGL context that is not SwiftShader's | `sudo apt-get install --yes xvfb libvulkan1 mesa-vulkan-drivers` | `mesa-vulkan-drivers` gives ANGLE an OpenGL context to build, `libvulkan1` is the loader it reaches the ICD through; Chrome's SwiftShader Vulkan still serves WebGPU below them, so the packages change only whether a canvas is composited, not what the tests run on |
+| a container | `--no-sandbox`, `--disable-dev-shm-usage`, `--enable-unsafe-swiftshader` | its sandbox and its small `/dev/shm`, and software rendering for both backends |
 
 ```js
 const server = spawn("Xvfb",
@@ -258,22 +295,16 @@ const server = spawn("Xvfb",
   { stdio: ["ignore", "pipe", "pipe"] });
 ```
 
-`-displayfd` makes Xvfb pick a free display number and report it on stdout, so
-two runs on one machine cannot collide. Its own stderr is tagged `xvfb:` as it
-is forwarded, so a complaint from the server is not read as the browser's.
+`-displayfd` has Xvfb pick a free display number and report it on stdout, so two
+runs on one machine cannot collide; its own stderr is tagged `xvfb:` as it is
+forwarded, so the server's complaints are not read as the browser's.
 
-Both halves are needed, which is what made this take a matrix of runs to pin
-down: WebGPU itself reaches SwiftShader Vulkan without `--enable-features=Vulkan`,
-so the adapter looks right and the tests pass, but only a headed browser with
-that feature enabled composites a canvas at all. Headed without the feature
-reads back transparency, and headless reads back transparency with or without
-it.
+**Cost:** the WebGPU pass is headed and reads a canvas through the compositor
+rather than through a texture copy; the WebGL2 pass keeps its headless launch,
+since its canvas does reach a headless compositor. A machine that already runs a
+desktop has the OpenGL implementation, so only a bare CI image installs one.
 
-**Cost:** the WebGPU pass is headed, needs `Xvfb` installed, and reads a canvas
-through the compositor rather than through a texture copy. The WebGL2 pass keeps
-its headless launch, since its canvas does reach a headless compositor.
-
-**Rule:** only a check that reads a canvas needs a window, and the example check
-is the only one that does. A GPU test reads its frame from an offscreen texture —
-a test that started reading the canvas would fail on any machine without a
+**Rule:** only a check that reads a canvas needs any of this, and the example
+check is the only one that does. A GPU test reads its frame from an offscreen
+texture — one that started reading the canvas would fail on any machine without a
 display.

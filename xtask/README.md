@@ -188,15 +188,14 @@ a backend and leaves a shaded image on its canvas rather than a blank one. They
 are the same pages `run-wasm` serves, built by the same code, so the two cannot
 drift.
 
-That canvas check is also why the WebGPU pass runs headed: a headless browser
-composites no WebGPU canvas at all, so the frame is drawn and then read back as
-transparency however the launch flags are set. The runner gives that pass a
-window — a private Xvfb on Linux when there is no display to borrow, `DISPLAY`
-pointed at it and `WAYLAND_DISPLAY` dropped so Chrome cannot take the Wayland
-route instead. The GPU tests themselves read their frames from offscreen
-textures and would pass headless; only the example check needs the window. See
-WORKAROUND.md, "A WebGPU canvas reads back transparent in a headless browser",
-for the mechanism and the flags that go with it.
+That canvas check is also why the WebGPU pass runs headed and why a bare image
+installs Mesa's Vulkan driver: nothing else in the pass reads a canvas, and the
+GPU tests read their frames from offscreen textures that no window has to
+composite. The runner gives that pass a window — a private Xvfb on Linux when
+there is no display to borrow, `DISPLAY` pointed at it and `WAYLAND_DISPLAY`
+dropped so Chrome cannot take the Wayland route instead. Which condition needs
+which, and why, is in WORKAROUND.md, "A WebGPU canvas reads back transparent
+without a window and a GL driver".
 
 The runner's JS dependencies and a browser are installed on the first run;
 `CHROME_PATH` names an existing browser to reuse instead of downloading one.

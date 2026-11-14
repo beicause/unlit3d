@@ -80,12 +80,12 @@ const BACKEND_ARGS = {
 /**
  * The backends whose canvas only shows anything in a window.
  *
- * A WebGPU canvas reaches the compositor through a shared image the software
- * Vulkan devices cannot back, so a headless browser renders into it and then
- * hands back transparency: the tests still pass — they read their frames from
- * offscreen textures — but the example check, which reads the canvas, would
- * fail on a frame that was drawn. See WORKAROUND.md, "A WebGPU canvas reads
- * back transparent in a headless browser".
+ * A WebGPU canvas reaches the compositor through a shared image that a headless
+ * browser cannot back, so a headless one renders into it and then hands back
+ * transparency: the tests still pass — they read their frames from offscreen
+ * textures — but the example check, which reads the canvas, would fail on a
+ * frame that was drawn. See WORKAROUND.md, "A WebGPU canvas reads back
+ * transparent without a window and a GL driver".
  */
 const BACKENDS_NEEDING_A_WINDOW = new Set(["webgpu"]);
 const BACKEND = process.env[BACKEND_ENV] ?? "";
