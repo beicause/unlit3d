@@ -7,7 +7,7 @@
 //!
 //! The view is the source's own input, so a world decides what to hand it and
 //! may swap it between frames through its [`view`][BlitSource::view] field. It
-//! lives in the frame's [`ResourceGraph`], and the bind group is a node there
+//! lives in the frame's [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph), and the bind group is a node there
 //! that a replace of the view rebuilds; the pipeline is specialized on the
 //! pass's target through the generic variant cache, like any other source's, so
 //! the same source presents into a swap chain or into another offscreen target.
@@ -23,7 +23,7 @@ use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 /// A frame source that blits one texture view over its pass's target.
 ///
 /// The view the source samples is the caller's, registered in the frame's
-/// [`ResourceGraph`], so a world may hand over a different one through the
+/// [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph), so a world may hand over a different one through the
 /// [`view`][BlitSource::view] field. The pipeline is built on the first frame
 /// that knows its target, the way
 /// [`EguiSource`](crate::egui::EguiSource) specializes its own.
