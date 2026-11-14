@@ -19,6 +19,7 @@
 pub mod common;
 
 mod blit;
+mod blitz;
 mod custom_instances;
 mod custom_pipeline;
 mod gltf_scene;
@@ -36,6 +37,7 @@ mod skinned_scene;
 unlit_wgpu_test_util::gpu_test_main!(
     [
         blit::all_tests(),
+        blitz::all_tests(),
         custom_instances::all_tests(),
         custom_pipeline::all_tests(),
         gltf_scene::all_tests(),

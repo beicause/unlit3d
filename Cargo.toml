@@ -17,6 +17,13 @@ repository = "https://github.com/beicause/unlit3d"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+# The drawing interface a document is painted through: blitz-paint records
+# shapes into it and a backend rasterizes them.
+anyrender = { version = "0.14.0", default-features = false }
+# The CPU rasterizer for those drawings. Every GPU backend of Vello builds a
+# device and an adapter of its own, which a frame source has no way to hand it;
+# a page is therefore rasterized on the CPU and uploaded as a texture.
+anyrender_vello_cpu = { version = "0.18.0", default-features = false }
 # The snapshot mailbox's slot: a producer swaps the newest snapshot in without
 # taking a lock a reader holds.
 arc-swap = { version = "1.9.2", default-features = false }
@@ -25,6 +32,14 @@ arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
+# The HTML document Blitz lays out and paints. The three are pinned to one
+# release because they require each other exactly; the default feature set is
+# spelled out instead of taken, since it turns the host's system fonts on.
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["accessibility", "custom-widget", "file-input", "svg", "text-transform-icu", "woff"] }
+blitz-html = { version = "=0.3.0-beta.4", default-features = false }
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["svg"] }
+# The viewport and colour-scheme types a document is configured through.
+blitz-traits = { version = "=0.3.0-beta.4", default-features = false }
 # The FLAC decoder a test reads a stream back with, so an encoder is
 # checked against something other than itself.
 claxon = "0.4.3"
@@ -40,6 +55,9 @@ cpal = { version = "0.18.2", default-features = false }
 # a dev dependency for the tests that synthesise streams in memory.
 draco-core = { version = "2.3.3", default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode", "point_cloud_decode"] }
 egui = { version = "0.37.0", default-features = false, features = ["default_fonts", "bytemuck"] }
+# The font egui's default text is drawn with. A Blitz document is laid out with
+# it too, as its only font, so a page paints the same glyphs on every target.
+epaint_default_fonts = { version = "0.37.0", default-features = false }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 # Reflection: a component's own field list is its codec, so nothing declares
 # those fields twice. `facet` derives the reflection, `facet-json` turns it

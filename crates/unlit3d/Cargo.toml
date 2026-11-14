@@ -24,24 +24,31 @@ rustdoc-args = ["--cfg", "docsrs"]
 # One binary for the whole integration suite: the tests share the harness in
 # tests/common and link the same GPU stack, so a link per file would repeat
 # both. The required features are those its cases use -- glTF documents, the
-# MCP server and the egui-backed overlay source -- so the binary is skipped whole
-# while any of them is off.
+# MCP server, the egui-backed overlay and the Blitz page -- so the binary is
+# skipped whole while any of them is off.
 [[test]]
 harness = false
 name = "unlit3d"
 path = "tests/gpu_suite.rs"
-required-features = ["gltf", "mcp", "egui"]
+required-features = ["blitz", "gltf", "mcp", "egui"]
 
 [dependencies]
+anyrender = { workspace = true, optional = true }
+anyrender_vello_cpu = { workspace = true, optional = true }
 arc-swap.workspace = true
 arrayvec.workspace = true
 # One unbounded channel per input subscriber: a world that reads input at its
 # own pace is exactly a channel consumer.
 async-channel.workspace = true
 bitflags.workspace = true
+blitz-dom = { workspace = true, optional = true }
+blitz-html = { workspace = true, optional = true }
+blitz-paint = { workspace = true, optional = true }
+blitz-traits = { workspace = true, optional = true }
 const_shader_layout.workspace = true
 draco-core = { workspace = true, optional = true }
 egui = { workspace = true, optional = true }
+epaint_default_fonts = { workspace = true, optional = true }
 facet = { workspace = true, features = ["reflect"], optional = true }
 facet-json = { workspace = true, optional = true }
 fast_image_resize = { workspace = true, optional = true }
@@ -110,6 +117,19 @@ mcp = [
 ## by default because it is only the bridge that needs it; the engine itself
 ## never reads the reflection.
 reflect = ["dep:facet", "dep:facet-json", "dep:inventory", "unlit_ecs/reflect"]
+## The [`blitz`](crate::blitz) module: an HTML document laid out by
+## [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source. It
+## rasterizes the page on the CPU, because every GPU backend of Vello builds a
+## device of its own and a frame source is only handed the running one.
+blitz = [
+  "dep:anyrender",
+  "dep:anyrender_vello_cpu",
+  "dep:blitz-dom",
+  "dep:blitz-html",
+  "dep:blitz-paint",
+  "dep:blitz-traits",
+  "dep:epaint_default_fonts",
+]
 ## The [`egui`](crate::egui) module: an egui overlay drawn as a frame source, and
 ## the [`unlit_wgpu`] egui backend it draws with. The overlay's frame clock
 ## is the one place that needs a browser-capable `Instant`.

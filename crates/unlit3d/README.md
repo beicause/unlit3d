@@ -16,6 +16,7 @@ directly, and you are expected to know WebGPU to use it well.
 
 | Feature | Default | Provides |
 |---------|---------|----------|
+| `blitz` | no | the `blitz` module: an HTML document laid out by [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source |
 | `egui` | yes | the `egui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into a `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
@@ -129,6 +130,7 @@ world root                              the root scope sees every entity
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
 │   ├── Source(LineSource)                    strokes; blended ones composite with the meshes by depth
+│   ├── Source(BlitzSource)                   an HTML page composited over the meshes
 │   └── Source(EguiSource)
 │       └── EguiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
@@ -865,6 +867,40 @@ texels. Averaging a stored encoding instead would shift the level's
 brightness, which is the error the chain exists to avoid. How much of the
 chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
 
+## Blitz
+
+`blitz::BlitzSource` draws an HTML document: it lays the page out with
+[Blitz](https://crates.io/crates/blitz-dom) and rasterizes it with the CPU
+backend of Vello, then composites the result over the frame. It is the
+counterpart of [`EguiSource`](egui::EguiSource) for pages rather than widgets.
+
+The page is rasterized on the CPU because every GPU backend of Vello builds an
+adapter of its own, and a frame source is handed nothing but the frame's device,
+queue and graph. The pixmap therefore reaches the frame as an upload of an
+[`Rgba8Unorm`](wgpu::TextureFormat::Rgba8Unorm) texture — the bytes the CPU
+backend writes are already sRGB-encoded and premultiplied — and the composite
+decodes them for an sRGB target exactly as it decodes egui's own pictures,
+blending them with `PREMULTIPLIED_ALPHA_BLENDING`.
+
+A page is a whole document rather than an attachment laid over a scene, and it
+covers the target, so it records at [`FrameSourceOrder::BLITZ`](source::FrameSourceOrder::BLITZ) —
+over the meshes and under the overlay, which stays readable on top of it.
+
+The document is described by its markup alone: nothing reaches it from the
+network, the pointer or the keyboard, and `BlitzSource::set_html` replaces the
+markup for the next frame. Its only font is egui's default font, registered as
+the document's single font with the system fonts left off, so the same markup
+paints the same glyphs on every target rather than whatever the host has
+installed.
+
+A page is laid out at the target's pixel size and repainted when its markup, its
+viewport or that size changed — and otherwise only while the document animates.
+A static page is therefore rasterized once, and the frames after it reuse its
+texture. Time comes from the frame clock, so a recorded sequence of frames paints
+the same animations at the same times whatever the wall clock reads. A source
+several passes reach keeps one uploaded page per page size, since the size is all
+that tells two uploads apart.
+
 ## egui
 
 `egui::EguiPanel` is itself a behaviour component holding a closure, so
@@ -1315,11 +1351,11 @@ cargo xtask test                          # the whole workspace
 cargo nextest run -p unlit3d --all-features  # just this crate
 ```
 
-The integration tests are one binary, and its `required-features` are `gltf`,
-`mcp` and `egui` — the features its cases reach. A run without them does not fail:
-Cargo skips the target whole, so `cargo nextest run -p unlit3d` reports the unit
-tests and nothing else. `--all-features` (or naming all three) is what puts the
-suite in the run.
+The integration tests are one binary, and its `required-features` are `blitz`,
+`gltf`, `mcp` and `egui` — the features its cases reach. A run without them does
+not fail: Cargo skips the target whole, so `cargo nextest run -p unlit3d` reports
+the unit tests and nothing else. `--all-features` (or naming all four) is what
+puts the suite in the run.
 
 The GPU integration tests render scenes into offscreen targets and inspect the
 pixels that come back. With the `mcp` feature on, an end-to-end test builds a

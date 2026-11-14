@@ -13,6 +13,7 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
+| `blitz` | 否 | `blitz` 模块：由 [Blitz](https://crates.io/crates/blitz-dom) 布局的 HTML 文档，作为帧源绘制 |
 | `egui` | 是 | `egui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；`presenter`，建在它之上的现成窗口循环；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档（含 `KHR_draco_mesh_compression` 压缩的 primitive）加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
@@ -96,6 +97,7 @@ world root                              根 scope 看得见所有实体
 │   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
 │   │   └── ...
 │   ├── Source(LineSource)                    笔画；混合的与网格按深度合成
+│   ├── Source(BlitzSource)                   合成在网格之上的 HTML 页面
 │   └── Source(EguiSource)
 │       └── EguiPanel
 ├── FramePass(FramePassOrder(1)) + RenderLoadOps
@@ -573,6 +575,29 @@ impl InstanceContext<'_> {
 图像就在自己的 texel 里平均。改为对存储编码平均会让该级亮度发生偏移，而 mip 链存在的意义正是
 避免这个误差。文档构建多长的链由 `MipChain` 决定，用 `LitGltf::mip_chain` 设置。
 
+## Blitz
+
+`blitz::BlitzSource` 绘制一个 HTML 文档：它用 [Blitz](https://crates.io/crates/blitz-dom)
+布局页面，再用 Vello 的 CPU 后端光栅化，然后把结果合成到帧上。它是
+`EguiSource` 面向整页文档而非控件的对应物。
+
+页面放在 CPU 上光栅化，因为 Vello 的每个 GPU 后端都会自建适配器，而帧源拿到的只有本帧的
+device、queue 与资源图。因此位图以一张 `Rgba8Unorm` 纹理的上传形式进入帧——CPU 后端写出
+的字节已经是 sRGB 编码且预乘的——再由合成按 sRGB 目标解码，方式与解码 egui 自己的贴图完全
+一致，并用 `PREMULTIPLIED_ALPHA_BLENDING` 混合。
+
+页面是整份文档而不是贴在场景上的附加物，且覆盖整个目标，所以它以
+`FrameSourceOrder::BLITZ` 录制——在网格之上、叠加层之下，于是叠加层仍可读。
+
+文档只由它的标记描述：网络、指针与键盘都够不到它，`BlitzSource::set_html` 为下一帧换掉
+标记。它唯一的字体是 egui 的默认字体，作为文档的单一字体注册且关闭系统字体，因此同一份
+标记在每个目标上都画出同样的字形，而不是宿主装了什么都算数。
+
+页面按目标的像素尺寸布局，并在标记、视口或该尺寸变化时重绘——其余时候只在文档有动画时重绘。
+静态页面因此只光栅化一次，其后的帧复用它的纹理。时间取自帧时钟，所以一串录制下来的帧会在
+同一时刻画出同样的动画，与墙钟读数无关。被多个 pass 够到的源按页面尺寸各留一份已上传的
+页面，因为尺寸是区分两份上传的唯一依据。
+
 ## egui
 
 `egui::EguiPanel` 本身就是一个持有闭包的行为组件，所以一个界面就是一个实体——一帧可以有
@@ -929,10 +954,10 @@ cargo xtask test                          # 整个工作区
 cargo nextest run -p unlit3d --all-features  # 只跑本 crate
 ```
 
-集成测试是一个二进制，它的 `required-features` 是 `gltf`、`mcp` 与 `egui`——其用例会用到的
-功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
+集成测试是一个二进制，它的 `required-features` 是 `blitz`、`gltf`、`mcp` 与
+`egui`——其用例会用到的功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
 `cargo nextest run -p unlit3d` 只报单元测试。要把 suite 放进这一趟，得加
-`--all-features`（或把这三项都点名）。
+`--all-features`（或把这四项都点名）。
 
 GPU 集成测试把场景渲染到离屏目标并检查回读的像素。打开 `mcp` feature 后，一个端到端
 测试会在一条线程上建起真实的 GPU world，用一对流把它服务出去，并与之说 JSON-RPC：

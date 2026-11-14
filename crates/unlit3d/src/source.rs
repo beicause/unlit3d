@@ -60,6 +60,12 @@ impl FrameSourceOrder {
     pub const LINE: Self = Self(50);
     /// A source that composes over the meshes, such as the overlay.
     pub const EGUI: Self = Self(100);
+    /// The order of a Blitz page, which composes over the meshes but under the
+    /// overlay.
+    ///
+    /// A page is a whole document rather than an attachment laid over one, and
+    /// it covers the target, so an overlay recorded after it stays readable.
+    pub const BLITZ: Self = Self(90);
 }
 
 impl OrderKey for FrameSourceOrder {

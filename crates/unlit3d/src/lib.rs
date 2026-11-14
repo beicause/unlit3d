@@ -19,6 +19,9 @@ pub use unlit_wgpu::wgpu;
 pub mod attachments;
 mod behaviour;
 pub mod blit;
+#[cfg(feature = "blitz")]
+#[cfg_attr(docsrs, doc(cfg(feature = "blitz")))]
+pub mod blitz;
 pub mod bounds;
 pub mod components;
 pub mod culling;
@@ -74,6 +77,8 @@ pub mod winit;
 
 /// The types most callers need for typical usage.
 pub mod prelude {
+    #[cfg(feature = "blitz")]
+    pub use crate::blitz::BlitzSource;
     #[cfg(feature = "egui")]
     pub use crate::egui::{EguiPanel, EguiSource};
     pub use crate::light::{

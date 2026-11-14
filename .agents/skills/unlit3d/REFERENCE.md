@@ -29,7 +29,7 @@
 | 每 pass 信息 | `PassInfo { surface: SurfaceKey, width, height, viewport }`，source 靠它知道画进什么目标、目标多大 | `crates/unlit3d/src/pass.rs` |
 | 清屏 | `RenderLoadOps { color, depth, stencil }`（定义在 `crates/unlit3d/src/components.rs`），默认 `color_clear()` / `depth_clear()`（清 0.0，reverse-z 的远平面）/ `stencil_clear()`；三个 `const fn` 在 `crates/unlit_wgpu/src/render_attachments.rs`，经 prelude 重导出 | `crates/unlit3d/src/components.rs`、`crates/unlit_wgpu/src/render_attachments.rs` |
 | source 组件 | `Source::new(impl FrameSource)` + `with_order` / `as_mut::<T>` / `as_ref::<T>` | `crates/unlit3d/src/source.rs` |
-| source 顺序 | `FrameSourceOrder::MESH = 0`、`::LINE = 50`、`::EGUI = 100`：线默认夹在 mesh 与 egui 之间，因为它测 mesh 写下的深度 | 同上 |
+| source 顺序 | `FrameSourceOrder::MESH = 0`、`::LINE = 50`、`::BLITZ = 90`、`::EGUI = 100`：线默认夹在 mesh 与 egui 之间，因为它测 mesh 写下的深度；Blitz 页面是覆盖整个目标的不透明文档，所以在 mesh 之上、叠加层之下 | 同上 |
 | 自定义 source | `trait FrameSource`：`build_scene` + `order`。会被**每个 pass 各调一次**，per-pass 状态按 `info.surface` 存 | 同上 |
 | 附件分配 | `FrameAttachments::new` 只分配**深度**（`with_depth` 为真时）与 **MSAA**（`sample_count > 1` 时）两张纹理并把视图登记进图；**颜色附件是调用方的**，两者用 `FramePass::set_attachments` 配到一起。`resize` 重建时视图 id 不变 | `crates/unlit3d/src/attachments.rs` |
 | 目标特化键 | 画的时候 `Pass::attachments()` 把三个视图装配成 `RenderAttachments`，它的 `surface_key()` 才是 `SurfaceKey` 的来源。**`FrameAttachments` 上没有这个方法** | `crates/unlit_wgpu/src/render_attachments.rs` |
@@ -141,6 +141,15 @@
 | source | `EguiSource::new()`、`publish_target(Snapshot<EguiTarget>)`、`context()` / `context_mut()` |
 | 面板 | `EguiPanel::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut egui::Ui)`——**第一个参数是 `Scope`，不是 `&World`** |
 | 跨 world | `ExternalFrame` / `ExternalFrames::new / publish / with_frames`、`EguiTarget { screen, max_texture_side }`、`lay_out`、`raw_input`。`publish` 会把被顶掉帧的纹理增量 `append` 给继任者——egui 只在写出纹理的那一帧带增量，丢掉它就没材质 |
+
+## blitz
+
+| 项 | 是什么 |
+| --- | --- |
+| source | `BlitzSource::new(html)`、`set_html(html)`——换标记后下一帧重绘 |
+| 布局与绘制 | 用 Blitz 布局、Vello 的 CPU 后端光栅化，位图以 `Rgba8Unorm` 纹理上传后由共享的全屏合成贴上目标；只重绘标记、视口、目标尺寸变化或文档有动画时 |
+| 字体 | 只有 egui 的默认字体（`epaint_default_fonts::HACK_REGULAR`），系统字体关闭，各平台字形一致 |
+| 不接的东西 | 没有网络加载、没有指针/键盘/IME/剪贴板；文档只由标记描述 |
 
 ## winit 桥
 
