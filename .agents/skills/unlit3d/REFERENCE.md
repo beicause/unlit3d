@@ -148,11 +148,12 @@
 | --- | --- |
 | source | `BlitzSource::new()`——无参；绘制自己作用域里携带的第一个 `BlitzDocument`，没有就不画 |
 | 页面 | `BlitzDocument::new(markup)`、`set_markup(markup)`、`set_base_url(base)`、`insert_resource(path, bytes)`——**挂在 source 实体之下**，否则 source 看不见 |
-| 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `name()`（"click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（会冒泡经过的节点链）、`data()`、`document()` / `document_mut()`、`prevent_default()` / `stop_propagation()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `name()` 过滤 |
-| 输入 | 帧输入自动驱动文档：指针、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持 |
-| 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供；没人提供的路径让元素留空，不卡帧 |
+| 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `name()`（"click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（事件指向的节点及其元素祖先，回调对整条链只跑一次）、`data()`、`document()` / `document_mut()`、`prevent_default()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `name()` 过滤 |
+| 输入 | 帧输入自动驱动文档：指针、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次 |
+| 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供，路径在加载时按当前基准解析；没人提供的路径收到空字节（样式表读成空表、图片读成加载失败），页面照常画 |
 | 布局与绘制 | 用 Blitz 布局、Vello 的 CPU 后端光栅化，位图以 `Rgba8Unorm` 纹理上传后由共享的全屏合成贴上目标；重绘时机 = 标记/视口/尺寸变化、输入或回调要求、文档有动画 |
 | 字体 | 只有 egui 的默认字体（`epaint_default_fonts::HACK_REGULAR`），系统字体关闭，各平台字形一致 |
+| 边界 | 页面只向宿主请求重绘；光标形状、IME 开关、剪贴板都没接通，事件含义由 Rust 决定 |
 
 ## winit 桥
 
