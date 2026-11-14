@@ -337,6 +337,34 @@ async fn a_click_toggles_a_checkbox() {
     );
 }
 
+/// Input belongs to the frame that read it: a click dispatched once is not
+/// dispatched again by the frames that follow it.
+async fn input_is_dispatched_once() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
+        </div>
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    feed(&input, &events, click([20.0, 20.0]));
+    gpu.render(&world);
+    // The frames after it tick the world, which is what hands the source a
+    // batch with nothing in it.
+    for _ in 0..3 {
+        events.refresh();
+        gpu.render(&world);
+    }
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let clicks = seen.iter().filter(|event| event.name == "click").count();
+    assert_eq!(
+        clicks, 1,
+        "the click should be dispatched by one frame only, got {seen:?}"
+    );
+}
+
 /// Text a key produced reaches the focused field, which is what makes the page
 /// an editable document rather than a picture of one.
 async fn typing_reaches_a_text_field() {
@@ -377,4 +405,5 @@ gpu_tests! {
     a_page_draws_an_image_from_a_data_url,
     a_click_toggles_a_checkbox,
     typing_reaches_a_text_field,
+    input_is_dispatched_once,
 }

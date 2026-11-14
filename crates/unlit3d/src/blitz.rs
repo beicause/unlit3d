@@ -85,7 +85,8 @@ const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub struct BlitzSource {
     /// Converts the frame's input into the events a document dispatches.
     translator: Translator,
-    /// The frame's input events, copied out of the world to be translated.
+    /// This frame's input events, copied out of the world so it is not borrowed
+    /// while the document it feeds is. Kept between frames to be reused.
     batch: Vec<InputEvent>,
     /// The renderer the page is rasterized with.
     painter: Option<VelloCpuImageRenderer>,
@@ -181,6 +182,9 @@ impl FrameSource for BlitzSource {
 
         // One physical pixel per logical point until the world says otherwise.
         let mut batch = core::mem::take(&mut self.batch);
+        // The batch is one frame's, and the world puts a fresh one in the buffer
+        // on its next tick: an event dispatched now is never dispatched again.
+        batch.clear();
         let mut scale_factor = 1.0;
         let mut cursor = None;
         let mut buttons = MouseButtons::empty();
