@@ -46,7 +46,7 @@ Scenes:
 运行时不需要任何文件。`blitz_only` 与 `mesh_and_ui` 通过
 [`BlitzSource`](../crates/unlit3d/README.zh-CN.md) 绘制 HTML 页面：前者整帧只有一页，
 所以画面全是 Blitz 的输出；后者把一张半透明卡片放在立方体的网格与 egui 叠加层之间，
-于是一帧里三个源按各自声明的顺序叠在一起。`blitz_only` 画的页面带一张图像与表单该有的
+于是一帧里三个源按各自实体上的顺序叠在一起。`blitz_only` 画的页面带一张图像与表单该有的
 控件——复选框、一组单选框与一个文本框——它的 `OnBlitzEvent` 回调把页面派发的每个 DOM
 事件名写进状态行。捕获会自己驱动这些控件，并把页面冻结两次：
 `blitz_only/frame_00.webp` 是标记所声明的样子，`blitz_only/frame_01.webp` 是点击、

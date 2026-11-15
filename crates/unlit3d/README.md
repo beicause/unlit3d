@@ -898,7 +898,14 @@ second time.
 
 Images a page draws are uploaded into textures of their own, one per picture and
 kept across frames, because Vello's GPU backend has no upload path of its own
-and a page hands its pictures over as paints rather than as resources.
+and a page hands its pictures over as paints rather than as resources. An image
+too large for the device, or in a format the scene does not take, is drawn as
+nothing rather than failing the frame.
+
+CSS filters are drawn where the scene has the primitive: a graph of one flood,
+Gaussian blur, drop shadow or offset is applied, and anything else -- the colour
+matrices a `brightness`, `grayscale` or `sepia` becomes, and any graph of
+several primitives -- is drawn without the filter.
 
 A page is a whole document rather than an attachment laid over a scene, and it
 covers the target, so it records at [`FrameSourceOrder::BLITZ`](source::FrameSourceOrder::BLITZ) —
@@ -1403,11 +1410,11 @@ cargo xtask test                          # the whole workspace
 cargo nextest run -p unlit3d --all-features  # just this crate
 ```
 
-The integration tests are one binary, and its `required-features` are `blitz`,
-`gltf`, `mcp` and `egui` — the features its cases reach. A run without them does
-not fail: Cargo skips the target whole, so `cargo nextest run -p unlit3d` reports
-the unit tests and nothing else. `--all-features` (or naming all four) is what
-puts the suite in the run.
+The integration tests are one binary, and its `required-features` are
+`blitz_epaint_fonts`, `gltf`, `mcp` and `egui` — the features its cases reach.
+A run without them does not fail: Cargo skips the target whole, so
+`cargo nextest run -p unlit3d` reports the unit tests and nothing else.
+`--all-features` (or naming all four) is what puts the suite in the run.
 
 The GPU integration tests render scenes into offscreen targets and inspect the
 pixels that come back. With the `mcp` feature on, an end-to-end test builds a

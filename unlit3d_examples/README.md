@@ -53,12 +53,12 @@ time. `blitz_only` and `mesh_and_ui` draw HTML pages through
 [`BlitzSource`](../crates/unlit3d/README.md): the first one a page and nothing
 else, so the whole frame is Blitz's output; the second one a translucent card
 between the cube's mesh and the egui overlay, so one frame shows the three
-sources stacked in the order they declare. The page `blitz_only` draws carries
-an image and the controls a form has — a checkbox, a group of radios and a text
-field — and its `OnBlitzEvent` callback writes the name of every DOM event the
-page dispatches into its status line. A capture feeds the controls itself and
-freezes the page twice: `blitz_only/frame_00.webp` as the markup declares it and
-`blitz_only/frame_01.webp` after a click, a pick and some typing, so a page that
+sources stacked in the order their entities give them. The page `blitz_only`
+draws carries an image and the controls a form has — a checkbox, a group of
+radios and a text field — and its `OnBlitzEvent` callback writes the name of
+every DOM event the page dispatches into its status line. A capture feeds the
+controls itself and freezes the page twice: `blitz_only/frame_00.webp` as the markup
+declares it and `blitz_only/frame_01.webp` after a click, a pick and some typing, so a page that
 stops receiving events fails the second frame while still matching the first. A
 windowed run shows the same events arriving from the pointer and the keyboard.
 

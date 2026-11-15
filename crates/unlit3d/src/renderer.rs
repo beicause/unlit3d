@@ -323,8 +323,8 @@ impl Renderer {
         // needs. Nothing of the graph or the encoder outlives this loop's body.
         //
         // The sources are visited by row order, which is *not* draw order: the
-        // order they record in is resolved below, from the `order` each one
-        // declares.
+        // order they record in is resolved below, from the `order` field of each
+        // entity.
         //
         // Each source is fetched and dropped before the next one, so no list of
         // entities is built: the query hands out a `&mut Source` while the rest

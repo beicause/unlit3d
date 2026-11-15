@@ -596,7 +596,12 @@ impl InstanceContext<'_> {
 再编码一次。
 
 页面画出的图片各上传成一张自己的纹理，按图片缓存并在帧之间复用：Vello 的 GPU 后端本身没有
-上传通道，而页面交出的图片是画材而不是可注册的资源。
+上传通道，而页面交出的图片是画材而不是可注册的资源。设备放不下、或格式不为画场所接受的图片
+按什么都不画处理，而不是让整帧失败。
+
+CSS 滤镜只在画场有对应图元时才画：单原语图里的 flood、高斯模糊、投影与偏移会被应用，其余的
+——`brightness`、`grayscale`、`sepia` 这类色彩滤镜化成的色彩矩阵，以及由多个原语组成的
+图——按无滤镜绘制。
 
 页面是整份文档而不是贴在场景上的附加物，且覆盖整个目标，所以它以
 `FrameSourceOrder::BLITZ` 录制——在网格之上、叠加层之下，于是叠加层仍可读。
@@ -989,8 +994,8 @@ cargo xtask test                          # 整个工作区
 cargo nextest run -p unlit3d --all-features  # 只跑本 crate
 ```
 
-集成测试是一个二进制，它的 `required-features` 是 `blitz`、`gltf`、`mcp` 与
-`egui`——其用例会用到的功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
+集成测试是一个二进制，它的 `required-features` 是 `blitz_epaint_fonts`、`gltf`、`mcp`
+与 `egui`——其用例会用到的功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
 `cargo nextest run -p unlit3d` 只报单元测试。要把 suite 放进这一趟，得加
 `--all-features`（或把这四项都点名）。
 
