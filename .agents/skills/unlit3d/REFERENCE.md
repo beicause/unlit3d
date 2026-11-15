@@ -149,11 +149,11 @@
 | source | `BlitzSource::new()`——无参；绘制自己作用域里携带的第一个 `BlitzDocument`，没有就不画 |
 | 页面 | `BlitzDocument::new(markup)`、`set_markup(markup)`、`set_base_url(base)`、`insert_resource(path, bytes)`——**挂在 source 实体之下**，否则 source 看不见 |
 | 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `data()`（其 `.name()` 是 "click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（事件指向的节点及其元素祖先，回调对整条链只跑一次）、`document_mut()`、`prevent_default()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `data().name()` 过滤 |
-| 输入 | 帧输入自动驱动文档：指针、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次 |
+| 输入 | 帧输入自动驱动文档：指针（含笔）、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。键盘事件带 `Key` 推出的 `Code` 与 `KeyLocation` 推出的左右位置，二者只在回调里可见。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次 |
 | 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供，路径在加载时按当前基准解析；没人提供的路径收到空字节（样式表读成空表、图片读成加载失败），页面照常画 |
 | 布局与绘制 | 用 Blitz 布局、Vello 的 GPU 后端在帧的构建阶段光栅化进一张与 pass 同尺寸的 `Rgba8Unorm` 纹理（命令录进本帧编码器），再由共享的全屏合成贴上目标；页面图片各上传成自有纹理并按图片缓存；重绘时机 = 标记/视口/尺寸变化、输入或回调要求、文档有动画 |
 | 字体 | 默认字体是 egui 的 `epaint_default_fonts::HACK_REGULAR`（`blitz_epaint_fonts` 特性），`blitz_sc_fonts` 另加 Noto Sans SC 一级+二级子集承载汉字（四个通用族里排在默认字体之后，并挂上汉字回退表），系统字体默认关闭（`blitz_system_fonts` 才加载），各平台字形一致 |
-| 边界 | 页面只向宿主请求重绘；光标形状、IME 开关、剪贴板都没接通，事件含义由 Rust 决定。CSS 滤镜只画 Flood／GaussianBlur／DropShadow／Offset 这四种单原语图，色彩滤镜（brightness／grayscale／sepia 等）与多原语图按无滤镜绘制 |
+| 边界 | 页面只向宿主请求重绘；光标形状、IME 开关、剪贴板都没接通（输入法的预编辑与提交本身会送到页面，只是窗口不打开平台输入法），事件含义由 Rust 决定。CSS 滤镜只画 Flood／GaussianBlur／DropShadow／Offset 这四种单原语图，色彩滤镜（brightness／grayscale／sepia 等）与多原语图按无滤镜绘制 |
 
 ## winit 桥
 

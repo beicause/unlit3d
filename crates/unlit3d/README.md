@@ -953,10 +953,13 @@ belongs under the source that draws it: one the source cannot see is not drawn
 at all, and one two sources both see takes the tick's input once, from whichever
 of them the frame builds first.
 
-The page asks the host for one thing only: another frame. Cursor shape, IME and
-the clipboard are not plumbed through, so a page never asks for them, and Rust
+The page asks the host for one thing only: another frame. Cursor shape and the
+clipboard are not plumbed through, so a page never asks for them, and Rust
 decides what a click or a keystroke means through
-[`OnBlitzEvent`](blitz::OnBlitzEvent) instead.
+[`OnBlitzEvent`](blitz::OnBlitzEvent) instead. An input-method composition does
+reach the page as the preedit and commit Blitz composes from, but the window
+never turns the platform's input method on, so a windowed run sees composition
+only when the host enables it.
 
 ## egui
 
