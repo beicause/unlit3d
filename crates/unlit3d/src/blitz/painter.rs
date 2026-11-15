@@ -21,7 +21,10 @@ use hashbrown::HashMap;
 use unlit_wgpu::resources::TextureExt;
 use vello_gpu::filter_effects::FilterPrimitive;
 use vello_gpu::kurbo::{Affine, Diagonal2, Rect, Shape, Stroke};
-use vello_gpu::peniko::{BlendMode, Color, Fill, FontData, ImageBrush, ImageData, StyleRef};
+use vello_gpu::peniko::color::palette::css;
+use vello_gpu::peniko::{
+    BlendMode, Color, Fill, FontData, ImageBrush, ImageData, ImageFormat, StyleRef,
+};
 use vello_gpu::{ImageSource, PaintType, TextureId, TextureRegion};
 
 /// How far a path may deviate from its flattened form, in device pixels.
@@ -37,11 +40,16 @@ enum Layer {
     Clip,
 }
 
-/// An image a page drew, uploaded once and drawn with from then on.
-struct UploadedImage {
-    /// Whether any of its texels is not opaque, which lets the renderer skip the
-    /// opaque sampling path.
-    may_have_transparency: bool,
+/// What became of an image a page drew.
+enum UploadedImage {
+    /// The texture the scene samples, and whether any of its texels is not
+    /// opaque, which lets the renderer skip the opaque sampling path.
+    Texture { may_have_transparency: bool },
+    /// An image the device cannot hold, which is drawn as nothing.
+    ///
+    /// It is remembered like an uploaded one so the page asks for it once
+    /// rather than on every frame that draws it.
+    Missing,
 }
 
 /// A page's drawing commands, and the GPU state that rasterizes them.
@@ -137,28 +145,48 @@ impl Painter {
         match paint {
             Paint::Solid(color) => PaintType::Solid(color),
             Paint::Gradient(gradient) => PaintType::Gradient(gradient.clone()),
-            Paint::Image(brush) => PaintType::Image(ImageBrush {
-                image: self.upload(brush.image),
-                sampler: brush.sampler,
-            }),
+            Paint::Image(brush) => match self.upload(brush.image) {
+                Some(image) => PaintType::Image(ImageBrush {
+                    image,
+                    sampler: brush.sampler,
+                }),
+                None => PaintType::Solid(css::TRANSPARENT),
+            },
             // Nothing serves a page's images as a resource, so neither of these
             // can arrive; drawing them as nothing keeps a page painting rather
             // than failing the frame.
-            Paint::Resource(_) | Paint::Custom(_) => {
-                PaintType::Solid(vello_gpu::peniko::color::palette::css::TRANSPARENT)
-            }
+            Paint::Resource(_) | Paint::Custom(_) => PaintType::Solid(css::TRANSPARENT),
         }
     }
 
-    /// The source `image` is sampled from, uploading it the first time.
-    fn upload(&mut self, image: &ImageData) -> ImageSource {
+    /// The source `image` is sampled from, or [`None`] if it is drawn as nothing.
+    ///
+    /// An image is uploaded the first time a page draws it and kept from then on,
+    /// keyed by the id of the bytes it came from: the pages a target shows share
+    /// one copy of each picture, and a target that lives for the whole run holds
+    /// as many of them as it has drawn.
+    fn upload(&mut self, image: &ImageData) -> Option<ImageSource> {
         let id = image.data.id();
         if let Some(uploaded) = self.images.get(&id) {
-            return ImageSource::external_texture(
-                TextureId(id),
-                TextureRegion::Full,
-                uploaded.may_have_transparency,
-            );
+            return match uploaded {
+                UploadedImage::Texture {
+                    may_have_transparency,
+                } => Some(ImageSource::external_texture(
+                    TextureId(id),
+                    TextureRegion::Full,
+                    *may_have_transparency,
+                )),
+                UploadedImage::Missing => None,
+            };
+        }
+
+        // Vello's own conversion asserts that an image fits a 16-bit extent and
+        // is a format it knows, so both are turned away before it is reached: a
+        // page may name an image the device cannot hold, and one that large is
+        // drawn as nothing rather than failing the page.
+        if !drawable(image, self.limit) {
+            self.images.insert(id, UploadedImage::Missing);
+            return None;
         }
 
         // The conversion is what premultiplies the texels, which is the state a
@@ -173,12 +201,10 @@ impl Painter {
             height,
             depth_or_array_layers: 1,
         };
-        // A page may name an image the device cannot make a texture of; one that
-        // large is drawn as nothing rather than failing the page.
-        if size.width > self.limit || size.height > self.limit {
-            return ImageSource::external_texture(TextureId(id), TextureRegion::Full, true);
-        }
-
+        // The page format is uncompressed, so one texel is one step of a row.
+        let texel = super::PAGE_FORMAT
+            .block_copy_size(None)
+            .expect("the page format is uncompressed");
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("blitz::image"),
             size,
@@ -194,7 +220,7 @@ impl Painter {
             pixmap.data_as_u8_slice(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * 4),
+                bytes_per_row: Some(width * texel),
                 rows_per_image: Some(height),
             },
             size,
@@ -207,11 +233,15 @@ impl Painter {
         let may_have_transparency = pixmap.may_have_transparency();
         self.images.insert(
             id,
-            UploadedImage {
+            UploadedImage::Texture {
                 may_have_transparency,
             },
         );
-        ImageSource::external_texture(TextureId(id), TextureRegion::Full, may_have_transparency)
+        Some(ImageSource::external_texture(
+            TextureId(id),
+            TextureRegion::Full,
+            may_have_transparency,
+        ))
     }
 }
 
@@ -370,9 +400,14 @@ impl PaintScene for Painter {
 /// The filter `filter` describes, as far as a scene can record it.
 ///
 /// The scene takes one primitive per layer, so a graph of several of them is
-/// drawn without the effect rather than with only its first step.
+/// drawn without the effect rather than with only its first step. That covers
+/// the CSS colour filters -- brightness, contrast, grayscale and the rest --
+/// which a filter graph states as one colour-matrix step: they are drawn
+/// without rather than wrongly, since Vello has no colour-matrix primitive.
 fn convert_filter(filter: Arc<filters::Filter>) -> Option<vello_gpu::filter_effects::Filter> {
-    let node = filter.nodes().first()?;
+    let [node] = filter.nodes() else {
+        return None;
+    };
     let primitive = convert_filter_effect(&node.effect)?;
     Some(vello_gpu::filter_effects::Filter::from_primitive(primitive))
 }
@@ -407,5 +442,71 @@ fn convert_edge_mode(edge_mode: EdgeMode) -> vello_gpu::filter_effects::EdgeMode
         EdgeMode::Wrap => vello_gpu::filter_effects::EdgeMode::Wrap,
         EdgeMode::Mirror => vello_gpu::filter_effects::EdgeMode::Mirror,
         EdgeMode::None => vello_gpu::filter_effects::EdgeMode::None,
+    }
+}
+
+/// Whether a scene can draw `image` at all.
+///
+/// Vello's conversion asserts that the extent fits 16 bits and that the format
+/// is one it knows, so an image either of those rules out would fail the frame
+/// rather than draw nothing: it is turned away here instead.
+fn drawable(image: &ImageData, limit: u32) -> bool {
+    let limit = limit.min(u32::from(u16::MAX));
+    let known = matches!(image.format, ImageFormat::Rgba8 | ImageFormat::Bgra8);
+    known && image.width <= limit && image.height <= limit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyrender::filters::color_transformation::ColorMatrix;
+
+    /// Image data of `width` by `height`, with no texels behind it: whether a
+    /// scene would draw it is decided before any of them are read.
+    fn image(width: u32, height: u32, format: ImageFormat) -> ImageData {
+        let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(Vec::new());
+        ImageData {
+            data: vello_gpu::peniko::Blob::new(data),
+            format,
+            alpha_type: vello_gpu::peniko::ImageAlphaType::Alpha,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn an_image_past_the_extent_vello_names_is_turned_away() {
+        assert!(drawable(&image(64, 64, ImageFormat::Rgba8), 4096));
+        assert!(drawable(&image(4096, 4096, ImageFormat::Bgra8), 4096));
+        assert!(!drawable(&image(4097, 64, ImageFormat::Rgba8), 4096));
+        assert!(!drawable(&image(64, 4097, ImageFormat::Rgba8), 4096));
+        // A device whose textures may be larger than Vello's extents does not
+        // extend them: what the scene cannot name is still too large.
+        assert!(!drawable(&image(70_000, 8, ImageFormat::Rgba8), u32::MAX));
+    }
+
+    #[test]
+    fn a_single_primitive_the_scene_knows_is_recorded() {
+        let flood = FilterEffect::Flood(css::TRANSPARENT);
+        assert!(convert_filter(Arc::new(filters::Filter::single(flood))).is_some());
+    }
+
+    #[test]
+    fn a_colour_filter_is_drawn_without() {
+        // A graph of one colour matrix is how a CSS brightness, grayscale or
+        // sepia arrives, and the scene has no primitive for it.
+        let matrix = FilterEffect::ColorMatrix(ColorMatrix::brightness(1.5));
+        assert!(convert_filter(Arc::new(filters::Filter::single(matrix))).is_none());
+    }
+
+    #[test]
+    fn a_graph_of_several_primitives_is_drawn_without() {
+        let graph = filters::Filter::linear_list(
+            [css::TRANSPARENT, css::TRANSPARENT]
+                .into_iter()
+                .map(FilterEffect::Flood),
+        );
+        assert_eq!(graph.nodes().len(), 2);
+        assert!(convert_filter(Arc::new(graph)).is_none());
     }
 }
