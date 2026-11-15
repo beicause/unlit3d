@@ -10,6 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
+use keyboard_types::{Code, Location};
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
@@ -44,6 +45,10 @@ struct Seen {
     value: String,
     /// Whether `#box` was checked when the event arrived, when the page has one.
     checked: Option<bool>,
+    /// The physical key a key event named, when the event was a key event.
+    code: Option<Code>,
+    /// The side of the keyboard that key sits on, beside `code`.
+    location: Option<Location>,
 }
 
 /// The pixel at `x`, `y` of the rendered target, as RGBA.
@@ -108,6 +113,13 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 blitz_traits::events::DomEventData::Input(input) => input.value.clone(),
                 _ => String::new(),
             };
+            let (code, location) = match event.data() {
+                blitz_traits::events::DomEventData::KeyDown(key)
+                | blitz_traits::events::DomEventData::KeyUp(key) => {
+                    (Some(key.code), Some(key.location))
+                }
+                _ => (None, None),
+            };
             let checked = event
                 .document_mut()
                 .get_element_by_id("box")
@@ -118,6 +130,8 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 name: event.data().name().to_owned(),
                 value,
                 checked,
+                code,
+                location,
             });
         })]);
     let input = spawn_input(&mut world);
@@ -262,8 +276,10 @@ async fn new_markup_replaces_the_page() {
 
     // A page that changed nothing above it is not repainted, so only the new
     // markup can turn the centre red.
-    let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
-    row.get().set_markup(RED_PAGE);
+    {
+        let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
+        row.get().set_markup(RED_PAGE);
+    }
     gpu.render(&world);
 
     let red = centre_pixel(&ctx.device, &ctx.queue, &target).await;
@@ -282,8 +298,10 @@ async fn a_page_draws_an_image_from_a_registered_path() {
         <img src="solid.png" style="display: block; width: 64px; height: 64px">
     </body></html>"#;
     let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
-    row.get().insert_resource("solid.png", RED_PNG);
+    {
+        let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
+        row.get().insert_resource("solid.png", RED_PNG);
+    }
 
     gpu.render_frames(&world, 2);
 
@@ -370,9 +388,11 @@ async fn a_page_loads_a_stylesheet_it_serves() {
     let html = r#"<html><head><link rel="stylesheet" href="page.css"></head>
         <body style="margin: 0"></body></html>"#;
     let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
-    row.get()
-        .insert_resource("page.css", "html { background: #808080 }");
+    {
+        let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
+        row.get()
+            .insert_resource("page.css", "html { background: #808080 }");
+    }
 
     gpu.render_frames(&world, 2);
 
@@ -391,11 +411,13 @@ async fn a_new_base_still_serves_the_registered_bytes() {
         <img src="solid.png" style="display: block; width: 64px; height: 64px">
     </body></html>"#;
     let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
-    let page = row.get();
-    page.insert_resource("solid.png", RED_PNG);
-    page.set_base_url("https://example.test/images/")
-        .expect("the base is an absolute URL");
+    {
+        let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
+        let page = row.get();
+        page.insert_resource("solid.png", RED_PNG);
+        page.set_base_url("https://example.test/images/")
+            .expect("the base is an absolute URL");
+    }
 
     gpu.render_frames(&world, 2);
 
@@ -419,9 +441,11 @@ async fn a_replaced_page_is_not_drawn_from_the_old_pixels() {
 
     let (world, gpu, target, _source, page) = render_page(&ctx, GREY_PAGE);
     gpu.render_frames(&world, 2);
-    let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
-    row.get()
-        .set_markup(r#"<html><head><link rel="stylesheet" href="later.css"></head></html>"#);
+    {
+        let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
+        row.get()
+            .set_markup(r#"<html><head><link rel="stylesheet" href="later.css"></head></html>"#);
+    }
 
     gpu.render_frames(&world, 2);
 
@@ -464,6 +488,8 @@ async fn one_tick_reaches_a_shared_page_once() {
                 name: event.data().name().to_owned(),
                 value: String::new(),
                 checked: None,
+                code: None,
+                location: None,
             });
         }),
     ]);
@@ -721,6 +747,156 @@ async fn typing_reaches_a_text_field() {
 // This file's share of the suite's registry: the suite root concatenates
 // it with its siblings', and `gpu_test_main!` there runs the result under
 // `cargo nextest` natively and in a browser through the wasm export it adds.
+/// A pen is a pointer of its own, so a page that reads only the mouse
+/// would miss it: the pen press and lift reach the control as a pointer
+/// click and toggle it.
+async fn a_pen_click_toggles_a_checkbox() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <input type="checkbox" id="box"
+               style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    let pen = |action: PointerAction| {
+        InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Pen,
+            id: 0,
+            action,
+            position: Some([20.0, 20.0]),
+            modifiers: Modifiers::default(),
+        })
+    };
+    feed(
+        &input,
+        &events,
+        [
+            pen(PointerAction::Pressed),
+            pen(PointerAction::Released { cancelled: false }),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let toggled = seen
+        .iter()
+        .rev()
+        .find(|event| event.name == "input")
+        .expect("a pen click on the control dispatches an input event");
+    assert_eq!(
+        toggled.checked,
+        Some(true),
+        "the control should be checked when a pen toggles it"
+    );
+}
+
+/// A composed character arrives as a preedit and then as a commit, and
+/// the commit is what the field inserts: a page that dropped the IME
+/// events would show an empty field.
+async fn an_ime_commit_reaches_a_text_field() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <input type="text" id="box"
+               style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    feed(&input, &events, click([40.0, 20.0]));
+    gpu.render(&world);
+    feed(
+        &input,
+        &events,
+        [
+            InputEvent::Ime(ImeEvent {
+                kind: ImeKind::Preedit {
+                    text: "ni".to_owned(),
+                    active_range: None,
+                },
+            }),
+            InputEvent::Ime(ImeEvent {
+                kind: ImeKind::Commit(CHINESE.to_owned()),
+            }),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    // Blitz keeps the undecided preedit in the field's value and replaces it
+    // when the commit arrives, so the value holds the composed text beside the
+    // preedit that was still showing.
+    assert!(
+        seen.iter()
+            .any(|event| event.name == "input" && event.value.contains(CHINESE)),
+        "the committed text should reach the field, got {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|event| event.name == "composition"),
+        "the preedit should be reported as a composition, got {seen:?}"
+    );
+}
+
+/// The character the input-method test commits.
+const CHINESE: &str = "你";
+/// A key reaches a page as the code and the side of the keyboard it
+/// sits on, not only as the character it types: a shortcut matches the
+/// physical key, and the left and right shift are two of them.
+async fn a_key_reaches_the_page_as_a_code_and_a_side() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
+        </div>
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    // A character key is dropped while it types nothing but text, so the two
+    // keys here are ones a page reads as keys: an arrow, and a key the crate
+    // only carries the platform code of, on the numeric keypad.
+    feed(
+        &input,
+        &events,
+        [
+            InputEvent::Key(KeyEvent {
+                key: Key::ArrowLeft,
+                location: KeyLocation::Standard,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }),
+            InputEvent::Key(KeyEvent {
+                key: Key::Other(37),
+                location: KeyLocation::Numpad,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let keys: Vec<_> = seen
+        .iter()
+        .filter(|event| event.name == "keydown")
+        .collect();
+    assert_eq!(
+        keys.first().and_then(|event| event.code),
+        Some(Code::ArrowLeft),
+        "a key reaches the page as its physical code, got {keys:?}"
+    );
+    assert_eq!(
+        keys.first().and_then(|event| event.location),
+        Some(Location::Standard),
+        "and with the side of the keyboard it is on, got {keys:?}"
+    );
+    assert_eq!(
+        keys.last().and_then(|event| event.location),
+        Some(Location::Numpad),
+        "a keypad key says it is on the keypad, got {keys:?}"
+    );
+}
 gpu_tests! {
     a_page_paints_its_own_colours,
     a_page_draws_its_content,
@@ -741,4 +917,7 @@ gpu_tests! {
     a_wheel_scrolls_the_page,
     leaving_the_page_is_reported_to_it,
     a_callback_can_cancel_the_default_action,
+    a_pen_click_toggles_a_checkbox,
+    an_ime_commit_reaches_a_text_field,
+    a_key_reaches_the_page_as_a_code_and_a_side,
 }
