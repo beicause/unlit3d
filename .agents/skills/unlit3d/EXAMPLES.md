@@ -24,7 +24,7 @@
 | ----------------------------------------------------------- | -------------------------------------------------------------- |
 | `spin_cube`                                                 | 纹理立方体 + 两块 egui 面板 + 键盘与拖拽；默认场景，也是窄宽高比快照的取样对象 |
 | `egui_only`                                                   | 没有 mesh source、没有相机也能出一帧 egui                          |
-| `mesh_and_egui`                                             | mesh、blitz、egui 三个 source 同帧叠放的顺序、scissor、load ops   |
+| `mesh_and_ui`                                               | mesh、blitz、egui 三个 source 同帧叠放的顺序、scissor、load ops   |
 | `blitz_only`                                                | 没有 mesh source、没有相机，整帧只有一张 Blitz 布局的 HTML 页；页里有图像、checkbox、radio 与文本框，`OnBlitzEvent` 把事件名写进状态行 |
 | `transparent`                                               | 透明 + `ZSortedDrawing` + blend                                  |
 | `animated`                                                  | 八帧内 mesh 的分配、回收、平移旋转                               |

@@ -1,9 +1,9 @@
-//! The mesh-and-egui scene: a cube, a Blitz page and a rich egui panel in one
+//! The mesh-and-UI scene: a cube, a Blitz page and a rich egui panel in one
 //! pass.
 //!
 //! The three sources share the pass and have to agree on record order, scissor
 //! state and the frame's load ops: the meshes come first, then the page, which
-//! composes over them, then the overlay. The snapshot `mesh_and_egui.webp`
+//! composes over them, then the overlay. The snapshot `mesh_and_ui.webp`
 //! freezes the second frame.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, default_options};
@@ -43,7 +43,7 @@ impl Bundle for TiltedCube {
 
 /// The scene: a cube with the same rich interface over it.
 pub static SCENE: SceneDef = SceneDef {
-    id: "mesh_and_egui",
+    id: "mesh_and_ui",
     title: "Mesh, Blitz and egui",
     description: "a cube, a Blitz page and the rich egui panel in one pass",
     size: TEST_SIZE,
@@ -133,7 +133,7 @@ fn build(
                 frame_size,
             );
         }),
-        snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_egui.webp".to_owned())),
+        snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_ui.webp".to_owned())),
     }
 }
 

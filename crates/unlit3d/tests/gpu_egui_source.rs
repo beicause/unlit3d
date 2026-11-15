@@ -3,7 +3,7 @@
 //! Two groups. The first draws egui with no `MeshSource` and no camera at all;
 //! the second draws a mesh and an overlay in one pass, which is where the two sources
 //! have to agree on record order, scissor state and the frame's load ops.
-//! Snapshots of these frames are verified by the `egui_only` and `mesh_and_egui`
+//! Snapshots of these frames are verified by the `egui_only` and `mesh_and_ui`
 //! scenes in `unlit3d_examples`. Every test renders one frame to warm egui up
 //! — the first frame does not know the font metrics — and asserts on the
 //! second. Nothing here reads the clock or the layout feedback, so a frame is

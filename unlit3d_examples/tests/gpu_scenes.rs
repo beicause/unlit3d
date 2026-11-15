@@ -106,7 +106,7 @@ const GLTF_TOLERANCE: Tolerance = Tolerance {
 ///
 /// | frame | SSIMULACRA2 | pixels past a channel difference of 8 |
 /// |-------|-------------|---------------------------------------|
-/// | `mesh_and_egui`, over a real WebGL2 pass | 82.46 | 1.41% |
+/// | `mesh_and_ui`, over a real WebGL2 pass | 82.46 | 1.41% |
 /// | `egui_only`, over the same pass | 86.68 | 1.41% |
 /// | `spin_cube`, over the same pass | 87.19 | 0.63% |
 ///
@@ -460,11 +460,11 @@ async fn spin_cube_matches_its_snapshot() {
     .await;
 }
 
-async fn mesh_and_egui_matches_its_snapshot() {
+async fn mesh_and_ui_matches_its_snapshot() {
     compare_scene(
-        &scenes::mesh_and_egui::SCENE,
+        &scenes::mesh_and_ui::SCENE,
         EGUI_TOLERANCE,
-        &snapshots!["mesh_and_egui.webp"],
+        &snapshots!["mesh_and_ui.webp"],
     )
     .await;
 }
@@ -653,7 +653,7 @@ gpu_tests! {
     instanced_skinned_morph_matches_its_snapshots,
     gltf_matches_its_snapshots,
     spin_cube_matches_its_snapshot,
-    mesh_and_egui_matches_its_snapshot,
+    mesh_and_ui_matches_its_snapshot,
     blitz_only_matches_its_snapshot,
     egui_only_matches_its_snapshot,
     transparent_matches_its_snapshot,

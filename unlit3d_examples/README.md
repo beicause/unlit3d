@@ -23,7 +23,7 @@ one can be switched to at runtime. `--list-scenes` prints the table:
 Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
   egui_only                a rich egui panel, no mesh source and no camera
-  mesh_and_egui          a cube, a Blitz page and the rich egui panel, one pass
+  mesh_and_ui            a cube, a Blitz page and the rich egui panel, one pass
   blitz_only             an HTML page laid out by Blitz, no mesh source and no camera
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
@@ -49,7 +49,7 @@ loader's skinning and morph-target animation are checked against real assets
 rather than the hand-written ones the unit tests use. The example reaches those
 documents through [`asset_bytes`](asset_bytes/README.md), the crate that
 embeds them, so the binary carries the models it draws and needs no file at run
-time. `blitz_only` and `mesh_and_egui` draw HTML pages through
+time. `blitz_only` and `mesh_and_ui` draw HTML pages through
 [`BlitzSource`](../crates/unlit3d/README.md): the first one a page and nothing
 else, so the whole frame is Blitz's output; the second one a translucent card
 between the cube's mesh and the egui overlay, so one frame shows the three

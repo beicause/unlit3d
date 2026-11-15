@@ -21,7 +21,7 @@
 Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
   egui_only                a rich egui panel, no mesh source and no camera
-  mesh_and_egui          a cube, a Blitz page and the rich egui panel, one pass
+  mesh_and_ui            a cube, a Blitz page and the rich egui panel, one pass
   blitz_only             an HTML page laid out by Blitz, no mesh source and no camera
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
@@ -43,7 +43,7 @@ Scenes:
 通过 `LitGltf` 绘制 `unlit3d_asset_files/assets` 下的 glTF 文档，因此加载器的蒙皮
 与形变目标动画是拿真实资产来检验的，而不是单元测试里手写的那些。示例经由承载这些文档的
 [`asset_bytes`](asset_bytes/README.zh-CN.md) crate 取得它们，于是二进制自带所画的模型，
-运行时不需要任何文件。`blitz_only` 与 `mesh_and_egui` 通过
+运行时不需要任何文件。`blitz_only` 与 `mesh_and_ui` 通过
 [`BlitzSource`](../crates/unlit3d/README.zh-CN.md) 绘制 HTML 页面：前者整帧只有一页，
 所以画面全是 Blitz 的输出；后者把一张半透明卡片放在立方体的网格与 egui 叠加层之间，
 于是一帧里三个源按各自声明的顺序叠在一起。`blitz_only` 画的页面带一张图像与表单该有的
