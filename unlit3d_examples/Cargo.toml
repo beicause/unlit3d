@@ -45,7 +45,7 @@ serde_json.workspace = true
 # The MCP command types the `--mcp` mode carries come from the ECS crate.
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", default-features = false, features = ["mcp"] }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["blitz", "gltf", "egui", "winit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["blitz_epaint_fonts", "blitz_sc_fonts", "gltf", "egui", "winit"] }
 # The glTF documents the scenes embed. Their own crate because the bytes would
 # otherwise sit in this crate's metadata, copied for every crate that reads it.
 unlit3d_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.3", default-features = false }
@@ -77,7 +77,7 @@ env_logger.workspace = true
 # `--mcp` serves the scene over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["blitz", "gltf", "mcp", "egui", "winit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["blitz_epaint_fonts", "blitz_sc_fonts", "gltf", "mcp", "egui", "winit"] }
 
 # The GPU context is requested asynchronously, so the setup future needs a
 # driver: a blocking executor natively, the browser's task queue on the web.

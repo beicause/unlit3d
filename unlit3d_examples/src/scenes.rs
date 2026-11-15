@@ -207,6 +207,16 @@ pub struct SceneOptions {
     /// froze; a windowed run passes the scene's own [`SceneDef::step_seconds`]
     /// so the sequence plays at a watchable pace.
     pub sequence_step: Option<f32>,
+    /// Let the scene spawn its own input writer instead of reading the
+    /// window's.
+    ///
+    /// A capture runs without a window, so nothing would ever push an event
+    /// into a scene that drives its own controls: it spawns a writer and feeds
+    /// the frames it draws. A windowed run clears this, because input is
+    /// distributed to a nested world that has no writer of its own -- one the
+    /// scene spawned would be the one it reads, and the window's events would
+    /// never arrive.
+    pub own_input: bool,
 }
 
 // ---------------------------------------------------------------------------

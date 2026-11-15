@@ -3,9 +3,11 @@
 //! No mesh source and no camera: what the frame shows is the page alone, laid
 //! out by Blitz and rasterized on the CPU. The snapshot `blitz_only.webp`
 //! freezes the second frame, like every other overlay scene: the first frame of
-//! a source is the one that builds its document.
+//! a source is the one that builds its document. The frame it freezes is the
+//! one after the capture drives the page's controls, so the picture shows a
+//! form in the state a reader left it rather than the state its markup states.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, spawn_in};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, spawn_in, spawn_shared};
 use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
@@ -48,9 +50,12 @@ pub static SCENE: SceneDef = SceneDef {
 ///
 /// It also carries the parts of a page that need more than markup: an image
 /// decoded from its `data:` URL, a checkbox, a group of radios with one checked,
-/// and a text field with a value. Nothing in the snapshot test drives them, so
-/// they are painted in the state the markup states; the windowed run does, and
-/// the status line the callback writes is what shows it. Every control is
+/// and an empty text field. Its labels are Chinese, which is what the
+/// bundled Noto Sans SC subset is for. The capture drives them before it
+/// freezes a frame -- it unticks the checkbox, picks the second radio and types
+/// into the field -- so the picture shows the state it left rather than the
+/// state the markup states, and the status line holds the name of the last
+/// event the page dispatched. Every control is
 /// positioned rather than flowed, so the layout does not depend on how an
 /// inline-block baseline sorts them.
 const PAGE: &str = r#"<!doctype html>
@@ -106,17 +111,17 @@ const PAGE: &str = r#"<!doctype html>
 </head>
 <body>
   <h1>unlit3d</h1>
-  <p>a frame source painted by Blitz</p>
+  <p>由 Blitz 布局与绘制的页面</p>
   <div class="row"><div class="block card"></div><div class="block gradient"></div><div class="block outlined"></div></div>
   <img class="chip" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAQ0lEQVR42mPQr802bcq3bi926in3mFjtN60+dHZz9IL2xKXdGav689ZPLtkyvXrn7MZ989sPL+47uYJhVMOohuGrAQAtoYngerfVgwAAAABJRU5ErkJggg==">
   <input id="box" class="at" type="checkbox" checked style="left: 90px; top: 100px">
-  <label class="at" for="box" style="left: 114px; top: 99px">box</label>
+  <label class="at" for="box" style="left: 114px; top: 99px">勾选</label>
   <input id="a" class="at" type="radio" name="pick" checked style="left: 150px; top: 100px">
-  <label class="at" for="a" style="left: 174px; top: 99px">one</label>
+  <label class="at" for="a" style="left: 174px; top: 99px">一</label>
   <input id="b" class="at" type="radio" name="pick" style="left: 200px; top: 100px">
-  <label class="at" for="b" style="left: 224px; top: 99px">two</label>
-  <input id="field" class="at" type="text" value="type here" style="left: 10px; top: 136px; width: 120px">
-  <div class="strip" id="status">no events yet</div>
+  <label class="at" for="b" style="left: 224px; top: 99px">二</label>
+  <input id="field" class="at" type="text" style="left: 10px; top: 136px; width: 120px">
+  <div class="strip" id="status">等待事件</div>
 </body>
 </html>"#;
 
@@ -127,12 +132,24 @@ fn build(
     pass: Entity,
     _ui: Option<Entity>,
     _size: (u32, u32),
-    _options: SceneOptions,
+    options: SceneOptions,
 ) -> SceneControl {
     let source = world
         .scope_mut(pass)
         .expect("the pass is alive")
         .spawn(bundle![Source::new(BlitzSource::new())]);
+
+    // A capture runs without a window, so nothing would push the clicks and
+    // keystrokes the page's controls react to: the scene spawns a writer of its
+    // own and feeds them itself. A windowed run leaves input to the window.
+    let input = options.own_input.then(|| {
+        let input = InputWriter::new();
+        // `InputFeed` expands into a writer and the buffer it feeds, so it is
+        // spawned as itself: a `bundle![...]` around it would register the feed
+        // as one component and spread neither.
+        spawn_shared(world, InputFeed(input.clone()));
+        input
+    });
 
     spawn_in(world, source, bundle![BlitzDocument::new(PAGE)]);
 
@@ -157,14 +174,45 @@ fn build(
             event
                 .document_mut()
                 .mutate()
-                .set_node_text(text, &format!("last event: {name}"));
+                .set_node_text(text, &format!("最后事件：{name}"));
         })],
     );
 
     SceneControl {
-        // The page is static: it is laid out and rasterized once, and the frames
-        // after it reuse that texture.
-        advance: Box::new(|_world, _frame, _delta, _size| {}),
+        // A page repaints only on what it was told, so the frame that pushes
+        // input is the one before the frame the snapshot freezes: input queued
+        // here is taken by the next frame's dispatch, which runs before that
+        // frame draws.
+        advance: Box::new(move |_world, frame, _delta, _size| {
+            let Some(input) = &input else {
+                return;
+            };
+            if frame != 0 {
+                return;
+            }
+            input.push_all(click([98.0, 108.0]));
+            input.push_all(click([208.0, 108.0]));
+            input.push_all(click([40.0, 146.0]));
+            input.push(InputEvent::Text(TextEvent("输入".to_owned())));
+        }),
         snapshot: Box::new(|frame| (frame == 1).then(|| "blitz_only.webp".to_owned())),
     }
+}
+
+/// The press and release at a position that a document reads as a click.
+fn click(position: [f32; 2]) -> [InputEvent; 2] {
+    [
+        InputEvent::Mouse(MouseEvent::Button {
+            position,
+            button: MouseButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+        InputEvent::Mouse(MouseEvent::Button {
+            position,
+            button: MouseButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        }),
+    ]
 }

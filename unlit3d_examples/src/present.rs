@@ -40,6 +40,7 @@ pub(crate) fn present(world: &World, app: Entity) {
                     reproducible: false,
                     letterbox: true,
                     sequence_step: def.step_seconds,
+                    own_input: false,
                 },
                 def,
                 PanelRects::read(world, app),

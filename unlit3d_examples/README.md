@@ -56,8 +56,10 @@ between the cube's mesh and the egui overlay, so one frame shows the three
 sources stacked in the order they declare. The page `blitz_only` draws carries
 an image and the controls a form has — a checkbox, a group of radios and a text
 field — and its `OnBlitzEvent` callback writes the name of every DOM event the
-page dispatches into its status line, so running the scene in a window shows the
-clicks and keystrokes reaching Rust.
+page dispatches into its status line. A capture feeds the controls itself before
+it freezes the frame, so the snapshot holds the page after a click, a pick and
+some typing; a windowed run shows the same events arriving from the pointer and
+the keyboard.
 
 `custom_pipeline` registers two families of its own rather than drawing
 through the built-in lit one. A sky family reconstructs a view ray

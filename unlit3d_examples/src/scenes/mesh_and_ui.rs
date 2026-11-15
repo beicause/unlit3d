@@ -169,7 +169,7 @@ const PAGE: &str = r#"<!doctype html>
 </style>
 </head>
 <body>
-  <div class="card">blitz page</div>
+  <div class="card">blitz 页面</div>
 </body>
 </html>"#;
 
