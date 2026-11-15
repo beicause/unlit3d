@@ -109,10 +109,13 @@ mod tests {
     /// which is how a tool sees another world's input.
     #[test]
     fn a_buffer_reflects_its_events_and_the_state_they_left() {
-        use crate::input::{InputEvent, InputEvents, InputWriter, Key, KeyEvent, Modifiers};
+        use crate::input::{
+            InputEvent, InputEvents, InputWriter, Key, KeyEvent, KeyLocation, Modifiers,
+        };
 
         let key = InputEvent::Key(KeyEvent {
             key: Key::A,
+            location: KeyLocation::Standard,
             pressed: true,
             repeat: false,
             modifiers: Modifiers::default(),
@@ -140,7 +143,7 @@ mod tests {
     /// writes, so a field left out of the JSON takes its default.
     #[test]
     fn the_events_decode_through_their_reflection() {
-        use crate::input::{Key, KeyEvent, MouseEvent, TouchPhase, WheelUnit};
+        use crate::input::{Key, KeyEvent, KeyLocation, MouseEvent, TouchPhase, WheelUnit};
 
         let events = decode_events(
             r#"[{"Key":{"key":"A","pressed":true}},{"Mouse":{"Wheel":{"delta":[1.0,2.0]}}}]"#,
@@ -151,6 +154,7 @@ mod tests {
             vec![
                 InputEvent::Key(KeyEvent {
                     key: Key::A,
+                    location: KeyLocation::Standard,
                     pressed: true,
                     repeat: false,
                     modifiers: Default::default(),

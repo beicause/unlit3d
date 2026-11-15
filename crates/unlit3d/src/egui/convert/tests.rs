@@ -1,5 +1,5 @@
 use super::*;
-use crate::input::TextEvent;
+use crate::input::{KeyLocation, TextEvent};
 
 /// One event's translation at a given density, collected into a fresh
 /// buffer so a test can compare the whole list.
@@ -18,6 +18,7 @@ fn at_one(event: InputEvent) -> Vec<EguiEvent> {
 fn key(key: Key, pressed: bool) -> InputEvent {
     InputEvent::Key(KeyEvent {
         key,
+        location: KeyLocation::Standard,
         pressed,
         repeat: false,
         modifiers: Modifiers::default(),
@@ -45,6 +46,7 @@ fn a_key_press_carries_both_readings_of_the_key() {
 fn a_key_release_and_repeat_survive_the_translation() {
     let release = at_one(InputEvent::Key(KeyEvent {
         key: Key::Space,
+        location: KeyLocation::Standard,
         pressed: false,
         repeat: true,
         modifiers: Modifiers::default(),

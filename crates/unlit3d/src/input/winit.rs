@@ -42,10 +42,12 @@ use unlit_ecs::sync;
 use winit::event::{
     Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase, WindowEvent,
 };
-use winit::keyboard::{KeyCode, ModifiersState, NativeKeyCode, PhysicalKey};
+use winit::keyboard::{
+    KeyCode, KeyLocation as WinitKeyLocation, ModifiersState, NativeKeyCode, PhysicalKey,
+};
 
 use super::{
-    ImeEvent, ImeKind, InputEvent, InputWriter, Key, KeyEvent, Modifiers,
+    ImeEvent, ImeKind, InputEvent, InputWriter, Key, KeyEvent, KeyLocation, Modifiers,
     MouseButton as CrateButton, MouseEvent, PointerAction, PointerEvent, PointerKind, TextEvent,
     TouchEvent, TouchPhase, WheelUnit,
 };
@@ -138,6 +140,7 @@ impl WinitInput {
         match event {
             WindowEvent::KeyboardInput { event, .. } => self.on_key(
                 event.physical_key,
+                event.location,
                 event.state.is_pressed(),
                 event.repeat,
                 event.text.as_deref(),
@@ -288,12 +291,14 @@ impl WinitInput {
     fn on_key(
         &self,
         physical_key: PhysicalKey,
+        location: WinitKeyLocation,
         pressed: bool,
         repeat: bool,
         text: Option<&str>,
     ) -> bool {
         let key = InputEvent::Key(KeyEvent {
             key: key_of(physical_key),
+            location: to_location(location),
             pressed,
             repeat,
             modifiers: self.modifiers(),
@@ -522,6 +527,16 @@ fn native_code(native: NativeKeyCode) -> u32 {
         NativeKeyCode::Android(code) | NativeKeyCode::Xkb(code) => code,
         NativeKeyCode::MacOS(code) | NativeKeyCode::Windows(code) => u32::from(code),
         NativeKeyCode::Unidentified => UNIDENTIFIED_CODE,
+    }
+}
+
+/// The crate's name for where winit says a key sits.
+fn to_location(location: WinitKeyLocation) -> KeyLocation {
+    match location {
+        WinitKeyLocation::Standard => KeyLocation::Standard,
+        WinitKeyLocation::Left => KeyLocation::Left,
+        WinitKeyLocation::Right => KeyLocation::Right,
+        WinitKeyLocation::Numpad => KeyLocation::Numpad,
     }
 }
 

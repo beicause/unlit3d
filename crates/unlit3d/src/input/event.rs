@@ -360,12 +360,37 @@ pub enum ImeKind {
     Disabled,
 }
 
+/// Where on the keyboard a key sits.
+///
+/// A key is identified by its position, and a few positions exist twice: Shift,
+/// Control and Alt are on both sides, and Enter and the digits appear again on
+/// the numeric keypad. A shortcut that tells the left Shift from the right one,
+/// or that leaves the keypad alone, needs this beside the key itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub enum KeyLocation {
+    /// The key is in its one usual place, or the platform did not say which of
+    /// its several places it was.
+    #[default]
+    Standard,
+    /// The key is the left one of a pair.
+    Left,
+    /// The key is the right one of a pair.
+    Right,
+    /// The key is on the numeric keypad.
+    Numpad,
+}
+
 /// A key was pressed, released, or auto-repeated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct KeyEvent {
     /// Which key.
     pub key: Key,
+    /// Where on the keyboard that key sits.
+    #[cfg_attr(feature = "reflect", facet(default))]
+    pub location: KeyLocation,
     /// Whether the key went down (`true`) or came up (`false`).
     #[cfg_attr(feature = "reflect", facet(default = true))]
     pub pressed: bool,

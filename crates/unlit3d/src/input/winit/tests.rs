@@ -98,8 +98,20 @@ fn a_physical_key_carries_its_key_and_the_held_modifiers() {
     let shift = ModifiersState::SHIFT.into();
     assert!(input.on_window_event(&WindowEvent::ModifiersChanged(shift)));
 
-    assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyW), true, false, None));
-    assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyW), false, false, None));
+    assert!(input.on_key(
+        PhysicalKey::Code(KeyCode::KeyW),
+        winit::keyboard::KeyLocation::Standard,
+        true,
+        false,
+        None
+    ));
+    assert!(input.on_key(
+        PhysicalKey::Code(KeyCode::KeyW),
+        winit::keyboard::KeyLocation::Standard,
+        false,
+        false,
+        None
+    ));
 
     let expected = to_modifiers(ModifiersState::SHIFT);
     let events = events(&input);
@@ -107,6 +119,7 @@ fn a_physical_key_carries_its_key_and_the_held_modifiers() {
         events[1],
         InputEvent::Key(KeyEvent {
             key: Key::W,
+            location: KeyLocation::Standard,
             pressed: true,
             repeat: false,
             modifiers: expected,
@@ -116,6 +129,7 @@ fn a_physical_key_carries_its_key_and_the_held_modifiers() {
         events[2],
         InputEvent::Key(KeyEvent {
             key: Key::W,
+            location: KeyLocation::Standard,
             pressed: false,
             repeat: false,
             modifiers: expected,
@@ -129,13 +143,20 @@ fn a_physical_key_carries_its_key_and_the_held_modifiers() {
 fn a_pressed_key_also_pushes_the_text_it_produced() {
     let input = input();
 
-    assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyA), true, false, Some("a")));
+    assert!(input.on_key(
+        PhysicalKey::Code(KeyCode::KeyA),
+        winit::keyboard::KeyLocation::Standard,
+        true,
+        false,
+        Some("a")
+    ));
 
     assert_eq!(
         events(&input),
         [
             InputEvent::Key(KeyEvent {
                 key: Key::A,
+                location: KeyLocation::Standard,
                 pressed: true,
                 repeat: false,
                 modifiers: Modifiers::default(),
@@ -149,7 +170,13 @@ fn a_pressed_key_also_pushes_the_text_it_produced() {
 fn a_released_key_pushes_no_text() {
     let input = input();
 
-    assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyA), false, false, Some("a")));
+    assert!(input.on_key(
+        PhysicalKey::Code(KeyCode::KeyA),
+        winit::keyboard::KeyLocation::Standard,
+        false,
+        false,
+        Some("a")
+    ));
 
     assert_eq!(events(&input).len(), 1);
 }

@@ -37,7 +37,8 @@
 //! way for a shifted one -- `Shift+1` is `!`, and a letter is upper-cased --
 //! but a key that produces something else through the layout reaches the
 //! document only through its text, which is what a text field inserts from
-//! anyway.
+//! anyway. The event also carries the physical key as a code and the side of
+//! the keyboard it sits on, which is what a shortcut matches against.
 
 use blitz_dom::{BaseDocument, Document, EventDriver, EventHandler, NodeId};
 use blitz_traits::SmolStr;
@@ -51,8 +52,8 @@ use keyboard_types::{Code, Key as DomKey, Location, Modifiers, NamedKey};
 use unlit_ecs::{Entity, Scope};
 
 use crate::input::{
-    ImeEvent, ImeKind, InputEvent, Key, KeyEvent, MouseButton, MouseEvent, PointerAction,
-    PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit,
+    ImeEvent, ImeKind, InputEvent, Key, KeyEvent, KeyLocation, MouseButton, MouseEvent,
+    PointerAction, PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit,
 };
 
 use super::document::BlitzShell;
@@ -478,14 +479,27 @@ impl Translator {
         if event.pressed && !event.modifiers.command && matches!(key, DomKey::Character(_)) {
             return;
         }
-        self.pending
-            .push(self.key_event(key, event.pressed, event.repeat));
+        self.pending.push(self.key_event(
+            code_of(event.key),
+            location_of(event.location),
+            key,
+            event.pressed,
+            event.repeat,
+        ));
     }
 
     /// Translate the text a key produced, or a paste, which inserts the same
     /// way.
     fn text(&mut self, event: &TextEvent) {
-        let mut key = self.key_event(DomKey::Character(event.0.clone()), true, false);
+        // Text carries no physical key of its own: it is what a key produced,
+        // not which key produced it.
+        let mut key = self.key_event(
+            Code::Unidentified,
+            Location::Standard,
+            DomKey::Character(event.0.clone()),
+            true,
+            false,
+        );
         if let UiEvent::KeyDown(key) = &mut key {
             key.text = Some(SmolStr::new(event.0.as_str()));
         }
@@ -493,15 +507,23 @@ impl Translator {
     }
 
     /// Wrap `key` as the event a document dispatches for it.
-    fn key_event(&self, key: DomKey, pressed: bool, repeat: bool) -> UiEvent {
+    ///
+    /// A page reads the physical key as a code and the side of the keyboard it
+    /// is on, which the input layer already states, so both are carried across
+    /// rather than left blank.
+    fn key_event(
+        &self,
+        code: Code,
+        location: Location,
+        key: DomKey,
+        pressed: bool,
+        repeat: bool,
+    ) -> UiEvent {
         let event = BlitzKeyEvent {
             key,
-            // The crate reports the physical key as a code of its own, and a
-            // document reads the logical key alone: a code would be a second
-            // spelling of the same information, and no page asks for one.
-            code: Code::Unidentified,
+            code,
+            location,
             modifiers: modifiers_of(self.modifiers),
-            location: Location::Standard,
             is_auto_repeating: repeat,
             is_composing: false,
             state: if pressed {
@@ -621,6 +643,114 @@ fn key_of(key: Key, shift: bool) -> DomKey {
     }
 }
 
+/// The physical key a crate key names, as a document reports it.
+///
+/// The crate names a key by where it sits on the keyboard and a document
+/// names the same key by a code, so the two agree variant for variant. A key
+/// the crate only carries the platform code of has no code of its own.
+fn code_of(key: Key) -> Code {
+    match key {
+        Key::A => Code::KeyA,
+        Key::B => Code::KeyB,
+        Key::C => Code::KeyC,
+        Key::D => Code::KeyD,
+        Key::E => Code::KeyE,
+        Key::F => Code::KeyF,
+        Key::G => Code::KeyG,
+        Key::H => Code::KeyH,
+        Key::I => Code::KeyI,
+        Key::J => Code::KeyJ,
+        Key::K => Code::KeyK,
+        Key::L => Code::KeyL,
+        Key::M => Code::KeyM,
+        Key::N => Code::KeyN,
+        Key::O => Code::KeyO,
+        Key::P => Code::KeyP,
+        Key::Q => Code::KeyQ,
+        Key::R => Code::KeyR,
+        Key::S => Code::KeyS,
+        Key::T => Code::KeyT,
+        Key::U => Code::KeyU,
+        Key::V => Code::KeyV,
+        Key::W => Code::KeyW,
+        Key::X => Code::KeyX,
+        Key::Y => Code::KeyY,
+        Key::Z => Code::KeyZ,
+        Key::Escape => Code::Escape,
+        Key::Space => Code::Space,
+        Key::Enter => Code::Enter,
+        Key::Tab => Code::Tab,
+        Key::Backspace => Code::Backspace,
+        Key::Delete => Code::Delete,
+        Key::ArrowUp => Code::ArrowUp,
+        Key::ArrowDown => Code::ArrowDown,
+        Key::ArrowLeft => Code::ArrowLeft,
+        Key::ArrowRight => Code::ArrowRight,
+        Key::Home => Code::Home,
+        Key::End => Code::End,
+        Key::PageUp => Code::PageUp,
+        Key::PageDown => Code::PageDown,
+        Key::Num0 => Code::Digit0,
+        Key::Num1 => Code::Digit1,
+        Key::Num2 => Code::Digit2,
+        Key::Num3 => Code::Digit3,
+        Key::Num4 => Code::Digit4,
+        Key::Num5 => Code::Digit5,
+        Key::Num6 => Code::Digit6,
+        Key::Num7 => Code::Digit7,
+        Key::Num8 => Code::Digit8,
+        Key::Num9 => Code::Digit9,
+        Key::F1 => Code::F1,
+        Key::F2 => Code::F2,
+        Key::F3 => Code::F3,
+        Key::F4 => Code::F4,
+        Key::F5 => Code::F5,
+        Key::F6 => Code::F6,
+        Key::F7 => Code::F7,
+        Key::F8 => Code::F8,
+        Key::F9 => Code::F9,
+        Key::F10 => Code::F10,
+        Key::F11 => Code::F11,
+        Key::F12 => Code::F12,
+        Key::F13 => Code::F13,
+        Key::F14 => Code::F14,
+        Key::F15 => Code::F15,
+        Key::F16 => Code::F16,
+        Key::F17 => Code::F17,
+        Key::F18 => Code::F18,
+        Key::F19 => Code::F19,
+        Key::F20 => Code::F20,
+        Key::F21 => Code::F21,
+        Key::F22 => Code::F22,
+        Key::F23 => Code::F23,
+        Key::F24 => Code::F24,
+        Key::F25 => Code::F25,
+        Key::F26 => Code::F26,
+        Key::F27 => Code::F27,
+        Key::F28 => Code::F28,
+        Key::F29 => Code::F29,
+        Key::F30 => Code::F30,
+        Key::F31 => Code::F31,
+        Key::F32 => Code::F32,
+        Key::F33 => Code::F33,
+        Key::F34 => Code::F34,
+        Key::F35 => Code::F35,
+        Key::Other(_) => Code::Unidentified,
+    }
+}
+
+/// The side of the keyboard a key is on, as a document reports it.
+///
+/// A document tells the left shift from the right one and names the numeric
+/// keypad as its own side, which is the same set of places the crate states.
+fn location_of(location: KeyLocation) -> Location {
+    match location {
+        KeyLocation::Standard => Location::Standard,
+        KeyLocation::Left => Location::Left,
+        KeyLocation::Right => Location::Right,
+        KeyLocation::Numpad => Location::Numpad,
+    }
+}
 /// The character the crate's key types, if it types one.
 ///
 /// The character is what the key types on a US layout, which is what a document

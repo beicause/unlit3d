@@ -51,6 +51,7 @@
 //! // This frame's events, as a translation layer would feed them in.
 //! input.push(InputEvent::Key(KeyEvent {
 //!     key: Key::W,
+//!     location: KeyLocation::Standard,
 //!     pressed: true,
 //!     repeat: false,
 //!     modifiers: Modifiers::default(),
@@ -84,9 +85,9 @@ mod event;
 mod state;
 
 pub use event::{
-    ImeEvent, ImeKind, InputEvent, Key, KeyEvent, Modifiers, MouseButton, MouseButtons, MouseEvent,
-    PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase,
-    WheelUnit,
+    ImeEvent, ImeKind, InputEvent, Key, KeyEvent, KeyLocation, Modifiers, MouseButton,
+    MouseButtons, MouseEvent, PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent,
+    TouchEvent, TouchPhase, WheelUnit,
 };
 pub use state::InputState;
 

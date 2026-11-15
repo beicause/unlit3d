@@ -12,6 +12,7 @@ const CURSOR: [f32; 2] = [3.0, 4.0];
 fn key_event(key: Key) -> InputEvent {
     InputEvent::Key(KeyEvent {
         key,
+        location: KeyLocation::Standard,
         pressed: true,
         repeat: false,
         modifiers: Modifiers::default(),
@@ -231,6 +232,7 @@ fn a_callback_may_read_the_input_state() {
         }),]);
     input.push(InputEvent::Key(KeyEvent {
         key: Key::C,
+        location: KeyLocation::Standard,
         pressed: true,
         repeat: false,
         modifiers: Modifiers {

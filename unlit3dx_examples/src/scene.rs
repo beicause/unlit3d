@@ -780,6 +780,7 @@ mod tests {
         // A press fed to the writer is what a window would push.
         input.push(InputEvent::Key(KeyEvent {
             key: Key::Space,
+            location: KeyLocation::Standard,
             pressed: true,
             repeat: false,
             modifiers: Modifiers::default(),
@@ -830,6 +831,7 @@ mod tests {
 
         input.push(InputEvent::Key(KeyEvent {
             key: Key::Space,
+            location: KeyLocation::Standard,
             pressed: true,
             repeat: false,
             modifiers: Modifiers::default(),
