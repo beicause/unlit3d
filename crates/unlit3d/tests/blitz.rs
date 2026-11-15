@@ -412,7 +412,8 @@ async fn a_new_base_still_serves_the_registered_bytes() {
         .map(|mut row| {
             let page = row.get();
             page.insert_resource("solid.png", RED_PNG);
-            page.set_base_url("https://example.test/images/");
+            page.set_base_url("https://example.test/images/")
+                .expect("the base is an absolute URL");
         })
         .expect("the page entity exists");
 
@@ -580,6 +581,121 @@ async fn a_key_release_reaches_the_page() {
     );
 }
 
+/// A wheel turns the page under the pointer, so a document taller than the
+/// target is read by scrolling rather than only by what fits.
+async fn a_wheel_scrolls_the_page() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <div style="height: 64px; background: #ff0000"></div>
+        <div style="height: 400px; background: #0000ff"></div>
+    </body></html>"#;
+    let (mut world, gpu, target, _source, _page) = render_page(&ctx, html);
+    let (input, events) = spawn_input(&mut world);
+    gpu.render_frames(&world, 2);
+
+    let before = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
+    assert!(
+        before[0].abs_diff(255) <= 2 && before[2] <= 2,
+        "the page should start at its first block, got {before:?}"
+    );
+
+    feed(
+        &input,
+        &events,
+        [
+            // The pointer has to be over the page for it to be the one
+            // scrolled, and a wheel reports where it is used.
+            InputEvent::Mouse(MouseEvent::Moved {
+                position: [32.0, 32.0],
+            }),
+            InputEvent::Mouse(MouseEvent::Wheel {
+                delta: [0.0, -64.0],
+                unit: WheelUnit::Pixel,
+                phase: TouchPhase::Moved,
+                modifiers: Modifiers::default(),
+            }),
+        ],
+    );
+    gpu.render(&world);
+
+    let after = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
+    assert!(
+        after[2].abs_diff(255) <= 2 && after[0] <= 2,
+        "the wheel should have scrolled the first block out of view, got {after:?}"
+    );
+}
+
+/// A pointer that leaves the page is reported to it, which is what ends a hover.
+async fn leaving_the_page_is_reported_to_it() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <div id="left" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
+        </div>
+    </body></html>"#;
+    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+
+    gpu.render_frames(&world, 2);
+    feed(
+        &input,
+        &events,
+        [
+            InputEvent::Mouse(MouseEvent::Moved {
+                position: [20.0, 20.0],
+            }),
+            InputEvent::Mouse(MouseEvent::Left),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    assert!(
+        seen.iter().any(|event| event.name == "pointerleave"),
+        "the pointer's departure should reach the page, got {seen:?}"
+    );
+}
+
+/// A callback that cancels an event stops Blitz's own reaction to it: the box
+/// the click landed on stays as it was, because Rust decided the click meant
+/// something else.
+async fn a_callback_can_cancel_the_default_action() {
+    let ctx = Ctx::headless().await;
+    let html = r#"<html style="background: #808080"><body style="margin: 0">
+        <input type="checkbox" id="box"
+               style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
+    </body></html>"#;
+    let (mut world, gpu, target, source, seen, input, events) = render_watched_page(&ctx, html);
+    gpu.spawn_in(
+        &mut world,
+        source,
+        bundle![OnBlitzEvent::new(|_scope, _entity, event| {
+            if event.data().name() == "click" {
+                event.prevent_default();
+            }
+        })],
+    );
+
+    gpu.render_frames(&world, 2);
+    feed(&input, &events, click([20.0, 20.0]));
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    assert!(
+        seen.iter().any(|event| event.name == "click"),
+        "the click should still reach the callbacks, got {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|event| event.name == "input"),
+        "a cancelled click should not toggle the box, got {seen:?}"
+    );
+    // The box is white inside while it is unchecked and filled with the accent
+    // colour once it is checked.
+    let inside = pixel(&ctx.device, &ctx.queue, &target, 20, 20).await;
+    assert!(
+        inside[..3].iter().all(|&channel| channel == 255),
+        "a cancelled click should leave the box unchecked, got {inside:?}"
+    );
+}
+
 /// Input belongs to the frame that read it: a click dispatched once is not
 /// dispatched again by the frames that follow it.
 async fn input_is_dispatched_once() {
@@ -656,4 +772,7 @@ gpu_tests! {
     one_tick_reaches_a_shared_page_once,
     losing_focus_leaves_the_text_field,
     a_key_release_reaches_the_page,
+    a_wheel_scrolls_the_page,
+    leaving_the_page_is_reported_to_it,
+    a_callback_can_cancel_the_default_action,
 }
