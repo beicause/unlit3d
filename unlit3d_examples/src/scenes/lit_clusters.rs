@@ -114,7 +114,7 @@ fn build_clusters(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // The floor is one plane: the grid is a screen-space structure, so its cells
     // are not aligned with anything the geometry could carry.

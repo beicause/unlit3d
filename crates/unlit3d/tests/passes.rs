@@ -140,10 +140,6 @@ impl FrameSource for CountingSource {
     ) {
         self.builds.set(self.builds.get() + 1);
     }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::MESH
-    }
 }
 
 /// Two passes of one world each draw their own sources, in one frame.
@@ -164,14 +160,17 @@ async fn two_passes_draw_their_own_sources() {
 
     let texture = solid_texture(&ctx.device, &ctx.queue, FIRST);
     let (_, view) = gpu.register_texture(&world, texture);
-    gpu.spawn_source(&mut world, BlitSource::new(view));
+    gpu.spawn_source(&mut world, FrameSourceOrder::MESH, BlitSource::new(view));
 
     let texture = solid_texture(&ctx.device, &ctx.queue, SECOND);
     let (_, view) = gpu.register_texture(&world, texture);
     world
         .scope_mut(second_pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(BlitSource::new(view))]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            BlitSource::new(view)
+        )]);
 
     gpu.render(&world);
 
@@ -202,17 +201,23 @@ async fn a_nested_source_is_built_by_every_pass_above_it() {
     world
         .scope_mut(nested_pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(CountingSource {
-            builds: nested_builds.clone(),
-        }),]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            CountingSource {
+                builds: nested_builds.clone(),
+            }
+        ),]);
 
     let sibling_builds = Rc::new(Cell::new(0));
     world
         .scope_mut(outer_pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(CountingSource {
-            builds: sibling_builds.clone(),
-        }),]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            CountingSource {
+                builds: sibling_builds.clone(),
+            }
+        ),]);
 
     gpu.render(&world);
 
@@ -236,11 +241,12 @@ async fn a_source_no_pass_reaches_draws_nowhere() {
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
 
     let builds = Rc::new(Cell::new(0));
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(CountingSource {
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        CountingSource {
             builds: builds.clone(),
-        }),]);
+        }
+    ),]);
 
     gpu.render(&world);
 
@@ -296,7 +302,10 @@ async fn a_parked_pass_draws_nothing() {
     world
         .scope_mut(pass_b)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(BlitSource::new(view))]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            BlitSource::new(view)
+        )]);
 
     world
         .root_scope()
@@ -338,7 +347,10 @@ async fn a_shared_source_draws_into_every_pass() {
     world
         .scope_mut(shared)
         .expect("the shared subtree is its own scope")
-        .spawn(bundle![Source::new(BlitSource::new(view))]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            BlitSource::new(view)
+        )]);
 
     gpu.render(&world);
 

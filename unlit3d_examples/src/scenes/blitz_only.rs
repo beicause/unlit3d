@@ -137,7 +137,10 @@ fn build(
     let source = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(BlitzSource::new())]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::BLITZ,
+            BlitzSource::new()
+        )]);
 
     // A capture runs without a window, so nothing would push the clicks and
     // keystrokes the page's controls react to: the scene spawns a writer of its

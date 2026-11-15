@@ -47,19 +47,24 @@ impl TestGpu {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(&world.root_scope(), test.context);
         source.register_lit_family(&world.root_scope());
-        test.source = Some(test.spawn_source(world, source));
+        test.source = Some(test.spawn_source(world, FrameSourceOrder::MESH, source));
         test
     }
 
-    /// Spawn `source` as a source of the frame's pass.
+    /// Spawn `source` as a source of the frame's pass, recording at `order`.
     ///
     /// A source draws into the pass it hangs under, so the harness's sources
     /// are spawned into the pass's subtree rather than at the root.
-    pub fn spawn_source(&self, world: &mut World, source: impl FrameSource) -> Entity {
+    pub fn spawn_source(
+        &self,
+        world: &mut World,
+        order: FrameSourceOrder,
+        source: impl FrameSource,
+    ) -> Entity {
         world
             .scope_mut(self.pass)
             .expect("the pass entity is its own scope")
-            .spawn(bundle![Source::new(source)])
+            .spawn(bundle![Source::new(order, source)])
     }
 
     /// The frame's pass entity.

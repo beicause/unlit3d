@@ -158,13 +158,6 @@ fn a_panel_is_driven_by_the_source() {
     );
 }
 
-/// The source is constructed with no arguments and records over the meshes.
-#[test]
-fn a_fresh_source_declares_the_overlay_order() {
-    let source = EguiSource::new();
-    assert_eq!(source.order(), FrameSourceOrder::EGUI);
-}
-
 /// A panel's queued spawn lands once the frame loop applies the queue.
 ///
 /// A panel gets only a shared world, so a structural change is queued —

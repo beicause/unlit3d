@@ -94,7 +94,7 @@ fn blit_world_from(
     let gpu = TestGpu::frame_only(&mut world, ctx);
     let texture = solid_texture(&ctx.device, &ctx.queue, format, rgba);
     let (_, view) = gpu.register_texture(&world, texture);
-    let source = gpu.spawn_source(&mut world, BlitSource::new(view));
+    let source = gpu.spawn_source(&mut world, FrameSourceOrder::MESH, BlitSource::new(view));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target, source)
 }

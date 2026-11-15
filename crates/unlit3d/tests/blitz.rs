@@ -75,7 +75,7 @@ async fn centre_pixel(
 fn render_page(ctx: &Ctx, html: &str) -> (World, TestGpu, wgpu::Texture, Entity, Entity) {
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
-    let source = gpu.spawn_source(&mut world, BlitzSource::new());
+    let source = gpu.spawn_source(&mut world, FrameSourceOrder::BLITZ, BlitzSource::new());
     // A page declares no depth state, so its target carries no depth
     // attachment: wgpu requires the pass and the pipeline to agree.
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
@@ -483,7 +483,10 @@ async fn one_tick_reaches_a_shared_page_once() {
     let source = world
         .scope_mut(nested)
         .expect("the nested pass entity is its own scope")
-        .spawn(bundle![Source::new(BlitzSource::new())]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::BLITZ,
+            BlitzSource::new()
+        )]);
     world
         .scope_mut(source)
         .expect("the source entity is its own scope")

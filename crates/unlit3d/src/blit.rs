@@ -18,7 +18,7 @@ use unlit_wgpu::scene::{DrawOrder, Scene};
 
 use crate::pass::PassInfo;
 use crate::screen::ScreenBlit;
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
+use crate::source::{FrameSource, RenderContext};
 
 /// A frame source that blits one texture view over its pass's target.
 ///
@@ -73,9 +73,5 @@ impl FrameSource for BlitSource {
     ) {
         self.screen
             .record(scope, ctx, info, scene, self.view.clone(), self.blend);
-    }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::MESH
     }
 }

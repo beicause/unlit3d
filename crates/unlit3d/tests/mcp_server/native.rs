@@ -69,7 +69,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();

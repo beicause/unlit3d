@@ -215,7 +215,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot

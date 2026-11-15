@@ -198,7 +198,7 @@ pub fn setup_render_world(
     world
         .scope_mut(pass)
         .expect("the scene's pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     (world.remote(renderer), world.remote(pass))
 }
 

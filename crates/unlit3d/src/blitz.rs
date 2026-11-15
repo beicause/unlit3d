@@ -38,7 +38,7 @@
 //!     ResourceGraph::new(),
 //! );
 //!
-//! let source = world.root_scope_mut().spawn(bundle![Source::new(BlitzSource::new())]);
+//! let source = world.root_scope_mut().spawn(bundle![Source::new(FrameSourceOrder::BLITZ, BlitzSource::new())]);
 //! world.scope_mut(source).expect("the source is alive").spawn(bundle![
 //!     BlitzDocument::new("<body style=\"background: #204060\"><p>hello</p></body>"),
 //! ]);
@@ -55,7 +55,7 @@ use unlit_wgpu::specialize::SurfaceKey;
 use crate::input::{InputEvent, InputEvents, MouseButtons};
 use crate::pass::PassInfo;
 use crate::screen::ScreenBlit;
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
+use crate::source::{FrameSource, RenderContext};
 
 mod document;
 mod events;
@@ -422,10 +422,6 @@ impl FrameSource for BlitzSource {
             Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         );
         drop(maintain);
-    }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::BLITZ
     }
 }
 

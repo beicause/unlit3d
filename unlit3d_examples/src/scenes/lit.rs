@@ -197,7 +197,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let mut floor = grid(
         glam::Vec3::new(0.0, 0.0, FLOOR.2 - FLOOR.0 * 0.5),

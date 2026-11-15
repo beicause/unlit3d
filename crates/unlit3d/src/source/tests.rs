@@ -68,16 +68,14 @@ fn draining_open_urls_empties_the_queue() {
     );
 }
 
-/// A source that records how many times it was built and what it saw.
+/// A source that records how many times it was built.
 struct RecordingSource {
-    order: FrameSourceOrder,
     built: Rc<Cell<u32>>,
 }
 
 impl RecordingSource {
-    fn new(order: FrameSourceOrder) -> Self {
+    fn new() -> Self {
         Self {
-            order,
             built: Rc::new(Cell::new(0)),
         }
     }
@@ -94,10 +92,6 @@ impl FrameSource for RecordingSource {
     ) {
         self.built.set(self.built.get() + 1);
     }
-
-    fn order(&self) -> FrameSourceOrder {
-        self.order
-    }
 }
 
 use std::cell::{Cell, RefCell};
@@ -113,7 +107,7 @@ fn record_order(world: &World) -> (Vec<Entity>, Vec<AmbiguousGroup<FrameSourceOr
             .root_scope()
             .query::<(Entity, &Source)>()
             .iter()
-            .map(|(entity, source)| (source.order(), entity)),
+            .map(|(entity, source)| (source.order, entity)),
     );
     (resolved.entities().to_vec(), resolved.ambiguous().to_vec())
 }
@@ -131,16 +125,14 @@ fn explicit_order_wins_over_spawn_order() {
     );
 
     // Spawned overlay-first, so spawn order is the opposite of draw order.
-    let overlay = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
-    let mesh = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
+    let overlay = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
+    let mesh = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
 
     let (order, ambiguous) = record_order(&world);
     assert_eq!(order, vec![mesh, overlay], "the lower order records first");
@@ -154,21 +146,18 @@ fn equal_orders_fall_back_to_entity_order() {
     let mut world = World::new();
     test_context(&mut world);
 
-    let first = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
-    let second = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
-    let third = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
+    let first = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
+    let second = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
+    let third = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
     assert_eq!(record_order(&world).0, vec![first, second, third]);
 
     // An explicit order is the way to choose: the entity is only a
@@ -181,39 +170,36 @@ fn equal_orders_fall_back_to_entity_order() {
     );
 }
 
-/// A source spawned at an explicit order ignores what its own `order`
-/// says, and `set_order` can change it later.
+/// Two sources of one kind record where each was given an order, and writing
+/// the field reorders a live source in place.
 #[test]
-fn an_explicit_order_overrides_the_one_the_source_declares() {
+fn the_order_belongs_to_the_entity_rather_than_the_source_type() {
     let mut world = World::new();
     test_context(&mut world);
 
-    let a = world.root_scope_mut().spawn(bundle![
-        Source::new(RecordingSource::new(FrameSourceOrder::MESH))
-            .with_order(FrameSourceOrder::EGUI),
-    ]);
-    let b = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
+    let a = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new(),
+    ),]);
+    let b = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new(),
+    ),]);
 
-    // `a` was spawned as an overlay, so it records last despite declaring
-    // `MESH` itself.
+    // `a` was spawned as an overlay, so it records last.
     assert_eq!(record_order(&world).0, vec![b, a]);
 
-    let _ = world
+    world
         .root_scope()
         .query_one::<&mut Source>(a)
-        .map(|mut source| {
-            let source = source.get();
-            source.set_order(None)
-        });
-    assert_eq!(
-        record_order(&world).0,
-        vec![a, b],
-        "dropping the override falls back to the declared order"
-    );
+        .map(|mut source| source.get().order = FrameSourceOrder::LINE)
+        .expect("the source is spawned");
+    world
+        .root_scope()
+        .query_one::<&mut Source>(b)
+        .map(|mut source| source.get().order = FrameSourceOrder::EGUI)
+        .expect("the source is spawned");
+    assert_eq!(record_order(&world).0, vec![a, b], "the field is the order");
 }
 
 /// Typed access finds the concrete type and names the mismatch for
@@ -232,22 +218,18 @@ fn typed_access_downcasts_and_rejects_the_wrong_type() {
             _encoder: &mut wgpu::CommandEncoder,
         ) {
         }
-        fn order(&self) -> FrameSourceOrder {
-            FrameSourceOrder::MESH
-        }
     }
 
     let mut world = World::new();
     test_context(&mut world);
 
-    let recording = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
+    let recording = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
     let other = world
         .root_scope_mut()
-        .spawn(bundle![Source::new(OtherSource)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, OtherSource)]);
 
     assert!(
         world
@@ -314,21 +296,18 @@ fn one_query_builds_every_source_type() {
         ) {
             self.0 += 1;
         }
-        fn order(&self) -> FrameSourceOrder {
-            FrameSourceOrder::EGUI
-        }
     }
 
     let mut world = World::new();
     let ctx = test_context(&mut world);
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(CountingSource(0))]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        CountingSource(0)
+    )]);
 
     let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
         .0
@@ -381,18 +360,16 @@ fn every_source_is_built_before_any_is_recorded() {
         ) {
             self.log.borrow_mut().push(format!("build {}", self.name));
         }
-        fn order(&self) -> FrameSourceOrder {
-            FrameSourceOrder::MESH
-        }
     }
 
     for name in ["a", "b"] {
-        world
-            .root_scope_mut()
-            .spawn(bundle![Source::new(PhasedSource {
+        world.root_scope_mut().spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            PhasedSource {
                 name,
                 log: Rc::clone(&order),
-            }),]);
+            }
+        ),]);
     }
 
     let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
@@ -429,21 +406,6 @@ fn every_source_is_built_before_any_is_recorded() {
     );
 }
 
-/// A source that was never spawned at an explicit order takes the one it
-/// declares, and a fresh source reports what it declared.
-#[test]
-fn a_source_reports_its_declared_order_until_overridden() {
-    let source = Source::new(RecordingSource::new(FrameSourceOrder::EGUI));
-    assert_eq!(source.order(), FrameSourceOrder::EGUI);
-
-    let mut source = Source::new(RecordingSource::new(FrameSourceOrder::MESH))
-        .with_order(FrameSourceOrder::EGUI);
-    assert_eq!(source.order(), FrameSourceOrder::EGUI, "the override wins");
-
-    source.set_order(None);
-    assert_eq!(source.order(), FrameSourceOrder::MESH, "and can be dropped");
-}
-
 /// An ambiguity is reported once, and only again when it changes: a steady
 /// frame must not flood the log.
 #[test]
@@ -451,16 +413,14 @@ fn an_ambiguity_is_reported_once_and_again_only_when_it_changes() {
     let mut world = World::new();
     test_context(&mut world);
 
-    let a = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
-    let b = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
+    let a = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
+    let b = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
 
     let (_, ambiguous) = record_order(&world);
     assert_eq!(ambiguous.len(), 1, "the two share one order");
@@ -473,24 +433,20 @@ fn an_ambiguity_is_reported_once_and_again_only_when_it_changes() {
 
     // Resolving the ambiguity stops the reporting; reintroducing it warns
     // once more.
-    let _ = world
+    world
         .root_scope()
         .query_one::<&mut Source>(b)
-        .map(|mut source| {
-            let source = source.get();
-            source.set_order(Some(FrameSourceOrder::EGUI))
-        });
+        .map(|mut source| source.get().order = FrameSourceOrder::EGUI)
+        .expect("the source is spawned");
     let (_, resolved) = record_order(&world);
     assert!(resolved.is_empty());
     assert!(!warnings.check(&resolved));
 
-    let _ = world
+    world
         .root_scope()
         .query_one::<&mut Source>(b)
-        .map(|mut source| {
-            let source = source.get();
-            source.set_order(Some(FrameSourceOrder::MESH))
-        });
+        .map(|mut source| source.get().order = FrameSourceOrder::MESH)
+        .expect("the source is spawned");
     let (_, again) = record_order(&world);
     assert!(warnings.check(&again), "the ambiguity is back");
     assert!(!warnings.check(&again), "and still reports only once");
@@ -507,17 +463,15 @@ fn resolving_the_order_reuses_its_buffers() {
     let mut world = World::new();
     test_context(&mut world);
     for _ in 0..4 {
-        world
-            .root_scope_mut()
-            .spawn(bundle![Source::new(RecordingSource::new(
-                FrameSourceOrder::MESH
-            )),]);
+        world.root_scope_mut().spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            RecordingSource::new()
+        ),]);
     }
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
 
     let mut resolved = Ordering::<FrameSourceOrder>::default();
     resolved.resolve(
@@ -525,7 +479,7 @@ fn resolving_the_order_reuses_its_buffers() {
             .root_scope()
             .query::<(Entity, &Source)>()
             .iter()
-            .map(|(entity, source)| (source.order(), entity)),
+            .map(|(entity, source)| (source.order, entity)),
     );
     let order_capacity = resolved.order_capacity();
     let ambiguous_capacity = resolved.ambiguous_capacity();
@@ -543,7 +497,7 @@ fn resolving_the_order_reuses_its_buffers() {
             .root_scope()
             .query::<(Entity, &Source)>()
             .iter()
-            .map(|(entity, source)| (source.order(), entity)),
+            .map(|(entity, source)| (source.order, entity)),
     );
     assert_eq!(resolved.entities().len(), 4);
     assert_eq!(
@@ -563,16 +517,14 @@ fn resolving_the_order_reuses_its_buffers() {
 fn distinct_orders_are_never_ambiguous() {
     let mut world = World::new();
     test_context(&mut world);
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
 
     let (order, ambiguous) = record_order(&world);
     assert_eq!(order.len(), 2);
@@ -624,16 +576,14 @@ fn capture_logs(f: impl FnOnce()) -> Vec<String> {
 fn the_ambiguity_warning_names_the_group_order_and_entities() {
     let mut world = World::new();
     test_context(&mut world);
-    let a = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
-    let b = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
+    let a = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
+    let b = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
 
     let messages = capture_logs(|| {
         let (_, ambiguous) = record_order(&world);
@@ -662,16 +612,14 @@ fn the_ambiguity_warning_names_the_group_order_and_entities() {
 fn distinct_orders_log_nothing() {
     let mut world = World::new();
     test_context(&mut world);
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::EGUI
-        )),]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
+    world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::EGUI,
+        RecordingSource::new()
+    ),]);
 
     let messages = capture_logs(|| {
         let (_, ambiguous) = record_order(&world);
@@ -686,16 +634,14 @@ fn distinct_orders_log_nothing() {
 fn a_steady_frame_repeats_nothing_in_the_log() {
     let mut world = World::new();
     test_context(&mut world);
-    let a = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
-    let _b = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
+    let a = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
+    let _b = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
     let mut warnings = OrderWarnings::<FrameSourceOrder>::default();
 
     let messages = capture_logs(|| {
@@ -711,13 +657,11 @@ fn a_steady_frame_repeats_nothing_in_the_log() {
     );
 
     // Resolving it and reintroducing it warns once more, not twice.
-    let _ = world
+    world
         .root_scope()
         .query_one::<&mut Source>(a)
-        .map(|mut source| {
-            let source = source.get();
-            source.set_order(Some(FrameSourceOrder::EGUI))
-        });
+        .map(|mut source| source.get().order = FrameSourceOrder::EGUI)
+        .expect("the source is spawned");
     let messages = capture_logs(|| {
         let (_, resolved) = record_order(&world);
         assert!(!warnings.check(&resolved), "resolved: nothing to say");
@@ -731,35 +675,29 @@ fn a_steady_frame_repeats_nothing_in_the_log() {
 fn re_applying_the_same_order_keeps_the_log_quiet() {
     let mut world = World::new();
     test_context(&mut world);
-    let a = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
-    let b = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(RecordingSource::new(
-            FrameSourceOrder::MESH
-        )),]);
+    let a = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
+    let b = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        RecordingSource::new()
+    ),]);
     let mut warnings = OrderWarnings::<FrameSourceOrder>::default();
 
     let messages = capture_logs(|| {
         for _ in 0..3 {
             // What a caller that pins its sources' order every frame does.
-            let _ = world
+            world
                 .root_scope()
                 .query_one::<&mut Source>(a)
-                .map(|mut source| {
-                    let source = source.get();
-                    source.set_order(Some(FrameSourceOrder::MESH))
-                });
-            let _ = world
+                .map(|mut source| source.get().order = FrameSourceOrder::MESH)
+                .expect("the source is spawned");
+            world
                 .root_scope()
                 .query_one::<&mut Source>(b)
-                .map(|mut source| {
-                    let source = source.get();
-                    source.set_order(Some(FrameSourceOrder::MESH))
-                });
+                .map(|mut source| source.get().order = FrameSourceOrder::MESH)
+                .expect("the source is spawned");
             let (_, ambiguous) = record_order(&world);
             warnings.check(&ambiguous);
         }
@@ -780,11 +718,10 @@ fn a_three_way_ambiguity_is_one_group_of_three() {
 
     let ids: Vec<Entity> = (0..3)
         .map(|_| {
-            world
-                .root_scope_mut()
-                .spawn(bundle![Source::new(RecordingSource::new(
-                    FrameSourceOrder::MESH
-                )),])
+            world.root_scope_mut().spawn(bundle![Source::new(
+                FrameSourceOrder::MESH,
+                RecordingSource::new()
+            ),])
         })
         .collect();
 
@@ -802,11 +739,10 @@ fn later_entities_break_a_tie_last() {
 
     let ids: Vec<Entity> = (0..3)
         .map(|_| {
-            world
-                .root_scope_mut()
-                .spawn(bundle![Source::new(RecordingSource::new(
-                    FrameSourceOrder::MESH
-                )),])
+            world.root_scope_mut().spawn(bundle![Source::new(
+                FrameSourceOrder::MESH,
+                RecordingSource::new()
+            ),])
         })
         .collect();
     assert_eq!(record_order(&world).0, ids);

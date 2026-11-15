@@ -62,7 +62,7 @@ const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
 /// world
 ///     .scope_mut(pass)
 ///     .expect("the pass entity is spawned")
-///     .spawn(bundle![Source::new(source)]);
+///     .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 /// let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 /// ```
 pub struct Renderer {
@@ -88,8 +88,8 @@ pub struct Renderer {
     /// One buffer serves every pass in turn, because a pass's sources are
     /// recorded before the next pass is looked at.
     sources: Ordering<FrameSourceOrder>,
-    /// Reports sources that declared the same [`FrameSourceOrder`], without
-    /// repeating itself every frame.
+    /// Reports sources tied on the same [`FrameSourceOrder`], without repeating
+    /// itself every frame.
     source_warnings: OrderWarnings<FrameSourceOrder>,
     /// The scene each (pass, source) pair built this frame, keyed by the pair.
     ///
@@ -403,7 +403,7 @@ impl Renderer {
                     pass_scope
                         .query::<(Entity, &Source)>()
                         .iter()
-                        .map(|(entity, source)| (source.order(), entity)),
+                        .map(|(entity, source)| (source.order, entity)),
                 );
                 // Ambiguities are remembered per pass, so two passes with
                 // their own tied sources do not keep overwriting each other's
@@ -599,10 +599,6 @@ mod tests {
             _encoder: &mut wgpu::CommandEncoder,
         ) {
         }
-
-        fn order(&self) -> FrameSourceOrder {
-            FrameSourceOrder::MESH
-        }
     }
 
     /// A world holding a renderer and one pass, ready to be given sources.
@@ -626,10 +622,14 @@ mod tests {
         let under = world
             .scope_mut(pass)
             .expect("the pass is spawned")
-            .spawn(unlit_ecs::bundle![Source::new(Nowhere)]);
-        let beside = world
-            .root_scope_mut()
-            .spawn(unlit_ecs::bundle![Source::new(Nowhere)]);
+            .spawn(unlit_ecs::bundle![Source::new(
+                FrameSourceOrder::MESH,
+                Nowhere
+            )]);
+        let beside = world.root_scope_mut().spawn(unlit_ecs::bundle![Source::new(
+            FrameSourceOrder::MESH,
+            Nowhere
+        )]);
 
         world
             .root_scope()

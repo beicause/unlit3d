@@ -73,7 +73,7 @@ use crate::components::{InstanceVisibility, Transform, frame_camera};
 use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
 use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
+use crate::source::{FrameSource, RenderContext};
 
 /// The vertex-buffer slot the instance stream binds at.
 ///
@@ -560,10 +560,6 @@ impl FrameSource for LineSource {
                 }
             }
         }
-    }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::LINE
     }
 }
 

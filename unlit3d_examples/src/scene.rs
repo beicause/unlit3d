@@ -138,7 +138,7 @@ impl Scene {
             world
                 .scope_mut(pass)
                 .expect("the pass was just spawned")
-                .spawn(bundle![Source::new(source_egui)])
+                .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source_egui)])
         });
         let control = (def.build)(&mut world, context, pass, ui, content, options);
         let SceneControl { advance, snapshot } = control;

@@ -47,10 +47,6 @@ impl FrameSource for OwningSource {
             );
         }
     }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::EGUI
-    }
 }
 
 /// A source whose build takes a maintain scope and then returns at once,
@@ -86,10 +82,6 @@ impl FrameSource for EarlyReturnSource {
             // returns, leaving the scope's drop to collect it.
             self.node = None;
         }
-    }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::MESH
     }
 }
 
@@ -157,12 +149,13 @@ fn dropping_a_source_releases_the_nodes_it_owns() {
     let mut world = World::new();
     let ctx = noop_context(&mut world);
     let base = graph_len(&world, ctx);
-    let entity = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(OwningSource {
+    let entity = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        OwningSource {
             context: ctx,
             node: None,
-        }),]);
+        }
+    ),]);
     build_once(&mut world, entity, ctx);
     assert_eq!(
         graph_len(&world, ctx),
@@ -195,12 +188,13 @@ fn removing_a_source_that_owns_nothing_still_removes_it() {
     let mut world = World::new();
     let ctx = noop_context(&mut world);
     let base = graph_len(&world, ctx);
-    let entity = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(OwningSource {
+    let entity = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        OwningSource {
             context: ctx,
             node: None,
-        }),]);
+        }
+    ),]);
 
     world.root_scope_mut().despawn(entity).unwrap();
     assert!(!world.root_scope().contains(entity));
@@ -220,14 +214,13 @@ fn one_maintain_drops_the_nodes_every_source_gave_up() {
     let base = graph_len(&world, ctx);
     let mut entities = Vec::new();
     for _ in 0..2 {
-        entities.push(
-            world
-                .root_scope_mut()
-                .spawn(bundle![Source::new(OwningSource {
-                    context: ctx,
-                    node: None,
-                }),]),
-        );
+        entities.push(world.root_scope_mut().spawn(bundle![Source::new(
+            FrameSourceOrder::MESH,
+            OwningSource {
+                context: ctx,
+                node: None,
+            }
+        ),]));
     }
 
     for &entity in &entities {
@@ -268,12 +261,13 @@ fn a_build_that_returns_early_still_maintains() {
     let mut world = World::new();
     let ctx = noop_context(&mut world);
     let base = graph_len(&world, ctx);
-    let entity = world
-        .root_scope_mut()
-        .spawn(bundle![Source::new(EarlyReturnSource {
+    let entity = world.root_scope_mut().spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        EarlyReturnSource {
             context: ctx,
             node: None,
-        }),]);
+        }
+    ),]);
 
     // The first build registers the node the source owns.
     build_once(&mut world, entity, ctx);

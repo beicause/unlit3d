@@ -288,7 +288,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     let camera_entity = super::spawn_in(
         world,
         source_entity,

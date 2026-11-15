@@ -73,7 +73,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
@@ -109,7 +109,10 @@ fn build(
     let page_source = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(BlitzSource::new())]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::BLITZ,
+            BlitzSource::new()
+        )]);
     super::spawn_in(world, page_source, bundle![BlitzDocument::new(PAGE)]);
 
     if options.egui {

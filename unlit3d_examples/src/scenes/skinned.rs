@@ -76,7 +76,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));

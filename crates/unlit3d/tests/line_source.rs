@@ -82,7 +82,7 @@ fn segment_world(ctx: &Ctx, eye: glam::Vec3, stroke: Line) -> (World, TestGpu, w
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
 
-    let source_entity = gpu.spawn_source(&mut world, LineSource::new());
+    let source_entity = gpu.spawn_source(&mut world, FrameSourceOrder::LINE, LineSource::new());
     gpu.spawn_in(&mut world, source_entity, bundle![stroke]);
 
     let camera = camera_looking_at(eye, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
@@ -244,7 +244,7 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
 
     // The stroke runs along X behind the cube's front face, so the cube stands
     // in front of its middle and leaves its two ends in the open.
-    let lines_entity = gpu.spawn_source(&mut world, LineSource::new());
+    let lines_entity = gpu.spawn_source(&mut world, FrameSourceOrder::LINE, LineSource::new());
     gpu.spawn_in(
         &mut world,
         lines_entity,
@@ -492,7 +492,7 @@ async fn a_blended_stroke_passing_behind_an_opaque_one_is_hidden_by_it() {
 
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, &ctx);
-    let source_entity = gpu.spawn_source(&mut world, LineSource::new());
+    let source_entity = gpu.spawn_source(&mut world, FrameSourceOrder::LINE, LineSource::new());
 
     // The opaque stroke stands along X through the origin; the blended one
     // runs down Y one unit behind it, so the two cross at the frame's centre

@@ -253,7 +253,7 @@ pub fn control_panel_job(panels: PanelSlots, pass: RemoteEntity) -> Job {
         world
             .scope_mut(pass.entity)
             .expect("the scene's pass is alive")
-            .spawn(bundle![Source::new(source)]);
+            .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source)]);
     })
 }
 

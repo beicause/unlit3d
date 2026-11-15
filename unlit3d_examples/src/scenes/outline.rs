@@ -354,7 +354,7 @@ fn built(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // One smooth sphere, shared by every body and by both of its draws.
     let (positions, normals, indices) = sphere(SLICES, STACKS);
@@ -452,7 +452,10 @@ fn built(
     let lines = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(LineSource::new())]);
+        .spawn(bundle![Source::new(
+            FrameSourceOrder::LINE,
+            LineSource::new()
+        )]);
     let mut strokes = orbit();
     strokes.extend(armillary());
     strokes.extend(caps_strokes());

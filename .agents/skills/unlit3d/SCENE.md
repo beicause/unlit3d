@@ -24,7 +24,10 @@ let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 
 // pass 是作用域：它录制挂在自己下面的 source。
 let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
-let source = world.scope_mut(pass).unwrap().spawn(bundle![Source::new(mesh_source)]);
+let source = world
+    .scope_mut(pass)
+    .unwrap()
+    .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
 
 // 相机与渲染实体都挂在 source 自己的子树里。
 world.scope_mut(source).unwrap().spawn(bundle![camera]);
@@ -101,7 +104,9 @@ world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
 **可直接抄结构**：
 
 ```rust
-let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+let ui = world
+    .root_scope_mut()
+    .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
 world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_scope, _entity, ui| {
     ui.label("hello");
 })]);

@@ -21,7 +21,7 @@
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities under the same source, each with its own
 //! // sibling state.
-//! let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+//! let ui = world.root_scope_mut().spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
 //! world.scope_mut(ui).unwrap().spawn(bundle![
 //!     EguiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
@@ -59,7 +59,7 @@ use crate::input::InputEvents;
 use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::relay::Snapshot;
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
+use crate::source::{FrameSource, RenderContext};
 /// egui, re-exported because a [`EguiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
@@ -525,10 +525,6 @@ impl FrameSource for EguiSource {
         let bind_group = graph.get(&global).expect("the group exists");
         let mut egui_scene = gpu.integration.scene(graph, bind_group);
         scene.draws.append(&mut egui_scene.draws);
-    }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::EGUI
     }
 }
 

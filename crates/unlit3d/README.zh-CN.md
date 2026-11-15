@@ -79,7 +79,7 @@ Godot 的场景树轻松可以拆分和组合；API 可以非常高层（如 God
 
 一帧**不是**「一个主场景加若干附加物」，也不是一个 pass：它是一串 pass。
 `Renderer` 自身不绘制任何东西：它按 `FramePassOrder` 遍历 world 里的 `FramePass`
-实体，在每个 pass 内按各帧源通过 `FrameSourceOrder` 声明的顺序录制其下的源。
+实体，在每个 pass 内按各帧源自身携带的 `FrameSourceOrder` 顺序录制其下的源。
 
 渲染 world 就是一棵普通的实体树，而树本身**就是**帧的形状：一个 scope 看得见它扎根
 的实体、其下的一切，以及 shared 子树，但看不见祖先，也看不见兄弟。
@@ -192,12 +192,13 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 </details>
 
 <details>
-<summary>为什么顺序由每个源显式声明，而不是靠创建顺序</summary>
+<summary>为什么顺序是实体上的字段，而不是源上的方法</summary>
 
-顺序是必需方法，且 `FrameSourceOrder` 不实现 `Default`。若给出默认值，「忘记声明顺序」与
-「确实想沿用创建顺序」就无法区分，顺序意图又变回隐式。顺序相同的源会记录并发出警告；
-源的顺序必须是源显式携带的序号，不能借用实体在原型内的行序：实体的行序不保证稳定，
-移除组件时会被打乱。
+`FrameSourceOrder` 不实现 `Default`。若给出默认值，「忘记给顺序」与
+「确实想沿用创建顺序」就无法区分，顺序意图又变回隐式。同理，顺序是 `Source::new` 的第一个
+参数，并且放在公开字段里而不是藏在访问器后：两个持有同类源的实体按各自拿到的顺序录制，
+想在运行时重排的调用方直接写这个字段。它也不能借用实体在原型内的行序：实体的行序不保证
+稳定，移除组件时会被打乱。顺序相同的源会记录并发出警告。
 
 单个场景之内，源产出的顺序（它的可见条目、它的实例 run）不变。源之间的
 顺序不是被 pass 级状态逼出来的硬约束——`Scene` 已携带必要的 pass 状态信息，在录制时
@@ -715,7 +716,7 @@ let pass = world
 let source = world
     .scope_mut(pass)
     .unwrap()
-    .spawn(bundle![Source::new(mesh_source)]);
+    .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -816,7 +817,9 @@ use unlit3d::prelude::*;
 let mut world = World::new();
 // The panels of an egui source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
-let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+let ui = world
+    .root_scope_mut()
+    .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
 world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);

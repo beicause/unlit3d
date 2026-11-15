@@ -61,7 +61,7 @@ use crate::scene::{
     AnyFamily, DrawHandlesKey, EntryHandles, Family, FamilyId, RenderPipelineHandles, SceneFrame,
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
+use crate::source::{FrameSource, RenderContext};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The capacity that covers `needed` after growing from `current`.
@@ -450,9 +450,5 @@ impl FrameSource for MeshSource {
             profiling::scope!("mesh_source.assemble");
             self.assemble_frame(world, scene, &uniforms);
         }
-    }
-
-    fn order(&self) -> FrameSourceOrder {
-        FrameSourceOrder::MESH
     }
 }

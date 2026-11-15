@@ -182,7 +182,7 @@ pub fn build_world(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     for document in &config.documents {
         let gltf = LitGltf::load(&document.path)?;
@@ -266,7 +266,7 @@ pub fn offscreen_world(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     // The input is shared by every source, so it lives in the subtree every
     // scope sees.
     let input = InputWriter::new();

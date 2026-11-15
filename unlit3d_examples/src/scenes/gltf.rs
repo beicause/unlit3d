@@ -102,7 +102,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so

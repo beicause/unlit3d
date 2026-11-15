@@ -277,7 +277,7 @@ fn egui_only_world(world: &mut World, ctx: &Ctx) -> (TestGpu, Entity) {
 /// Mount a `EguiSource` and answer its entity: a panel spawned under it is what
 /// the source runs.
 fn mount_egui_source(world: &mut World, gpu: &TestGpu) -> Entity {
-    gpu.spawn_source(world, EguiSource::new())
+    gpu.spawn_source(world, FrameSourceOrder::EGUI, EguiSource::new())
 }
 
 /// Spawn `panel` under the egui source, which is the scope it runs.
@@ -533,14 +533,13 @@ async fn mesh_and_egui_frame(
     let ui = mount_egui_source(world, &gpu);
     spawn_panel(world, ui, panel);
     if egui_first {
-        let _ = world
+        world
             .root_scope()
             .query_one::<&mut Source>(ui)
             .map(|mut source| {
-                source
-                    .get()
-                    .set_order(Some(FrameSourceOrder(FrameSourceOrder::MESH.0 - 1)));
-            });
+                source.get().order = FrameSourceOrder(FrameSourceOrder::MESH.0 - 1);
+            })
+            .expect("the overlay is spawned");
     }
 
     let target = gpu.bind_offscreen_target_with(world, 1, true);
@@ -617,7 +616,7 @@ async fn egui_does_not_clip_the_mesh() {
                 RED,
             );
         }),]);
-    gpu.spawn_source(&mut world, EguiSource::new());
+    gpu.spawn_source(&mut world, FrameSourceOrder::EGUI, EguiSource::new());
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -714,7 +713,7 @@ async fn mesh_and_egui_survive_a_second_frame() {
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&world, &gpu);
 
-    gpu.spawn_source(&mut world, EguiSource::new());
+    gpu.spawn_source(&mut world, FrameSourceOrder::EGUI, EguiSource::new());
     world.root_scope_mut().spawn(bundle![rich_panel()]);
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);

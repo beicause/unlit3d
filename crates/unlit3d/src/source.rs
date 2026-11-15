@@ -38,9 +38,9 @@ use crate::pass::PassInfo;
 
 /// Where a source records, relative to every other source.
 ///
-/// Lower values record first. Deliberately has no `Default`: every source
-/// states its ordering intent, and a silent default is exactly what an explicit
-/// order exists to remove.
+/// Lower values record first. Deliberately has no `Default`: where a source
+/// records relative to the others is a decision, and a silent default is
+/// exactly what an explicit order exists to remove.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameSourceOrder(pub i32);
 
@@ -370,6 +370,10 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
 /// [`FrameSource::build_scene`]. The scene is the driver's, not the source's:
 /// a source in the scope of several passes is built once per pass, each time
 /// into that pass's own scene.
+///
+/// Where a source records is not part of the trait: it belongs to the
+/// [`Source`] the entity carries: one kind of source can record at two
+/// different orders, and writing that field reorders a live source.
 pub trait FrameSource: 'static {
     /// Fill `scene` with this frame's draws, fetching what it needs from
     /// `world`.
@@ -401,17 +405,6 @@ pub trait FrameSource: 'static {
         scene: &mut Scene,
         encoder: &mut wgpu::CommandEncoder,
     );
-
-    /// Where this source records, relative to the others.
-    ///
-    /// Required, not defaulted: a source that stayed silent would be ordered
-    /// by entity alone, which is the implicit behaviour this exists to
-    /// replace. Use [`FrameSourceOrder::MESH`], [`FrameSourceOrder::EGUI`], or a value
-    /// of your own.
-    ///
-    /// A [`Source`] may override this per entity with [`Source::with_order`],
-    /// which is how a caller reorders an existing source without rebuilding it.
-    fn order(&self) -> FrameSourceOrder;
 }
 
 /// A frame source behind an erased handle, so one query sees every concrete
@@ -442,46 +435,29 @@ pub struct WrongSourceType {
 
 /// A frame source as an ECS component.
 ///
-/// The trait API is reachable directly (`source.order()`,
-/// `source.build_scene(..)`); typed access upcasts to `dyn Any` and
-/// downcasts, which [`Source::as_mut`] and [`Source::as_ref`] wrap as a
-/// [`Result`] carrying [`WrongSourceType`].
+/// The trait API is reachable directly (`source.build_scene(..)`); typed access
+/// upcasts to `dyn Any` and downcasts, which [`Source::as_mut`] and
+/// [`Source::as_ref`] wrap as a [`Result`] carrying [`WrongSourceType`].
+///
+/// The order belongs to the entity rather than to the source's type: two
+/// entities built from the same kind of source record at whatever order each
+/// was given, and writing the field reorders a live source in place.
 pub struct Source {
     source: Box<dyn AnySource>,
     /// The concrete type `source` was built from, for a readable refusal.
     type_name: &'static str,
-    /// An explicit order that overrides the source's own.
-    order: Option<FrameSourceOrder>,
+    /// Where this source records, relative to the others.
+    pub order: FrameSourceOrder,
 }
 
 impl Source {
-    /// Wrap `source`, taking its order from [`FrameSource::order`].
-    pub fn new<S: FrameSource>(source: S) -> Self {
+    /// Wrap `source`, recording it at `order`.
+    pub fn new<S: FrameSource>(order: FrameSourceOrder, source: S) -> Self {
         Self {
             type_name: core::any::type_name::<S>(),
             source: Box::new(source),
-            order: None,
+            order,
         }
-    }
-
-    /// Wrap `source`, recording it at `order` regardless of what
-    /// [`FrameSource::order`] says.
-    pub fn with_order(mut self, order: FrameSourceOrder) -> Self {
-        self.order = Some(order);
-        self
-    }
-
-    /// The order this source records at, explicit or declared.
-    pub fn order(&self) -> FrameSourceOrder {
-        self.order.unwrap_or_else(|| self.source.order())
-    }
-
-    /// Override the order this source records at.
-    ///
-    /// Setting the same value again is a no-op, so a caller may apply an order
-    /// every frame without disturbing the ambiguity bookkeeping.
-    pub fn set_order(&mut self, order: Option<FrameSourceOrder>) {
-        self.order = order;
     }
 
     /// The source as its concrete type.
@@ -530,7 +506,7 @@ impl Source {
 impl core::fmt::Debug for Source {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Source")
-            .field("order", &self.order())
+            .field("order", &self.order)
             .finish_non_exhaustive()
     }
 }

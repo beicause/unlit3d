@@ -234,6 +234,7 @@ mod tests {
     use unlit3d::egui::EguiPanel;
     use unlit3d::input::{InputWriter, Modifiers, refresh_input};
     use unlit3d::relay::Snapshot;
+    use unlit3d::source::FrameSourceOrder;
 
     /// The worlds a panel is split across: the one holding it, and the one
     /// that draws what it sends.
@@ -264,9 +265,10 @@ mod tests {
 
         fn with_capacity(capacity: usize) -> Self {
             let mut render = World::new();
-            render
-                .root_scope_mut()
-                .spawn(bundle![Source::new(EguiSource::new())]);
+            render.root_scope_mut().spawn(bundle![Source::new(
+                FrameSourceOrder::EGUI,
+                EguiSource::new()
+            )]);
             let (sender, jobs) = async_channel::bounded(capacity);
             let target = Snapshot::new();
             let host = EguiPanelHost::new(JobSender::new(sender.clone()), target.reader(), 0);

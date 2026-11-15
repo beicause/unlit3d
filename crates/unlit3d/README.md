@@ -110,8 +110,8 @@ A frame is **not** "one main scene plus extras", and not one pass either: it is 
 sequence of passes. [`Renderer`](renderer::Renderer) draws nothing itself: it walks the
 world's [`FramePass`](pass::FramePass) entities in
 [`FramePassOrder`](pass::FramePassOrder), and within each pass records the frame
-sources below it, in the order each declares through
-[`FrameSourceOrder`](source::FrameSourceOrder).
+sources below it, in the [`FrameSourceOrder`](source::FrameSourceOrder) each
+one carries.
 
 A render world is an ordinary entity tree, and the tree *is* the frame's shape:
 a scope sees the entity it is rooted at, everything below it, and the shared
@@ -285,15 +285,18 @@ its own build phase without the renderer passing it along.
 </details>
 
 <details>
-<summary>Why a source declares its order instead of relying on creation order</summary>
+<summary>Why the order is a field on the entity instead of a method on the source</summary>
 
-The order is a required method, and [`FrameSourceOrder`](source::FrameSourceOrder) does not
-implement `Default`. With a default value, "forgot to declare the order" and
-"really meant to keep creation order" become indistinguishable, and the ordering
-intent turns implicit again. Sources with equal order are logged and warned
-about, and a source's order has to be an index the source carries explicitly: it
-cannot borrow an entity's row order within the archetype, because that row order
-is not guaranteed stable and is disturbed when components are removed.
+`FrameSourceOrder` does not implement `Default`. With a default value,
+"forgot to give the order" and "really meant to keep creation order" become
+indistinguishable, and the ordering intent turns implicit again. The order is
+`Source::new`'s first argument for the same reason, and it sits in a public
+field rather than behind an accessor: two entities holding the same kind of
+source record at whatever order each was given, and a caller that wants to
+reorder a live source writes the field. It is also why the order cannot borrow
+an entity's row order within the archetype: that row order is not guaranteed
+stable and is disturbed when components are removed. Sources with equal order
+are logged and warned about.
 
 Within a scene, the ordering a source produces (its visible entries, its
 instance runs) is unchanged. The ordering among sources is not a hard
@@ -1059,7 +1062,7 @@ let pass = world
 let source = world
     .scope_mut(pass)
     .unwrap()
-    .spawn(bundle![Source::new(mesh_source)]);
+    .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -1161,7 +1164,9 @@ use unlit3d::prelude::*;
 let mut world = World::new();
 // The panels of an egui source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
-let ui = world.root_scope_mut().spawn(bundle![Source::new(EguiSource::new())]);
+let ui = world
+    .root_scope_mut()
+    .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
 world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);

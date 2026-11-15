@@ -34,7 +34,7 @@ use crate::frame::{Frame, FrameBehaviourOrder, FrameSkip, OnFrame, dispatch_fram
 use crate::offscreen::{PersistentTarget, TargetConfig};
 use crate::pass::{FramePass, FramePassOrder, Pass};
 use crate::renderer::Renderer;
-use crate::source::Source;
+use crate::source::{FrameSourceOrder, Source};
 use crate::winit::builtin::{Resumed, window};
 use crate::winit::event::{OnAboutToWait, OnWindowEvent};
 use crate::winit::surface::{SurfaceOptions, WindowSurface};
@@ -453,9 +453,10 @@ fn build_in(
         None => None,
         Some(target) => {
             let blit_pass = world.root_scope_mut().spawn(Pass::new(BLIT_PASS_ORDER));
-            world
-                .scope_mut(blit_pass)?
-                .spawn(bundle![Source::new(BlitSource::new(target.view.clone()))]);
+            world.scope_mut(blit_pass)?.spawn(bundle![Source::new(
+                FrameSourceOrder::MESH,
+                BlitSource::new(target.view.clone())
+            )]);
             Some(Blit { pass: blit_pass })
         }
     };

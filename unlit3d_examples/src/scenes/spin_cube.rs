@@ -65,7 +65,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle![Source::new(source)]);
+        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
