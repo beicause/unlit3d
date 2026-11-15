@@ -526,12 +526,14 @@ async fn a_key_release_reaches_the_page() {
         [
             InputEvent::Key(KeyEvent {
                 key: Key::Enter,
+                location: KeyLocation::Standard,
                 pressed: true,
                 repeat: false,
                 modifiers: Modifiers::default(),
             }),
             InputEvent::Key(KeyEvent {
                 key: Key::Enter,
+                location: KeyLocation::Standard,
                 pressed: false,
                 repeat: false,
                 modifiers: Modifiers::default(),
