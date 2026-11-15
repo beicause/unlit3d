@@ -94,7 +94,7 @@ impl OnBlitzEvent {
     }
 
     /// Run this callback for `entity`, on `event`.
-    pub fn run(&mut self, scope: Scope<'_>, entity: Entity, event: &mut BlitzEvent<'_>) {
+    pub(crate) fn run(&mut self, scope: Scope<'_>, entity: Entity, event: &mut BlitzEvent<'_>) {
         (self.0)(scope, entity, event)
     }
 }
@@ -139,12 +139,7 @@ impl BlitzEvent<'_> {
         self.chain
     }
 
-    /// The page the event was dispatched into.
-    pub fn document(&self) -> &BaseDocument {
-        self.document
-    }
-
-    /// The page the event was dispatched into, to change.
+    /// The page the event was dispatched into, to read or change.
     ///
     /// A change is recorded by the document and laid out once the event has been
     /// dispatched, so a callback may change the page it is reacting to without
@@ -157,6 +152,10 @@ impl BlitzEvent<'_> {
     ///
     /// A cancelled click does not check the box it landed on, and a cancelled
     /// key press does not insert its character or scroll a text field.
+    ///
+    /// Every callback of the page is run for every event whether or not one of
+    /// them cancelled it: an event reaches the whole page at once rather than
+    /// stopping at the first callback that reacted to it.
     pub fn prevent_default(&mut self) {
         self.state.prevent_default();
     }
@@ -236,6 +235,11 @@ pub(crate) struct Translator {
     modifiers: crate::input::Modifiers,
     /// The buttons held.
     buttons: MouseEventButtons,
+    /// The fingers down, oldest first.
+    ///
+    /// A finger is one of several, so a page is told which contact is the
+    /// primary one and holds a button until the last of them lifts.
+    contacts: Vec<u64>,
     /// The translated events, kept between frames.
     pending: Vec<UiEvent>,
 }
@@ -254,10 +258,18 @@ pub(crate) struct Frame<'a> {
     /// How far the document is scrolled, which turns a client position into the
     /// page position a document hovers with.
     pub(crate) scroll: [f64; 2],
+    /// The page's own size, in CSS pixels, which is what a wheel step stated in
+    /// pages scrolls by.
+    pub(crate) viewport: [f32; 2],
 }
 
 impl Translator {
     /// Translate the frame's events, returning them in dispatch order.
+    ///
+    /// Called for every frame, not only for the ones that dispatch something: a
+    /// page hovers with the pointer's position and reports the modifiers that
+    /// are held even when nothing happened to it, and the scale factor a
+    /// position is divided by changes without an event of its own.
     pub(crate) fn translate(&mut self, frame: Frame<'_>) -> &[UiEvent] {
         self.scale = if frame.scale > 0.0 { frame.scale } else { 1.0 };
         if let Some(cursor) = frame.cursor {
@@ -266,17 +278,17 @@ impl Translator {
         self.buttons = buttons_of(frame.buttons);
         self.pending.clear();
         for event in frame.batch {
-            self.event(event, frame.scroll);
+            self.event(event, frame);
         }
         &self.pending
     }
 
     /// Translate one event, appending what it stands for.
-    fn event(&mut self, event: &InputEvent, scroll: [f64; 2]) {
+    fn event(&mut self, event: &InputEvent, frame: Frame<'_>) {
         match event {
-            InputEvent::Mouse(event) => self.mouse(event, scroll),
-            InputEvent::Pointer(event) => self.pointer(event, scroll),
-            InputEvent::Touch(event) => self.touch(event, scroll),
+            InputEvent::Mouse(event) => self.mouse(event, frame),
+            InputEvent::Pointer(event) => self.pointer(event, frame),
+            InputEvent::Touch(event) => self.touch(event, frame),
             InputEvent::Key(event) => self.key(event),
             InputEvent::Text(event) => self.text(event),
             InputEvent::Ime(ImeEvent { kind }) => self.pending.push(UiEvent::Ime(ime_event(kind))),
@@ -292,13 +304,14 @@ impl Translator {
     }
 
     /// Translate a mouse event.
-    fn mouse(&mut self, event: &MouseEvent, scroll: [f64; 2]) {
+    fn mouse(&mut self, event: &MouseEvent, frame: Frame<'_>) {
+        let scroll = frame.scroll;
         match event {
             MouseEvent::Moved { position } => {
                 self.position = *position;
                 let coords = self.coords(scroll);
                 let pointer =
-                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords);
+                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords, true);
                 self.pending.push(UiEvent::PointerMove(pointer));
             }
             MouseEvent::Button {
@@ -317,7 +330,7 @@ impl Translator {
                 };
                 self.buttons.set(MouseEventButtons::from(button), *pressed);
                 let coords = self.coords(scroll);
-                let pointer = self.pointer_event(BlitzPointerId::Mouse, button, coords);
+                let pointer = self.pointer_event(BlitzPointerId::Mouse, button, coords, true);
                 self.pending.push(if *pressed {
                     UiEvent::PointerDown(pointer)
                 } else {
@@ -327,21 +340,26 @@ impl Translator {
             MouseEvent::Left => {
                 let coords = self.coords(scroll);
                 let pointer =
-                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords);
+                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords, true);
                 self.pending.push(UiEvent::PointerLeave(pointer));
             }
+            // The wheel's phase is dropped: a page scrolls by the distance it is
+            // given, and Blitz has no momentum to end.
             MouseEvent::Wheel { delta, unit, .. } => {
                 let delta = match unit {
                     WheelUnit::Pixel => BlitzWheelDelta::Pixels(
                         f64::from(delta[0]) / f64::from(self.scale),
                         f64::from(delta[1]) / f64::from(self.scale),
                     ),
-                    // A page step is counted as one line: Blitz multiplies a line
-                    // by a distance of its own and has no third unit, so a page
-                    // would otherwise scroll by a single line.
-                    WheelUnit::Line | WheelUnit::Page => {
+                    WheelUnit::Line => {
                         BlitzWheelDelta::Lines(f64::from(delta[0]), f64::from(delta[1]))
                     }
+                    // A page is a distance Blitz has no unit for, so a step of
+                    // one scrolls by the height of the page being scrolled.
+                    WheelUnit::Page => BlitzWheelDelta::Pixels(
+                        f64::from(delta[0]) * f64::from(frame.viewport[0]),
+                        f64::from(delta[1]) * f64::from(frame.viewport[1]),
+                    ),
                 };
                 let coords = self.coords(scroll);
                 self.pending.push(UiEvent::Wheel(BlitzWheelEvent {
@@ -360,7 +378,8 @@ impl Translator {
     /// A mouse and a finger already report their actions as [`MouseEvent`]s and
     /// [`TouchEvent`]s, which carry more than a pointer event does; only a pen,
     /// which has no category of its own, is fed from here.
-    fn pointer(&mut self, event: &PointerEvent, scroll: [f64; 2]) {
+    fn pointer(&mut self, event: &PointerEvent, frame: Frame<'_>) {
+        let scroll = frame.scroll;
         if !matches!(event.kind, PointerKind::Pen | PointerKind::Other) {
             return;
         }
@@ -370,7 +389,7 @@ impl Translator {
         self.position = position;
         self.modifiers = event.modifiers;
         let coords = self.coords(scroll);
-        let pointer = self.pointer_event(BlitzPointerId::Pen, MouseEventButton::Main, coords);
+        let pointer = self.pointer_event(BlitzPointerId::Pen, MouseEventButton::Main, coords, true);
         match event.action {
             PointerAction::Moved => self.pending.push(UiEvent::PointerMove(pointer)),
             PointerAction::Pressed => {
@@ -393,28 +412,54 @@ impl Translator {
     }
 
     /// Translate a touch event.
-    fn touch(&mut self, event: &TouchEvent, scroll: [f64; 2]) {
+    ///
+    /// A screen can be touched with more than one finger, and the fingers are
+    /// independent contacts: the page holds the primary button while any of them
+    /// is down, and names the oldest one as the primary contact, which is the
+    /// contact that drags and hovers. The pointer a page reports a position with
+    /// is the one of the contact the event came from, so lifting a second finger
+    /// leaves the first where it was instead of jumping to the second.
+    fn touch(&mut self, event: &TouchEvent, frame: Frame<'_>) {
+        let index = self.contacts.iter().position(|id| *id == event.id);
+        let started = match event.phase {
+            TouchPhase::Started => true,
+            TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => false,
+        };
+        if started && index.is_none() {
+            self.contacts.push(event.id);
+        }
+        let primary = self.contacts.first() == Some(&event.id);
         self.position = event.position;
-        let coords = self.coords(scroll);
+        let coords = self.coords(frame.scroll);
         let mut pointer = self.pointer_event(
             BlitzPointerId::Finger(event.id),
             MouseEventButton::Main,
             coords,
+            primary,
         );
         pointer.details.pressure = f64::from(event.force.unwrap_or(0.0));
+        if !self.contacts.is_empty() {
+            self.buttons.insert(MouseEventButtons::Primary);
+        }
         match event.phase {
-            TouchPhase::Started => {
-                self.buttons.insert(MouseEventButtons::Primary);
-                self.pending.push(UiEvent::PointerDown(pointer));
-            }
+            TouchPhase::Started => self.pending.push(UiEvent::PointerDown(pointer)),
             TouchPhase::Moved => self.pending.push(UiEvent::PointerMove(pointer)),
-            TouchPhase::Ended => {
-                self.buttons.remove(MouseEventButtons::Primary);
-                self.pending.push(UiEvent::PointerUp(pointer));
-            }
-            TouchPhase::Cancelled => {
-                self.buttons.remove(MouseEventButtons::Primary);
-                self.pending.push(UiEvent::PointerCancel(pointer));
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                // The contact is over whichever way it ended, so it leaves the
+                // list before the page is told: the last finger down is the one
+                // that decides whether a button is still held.
+                if let Some(index) = self.contacts.iter().position(|id| *id == event.id) {
+                    self.contacts.remove(index);
+                }
+                if self.contacts.is_empty() {
+                    self.buttons.remove(MouseEventButtons::Primary);
+                }
+                self.pending
+                    .push(if matches!(event.phase, TouchPhase::Cancelled) {
+                        UiEvent::PointerCancel(pointer)
+                    } else {
+                        UiEvent::PointerUp(pointer)
+                    });
             }
         }
     }
@@ -490,15 +535,20 @@ impl Translator {
     }
 
     /// The pointer event a document dispatches for `id`.
+    ///
+    /// `is_primary` says whether this is the contact the page drags and
+    /// hovers with, which for a mouse and a pen is always this one and for a
+    /// finger is the oldest one still down.
     fn pointer_event(
         &self,
         id: BlitzPointerId,
         button: MouseEventButton,
         coords: PointerCoords,
+        is_primary: bool,
     ) -> BlitzPointerEvent {
         BlitzPointerEvent {
             id,
-            is_primary: true,
+            is_primary,
             coords,
             button,
             buttons: self.buttons,

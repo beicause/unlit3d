@@ -34,7 +34,6 @@ required-features = ["blitz_epaint_fonts", "gltf", "mcp", "egui"]
 
 [dependencies]
 anyrender = { workspace = true, optional = true }
-anyrender_vello_cpu = { workspace = true, optional = true }
 arc-swap.workspace = true
 arrayvec.workspace = true
 # One unbounded channel per input subscriber: a world that reads input at its
@@ -54,6 +53,7 @@ facet = { workspace = true, features = ["reflect"], optional = true }
 facet-json = { workspace = true, optional = true }
 fast_image_resize = { workspace = true, optional = true }
 glam.workspace = true
+glifo = { workspace = true, optional = true }
 gltf = { workspace = true, optional = true }
 half = { workspace = true, optional = true }
 hashbrown.workspace = true
@@ -65,6 +65,7 @@ profiling.workspace = true
 thiserror.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3", default-features = false }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
+vello_gpu = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
 wgpu.workspace = true
 winit = { workspace = true, optional = true }
@@ -122,12 +123,13 @@ mcp = [
 reflect = ["dep:facet", "dep:facet-json", "dep:inventory", "unlit_ecs/reflect"]
 ## The [`blitz`](crate::blitz) module: HTML documents laid out by
 ## [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source, with
-## the frame's pointer, wheel, key, text and IME input driving them. It
-## rasterizes the page on the CPU, because every GPU backend of Vello builds a
-## device of its own and a frame source is only handed the running one.
+## the frame's pointer, wheel, key, text and IME input driving them. The page is
+## rasterized by Vello's GPU backend into a texture of its own, which the source
+## composites over the frame's target.
 blitz = [
   "dep:anyrender",
-  "dep:anyrender_vello_cpu",
+  "dep:glifo",
+  "dep:vello_gpu",
   "dep:blitz-dom",
   "dep:blitz-html",
   "dep:blitz-paint",

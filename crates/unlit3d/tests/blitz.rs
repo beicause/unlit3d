@@ -108,9 +108,9 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 _ => String::new(),
             };
             let checked = event
-                .document()
+                .document_mut()
                 .get_element_by_id("box")
-                .and_then(|id| event.document().get_node(id))
+                .and_then(|id| event.document_mut().get_node(id))
                 .and_then(|node| node.element_data())
                 .and_then(|element| element.checkbox_input_checked());
             log.lock().expect("the log is not poisoned").push(Seen {

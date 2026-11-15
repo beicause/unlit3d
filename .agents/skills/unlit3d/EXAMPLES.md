@@ -51,7 +51,7 @@
 - 帧行为与帧时钟：`crates/unlit3d/src/frame.rs`。
 - 输入：`crates/unlit3d/src/input.rs`（`input/` 目录下：事件词汇在 `event.rs`，状态在 `state.rs`，帧循环的接线在 `input.rs` 本身）。
 - egui：`crates/unlit3d/src/egui.rs`。
-- blitz：`crates/unlit3d/src/blitz.rs`（Blitz 页面源）；页面组件与资源在 `crates/unlit3d/src/blitz/document.rs`，输入换算与 `OnBlitzEvent` 在 `crates/unlit3d/src/blitz/events.rs`；全屏合成 `crates/unlit3d/src/screen.rs` 由它和 `crates/unlit3d/src/blit.rs` 共用。
+- blitz：`crates/unlit3d/src/blitz.rs`（Blitz 页面源）；页面组件与资源在 `crates/unlit3d/src/blitz/document.rs`，输入换算与 `OnBlitzEvent` 在 `crates/unlit3d/src/blitz/events.rs`，Vello GPU 适配层在 `crates/unlit3d/src/blitz/painter.rs`，字体在 `crates/unlit3d/src/blitz/fonts.rs`；全屏合成 `crates/unlit3d/src/screen.rs` 由它和 `crates/unlit3d/src/blit.rs` 共用。
 - winit 桥与内置行为：`crates/unlit3d/src/winit/` 下的 `event.rs` / `builtin.rs` / `surface.rs`。
 
 ### 多 world

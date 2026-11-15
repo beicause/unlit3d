@@ -873,9 +873,9 @@ chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
 ## Blitz
 
 `blitz::BlitzSource` draws an HTML document: it lays the page out with
-[Blitz](https://crates.io/crates/blitz-dom) and rasterizes it with the CPU
-backend of Vello, then composites the result over the frame. It is the
-counterpart of [`EguiSource`](egui::EguiSource) for pages rather than widgets.
+[Blitz](https://crates.io/crates/blitz-dom), rasterizes it with Vello's GPU
+backend, and composites the result over the frame. It is the counterpart of
+[`EguiSource`](egui::EguiSource) for pages rather than widgets.
 
 The page is not the source's own: it is a [`BlitzDocument`](blitz::BlitzDocument)
 component, and the source draws the first one its scope carries. Spawn a page
@@ -883,13 +883,19 @@ under the source that draws it, exactly as a panel hangs under the egui source.
 The markup therefore lives in the world like any other behaviour, and the code
 that owns the entity can replace it while the frame keeps drawing.
 
-The page is rasterized on the CPU because every GPU backend of Vello builds an
-adapter of its own, and a frame source is handed nothing but the frame's device,
-queue and graph. The pixmap therefore reaches the frame as an upload of an
-[`Rgba8Unorm`](wgpu::TextureFormat::Rgba8Unorm) texture — the bytes the CPU
-backend writes are already sRGB-encoded and premultiplied — and the composite
-decodes them for an sRGB target exactly as it decodes egui's own pictures,
-blending them with `PREMULTIPLIED_ALPHA_BLENDING`.
+The page is rasterized during the build phase of the frame, into an
+[`Rgba8Unorm`](wgpu::TextureFormat::Rgba8Unorm) texture of the pass's own size.
+Vello records its commands into the frame's encoder, so the page is drawn along
+with everything else the frame draws rather than submitted on its own. It
+computes in sRGB-encoded values and writes them premultiplied, which is what a
+plain texture hands the composite: the composite decodes them once for an sRGB
+target exactly as it decodes egui's own pictures, blending them with
+`PREMULTIPLIED_ALPHA_BLENDING`. An sRGB texture would encode the values a
+second time.
+
+Images a page draws are uploaded into textures of their own, one per picture and
+kept across frames, because Vello's GPU backend has no upload path of its own
+and a page hands its pictures over as paints rather than as resources.
 
 A page is a whole document rather than an attachment laid over a scene, and it
 covers the target, so it records at [`FrameSourceOrder::BLITZ`](source::FrameSourceOrder::BLITZ) —
@@ -931,10 +937,11 @@ rasterized once and the frames after it reuse its texture, but a page that
 handles input repaints as it is clicked. Time comes from the frame clock, so a
 recorded sequence of frames paints the same animations at the same times
 whatever the wall clock reads. A source several passes reach takes a tick of
-input once, so a click is dispatched once, and keeps one uploaded page per page
-size, since the size is all that tells two uploads apart. A page belongs under
-the source that draws it: one the source cannot see is not drawn at all, and one
-two sources both see would take every event through both.
+input once, so a click is dispatched once, and keeps one rasterized page per
+surface and size, since those two are all that tell two of them apart. A page
+belongs under the source that draws it: one the source cannot see is not drawn
+at all, and one two sources both see takes the tick's input once, from whichever
+of them the frame builds first.
 
 The page asks the host for one thing only: another frame. Cursor shape, IME and
 the clipboard are not plumbed through, so a page never asks for them, and Rust

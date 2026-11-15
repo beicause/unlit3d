@@ -1,17 +1,16 @@
 //! A Blitz page, painted as a frame source.
 //!
 //! [`BlitzSource`] draws the [`BlitzDocument`] its scope carries: `blitz-dom` lays
-//! the page out, `anyrender_vello_cpu` rasterizes it, and the result is
-//! composited over whatever the frame already holds — the counterpart of
-//! [`EguiSource`](crate::egui::EguiSource) for pages rather than widgets.
+//! the page out, `blitz-paint` records what it painted, and Vello's GPU backend
+//! rasterizes the recording into a texture the frame composites — the
+//! counterpart of [`EguiSource`](crate::egui::EguiSource) for pages rather than
+//! widgets.
 //!
-//! The page is rasterized on the CPU because every GPU backend of Vello builds
-//! an adapter of its own, and a frame source is handed nothing but the frame's
-//! device, queue and graph. The pixmap therefore reaches the frame as an
-//! ordinary upload of [`wgpu::TextureFormat::Rgba8Unorm`] texels: the bytes are
-//! sRGB-encoded and premultiplied, which is what the CPU backend writes, so the
-//! composite decodes them for an sRGB target exactly as it decodes egui's own
-//! pictures.
+//! The page is rasterized in the build phase of the frame, into a texture of
+//! [`wgpu::TextureFormat::Rgba8Unorm`] at the pass's own size. Vello draws in
+//! sRGB-encoded values and writes them premultiplied, which is what the
+//! composite expects of a plain texture: it decodes them once for an sRGB
+//! target exactly as it decodes egui's own pictures.
 //!
 //! A page is not a picture of one. The source feeds it the frame's input and
 //! lets Blitz dispatch it, so hover, focus, scrolling, text editing and the
@@ -47,12 +46,11 @@
 
 use std::sync::Arc;
 
-use anyrender::ImageRenderer;
-use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_traits::shell::{ColorScheme, Viewport};
+use blitz_traits::shell::{ColorScheme, ShellProvider as _, Viewport};
 use unlit_ecs::{Entity, Scope};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawOrder, Scene};
+use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::input::{InputEvent, InputEvents, MouseButtons};
 use crate::pass::PassInfo;
@@ -62,17 +60,19 @@ use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 mod document;
 mod events;
 mod fonts;
+mod painter;
 
 pub use document::BlitzDocument;
 pub use events::{BlitzEvent, OnBlitzEvent};
 
 use events::{BlitzHandler, Frame, Translator};
+use painter::Painter;
 
-/// The format the painted page is uploaded in.
+/// The format a page is rasterized and composited in.
 ///
-/// Plain rather than sRGB: the CPU backend's bytes are already sRGB-encoded, and
-/// a plain texture hands them to the fragment untouched for the composite to
-/// decode once for the target.
+/// Plain rather than sRGB: Vello computes in sRGB-encoded values, so a plain
+/// texture hands them to the composite untouched, which decodes them once for
+/// the target. An sRGB texture would encode them a second time.
 const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Paints the Blitz page its scope carries.
@@ -83,11 +83,12 @@ const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// events. The source draws the first page its scope carries, at the size of the
 /// pass it is drawn in, and paints nothing when there is no page.
 ///
-/// One source drives one page, and the page keeps what a document keeps — its
-/// layout, its form state, its scroll position — for as long as it is drawn.
-/// A page therefore belongs beneath the one source that draws it: one below no
-/// source is never painted, and one two sources both reach takes every event
-/// through both of them.
+/// A page keeps what a document keeps — its layout, its form state, its scroll
+/// position — for as long as it is drawn, so a source that draws it is drawing
+/// the state the page is in rather than a copy of it: two sources that see one
+/// page paint the same page, and the tick's input reaches it once, from
+/// whichever of them the frame builds first. A page below no source is never
+/// painted at all.
 pub struct BlitzSource {
     /// Converts the frame's input into the events a document dispatches.
     translator: Translator,
@@ -95,31 +96,40 @@ pub struct BlitzSource {
     /// borrowed while the document it feeds is. Kept between frames to be
     /// reused.
     batch: Vec<InputEvent>,
-    /// The renderer the page is rasterized with.
-    painter: Option<VelloCpuImageRenderer>,
-    /// The size the painter was last built or resized for.
-    painted_size: (u32, u32),
-    /// The page's pixels, kept between frames so a repaint reuses the buffer.
-    pixels: Vec<u8>,
-    /// One uploaded texture per size the page is drawn at.
+    /// One uploaded texture and one rasterizer per surface and size the page is
+    /// drawn at.
     targets: Vec<TextureTarget>,
     /// The frame the targets were last used in.
     frame: u32,
+    /// Whether the world was focused on the last frame this source was built.
+    focused: bool,
     /// The composite the page reaches the frame through.
     screen: ScreenBlit,
 }
 
-/// A page's pixels uploaded at one size.
+/// A page's pixels uploaded for one surface, at one size.
 ///
-/// A size says which texture a page's pixels go into; the generation says which
-/// page they hold. A target is reused for as long as the frame keeps drawing at
-/// that size, and one that no frame has drawn for two frames is dropped.
+/// The surface and the size say which texture a page's pixels go into; the
+/// generation says which page they hold. A target is reused for as long as the
+/// frame keeps drawing at that surface and size, and one that no frame has drawn
+/// for two frames is dropped.
+///
+/// The rasterizer is the target's rather than the source's, so a page drawn into
+/// two differently sized passes is recorded once for each of them and reused
+/// for as long as the layout holds: a page that is painted at one size on one
+/// frame and at another on the next would otherwise be laid out again on every
+/// frame.
 struct TextureTarget {
+    /// The surface the texture has to match.
+    key: SurfaceKey,
     /// The size the texture was created at.
     size: (u32, u32),
-    /// The uploaded page.
-    texture: ResHandle<wgpu::Texture>,
-    /// The view the composite samples.
+    /// The drawing commands of the page, and what rasterizes them.
+    painter: Painter,
+    /// The rasterized page.
+    ///
+    /// It depends on nothing but the texture created with it, which the graph
+    /// keeps alive through this handle for as long as the target lists it.
     view: ResHandle<TextureView>,
     /// The last frame this target was drawn in.
     frame: u32,
@@ -142,11 +152,9 @@ impl BlitzSource {
         Self {
             translator: Translator::default(),
             batch: Vec::new(),
-            painter: None,
-            painted_size: (0, 0),
-            pixels: Vec::new(),
             targets: Vec::new(),
             frame: 0,
+            focused: true,
             screen: ScreenBlit::new(DrawOrder::After),
         }
     }
@@ -165,7 +173,7 @@ impl FrameSource for BlitzSource {
         ctx: RenderContext,
         info: PassInfo,
         scene: &mut Scene,
-        _encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         // The graph settles on every way out of this build: the uploads and the
         // composite's own nodes are registered here and realised at the end of
@@ -192,7 +200,14 @@ impl FrameSource for BlitzSource {
         // The page is painted at the target's own pixel size, which is also what
         // the document states as its viewport: a logical pixel is a physical one
         // divided by the world's scale factor, so the two describe one page.
-        let limit = device.limits().max_texture_dimension_2d;
+        //
+        // The rasterizer addresses its pixmap with 16-bit extents, like the
+        // textures it is uploaded into, so a target larger than that is painted
+        // at the largest size either of them can name.
+        let limit = device
+            .limits()
+            .max_texture_dimension_2d
+            .min(u32::from(u16::MAX));
         let size = (info.width.clamp(1, limit), info.height.clamp(1, limit));
 
         // The state the world's events left behind describes the devices now,
@@ -220,10 +235,10 @@ impl FrameSource for BlitzSource {
                 cursor = state.1;
                 buttons = state.2;
                 focused = state.3;
-                // One page is built by every source and pass that see it, and
-                // each of them reads the same batch: the page takes this tick's
-                // events once, so a click is one click however many times the
-                // frame draws what it changed.
+                // A page is built by every source and pass that see it, and each
+                // of them reads the same batch, so the page takes a tick's events
+                // once: a click is one click however many times the frame draws
+                // what it changed.
                 if page.feeds_input(events.tick()) {
                     events.with_batch(|events| batch.extend_from_slice(events));
                 }
@@ -245,26 +260,33 @@ impl FrameSource for BlitzSource {
         let generation = page.generation;
         let document = page.document(viewport);
         let scroll = document.viewport_scroll();
+        let logical_size = document.viewport().logical_size();
         // A window that has lost focus takes the page's focus with it, or the
         // field the user was in keeps its caret and its editing state in a
-        // window that is no longer theirs.
-        if !focused {
+        // window that is no longer theirs. Losing focus is the one change the
+        // page does not announce: clearing a focus that is already unset changes
+        // nothing and asks for nothing, so the frame that lost it repaints here.
+        if !focused && self.focused {
             document.clear_focus();
+            shell.request_redraw();
         }
+        self.focused = focused;
 
+        // The state behind the pointer is handed over on every frame, not only on
+        // the ones that carry a batch: the scale factor a position is divided by
+        // and the buttons the page holds change without an event of their own.
+        let events = self.translator.translate(Frame {
+            batch: &batch,
+            scale: scale_factor,
+            cursor,
+            buttons,
+            scroll: [scroll.x, scroll.y],
+            viewport: [logical_size.0, logical_size.1],
+        });
         // Input first, so what the callbacks change is what this frame paints.
-        if !batch.is_empty() {
-            let events = self.translator.translate(Frame {
-                batch: &batch,
-                scale: scale_factor,
-                cursor,
-                buttons,
-                scroll: [scroll.x, scroll.y],
-            });
-            let mut handler = BlitzHandler::new(*scope, &shell);
-            for event in events {
-                handler.dispatch(&mut *document, event);
-            }
+        let mut handler = BlitzHandler::new(*scope, &shell);
+        for event in events {
+            handler.dispatch(&mut *document, event);
         }
         self.batch = batch;
 
@@ -274,55 +296,12 @@ impl FrameSource for BlitzSource {
         // repaint.
         let mut repaint = shell.take_redraw();
 
-        if self.painter.is_none() {
-            self.painter = Some(VelloCpuImageRenderer::new(size.0, size.1));
-            self.painted_size = size;
-            repaint = true;
-        } else if self.painted_size != size {
-            if let Some(painter) = self.painter.as_mut() {
-                painter.resize(size.0, size.1);
-            }
-            self.painted_size = size;
-            repaint = true;
-        }
-
-        // A page repaints when the frame that built it changed, and otherwise
-        // only while it animates: Blitz reports no damage once layout settled,
-        // so a static page is rasterized exactly once per frame that needs it.
-        //
-        // Resolving is also what drains the resources the last layout asked for,
-        // so it runs even when the page is still waiting on one: skipping it
-        // would leave that request unanswered forever, and the page would never
-        // paint again. The pixels are only rasterized once nothing it blocks on
-        // is outstanding.
-        let mut painted_now = false;
-        if repaint || document.is_animating() {
-            document.resolve(time);
-            if !document.has_pending_critical_resources() {
-                let painter = self.painter.as_mut().expect("the painter was built above");
-                // The renderer keeps the commands of the frame it last
-                // rasterized, so a page that replaces its document paints the
-                // successor on top of it unless the commands are dropped first.
-                painter.reset();
-                // Every frame starts from nothing: the buffer is the one the
-                // frame before it filled, and a page that paints fewer pixels
-                // than its predecessor would otherwise show the rest of it.
-                self.pixels.fill(0);
-                let paint_scale = document.viewport().scale_f64();
-                painter.render_to_vec(
-                    |scene| {
-                        blitz_paint::paint_scene(scene, document, paint_scale, size.0, size.1, 0, 0)
-                    },
-                    &mut self.pixels,
-                );
-                painted_now = true;
-            }
-        }
-
-        // A size is all that tells two targets apart, so a target is reused for
-        // as long as the frame keeps drawing at that size. One that no frame has
-        // drawn for two frames is dropped, and the graph reclaims its resources
-        // once the last handle is gone.
+        // A target is kept for the surface and the size it is drawn at, and one
+        // that no frame has drawn for two frames is dropped, which leaves the
+        // graph to reclaim its resources once the last handle is gone. The
+        // rasterizer and the buffer it paints into live with the target, so a
+        // page drawn at two sizes lays each of them out once rather than laying
+        // the page out again on every frame that switches between them.
         let frame = ctx.clock(scope).map(|clock| clock.index).unwrap_or(0);
         if self.frame != frame {
             self.frame = frame;
@@ -330,7 +309,11 @@ impl FrameSource for BlitzSource {
         }
 
         let mut graph = ctx.graph(scope);
-        let index = match self.targets.iter().position(|target| target.size == size) {
+        let index = match self
+            .targets
+            .iter()
+            .position(|target| target.key == info.surface && target.size == size)
+        {
             Some(index) => index,
             None => {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -344,7 +327,10 @@ impl FrameSource for BlitzSource {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: PAGE_FORMAT,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    // Vello renders into the texture through a pass of its own,
+                    // so it is an attachment as well as a picture.
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 });
                 let view =
@@ -352,49 +338,76 @@ impl FrameSource for BlitzSource {
                 let graph = graph.get();
                 let texture = graph.insert(texture, None);
                 let view = graph.insert(view, None);
+                // The view keeps the texture it was made from alive, so the
+                // target only has to hold the view.
                 graph.add_dependency(&view, &texture);
                 self.targets.push(TextureTarget {
+                    key: info.surface,
                     size,
-                    texture,
+                    painter: Painter::new(&device, &queue, size),
                     view,
                     frame,
                     painted: None,
                 });
+                // A target that holds nothing is drawn from a page that is yet to
+                // be rasterized into it, so the frame that created it paints.
+                repaint = true;
                 self.targets.len() - 1
             }
         };
         let target = &mut self.targets[index];
         target.frame = frame;
-        // The target is created only for a size the painter was just resized or
-        // freshly built for, which is a repaint: an existing one is rewritten
-        // only when the page itself is. The pixel buffer is the buffer the last
-        // repaint filled, so it describes this frame only if it is this frame's
-        // size: a page that grew while it could not be painted still holds the
-        // smaller one.
-        let pixels = (self.pixels.len() == size.0 as usize * size.1 as usize * 4)
-            .then_some(self.pixels.as_slice());
-        if painted_now
-            && let Some(pixels) = pixels
-            && let Some(texture) = graph.get().get(&target.texture)
-        {
-            target.painted = Some(generation);
-            queue.write_texture(
-                texture.as_image_copy(),
-                pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size.0 * 4),
-                    rows_per_image: Some(size.1),
-                },
-                wgpu::Extent3d {
-                    width: size.0,
-                    height: size.1,
-                    depth_or_array_layers: 1,
-                },
-            );
+
+        // A page repaints when the frame that built it changed, and otherwise
+        // only while it animates: Blitz reports no damage once layout settled, so
+        // a static page is rasterized exactly once per target that shows it.
+        //
+        // Resolving is also what drains the resources the last layout asked for,
+        // so it runs even when the page is still waiting on one: skipping it
+        // would leave that request unanswered forever, and the page would never
+        // paint again. The pixels are only rasterized once nothing it blocks on
+        // is outstanding.
+        if repaint || document.is_animating() {
+            document.resolve(time);
+            if !document.has_pending_critical_resources() {
+                // The painter keeps the commands of the frame it last recorded,
+                // so a page that replaces its document paints the successor on
+                // top of it unless the commands are dropped first. The texture
+                // is cleared by the pass Vello opens for it, so a page that
+                // covers less ground than its predecessor leaves nothing of it.
+                target.painter.clear();
+                let paint_scale = document.viewport().scale_f64();
+                blitz_paint::paint_scene(
+                    &mut target.painter,
+                    document,
+                    paint_scale,
+                    size.0,
+                    size.1,
+                    0,
+                    0,
+                );
+                // The commands are recorded into the frame's own encoder, so the
+                // page is drawn along with everything else the frame draws.
+                let view = graph
+                    .get()
+                    .get(&target.view)
+                    .map(|view| view.view().clone());
+                if let Some(view) = view {
+                    match target.painter.render(encoder, &view) {
+                        Ok(()) => target.painted = Some(generation),
+                        // A page that did not rasterize is not composed: the
+                        // texture holds as much of the page as the failed pass
+                        // drew, which is not the page.
+                        Err(error) => {
+                            log::error!("a Blitz page failed to rasterize: {error}");
+                            target.painted = None;
+                        }
+                    }
+                }
+            }
         }
-        let view = self.targets[index].view.clone();
-        let painted = self.targets[index].painted;
+        let view = target.view.clone();
+        let painted = target.painted;
         drop(graph);
         if painted != Some(generation) {
             return;
@@ -418,9 +431,9 @@ impl FrameSource for BlitzSource {
 
 /// The page this scope carries.
 ///
-/// A scope that carries more than one page draws the one that was spawned
-/// first, so which page a source paints is a property of the world rather than
-/// of the order a query happened to walk.
+/// A scope that carries more than one page draws the one with the smallest
+/// entity, so which page a source paints is settled by the world rather than by
+/// the order a query happened to walk.
 fn first_page(scope: &Scope<'_>) -> Option<Entity> {
     scope
         .query::<(&BlitzDocument, Entity)>()

@@ -18,12 +18,14 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 # The drawing interface a document is painted through: blitz-paint records
-# shapes into it and a backend rasterizes them.
+# shapes into it and a backend rasterizes them. Only the interface is used, since
+# no backend of its own fits a frame source.
 anyrender = { version = "0.14.0", default-features = false }
-# The CPU rasterizer for those drawings. Every GPU backend of Vello builds a
-# device and an adapter of its own, which a frame source has no way to hand it;
-# a page is therefore rasterized on the CPU and uploaded as a texture.
-anyrender_vello_cpu = { version = "0.18.0", default-features = false }
+# The GPU rasterizer those drawings reach: it records the page into the frame's
+# own encoder. Its default features would drag in `wgpu/default`, which this
+# workspace builds without, and the shader features are the ones a page uses —
+# blurred shadows, every image kind and sweep gradients.
+vello_gpu = { version = "0.4.0", default-features = false, features = ["wgpu", "text", "all_shader_features"] }
 # The snapshot mailbox's slot: a producer swaps the newest snapshot in without
 # taking a lock a reader holds.
 arc-swap = { version = "1.9.2", default-features = false }
@@ -95,6 +97,10 @@ futures-executor = { version = "0.3.34", default-features = false, features = ["
 # which is what the trait needs.
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 glam = { version = "0.33", default-features = false, features = ["std", "zerocopy"] }
+# The glyph runs a page's text is drawn as. `vello_gpu` shapes them but keeps
+# `glifo`, the crate the glyphs come from, out of its own exports, so the
+# adapter that hands it glyphs names them itself.
+glifo = { version = "0.5.0", default-features = false, features = ["std"] }
 gltf = { version = "1.4.1", default-features = false, features = ["extensions", "import", "names", "utils"] }
 half = { version = "2.7.1", default-features = false }
 hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
