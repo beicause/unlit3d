@@ -5951,6 +5951,7 @@ dependencies = [
  "unlit_ecs",
  "unlit_wgpu",
  "unlit_wgpu_test_util",
+ "url",
  "vello_gpu",
  "wasm-bindgen",
  "web-time",

@@ -149,6 +149,10 @@ smallvec = { version = "1.16.1", default-features = false, features = ["const_ge
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 tokio = { version = "1.53", default-features = false }
 ureq = { version = "3.4.0", default-features = false }
+# The base URL a page's relative references resolve against, and the parse error
+# `BlitzDocument::set_base_url` answers with. `blitz-traits` re-exports the `Url`
+# type but not the error it parses with.
+url = { version = "2.5", default-features = false, features = ["std"] }
 uuid = { version = "1.26.1", default-features = false, features = ["v4"] }
 wasm-bindgen = "0.2.128"
 wasm-bindgen-futures = "0.4.78"

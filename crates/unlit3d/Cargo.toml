@@ -65,6 +65,7 @@ profiling.workspace = true
 thiserror.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3", default-features = false }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
+url = { workspace = true, optional = true }
 vello_gpu = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
 wgpu.workspace = true
@@ -136,6 +137,7 @@ blitz = [
   "dep:blitz-traits",
   "dep:data-url",
   "dep:keyboard-types",
+  "dep:url",
 ]
 ## Lay pages out with the fonts the crate carries: egui's default font for the
 ## Latin text and, with `blitz_sc_fonts`, a Noto Sans SC subset for the Chinese

@@ -112,19 +112,16 @@ impl BlitzDocument {
     /// changing the base serves the same bytes at the addresses the new base
     /// gives them.
     ///
-    /// A value that is not an absolute URL is logged and ignored, and the base
-    /// stays what it was: a page whose references cannot resolve would panic
-    /// when it loads them.
-    pub fn set_base_url(&mut self, base_url: impl AsRef<str>) {
-        match Url::parse(base_url.as_ref()) {
-            Ok(url) => {
-                *sync::write(&self.resources.base) = url;
-                self.document = None;
-                self.generation += 1;
-                self.shell.request_redraw();
-            }
-            Err(error) => log::warn!("a page base URL that is not absolute: {error}"),
-        }
+    /// A value that is not an absolute URL is rejected and the base stays what
+    /// it was: every reference a page resolves against it is resolved by URL
+    /// rules, and one the page cannot resolve panics when it loads it.
+    pub fn set_base_url(&mut self, base_url: impl AsRef<str>) -> Result<(), url::ParseError> {
+        let url = Url::parse(base_url.as_ref())?;
+        *sync::write(&self.resources.base) = url;
+        self.document = None;
+        self.generation += 1;
+        self.shell.request_redraw();
+        Ok(())
     }
 
     /// Serve `bytes` for `path`.

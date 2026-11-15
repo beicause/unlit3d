@@ -2,8 +2,8 @@
 //! HTML document and paints it over the frame.
 //!
 //! What these pin down is the composite and the input path rather than the
-//! layout engine itself: the page is rasterized on the CPU into premultiplied
-//! sRGB-encoded texels, so a frame is only right if those bytes reach an sRGB
+//! layout engine itself: the page is rasterized into premultiplied texels that
+//! hold sRGB-encoded channels, so a frame is only right if those bytes reach the
 //! target through exactly one decode, and a page is only live if what the frame
 //! feeds it reaches the document.
 
@@ -114,7 +114,7 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 .and_then(|node| node.element_data())
                 .and_then(|element| element.checkbox_input_checked());
             log.lock().expect("the log is not poisoned").push(Seen {
-                name: event.name().to_owned(),
+                name: event.data().name().to_owned(),
                 value,
                 checked,
             });
@@ -494,7 +494,7 @@ async fn one_tick_reaches_a_shared_page_once() {
             BlitzDocument::new(html),
             OnBlitzEvent::new(move |_scope, _entity, event| {
                 log.lock().expect("the log is not poisoned").push(Seen {
-                    name: event.name().to_owned(),
+                    name: event.data().name().to_owned(),
                     value: String::new(),
                     checked: None,
                 });
