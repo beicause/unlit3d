@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyrender::filters::{self, EdgeMode, FilterEffect};
 use anyrender::{NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
 use glifo::FontEmbolden;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use unlit_wgpu::resources::TextureExt;
 use vello_gpu::filter_effects::FilterPrimitive;
 use vello_gpu::kurbo::{Affine, Diagonal2, Rect, Shape, Stroke};
@@ -71,6 +71,10 @@ pub(crate) struct Painter {
     /// The images themselves, keyed by the id of the bytes they came from, so a
     /// page that draws one image in several places uploads it once.
     images: HashMap<u64, UploadedImage>,
+    /// The images the recording under way has drawn.
+    drawn: HashSet<u64>,
+    /// The images the recording before that one drew.
+    previous: HashSet<u64>,
     /// The clips pushed and not yet popped.
     layers: Vec<Layer>,
 }
@@ -99,15 +103,37 @@ impl Painter {
             scene: vello_gpu::Scene::new(size.0 as u16, size.1 as u16),
             bindings: vello_gpu::TextureBindings::new(),
             images: HashMap::new(),
+            drawn: HashSet::new(),
+            previous: HashSet::new(),
             layers: Vec::new(),
         }
     }
 
     /// Start a new page, dropping what the last one recorded.
     ///
-    /// The images a page drew stay uploaded: the one after it is most often the
-    /// same page with a control moved, and its pictures are the same pictures.
+    /// An image outlives the recording that drew it: the page after it is most
+    /// often the same page with a control moved, and its pictures are the same
+    /// pictures. One the page has stopped drawing is let go of once neither of
+    /// the last two recordings named it, so a page that cycles through pictures
+    /// holds a bounded number of them without re-uploading one it draws every
+    /// frame.
     pub(crate) fn clear(&mut self) {
+        let mut evicted = Vec::new();
+        self.images.retain(|id, _| {
+            if forgotten(*id, &self.drawn, &self.previous) {
+                evicted.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in evicted {
+            self.bindings.remove(TextureId(id));
+        }
+        // This recording's images become the last two recordings' worth the
+        // next one is measured against.
+        core::mem::swap(&mut self.previous, &mut self.drawn);
+        self.drawn.clear();
         self.scene.reset();
         self.layers.clear();
     }
@@ -161,12 +187,12 @@ impl Painter {
 
     /// The source `image` is sampled from, or [`None`] if it is drawn as nothing.
     ///
-    /// An image is uploaded the first time a page draws it and kept from then on,
-    /// keyed by the id of the bytes it came from: the pages a target shows share
-    /// one copy of each picture, and a target that lives for the whole run holds
-    /// as many of them as it has drawn.
+    /// An image is uploaded the first time a page draws it and kept by the id of
+    /// the bytes it came from, so every page the target shows shares one copy of
+    /// each picture. [`Painter::clear`] decides when one is let go of.
     fn upload(&mut self, image: &ImageData) -> Option<ImageSource> {
         let id = image.data.id();
+        self.drawn.insert(id);
         if let Some(uploaded) = self.images.get(&id) {
             return match uploaded {
                 UploadedImage::Texture {
@@ -445,6 +471,16 @@ fn convert_edge_mode(edge_mode: EdgeMode) -> vello_gpu::filter_effects::EdgeMode
     }
 }
 
+/// Whether a painter lets go of image `id`.
+///
+/// A recording and the one before it are both allowed to name an image: the one
+/// being recorded has not been read yet when the recording before it is
+/// measured, so letting go of a picture on a single recording that did not name
+/// it would drop one the page is about to draw again.
+fn forgotten(id: u64, drawn: &HashSet<u64>, previous: &HashSet<u64>) -> bool {
+    !drawn.contains(&id) && !previous.contains(&id)
+}
+
 /// Whether a scene can draw `image` at all.
 ///
 /// Vello's conversion asserts that the extent fits 16 bits and that the format
@@ -483,6 +519,21 @@ mod tests {
         // A device whose textures may be larger than Vello's extents does not
         // extend them: what the scene cannot name is still too large.
         assert!(!drawable(&image(70_000, 8, ImageFormat::Rgba8), u32::MAX));
+    }
+
+    #[test]
+    fn a_picture_is_kept_until_two_recordings_pass_without_it() {
+        let drawn = HashSet::from_iter([1]);
+        let previous = HashSet::from_iter([2]);
+        assert!(!forgotten(1, &drawn, &previous), "one drawn now is kept");
+        assert!(
+            !forgotten(2, &drawn, &previous),
+            "one the recording before drew is kept, because the page may draw it again"
+        );
+        assert!(
+            forgotten(3, &drawn, &previous),
+            "one neither recording named is let go of"
+        );
     }
 
     #[test]
