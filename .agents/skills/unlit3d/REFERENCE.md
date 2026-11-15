@@ -30,7 +30,7 @@
 | 清屏 | `RenderLoadOps { color, depth, stencil }`（定义在 `crates/unlit3d/src/components.rs`），默认 `color_clear()` / `depth_clear()`（清 0.0，reverse-z 的远平面）/ `stencil_clear()`；三个 `const fn` 在 `crates/unlit_wgpu/src/render_attachments.rs`，经 prelude 重导出 | `crates/unlit3d/src/components.rs`、`crates/unlit_wgpu/src/render_attachments.rs` |
 | source 组件 | `Source::new(FrameSourceOrder, impl FrameSource)` + `pub order` 字段（直接写它即可重排）/ `as_mut::<T>` / `as_ref::<T>` / `build_scene` | `crates/unlit3d/src/source.rs` |
 | source 顺序 | `FrameSourceOrder::MESH = 0`、`::LINE = 50`、`::BLITZ = 90`、`::EGUI = 100`：线默认夹在 mesh 与 egui 之间，因为它测 mesh 写下的深度；Blitz 页面是覆盖整个目标的不透明文档，所以在 mesh 之上、叠加层之下。顺序属于实体而非源类型，`Source::new` 的第一个参数就是它；同类源的两个实体可以给不同顺序 | 同上 |
-| 自定义 source | `trait FrameSource`：`build_scene` + `order`。会被**每个 pass 各调一次**，per-pass 状态按 `info.surface` 存 | 同上 |
+| 自定义 source | `trait FrameSource` 只有 `build_scene`：顺序不来自类型，而来自 `Source` 的 `order` 字段。会被**每个 pass 各调一次**，per-pass 状态按 `info.surface` 存 | 同上 |
 | 附件分配 | `FrameAttachments::new` 只分配**深度**（`with_depth` 为真时）与 **MSAA**（`sample_count > 1` 时）两张纹理并把视图登记进图；**颜色附件是调用方的**，两者用 `FramePass::set_attachments` 配到一起。`resize` 重建时视图 id 不变 | `crates/unlit3d/src/attachments.rs` |
 | 目标特化键 | 画的时候 `Pass::attachments()` 把三个视图装配成 `RenderAttachments`，它的 `surface_key()` 才是 `SurfaceKey` 的来源。**`FrameAttachments` 上没有这个方法** | `crates/unlit_wgpu/src/render_attachments.rs` |
 
@@ -148,12 +148,12 @@
 | --- | --- |
 | source | `BlitzSource::new()`——无参；绘制自己作用域里携带的第一个 `BlitzDocument`，没有就不画 |
 | 页面 | `BlitzDocument::new(markup)`、`set_markup(markup)`、`set_base_url(base)`、`insert_resource(path, bytes)`——**挂在 source 实体之下**，否则 source 看不见 |
-| 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `name()`（"click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（事件指向的节点及其元素祖先，回调对整条链只跑一次）、`data()`、`document_mut()`、`prevent_default()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `name()` 过滤 |
+| 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `data()`（其 `.name()` 是 "click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（事件指向的节点及其元素祖先，回调对整条链只跑一次）、`document_mut()`、`prevent_default()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `data().name()` 过滤 |
 | 输入 | 帧输入自动驱动文档：指针、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次 |
 | 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供，路径在加载时按当前基准解析；没人提供的路径收到空字节（样式表读成空表、图片读成加载失败），页面照常画 |
 | 布局与绘制 | 用 Blitz 布局、Vello 的 GPU 后端在帧的构建阶段光栅化进一张与 pass 同尺寸的 `Rgba8Unorm` 纹理（命令录进本帧编码器），再由共享的全屏合成贴上目标；页面图片各上传成自有纹理并按图片缓存；重绘时机 = 标记/视口/尺寸变化、输入或回调要求、文档有动画 |
 | 字体 | 默认字体是 egui 的 `epaint_default_fonts::HACK_REGULAR`（`blitz_epaint_fonts` 特性），`blitz_sc_fonts` 另加 Noto Sans SC 一级+二级子集承载汉字（四个通用族里排在默认字体之后，并挂上汉字回退表），系统字体默认关闭（`blitz_system_fonts` 才加载），各平台字形一致 |
-| 边界 | 页面只向宿主请求重绘；光标形状、IME 开关、剪贴板都没接通，事件含义由 Rust 决定 |
+| 边界 | 页面只向宿主请求重绘；光标形状、IME 开关、剪贴板都没接通，事件含义由 Rust 决定。CSS 滤镜只画 Flood／GaussianBlur／DropShadow／Offset 这四种单原语图，色彩滤镜（brightness／grayscale／sepia 等）与多原语图按无滤镜绘制 |
 
 ## winit 桥
 

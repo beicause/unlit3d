@@ -28,7 +28,7 @@
 //! A dispatch reaches a callback more than once for the same reason: Blitz
 //! synthesises the mouse and touch compatibility events a browser would, so a
 //! click is reported as `pointerup`, `mouseup` and `click`. A callback that
-//! reacts to one of them filters on [`BlitzEvent::name`].
+//! reacts to one of them filters on the name of [`BlitzEvent::data`].
 //!
 //! # Keys
 //!
@@ -84,7 +84,7 @@ type EventCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)>;
 /// Every event the document dispatches, which for one physical action is more
 /// than one: Blitz reports a click as pointer, mouse and click events, and a key
 /// press as a key event and the text it produced. A callback that reacts once
-/// filters on [`BlitzEvent::name`].
+/// filters on the name of [`BlitzEvent::data`].
 pub struct OnBlitzEvent(pub EventCallback);
 
 impl OnBlitzEvent {
@@ -112,12 +112,10 @@ pub struct BlitzEvent<'a> {
 }
 
 impl BlitzEvent<'_> {
-    /// The event's DOM name, such as `click`, `input` or `keydown`.
-    pub fn name(&self) -> &'static str {
-        self.event.name()
-    }
-
     /// The event's payload.
+    ///
+    /// Its name -- `click`, `input`, `keydown` -- is
+    /// [`DomEventData::name`], and that is what a callback filters on.
     ///
     /// A pointer action is reported as a pointer event and again as the mouse or
     /// touch event a browser would synthesise for it, so this is also how a

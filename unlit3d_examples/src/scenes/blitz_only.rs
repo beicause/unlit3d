@@ -167,7 +167,7 @@ fn build(
         world,
         source,
         bundle![OnBlitzEvent::new(|_scope, _entity, event| {
-            let name = event.name();
+            let name = event.data().name();
             let document = event.document_mut();
             let Some(status) = document.get_element_by_id("status") else {
                 return;
