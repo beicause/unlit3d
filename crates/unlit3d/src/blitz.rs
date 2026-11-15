@@ -248,6 +248,9 @@ impl FrameSource for BlitzSource {
             scale_factor = 1.0;
         }
 
+        // A page is laid out for a light colour scheme: nothing in the world
+        // states a preference, and one answer is what keeps a snapshot holding.
+        // `prefers-color-scheme` therefore never matches.
         let viewport = Viewport::new(size.0, size.1, scale_factor, ColorScheme::Light);
         // The clock is the frame's own time base, so a sequence of frames paints
         // the same animations at the same times whatever the wall clock reads.
@@ -427,13 +430,15 @@ impl FrameSource for BlitzSource {
 
 /// The page this scope carries.
 ///
-/// A scope that carries more than one page draws the one with the smallest
-/// entity, so which page a source paints is settled by the world rather than by
-/// the order a query happened to walk.
+/// A scope that carries more than one page draws the one whose handle sorts
+/// first, so which page a source paints is settled by the world rather than by
+/// the order a query happened to walk. An entity's handle is its row index and
+/// the generation it was allocated at, so a page spawned after another one was
+/// despawned still sorts after the one that stayed.
 fn first_page(scope: &Scope<'_>) -> Option<Entity> {
     scope
         .query::<(&BlitzDocument, Entity)>()
         .iter()
-        .min_by_key(|(_document, entity)| *entity)
+        .min_by_key(|(_document, entity)| entity.to_bits())
         .map(|(_document, entity)| entity)
 }
