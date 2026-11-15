@@ -114,11 +114,10 @@ impl Scene {
         // pass where its sources draw, so a viewport kept only on this struct
         // would never reach the renderer and the content would stretch to the
         // whole target.
-        world
-            .root_scope()
-            .query_one::<&mut FramePass>(pass)
-            .map(|mut pass| pass.get().viewport = viewport)
-            .expect("the pass was just spawned");
+        {
+            let mut row = world.root_scope().query_one::<&mut FramePass>(pass);
+            row.get().viewport = viewport;
+        }
 
         // The egui source is mounted before the scene is built, so a scene's own
         // panels hang in the scope it draws: a source renders its own subtree,
@@ -137,7 +136,6 @@ impl Scene {
             }
             world
                 .scope_mut(pass)
-                .expect("the pass was just spawned")
                 .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source_egui)])
         });
         let control = (def.build)(&mut world, context, pass, ui, content, options);
@@ -149,7 +147,7 @@ impl Scene {
         // which reaches the shared subtree and nothing beside it.
         let shared = world.shared();
         let (switch, fullscreen, fullscreen_active, frame_rate) = {
-            let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
+            let mut shared_view = world.scope_mut(shared);
             (
                 shared_view.spawn(bundle![SceneSwitch(None)]),
                 shared_view.spawn(bundle![FullscreenRequest(false)]),
@@ -244,11 +242,12 @@ impl Scene {
         // Measured before anything else, so the reading covers the whole frame
         // — input, behaviour, render and present — and not just the part
         // between here and the next call.
-        world
-            .root_scope()
-            .query_one::<&mut FrameRate>(self.frame_rate)
-            .map(|mut rate| rate.get().push(delta_time))
-            .expect("the frame-rate component exists");
+        {
+            let mut rate = world
+                .root_scope()
+                .query_one::<&mut FrameRate>(self.frame_rate);
+            rate.get().push(delta_time);
+        }
 
         let mut frame = Frame {
             delta_time,
@@ -259,11 +258,12 @@ impl Scene {
         self.frame = frame.index;
 
         // The selector's request, read once so the frame loop can act on it.
-        self.pending = world
-            .root_scope()
-            .query_one::<&mut SceneSwitch>(self.switch)
-            .map(|mut s| s.get().0.take())
-            .expect("the switch component exists");
+        self.pending = {
+            let mut switch = world
+                .root_scope()
+                .query_one::<&mut SceneSwitch>(self.switch);
+            switch.get().0.take()
+        };
     }
 
     /// The selector window's rectangle the last time it was laid out, or
@@ -309,15 +309,16 @@ impl Scene {
     /// what owns the window; the scene keeps no opinion of its own about
     /// fullscreen.
     pub(crate) fn fullscreen_request(&mut self, world: &World, active: bool) -> bool {
-        let _ = world
+        {
+            let mut state = world
+                .root_scope()
+                .query_one::<&mut FullscreenActive>(self.fullscreen_active);
+            state.get().0 = active;
+        }
+        let mut request = world
             .root_scope()
-            .query_one::<&mut FullscreenActive>(self.fullscreen_active)
-            .map(|mut state| state.get().0 = active);
-        world
-            .root_scope()
-            .query_one::<&mut FullscreenRequest>(self.fullscreen)
-            .map(|mut request| std::mem::take(&mut request.get().0))
-            .expect("the fullscreen request component exists")
+            .query_one::<&mut FullscreenRequest>(self.fullscreen);
+        std::mem::take(&mut request.get().0)
     }
 
     /// Render one frame into whatever target the caller bound.
@@ -326,11 +327,8 @@ impl Scene {
     /// the swap chain's image and renders between the acquire and the present,
     /// so it needs both under one borrow.
     pub fn render(&mut self, world: &World) {
-        world
-            .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| renderer.get().render(world))
-            .expect("the renderer is a resource entity");
+        let mut renderer = world.root_scope().query_one::<&mut Renderer>(self.renderer);
+        renderer.get().render(world);
     }
 
     /// Finish the frame: apply whatever a behaviour component or panel queued.

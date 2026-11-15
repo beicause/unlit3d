@@ -101,7 +101,6 @@ fn build(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // Both documents' resources go into the one source the scene draws
@@ -120,9 +119,7 @@ fn build(
     // handle carries the pose entity its skin reads, and the cube's carries
     // the weights entity its morph targets read.
     let (fox_nodes, morph_nodes) = {
-        let mut scope = world
-            .scope_mut(source_entity)
-            .expect("the source entity is alive");
+        let mut scope = world.scope_mut(source_entity);
         (
             fox.spawn_default_scene(&mut scope, &fox_resources),
             morph.spawn_default_scene(&mut scope, &morph_resources),
@@ -134,30 +131,30 @@ fn build(
     // in its morph weights — so the placement written here survives every
     // frame instead of being recomposed away.
     {
-        let scope = world
-            .scope(source_entity)
-            .expect("the source entity is alive");
+        let scope = world.scope(source_entity);
         for node in &fox_nodes {
             for &entity in &node.entities {
                 let _ = scope
-                    .query_one::<&mut Transform>(entity)
+                    .try_query_one::<&mut Transform>(entity)
                     .map(|mut current| *current.get() = FOX_PLACEMENT);
             }
         }
         for node in &morph_nodes {
             for &entity in &node.entities {
                 let _ = scope
-                    .query_one::<&mut Transform>(entity)
+                    .try_query_one::<&mut Transform>(entity)
                     .map(|mut current| *current.get() = MORPH_PLACEMENT);
             }
         }
     }
 
-    let camera_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
-    );
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![super::camera_looking_at(
+            CAMERA_EYE,
+            CAMERA_TARGET,
+            size
+        )]);
 
     let fox_animation = animation_index(&fox, FOX_ANIMATION);
     let morph_animation = animation_index(&morph, MORPH_ANIMATION);
@@ -182,9 +179,7 @@ fn build(
                 clock += delta;
                 (clock % fox_duration, clock % morph_duration)
             };
-            let scope = world
-                .scope(source_entity)
-                .expect("the source entity is alive");
+            let scope = world.scope(source_entity);
             fox.apply_animation(
                 &scope,
                 unlit3d::gltf::AnimationId::new(fox_animation),

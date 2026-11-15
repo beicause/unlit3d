@@ -43,11 +43,9 @@ fn build(
     options: SceneOptions,
 ) -> SceneControl {
     if options.egui {
-        super::spawn_in(
-            world,
-            ui.expect("the egui source was mounted"),
-            bundle![rich_panel()],
-        );
+        world
+            .scope_mut(ui.expect("the egui source was mounted"))
+            .spawn(bundle![rich_panel()]);
     }
 
     SceneControl {

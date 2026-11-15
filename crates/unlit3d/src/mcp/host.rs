@@ -59,7 +59,7 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
     if let Some(entity) = handle {
         return world
             .root_scope()
-            .query_one::<Has<Renderer>>(entity)
+            .try_query_one::<Has<Renderer>>(entity)
             .is_ok_and(|mut holder| holder.get())
             .then_some(entity)
             .ok_or_else(|| format!("entity {entity:?} carries no renderer"));
@@ -79,7 +79,7 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
     if let Some(entity) = handle {
         let is_mesh_source = world
             .root_scope()
-            .query_one::<&Source>(entity)
+            .try_query_one::<&Source>(entity)
             .is_ok_and(|mut source| source.get().as_ref::<MeshSource>().is_ok());
         return is_mesh_source
             .then_some(entity)
@@ -107,10 +107,10 @@ fn with_mesh_source<R>(
     // The scope is the source's own: a source entity is its own scope, and a
     // source only ever sees the subtree it draws.
     let scope = world
-        .scope(entity)
+        .try_scope(entity)
         .map_err(|_| "the mesh source entity is gone".to_string())?;
     let mut source = scope
-        .query_one::<&mut Source>(entity)
+        .try_query_one::<&mut Source>(entity)
         .map_err(|_| "the mesh source entity is gone".to_string())?;
     let mesh_source = source
         .get()
@@ -140,7 +140,7 @@ fn graph_of<'w>(
 ) -> Result<unlit_ecs::QueryOne<'w, &'w ResourceGraph>, String> {
     world
         .root_scope()
-        .query_one::<&ResourceGraph>(context.graph)
+        .try_query_one::<&ResourceGraph>(context.graph)
         .map_err(|_| "the render context has no resource graph".to_string())
 }
 
@@ -151,7 +151,7 @@ fn graph_of_mut<'w>(
 ) -> Result<unlit_ecs::QueryOne<'w, &'w mut ResourceGraph>, String> {
     world
         .root_scope()
-        .query_one::<&mut ResourceGraph>(context.graph)
+        .try_query_one::<&mut ResourceGraph>(context.graph)
         .map_err(|_| "the render context has no resource graph".to_string())
 }
 
@@ -482,7 +482,7 @@ fn single_entity<T: 'static>(
     if let Some(entity) = handle {
         return world
             .root_scope()
-            .query_one::<Has<T>>(entity)
+            .try_query_one::<Has<T>>(entity)
             .is_ok_and(|mut holder| holder.get())
             .then_some(entity)
             .ok_or_else(|| format!("entity {entity:?} carries no {what}"));
@@ -516,7 +516,7 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
     let _ = world
         .root_scope()
-        .query_one::<&mut InputWriter>(entity)
+        .try_query_one::<&mut InputWriter>(entity)
         .map(|mut writer| {
             let writer = writer.get();
             writer.push_all(decoded)
@@ -632,7 +632,7 @@ pub fn create_mesh(
     let scope = match args.scope {
         Some(bits) => {
             let scope = Entity::from_bits(bits);
-            if world.scope(scope).is_err() {
+            if world.try_scope(scope).is_err() {
                 return Err(format!("no scope {scope:?}"));
             }
             scope
@@ -641,7 +641,7 @@ pub fn create_mesh(
     };
     let name = "mcp mesh";
     let entity = world
-        .scope_mut(scope)
+        .try_scope_mut(scope)
         .map_err(|_| format!("no scope {scope:?}"))?
         .spawn_named(name, builder);
     to_value(&SpawnedEntity {
@@ -659,7 +659,7 @@ pub fn remove_mesh(
 ) -> Result<Value, String> {
     let mesh = world
         .root_scope()
-        .query_one::<&GpuMesh>(entity)
+        .try_query_one::<&GpuMesh>(entity)
         .map(|mut mesh| {
             let mesh = mesh.get();
             mesh.clone()
@@ -680,7 +680,7 @@ pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value
     let world_ref: &World = &*world;
     world_ref
         .root_scope()
-        .query_one::<&mut Renderer>(entity)
+        .try_query_one::<&mut Renderer>(entity)
         .map(|mut renderer| renderer.get().render(world_ref))
         .map_err(|error| format!("entity {entity:?} carries no renderer: {error}"))?;
     Ok(Value::Null)
@@ -799,7 +799,7 @@ pub fn load_gltf(
         None => mesh_source_entity(world, source)?,
     };
     let mut scope = world
-        .scope_mut(scope)
+        .try_scope_mut(scope)
         .map_err(|_| format!("no scope {scope:?}"))?;
     let nodes = gltf.spawn_default_scene(&mut scope, &resources);
     let entities: Vec<Entity> = nodes

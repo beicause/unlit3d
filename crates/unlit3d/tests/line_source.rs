@@ -83,10 +83,10 @@ fn segment_world(ctx: &Ctx, eye: glam::Vec3, stroke: Line) -> (World, TestGpu, w
     let gpu = TestGpu::frame_only(&mut world, ctx);
 
     let source_entity = gpu.spawn_source(&mut world, FrameSourceOrder::LINE, LineSource::new());
-    gpu.spawn_in(&mut world, source_entity, bundle![stroke]);
+    world.scope_mut(source_entity).spawn(bundle![stroke]);
 
     let camera = camera_looking_at(eye, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
-    gpu.spawn_in(&mut world, source_entity, bundle![camera]);
+    world.scope_mut(source_entity).spawn(bundle![camera]);
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source");
     (world, gpu, target)
@@ -245,23 +245,16 @@ async fn a_stroke_behind_a_body_is_hidden_by_it() {
     // The stroke runs along X behind the cube's front face, so the cube stands
     // in front of its middle and leaves its two ends in the open.
     let lines_entity = gpu.spawn_source(&mut world, FrameSourceOrder::LINE, LineSource::new());
-    gpu.spawn_in(
-        &mut world,
-        lines_entity,
-        bundle![Line::from(
-            LineSegment::new([-LENGTH, 0.0, -0.5], [LENGTH, 0.0, -0.5])
-                .with_color(STROKE)
-                .with_half_width(HALF_WIDTH)
-        )],
-    );
+    world.scope_mut(lines_entity).spawn(bundle![Line::from(
+        LineSegment::new([-LENGTH, 0.0, -0.5], [LENGTH, 0.0, -0.5])
+            .with_color(STROKE)
+            .with_half_width(HALF_WIDTH)
+    )]);
 
     // Two sources draw this frame and a source only sees its own subtree, so the
     // camera goes in the shared subtree both of them read.
     let camera = camera_looking_at(EYE, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
-    world
-        .scope_mut(world.shared())
-        .expect("the shared subtree is its own scope")
-        .spawn(bundle![camera]);
+    world.scope_mut(world.shared()).spawn(bundle![camera]);
     gpu.spawn(&mut world, bundle![mesh, GpuRenderPipeline::new(key)]);
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source::occlusion");
@@ -498,26 +491,18 @@ async fn a_blended_stroke_passing_behind_an_opaque_one_is_hidden_by_it() {
     // runs down Y one unit behind it, so the two cross at the frame's centre
     // — where the opaque stroke's depth is what decides — and the blended one
     // still shows everywhere the opaque one does not reach.
-    gpu.spawn_in(
-        &mut world,
-        source_entity,
-        bundle![Line::opaque(
-            LineSegment::new([-LENGTH, 0.0, 0.0], [LENGTH, 0.0, 0.0])
-                .with_color(INK)
-                .with_half_width(HALF_WIDTH)
-        )],
-    );
-    gpu.spawn_in(
-        &mut world,
-        source_entity,
-        bundle![Line::blended(
-            LineSegment::new([0.0, -LENGTH, -1.0], [0.0, LENGTH, -1.0])
-                .with_color(STROKE)
-                .with_half_width(HALF_WIDTH)
-        )],
-    );
+    world.scope_mut(source_entity).spawn(bundle![Line::opaque(
+        LineSegment::new([-LENGTH, 0.0, 0.0], [LENGTH, 0.0, 0.0])
+            .with_color(INK)
+            .with_half_width(HALF_WIDTH)
+    )]);
+    world.scope_mut(source_entity).spawn(bundle![Line::blended(
+        LineSegment::new([0.0, -LENGTH, -1.0], [0.0, LENGTH, -1.0])
+            .with_color(STROKE)
+            .with_half_width(HALF_WIDTH)
+    )]);
     let camera = camera_looking_at(EYE, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
-    gpu.spawn_in(&mut world, source_entity, bundle![camera]);
+    world.scope_mut(source_entity).spawn(bundle![camera]);
 
     let target = gpu.bind_offscreen_target(&world, "test::line_source::opaque_hides");
     gpu.render(&world);

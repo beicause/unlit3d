@@ -64,68 +64,61 @@ fn build(
     });
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
     let root = world.root_scope();
-    let (mesh, material) = root
-        .query_one::<&mut Source>(source_entity)
-        .map(|mut source| {
-            let source = source
-                .get()
-                .as_mut::<MeshSource>()
-                .expect("the source entity carries a MeshSource");
-            let (positions, uvs, colors, indices) = super::cube();
-            let mesh = source.allocate_lit_mesh(
-                &root,
-                &key.options,
-                LitMeshDesc {
-                    positions: &positions,
-                    uvs: Some(&uvs),
-                    colors: Some(&colors),
-                    indices: Some(&indices),
-                    ..Default::default()
-                },
-            );
-            let texture = checkerboard(&source.device(&root), &source.queue(&root), 64);
-            let view = source.register_texture_and_default_view(&root, texture).1;
-            // Linear filtering: the checkerboard is a high-frequency pattern,
-            // and point sampling it under minification aliases into moire on
-            // the faces the camera sees at a glancing angle.
-            let sampler = source.register_sampler(
-                &root,
-                Some(wgpu::SamplerDescriptor {
-                    mag_filter: wgpu::FilterMode::Linear,
-                    min_filter: wgpu::FilterMode::Linear,
-                    mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                    anisotropy_clamp: 4,
-                    ..Default::default()
-                }),
-            );
-            let material = source.allocate_lit_material(&root, &key.options, view, sampler);
-            (mesh, material)
-        })
-        .expect("the source entity exists");
+    let (mesh, material) = {
+        let mut row = root.query_one::<&mut Source>(source_entity);
+        let source = row
+            .get()
+            .as_mut::<MeshSource>()
+            .expect("the source entity carries a MeshSource");
+        let (positions, uvs, colors, indices) = super::cube();
+        let mesh = source.allocate_lit_mesh(
+            &root,
+            &key.options,
+            LitMeshDesc {
+                positions: &positions,
+                uvs: Some(&uvs),
+                colors: Some(&colors),
+                indices: Some(&indices),
+                ..Default::default()
+            },
+        );
+        let texture = checkerboard(&source.device(&root), &source.queue(&root), 64);
+        let view = source.register_texture_and_default_view(&root, texture).1;
+        // Linear filtering: the checkerboard is a high-frequency pattern,
+        // and point sampling it under minification aliases into moire on
+        // the faces the camera sees at a glancing angle.
+        let sampler = source.register_sampler(
+            &root,
+            Some(wgpu::SamplerDescriptor {
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                anisotropy_clamp: 4,
+                ..Default::default()
+            }),
+        );
+        let material = source.allocate_lit_material(&root, &key.options, view, sampler);
+        (mesh, material)
+    };
 
     // The camera the frame is viewed from, and the cube itself. The scene
     // leaves its pass at the default load ops, so the pass clears color and
     // depth on its own.
-    super::spawn_in(
-        world,
-        source_entity,
-        bundle![orbit_camera(size, 0.6, ORBIT_ELEVATION)],
-    );
+    world
+        .scope_mut(source_entity)
+        .spawn(bundle![orbit_camera(size, 0.6, ORBIT_ELEVATION)]);
     // The panel is drawn by the egui source and the cube by the mesh source, and
     // one source's scope reaches nothing of the other's. The state both of them
     // touch therefore lives in the shared subtree, which every scope reaches: the
     // spin the panel drives, the frame count it reads, the drag the pointer
     // behaviour follows and the orbit it writes.
     let (spin, orbit) = {
-        let mut shared = world
-            .scope_mut(world.shared())
-            .expect("the shared scope exists");
+        let mut shared = world.scope_mut(world.shared());
         (
             shared.spawn(SpinState {
                 radians_per_second: SPIN,
@@ -138,15 +131,11 @@ fn build(
     };
     // The cube is drawn by the mesh source, so it hangs in that source's scope
     // beside the camera.
-    super::spawn_in(
-        world,
-        source_entity,
-        TexturedCube {
-            mesh,
-            material,
-            pipeline: GpuRenderPipeline::new(key),
-        },
-    );
+    world.scope_mut(source_entity).spawn(TexturedCube {
+        mesh,
+        material,
+        pipeline: GpuRenderPipeline::new(key),
+    });
 
     if panels {
         let panel = EguiPanel::new(move |world, _entity, ui| {
@@ -157,36 +146,36 @@ fn build(
                 .id(egui::Id::unique("unlit3d"))
                 .show(ui.ctx(), |ui| {
                     let frames = world
-                        .query_one::<&FrameCount>(spin)
+                        .try_query_one::<&FrameCount>(spin)
                         .map_or(0, |mut frames| frames.get().0);
                     ui.label(format!("frame {frames}"));
                     ui.label("The cube spins behind this panel.");
 
                     let spinning = world
-                        .query_one::<&Spin>(spin)
+                        .try_query_one::<&Spin>(spin)
                         .is_ok_and(|mut state| state.get().spinning);
                     let mut spinning_now = spinning;
                     if ui.checkbox(&mut spinning_now, "Spin").changed() {
                         let _ = world
-                            .query_one::<&mut Spin>(spin)
+                            .try_query_one::<&mut Spin>(spin)
                             .map(|mut state| state.get().spinning = spinning_now);
                     }
 
                     let mut speed = world
-                        .query_one::<&Spin>(spin)
+                        .try_query_one::<&Spin>(spin)
                         .map_or(SPIN, |mut state| state.get().radians_per_second);
                     if ui
                         .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
                         .changed()
                     {
-                        let _ = world.query_one::<&mut Spin>(spin).map(|mut state| {
+                        let _ = world.try_query_one::<&mut Spin>(spin).map(|mut state| {
                             state.get().radians_per_second = speed;
                         });
                     }
 
                     if ui.button("Reset the spin").clicked() {
                         let _ = world
-                            .query_one::<&mut SpinReset>(spin)
+                            .try_query_one::<&mut SpinReset>(spin)
                             .map(|mut reset| reset.get().0 = true);
                     }
 
@@ -202,7 +191,7 @@ fn build(
                         .next()
                         .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
-                    match world.query_one::<&CameraOrbit>(orbit) {
+                    match world.try_query_one::<&CameraOrbit>(orbit) {
                         Ok(mut orbit) => {
                             let orbit = orbit.get();
                             ui.label(format!(
@@ -214,11 +203,9 @@ fn build(
                     };
                 });
         });
-        super::spawn_in(
-            world,
-            ui.expect("the egui source was mounted"),
-            bundle![panel],
-        );
+        world
+            .scope_mut(ui.expect("the egui source was mounted"))
+            .spawn(bundle![panel]);
     }
     // The second panel shows the world's input state, which is what makes the
     // events visible next to the overlay they also drive.
@@ -230,7 +217,7 @@ fn build(
             if key.pressed && !key.repeat && key.key == Key::Space {
                 let _ = world
                     .root_scope()
-                    .query_one::<&mut Spin>(spin)
+                    .try_query_one::<&mut Spin>(spin)
                     .map(|mut state| state.get().spinning = !state.get().spinning);
             }
         }),]);
@@ -248,7 +235,7 @@ fn build(
                 ) {
                     let _ = world
                         .root_scope()
-                        .query_one::<&mut DragFrom>(spin)
+                        .try_query_one::<&mut DragFrom>(spin)
                         .map(|mut drag| drag.get().0 = None);
                 }
                 return;
@@ -274,29 +261,30 @@ fn build(
             if over_egui {
                 let _ = world
                     .root_scope()
-                    .query_one::<&mut DragFrom>(spin)
+                    .try_query_one::<&mut DragFrom>(spin)
                     .map(|mut drag| drag.get().0 = None);
                 return;
             }
 
             match event.action {
                 PointerAction::Pressed => {
-                    let _ = world
-                        .root_scope()
-                        .query_one::<&mut DragFrom>(spin)
-                        .map(|mut drag| {
-                            drag.get().0 = Some(PointerContact {
-                                kind: event.kind,
-                                id: event.id,
-                                position,
+                    let _ =
+                        world
+                            .root_scope()
+                            .try_query_one::<&mut DragFrom>(spin)
+                            .map(|mut drag| {
+                                drag.get().0 = Some(PointerContact {
+                                    kind: event.kind,
+                                    id: event.id,
+                                    position,
+                                });
                             });
-                        });
                 }
                 PointerAction::Moved => {
                     let previous =
                         world
                             .root_scope()
-                            .query_one::<&mut DragFrom>(spin)
+                            .try_query_one::<&mut DragFrom>(spin)
                             .map(|mut drag| {
                                 let tracked = drag.get().0.as_mut()?;
                                 if (tracked.kind, tracked.id) != (event.kind, event.id) {
@@ -309,21 +297,19 @@ fn build(
                     };
                     const RADIANS_PER_PIXEL: f32 = 0.01;
                     let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-                    let _ =
-                        world
-                            .root_scope()
-                            .query_one::<&mut CameraOrbit>(orbit)
-                            .map(|mut drag| {
-                                drag.get().azimuth -= dx * RADIANS_PER_PIXEL;
-                                drag.get().elevation = (drag.get().elevation
-                                    + dy * RADIANS_PER_PIXEL)
-                                    .clamp(-1.4, 1.4);
-                            });
+                    let _ = world
+                        .root_scope()
+                        .try_query_one::<&mut CameraOrbit>(orbit)
+                        .map(|mut drag| {
+                            drag.get().azimuth -= dx * RADIANS_PER_PIXEL;
+                            drag.get().elevation =
+                                (drag.get().elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                        });
                 }
                 PointerAction::Released { .. } | PointerAction::Left => {
                     let _ = world
                         .root_scope()
-                        .query_one::<&mut DragFrom>(spin)
+                        .try_query_one::<&mut DragFrom>(spin)
                         .map(|mut drag| drag.get().0 = None);
                 }
                 PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
@@ -359,9 +345,7 @@ fn build(
 
             // The cube and the camera are what the mesh source draws, so they
             // are read and written through its own scope.
-            let view = world
-                .scope(source_entity)
-                .expect("the source entity is alive");
+            let view = world.scope(source_entity);
             let angle = root
                 .query::<(Entity, &Spin)>()
                 .iter()

@@ -198,7 +198,7 @@ pub fn mount_controls(world: &mut World) {
                     // along so Play can unlock the output the same click.
                     if let (Some(scene), Ok(mut track)) = (
                         world.query::<&Scene>().iter().next(),
-                        world.query_one::<&mut Track>(tracks.background),
+                        world.try_query_one::<&mut Track>(tracks.background),
                     ) {
                         track_controls(
                             ui,
@@ -210,7 +210,7 @@ pub fn mount_controls(world: &mut World) {
                     }
                     if let (Some(scene), Ok(mut track)) = (
                         world.query::<&Scene>().iter().next(),
-                        world.query_one::<&mut Track>(tracks.sequence),
+                        world.try_query_one::<&mut Track>(tracks.sequence),
                     ) {
                         track_controls(
                             ui,
@@ -252,7 +252,6 @@ pub fn control_panel_job(panels: PanelSlots, pass: RemoteEntity) -> Job {
         source.publish_target(panels.target);
         world
             .scope_mut(pass.entity)
-            .expect("the scene's pass is alive")
             .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source)]);
     })
 }

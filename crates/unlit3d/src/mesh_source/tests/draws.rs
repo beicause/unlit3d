@@ -524,7 +524,6 @@ fn a_hidden_entity_is_not_drawn() {
     *h.world
         .root_scope()
         .query_one::<&mut InstanceVisibility>(hidden)
-        .expect("the hidden entity still carries its visibility")
         .get() = InstanceVisibility::default();
     let mut scene = Scene::new();
     h.source.build_scene(

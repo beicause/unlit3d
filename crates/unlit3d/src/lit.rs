@@ -330,20 +330,20 @@ impl InstanceData for LitInstance {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let world = &context.world;
         let entity = context.entity;
-        let mut mesh_row = world.query_one::<&GpuMesh>(entity).unwrap_or_else(|_| {
+        let mut mesh_row = world.try_query_one::<&GpuMesh>(entity).unwrap_or_else(|_| {
             panic!(
                 "every visible entity carries the mesh culling resolved, but {entity:?} does not"
             )
         });
         let mesh = mesh_row.get();
         let base_color = world
-            .query_one::<&InstanceColor>(entity)
+            .try_query_one::<&InstanceColor>(entity)
             .map_or(glam::Vec4::ONE, |mut color| color.get().color);
         let cutoff = world
-            .query_one::<&InstanceCutoff>(entity)
+            .try_query_one::<&InstanceCutoff>(entity)
             .map_or(0.0, |mut cutoff| cutoff.get().cutoff);
         let hull_width = world
-            .query_one::<&InstanceHullWidth>(entity)
+            .try_query_one::<&InstanceHullWidth>(entity)
             .map_or(0.0, |mut hull| hull.get().width);
         // Skinning and morphing are independent: a mesh may have either, both
         // or neither, and each packs into its own array.

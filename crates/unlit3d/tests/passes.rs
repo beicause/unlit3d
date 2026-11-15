@@ -88,16 +88,10 @@ fn bind_target(
         samples,
         with_depth,
     );
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| {
-            let pass = pass.get();
-            {
-                pass.set_attachments(&attachments, color_view);
-            }
-        })
-        .expect("the pass entity exists");
+    {
+        let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
+        pass.get().set_attachments(&attachments, color_view);
+    }
     color
 }
 
@@ -117,7 +111,6 @@ async fn centre_pixel(
 fn spawn_pass(world: &mut World, parent: Entity, order: i32) -> Entity {
     world
         .scope_mut(parent)
-        .expect("the parent entity is its own scope")
         .spawn(Pass::new(FramePassOrder(order)))
 }
 
@@ -164,13 +157,10 @@ async fn two_passes_draw_their_own_sources() {
 
     let texture = solid_texture(&ctx.device, &ctx.queue, SECOND);
     let (_, view) = gpu.register_texture(&world, texture);
-    world
-        .scope_mut(second_pass)
-        .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::MESH,
-            BlitSource::new(view)
-        )]);
+    world.scope_mut(second_pass).spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        BlitSource::new(view)
+    )]);
 
     gpu.render(&world);
 
@@ -198,26 +188,20 @@ async fn a_nested_source_is_built_by_every_pass_above_it() {
     bind_target(&gpu, &world, nested_pass, 1, false);
 
     let nested_builds = Rc::new(Cell::new(0));
-    world
-        .scope_mut(nested_pass)
-        .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::MESH,
-            CountingSource {
-                builds: nested_builds.clone(),
-            }
-        ),]);
+    world.scope_mut(nested_pass).spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        CountingSource {
+            builds: nested_builds.clone(),
+        }
+    ),]);
 
     let sibling_builds = Rc::new(Cell::new(0));
-    world
-        .scope_mut(outer_pass)
-        .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::MESH,
-            CountingSource {
-                builds: sibling_builds.clone(),
-            }
-        ),]);
+    world.scope_mut(outer_pass).spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        CountingSource {
+            builds: sibling_builds.clone(),
+        }
+    ),]);
 
     gpu.render(&world);
 
@@ -291,30 +275,21 @@ async fn a_parked_pass_draws_nothing() {
     world
         .root_scope()
         .query_one::<&mut RenderLoadOps>(pass_b)
-        .map(|mut load| {
-            let load = load.get();
-            load.color = wgpu::LoadOp::Clear(wgpu::Color::RED)
-        })
-        .expect("the pass carries its load ops");
+        .get()
+        .color = wgpu::LoadOp::Clear(wgpu::Color::RED);
 
     let texture = solid_texture(&ctx.device, &ctx.queue, COLOR);
     let (_, view) = gpu.register_texture(&world, texture);
-    world
-        .scope_mut(pass_b)
-        .expect("the pass entity is its own scope")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::MESH,
-            BlitSource::new(view)
-        )]);
+    world.scope_mut(pass_b).spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        BlitSource::new(view)
+    )]);
 
     world
         .root_scope()
         .query_one::<&mut FramePass>(pass_b)
-        .map(|mut pass| {
-            let pass = pass.get();
-            pass.park()
-        })
-        .expect("the pass entity exists");
+        .get()
+        .park();
     gpu.render(&world);
 
     let untouched =
@@ -344,13 +319,10 @@ async fn a_shared_source_draws_into_every_pass() {
     let texture = solid_texture(&ctx.device, &ctx.queue, COLOR);
     let (_, view) = gpu.register_texture(&world, texture);
     let shared = world.shared();
-    world
-        .scope_mut(shared)
-        .expect("the shared subtree is its own scope")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::MESH,
-            BlitSource::new(view)
-        )]);
+    world.scope_mut(shared).spawn(bundle![Source::new(
+        FrameSourceOrder::MESH,
+        BlitSource::new(view)
+    )]);
 
     gpu.render(&world);
 

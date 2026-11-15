@@ -332,7 +332,7 @@ impl FrameSource for MeshSource {
         // the pass.
         let camera = match info.camera {
             Some(camera_entity) => world
-                .query_one::<&Camera>(camera_entity)
+                .try_query_one::<&Camera>(camera_entity)
                 .ok()
                 .map(|mut row| {
                     let camera = row.get().clone();

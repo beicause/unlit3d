@@ -54,7 +54,7 @@ fn advance<T: 'static>(
     OnFrame::with_order(order, move |world, entity, frame| {
         let _ = world
             .root_scope()
-            .query_one::<&mut T>(entity)
+            .try_query_one::<&mut T>(entity)
             .map(|mut component| tick(component.get(), world, frame));
     })
 }

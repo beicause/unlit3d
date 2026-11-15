@@ -25,7 +25,7 @@ impl Command for RunSceneAdvance {
         let Self { entity, frame } = *self;
         let advance = world
             .root_scope()
-            .query_one::<&mut SceneAdvance>(entity)
+            .try_query_one::<&mut SceneAdvance>(entity)
             .ok()
             .and_then(|mut slot| slot.get().0.take());
         let Some(mut advance) = advance else {
@@ -34,7 +34,7 @@ impl Command for RunSceneAdvance {
         advance(world, frame.index, frame.delta_time, frame.size);
         let _ = world
             .root_scope()
-            .query_one::<&mut SceneAdvance>(entity)
+            .try_query_one::<&mut SceneAdvance>(entity)
             .map(|mut slot| slot.get().0 = Some(advance));
         Ok(())
     }
@@ -53,7 +53,7 @@ pub(crate) struct RunInWorld {
 impl Command for RunInWorld {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let Self { entity, command } = *self;
-        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(entity) else {
+        let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(entity) else {
             command.fail(format!("host entity {entity:?} carries no world"));
             return Ok(());
         };
@@ -79,7 +79,7 @@ impl Command for RunInHost {
 
 /// The GPU context, once the asynchronous setup has landed.
 pub(crate) fn gpu(world: &World, app: Entity) -> Option<Gpu> {
-    let mut state = world.root_scope().query_one::<&GpuState>(app).ok()?;
+    let mut state = world.root_scope().try_query_one::<&GpuState>(app).ok()?;
     match state.get() {
         GpuState::Ready(gpu) => Some(gpu.clone()),
         GpuState::Idle | GpuState::Requested => None,
@@ -126,7 +126,7 @@ impl Command for BuildPresenter {
         let entity = world.root_scope_mut().spawn(bundle![presenter]);
         world
             .root_scope()
-            .query_one::<&mut PresenterEntity>(self.app)?
+            .try_query_one::<&mut PresenterEntity>(self.app)?
             .get()
             .0 = Some(entity);
         Ok(())

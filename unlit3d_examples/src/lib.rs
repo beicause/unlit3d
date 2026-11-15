@@ -198,10 +198,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     let input = InputWriter::new();
     // The writer is read by every source, so it lives in the shared subtree.
     let shared = world.shared();
-    world
-        .scope_mut(shared)
-        .expect("the shared scope exists")
-        .spawn(bundle![input.clone()]);
+    world.scope_mut(shared).spawn(bundle![input.clone()]);
     world
         .root_scope_mut()
         .spawn(bundle![winit_input_behaviour(WinitInput::new(input))]);

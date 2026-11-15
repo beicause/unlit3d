@@ -36,7 +36,7 @@
 //! // The renderer the surface draws through, spawned once as a resource.
 //! let window_surface = world
 //!     .root_scope()
-//!     .query_one::<&mut Renderer>(renderer)
+//!     .try_query_one::<&mut Renderer>(renderer)
 //!     .map(|mut r| {
 //!         WindowSurface::new(
 //!             world,
@@ -54,7 +54,6 @@
 //! let context = world
 //!     .root_scope()
 //!     .query_one::<&Renderer>(renderer)
-//!     .unwrap()
 //!     .get()
 //!     .context();
 //! let attachments = FrameAttachments::new(
@@ -98,7 +97,7 @@
 //!     return;
 //! };
 //! // The region the content is drawn into belongs to the caller.
-//! root.query_one::<&mut Renderer>(renderer_entity)
+//! root.try_query_one::<&mut Renderer>(renderer_entity)
 //!     .map(|mut renderer| renderer.get().render(world))
 //!     .unwrap();
 //! frame.present_and_park(world, queue, pass);
@@ -441,26 +440,18 @@ impl WindowSurface {
     ) -> Option<Frame> {
         let _ = world
             .root_scope()
-            .query_one::<&mut FramePass>(pass)
+            .try_query_one::<&mut FramePass>(pass)
             .map(|mut pass| pass.get().park());
-        let mut renderer_row = world
-            .root_scope()
-            .query_one::<&mut Renderer>(renderer)
-            .expect("the renderer exists");
+        let mut renderer_row = world.root_scope().query_one::<&mut Renderer>(renderer);
         let Some(frame) = self.acquire(world, &mut *renderer_row.get()) else {
             // The acquire failed, so the pass stays parked: nothing records
             // into a swap-chain image that is gone or was never acquired.
             return None;
         };
         if let Some(attachments) = attachments {
-            world
-                .root_scope()
-                .query_one::<&mut FramePass>(pass)
-                .map(|mut pass| {
-                    pass.get()
-                        .set_attachments(attachments, frame.color_view().clone());
-                })
-                .expect("the presenting pass exists");
+            let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
+            pass.get()
+                .set_attachments(attachments, frame.color_view().clone());
         }
         Some(frame)
     }
@@ -512,7 +503,7 @@ impl Frame {
         self.present(queue);
         let _ = world
             .root_scope()
-            .query_one::<&mut FramePass>(pass)
+            .try_query_one::<&mut FramePass>(pass)
             .map(|mut pass| pass.get().park());
     }
 }

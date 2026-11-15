@@ -122,11 +122,8 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
     world
         .root_scope()
         .query_one::<&mut FramePass>(gpu.pass())
-        .map(|mut pass| {
-            let pass = pass.get();
-            pass.viewport = viewport
-        })
-        .expect("the pass entity exists");
+        .get()
+        .viewport = viewport;
     (world, gpu)
 }
 

@@ -204,7 +204,6 @@ fn target_texture(world: &World, scene: &Scene, target: &PersistentTarget) -> wg
     let context = world
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
-        .expect("the renderer is a resource entity")
         .get()
         .context();
     let mut graph = context
@@ -239,7 +238,6 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     let context = world
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
-        .expect("the renderer is a resource entity")
         .get()
         .context();
     let target = PersistentTarget::bind(
@@ -337,7 +335,6 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
     let context = world
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
-        .expect("the renderer is a resource entity")
         .get()
         .context();
     let target = PersistentTarget::bind(

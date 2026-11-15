@@ -75,7 +75,6 @@ fn build(
     let key = LitPipelineKey::new(default_options());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
@@ -97,20 +96,16 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle![camera(size)]);
+    let camera_entity = world.scope_mut(source_entity).spawn(bundle![camera(size)]);
     // The pose is an entity of its own: the mesh names it rather than owning
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
-    let pose_entity = super::spawn_in(world, source_entity, bundle![skin.pose()]);
-    super::spawn_in(
-        world,
-        source_entity,
-        SkinnedCube {
-            mesh,
-            pipeline: GpuRenderPipeline::new(key),
-            pose: pose_entity,
-        },
-    );
+    let pose_entity = world.scope_mut(source_entity).spawn(bundle![skin.pose()]);
+    world.scope_mut(source_entity).spawn(SkinnedCube {
+        mesh,
+        pipeline: GpuRenderPipeline::new(key),
+        pose: pose_entity,
+    });
 
     let mut skin = skin;
     SceneControl {
@@ -121,9 +116,7 @@ fn build(
             skin.set_angle(bend_angle(frame));
             *world
                 .scope(source_entity)
-                .expect("the source is alive")
                 .query_one::<&mut SkinPose>(pose_entity)
-                .expect("the pose entity carries a `SkinPose`")
                 .get() = skin.pose();
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the cube.

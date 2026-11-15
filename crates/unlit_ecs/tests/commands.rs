@@ -35,19 +35,14 @@ fn a_queued_spawn_does_nothing_until_apply() {
     world.apply().unwrap();
     assert!(world.root_scope().contains(child));
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Marker>(child)
-            .unwrap()
-            .get()
-            .0,
+        world.root_scope().query_one::<&Marker>(child).get().0,
         0,
         "the behaviour read the world before the spawn existed"
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<Spawned>>(child)
+            .try_query_one::<Has<Spawned>>(child)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -65,14 +60,7 @@ fn a_queued_handle_is_usable_before_apply() {
     world.apply().unwrap();
 
     assert!(world.root_scope().contains(child));
-    assert_eq!(
-        *world
-            .root_scope()
-            .query_one::<&Entity>(owner)
-            .unwrap()
-            .get(),
-        child
-    );
+    assert_eq!(*world.root_scope().query_one::<&Entity>(owner).get(), child);
 }
 
 #[test]
@@ -100,24 +88,8 @@ fn commands_apply_in_the_order_they_were_queued() {
 
     assert!(world.root_scope().contains(first));
     assert!(world.root_scope().contains(second));
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Marker>(first)
-            .unwrap()
-            .get()
-            .0,
-        1
-    );
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Marker>(second)
-            .unwrap()
-            .get()
-            .0,
-        2
-    );
+    assert_eq!(world.root_scope().query_one::<&Marker>(first).get().0, 1);
+    assert_eq!(world.root_scope().query_one::<&Marker>(second).get().0, 2);
 }
 
 #[test]
@@ -203,12 +175,7 @@ fn many_commands_apply_without_losing_any() {
     assert_eq!(world.root_scope().len(), 256);
     for (expected, entity) in (0..256u32).zip(&handles) {
         assert_eq!(
-            world
-                .root_scope()
-                .query_one::<&Marker>(*entity)
-                .unwrap()
-                .get()
-                .0,
+            world.root_scope().query_one::<&Marker>(*entity).get().0,
             expected
         );
     }
@@ -240,9 +207,9 @@ fn a_refused_command_leaves_the_rest_of_the_queue_applied() {
     let mut world = World::new();
     let shared = world.shared();
     let scene = world.root_scope_mut().spawn(bundle![Marker(1)]);
-    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(2)]);
+    let resource = world.scope_mut(shared).spawn(bundle![Marker(2)]);
 
-    world.scope(scene).unwrap().queue().despawn(resource);
+    world.scope(scene).queue().despawn(resource);
     let late = world.root_scope().queue().spawn(bundle![Marker(3)]);
     let error = world.apply().unwrap_err();
     assert_eq!(
@@ -267,10 +234,10 @@ fn only_the_first_failure_is_reported() {
     let mut world = World::new();
     let shared = world.shared();
     let scene = world.root_scope_mut().spawn(bundle![Marker(1)]);
-    let first = world.scope_mut(shared).unwrap().spawn(bundle![Marker(2)]);
-    let second = world.scope_mut(shared).unwrap().spawn(bundle![Marker(3)]);
+    let first = world.scope_mut(shared).spawn(bundle![Marker(2)]);
+    let second = world.scope_mut(shared).spawn(bundle![Marker(3)]);
 
-    let queue = world.scope(scene).unwrap().queue();
+    let queue = world.scope(scene).queue();
     queue.despawn(first);
     queue.despawn(second);
     assert_eq!(

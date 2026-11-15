@@ -8,7 +8,7 @@
 //! builds its document on its first frame, which is drawn before the loop and
 //! is the frame both captures are taken after.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, spawn_in, spawn_shared};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
@@ -138,13 +138,10 @@ fn build(
     _size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let source = world
-        .scope_mut(pass)
-        .expect("the pass is alive")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::BLITZ,
-            BlitzSource::new()
-        )]);
+    let source = world.scope_mut(pass).spawn(bundle![Source::new(
+        FrameSourceOrder::BLITZ,
+        BlitzSource::new()
+    )]);
 
     // A capture runs without a window, so nothing would push the clicks and
     // keystrokes the page's controls react to: the scene spawns a writer of its
@@ -154,19 +151,22 @@ fn build(
         // `InputFeed` expands into a writer and the buffer it feeds, so it is
         // spawned as itself: a `bundle![...]` around it would register the feed
         // as one component and spread neither.
-        spawn_shared(world, InputFeed(input.clone()));
+        world
+            .scope_mut(world.shared())
+            .spawn(InputFeed(input.clone()));
         input
     });
 
-    spawn_in(world, source, bundle![BlitzDocument::new(PAGE)]);
+    world
+        .scope_mut(source)
+        .spawn(bundle![BlitzDocument::new(PAGE)]);
 
     // The page reacts to nothing on its own: a click, a keystroke or a tick has
     // no handler inside it, and writing the event name into the status line is
     // the smallest thing the callback can do that shows it arrived.
-    spawn_in(
-        world,
-        source,
-        bundle![OnBlitzEvent::new(|_scope, _entity, event| {
+    world
+        .scope_mut(source)
+        .spawn(bundle![OnBlitzEvent::new(|_scope, _entity, event| {
             let name = event.data().name();
             let document = event.document_mut();
             let Some(status) = document.get_element_by_id("status") else {
@@ -182,8 +182,7 @@ fn build(
                 .document_mut()
                 .mutate()
                 .set_node_text(text, &format!("最后事件：{name}"));
-        })],
-    );
+        })]);
 
     SceneControl {
         // A page repaints only on what it was told, so the frame that pushes

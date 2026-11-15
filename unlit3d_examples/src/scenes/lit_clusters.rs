@@ -113,7 +113,6 @@ fn build_clusters(
 
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // The floor is one plane: the grid is a screen-space structure, so its cells
@@ -132,19 +131,23 @@ fn build_clusters(
     let mesh = allocate_surface(world, source_entity, &key, &floor);
     let pipeline = GpuRenderPipeline::new(key);
 
-    let camera_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![camera_looking_at(CLUSTER_EYE, CLUSTER_TARGET, size)],
-    );
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![camera_looking_at(
+            CLUSTER_EYE,
+            CLUSTER_TARGET,
+            size
+        )]);
     // A dim ambient keeps the unoccupied cells readable beneath the grid, while
     // the local lights remain visible through their cells.
-    super::spawn_in(
-        world,
-        source_entity,
-        bundle![AmbientLight::new(glam::Vec4::new(0.08, 0.08, 0.08, 0.0))],
-    );
-    super::spawn_in(world, source_entity, LitSurface { mesh, pipeline });
+    world
+        .scope_mut(source_entity)
+        .spawn(bundle![AmbientLight::new(glam::Vec4::new(
+            0.08, 0.08, 0.08, 0.0
+        ))]);
+    world
+        .scope_mut(source_entity)
+        .spawn(LitSurface { mesh, pipeline });
 
     // One row per light kind, each light aimed straight down at the floor. The
     // color follows the row, so a lit frame of this scene still tells the rows
@@ -165,70 +168,54 @@ fn build_clusters(
 
     for (column, x) in CLUSTER_COLUMNS.into_iter().enumerate() {
         let color = hue_color(column as f32 / CLUSTER_COLUMNS.len() as f32);
-        super::spawn_in(
-            world,
-            source_entity,
-            PlacedLight {
-                light: LightSource::new(PointLight {
-                    color,
-                    intensity: 0.5,
-                    range: point_range,
-                }),
-                translation: glam::Vec3::new(x, point_height, point_depth),
-                rotation: glam::Quat::IDENTITY,
-            },
-        );
+        world.scope_mut(source_entity).spawn(PlacedLight {
+            light: LightSource::new(PointLight {
+                color,
+                intensity: 0.5,
+                range: point_range,
+            }),
+            translation: glam::Vec3::new(x, point_height, point_depth),
+            rotation: glam::Quat::IDENTITY,
+        });
     }
 
     for (column, x) in CLUSTER_COLUMNS.into_iter().enumerate() {
         let color = hue_color(column as f32 / CLUSTER_COLUMNS.len() as f32 + 0.33);
         let position = glam::Vec3::new(x, spot_height, spot_depth);
-        super::spawn_in(
-            world,
-            source_entity,
-            PlacedLight::aiming(
-                LightSource::new(SpotLight {
-                    color,
-                    intensity: 1.0,
-                    range: spot_range,
-                    inner_angle: 18f32.to_radians(),
-                    outer_angle: 32f32.to_radians(),
-                }),
-                position,
-                position + glam::Vec3::NEG_Y,
-            ),
-        );
+        world.scope_mut(source_entity).spawn(PlacedLight::aiming(
+            LightSource::new(SpotLight {
+                color,
+                intensity: 1.0,
+                range: spot_range,
+                inner_angle: 18f32.to_radians(),
+                outer_angle: 32f32.to_radians(),
+            }),
+            position,
+            position + glam::Vec3::NEG_Y,
+        ));
     }
 
     for (column, x) in CLUSTER_COLUMNS.into_iter().enumerate() {
         let color = hue_color(column as f32 / CLUSTER_COLUMNS.len() as f32 + 0.66);
         let position = glam::Vec3::new(x, quad_height, quad_depth);
-        super::spawn_in(
-            world,
-            source_entity,
-            PlacedLight::aiming(
-                LightSource::new(QuadLight::rect(color, 0.6, quad_range, 1.6, 1.2)),
-                position,
-                position + glam::Vec3::NEG_Y,
-            ),
-        );
+        world.scope_mut(source_entity).spawn(PlacedLight::aiming(
+            LightSource::new(QuadLight::rect(color, 0.6, quad_range, 1.6, 1.2)),
+            position,
+            position + glam::Vec3::NEG_Y,
+        ));
     }
 
     // A single directional light, which reaches every cell of the grid whatever
     // its depth: the row it lights is the whole frame, so a grid that drops it
     // from any cell shows up as that cell going dark.
-    super::spawn_in(
-        world,
-        source_entity,
-        PlacedLight {
-            light: LightSource::new(DirectionalLight {
-                color: glam::Vec4::new(0.9, 0.85, 0.75, 0.0),
-                intensity: 0.2,
-            }),
-            translation: glam::Vec3::ZERO,
-            rotation: glam::Quat::from_rotation_x(-1.0),
-        },
-    );
+    world.scope_mut(source_entity).spawn(PlacedLight {
+        light: LightSource::new(DirectionalLight {
+            color: glam::Vec4::new(0.9, 0.85, 0.75, 0.0),
+            intensity: 0.2,
+        }),
+        translation: glam::Vec3::ZERO,
+        rotation: glam::Quat::from_rotation_x(-1.0),
+    });
 
     SceneControl {
         advance: Box::new(move |world, _frame, _delta, frame_size| {

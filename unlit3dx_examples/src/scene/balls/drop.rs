@@ -19,7 +19,7 @@ impl Balls {
 
         let selected = world
             .root_scope()
-            .query_one::<&SceneState>(state)
+            .try_query_one::<&SceneState>(state)
             .ok()
             .and_then(|mut state| {
                 state.get().loaded.as_ref().map(|assets| {

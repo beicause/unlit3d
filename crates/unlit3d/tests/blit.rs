@@ -141,19 +141,14 @@ async fn a_new_view_changes_what_the_frame_shows() {
         SECOND,
     );
     let (_, view) = gpu.register_texture(&world, texture);
-    world
-        .root_scope()
-        .query_one::<&mut Source>(source)
-        .map(|mut source| {
-            let source = source.get();
-            {
-                source
-                    .as_mut::<BlitSource>()
-                    .expect("the source is a BlitSource")
-                    .view = view;
-            }
-        })
-        .expect("the source entity exists");
+    let mut source = world.root_scope().query_one::<&mut Source>(source);
+    let source = source.get();
+    {
+        source
+            .as_mut::<BlitSource>()
+            .expect("the source is a BlitSource")
+            .view = view;
+    };
     gpu.render(&world);
 
     assert_eq!(
@@ -168,17 +163,12 @@ async fn a_new_view_changes_what_the_frame_shows() {
 /// states.
 async fn blended_centre(ctx: &Ctx, rgba: [u8; 4]) -> [u8; 4] {
     let (world, gpu, target, source) = blit_world(ctx, rgba);
-    world
-        .root_scope()
-        .query_one::<&mut Source>(source)
-        .map(|mut source| {
-            source
-                .get()
-                .as_mut::<BlitSource>()
-                .expect("the source is a BlitSource")
-                .blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
-        })
-        .expect("the source entity exists");
+    let mut source = world.root_scope().query_one::<&mut Source>(source);
+    source
+        .get()
+        .as_mut::<BlitSource>()
+        .expect("the source is a BlitSource")
+        .blend = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
     gpu.render(&world);
     centre_pixel(&ctx.device, &ctx.queue, &target).await
 }

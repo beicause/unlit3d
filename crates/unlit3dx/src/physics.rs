@@ -167,7 +167,7 @@ fn physics_events(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut PhysicsE
         .map(|(entity, _events)| entity)?;
     world
         .root_scope()
-        .query_one::<&mut PhysicsEvents>(entity)
+        .try_query_one::<&mut PhysicsEvents>(entity)
         .ok()
 }
 
@@ -181,7 +181,7 @@ fn physics_contacts(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut Physic
         .map(|(entity, _contacts)| entity)?;
     world
         .root_scope()
-        .query_one::<&mut PhysicsContacts>(entity)
+        .try_query_one::<&mut PhysicsContacts>(entity)
         .ok()
 }
 
@@ -298,10 +298,7 @@ fn physics_world(world: &World) -> unlit_ecs::QueryOne<'_, &mut PhysicsWorld> {
         .next()
         .map(|(entity, _physics)| entity)
         .expect("the physics world exists");
-    world
-        .root_scope()
-        .query_one::<&mut PhysicsWorld>(entity)
-        .expect("the physics world exists")
+    world.root_scope().query_one::<&mut PhysicsWorld>(entity)
 }
 
 /// Spawn the physics world driven by `R`: on its own thread

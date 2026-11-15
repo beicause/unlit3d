@@ -22,7 +22,7 @@
 //! // panels are more entities under the same source, each with its own
 //! // sibling state.
 //! let ui = world.root_scope_mut().spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
-//! world.scope_mut(ui).unwrap().spawn(bundle![
+//! world.scope_mut(ui).spawn(bundle![
 //!     EguiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
 //!     }),
@@ -561,10 +561,12 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
         urls.clear();
         return;
     };
-    let _ = scope.query_one::<&mut OpenUrls>(entity).map(|mut slot| {
-        let slot = slot.get();
-        slot.replace(urls.drain(..))
-    });
+    let _ = scope
+        .try_query_one::<&mut OpenUrls>(entity)
+        .map(|mut slot| {
+            let slot = slot.get();
+            slot.replace(urls.drain(..))
+        });
 }
 
 /// A frame of egui that was laid out somewhere other than the world drawing it.

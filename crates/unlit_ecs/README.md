@@ -75,13 +75,21 @@ It is at an **early stage of development** and its API changes freely.
   component being absent: a row already claimed exclusively panics the same way
   instead of reading as `None`.
 - **A failed access is an error, not a `None`.** Every function that reaches an
-  entity answers [`Result`], and the [`EntityAccessError`] it fails with names
-  the handle that was asked about and the reason: the entity has gone, it is
-  outside the scope, it does not match the query, it was not reserved, or it
-  is not the caller's to move. An archetype named by id answers
+  entity names the reason it was refused in an [`EntityAccessError`]: the entity
+  has gone, it is outside the scope, it does not match the query, it was not
+  reserved, or it is not the caller's to move. An archetype named by id answers
   [`ArchetypeAccessError`] instead. `Option` stays where absence is not a
   failed access — a query item `Option<&C>` is absent for an entity that
   merely lacks `C`.
+- **The shortcuts panic, the `try_` names answer `Result`.** Opening a scope,
+  opening a nested one and reading one entity's query answer their item directly
+  and panic with the error's own message, because the call sites that hold a
+  handle they just took have nothing to do with the failure but report it. The
+  fallible form is one name away — [`World::try_scope`],
+  [`Scope::try_query_one`] and their kin — and is what a caller uses when the
+  handle may have gone, when it comes from elsewhere, or when a missing row is an
+  answer rather than a fault. The cost of the shortcut is that a caller which
+  should have branched compiles, and finds the reason at run time instead.
 - **Two entities are scaffolding.** [`World::root`] and [`World::shared`]
   belong to the tree, not to its content: neither is counted, queried, despawned
   or relinked. [Scopes](#scopes) says what they are and what they cost.
@@ -97,11 +105,11 @@ use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
 let scene = world.root_scope_mut().spawn(bundle![]);
-let cube = world.scope_mut(scene).unwrap().spawn(bundle![0u32]);
-let camera = world.scope_mut(scene).unwrap().spawn(bundle![0f32]);
+let cube = world.scope_mut(scene).spawn(bundle![0u32]);
+let camera = world.scope_mut(scene).spawn(bundle![0f32]);
 
 // The scene's scope sees the scene and everything below it, and nothing beside.
-let scope = world.scope(scene).unwrap();
+let scope = world.scope(scene);
 assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
@@ -370,14 +378,14 @@ let clock = world.root_scope_mut().spawn(bundle![0.016f32]);
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
-let delta = *world.root_scope().query_one::<&f32>(clock).unwrap().get();
+let delta = *world.root_scope().query_one::<&f32>(clock).get();
 {
     let mut spins = world.root_scope().query::<&mut Spin>();
     for spin in spins.iter() {
         spin.angle += spin.radians_per_second * delta;
     }
 }
-assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().get().angle, 0.0);
+assert_ne!(world.root_scope().query_one::<&Spin>(cube).get().angle, 0.0);
 
 // A predicate narrows the archetypes a query visits, before any column is
 // claimed: here, everything that is not a clock.
@@ -410,9 +418,10 @@ through [`PlanBuilder`], which hands out [`Col`] and [`ColMut`] and records
 what it was asked for, so the components a query claims are exactly the ones it
 declares. [`Scope::query_one`] runs the same query over one entity and answers a
 [`QueryOne`] holder whose [`QueryOne::get`] hands out the single row, so a
-lookup by handle and a pass over a scope share one vocabulary; a handle that
-names no visible entity, or one the query does not match, is an
-[`EntityAccessError`].
+lookup by handle and a pass over a scope share one vocabulary. A handle that
+names no visible entity, or one the query does not match, panics with the
+[`EntityAccessError`] that says which; [`Scope::try_query_one`] answers it
+instead for a caller that expects the row to be missing.
 
 Spawning and despawning need a `&mut` scope, or a queued command:
 
@@ -448,9 +457,9 @@ let entity = world.root_scope_mut().spawn(bundle![(1u32, 2.0f32), (true, ())]);
 
 // Two components: one tuple, and a nested one.
 let scope = world.root_scope();
-assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap().get());
-assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap().get());
-assert!(!scope.query_one::<Has<u32>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<(u32, f32)>>(entity).get());
+assert!(scope.query_one::<Has<(bool, ())>>(entity).get());
+assert!(!scope.query_one::<Has<u32>>(entity).get());
 ```
 
 A bundle written as `..value` is spread into its own components, so a bundle
@@ -468,8 +477,8 @@ let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
-assert!(scope.query_one::<Has<u32>>(entity).unwrap().get());
-assert!(scope.query_one::<Has<f32>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<u32>>(entity).get());
+assert!(scope.query_one::<Has<f32>>(entity).get());
 ```
 
 ## The MCP server

@@ -13,19 +13,14 @@ pub(crate) fn present(world: &World, app: Entity) {
     };
     let window_size = window.inner_size();
     let size = (window_size.width.max(1), window_size.height.max(1));
-    let def = world
-        .root_scope()
-        .query_one::<&InitialScene>(app)
-        .expect("the app entity carries its initial scene")
-        .get()
-        .0;
+    let def = world.root_scope().query_one::<&InitialScene>(app).get().0;
     let mcp = world
         .root_scope()
-        .query_one::<&McpEnabled>(app)
+        .try_query_one::<&McpEnabled>(app)
         .is_ok_and(|mut mcp| mcp.get().0);
     let scene_entity = match world
         .root_scope()
-        .query_one::<&SceneEntity>(app)
+        .try_query_one::<&SceneEntity>(app)
         .ok()
         .and_then(|mut slot| slot.get().0)
     {
@@ -52,7 +47,7 @@ pub(crate) fn present(world: &World, app: Entity) {
             });
             let _ = world
                 .root_scope()
-                .query_one::<&mut SceneEntity>(app)
+                .try_query_one::<&mut SceneEntity>(app)
                 .map(|mut slot| slot.get().0 = Some(entity));
             window.set_title(&format!(
                 "unlit3d{} — {}",
@@ -64,16 +59,13 @@ pub(crate) fn present(world: &World, app: Entity) {
     };
     if world
         .root_scope()
-        .query_one::<&World>(scene_entity)
+        .try_query_one::<&World>(scene_entity)
         .is_err()
     {
         return;
     }
     let (renderer, pass) = {
-        let mut scene = world
-            .root_scope()
-            .query_one::<&mut Scene>(scene_entity)
-            .expect("the scene entity carries a scene");
+        let mut scene = world.root_scope().query_one::<&mut Scene>(scene_entity);
         scene.get().resize(size, def.baseline);
         (scene.get().renderer, scene.get().pass)
     };
@@ -117,7 +109,7 @@ pub(crate) fn present(world: &World, app: Entity) {
 pub(crate) fn presenter_entity(world: &World, app: Entity) -> Option<Entity> {
     world
         .root_scope()
-        .query_one::<&PresenterEntity>(app)
+        .try_query_one::<&PresenterEntity>(app)
         .ok()
         .and_then(|mut slot| slot.get().0)
 }
@@ -129,7 +121,7 @@ pub(crate) fn release_surface(world: &World, app: Entity) {
     };
     let released = world
         .root_scope()
-        .query_one::<&mut Presenter>(entity)
+        .try_query_one::<&mut Presenter>(entity)
         .map(|mut presenter| presenter.get().release(world));
     if let Ok(Err(error)) = released {
         log::error!("failed to release the presentation path: {error}");
@@ -141,7 +133,7 @@ pub(crate) fn release_presenter(world: &World, app: Entity) {
     release_surface(world, app);
     let entity = world
         .root_scope()
-        .query_one::<&mut PresenterEntity>(app)
+        .try_query_one::<&mut PresenterEntity>(app)
         .ok()
         .and_then(|mut slot| slot.get().0.take());
     if let Some(entity) = entity {
@@ -161,13 +153,13 @@ pub(crate) fn switch_scene(world: &World, app: Entity, def: &'static scenes::Sce
     release_presenter(world, app);
     if let Some(entity) = world
         .root_scope()
-        .query_one::<&mut SceneEntity>(app)
+        .try_query_one::<&mut SceneEntity>(app)
         .ok()
         .and_then(|mut slot| slot.get().0.take())
     {
         world.root_scope().queue().despawn(entity);
     }
-    if let Ok(mut initial) = world.root_scope().query_one::<&mut InitialScene>(app) {
+    if let Ok(mut initial) = world.root_scope().try_query_one::<&mut InitialScene>(app) {
         initial.get().0 = def;
     }
     present(world, app);

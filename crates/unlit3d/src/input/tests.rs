@@ -190,7 +190,7 @@ fn a_callback_sees_the_entity_it_sits_on() {
     world.root_scope_mut().spawn(bundle![
         7u32,
         OnKey::new(move |world, entity, _| {
-            let marker = *world.root_scope().query_one::<&u32>(entity).unwrap().get();
+            let marker = *world.root_scope().query_one::<&u32>(entity).get();
             matches.set(marker as usize);
         }),
     ]);
@@ -311,7 +311,7 @@ fn a_callback_may_queue_its_own_despawn() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<OnKey>>(doomed)
+            .try_query_one::<Has<OnKey>>(doomed)
             .is_ok_and(|mut holder| holder.get())
     );
 }
@@ -765,7 +765,7 @@ fn a_behaviour_cannot_reborrow_its_own_component() {
     world
         .root_scope_mut()
         .spawn(bundle![OnKey::new(|world, entity, _| {
-            let _ = world.root_scope().query_one::<&OnKey>(entity);
+            let _ = world.root_scope().try_query_one::<&OnKey>(entity);
         }),]);
     let input = InputWriter::new();
     world.root_scope_mut().spawn(InputFeed(input.clone()));

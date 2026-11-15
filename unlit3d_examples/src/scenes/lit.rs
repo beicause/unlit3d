@@ -196,7 +196,6 @@ fn build(
 
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let mut floor = grid(
@@ -222,29 +221,21 @@ fn build(
     let pipeline = GpuRenderPipeline::new(key);
     let relief_pipeline = GpuRenderPipeline::new(relief_key);
 
-    let camera_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
-    );
-    super::spawn_in(world, source_entity, bundle![AmbientLight::new(AMBIENT)]);
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)]);
+    world
+        .scope_mut(source_entity)
+        .spawn(bundle![AmbientLight::new(AMBIENT)]);
 
-    super::spawn_in(
-        world,
-        source_entity,
-        LitSurface {
-            mesh: floor_mesh,
-            pipeline,
-        },
-    );
-    super::spawn_in(
-        world,
-        source_entity,
-        LitSurface {
-            mesh: wall_mesh,
-            pipeline: relief_pipeline,
-        },
-    );
+    world.scope_mut(source_entity).spawn(LitSurface {
+        mesh: floor_mesh,
+        pipeline,
+    });
+    world.scope_mut(source_entity).spawn(LitSurface {
+        mesh: wall_mesh,
+        pipeline: relief_pipeline,
+    });
 
     // Two directional lights, told apart by hue as well as by direction: the
     // amber key rakes across the floor from above and the blue fill faces the
@@ -262,88 +253,68 @@ fn build(
             glam::Quat::IDENTITY,
         ),
     ] {
-        super::spawn_in(
-            world,
-            source_entity,
-            PlacedLight {
-                light: LightSource::new(DirectionalLight { color, intensity }),
-                translation: glam::Vec3::ZERO,
-                rotation,
-            },
-        );
+        world.scope_mut(source_entity).spawn(PlacedLight {
+            light: LightSource::new(DirectionalLight { color, intensity }),
+            translation: glam::Vec3::ZERO,
+            rotation,
+        });
     }
 
     for (x, color) in POINT_LIGHTS {
-        super::spawn_in(
-            world,
-            source_entity,
-            PlacedLight {
-                light: LightSource::new(PointLight {
-                    color,
-                    intensity: POINT_INTENSITY,
-                    range: POINT_RANGE,
-                }),
-                translation: glam::Vec3::new(x, POINT_HEIGHT, POINT_DEPTH),
-                rotation: glam::Quat::IDENTITY,
-            },
-        );
+        world.scope_mut(source_entity).spawn(PlacedLight {
+            light: LightSource::new(PointLight {
+                color,
+                intensity: POINT_INTENSITY,
+                range: POINT_RANGE,
+            }),
+            translation: glam::Vec3::new(x, POINT_HEIGHT, POINT_DEPTH),
+            rotation: glam::Quat::IDENTITY,
+        });
     }
 
     // The overhead spot aims at the wall, so its cone shows on both surfaces at
     // once: the wall takes the middle of it and the floor takes the spill.
-    super::spawn_in(
-        world,
-        source_entity,
-        PlacedLight::aiming(
-            LightSource::new(SpotLight {
-                color: OVERHEAD_SPOT.1,
-                intensity: SPOT_INTENSITY,
-                range: 14.0,
-                inner_angle: SPOT_INNER.to_radians(),
-                outer_angle: SPOT_OUTER.to_radians(),
-            }),
-            OVERHEAD_SPOT.0,
-            OVERHEAD_TARGET,
-        ),
-    );
+    world.scope_mut(source_entity).spawn(PlacedLight::aiming(
+        LightSource::new(SpotLight {
+            color: OVERHEAD_SPOT.1,
+            intensity: SPOT_INTENSITY,
+            range: 14.0,
+            inner_angle: SPOT_INNER.to_radians(),
+            outer_angle: SPOT_OUTER.to_radians(),
+        }),
+        OVERHEAD_SPOT.0,
+        OVERHEAD_TARGET,
+    ));
 
     // The rectangle stands upright and faces the right of the wall. Its
     // distance gives it a soft edge, contrasting with the closer triangle.
-    super::spawn_in(
-        world,
-        source_entity,
-        PlacedLight::aiming(
-            LightSource::new(QuadLight::rect(
-                QUAD_COLOR,
-                QUAD_INTENSITY,
-                8.0,
-                QUAD_SIZE.0,
-                QUAD_SIZE.1,
-            )),
-            glam::Vec3::new(QUAD_X, QUAD_HEIGHT, QUAD_DEPTH),
-            glam::Vec3::new(QUAD_X, QUAD_HEIGHT, WALL.2),
-        ),
-    );
+    world.scope_mut(source_entity).spawn(PlacedLight::aiming(
+        LightSource::new(QuadLight::rect(
+            QUAD_COLOR,
+            QUAD_INTENSITY,
+            8.0,
+            QUAD_SIZE.0,
+            QUAD_SIZE.1,
+        )),
+        glam::Vec3::new(QUAD_X, QUAD_HEIGHT, QUAD_DEPTH),
+        glam::Vec3::new(QUAD_X, QUAD_HEIGHT, WALL.2),
+    ));
 
     // The triangle stands on the left, aiming mostly at the wall but tipped
     // down enough for its lower part to spill onto the floor.
     let tilt = TRIANGLE_TILT_DEGREES.to_radians();
     let upright = glam::Vec3::new(0.0, tilt.cos(), -tilt.sin());
     let triangle_center = TRIANGLE_FOOT + upright * TRIANGLE_VERTICES[0].y.abs();
-    super::spawn_in(
-        world,
-        source_entity,
-        PlacedLight::aiming(
-            LightSource::new(QuadLight {
-                color: TRIANGLE_COLOR,
-                intensity: TRIANGLE_INTENSITY,
-                range: 16.0,
-                vertices: TRIANGLE_VERTICES,
-            }),
-            triangle_center,
-            triangle_center + glam::Vec3::new(0.0, -tilt.sin(), -tilt.cos()),
-        ),
-    );
+    world.scope_mut(source_entity).spawn(PlacedLight::aiming(
+        LightSource::new(QuadLight {
+            color: TRIANGLE_COLOR,
+            intensity: TRIANGLE_INTENSITY,
+            range: 16.0,
+            vertices: TRIANGLE_VERTICES,
+        }),
+        triangle_center,
+        triangle_center + glam::Vec3::new(0.0, -tilt.sin(), -tilt.cos()),
+    ));
 
     SceneControl {
         // A single frame: the lights do not move, so only the camera's aspect

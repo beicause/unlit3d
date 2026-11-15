@@ -120,7 +120,7 @@ impl PersistentTarget {
             config.samples,
             config.with_depth,
         );
-        let mut pass_row = world.root_scope().query_one::<&mut FramePass>(pass)?;
+        let mut pass_row = world.root_scope().try_query_one::<&mut FramePass>(pass)?;
         pass_row.get().set_attachments(&attachments, view.clone());
         Ok(Self {
             texture,

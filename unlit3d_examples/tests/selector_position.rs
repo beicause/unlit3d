@@ -255,7 +255,6 @@ fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
     let context = world
         .root_scope()
         .query_one::<&Renderer>(scene.renderer)
-        .expect("the renderer is a resource entity")
         .get()
         .context();
     PersistentTarget::bind(

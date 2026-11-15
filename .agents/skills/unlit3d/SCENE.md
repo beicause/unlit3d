@@ -26,19 +26,18 @@ let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
 let source = world
     .scope_mut(pass)
-    .unwrap()
     .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
 
 // 相机与渲染实体都挂在 source 自己的子树里。
-world.scope_mut(source).unwrap().spawn(bundle![camera]);
-world.scope_mut(source).unwrap()
+world.scope_mut(source).spawn(bundle![camera]);
+world.scope_mut(source)
     .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
 
 // 每帧：先给 pass 挂附件，再让 renderer 录一次。
 let attachments = FrameAttachments::new(&world, ctx, format, size, 1, true);
-world.root_scope().query_one::<&mut FramePass>(pass).unwrap()
-    .set_attachments(&attachments, color_view);
-world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
+world.root_scope().query_one::<&mut FramePass>(pass)
+    .get().set_attachments(&attachments, color_view);
+world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 ```
 
 想直接出图：颜色附件用 `create_color_target` 建，渲染完 `unlit_wgpu::readback::readback_texture(device, queue, &texture).await` 取像素（按纹理格式返回该格式本身的字节，行对齐 padding 已剥掉）。它是 future：await 就是在等拷贝落地，同步上下文里用 `pollster::block_on` 驱动。
@@ -107,7 +106,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).unwrap().render(&world);
 let ui = world
     .root_scope_mut()
     .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
-world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_scope, _entity, ui| {
+world.scope_mut(ui).spawn(bundle![EguiPanel::new(|_scope, _entity, ui| {
     ui.label("hello");
 })]);
 ```

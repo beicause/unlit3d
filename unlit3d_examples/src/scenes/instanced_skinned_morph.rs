@@ -84,7 +84,6 @@ fn build(
     let key = LitPipelineKey::new(default_options());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
@@ -107,7 +106,7 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle![camera(size)]);
+    let camera_entity = world.scope_mut(source_entity).spawn(bundle![camera(size)]);
 
     // One pose entity and one weights entity per instance, all naming the
     // same shared mesh: the instances merge into a single draw whose instance
@@ -115,41 +114,29 @@ fn build(
     let mut pose_entities = Vec::new();
     let mut weight_entities = Vec::new();
     for instance in 0..INSTANCES {
-        let pose_entity = super::spawn_in(
-            world,
-            source_entity,
-            bundle![SkinPose {
-                matrices: rest_pose(2)
-            }],
-        );
-        let weight_entity = super::spawn_in(
-            world,
-            source_entity,
-            bundle![MorphWeights {
-                weights: instance_weights(0, instance).to_vec()
-            }],
-        );
+        let pose_entity = world.scope_mut(source_entity).spawn(bundle![SkinPose {
+            matrices: rest_pose(2)
+        }]);
+        let weight_entity = world.scope_mut(source_entity).spawn(bundle![MorphWeights {
+            weights: instance_weights(0, instance).to_vec()
+        }]);
         let color = match instance {
             0 => glam::Vec4::new(1.0, 0.75, 0.55, 1.0),
             1 => glam::Vec4::new(0.55, 0.85, 1.0, 1.0),
             _ => glam::Vec4::new(0.7, 1.0, 0.6, 1.0),
         };
-        super::spawn_in(
-            world,
-            source_entity,
-            Instance {
-                transform: Transform {
-                    translation: glam::Vec3::new((instance as f32 - 1.0) * 1.3, 0.0, 0.0),
-                    scale: glam::Vec3::splat(0.8),
-                    ..Default::default()
-                },
-                tint: color,
-                mesh: mesh.clone(),
-                pipeline: GpuRenderPipeline::new(key.clone()),
-                pose: pose_entity,
-                weights: weight_entity,
+        world.scope_mut(source_entity).spawn(Instance {
+            transform: Transform {
+                translation: glam::Vec3::new((instance as f32 - 1.0) * 1.3, 0.0, 0.0),
+                scale: glam::Vec3::splat(0.8),
+                ..Default::default()
             },
-        );
+            tint: color,
+            mesh: mesh.clone(),
+            pipeline: GpuRenderPipeline::new(key.clone()),
+            pose: pose_entity,
+            weights: weight_entity,
+        });
         pose_entities.push(pose_entity);
         weight_entities.push(weight_entity);
     }
@@ -166,16 +153,14 @@ fn build(
             // Update every instance's own pose: one component write per
             // instance, and the source packs and uploads them once per frame.
             {
-                let scope = world.scope(source_entity).expect("the source is alive");
+                let scope = world.scope(source_entity);
                 for instance in 0..INSTANCES {
                     skins[instance].set_angle(instance_angle(frame, instance));
                     *scope
                         .query_one::<&mut SkinPose>(pose_entities[instance])
-                        .expect("the pose entity carries a `SkinPose`")
                         .get() = skins[instance].pose();
                     scope
                         .query_one::<&mut MorphWeights>(weight_entities[instance])
-                        .expect("the weight entity carries a `MorphWeights`")
                         .get()
                         .weights = instance_weights(frame, instance).to_vec();
                 }

@@ -162,10 +162,7 @@ impl InstanceData for ParticleInstances {
     }
 
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
-        let mut particle = context
-            .world
-            .query_one::<&Particle>(context.entity)
-            .expect("every visible particle carries a Particle component");
+        let mut particle = context.world.query_one::<&Particle>(context.entity);
         let record = ParticleRecord {
             origin: [
                 particle.get().origin.x,

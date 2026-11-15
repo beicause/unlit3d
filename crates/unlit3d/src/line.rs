@@ -424,7 +424,7 @@ impl FrameSource for LineSource {
         // fallback a mesh source makes, so the two agree by construction.
         let camera = match info.camera {
             Some(camera_entity) => scope
-                .query_one::<&SceneCamera>(camera_entity)
+                .try_query_one::<&SceneCamera>(camera_entity)
                 .ok()
                 .map(|mut row| {
                     let camera = row.get().clone();

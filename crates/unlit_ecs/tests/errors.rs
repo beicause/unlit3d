@@ -12,7 +12,7 @@ struct Name(&'static str);
 fn fixture() -> (World, Entity, Entity, Entity) {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
-    let child = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
+    let child = world.scope_mut(scene).spawn(bundle![Marker(1)]);
     let sibling = world.root_scope_mut().spawn(bundle![Name("other")]);
     (world, scene, child, sibling)
 }
@@ -21,21 +21,21 @@ fn fixture() -> (World, Entity, Entity, Entity) {
 fn a_handle_that_names_no_live_entity_is_reported() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
-    let dead = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
-    assert!(world.scope_mut(scene).unwrap().despawn(dead).is_ok());
+    let dead = world.scope_mut(scene).spawn(bundle![Marker(1)]);
+    assert!(world.scope_mut(scene).despawn(dead).is_ok());
 
     let not_alive = EntityAccessError::NotAlive { entity: dead };
-    assert_eq!(world.scope_mut(dead).err().unwrap(), not_alive);
-    let scope = world.scope(scene).unwrap();
+    assert_eq!(world.try_scope_mut(dead).err().unwrap(), not_alive);
+    let scope = world.scope(scene);
     assert_eq!(scope.location(dead).unwrap_err(), not_alive);
-    assert_eq!(scope.query_one::<&Marker>(dead).unwrap_err(), not_alive);
+    assert_eq!(scope.try_query_one::<&Marker>(dead).unwrap_err(), not_alive);
     assert_eq!(scope.archetype_of(dead).unwrap_err(), not_alive);
     assert_eq!(scope.entity_name(dead).unwrap_err(), not_alive);
     assert_eq!(scope.entity_info(dead).unwrap_err(), not_alive);
     assert_eq!(scope.parent_scope(dead).unwrap_err(), not_alive);
     assert_eq!(world.entity_name(dead).unwrap_err(), not_alive);
     assert_eq!(world.parent_scope(dead).unwrap_err(), not_alive);
-    assert_eq!(world.scope(dead).unwrap_err(), not_alive);
+    assert_eq!(world.try_scope(dead).unwrap_err(), not_alive);
     assert!(!scope.contains(dead), "the row is gone with the handle");
 }
 
@@ -71,16 +71,19 @@ fn a_handle_outside_the_scope_is_not_visible() {
         entity: sibling,
         scope: scene,
     };
-    let scope = world.scope(scene).unwrap();
+    let scope = world.scope(scene);
     assert_eq!(scope.location(sibling).unwrap_err(), not_visible);
-    assert_eq!(scope.query_one::<&Name>(sibling).unwrap_err(), not_visible);
+    assert_eq!(
+        scope.try_query_one::<&Name>(sibling).unwrap_err(),
+        not_visible
+    );
     assert_eq!(scope.archetype_of(sibling).unwrap_err(), not_visible);
     assert_eq!(scope.entity_name(sibling).unwrap_err(), not_visible);
     assert_eq!(scope.entity_info(sibling).unwrap_err(), not_visible);
     assert_eq!(scope.parent_scope(sibling).unwrap_err(), not_visible);
-    assert_eq!(scope.scope(sibling).unwrap_err(), not_visible);
+    assert_eq!(scope.try_scope(sibling).unwrap_err(), not_visible);
     assert_eq!(
-        world.scope(scene).unwrap().scope(sibling).err().unwrap(),
+        world.scope(scene).try_scope(sibling).err().unwrap(),
         not_visible
     );
     assert!(!scope.contains(sibling), "a sibling scene is out of reach");
@@ -89,15 +92,15 @@ fn a_handle_outside_the_scope_is_not_visible() {
 #[test]
 fn a_query_the_entity_does_not_match_is_reported() {
     let (world, scene, child, _) = fixture();
-    let scope = world.scope(scene).unwrap();
+    let scope = world.scope(scene);
     assert_eq!(
-        scope.query_one::<&Name>(child).unwrap_err(),
+        scope.try_query_one::<&Name>(child).unwrap_err(),
         EntityAccessError::NotMatched { entity: child },
         "the child carries a marker, not a name"
     );
     // `Has` asks the archetype rather than the row, so a component the
     // archetype does not carry is answered rather than turned down.
-    assert!(!scope.query_one::<Has<Name>>(child).unwrap().get());
+    assert!(!scope.query_one::<Has<Name>>(child).get());
 }
 
 #[test]
@@ -133,8 +136,8 @@ fn an_archetype_with_rows_beyond_the_scope_is_reported() {
     let (mut world, scene, _, sibling) = fixture();
     // The same component set spawned under another scope lands in the same
     // archetype, which the scene then sees only in part.
-    world.scope_mut(sibling).unwrap().spawn(bundle![Marker(2)]);
-    let scope = world.scope(scene).unwrap();
+    world.scope_mut(sibling).spawn(bundle![Marker(2)]);
+    let scope = world.scope(scene);
     let child = scope.children(scene).unwrap()[0];
     let id = scope.location(child).unwrap().archetype();
     assert_eq!(
@@ -154,7 +157,7 @@ fn an_archetype_error_passes_through_an_entity_error() {
 #[test]
 fn every_message_names_the_handle_it_was_asked_about() {
     let (world, scene, child, sibling) = fixture();
-    let scope = world.scope(scene).unwrap();
+    let scope = world.scope(scene);
     let never = Entity::from_raw(u32::MAX, 0);
 
     assert_eq!(
@@ -168,7 +171,7 @@ fn every_message_names_the_handle_it_was_asked_about() {
         "so does one that is real but out of reach"
     );
     assert_eq!(
-        scope.query_one::<&Name>(child).unwrap_err().to_string(),
+        scope.try_query_one::<&Name>(child).unwrap_err().to_string(),
         format!("{child:?} does not match the query"),
         "and one the query turned down"
     );
@@ -190,21 +193,14 @@ fn the_children_of_a_handle_that_is_not_there_are_reported() {
         EntityAccessError::NotAlive { entity: child },
     );
     assert_eq!(
-        world.scope(scene).unwrap().children(sibling).unwrap_err(),
+        world.scope(scene).children(sibling).unwrap_err(),
         EntityAccessError::NotVisible {
             entity: sibling,
             scope: scene,
         },
         "a sibling scene is beside it, not inside it"
     );
-    assert!(
-        world
-            .scope(scene)
-            .unwrap()
-            .children(scene)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(world.scope(scene).children(scene).unwrap().is_empty());
 }
 
 /// A structural change says which of the reasons it was turned down for, so a
@@ -213,11 +209,7 @@ fn the_children_of_a_handle_that_is_not_there_are_reported() {
 fn a_scope_that_does_not_own_the_entity_says_so() {
     let (mut world, _scene, child, sibling) = fixture();
     assert_eq!(
-        world
-            .scope_mut(sibling)
-            .unwrap()
-            .despawn(child)
-            .unwrap_err(),
+        world.scope_mut(sibling).despawn(child).unwrap_err(),
         EntityAccessError::NotOwned {
             entity: child,
             scope: sibling,
@@ -239,27 +231,22 @@ fn a_dead_handle_is_reported_before_ownership_is_asked() {
     let (mut world, scene, child, sibling) = fixture();
     world.root_scope_mut().despawn(child).unwrap();
     assert_eq!(
-        world
-            .scope_mut(sibling)
-            .unwrap()
-            .despawn(child)
-            .unwrap_err(),
+        world.scope_mut(sibling).despawn(child).unwrap_err(),
         EntityAccessError::NotAlive { entity: child },
         "not 'not yours': there is nothing left to own"
     );
     assert_eq!(
-        world
-            .scope_mut(sibling)
-            .unwrap()
-            .link(child, sibling)
-            .unwrap_err(),
+        world.scope_mut(sibling).link(child, sibling).unwrap_err(),
         EntityAccessError::NotAlive { entity: child },
     );
     assert_eq!(
-        world.scope_mut(sibling).unwrap().unlink(child).unwrap_err(),
+        world.scope_mut(sibling).unlink(child).unwrap_err(),
         EntityAccessError::NotAlive { entity: child },
     );
-    assert!(world.scope(scene).is_ok(), "the scene itself is untouched");
+    assert!(
+        world.try_scope(scene).is_ok(),
+        "the scene itself is untouched"
+    );
 }
 
 /// The shared subtree is readable from every scope but it is the root's to
@@ -269,31 +256,23 @@ fn a_shared_row_answers_that_only_the_root_may_move_it() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
     let shared = world.shared();
-    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
+    let resource = world.scope_mut(shared).spawn(bundle![Marker(1)]);
     assert_eq!(
-        world
-            .scope_mut(scene)
-            .unwrap()
-            .despawn(resource)
-            .unwrap_err(),
+        world.scope_mut(scene).despawn(resource).unwrap_err(),
         EntityAccessError::NotMovable {
             entity: resource,
             scope: scene,
         },
     );
     assert_eq!(
-        world
-            .scope_mut(scene)
-            .unwrap()
-            .unlink(resource)
-            .unwrap_err(),
+        world.scope_mut(scene).unlink(resource).unwrap_err(),
         EntityAccessError::NotMovable {
             entity: resource,
             scope: scene,
         },
     );
     // The scene can still read it, which is the whole point of the subtree.
-    assert!(world.scope(scene).unwrap().contains(resource));
+    assert!(world.scope(scene).contains(resource));
     assert!(world.root_scope_mut().despawn(resource).is_ok());
 }
 
@@ -329,11 +308,7 @@ fn a_root_answers_that_it_is_scaffolding() {
 fn a_link_that_would_cycle_says_which_pair_it_was() {
     let (mut world, scene, child, _) = fixture();
     assert_eq!(
-        world
-            .scope_mut(scene)
-            .unwrap()
-            .link(scene, child)
-            .unwrap_err(),
+        world.scope_mut(scene).link(scene, child).unwrap_err(),
         EntityAccessError::WouldCycle {
             child: scene,
             parent: child,
@@ -341,11 +316,7 @@ fn a_link_that_would_cycle_says_which_pair_it_was() {
         "the child is below the scene"
     );
     assert_eq!(
-        world
-            .scope_mut(scene)
-            .unwrap()
-            .link(child, child)
-            .unwrap_err(),
+        world.scope_mut(scene).link(child, child).unwrap_err(),
         EntityAccessError::WouldCycle {
             child,
             parent: child,
@@ -353,7 +324,7 @@ fn a_link_that_would_cycle_says_which_pair_it_was() {
         "so is a link onto itself"
     );
     assert_eq!(
-        world.scope_mut(scene).unwrap().unlink(scene).unwrap_err(),
+        world.scope_mut(scene).unlink(scene).unwrap_err(),
         EntityAccessError::WouldCycle {
             child: scene,
             parent: scene,
@@ -385,21 +356,21 @@ fn unlinking_what_is_already_there_is_the_thing_asked_for() {
 fn every_structural_message_names_its_reason() {
     let (mut world, scene, child, sibling) = fixture();
     let shared = world.shared();
-    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(2)]);
+    let resource = world.scope_mut(shared).spawn(bundle![Marker(2)]);
     assert_eq!(
-        world.scope_mut(sibling).unwrap().despawn(child),
+        world.scope_mut(sibling).despawn(child),
         Err(EntityAccessError::NotOwned {
             entity: child,
             scope: sibling,
         }),
     );
-    let mut scope = world.scope_mut(sibling).unwrap();
+    let mut scope = world.scope_mut(sibling);
     let error = scope.despawn(child).unwrap_err();
     assert_eq!(
         error.to_string(),
         format!("{child:?} is outside {sibling:?}, so it is not its to move or remove"),
     );
-    let mut scope = world.scope_mut(scene).unwrap();
+    let mut scope = world.scope_mut(scene);
     let error = scope.despawn(resource).unwrap_err();
     assert_eq!(
         error.to_string(),

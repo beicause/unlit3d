@@ -289,7 +289,7 @@ fn encode_json_component<C: Facet<'static>>(
     entity: Entity,
 ) -> Result<String, ComponentError> {
     let mut component = scope
-        .query_one::<&C>(entity)
+        .try_query_one::<&C>(entity)
         .map_err(|error| missing::<C>(entity, error))?;
     to_json(component.get())
 }
@@ -314,7 +314,7 @@ fn current_partial_component<C: Facet<'static> + Clone>(
     entity: Entity,
 ) -> Result<Partial<'static, false>, ComponentError> {
     let current = scope
-        .query_one::<&C>(entity)
+        .try_query_one::<&C>(entity)
         .map(|mut component| component.get().clone())
         .map_err(|error| missing::<C>(entity, error))?;
     let partial = Partial::alloc_owned::<C>()?;
@@ -327,7 +327,7 @@ fn set_component<C: Facet<'static>>(
     partial: Partial<'static, false>,
 ) -> Result<(), ComponentError> {
     let mut component = scope
-        .query_one::<&mut C>(entity)
+        .try_query_one::<&mut C>(entity)
         .map_err(|error| missing::<C>(entity, error))?;
     *component.get() = materialize(partial)?;
     Ok(())
@@ -473,10 +473,7 @@ mod tests {
         let partial = partial.set_field("y", 2.0_f32).expect("y is a field");
         set(&world.root_scope(), entity, "Position", partial).expect("the partial is written");
 
-        let mut written = world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .expect("the component is there");
+        let mut written = world.root_scope().query_one::<&Position>(entity);
         let value = written.get();
         assert_eq!(value.x, 0.0);
         assert_eq!(value.y, 2.0);
@@ -517,7 +514,7 @@ mod tests {
         let dead = world.root_scope_mut().spawn(bundle![Position::default()]);
         world.root_scope_mut().despawn(dead).unwrap();
 
-        let hidden = encode_json(&world.scope(scene).unwrap(), outside, "Position")
+        let hidden = encode_json(&world.scope(scene), outside, "Position")
             .expect_err("the scene cannot see it");
         assert!(
             matches!(

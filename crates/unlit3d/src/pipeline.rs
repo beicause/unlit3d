@@ -645,7 +645,7 @@ impl<'a> InstanceContext<'a> {
     pub fn pack_joints(&mut self) -> u32 {
         let mut binding_row = self
             .world
-            .query_one::<&SkinBinding>(self.entity)
+            .try_query_one::<&SkinBinding>(self.entity)
             .unwrap_or_else(|_| {
                 panic!(
                     "a skinned mesh needs a `SkinBinding` naming the entity that holds \
@@ -655,7 +655,7 @@ impl<'a> InstanceContext<'a> {
         let binding = binding_row.get();
         let mut pose_row = self
             .world
-            .query_one::<&SkinPose>(binding.pose)
+            .try_query_one::<&SkinPose>(binding.pose)
             .unwrap_or_else(|_| {
                 panic!(
                     "the entity a skinned mesh binds to carries no `SkinPose`: {:?}",
@@ -687,7 +687,7 @@ impl<'a> InstanceContext<'a> {
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32 {
         let mut binding_row = self
             .world
-            .query_one::<&MorphBinding>(self.entity)
+            .try_query_one::<&MorphBinding>(self.entity)
             .unwrap_or_else(|_| {
                 panic!(
                     "a mesh with morph targets needs a `MorphBinding` naming the entity \
@@ -697,7 +697,7 @@ impl<'a> InstanceContext<'a> {
         let binding = binding_row.get();
         let mut weights_row = self
             .world
-            .query_one::<&MorphWeights>(binding.weights)
+            .try_query_one::<&MorphWeights>(binding.weights)
             .unwrap_or_else(|_| {
                 panic!(
                     "the entity a morphed mesh binds to carries no `MorphWeights`: {:?}",

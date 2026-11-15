@@ -534,15 +534,9 @@ pub fn aim_camera(
     size: (u32, u32),
 ) {
     let mut camera = camera_looking_at(eye, target, size);
-    world
-        .scope(scope)
-        .expect("the scope is alive")
-        .query_one::<&mut Camera>(entity)
-        .map(|mut current| {
-            camera.active = current.get().active;
-            *current.get() = camera;
-        })
-        .expect("the entity carries a camera");
+    let mut current = world.scope(scope).query_one::<&mut Camera>(entity);
+    camera.active = current.get().active;
+    *current.get() = camera;
 }
 
 /// Default options for the ECS scenes: per-instance transform and tint,
@@ -660,40 +654,6 @@ pub fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
     }
 }
 
-/// Spawn `bundle` into `scope`'s subtree.
-///
-/// A scene's content hangs under the source that draws it: a source renders
-/// the subtree it owns, so an entity spawned beside the source is one no frame
-/// of it shows.
-pub fn spawn_in<B: unlit_ecs::Bundle>(world: &mut World, scope: Entity, bundle: B) -> Entity {
-    world
-        .scope_mut(scope)
-        .expect("the scope is alive")
-        .spawn(bundle)
-}
-
-/// Spawn `bundle` into the world's shared subtree.
-///
-/// State every source of a scene reads — the input batches — belongs here: a
-/// source's own scope holds what it draws, and one beside it would hold what
-/// the other cannot see.
-pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entity {
-    let shared = world.shared();
-    world
-        .scope_mut(shared)
-        .expect("the shared scope exists")
-        .spawn(bundle)
-}
-
-/// Despawn `entity` and its subtree, through the scope that owns it.
-pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) {
-    world
-        .scope_mut(scope)
-        .expect("the scope named in the scene")
-        .despawn(entity)
-        .expect("the scene owns the entity it despawns");
-}
-
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.
 ///
 /// A shared-world entry point, so the scene's own `&mut World` can
@@ -705,12 +665,8 @@ pub fn with_mesh_source<R>(
 ) -> R {
     // The scope is the source's own, so what its closure reads is the subtree
     // the source draws.
-    let scope = world
-        .scope(source_entity)
-        .expect("the source entity is alive");
-    let mut source = scope
-        .query_one::<&mut Source>(source_entity)
-        .expect("the source entity exists");
+    let scope = world.scope(source_entity);
+    let mut source = scope.query_one::<&mut Source>(source_entity);
     let mesh = source
         .get()
         .as_mut::<MeshSource>()

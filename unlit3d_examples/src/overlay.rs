@@ -102,7 +102,6 @@ pub(crate) fn mount_selector(
 ) {
     world
         .scope_mut(ui)
-        .expect("the egui source is alive")
         .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
             // The id is set explicitly: `Window::new` derives it from the title's
             // `Atoms` text, whose hash differs from a plain string id, so the
@@ -140,7 +139,7 @@ pub(crate) fn mount_selector(
                     let selected = scene.id == current.id;
                     if ui.selectable_label(selected, scene.title).clicked() {
                         let _ = world
-                            .query_one::<&mut SceneSwitch>(switch)
+                            .try_query_one::<&mut SceneSwitch>(switch)
                             .map(|mut s| s.get().0 = Some(scene));
                     }
                 }
@@ -300,12 +299,11 @@ const GPU_INFO_HEIGHT_FRACTION: f32 = 0.6;
 pub(crate) fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
     world
         .scope_mut(ui)
-        .expect("the egui source is alive")
         .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
-            let text = world
-                .query_one::<&FrameRate>(rate)
-                .map(|mut rate| rate.get().text())
-                .expect("the frame-rate component exists");
+            let text = {
+                let mut rate = world.query_one::<&FrameRate>(rate);
+                rate.get().text()
+            };
             frame_rate_readout(ui, &text);
         },),]);
 }
@@ -479,7 +477,6 @@ pub(crate) fn mount_gpu_info(
     let info = GpuInfo::read(&device);
     world
         .scope_mut(ui)
-        .expect("the egui source is alive")
         .spawn(bundle![EguiPanel::new(move |_world, _entity, ui| {
             gpu_info_panel(ui, &info, initial);
         },),]);
@@ -693,14 +690,13 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
 pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entity) {
     world
         .scope_mut(ui)
-        .expect("the egui source is alive")
         .spawn(bundle![EguiPanel::new(move |world, _entity, ui| {
             let active = world
-                .query_one::<&FullscreenActive>(state)
+                .try_query_one::<&FullscreenActive>(state)
                 .is_ok_and(|mut state| state.get().0);
             if fullscreen_button(ui, active) {
                 let _ = world
-                    .query_one::<&mut FullscreenRequest>(request)
+                    .try_query_one::<&mut FullscreenRequest>(request)
                     .map(|mut request| request.get().0 = true);
             }
         },),]);
@@ -721,7 +717,6 @@ pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, s
 pub(crate) fn mount_api_docs(world: &mut World, ui: Entity) {
     world
         .scope_mut(ui)
-        .expect("the egui source is alive")
         .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
             api_docs_button(ui);
         }),]);

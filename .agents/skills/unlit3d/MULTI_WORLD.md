@@ -57,17 +57,16 @@ let mut frame = Frame { delta_time: step as f32, index: 0, size };
 for index in 0..frames {
     frame.index = index;
     stepper.step(&host, &worlds, step);                       // 玩法 → 物理 → 音频
-    let mut nested = host.root_scope().query_one::<&mut World>(render.entity)
-        .expect("the render sub-world exists");
+    let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
     let world = nested.get();                                 // QueryOne 没有 Deref，先 get() 借出 &mut World
     drain_sub_world(world);                                   // render world 的 job 在宿主线程跑
     dispatch_frame(world, &mut frame);
-    let _ = world.root_scope().query_one::<&mut Renderer>(renderer.0)
-        .map(|mut row| { row.get().render(&world); });        // render 要 &World，不能再借 &mut
+    // render 要 &World，不能再借 &mut；行只在这次调用里借出，写完即释放。
+    world.root_scope().query_one::<&mut Renderer>(renderer.0)
+        .get().render(&world);
     // target.texture 是资源节点的 handle，取回真纹理才能回读。
     let texture = world.root_scope().query_one::<&mut Renderer>(renderer.0)
-        .map(|mut row| row.get().context())
-        .expect("the renderer exists")
+        .get().context()
         .graph(&world.root_scope()).get()
         .get(&target.texture).cloned()
         .expect("the target texture is a resource node");

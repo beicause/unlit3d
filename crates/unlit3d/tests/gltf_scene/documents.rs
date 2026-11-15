@@ -144,9 +144,7 @@ pub(super) fn spawn_scene(
     resources: &GltfResources,
 ) -> Vec<GltfNode> {
     let source = gpu.mesh_source();
-    let mut scope = world
-        .scope_mut(source)
-        .expect("the source entity is its own scope");
+    let mut scope = world.scope_mut(source);
     gltf.spawn_default_scene(&mut scope, resources)
 }
 

@@ -44,7 +44,6 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
         world
             .root_scope()
             .query_one::<&MorphWeights>(weights_entity)
-            .expect("the weight entity carries a `MorphWeights`")
             .get()
             .weights,
         vec![0.0, 0.0],
@@ -70,7 +69,6 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
     world
         .root_scope()
         .query_one::<&mut MorphWeights>(weights_entity)
-        .expect("the weight entity carries a `MorphWeights`")
         .get()
         .weights = vec![1.0, 0.0];
     let collapsed = read(&gpu).await;
@@ -86,7 +84,6 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
     world
         .root_scope()
         .query_one::<&mut MorphWeights>(weights_entity)
-        .expect("the weight entity carries a `MorphWeights`")
         .get()
         .weights = vec![0.0, 1.0];
     let displaced = read(&gpu).await;
@@ -189,10 +186,7 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
         skin_binding.pose
     };
     let rest = {
-        let mut pose_row = world
-            .root_scope()
-            .query_one::<&SkinPose>(pose)
-            .expect("the pose entity carries a `SkinPose`");
+        let mut pose_row = world.root_scope().query_one::<&SkinPose>(pose);
         pose_row.get().matrices.clone()
     };
     assert_eq!(rest.len(), 1, "one joint, one matrix");
@@ -218,11 +212,7 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
 
     // Move the joint a whole screen to the left: the quad follows it, and the
     // right side of the frame is left empty.
-    *world
-        .root_scope()
-        .query_one::<&mut SkinPose>(pose)
-        .expect("the pose entity carries a `SkinPose`")
-        .get() = SkinPose {
+    *world.root_scope().query_one::<&mut SkinPose>(pose).get() = SkinPose {
         matrices: vec![glam::Mat4::from_translation(glam::Vec3::new(
             -5.0, 0.0, 0.0,
         ))],

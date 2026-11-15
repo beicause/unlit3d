@@ -125,7 +125,6 @@ mod tests {
         world
             .root_scope()
             .query_one::<&InputEvents>(entity)
-            .expect("the buffer spawned")
             .get()
             .refresh();
 

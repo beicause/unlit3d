@@ -201,7 +201,7 @@ where
         // The material is read once and both its uses come from it: it decides
         // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
-            let Ok(mut row) = world.query_one::<(
+            let Ok(mut row) = world.try_query_one::<(
                 &GpuRenderPipeline,
                 &GpuMesh,
                 Option<&GpuMaterial>,

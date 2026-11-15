@@ -217,10 +217,7 @@ mod tests {
             r#"{"depth":{"clear":0.5}}"#,
         )
         .expect("a partial load op is accepted");
-        let mut render_load_ops_row = world
-            .root_scope()
-            .query_one::<&RenderLoadOps>(entity)
-            .expect("the load ops are there");
+        let mut render_load_ops_row = world.root_scope().query_one::<&RenderLoadOps>(entity);
 
         let ops = render_load_ops_row.get();
         assert_eq!(ops.depth, wgpu::LoadOp::Clear(0.5));

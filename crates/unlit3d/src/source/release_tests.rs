@@ -41,7 +41,6 @@ impl FrameSource for OwningSource {
             self.node = Some(
                 scope
                     .query_one::<&mut ResourceGraph>(ctx.graph)
-                    .expect("the context's graph exists")
                     .get()
                     .insert(GraphResource::Virtual, None),
             );
@@ -73,7 +72,6 @@ impl FrameSource for EarlyReturnSource {
             self.node = Some(
                 scope
                     .query_one::<&mut ResourceGraph>(ctx.graph)
-                    .expect("the context's graph exists")
                     .get()
                     .insert(GraphResource::Virtual, None),
             );
@@ -106,12 +104,12 @@ fn build_once(world: &mut World, entity: Entity, ctx: RenderContext) {
     let mut scene = Scene::new();
     world
         .root_scope()
-        .query_one::<&mut Source>(entity)
+        .try_query_one::<&mut Source>(entity)
         .map(|mut source| {
             let source = source.get();
             {
                 let scope = world
-                    .scope(entity)
+                    .try_scope(entity)
                     .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
                 source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
             }
@@ -124,7 +122,6 @@ fn graph_len(world: &World, ctx: RenderContext) -> usize {
     world
         .root_scope()
         .query_one::<&mut ResourceGraph>(ctx.graph)
-        .unwrap()
         .get()
         .len()
 }
@@ -134,7 +131,6 @@ fn maintain(world: &mut World, ctx: RenderContext) {
     world
         .root_scope()
         .query_one::<&mut ResourceGraph>(ctx.graph)
-        .unwrap()
         .get()
         .maintain();
 }

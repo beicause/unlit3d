@@ -50,7 +50,6 @@ fn draining_open_urls_empties_the_queue() {
     world
         .root_scope()
         .query_one::<&mut OpenUrls>(queue)
-        .unwrap()
         .get()
         .push("https://example.com", false);
 
@@ -189,16 +188,8 @@ fn the_order_belongs_to_the_entity_rather_than_the_source_type() {
     // `a` was spawned as an overlay, so it records last.
     assert_eq!(record_order(&world).0, vec![b, a]);
 
-    world
-        .root_scope()
-        .query_one::<&mut Source>(a)
-        .map(|mut source| source.get().order = FrameSourceOrder::LINE)
-        .expect("the source is spawned");
-    world
-        .root_scope()
-        .query_one::<&mut Source>(b)
-        .map(|mut source| source.get().order = FrameSourceOrder::EGUI)
-        .expect("the source is spawned");
+    world.root_scope().query_one::<&mut Source>(a).get().order = FrameSourceOrder::LINE;
+    world.root_scope().query_one::<&mut Source>(b).get().order = FrameSourceOrder::EGUI;
     assert_eq!(record_order(&world).0, vec![a, b], "the field is the order");
 }
 
@@ -235,45 +226,37 @@ fn typed_access_downcasts_and_rejects_the_wrong_type() {
         world
             .root_scope()
             .query_one::<&mut Source>(recording)
-            .map(|mut s| {
-                let s = s.get();
-                s.as_mut::<RecordingSource>().is_ok()
-            })
-            .unwrap()
+            .get()
+            .as_mut::<RecordingSource>()
+            .is_ok()
     );
     assert!(
         world
             .root_scope()
             .query_one::<&mut Source>(recording)
-            .map(|mut s| {
-                let s = s.get();
-                s.as_mut::<OtherSource>().is_err()
-            })
-            .unwrap()
+            .get()
+            .as_mut::<OtherSource>()
+            .is_err()
     );
     assert!(
         world
             .root_scope()
             .query_one::<&mut Source>(other)
-            .map(|mut s| {
-                let s = s.get();
-                s.as_mut::<OtherSource>().is_ok()
-            })
-            .unwrap()
+            .get()
+            .as_mut::<OtherSource>()
+            .is_ok()
     );
     assert!(
         world
             .root_scope()
             .query_one::<&mut Source>(other)
-            .map(|mut s| {
-                let s = s.get();
-                s.as_ref::<RecordingSource>().is_err()
-            })
-            .unwrap()
+            .get()
+            .as_ref::<RecordingSource>()
+            .is_err()
     );
 
     let scope = world.root_scope();
-    let mut row = scope.query_one::<&mut Source>(recording).unwrap();
+    let mut row = scope.query_one::<&mut Source>(recording);
     let error = row.get().as_mut::<OtherSource>().err().unwrap();
     assert!(error.actual.ends_with("RecordingSource"));
     assert!(error.requested.ends_with("OtherSource"));
@@ -321,19 +304,10 @@ fn one_query_builds_every_source_type() {
     assert_eq!(entities.len(), 2, "both sources are seen by one query type");
     let mut scene = Scene::new();
     for entity in entities {
-        world
-            .root_scope()
-            .query_one::<&mut Source>(entity)
-            .map(|mut source| {
-                let source = source.get();
-                {
-                    let scope = world
-                        .scope(entity)
-                        .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
-                    source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
-                }
-            })
-            .unwrap();
+        let mut row = world.root_scope().query_one::<&mut Source>(entity);
+        let source = row.get();
+        let scope = world.scope(entity);
+        source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder);
     }
 }
 
@@ -383,19 +357,10 @@ fn every_source_is_built_before_any_is_recorded() {
         .collect();
     let mut scene = Scene::new();
     for entity in &entities {
-        world
-            .root_scope()
-            .query_one::<&mut Source>(*entity)
-            .map(|mut source| {
-                let source = source.get();
-                {
-                    let scope = world
-                        .scope(*entity)
-                        .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
-                    source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
-                }
-            })
-            .unwrap();
+        let mut row = world.root_scope().query_one::<&mut Source>(*entity);
+        let source = row.get();
+        let scope = world.scope(*entity);
+        source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder);
     }
     order.borrow_mut().push("record".to_string());
 
@@ -433,20 +398,12 @@ fn an_ambiguity_is_reported_once_and_again_only_when_it_changes() {
 
     // Resolving the ambiguity stops the reporting; reintroducing it warns
     // once more.
-    world
-        .root_scope()
-        .query_one::<&mut Source>(b)
-        .map(|mut source| source.get().order = FrameSourceOrder::EGUI)
-        .expect("the source is spawned");
+    world.root_scope().query_one::<&mut Source>(b).get().order = FrameSourceOrder::EGUI;
     let (_, resolved) = record_order(&world);
     assert!(resolved.is_empty());
     assert!(!warnings.check(&resolved));
 
-    world
-        .root_scope()
-        .query_one::<&mut Source>(b)
-        .map(|mut source| source.get().order = FrameSourceOrder::MESH)
-        .expect("the source is spawned");
+    world.root_scope().query_one::<&mut Source>(b).get().order = FrameSourceOrder::MESH;
     let (_, again) = record_order(&world);
     assert!(warnings.check(&again), "the ambiguity is back");
     assert!(!warnings.check(&again), "and still reports only once");
@@ -657,11 +614,7 @@ fn a_steady_frame_repeats_nothing_in_the_log() {
     );
 
     // Resolving it and reintroducing it warns once more, not twice.
-    world
-        .root_scope()
-        .query_one::<&mut Source>(a)
-        .map(|mut source| source.get().order = FrameSourceOrder::EGUI)
-        .expect("the source is spawned");
+    world.root_scope().query_one::<&mut Source>(a).get().order = FrameSourceOrder::EGUI;
     let messages = capture_logs(|| {
         let (_, resolved) = record_order(&world);
         assert!(!warnings.check(&resolved), "resolved: nothing to say");
@@ -688,16 +641,8 @@ fn re_applying_the_same_order_keeps_the_log_quiet() {
     let messages = capture_logs(|| {
         for _ in 0..3 {
             // What a caller that pins its sources' order every frame does.
-            world
-                .root_scope()
-                .query_one::<&mut Source>(a)
-                .map(|mut source| source.get().order = FrameSourceOrder::MESH)
-                .expect("the source is spawned");
-            world
-                .root_scope()
-                .query_one::<&mut Source>(b)
-                .map(|mut source| source.get().order = FrameSourceOrder::MESH)
-                .expect("the source is spawned");
+            world.root_scope().query_one::<&mut Source>(a).get().order = FrameSourceOrder::MESH;
+            world.root_scope().query_one::<&mut Source>(b).get().order = FrameSourceOrder::MESH;
             let (_, ambiguous) = record_order(&world);
             warnings.check(&ambiguous);
         }

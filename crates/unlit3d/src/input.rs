@@ -43,7 +43,7 @@
 //!     Presses(0),
 //!     OnKey::new(|world, entity, key| {
 //!         if key.pressed {
-//!             let _ = world.root_scope().query_one::<&mut Presses>(entity).map(|mut presses| presses.get().0 += 1);
+//!             let _ = world.root_scope().try_query_one::<&mut Presses>(entity).map(|mut presses| presses.get().0 += 1);
 //!         }
 //!     }),
 //! ]);
@@ -263,7 +263,7 @@ pub fn refresh_input(world: &World) -> bool {
         .collect();
     let present = !entities.is_empty();
     for entity in entities {
-        if let Ok(mut buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
+        if let Ok(mut buffer) = world.root_scope().try_query_one::<&InputEvents>(entity) {
             buffer.get().refresh();
         }
     }
@@ -304,10 +304,7 @@ pub fn subscribe_input(world: &mut World) -> bool {
     // The buffer belongs to the shared subtree: a source reads the world's
     // input from its own scope, and a sibling's component is out of reach.
     let shared = world.shared();
-    world
-        .scope_mut(shared)
-        .expect("the shared scope exists")
-        .spawn(bundle![events]);
+    world.scope_mut(shared).spawn(bundle![events]);
     true
 }
 
@@ -356,7 +353,7 @@ fn distribute_into(world: &World, writer: &InputWriter) -> bool {
     for (entity, has) in children {
         let nested = world
             .root_scope()
-            .query_one::<&mut World>(entity)
+            .try_query_one::<&mut World>(entity)
             .map(|mut child| {
                 let child = child.get();
                 if !has {

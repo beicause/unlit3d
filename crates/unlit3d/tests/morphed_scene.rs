@@ -137,7 +137,6 @@ async fn meshes_can_share_one_morph_weights() {
     world
         .root_scope()
         .query_one::<&mut MorphWeights>(weights_entity)
-        .expect("the weight entity carries a `MorphWeights`")
         .get()
         .weights = vec![1.0, 0.0];
     let blended = read(&gpu).await;

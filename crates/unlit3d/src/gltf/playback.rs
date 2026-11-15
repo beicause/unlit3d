@@ -240,7 +240,7 @@ impl LitGltf {
             if scratch.dirty[node] {
                 let transform = decompose(scratch.matrices[node]);
                 for &entity in &handle.entities {
-                    if let Ok(mut current) = world.query_one::<&mut Transform>(entity) {
+                    if let Ok(mut current) = world.try_query_one::<&mut Transform>(entity) {
                         *current.get() = transform.clone();
                     }
                 }
@@ -251,12 +251,12 @@ impl LitGltf {
                 && self.skin_moved(node, &scratch.dirty)
             {
                 let pose = self.skin_pose_with_matrices(node, &scratch.matrices);
-                if let Ok(mut current) = world.query_one::<&mut SkinPose>(entity) {
+                if let Ok(mut current) = world.try_query_one::<&mut SkinPose>(entity) {
                     *current.get() = pose;
                 }
             }
             if let (Some(entity), true) = (handle.weights, scratch.weighted[node])
-                && let Ok(mut current) = world.query_one::<&mut MorphWeights>(entity)
+                && let Ok(mut current) = world.try_query_one::<&mut MorphWeights>(entity)
             {
                 current.get().weights.clone_from(&scratch.weights[node]);
             }

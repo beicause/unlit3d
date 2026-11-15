@@ -162,7 +162,7 @@ impl MeshSource {
                 }
 
                 let mut mesh_row = world
-                    .query_one::<&GpuMesh>(entry.mesh.entity)
+                    .try_query_one::<&GpuMesh>(entry.mesh.entity)
                     .unwrap_or_else(|_| {
                         panic!("visible entity has GpuMesh: {:?}", entry.mesh.entity)
                     });

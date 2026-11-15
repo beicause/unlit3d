@@ -35,7 +35,7 @@ fn drain(world: &mut World, receiver: &async_channel::Receiver<Job>) -> usize {
 fn queued(world: &World, voice: Entity) -> Vec<(f64, MidiMessage)> {
     world
         .root_scope()
-        .query_one::<&SynthVoice>(voice)
+        .try_query_one::<&SynthVoice>(voice)
         .map(|mut voice| {
             let voice = voice.get();
             voice.queued.clone()
@@ -397,7 +397,6 @@ fn a_voice_that_gave_up_keeps_no_queue() {
     world
         .root_scope()
         .query_one::<&mut SynthVoice>(source)
-        .expect("the voice was spawned")
         .get()
         .give_up("no soundfont");
     midi_job(source, kind, 0.0)(&mut world);

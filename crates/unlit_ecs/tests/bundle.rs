@@ -34,21 +34,11 @@ fn a_flat_list_spawns_every_component() {
     ]);
 
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .x,
+        world.root_scope().query_one::<&Position>(entity).get().x,
         1.0
     );
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Velocity>(entity)
-            .unwrap()
-            .get()
-            .dy,
+        world.root_scope().query_one::<&Velocity>(entity).get().dy,
         4.0
     );
 }
@@ -60,10 +50,7 @@ fn a_parenthesised_group_is_one_component() {
         Position { x: 1.0, y: 2.0 },
         (Velocity { dx: 3.0, dy: 4.0 }, 7u32),
     ]);
-    let mut velocity_row = world
-        .root_scope()
-        .query_one::<&(Velocity, u32)>(entity)
-        .unwrap();
+    let mut velocity_row = world.root_scope().query_one::<&(Velocity, u32)>(entity);
 
     let nested = velocity_row.get();
     assert_eq!(nested.0.dy, 4.0);
@@ -71,7 +58,7 @@ fn a_parenthesised_group_is_one_component() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "the group is one component, so its leaves are not components"
@@ -79,7 +66,7 @@ fn a_parenthesised_group_is_one_component() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<Velocity>>(entity)
+            .try_query_one::<Has<Velocity>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -96,7 +83,7 @@ fn a_tuple_pushed_whole_is_one_component() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<(u32, f32)>>(entity)
+            .try_query_one::<Has<(u32, f32)>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "the tuple itself is a component"
@@ -104,7 +91,7 @@ fn a_tuple_pushed_whole_is_one_component() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "a builder never takes a component apart"
@@ -112,7 +99,7 @@ fn a_tuple_pushed_whole_is_one_component() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<bool>>(entity)
+            .try_query_one::<Has<bool>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -126,15 +113,12 @@ fn an_empty_tuple_is_a_component() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<()>>(entity)
+            .try_query_one::<Has<()>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "the empty tuple is written, so it is a component"
     );
-    assert_eq!(
-        *world.root_scope().query_one::<&u32>(entity).unwrap().get(),
-        1
-    );
+    assert_eq!(*world.root_scope().query_one::<&u32>(entity).get(), 1);
 }
 
 #[test]
@@ -146,7 +130,7 @@ fn the_macro_returns_a_bundle_that_spawns_nothing() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<()>>(entity)
+            .try_query_one::<Has<()>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "an empty list contributes no component at all"
@@ -164,7 +148,7 @@ fn a_group_holding_one_expression_is_that_expression_as_a_component() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<(u32,)>>(entity)
+            .try_query_one::<Has<(u32,)>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "a one-element tuple stays a tuple"
@@ -172,14 +156,14 @@ fn a_group_holding_one_expression_is_that_expression_as_a_component() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<(u64,)>>(entity)
+            .try_query_one::<Has<(u64,)>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -228,7 +212,7 @@ fn more_than_sixteen_components() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<M08>>(entity)
+            .try_query_one::<Has<M08>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "a leaf past the tuple limit landed"
@@ -236,7 +220,7 @@ fn more_than_sixteen_components() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<Position>>(entity)
+            .try_query_one::<Has<Position>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -283,21 +267,21 @@ fn a_queued_spawn_applies() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<(u32, f32)>>(entity)
+            .try_query_one::<Has<(u32, f32)>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<bool>>(entity)
+            .try_query_one::<Has<bool>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -315,14 +299,14 @@ fn a_built_bundle_is_a_bundle() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<f32>>(entity)
+            .try_query_one::<Has<f32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -343,21 +327,21 @@ fn into_bundle_returns_exactly_the_bundles_components() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<(u32, f32)>>(entity)
+            .try_query_one::<Has<(u32, f32)>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<bool>>(entity)
+            .try_query_one::<Has<bool>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -375,31 +359,18 @@ fn a_builder_is_spread_with_a_dot_dot() {
         .spawn(bundle![..gathered, Velocity { dx: 3.0, dy: 4.0 }]);
 
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .y,
+        world.root_scope().query_one::<&Position>(entity).get().y,
         2.0
     );
+    assert_eq!(*world.root_scope().query_one::<&u32>(entity).get(), 7);
     assert_eq!(
-        *world.root_scope().query_one::<&u32>(entity).unwrap().get(),
-        7
-    );
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Velocity>(entity)
-            .unwrap()
-            .get()
-            .dy,
+        world.root_scope().query_one::<&Velocity>(entity).get().dy,
         4.0
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<DynamicBundle>>(entity)
+            .try_query_one::<Has<DynamicBundle>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "the builder is not stored as a component"
@@ -422,25 +393,20 @@ fn a_custom_bundle_is_spread_with_a_dot_dot() {
         .spawn(bundle![..Pose(Position { x: 5.0, y: 6.0 }), true]);
 
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .x,
+        world.root_scope().query_one::<&Position>(entity).get().x,
         5.0
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<bool>>(entity)
+            .try_query_one::<Has<bool>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<Pose>>(entity)
+            .try_query_one::<Has<Pose>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "the bundle is not stored as a component"
@@ -459,18 +425,15 @@ fn a_bundle_spread_keeps_a_tuple_component_whole() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<(f32, bool)>>(entity)
+            .try_query_one::<Has<(f32, bool)>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
-    assert_eq!(
-        *world.root_scope().query_one::<&u32>(entity).unwrap().get(),
-        1
-    );
+    assert_eq!(*world.root_scope().query_one::<&u32>(entity).get(), 1);
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<f32>>(entity)
+            .try_query_one::<Has<f32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -493,14 +456,14 @@ fn a_queued_spread_bundle_applies() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<u32>>(entity)
+            .try_query_one::<Has<u32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<f32>>(entity)
+            .try_query_one::<Has<f32>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
@@ -540,28 +503,15 @@ fn a_custom_bundle_is_spawned_on_its_own() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(Marker(9));
 
+    assert_eq!(world.root_scope().query_one::<&Marker>(entity).get().0, 9);
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Marker>(entity)
-            .unwrap()
-            .get()
-            .0,
-        9
-    );
-    assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .y,
+        world.root_scope().query_one::<&Position>(entity).get().y,
         2.0
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<DynamicBundle>>(entity)
+            .try_query_one::<Has<DynamicBundle>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false),
         "the bundle is not stored as a component"

@@ -189,12 +189,12 @@ impl PanelRects {
         Self {
             selector: world
                 .root_scope()
-                .query_one::<&SelectorPos>(app)
+                .try_query_one::<&SelectorPos>(app)
                 .ok()
                 .and_then(|mut pos| pos.get().0),
             gpu_info: world
                 .root_scope()
-                .query_one::<&GpuInfoPos>(app)
+                .try_query_one::<&GpuInfoPos>(app)
                 .ok()
                 .and_then(|mut pos| pos.get().0),
         }

@@ -39,7 +39,6 @@ fn a_scene_switch_drops_the_presentation_path() {
         world
             .root_scope()
             .query_one::<&PresenterEntity>(app)
-            .expect("the app keeps its presentation slot")
             .get()
             .0
             .is_none(),
@@ -57,7 +56,6 @@ fn a_scene_switch_drops_the_presentation_path() {
         world
             .root_scope()
             .query_one::<&InitialScene>(app)
-            .expect("the app keeps its initial scene")
             .get()
             .0
             .id,

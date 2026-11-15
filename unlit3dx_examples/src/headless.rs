@@ -127,15 +127,11 @@ pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutpu
     // still the scene's, so it arrives as a job like the meshes do.
     mount_scene_content(&render, pass, None);
     let offscreen = {
-        let mut nested = host
-            .root_scope()
-            .query_one::<&mut World>(render.entity)
-            .expect("the render sub-world exists");
+        let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
         let context = world
             .root_scope()
             .query_one::<&Renderer>(renderer.entity)
-            .expect("the renderer is a resource entity")
             .get()
             .context();
         PersistentTarget::bind(
@@ -207,10 +203,7 @@ pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutpu
         // for a capture is the frame that would have been drawn on time. A
         // scene that accumulates across draws — a ping-pong target, a temporal
         // filter — would have to draw every frame.
-        let mut nested = host
-            .root_scope()
-            .query_one::<&mut World>(render.entity)
-            .expect("the render sub-world exists");
+        let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
         drain_sub_world(world);
         dispatch_frame(world, &mut frame);
@@ -219,8 +212,7 @@ pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutpu
             let context = {
                 let mut renderer_row = world
                     .root_scope()
-                    .query_one::<&mut Renderer>(renderer.entity)
-                    .expect("the renderer is a resource entity");
+                    .query_one::<&mut Renderer>(renderer.entity);
                 renderer_row.get().render(&*world);
                 renderer_row.get().context()
             };

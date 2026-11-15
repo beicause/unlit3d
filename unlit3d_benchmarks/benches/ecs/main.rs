@@ -153,10 +153,7 @@ fn interleave(world: &World, entities: &[Entity]) -> Vec<Entity> {
 fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let mut mesh = world
-            .root_scope()
-            .query_one::<&Mesh>(entity)
-            .expect("a candidate has a mesh");
+        let mut mesh = world.root_scope().query_one::<&Mesh>(entity);
         sum += u64::from(mesh.get().0);
     }
     sum
@@ -166,15 +163,9 @@ fn get_one(world: &World, candidates: &[Entity]) -> u64 {
 fn get_three(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let mut pipeline = world
-            .root_scope()
-            .query_one::<&Pipeline>(entity)
-            .expect("a candidate has one");
-        let mut mesh = world
-            .root_scope()
-            .query_one::<&Mesh>(entity)
-            .expect("a candidate has a mesh");
-        let material = world.root_scope().query_one::<&Material>(entity);
+        let mut pipeline = world.root_scope().query_one::<&Pipeline>(entity);
+        let mut mesh = world.root_scope().query_one::<&Mesh>(entity);
+        let material = world.root_scope().try_query_one::<&Material>(entity);
         sum += u64::from(pipeline.get().0)
             + u64::from(mesh.get().0)
             + material.map_or(0, |mut m| m.get().0);
@@ -224,7 +215,7 @@ fn query_one_three(world: &World, candidates: &[Entity]) -> u64 {
     let root = world.root_scope();
     let mut sum = 0u64;
     for &entity in candidates {
-        let Ok(mut row) = root.query_one::<Resolve>(entity) else {
+        let Ok(mut row) = root.try_query_one::<Resolve>(entity) else {
             continue;
         };
         let (pipeline, mesh, material) = row.get();

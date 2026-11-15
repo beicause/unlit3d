@@ -211,7 +211,7 @@ fn scoped(world: &World, scope: Option<u64>) -> Result<Scope<'_>, String> {
         Some(bits) => {
             let scope = Entity::from_bits(bits);
             world
-                .scope(scope)
+                .try_scope(scope)
                 .map_err(|_| format!("no scope {scope:?}"))
         }
     }
@@ -225,7 +225,7 @@ fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, Str
             let scope = Entity::from_bits(bits);
 
             world
-                .scope_mut(scope)
+                .try_scope_mut(scope)
                 .map_err(|_| format!("no scope {scope:?}"))
         }
     }
@@ -304,7 +304,7 @@ mod tests {
     fn fixture() -> (World, Entity, Entity, Entity) {
         let mut world = World::new();
         let scene = world.root_scope_mut().spawn(bundle![0u32]);
-        let child = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
+        let child = world.scope_mut(scene).spawn(bundle![Marker(1)]);
         let sibling = world.root_scope_mut().spawn(bundle![Marker(2)]);
         (world, scene, child, sibling)
     }
@@ -367,15 +367,7 @@ mod tests {
         let error = write_component(&scope, sibling, "Marker", &serde_json::json!({ "0": 9 }))
             .expect_err("the sibling is out of reach");
         assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
-        assert_eq!(
-            world
-                .root_scope()
-                .query_one::<&Marker>(sibling)
-                .unwrap()
-                .get()
-                .0,
-            2
-        );
+        assert_eq!(world.root_scope().query_one::<&Marker>(sibling).get().0, 2);
     }
 
     #[test]

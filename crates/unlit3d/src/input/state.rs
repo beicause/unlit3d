@@ -44,7 +44,7 @@ use super::event::{
 ///                     .with_state(|state| state.modifiers.ctrl)
 ///             });
 ///         if ctrl {
-///             let _ = world.root_scope().query_one::<&mut CtrlPresses>(entity).map(|mut presses| presses.get().0 += 1);
+///             let _ = world.root_scope().try_query_one::<&mut CtrlPresses>(entity).map(|mut presses| presses.get().0 += 1);
 ///         }
 ///     }),
 /// ]);
@@ -52,7 +52,7 @@ use super::event::{
 /// input.push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
 /// dispatch_input(&world);
 ///
-/// assert_eq!(world.root_scope().query_one::<&CtrlPresses>(observer).unwrap().get().0, 1);
+/// assert_eq!(world.root_scope().query_one::<&CtrlPresses>(observer).get().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputState {

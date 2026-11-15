@@ -98,13 +98,14 @@ pub fn create_window_on_resume() -> OnResumed {
         if window(world).is_some() {
             return;
         }
-        let Ok(attributes) = world
-            .root_scope()
-            .query_one::<&WindowSpec>(entity)
-            .map(|mut spec| {
-                let spec = spec.get();
-                spec.0.clone()
-            })
+        let Ok(attributes) =
+            world
+                .root_scope()
+                .try_query_one::<&WindowSpec>(entity)
+                .map(|mut spec| {
+                    let spec = spec.get();
+                    spec.0.clone()
+                })
         else {
             log::warn!(
                 "create_window_on_resume: {entity:?} carries no WindowSpec, so no window is created"
@@ -113,7 +114,7 @@ pub fn create_window_on_resume() -> OnResumed {
         };
         let _ = world
             .root_scope()
-            .query_one::<&mut CreateWindowRequest>(entity)
+            .try_query_one::<&mut CreateWindowRequest>(entity)
             .map(|mut request| {
                 let request = request.get();
                 request.0 = Some(attributes)
@@ -127,7 +128,7 @@ pub fn exit_on_close_requested() -> OnWindowEvent {
         if matches!(payload.event, WindowEvent::CloseRequested) {
             let _ = world
                 .root_scope()
-                .query_one::<&mut ExitRequest>(entity)
+                .try_query_one::<&mut ExitRequest>(entity)
                 .map(|mut request| {
                     let request = request.get();
                     request.0 = true
@@ -148,7 +149,7 @@ pub fn exit_on_escape() -> OnWindowEvent {
         {
             let _ = world
                 .root_scope()
-                .query_one::<&mut ExitRequest>(entity)
+                .try_query_one::<&mut ExitRequest>(entity)
                 .map(|mut request| {
                     let request = request.get();
                     request.0 = true
@@ -251,7 +252,7 @@ mod tests {
         assert_eq!(
             world
                 .root_scope()
-                .query_one::<&mut ExitRequest>(entity)
+                .try_query_one::<&mut ExitRequest>(entity)
                 .map(|mut request| {
                     let request = request.get();
                     request.0
@@ -270,7 +271,7 @@ mod tests {
         assert_eq!(
             world
                 .root_scope()
-                .query_one::<&mut ExitRequest>(entity)
+                .try_query_one::<&mut ExitRequest>(entity)
                 .map(|mut request| {
                     let request = request.get();
                     request.0
@@ -286,16 +287,13 @@ mod tests {
             attributes: Window::default_attributes().with_title("unlit3d"),
         });
         world.apply().unwrap();
-        let mut on_resumed_row = world
-            .root_scope()
-            .query_one::<&mut OnResumed>(entity)
-            .expect("the behaviour is there");
+        let mut on_resumed_row = world.root_scope().query_one::<&mut OnResumed>(entity);
 
         let behaviour = on_resumed_row.get();
         behaviour.run(&world, entity, &());
         let attributes = world
             .root_scope()
-            .query_one::<&mut CreateWindowRequest>(entity)
+            .try_query_one::<&mut CreateWindowRequest>(entity)
             .map(|mut request| {
                 let request = request.get();
                 request.0.take()

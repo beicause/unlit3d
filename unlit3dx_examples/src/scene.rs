@@ -132,12 +132,12 @@ pub fn pose_job(poses: ScenePoses) -> Job {
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Ok(scope) = world.scope(source.entity) else {
+        let Ok(scope) = world.try_scope(source.entity) else {
             return;
         };
         for (entity, pose) in poses.0.iter() {
             let _ = scope
-                .query_one::<&mut Transform>(entity.entity)
+                .try_query_one::<&mut Transform>(entity.entity)
                 .map(|mut transform| {
                     transform.get().clone_from(pose);
                 });
@@ -182,7 +182,7 @@ pub fn setup_render_world(
     render_world: Entity,
     device: RenderDevice,
 ) -> (RemoteEntity, RemoteEntity) {
-    let Ok(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
+    let Ok(mut nested) = host.root_scope().try_query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
     let world = nested.get();
@@ -197,7 +197,6 @@ pub fn setup_render_world(
     source.register_lit_family(&world.root_scope());
     world
         .scope_mut(pass)
-        .expect("the scene's pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     (world.remote(renderer), world.remote(pass))
 }
@@ -221,7 +220,6 @@ pub fn camera_job() -> Job {
         };
         let camera_entity = world
             .scope_mut(source.entity)
-            .expect("the mesh source entity exists")
             .spawn(bundle![camera_looking_at(
                 WINDOW_SIZE,
                 orbit_eye(azimuth),
@@ -242,7 +240,7 @@ pub fn camera_job() -> Job {
                 );
                 let _ = world
                     .root_scope()
-                    .query_one::<&mut Camera>(camera_entity)
+                    .try_query_one::<&mut Camera>(camera_entity)
                     .map(|mut current| {
                         *current.get() = camera;
                     });

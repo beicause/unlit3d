@@ -39,7 +39,7 @@
 //! );
 //!
 //! let source = world.root_scope_mut().spawn(bundle![Source::new(FrameSourceOrder::BLITZ, BlitzSource::new())]);
-//! world.scope_mut(source).expect("the source is alive").spawn(bundle![
+//! world.scope_mut(source).spawn(bundle![
 //!     BlitzDocument::new("<body style=\"background: #204060\"><p>hello</p></body>"),
 //! ]);
 //! ```
@@ -185,7 +185,7 @@ impl FrameSource for BlitzSource {
         let Some(page) = first_page(scope) else {
             return;
         };
-        let Ok(mut row) = scope.query_one::<&mut BlitzDocument>(page) else {
+        let Ok(mut row) = scope.try_query_one::<&mut BlitzDocument>(page) else {
             return;
         };
         let page = row.get();

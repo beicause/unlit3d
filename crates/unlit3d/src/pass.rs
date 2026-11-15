@@ -286,9 +286,7 @@ mod tests {
             load: RenderLoadOps::default(),
         });
         let root = world.root_scope();
-        let mut row = root
-            .query_one::<&FramePass>(entity)
-            .expect("the pass is on the entity");
+        let mut row = root.query_one::<&FramePass>(entity);
         let pass = row.get();
         assert_eq!(pass.camera, Some(camera));
     }
@@ -298,9 +296,7 @@ mod tests {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
         let root = world.root_scope();
-        let mut row = root
-            .query_one::<&FramePass>(entity)
-            .expect("the pass is on the entity");
+        let mut row = root.query_one::<&FramePass>(entity);
         let pass = row.get();
         assert_eq!(pass.camera, None);
     }
@@ -317,15 +313,11 @@ mod tests {
             ..Pass::new(FramePassOrder(7))
         });
         let root = world.root_scope();
-        let mut frame_pass_row = root
-            .query_one::<&FramePass>(entity)
-            .expect("the pass is on the entity");
+        let mut frame_pass_row = root.query_one::<&FramePass>(entity);
 
         let pass = frame_pass_row.get();
         assert_eq!(pass.order, FramePassOrder(7));
-        let mut render_load_ops_row = root
-            .query_one::<&RenderLoadOps>(entity)
-            .expect("the load ops are on the same entity");
+        let mut render_load_ops_row = root.query_one::<&RenderLoadOps>(entity);
 
         let spawned = render_load_ops_row.get();
         assert_eq!(spawned.depth, wgpu::LoadOp::Load);

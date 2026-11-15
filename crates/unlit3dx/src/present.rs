@@ -124,7 +124,7 @@ pub fn draw_presented(render: Entity) -> OnFrame {
             let Some(presenter) = presenter_rows.iter().next().map(|(_, p)| p) else {
                 return;
             };
-            let Ok(mut nested) = world.root_scope().query_one::<&mut World>(render) else {
+            let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(render) else {
                 return;
             };
             drain_sub_world(&mut *nested.get());

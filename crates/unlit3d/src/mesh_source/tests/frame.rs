@@ -10,14 +10,10 @@ fn a_frame_uses_the_first_active_camera() {
         clip_from_view: glam::Mat4::IDENTITY,
         active: true,
     },]);
-    world
-        .root_scope()
-        .query_one::<&mut Camera>(inactive)
-        .map(|mut camera| {
-            let camera = camera.get();
-            camera.active = false
-        })
-        .expect("the entity carries a camera");
+    {
+        let mut camera = world.root_scope().query_one::<&mut Camera>(inactive);
+        camera.get().active = false;
+    }
     let active = world.root_scope_mut().spawn(bundle![Camera {
         view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
         clip_from_view: glam::Mat4::IDENTITY,
@@ -29,14 +25,10 @@ fn a_frame_uses_the_first_active_camera() {
     assert!(camera.active);
 
     // With every camera inactive, the frame has nothing to draw through.
-    world
-        .root_scope()
-        .query_one::<&mut Camera>(active)
-        .map(|mut camera| {
-            let camera = camera.get();
-            camera.active = false
-        })
-        .expect("the entity carries a camera");
+    {
+        let mut camera = world.root_scope().query_one::<&mut Camera>(active);
+        camera.get().active = false;
+    }
     assert!(frame_camera(&world.root_scope()).is_none());
 }
 
@@ -44,7 +36,7 @@ fn a_frame_uses_the_first_active_camera() {
 fn each_scope_frames_through_its_own_camera() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Transform::default()]);
-    world.scope_mut(scene).unwrap().spawn(bundle![Camera {
+    world.scope_mut(scene).spawn(bundle![Camera {
         view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
         clip_from_view: glam::Mat4::IDENTITY,
         active: true,
@@ -52,14 +44,13 @@ fn each_scope_frames_through_its_own_camera() {
     // A second scene, with no camera of its own.
     let sibling = world.root_scope_mut().spawn(bundle![Transform::default()]);
 
-    let (_entity, camera) =
-        frame_camera(&world.scope(scene).unwrap()).expect("the scene has a camera");
+    let (_entity, camera) = frame_camera(&world.scope(scene)).expect("the scene has a camera");
     assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
 
     // A sibling's camera is out of reach in both directions, which is what
     // lets two sources frame different parts of one world.
     assert!(
-        frame_camera(&world.scope(sibling).unwrap()).is_none(),
+        frame_camera(&world.scope(sibling)).is_none(),
         "a scope does not borrow its sibling's camera"
     );
     assert!(

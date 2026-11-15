@@ -72,7 +72,6 @@ fn build(
     let key = LitPipelineKey::new(default_options());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
@@ -90,15 +89,13 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle![camera_view(size)]);
-    super::spawn_in(
-        world,
-        source_entity,
-        TiltedCube {
-            mesh,
-            pipeline: GpuRenderPipeline::new(key),
-        },
-    );
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![camera_view(size)]);
+    world.scope_mut(source_entity).spawn(TiltedCube {
+        mesh,
+        pipeline: GpuRenderPipeline::new(key),
+    });
 
     // The page is a whole document, so it is a source of its own rather than a
     // panel: it is laid out and rasterized on the CPU and composited into the
@@ -106,21 +103,18 @@ fn build(
     // card, which is translucent so the cube and the overlay's band all show
     // through it: the frame proves the three sources share one pass and stack
     // in the order their sources declare.
-    let page_source = world
-        .scope_mut(pass)
-        .expect("the pass is alive")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::BLITZ,
-            BlitzSource::new()
-        )]);
-    super::spawn_in(world, page_source, bundle![BlitzDocument::new(PAGE)]);
+    let page_source = world.scope_mut(pass).spawn(bundle![Source::new(
+        FrameSourceOrder::BLITZ,
+        BlitzSource::new()
+    )]);
+    world
+        .scope_mut(page_source)
+        .spawn(bundle![BlitzDocument::new(PAGE)]);
 
     if options.egui {
-        super::spawn_in(
-            world,
-            ui.expect("the egui source was mounted"),
-            bundle![super::egui_only::rich_panel()],
-        );
+        world
+            .scope_mut(ui.expect("the egui source was mounted"))
+            .spawn(bundle![super::egui_only::rich_panel()]);
     }
 
     SceneControl {

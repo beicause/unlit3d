@@ -69,10 +69,7 @@ impl Interactive {
                 });
                 assert!(filled.is_ok(), "the audio world is a stepped world");
             }
-            let mut nested = host
-                .root_scope()
-                .query_one::<&mut World>(self.render)
-                .expect("the render sub-world exists");
+            let mut nested = host.root_scope().query_one::<&mut World>(self.render);
             let world = nested.get();
             drain_sub_world(world);
             dispatch_frame(world, &mut self.frame);
@@ -123,15 +120,11 @@ impl Interactive {
     pub async fn render_frame(&self, host: &World) -> Vec<u8> {
         self.draw(host);
         let texture = {
-            let mut nested = host
-                .root_scope()
-                .query_one::<&World>(self.render)
-                .expect("the render sub-world exists");
+            let mut nested = host.root_scope().query_one::<&World>(self.render);
             let world = nested.get();
             let context = world
                 .root_scope()
                 .query_one::<&Renderer>(self.renderer)
-                .expect("the renderer is a resource entity")
                 .get()
                 .context();
             let mut graph = context
@@ -152,15 +145,12 @@ impl Interactive {
     /// frame draws the scene as the steps left it rather than as the jobs
     /// found it.
     pub fn draw(&self, host: &World) {
-        let mut nested = host
-            .root_scope()
-            .query_one::<&mut World>(self.render)
-            .expect("the render sub-world exists");
+        let mut nested = host.root_scope().query_one::<&mut World>(self.render);
         let world = nested.get();
         drain_sub_world(world);
         let _ = world
             .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)
+            .try_query_one::<&mut Renderer>(self.renderer)
             .map(|mut renderer| renderer.get().render(&*world));
     }
 
@@ -258,7 +248,7 @@ pub fn scene_status(host: &World, worlds: &SceneHandles) -> SceneStatus {
             .next()
             .and_then(|tracks| {
                 scope
-                    .query_one::<&Track>(tracks.sequence)
+                    .try_query_one::<&Track>(tracks.sequence)
                     .ok()
                     .map(|mut track| {
                         let track = track.get();
@@ -310,15 +300,11 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
     let (renderer, pass) = setup_render_world(&mut host, render.entity, config.device.clone());
     mount_scene_content(&render, pass, Some(panels));
     let target = {
-        let mut nested = host
-            .root_scope()
-            .query_one::<&mut World>(render.entity)
-            .expect("the render sub-world exists");
+        let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
         let context = world
             .root_scope()
             .query_one::<&Renderer>(renderer.entity)
-            .expect("the renderer is a resource entity")
             .get()
             .context();
         PersistentTarget::bind(

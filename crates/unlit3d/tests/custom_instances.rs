@@ -274,10 +274,7 @@ impl InstanceData for CustomInstances {
     }
 
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
-        let mut custom_instance_row = context
-            .world
-            .query_one::<&CustomInstance>(context.entity)
-            .expect("every visible custom entity carries `CustomInstance`");
+        let mut custom_instance_row = context.world.query_one::<&CustomInstance>(context.entity);
 
         let instance = custom_instance_row.get();
         let record = InstanceRecord {

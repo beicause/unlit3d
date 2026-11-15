@@ -71,7 +71,7 @@ fn floor(ctx: &Ctx) -> Floor {
         )
     });
     let camera = camera_looking_at(EYE, glam::Vec3::ZERO, WIDTH as f32 / HEIGHT as f32);
-    let mut scope = world.scope_mut(source).expect("the source is a scope");
+    let mut scope = world.scope_mut(source);
     scope.spawn(bundle![camera]);
     scope.spawn(bundle![mesh, GpuRenderPipeline::new(key.clone())]);
     let ambient = scope.spawn(bundle![AmbientLight::new(AMBIENT)]);
@@ -101,10 +101,7 @@ impl Floor {
     /// Give the scene a light, through a transform of its own.
     fn place(&mut self, light: impl Light, translation: glam::Vec3, scale: glam::Vec3) {
         let rotation = glam::Quat::from_rotation_arc(glam::Vec3::NEG_Z, glam::Vec3::NEG_Y);
-        let mut scope = self
-            .world
-            .scope_mut(self.source)
-            .expect("the source is a scope");
+        let mut scope = self.world.scope_mut(self.source);
         scope.spawn(bundle![
             Transform {
                 translation,
@@ -122,8 +119,7 @@ impl Floor {
         let mut ambient_light_row = self
             .world
             .root_scope()
-            .query_one::<&mut AmbientLight>(self.ambient)
-            .expect("the floor's ambient light is alive");
+            .query_one::<&mut AmbientLight>(self.ambient);
 
         let light = ambient_light_row.get();
         light.color = ambient;
@@ -344,16 +340,13 @@ fn with_mesh_source<R>(
     source: Entity,
     f: impl FnOnce(&mut MeshSource, &unlit_ecs::Scope<'_>) -> R,
 ) -> R {
-    let mut source_row = world
-        .root_scope()
-        .query_one::<&mut Source>(source)
-        .expect("the source entity exists");
+    let mut source_row = world.root_scope().query_one::<&mut Source>(source);
 
     let handle = source_row.get();
     let mesh = handle
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
-    let scope = world.scope(source).expect("the source entity is alive");
+    let scope = world.scope(source);
     f(mesh, &scope)
 }
 

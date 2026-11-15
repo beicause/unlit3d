@@ -393,7 +393,7 @@ pub fn step_stepped_world(
     entity: Entity,
     delta_seconds: f32,
 ) -> Result<StepOutcome, StepError> {
-    let mut proxy = host.root_scope().query_one::<&mut WorldProxy>(entity)?;
+    let mut proxy = host.root_scope().try_query_one::<&mut WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
@@ -501,7 +501,7 @@ pub fn with_stepped_world<R>(
     entity: Entity,
     f: impl FnOnce(&World) -> R,
 ) -> Result<R, StepError> {
-    let mut proxy = host.root_scope().query_one::<&WorldProxy>(entity)?;
+    let mut proxy = host.root_scope().try_query_one::<&WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
@@ -522,7 +522,7 @@ pub fn with_stepped_world_mut<R>(
     entity: Entity,
     f: impl FnOnce(&mut World) -> R,
 ) -> Result<R, StepError> {
-    let mut proxy = host.root_scope().query_one::<&mut WorldProxy>(entity)?;
+    let mut proxy = host.root_scope().try_query_one::<&mut WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return Err(StepError::NotStepped);
     };

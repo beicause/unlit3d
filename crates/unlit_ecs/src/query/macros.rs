@@ -25,7 +25,7 @@
 //!     row.health.0 -= row.armor.0;
 //! }
 //!
-//! assert_eq!(world.root_scope().query_one::<&Health>(entity).unwrap().get().0, 8);
+//! assert_eq!(world.root_scope().query_one::<&Health>(entity).get().0, 8);
 //! ```
 //!
 //! The lifetime is nominal: the items a query yields borrow from the holder,

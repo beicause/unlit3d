@@ -68,14 +68,13 @@ fn offscreen_world(ctx: &Ctx) -> World {
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass entity is its own scope")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();
     {
         let shared = world.shared();
-        let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
+        let mut shared_view = world.scope_mut(shared);
         shared_view.spawn(bundle![input.subscribe()]);
         shared_view.spawn(bundle![input]);
     }
@@ -99,32 +98,24 @@ fn offscreen_world(ctx: &Ctx) -> World {
     world
         .root_scope()
         .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| {
-            let pass = pass.get();
-            {
-                pass.set_attachments(&attachments, color_view);
-            }
-        })
-        .expect("the pass entity exists");
+        .get()
+        .set_attachments(&attachments, color_view);
 
     let aspect = SIZE.0.max(1) as f32 / SIZE.1.max(1) as f32;
     // The camera sits in the source's own subtree, which is what it frames.
-    world
-        .scope_mut(source_entity)
-        .expect("the source entity is its own scope")
-        .spawn(bundle![Camera {
-            view_from_world: glam::camera::rh::view::look_at_mat4(
-                glam::Vec3::new(0.0, 1.0, 3.0),
-                glam::Vec3::ZERO,
-                glam::Vec3::Y,
-            ),
-            clip_from_view: glam::camera::rh::proj::directx::perspective_infinite_reverse(
-                60.0f32.to_radians(),
-                aspect,
-                0.1,
-            ),
-            active: true,
-        },]);
+    world.scope_mut(source_entity).spawn(bundle![Camera {
+        view_from_world: glam::camera::rh::view::look_at_mat4(
+            glam::Vec3::new(0.0, 1.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        ),
+        clip_from_view: glam::camera::rh::proj::directx::perspective_infinite_reverse(
+            60.0f32.to_radians(),
+            aspect,
+            0.1,
+        ),
+        active: true,
+    },]);
 
     world
 }

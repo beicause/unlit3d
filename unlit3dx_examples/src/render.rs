@@ -102,22 +102,17 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> Remot
         panic!("the render world carries no MeshSource");
     };
     let root = world.root_scope();
-    let mesh = root
-        .query_one::<&mut Source>(source_entity.entity)
-        .map(|mut source| {
-            source
-                .get()
-                .as_mut::<MeshSource>()
-                .expect("the source carries a MeshSource")
-                .allocate_lit_mesh(&root, &key.options, desc.borrowed())
-        })
-        .expect("the mesh source entity exists");
+    let mesh = {
+        let mut source = root.query_one::<&mut Source>(source_entity.entity);
+        source
+            .get()
+            .as_mut::<MeshSource>()
+            .expect("the source carries a MeshSource")
+            .allocate_lit_mesh(&root, &key.options, desc.borrowed())
+    };
     // The asset hangs under the source that draws it, so the world holds
     // one subtree per source rather than asset entities at its root.
-    let entity = world
-        .scope_mut(source_entity.entity)
-        .expect("the mesh source entity exists")
-        .spawn(bundle![mesh]);
+    let entity = world.scope_mut(source_entity.entity).spawn(bundle![mesh]);
     world.remote(entity)
 }
 
@@ -161,22 +156,19 @@ fn allocate_material(
         panic!("the render world carries no MeshSource");
     };
     let root = world.root_scope();
-    let material = root
-        .query_one::<&mut Source>(source_entity.entity)
-        .map(|mut source| {
-            let source = source
-                .get()
-                .as_mut::<MeshSource>()
-                .expect("the source carries a MeshSource");
-            let texture = build_texture(source, &root);
-            let view = source.register_texture_and_default_view(&root, texture).1;
-            let sampler = source.register_sampler(&root, Some(descriptor));
-            source.allocate_lit_material(&root, &key.options, view, sampler)
-        })
-        .expect("the mesh source entity exists");
+    let material = {
+        let mut source = root.query_one::<&mut Source>(source_entity.entity);
+        let source = source
+            .get()
+            .as_mut::<MeshSource>()
+            .expect("the source carries a MeshSource");
+        let texture = build_texture(source, &root);
+        let view = source.register_texture_and_default_view(&root, texture).1;
+        let sampler = source.register_sampler(&root, Some(descriptor));
+        source.allocate_lit_material(&root, &key.options, view, sampler)
+    };
     let entity = world
         .scope_mut(source_entity.entity)
-        .expect("the mesh source entity exists")
         .spawn(bundle![material]);
     world.remote(entity)
 }
@@ -199,26 +191,21 @@ pub(crate) fn instance_of(
     let mesh = world
         .root_scope()
         .query_one::<&GpuMesh>(mesh.entity)
-        .expect("the mesh asset entity exists")
         .get()
         .clone();
     let material = world
         .root_scope()
         .query_one::<&GpuMaterial>(material.entity)
-        .expect("the material asset entity exists")
         .get()
         .clone();
     // The instance hangs under the source that draws it: a source draws
     // the subtree it owns, so an instance spawned beside it is never seen.
-    let entity = world
-        .scope_mut(source_entity.entity)
-        .expect("the mesh source entity exists")
-        .spawn(Rendered {
-            transform,
-            mesh,
-            material,
-            pipeline: GpuRenderPipeline::new(key),
-        });
+    let entity = world.scope_mut(source_entity.entity).spawn(Rendered {
+        transform,
+        mesh,
+        material,
+        pipeline: GpuRenderPipeline::new(key),
+    });
     world.remote(entity)
 }
 
@@ -263,11 +250,11 @@ pub(crate) fn hidden_instance_of(
     let Some((source, _)) = mesh_source(world) else {
         return instance;
     };
-    let Ok(scope) = world.scope(source.entity) else {
+    let Ok(scope) = world.try_scope(source.entity) else {
         return instance;
     };
     let _ = scope
-        .query_one::<&mut InstanceVisibility>(instance.entity)
+        .try_query_one::<&mut InstanceVisibility>(instance.entity)
         .map(|mut visibility| visibility.get().visible = false);
     instance
 }
@@ -311,17 +298,17 @@ pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> 
         };
         let mut outside = instances;
         {
-            let Ok(scope) = world.scope(source.entity) else {
+            let Ok(scope) = world.try_scope(source.entity) else {
                 return Vec::new();
             };
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
             outside.retain(|answer| {
-                let Ok(mut mesh) = scope.query_one::<&GpuMesh>(answer.instance.entity) else {
+                let Ok(mut mesh) = scope.try_query_one::<&GpuMesh>(answer.instance.entity) else {
                     return false;
                 };
                 let model = scope
-                    .query_one::<&Transform>(answer.instance.entity)
+                    .try_query_one::<&Transform>(answer.instance.entity)
                     .map_or(Affine3A::IDENTITY, |mut transform| {
                         transform.get().compute_matrix()
                     });
@@ -331,7 +318,7 @@ pub(crate) fn sweep(instances: Vec<BallInstance>) -> impl FnOnce(&mut World) -> 
         if outside.is_empty() {
             return outside;
         }
-        if let Ok(mut scope) = world.scope_mut(source.entity) {
+        if let Ok(mut scope) = world.try_scope_mut(source.entity) {
             for answer in &outside {
                 let _ = scope.despawn(answer.instance.entity);
             }
@@ -346,7 +333,7 @@ pub(crate) fn despawn_instances_job(instances: Vec<RemoteEntity>) -> Job {
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Ok(mut scope) = world.scope_mut(source.entity) else {
+        let Ok(mut scope) = world.try_scope_mut(source.entity) else {
             return;
         };
         for instance in instances {
@@ -373,23 +360,23 @@ pub(crate) fn show(
     let Some((source, _)) = mesh_source(world) else {
         return false;
     };
-    let Ok(scope) = world.scope(source.entity) else {
+    let Ok(scope) = world.try_scope(source.entity) else {
         return false;
     };
     let Ok(mesh) = scope
-        .query_one::<&GpuMesh>(mesh.entity)
+        .try_query_one::<&GpuMesh>(mesh.entity)
         .map(|mut mesh| mesh.get().clone())
     else {
         return false;
     };
     let Ok(material) = scope
-        .query_one::<&GpuMaterial>(material.entity)
+        .try_query_one::<&GpuMaterial>(material.entity)
         .map(|mut material| material.get().clone())
     else {
         return false;
     };
     scope
-        .query_one::<(
+        .try_query_one::<(
             &mut GpuMesh,
             &mut GpuMaterial,
             &mut Transform,

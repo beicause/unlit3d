@@ -141,7 +141,7 @@ impl RenderContext {
     /// If the context's device resource is gone.
     pub fn device(self, scope: &Scope<'_>) -> Result<wgpu::Device, EntityAccessError> {
         scope
-            .query_one::<&wgpu::Device>(self.device)
+            .try_query_one::<&wgpu::Device>(self.device)
             .map(|mut row| row.get().clone())
     }
 
@@ -152,7 +152,7 @@ impl RenderContext {
     /// If the context's queue resource is gone.
     pub fn queue(self, scope: &Scope<'_>) -> Result<wgpu::Queue, EntityAccessError> {
         scope
-            .query_one::<&wgpu::Queue>(self.queue)
+            .try_query_one::<&wgpu::Queue>(self.queue)
             .map(|mut row| row.get().clone())
     }
 
@@ -163,7 +163,7 @@ impl RenderContext {
     /// If the context's capabilities resource is gone.
     pub fn capabilities(self, scope: &Scope<'_>) -> Result<DeviceCapabilities, EntityAccessError> {
         scope
-            .query_one::<&DeviceCapabilities>(self.capabilities)
+            .try_query_one::<&DeviceCapabilities>(self.capabilities)
             .map(|mut row| *row.get())
     }
 
@@ -181,7 +181,7 @@ impl RenderContext {
     /// If the context's health resource is gone.
     pub fn health(self, scope: &Scope<'_>) -> Result<DeviceHealth, EntityAccessError> {
         scope
-            .query_one::<&DeviceHealth>(self.health)
+            .try_query_one::<&DeviceHealth>(self.health)
             .map(|mut row| row.get().clone())
     }
 
@@ -192,7 +192,7 @@ impl RenderContext {
     /// If the context's clock resource is gone.
     pub fn clock(self, scope: &Scope<'_>) -> Result<FrameClock, EntityAccessError> {
         scope
-            .query_one::<&FrameClock>(self.clock)
+            .try_query_one::<&FrameClock>(self.clock)
             .map(|mut row| *row.get())
     }
 
@@ -205,7 +205,7 @@ impl RenderContext {
         self,
         scope: &Scope<'w>,
     ) -> Result<QueryOne<'w, &'w mut ResourceGraph>, EntityAccessError> {
-        scope.query_one::<&mut ResourceGraph>(self.graph)
+        scope.try_query_one::<&mut ResourceGraph>(self.graph)
     }
 
     /// The frame's [`ResourceGraph`], borrowed from `scope`.
@@ -249,9 +249,7 @@ impl RenderContext {
     ///
     /// If the context's uniforms resource is gone.
     pub fn uniforms<'w>(self, scope: &Scope<'w>) -> QueryOne<'w, &'w mut GlobalUniforms> {
-        scope
-            .query_one::<&mut GlobalUniforms>(self.uniforms)
-            .expect("the context's global uniforms exist")
+        scope.query_one::<&mut GlobalUniforms>(self.uniforms)
     }
 
     /// The context the world holds, found from any one of its addresses.
@@ -264,7 +262,7 @@ impl RenderContext {
     pub fn of(world: &World, anchor: Entity) -> Result<Self, EntityAccessError> {
         world
             .root_scope()
-            .query_one::<&RenderContext>(anchor)
+            .try_query_one::<&RenderContext>(anchor)
             .map(|mut context| {
                 let context = context.get();
                 *context
@@ -289,7 +287,10 @@ impl Drop for MaintainScope<'_> {
     fn drop(&mut self) {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
-        if let Ok(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
+        if let Ok(mut graph) = self
+            .scope
+            .try_query_one::<&mut ResourceGraph>(self.ctx.graph)
+        {
             graph.get().maintain();
         }
     }
@@ -355,7 +356,7 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
     };
     world
         .root_scope()
-        .query_one::<&mut OpenUrls>(entity)
+        .try_query_one::<&mut OpenUrls>(entity)
         .map(|mut urls| {
             let urls = urls.get();
             std::mem::take(&mut urls.0)
@@ -586,9 +587,7 @@ pub fn spawn_context(
     // state from its own scope, and no scope may remove what every other scope
     // depends on.
     let shared = world.shared();
-    let mut shared_view = world
-        .scope_mut(shared)
-        .expect("the shared scope exists from the moment the world is built");
+    let mut shared_view = world.scope_mut(shared);
     spawn_row(&mut shared_view, context.device, device, context);
     spawn_row(&mut shared_view, context.queue, queue, context);
     spawn_row(

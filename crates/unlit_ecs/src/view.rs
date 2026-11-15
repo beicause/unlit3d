@@ -105,12 +105,12 @@ impl<'w> Scope<'w> {
     ///
     /// This is the one-entity form of [`Scope::query`]: the row the entity is
     /// stored at is looked up directly instead of the archetypes being walked.
-    /// A lookup that finds nothing says why: the entity is not alive, out of
-    /// this scope's reach, or its row does not satisfy the query. The last one
-    /// covers two cases a caller answers the same way, so it is one error: the
-    /// archetype does not match `Q`, or the row sits outside what this scope
-    /// reaches. A shared row is reachable from every scope, the same by handle
-    /// as it is through [`Scope::query`].
+    /// A lookup that finds nothing is a failure, not a missing row: the entity
+    /// is not alive, out of this scope's reach, or its row does not satisfy the
+    /// query. The last one covers two cases a caller answers the same way, so it
+    /// is one error: the archetype does not match `Q`, or the row sits outside
+    /// what this scope reaches. A shared row is reachable from every scope, the
+    /// same by handle as it is through [`Scope::query`].
     ///
     /// A lookup by handle does not filter the scaffolding: the root and the
     /// shared scope answer like any other entity, which is what lets the
@@ -122,17 +122,32 @@ impl<'w> Scope<'w> {
     /// let mut world = World::new();
     /// let entity = world.root_scope_mut().spawn(bundle![1u32]);
     ///
-    /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap().get(), 1);
-    /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap().get());
-    /// assert!(!world.root_scope().query_one::<Has<bool>>(entity).unwrap().get());
-    /// assert!(world.root_scope().query_one::<&bool>(entity).is_err());
+    /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).get(), 1);
+    /// assert!(world.root_scope().query_one::<Has<u32>>(entity).get());
+    /// assert!(!world.root_scope().query_one::<Has<bool>>(entity).get());
+    /// assert!(world.root_scope().try_query_one::<&bool>(entity).is_err());
     /// ````
     ///
     /// The answer is a holder rather than the item itself: it claims the
     /// components the query reaches on that row while it is built, so the claim
     /// begins before the item exists and lasts as long as the holder.
+    ///
+    /// # Panics
+    ///
+    /// When the lookup is turned down, the message is the reason it was:
+    /// [`Scope::try_query_one`] answers the same question as a `Result` for a
+    /// caller that has to tell the reasons apart or let the row be missing.
     #[track_caller]
-    pub fn query_one<Q: Query>(
+    pub fn query_one<Q: Query>(&self, entity: Entity) -> QueryOne<'w, Q> {
+        self.try_query_one(entity)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// The fallible form of [`Scope::query_one`].
+    ///
+    /// Answers what that does, as a [`Result`] instead of a panic.
+    #[track_caller]
+    pub fn try_query_one<Q: Query>(
         &self,
         entity: Entity,
     ) -> Result<QueryOne<'w, Q>, EntityAccessError> {
@@ -223,9 +238,23 @@ impl<'w> Scope<'w> {
 
     /// The scope of a visible scope.
     ///
-    /// A scope is an entity like any other, so this is turned down the same way
+    /// A scope is an entity like any other, so it is turned down the same way
     /// [`Scope::location`] is.
-    pub fn scope(&self, scope: Entity) -> Result<Scope<'w>, EntityAccessError> {
+    ///
+    /// # Panics
+    ///
+    /// When `scope` is not visible here, the message is the reason it was not:
+    /// [`Scope::try_scope`] answers the same question as a `Result`.
+    #[track_caller]
+    pub fn scope(&self, scope: Entity) -> Scope<'w> {
+        self.try_scope(scope)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// The fallible form of [`Scope::scope`].
+    ///
+    /// Answers what that does, as a [`Result`] instead of a panic.
+    pub fn try_scope(&self, scope: Entity) -> Result<Scope<'w>, EntityAccessError> {
         self.location(scope)?;
         Ok(Scope::new(self.world, scope))
     }
@@ -547,7 +576,21 @@ impl<'w> ScopeMut<'w> {
     }
 
     /// The mutable scope of a visible scope.
-    pub fn scope_mut(&mut self, scope: Entity) -> Result<ScopeMut<'_>, EntityAccessError> {
+    ///
+    /// # Panics
+    ///
+    /// When `scope` is not visible here, the message is the reason it was not:
+    /// [`ScopeMut::try_scope_mut`] answers the same question as a `Result`.
+    #[track_caller]
+    pub fn scope_mut(&mut self, scope: Entity) -> ScopeMut<'_> {
+        self.try_scope_mut(scope)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// The fallible form of [`ScopeMut::scope_mut`].
+    ///
+    /// Answers what that does, as a [`Result`] instead of a panic.
+    pub fn try_scope_mut(&mut self, scope: Entity) -> Result<ScopeMut<'_>, EntityAccessError> {
         self.as_scope().location(scope)?;
         Ok(ScopeMut::new(self.world, scope))
     }

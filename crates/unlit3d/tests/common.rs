@@ -63,7 +63,6 @@ impl TestGpu {
     ) -> Entity {
         world
             .scope_mut(self.pass)
-            .expect("the pass entity is its own scope")
             .spawn(bundle![Source::new(order, source)])
     }
 
@@ -107,24 +106,6 @@ impl TestGpu {
         self.source.expect("this test world has a mesh source")
     }
 
-    /// Spawn `bundle` into a source's subtree, which is what a frame draws.
-    ///
-    /// A source queries its own scope, so an entity spawned beside the source
-    /// rather than under it is invisible to the frame. The view is taken and
-    /// dropped here rather than held, so a test can allocate through the
-    /// harness between spawns.
-    pub fn spawn_in<B: unlit_ecs::Bundle>(
-        &self,
-        world: &mut World,
-        source: Entity,
-        bundle: B,
-    ) -> Entity {
-        world
-            .scope_mut(source)
-            .expect("a source entity is its own scope")
-            .spawn(bundle)
-    }
-
     /// Spawn `bundle` into the mesh source's subtree.
     ///
     /// # Panics
@@ -132,7 +113,7 @@ impl TestGpu {
     /// In a world built with [`Self::frame_only`], which has no mesh source.
     pub fn spawn<B: unlit_ecs::Bundle>(&self, world: &mut World, bundle: B) -> Entity {
         let entity = self.mesh_source();
-        self.spawn_in(world, entity, bundle)
+        world.scope_mut(entity).spawn(bundle)
     }
 
     /// Despawn `entity` through the mesh source's subtree.
@@ -140,7 +121,6 @@ impl TestGpu {
         let source = self.mesh_source();
         world
             .scope_mut(source)
-            .expect("the source entity is its own scope")
             .despawn(entity)
             .expect("the mesh source owns what it drew");
     }
@@ -152,10 +132,7 @@ impl TestGpu {
         f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
     ) -> R {
         let entity = self.mesh_source();
-        let mut source_row = world
-            .root_scope()
-            .query_one::<&mut Source>(entity)
-            .expect("the source entity exists");
+        let mut source_row = world.root_scope().query_one::<&mut Source>(entity);
 
         let source = source_row.get();
         let mesh = source
@@ -163,17 +140,14 @@ impl TestGpu {
             .expect("the source is a MeshSource");
         // The closure works through the source's own scope: a source entity is
         // its own scope, which is what a frame hands it too.
-        let scope = world.scope(entity).expect("the source entity is alive");
+        let scope = world.scope(entity);
         f(mesh, &scope)
     }
 
     /// Run `f` on the frame driver.
     pub fn with_renderer<R>(&self, world: &World, f: impl FnOnce(&mut Renderer, &World) -> R) -> R {
-        world
-            .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| f(renderer.get(), world))
-            .expect("the renderer entity exists")
+        let mut renderer = world.root_scope().query_one::<&mut Renderer>(self.renderer);
+        f(renderer.get(), world)
     }
 
     /// The frame's resource graph.

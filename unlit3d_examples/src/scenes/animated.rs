@@ -132,10 +132,11 @@ fn build(
     let key = LitPipelineKey::new(super::default_options());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle![orbit_camera(0, size)]);
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![orbit_camera(0, size)]);
 
     // One entry per cell, holding the entity and the mesh while it is
     // occupied. Counts allocations, not cells: a cell that is filled twice
@@ -156,7 +157,10 @@ fn build(
             if step_index == 0 {
                 for entry in cells.iter_mut() {
                     if let Some((entity, mesh)) = entry.take() {
-                        super::despawn_in(world, source_entity, entity);
+                        world
+                            .scope_mut(source_entity)
+                            .despawn(entity)
+                            .expect("the scene owns the entity it despawns");
                         super::remove_mesh(world, source_entity, mesh);
                     }
                 }
@@ -168,7 +172,10 @@ fn build(
             // the world still names a mesh the renderer is about to free.
             for &cell in step.free {
                 let (entity, mesh) = cells[cell].take().expect("a freed cell holds a mesh");
-                super::despawn_in(world, source_entity, entity);
+                world
+                    .scope_mut(source_entity)
+                    .despawn(entity)
+                    .expect("the scene owns the entity it despawns");
                 super::remove_mesh(world, source_entity, mesh);
             }
 
@@ -177,23 +184,22 @@ fn build(
                 // the looped sequence — is retired first, so a mesh never
                 // outlives the entity that names it.
                 if let Some((entity, mesh)) = cells[cell].take() {
-                    super::despawn_in(world, source_entity, entity);
+                    world
+                        .scope_mut(source_entity)
+                        .despawn(entity)
+                        .expect("the scene owns the entity it despawns");
                     super::remove_mesh(world, source_entity, mesh);
                 }
                 // The allocation's offset is baked into the vertices, so every
                 // mesh draws different geometry even at the same transform.
                 let offset = glam::Vec3::splat(0.06 * allocated as f32);
                 let mesh = super::allocate_offset_cube_mesh(world, source_entity, &key, offset);
-                let entity = super::spawn_in(
-                    world,
-                    source_entity,
-                    CellCube {
-                        transform: cell_transform(cell, step_index),
-                        tint: TINTS[allocated % TINTS.len()],
-                        mesh: mesh.clone(),
-                        pipeline: GpuRenderPipeline::new(key.clone()),
-                    },
-                );
+                let entity = world.scope_mut(source_entity).spawn(CellCube {
+                    transform: cell_transform(cell, step_index),
+                    tint: TINTS[allocated % TINTS.len()],
+                    mesh: mesh.clone(),
+                    pipeline: GpuRenderPipeline::new(key.clone()),
+                });
                 cells[cell] = Some((entity, mesh));
                 allocated += 1;
             }
@@ -203,12 +209,10 @@ fn build(
             for (cell, entry) in cells.iter().enumerate() {
                 if let Some((entity, _)) = entry {
                     let transform = cell_transform(cell, step_index);
-                    world
+                    let mut current = world
                         .scope(source_entity)
-                        .expect("the source is alive")
-                        .query_one::<&mut Transform>(*entity)
-                        .map(|mut current| *current.get() = transform)
-                        .expect("a live mesh carries a transform");
+                        .query_one::<&mut Transform>(*entity);
+                    *current.get() = transform;
                 }
             }
             // Re-aim from the frame's own size, so a window that changes

@@ -111,11 +111,10 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     let (world, target, renderer) =
         build_world(config, RenderDevice::from(gpu), output_size, render_size)?;
 
-    world
-        .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| renderer.get().render(&world))
-        .expect("the renderer entity exists");
+    {
+        let mut renderer = world.root_scope().query_one::<&mut Renderer>(renderer);
+        renderer.get().render(&world);
+    }
 
     let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target).await;
     Ok(Frame {
@@ -181,7 +180,6 @@ pub fn build_world(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass entity is its own scope")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     for document in &config.documents {
@@ -190,19 +188,18 @@ pub fn build_world(
             gltf.insert_resources(source, world)
         });
         let nodes = {
-            let mut scope = world
-                .scope_mut(source_entity)
-                .expect("the source entity is its own scope");
+            let mut scope = world.scope_mut(source_entity);
             gltf.spawn_default_scene(&mut scope, &resources)
         };
         if let Some(placement) = &document.placement {
             let transform = placement.transform();
             for node in &nodes {
                 for &entity in &node.entities {
-                    let _ = world
+                    world
                         .root_scope()
                         .query_one::<&mut Transform>(entity)
-                        .map(|mut current| *current.get() = transform.clone());
+                        .get()
+                        .clone_from(&transform);
                 }
             }
         }
@@ -220,7 +217,6 @@ pub fn build_world(
     // The camera sits in the source's own subtree, which is what it frames.
     world
         .scope_mut(source_entity)
-        .expect("the source entity is its own scope")
         .spawn(bundle![camera(&config.camera, render_size)]);
 
     let viewport_width = render_size.0 as f32 * config.output.scale.0;
@@ -230,11 +226,9 @@ pub fn build_world(
     world
         .root_scope()
         .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| {
-            pass.get().viewport =
-                Some(ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y));
-        })
-        .expect("the pass entity exists");
+        .get()
+        .viewport =
+        Some(ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y));
 
     Ok((world, target, renderer))
 }
@@ -265,22 +259,19 @@ pub fn offscreen_world(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass entity is its own scope")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
     // The input is shared by every source, so it lives in the subtree every
     // scope sees.
     let input = InputWriter::new();
     {
         let shared = world.shared();
-        let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(InputFeed(input.clone()));
+        world.scope_mut(shared).spawn(InputFeed(input.clone()));
     }
 
     bind_target(&world, context, pass, &handle, size, samples, depth);
     // The camera sits in the source's own subtree, which is what it frames.
     world
         .scope_mut(source_entity)
-        .expect("the source entity is its own scope")
         .spawn(bundle![default_camera(size)]);
     (world, renderer)
 }
@@ -466,12 +457,8 @@ fn with_mesh_source<R>(
 ) -> R {
     // The scope is the source's own, so what its closure reads is the subtree
     // the source draws.
-    let scope = world
-        .scope(source_entity)
-        .expect("the source entity is alive");
-    let mut source = scope
-        .query_one::<&mut Source>(source_entity)
-        .expect("the mesh source entity exists");
+    let scope = world.scope(source_entity);
+    let mut source = scope.query_one::<&mut Source>(source_entity);
     let mesh = source
         .get()
         .as_mut::<MeshSource>()

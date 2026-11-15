@@ -170,7 +170,6 @@ fn build(
 
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
@@ -207,35 +206,25 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
-    );
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)]);
 
-    super::spawn_in(
-        world,
-        source_entity,
-        Backdrop {
-            mesh: backdrop,
-            pipeline: GpuRenderPipeline::new(opaque_key),
-        },
-    );
+    world.scope_mut(source_entity).spawn(Backdrop {
+        mesh: backdrop,
+        pipeline: GpuRenderPipeline::new(opaque_key),
+    });
 
     // Spawned nearest-first on purpose: registration order is not draw order
     // for a z-sorted entity, so only a correct sort composites them red,
     // green, blue from back to front.
     for (tint, x, z) in PANES.iter().rev() {
-        super::spawn_in(
-            world,
-            source_entity,
-            Pane {
-                tint: *tint,
-                translation: glam::Vec3::new(*x, 0.0, *z),
-                mesh: pane_mesh.clone(),
-                pipeline: GpuRenderPipeline::new(translucent_key.clone()),
-            },
-        );
+        world.scope_mut(source_entity).spawn(Pane {
+            tint: *tint,
+            translation: glam::Vec3::new(*x, 0.0, *z),
+            mesh: pane_mesh.clone(),
+            pipeline: GpuRenderPipeline::new(translucent_key.clone()),
+        });
     }
 
     SceneControl {

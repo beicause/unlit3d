@@ -61,7 +61,6 @@ const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
 ///     .spawn(Pass::new(FramePassOrder(0)));
 /// world
 ///     .scope_mut(pass)
-///     .expect("the pass entity is spawned")
 ///     .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 /// let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 /// ```
@@ -343,9 +342,9 @@ impl Renderer {
                 // without either one seeing the other's. The resources a
                 // source needs — the device, the graph, the frame's target —
                 // live in the shared subtree, which every scope sees.
-                let pass_scope = world.scope(pass_entity).unwrap_or(root);
+                let pass_scope = world.try_scope(pass_entity).unwrap_or(root);
                 for (entity, source) in pass_scope.query::<(Entity, &mut Source)>().iter() {
-                    let scope = world.scope(entity).unwrap_or(pass_scope);
+                    let scope = world.try_scope(entity).unwrap_or(pass_scope);
                     let scene = self.scene_for(pass_entity, entity);
                     source.build_scene(&scope, context, info, scene, &mut encoder);
                 }
@@ -387,7 +386,7 @@ impl Renderer {
         for index in 0..self.passes.entities().len() {
             let pass_entity = self.passes.entities()[index];
             let root = world.root_scope();
-            let Ok(mut pass) = root.query_one::<&FramePass>(pass_entity) else {
+            let Ok(mut pass) = root.try_query_one::<&FramePass>(pass_entity) else {
                 continue;
             };
             let pass = pass.get();
@@ -396,7 +395,7 @@ impl Renderer {
             let Some(attachments) = pass.attachments(world, self.context) else {
                 continue;
             };
-            let pass_scope = world.scope(pass_entity).unwrap_or(root);
+            let pass_scope = world.try_scope(pass_entity).unwrap_or(root);
             {
                 profiling::scope!("renderer.frame.resolve_sources");
                 self.sources.resolve(
@@ -423,7 +422,7 @@ impl Renderer {
                 let whole =
                     ViewportRect::new(attachments.width() as f32, attachments.height() as f32);
                 let load = root
-                    .query_one::<&RenderLoadOps>(pass_entity)
+                    .try_query_one::<&RenderLoadOps>(pass_entity)
                     .map_or_else(|_| RenderLoadOps::default(), |mut load| *load.get());
                 // The label reaches the validation errors wgpu raises while
                 // this pass records, so a message about a bad draw names the
@@ -514,7 +513,7 @@ impl Renderer {
     fn note_placement(&mut self, world: &World) {
         let root = world.root_scope();
         for (pass_entity, _) in root.query::<(Entity, &FramePass)>().iter() {
-            let pass_scope = world.scope(pass_entity).unwrap_or(root);
+            let pass_scope = world.try_scope(pass_entity).unwrap_or(root);
             for (entity, _) in pass_scope.query::<(Entity, &Source)>().iter() {
                 self.reached.insert(entity);
             }
@@ -551,7 +550,7 @@ impl Renderer {
         let camera = pass.camera.filter(|camera| {
             let has_camera = world
                 .root_scope()
-                .query_one::<&crate::components::Camera>(*camera)
+                .try_query_one::<&crate::components::Camera>(*camera)
                 .is_ok();
             if !has_camera {
                 self.missing_cameras.push((pass_entity, *camera));
@@ -619,26 +618,20 @@ mod tests {
     #[test]
     fn a_parked_pass_reaches_the_sources_under_it() {
         let (mut world, mut renderer, pass) = world_with_a_pass();
-        let under = world
-            .scope_mut(pass)
-            .expect("the pass is spawned")
-            .spawn(unlit_ecs::bundle![Source::new(
-                FrameSourceOrder::MESH,
-                Nowhere
-            )]);
+        let under = world.scope_mut(pass).spawn(unlit_ecs::bundle![Source::new(
+            FrameSourceOrder::MESH,
+            Nowhere
+        )]);
         let beside = world.root_scope_mut().spawn(unlit_ecs::bundle![Source::new(
             FrameSourceOrder::MESH,
             Nowhere
         )]);
 
-        world
-            .root_scope()
-            .query_one::<&mut FramePass>(pass)
-            .map(|mut pass| {
-                let pass = pass.get();
-                pass.park()
-            })
-            .expect("the pass is spawned");
+        {
+            let mut row = world.root_scope().query_one::<&mut FramePass>(pass);
+            let pass = row.get();
+            pass.park();
+        }
 
         renderer.note_placement(&world);
         assert!(

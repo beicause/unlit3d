@@ -287,40 +287,29 @@ fn build(
     // scene goes through a pipeline the example compiled itself.
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
-    let camera_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![camera_looking_at(
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![camera_looking_at(
             orbit_eye(ORBIT_START),
             CAMERA_TARGET,
             size,
-        ),],
-    );
+        ),]);
 
-    super::spawn_in(
-        world,
-        source_entity,
-        Sky {
-            mesh: sky_mesh,
-            pipeline: sky_pipeline,
-        },
-    );
+    world.scope_mut(source_entity).spawn(Sky {
+        mesh: sky_mesh,
+        pipeline: sky_pipeline,
+    });
     // One mesh, one pipeline and one material for the whole cloud, so the
     // renderer folds the particles into a single instanced draw and every
     // sprite's placement comes from its own record.
     for particle in particle_cloud() {
-        super::spawn_in(
-            world,
-            source_entity,
-            Sprite {
-                mesh: particle_mesh.clone(),
-                pipeline: particle_pipeline.clone(),
-                material: particle_material.clone(),
-                particle,
-            },
-        );
+        world.scope_mut(source_entity).spawn(Sprite {
+            mesh: particle_mesh.clone(),
+            pipeline: particle_pipeline.clone(),
+            material: particle_material.clone(),
+            particle,
+        });
     }
 
     // A capture replays the frozen sequence so a stored frame stays
@@ -356,9 +345,7 @@ fn build(
 
             let mut camera = world
                 .scope(source_entity)
-                .expect("the source is alive")
-                .query_one::<&Camera>(camera_entity)
-                .expect("the scene's camera exists");
+                .query_one::<&Camera>(camera_entity);
             let sky = SkyUniforms {
                 zenith: glam::Vec4::new(0.29, 0.45, 0.95, 1.0),
                 horizon: glam::Vec4::new(0.98, 0.62, 0.52, 1.0),

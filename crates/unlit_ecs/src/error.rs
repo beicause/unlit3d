@@ -1,16 +1,24 @@
 //! The errors an access that named an entity or an archetype answers with.
 //!
-//! Every lookup that names an entity answers [`Result`] rather than `Option`.
-//! A handle travels over wires, save files and scope boundaries, so a lookup can
-//! be turned down for reasons a caller has to tell apart: the entity is gone, it
-//! is alive but out of the scope's reach, or its archetype does not carry what
-//! was asked for. `Option` collapses all of them into one silence.
+//! A lookup that names an entity is never `Option`. A handle travels over wires,
+//! save files and scope boundaries, so a lookup can be turned down for reasons a
+//! caller has to tell apart: the entity is gone, it is alive but out of the
+//! scope's reach, or its archetype does not carry what was asked for. `Option`
+//! collapses all of them into one silence, so the reasons are variants here
+//! instead.
 //!
-//! A structural change is answered the same way. Despawning and relinking are
-//! turned down for reasons of their own - the entity is out of the subtree, it is
-//! shared, it is scaffolding - and a caller that was refused has to know which it
-//! was: the answer to "not yours" is to ask the scope that owns it, and the answer
-//! to "scaffolding" is to stop asking.
+//! The accessors that are most often called on a handle the caller just took -
+//! opening a scope, opening a nested one, reading one row by handle - hand their
+//! item out directly and panic with the variant's own message. They are the
+//! shortcuts; the `try_` name next to each answers this type, which is what a
+//! caller holding a handle from elsewhere uses. See the module documentation of
+//! [`crate::view`].
+//!
+//! A structural change keeps the `Result` form throughout. Despawning and
+//! relinking are turned down for reasons of their own - the entity is out of the
+//! subtree, it is shared, it is scaffolding - and a caller that was refused has
+//! to know which it was: the answer to "not yours" is to ask the scope that owns
+//! it, and the answer to "scaffolding" is to stop asking.
 //!
 //! A borrow conflict is deliberately not one of these. It says nothing about the
 //! handle, only that another holder has already claimed the component, and it

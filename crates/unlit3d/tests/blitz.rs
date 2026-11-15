@@ -79,7 +79,9 @@ fn render_page(ctx: &Ctx, html: &str) -> (World, TestGpu, wgpu::Texture, Entity,
     // A page declares no depth state, so its target carries no depth
     // attachment: wgpu requires the pass and the pipeline to agree.
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
-    let page = gpu.spawn_in(&mut world, source, bundle![BlitzDocument::new(html)]);
+    let page = world
+        .scope_mut(source)
+        .spawn(bundle![BlitzDocument::new(html)]);
     (world, gpu, target, source, page)
 }
 
@@ -99,10 +101,9 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
     let (mut world, gpu, target, source, _page) = render_page(ctx, html);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
-    gpu.spawn_in(
-        &mut world,
-        source,
-        bundle![OnBlitzEvent::new(move |_scope, _entity, event| {
+    world
+        .scope_mut(source)
+        .spawn(bundle![OnBlitzEvent::new(move |_scope, _entity, event| {
             let value = match event.data() {
                 blitz_traits::events::DomEventData::Input(input) => input.value.clone(),
                 _ => String::new(),
@@ -118,8 +119,7 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 value,
                 checked,
             });
-        })],
-    );
+        })]);
     let input = spawn_input(&mut world);
     (world, gpu, target, source, seen, input.0, input.1)
 }
@@ -132,7 +132,6 @@ fn spawn_input(world: &mut World) -> (InputWriter, InputEvents) {
     // source reads it from its own scope, which cannot see a sibling's.
     world
         .scope_mut(world.shared())
-        .expect("the shared scope exists")
         .spawn(bundle![events.clone()]);
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
@@ -177,11 +176,8 @@ fn bind_target(gpu: &TestGpu, world: &World, pass: Entity) -> wgpu::Texture {
     let (_, color_view) = gpu.register_texture(world, color.clone());
     let attachments =
         FrameAttachments::new(world, gpu.context, COLOR_FORMAT, (WIDTH, HEIGHT), 1, false);
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(pass)
-        .map(|mut pass| pass.get().set_attachments(&attachments, color_view))
-        .expect("the pass entity exists");
+    let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
+    pass.get().set_attachments(&attachments, color_view);
     color
 }
 
@@ -266,11 +262,8 @@ async fn new_markup_replaces_the_page() {
 
     // A page that changed nothing above it is not repainted, so only the new
     // markup can turn the centre red.
-    world
-        .root_scope()
-        .query_one::<&mut BlitzDocument>(page)
-        .map(|mut row| row.get().set_markup(RED_PAGE))
-        .expect("the page entity exists");
+    let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
+    row.get().set_markup(RED_PAGE);
     gpu.render(&world);
 
     let red = centre_pixel(&ctx.device, &ctx.queue, &target).await;
@@ -289,11 +282,8 @@ async fn a_page_draws_an_image_from_a_registered_path() {
         <img src="solid.png" style="display: block; width: 64px; height: 64px">
     </body></html>"#;
     let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    world
-        .root_scope()
-        .query_one::<&BlitzDocument>(page)
-        .map(|mut row| row.get().insert_resource("solid.png", RED_PNG))
-        .expect("the page entity exists");
+    let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
+    row.get().insert_resource("solid.png", RED_PNG);
 
     gpu.render_frames(&world, 2);
 
@@ -380,14 +370,9 @@ async fn a_page_loads_a_stylesheet_it_serves() {
     let html = r#"<html><head><link rel="stylesheet" href="page.css"></head>
         <body style="margin: 0"></body></html>"#;
     let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    world
-        .root_scope()
-        .query_one::<&BlitzDocument>(page)
-        .map(|mut row| {
-            row.get()
-                .insert_resource("page.css", "html { background: #808080 }")
-        })
-        .expect("the page entity exists");
+    let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
+    row.get()
+        .insert_resource("page.css", "html { background: #808080 }");
 
     gpu.render_frames(&world, 2);
 
@@ -406,16 +391,11 @@ async fn a_new_base_still_serves_the_registered_bytes() {
         <img src="solid.png" style="display: block; width: 64px; height: 64px">
     </body></html>"#;
     let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    world
-        .root_scope()
-        .query_one::<&mut BlitzDocument>(page)
-        .map(|mut row| {
-            let page = row.get();
-            page.insert_resource("solid.png", RED_PNG);
-            page.set_base_url("https://example.test/images/")
-                .expect("the base is an absolute URL");
-        })
-        .expect("the page entity exists");
+    let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
+    let page = row.get();
+    page.insert_resource("solid.png", RED_PNG);
+    page.set_base_url("https://example.test/images/")
+        .expect("the base is an absolute URL");
 
     gpu.render_frames(&world, 2);
 
@@ -439,14 +419,9 @@ async fn a_replaced_page_is_not_drawn_from_the_old_pixels() {
 
     let (world, gpu, target, _source, page) = render_page(&ctx, GREY_PAGE);
     gpu.render_frames(&world, 2);
-    world
-        .root_scope()
-        .query_one::<&mut BlitzDocument>(page)
-        .map(|mut row| {
-            row.get()
-                .set_markup(r#"<html><head><link rel="stylesheet" href="later.css"></head></html>"#)
-        })
-        .expect("the page entity exists");
+    let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
+    row.get()
+        .set_markup(r#"<html><head><link rel="stylesheet" href="later.css"></head></html>"#);
 
     gpu.render_frames(&world, 2);
 
@@ -465,10 +440,7 @@ async fn one_tick_reaches_a_shared_page_once() {
     let gpu = TestGpu::frame_only(&mut world, &ctx);
     let outer = gpu.pass();
     // A pass inside the outer one, so both of them reach the page's source.
-    let nested = world
-        .scope_mut(outer)
-        .expect("the pass entity is its own scope")
-        .spawn(Pass::new(FramePassOrder(1)));
+    let nested = world.scope_mut(outer).spawn(Pass::new(FramePassOrder(1)));
 
     // Both passes draw, so both reach the source under the nested one.
     gpu.bind_offscreen_target_with(&world, 1, false);
@@ -481,26 +453,20 @@ async fn one_tick_reaches_a_shared_page_once() {
         <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
         </div>
     </body></html>"#;
-    let source = world
-        .scope_mut(nested)
-        .expect("the nested pass entity is its own scope")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::BLITZ,
-            BlitzSource::new()
-        )]);
-    world
-        .scope_mut(source)
-        .expect("the source entity is its own scope")
-        .spawn(bundle![
-            BlitzDocument::new(html),
-            OnBlitzEvent::new(move |_scope, _entity, event| {
-                log.lock().expect("the log is not poisoned").push(Seen {
-                    name: event.data().name().to_owned(),
-                    value: String::new(),
-                    checked: None,
-                });
-            }),
-        ]);
+    let source = world.scope_mut(nested).spawn(bundle![Source::new(
+        FrameSourceOrder::BLITZ,
+        BlitzSource::new()
+    )]);
+    world.scope_mut(source).spawn(bundle![
+        BlitzDocument::new(html),
+        OnBlitzEvent::new(move |_scope, _entity, event| {
+            log.lock().expect("the log is not poisoned").push(Seen {
+                name: event.data().name().to_owned(),
+                value: String::new(),
+                checked: None,
+            });
+        }),
+    ]);
 
     gpu.render_frames(&world, 2);
     feed(&input, &events, click([20.0, 20.0]));
@@ -664,15 +630,13 @@ async fn a_callback_can_cancel_the_default_action() {
                style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
     </body></html>"#;
     let (mut world, gpu, target, source, seen, input, events) = render_watched_page(&ctx, html);
-    gpu.spawn_in(
-        &mut world,
-        source,
-        bundle![OnBlitzEvent::new(|_scope, _entity, event| {
+    world
+        .scope_mut(source)
+        .spawn(bundle![OnBlitzEvent::new(|_scope, _entity, event| {
             if event.data().name() == "click" {
                 event.prevent_default();
             }
-        })],
-    );
+        })]);
 
     gpu.render_frames(&world, 2);
     feed(&input, &events, click([20.0, 20.0]));

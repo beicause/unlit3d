@@ -47,11 +47,16 @@
   冲突；panic 报出组件名、两个持有者与两个源码位置，所以它说的是谁正握着，而不只是
   谁被拒。这是不做访问冲突分析的代价。可选组件只在「组件不存在」这件事上可选：行已被
   独占认领时同样 panic，而不会表现为 `None`。
-- **访问失败是 error，不是 `None`。** 每个触及实体的函数都回答 `Result`，出错时的
-  `EntityAccessError` 会指名被问到的那个句柄并给出原因：实体已经没了、它在 scope 之外、
-  它不匹配该查询、它未被预留，或者它不属于调用者去搬动。按 id 问 archetype 则回答
-  `ArchetypeAccessError`。`Option` 只留在「缺席本身不算访问失败」的地方——查询项
-  `Option<&C>` 对缺 `C` 的实体就是缺席。
+- **访问失败是 error，不是 `None`。** 每个触及实体的函数都用 `EntityAccessError`
+  说清它为什么被拒：实体已经没了、它在 scope 之外、它不匹配该查询、它未被预留，或者它
+  不属于调用者去搬动。按 id 问 archetype 则回答 `ArchetypeAccessError`。`Option` 只留在
+  「缺席本身不算访问失败」的地方——查询项 `Option<&C>` 对缺 `C` 的实体就是缺席。
+- **快捷方式是 panic，`try_` 名字才回答 `Result`。** 打开一个 scope、在其中再打开一个
+  scope、读单个实体的查询，都直接交出结果，失败时按错误自身的消息 panic：握着刚取到的
+  句柄的调用点本就无从处理这种失败，只能把它报出来。可失败的版本只隔一个名字——
+  `World::try_scope`、`Scope::try_query_one` 及同族——句柄可能已经没了、句柄来自别处、
+  或者「没有这一行」本身就是答案时用它。快捷方式的代价是本该分支的调用点也能编过，
+  要到运行时才知道原因。
 - **有两个实体是脚手架。** `World::root` 与 `World::shared` 属于树而不是树的内容：
   两者都不被计数、不被查询、不可 despawn、不可重挂。[scope](#scope) 一节说明它们是什么、
   代价落在哪里。
@@ -66,11 +71,11 @@ use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
 let scene = world.root_scope_mut().spawn(bundle![]);
-let cube = world.scope_mut(scene).unwrap().spawn(bundle![0u32]);
-let camera = world.scope_mut(scene).unwrap().spawn(bundle![0f32]);
+let cube = world.scope_mut(scene).spawn(bundle![0u32]);
+let camera = world.scope_mut(scene).spawn(bundle![0f32]);
 
 // 场景的 scope 看得见场景及其下的一切，看不见旁边的东西。
-let scope = world.scope(scene).unwrap();
+let scope = world.scope(scene);
 assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
@@ -281,14 +286,14 @@ let cube = world.root_scope_mut().spawn(bundle![Spin { radians_per_second: 1.0, 
 let clock = world.root_scope_mut().spawn(bundle![0.016f32]);
 
 // 驱动每一个 `Spin`。由调用者决定碰哪些实体、按什么顺序；库内没有场景图的概念。
-let delta = *world.root_scope().query_one::<&f32>(clock).unwrap().get();
+let delta = *world.root_scope().query_one::<&f32>(clock).get();
 {
     let mut spins = world.root_scope().query::<&mut Spin>();
     for spin in spins.iter() {
         spin.angle += spin.radians_per_second * delta;
     }
 }
-assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().get().angle, 0.0);
+assert_ne!(world.root_scope().query_one::<&Spin>(cube).get().angle, 0.0);
 
 // 谓词在认领任何列之前收窄要访问的 archetype：这里取「没有时钟」的那些。
 let _ = world
@@ -315,8 +320,8 @@ for (entity, has_spin) in presence.iter() {
 `unsafe`：查询通过 `PlanBuilder` 解析自己的列，它交出 `Col` 与 `ColMut` 并记下
 被索要了什么，所以查询认领的组件恰好是它声明的那些。`Scope::query_one` 在单个
 实体上跑同一个查询，交出的是 `QueryOne` 持有者，由 `QueryOne::get` 交出那一行，
-于是按句柄查找与遍历 scope 共用同一套词汇；句柄指不到可见实体、或实体不匹配该查询，
-都是一个 `EntityAccessError`。
+于是按句柄查找与遍历 scope 共用同一套词汇。句柄指不到可见实体、或实体不匹配该查询时，
+它按那个 `EntityAccessError` panic；预料到没有这一行的调用者改用 `Scope::try_query_one`。
 
 spawn 与 despawn 需要 `&mut` scope，或者排入队列的命令：
 
@@ -349,9 +354,9 @@ let entity = world.root_scope_mut().spawn(bundle![(1u32, 2.0f32), (true, ())]);
 
 // 两个组件：一个元组，一个嵌套的元组。
 let scope = world.root_scope();
-assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap().get());
-assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap().get());
-assert!(!scope.query_one::<Has<u32>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<(u32, f32)>>(entity).get());
+assert!(scope.query_one::<Has<(bool, ())>>(entity).get());
+assert!(!scope.query_one::<Has<u32>>(entity).get());
 ```
 
 用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样
@@ -368,8 +373,8 @@ let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
-assert!(scope.query_one::<Has<u32>>(entity).unwrap().get());
-assert!(scope.query_one::<Has<f32>>(entity).unwrap().get());
+assert!(scope.query_one::<Has<u32>>(entity).get());
+assert!(scope.query_one::<Has<f32>>(entity).get());
 ```
 
 ## MCP 服务器

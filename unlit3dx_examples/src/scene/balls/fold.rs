@@ -37,7 +37,7 @@ impl Balls {
             };
             for answer in answers {
                 if let Some(handle) = scope
-                    .query_one::<&Ball>(answer.ball)
+                    .try_query_one::<&Ball>(answer.ball)
                     .ok()
                     .and_then(|mut found| found.get().body)
                 {
@@ -52,7 +52,7 @@ impl Balls {
         self.instances
             .advance(delta_seconds, &mut self.settled_instances);
         for (ball, answer) in self.settled_instances.drain(..) {
-            match (scope.query_one::<&mut Ball>(ball), answer) {
+            match (scope.try_query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(instance)) => {
                     found.get().instance = Some(instance);
                 }
@@ -63,7 +63,7 @@ impl Balls {
 
         self.bodies.advance(delta_seconds, &mut self.settled_bodies);
         for (ball, answer) in self.settled_bodies.drain(..) {
-            match (scope.query_one::<&mut Ball>(ball), answer) {
+            match (scope.try_query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(handle)) => {
                     found.get().body = Some(handle);
                 }
@@ -77,7 +77,7 @@ impl Balls {
         // of marking it shown.
         self.shows.advance(delta_seconds, &mut self.settled_shows);
         for (ball, answer) in self.settled_shows.drain(..) {
-            match (scope.query_one::<&mut Ball>(ball), answer) {
+            match (scope.try_query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(true)) => {
                     found.get().phase = BallPhase::Shown;
                 }
@@ -139,7 +139,7 @@ impl Balls {
 
         // The assets are read once for every ball that is ready to show.
         let assets = scope
-            .query_one::<&SceneState>(state)
+            .try_query_one::<&SceneState>(state)
             .ok()
             .and_then(|mut state| state.get().loaded.clone());
         if let Some(assets) = assets {
@@ -156,7 +156,7 @@ impl Balls {
                         });
                 match sent {
                     Ok(()) => {
-                        if let Ok(mut ball) = scope.query_one::<&mut Ball>(candidate.ball) {
+                        if let Ok(mut ball) = scope.try_query_one::<&mut Ball>(candidate.ball) {
                             ball.get().phase = BallPhase::Requested;
                         }
                     }

@@ -228,17 +228,13 @@ struct Outlined {
 impl Outlined {
     /// The shell: the same mesh, spread and with the body's faces culled.
     fn spawn_shell(&self, world: &mut World, scope: Entity) {
-        super::spawn_in(
-            world,
-            scope,
-            bundle![
-                self.transform.clone(),
-                self.mesh.clone(),
-                self.shell.clone(),
-                InstanceColor::new(INK),
-                InstanceHullWidth::new(HULL_WIDTH),
-            ],
-        );
+        world.scope_mut(scope).spawn(bundle![
+            self.transform.clone(),
+            self.mesh.clone(),
+            self.shell.clone(),
+            InstanceColor::new(INK),
+            InstanceHullWidth::new(HULL_WIDTH),
+        ]);
     }
 }
 
@@ -346,14 +342,12 @@ fn built(
     // The camera hangs in the shared subtree. Two sources draw this frame — the
     // meshes and the strokes — and a source reads only its own subtree, so a
     // camera beside one of them would be invisible to the other.
-    let camera_entity = super::spawn_shared(
-        world,
-        bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
-    );
+    let camera_entity = world
+        .scope_mut(world.shared())
+        .spawn(bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)]);
 
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // One smooth sphere, shared by every body and by both of its draws.
@@ -404,42 +398,38 @@ fn built(
         // behind the body, so the body covers it wherever the two coincide
         // whatever order they land in. The spawn order here is arbitrary.
         outlined.spawn_shell(world, source_entity);
-        super::spawn_in(world, source_entity, outlined);
+        world.scope_mut(source_entity).spawn(outlined);
     }
 
     // The bodies without normals. They have no shell — the shell is pushed along
     // the normals a mesh carries, and these carry none — so they are here for the
     // shading their own facets give them.
     for (translation, radius, tint) in FACETED {
-        super::spawn_in(
-            world,
-            source_entity,
-            bundle![
-                Transform {
-                    translation,
-                    rotation: glam::Quat::IDENTITY,
-                    scale: glam::Vec3::splat(radius),
-                },
-                InstanceColor::new(tint),
-                faceted.clone(),
-                GpuRenderPipeline::new(body_key.clone()),
-            ],
-        );
+        world.scope_mut(source_entity).spawn(bundle![
+            Transform {
+                translation,
+                rotation: glam::Quat::IDENTITY,
+                scale: glam::Vec3::splat(radius),
+            },
+            InstanceColor::new(tint),
+            faceted.clone(),
+            GpuRenderPipeline::new(body_key.clone()),
+        ]);
     }
 
-    super::spawn_in(world, source_entity, bundle![AmbientLight::new(AMBIENT)]);
-    super::spawn_in(
-        world,
-        source_entity,
-        super::PlacedLight::aiming(
+    world
+        .scope_mut(source_entity)
+        .spawn(bundle![AmbientLight::new(AMBIENT)]);
+    world
+        .scope_mut(source_entity)
+        .spawn(super::PlacedLight::aiming(
             LightSource::new(DirectionalLight {
                 color: glam::Vec4::new(1.0, 0.97, 0.9, 0.0),
                 intensity: SUN_INTENSITY,
             }),
             SUN.0,
             SUN.1,
-        ),
-    );
+        ));
 
     // The strokes are their own source, and each one belongs to its entity:
     // the source collects the Line components its scope sees every frame, so
@@ -449,18 +439,15 @@ fn built(
     // The orbit and the armillary rings are washes — blended over the frame
     // and hidden by what stands in front of them — and the ticks are opaque,
     // so one source draws both of the source's ink behaviours.
-    let lines = world
-        .scope_mut(pass)
-        .expect("the pass is alive")
-        .spawn(bundle![Source::new(
-            FrameSourceOrder::LINE,
-            LineSource::new()
-        )]);
+    let lines = world.scope_mut(pass).spawn(bundle![Source::new(
+        FrameSourceOrder::LINE,
+        LineSource::new()
+    )]);
     let mut strokes = orbit();
     strokes.extend(armillary());
     strokes.extend(caps_strokes());
     for stroke in strokes {
-        super::spawn_in(world, lines, bundle![stroke]);
+        world.scope_mut(lines).spawn(bundle![stroke]);
     }
 
     SceneControl {

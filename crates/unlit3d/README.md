@@ -1068,16 +1068,14 @@ let pass = world
     .spawn(Pass::new(FramePassOrder(0)));
 let source = world
     .scope_mut(pass)
-    .unwrap()
     .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
-let scope = world.scope(source).unwrap();
+let scope = world.scope(source);
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
 //    renderable entity under it, carrying the lit key.
-let (mesh, material) = scope
-    .query_one::<&mut Source>(source)
-    .map(|mut source| {
-        let source = source.get().as_mut::<MeshSource>().unwrap();
+let (mesh, material) = {
+    let mut row = scope.query_one::<&mut Source>(source);
+    let source = row.get().as_mut::<MeshSource>().unwrap();
         let positions = [[0.0; 3]; 3];
         let uvs = [[0.0; 2]; 3];
         let colors = [[255u8; 4]; 3];
@@ -1108,13 +1106,11 @@ let (mesh, material) = scope
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-        let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
-        (mesh, material)
-    })
-    .unwrap();
+    let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
+    (mesh, material)
+};
 world
     .scope_mut(source)
-    .unwrap()
     .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
 
 // 4. Give the pass a render target and render one frame (uses the noop
@@ -1134,30 +1130,21 @@ let attachments = FrameAttachments::new(
     1,
     true,
 );
-let scope = world.scope(source).unwrap();
-let color_view = scope
-    .query_one::<&mut Source>(source)
-    .map(|mut source| {
-        source
-            .get()
-            .as_mut::<MeshSource>()
-            .unwrap()
-            .register_texture_and_default_view(&scope, color)
-            .1
-    })
-    .unwrap();
-world
-    .root_scope()
-    .query_one::<&mut FramePass>(pass)
-    .map(|mut pass| {
-        pass.get().set_attachments(&attachments, color_view);
-    })
-    .unwrap();
-world
-    .root_scope()
-    .query_one::<&mut Renderer>(renderer)
-    .map(|mut r| r.get().render(&world))
-    .unwrap();
+let scope = world.scope(source);
+let color_view = {
+    let mut row = scope.query_one::<&mut Source>(source);
+    row.get()
+        .as_mut::<MeshSource>()
+        .unwrap()
+        .register_texture_and_default_view(&scope, color)
+        .1
+};
+{
+    let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
+    pass.get().set_attachments(&attachments, color_view);
+}
+let mut renderer = world.root_scope().query_one::<&mut Renderer>(renderer);
+renderer.get().render(&world);
 ```
 
 An egui panel is a behaviour component, so mounting an interface is an ordinary
@@ -1174,7 +1161,7 @@ let mut world = World::new();
 let ui = world
     .root_scope_mut()
     .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
-world.scope_mut(ui).unwrap().spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
+world.scope_mut(ui).spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);
 # }

@@ -282,10 +282,7 @@ fn mount_egui_source(world: &mut World, gpu: &TestGpu) -> Entity {
 
 /// Spawn `panel` under the egui source, which is the scope it runs.
 fn spawn_panel(world: &mut World, ui: Entity, panel: EguiPanel) -> Entity {
-    world
-        .scope_mut(ui)
-        .expect("a source entity is its own scope")
-        .spawn(bundle![panel])
+    world.scope_mut(ui).spawn(bundle![panel])
 }
 
 /// Spawn an input buffer stating the window's size and density.
@@ -298,7 +295,6 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
     // source reads it from its own scope, which cannot see a sibling's.
     world
         .scope_mut(world.shared())
-        .expect("the shared scope exists")
         .spawn(bundle![events.clone()]);
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
@@ -311,16 +307,13 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
 fn spawn_load_ops(world: &World, gpu: &TestGpu) {
     // The load ops belong to the pass that opens the target, not to any one of
     // the sources recorded into it.
-    world
+    let mut ops = world
         .root_scope()
-        .query_one::<&mut RenderLoadOps>(gpu.pass())
-        .map(|mut ops| {
-            let ops = ops.get();
-            {
-                ops.color = wgpu::LoadOp::Clear(CLEAR_COLOR);
-            }
-        })
-        .expect("the pass entity carries load ops");
+        .query_one::<&mut RenderLoadOps>(gpu.pass());
+    let ops = ops.get();
+    {
+        ops.color = wgpu::LoadOp::Clear(CLEAR_COLOR);
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -533,13 +526,8 @@ async fn mesh_and_egui_frame(
     let ui = mount_egui_source(world, &gpu);
     spawn_panel(world, ui, panel);
     if egui_first {
-        world
-            .root_scope()
-            .query_one::<&mut Source>(ui)
-            .map(|mut source| {
-                source.get().order = FrameSourceOrder(FrameSourceOrder::MESH.0 - 1);
-            })
-            .expect("the overlay is spawned");
+        let mut source = world.root_scope().query_one::<&mut Source>(ui);
+        source.get().order = FrameSourceOrder(FrameSourceOrder::MESH.0 - 1);
     }
 
     let target = gpu.bind_offscreen_target_with(world, 1, true);
@@ -745,7 +733,7 @@ struct Burst(usize);
 fn burst_panel(extra: Entity) -> EguiPanel {
     EguiPanel::new(move |world, _entity, ui| {
         let burst = world
-            .query_one::<&Burst>(extra)
+            .try_query_one::<&Burst>(extra)
             .map_or(0, |mut burst| burst.get().0);
         let painter = ui.painter();
         for index in 0..burst {
@@ -783,7 +771,7 @@ async fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     gpu.render(&world);
     let _ = world
         .root_scope()
-        .query_one::<&mut Burst>(extra)
+        .try_query_one::<&mut Burst>(extra)
         .map(|mut burst| {
             let burst = burst.get();
             burst.0 = 0

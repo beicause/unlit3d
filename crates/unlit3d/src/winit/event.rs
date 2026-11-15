@@ -232,7 +232,7 @@ impl<U: 'static> WinitHost<U> {
         let _ = self
             .world
             .root_scope()
-            .query_one::<&mut Resumed>(entity)
+            .try_query_one::<&mut Resumed>(entity)
             .map(|mut state| {
                 let state = state.get();
                 state.0 = resumed

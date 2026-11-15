@@ -76,7 +76,6 @@ fn build(
     let key = LitPipelineKey::new(default_options());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
@@ -96,26 +95,18 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle![camera(size)]);
+    let camera_entity = world.scope_mut(source_entity).spawn(bundle![camera(size)]);
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
-    let weights_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![MorphWeights {
-            weights: weights(0).to_vec()
-        }],
-    );
-    super::spawn_in(
-        world,
-        source_entity,
-        MorphedCube {
-            mesh,
-            pipeline: GpuRenderPipeline::new(key),
-            weights: weights_entity,
-        },
-    );
+    let weights_entity = world.scope_mut(source_entity).spawn(bundle![MorphWeights {
+        weights: weights(0).to_vec()
+    }]);
+    world.scope_mut(source_entity).spawn(MorphedCube {
+        mesh,
+        pipeline: GpuRenderPipeline::new(key),
+        weights: weights_entity,
+    });
 
     SceneControl {
         advance: Box::new(move |world, frame, _delta, frame_size| {
@@ -124,9 +115,7 @@ fn build(
             // a GPU call: the source packs and uploads them once per frame.
             world
                 .scope(source_entity)
-                .expect("the source is alive")
                 .query_one::<&mut MorphWeights>(weights_entity)
-                .expect("the weight entity carries a `MorphWeights`")
                 .get()
                 .weights = weights(frame).to_vec();
             // The camera the whole sequence shares, re-aimed at the frame's

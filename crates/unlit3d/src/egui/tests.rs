@@ -80,12 +80,8 @@ fn each_panel_runs_once_and_may_write_a_sibling() {
             EguiPanel::new(move |world, entity, ui| {
                 runs.set(runs.get() + 1);
                 // Read the sibling, then write it back advanced by one.
-                let seen = world
-                    .query_one::<&Runs>(entity)
-                    .expect("the sibling exists")
-                    .get()
-                    .0;
-                let _ = world.query_one::<&mut Runs>(entity).map(|mut runs| {
+                let seen = world.query_one::<&Runs>(entity).get().0;
+                let _ = world.try_query_one::<&mut Runs>(entity).map(|mut runs| {
                     let runs = runs.get();
                     runs.0 = seen + 1
                 });
@@ -116,12 +112,7 @@ fn each_panel_runs_once_and_may_write_a_sibling() {
     assert_eq!(panels.len(), 2, "both panels are driven by one query");
     for entity in panels {
         assert_eq!(
-            world
-                .root_scope()
-                .query_one::<&Runs>(entity)
-                .expect("the sibling")
-                .get()
-                .0,
+            world.root_scope().query_one::<&Runs>(entity).get().0,
             1,
             "the panel ran once and wrote its sibling"
         );

@@ -34,41 +34,31 @@ fn a_spawned_entity_reads_back_its_components() {
     assert!(
         world
             .root_scope()
-            .query_one::<Has<Position>>(entity)
+            .try_query_one::<Has<Position>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         world
             .root_scope()
-            .query_one::<Has<Name>>(entity)
+            .try_query_one::<Has<Name>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<Velocity>>(entity)
+            .try_query_one::<Has<Velocity>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
 
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .x,
+        world.root_scope().query_one::<&Position>(entity).get().x,
         1.0
     );
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Name>(entity)
-            .unwrap()
-            .get()
-            .0,
+        world.root_scope().query_one::<&Name>(entity).get().0,
         "cube"
     );
 }
@@ -89,11 +79,16 @@ fn an_empty_entity_has_no_components() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<Position>>(entity)
+            .try_query_one::<Has<Position>>(entity)
             .map(|mut held| held.get())
             .unwrap_or(false)
     );
-    assert!(world.root_scope().query_one::<&Position>(entity).is_err());
+    assert!(
+        world
+            .root_scope()
+            .try_query_one::<&Position>(entity)
+            .is_err()
+    );
 }
 
 #[test]
@@ -108,9 +103,9 @@ fn components_are_written_through_a_scoped_borrow() {
     // The two live in different cells, so the borrows do not conflict.
     let moved_x = world
         .root_scope()
-        .query_one::<&mut Position>(entity)
+        .try_query_one::<&mut Position>(entity)
         .map(|mut held| {
-            let mut velocity_of = world.root_scope().query_one::<&Velocity>(entity).unwrap();
+            let mut velocity_of = world.root_scope().query_one::<&Velocity>(entity);
             let velocity = velocity_of.get();
             let position = held.get();
             position.x += velocity.dx;
@@ -120,12 +115,7 @@ fn components_are_written_through_a_scoped_borrow() {
 
     assert_eq!(moved_x, Ok(1.0));
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .y,
+        world.root_scope().query_one::<&Position>(entity).get().y,
         2.0
     );
 }
@@ -138,22 +128,14 @@ fn get_mut_holds_an_exclusive_borrow() {
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     {
-        let mut position_row = world
-            .root_scope()
-            .query_one::<&mut Position>(entity)
-            .unwrap();
+        let mut position_row = world.root_scope().query_one::<&mut Position>(entity);
 
         let position = position_row.get();
         position.x = 5.0;
     }
 
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Position>(entity)
-            .unwrap()
-            .get()
-            .x,
+        world.root_scope().query_one::<&Position>(entity).get().x,
         5.0
     );
 }
@@ -167,7 +149,7 @@ fn with_mut_is_none_without_the_component() {
     assert!(
         world
             .root_scope()
-            .query_one::<&mut Velocity>(entity)
+            .try_query_one::<&mut Velocity>(entity)
             .map(|mut holder| {
                 let _ = holder.get();
             })
@@ -182,7 +164,7 @@ fn a_despawned_handle_never_resolves_to_the_next_entity() {
 
     assert!(world.root_scope_mut().despawn(first).is_ok());
     assert!(!world.root_scope().contains(first));
-    assert!(world.root_scope().query_one::<&Name>(first).is_err());
+    assert!(world.root_scope().try_query_one::<&Name>(first).is_err());
     assert!(
         world.root_scope_mut().despawn(first).is_err(),
         "the second despawn is a no-op"
@@ -235,18 +217,12 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
         world
             .root_scope()
             .query_one::<&u32>(entity)
-            .unwrap()
             .get()
             .to_owned(),
         7
     );
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Name>(entity)
-            .unwrap()
-            .get()
-            .0,
+        world.root_scope().query_one::<&Name>(entity).get().0,
         "late"
     );
 }
@@ -291,7 +267,7 @@ fn a_handle_no_world_produced_refers_to_nothing() {
 
     let alien = Entity::from_raw(u32::MAX, u32::MAX);
     assert!(!world.root_scope().contains(alien));
-    assert!(world.root_scope().query_one::<&Name>(alien).is_err());
+    assert!(world.root_scope().try_query_one::<&Name>(alien).is_err());
     assert!(world.root_scope_mut().despawn(alien).is_err());
 }
 
@@ -322,39 +298,21 @@ fn a_wide_bundle_spawns_every_component() {
         Name("wide"),
     ]);
 
-    assert_eq!(
-        *world.root_scope().query_one::<&u8>(entity).unwrap().get(),
-        1
-    );
-    assert_eq!(
-        *world.root_scope().query_one::<&u64>(entity).unwrap().get(),
-        4
-    );
-    assert_eq!(
-        *world.root_scope().query_one::<&i64>(entity).unwrap().get(),
-        8
-    );
-    assert!(*world.root_scope().query_one::<&bool>(entity).unwrap().get());
-    assert_eq!(
-        *world.root_scope().query_one::<&char>(entity).unwrap().get(),
-        'x'
-    );
+    assert_eq!(*world.root_scope().query_one::<&u8>(entity).get(), 1);
+    assert_eq!(*world.root_scope().query_one::<&u64>(entity).get(), 4);
+    assert_eq!(*world.root_scope().query_one::<&i64>(entity).get(), 8);
+    assert!(*world.root_scope().query_one::<&bool>(entity).get());
+    assert_eq!(*world.root_scope().query_one::<&char>(entity).get(), 'x');
     assert_eq!(
         world
             .root_scope()
             .query_one::<&f64>(entity)
-            .unwrap()
             .get()
             .to_owned(),
         2.5
     );
     assert_eq!(
-        world
-            .root_scope()
-            .query_one::<&Name>(entity)
-            .unwrap()
-            .get()
-            .0,
+        world.root_scope().query_one::<&Name>(entity).get().0,
         "wide"
     );
 }
@@ -514,12 +472,12 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
     assert_eq!(resolved.len(), entities.len());
 
     for &entity in &entities {
-        let mut position_row_2 = world.root_scope().query_one::<&Position>(entity).unwrap();
+        let mut position_row_2 = world.root_scope().query_one::<&Position>(entity);
 
         let expected_x = position_row_2.get().x;
         let expected_velocity = world
             .root_scope()
-            .query_one::<&Velocity>(entity)
+            .try_query_one::<&Velocity>(entity)
             .map(|mut velocity| {
                 let velocity = velocity.get();
                 velocity.dx

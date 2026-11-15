@@ -16,20 +16,19 @@ pub(crate) fn step_sequence(entity: Entity) -> OnFrame {
     OnFrame::new(move |world, _entity, frame| {
         let stepped = match world
             .root_scope()
-            .query_one::<&SequenceStep>(entity)
+            .try_query_one::<&SequenceStep>(entity)
             .ok()
             .and_then(|mut step| step.get().0)
         {
-            Some(step) => world
-                .root_scope()
-                .query_one::<&mut SequenceClock>(entity)
-                .map(|mut clock| tick(&mut clock.get().0, step, frame.delta_time))
-                .expect("the scene frame entity carries a sequence clock"),
+            Some(step) => {
+                let mut clock = world.root_scope().query_one::<&mut SequenceClock>(entity);
+                tick(&mut clock.get().0, step, frame.delta_time)
+            }
             None => true,
         };
         let _ = world
             .root_scope()
-            .query_one::<&mut SequenceStepped>(entity)
+            .try_query_one::<&mut SequenceStepped>(entity)
             .map(|mut flag| flag.get().0 = stepped);
     })
 }
@@ -44,7 +43,7 @@ pub(crate) fn run_scene_advance(entity: Entity) -> OnFrame {
     OnFrame::with_order(SCENE_ADVANCE_ORDER, move |world, _entity, frame| {
         let stepped = world
             .root_scope()
-            .query_one::<&SequenceStepped>(entity)
+            .try_query_one::<&SequenceStepped>(entity)
             .is_ok_and(|mut flag| flag.get().0);
         if !stepped {
             return;
@@ -77,7 +76,7 @@ pub(crate) fn ensure_presented(app: Entity) -> OnFrame {
         }
         if world
             .root_scope()
-            .query_one::<&SceneEntity>(app)
+            .try_query_one::<&SceneEntity>(app)
             .map_or(true, |mut slot| slot.get().0.is_none())
         {
             present(world, app);
@@ -126,7 +125,7 @@ pub(crate) fn serve_scene_controls(app: Entity) -> OnFrame {
         }
         let Some(scene_entity) = world
             .root_scope()
-            .query_one::<&SceneEntity>(app)
+            .try_query_one::<&SceneEntity>(app)
             .ok()
             .and_then(|mut slot| slot.get().0)
         else {
@@ -134,14 +133,11 @@ pub(crate) fn serve_scene_controls(app: Entity) -> OnFrame {
         };
         let active = window(world).is_some_and(|window| fullscreen::active(&window));
         let (selector_pos, gpu_info_pos, switch, fullscreen) = {
-            let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) else {
+            let Ok(mut nested) = world.root_scope().try_query_one::<&World>(scene_entity) else {
                 return;
             };
             let (selector_pos, gpu_info_pos) = {
-                let mut scene = world
-                    .root_scope()
-                    .query_one::<&Scene>(scene_entity)
-                    .expect("the scene component exists");
+                let mut scene = world.root_scope().query_one::<&Scene>(scene_entity);
                 (
                     scene.get().selector_rect(nested.get()),
                     scene.get().gpu_info_rect(nested.get()),
@@ -149,22 +145,22 @@ pub(crate) fn serve_scene_controls(app: Entity) -> OnFrame {
             };
             let switch = world
                 .root_scope()
-                .query_one::<&mut Scene>(scene_entity)
+                .try_query_one::<&mut Scene>(scene_entity)
                 .ok()
                 .and_then(|mut scene| scene.get().pending.take());
             let fullscreen = world
                 .root_scope()
-                .query_one::<&mut Scene>(scene_entity)
+                .try_query_one::<&mut Scene>(scene_entity)
                 .is_ok_and(|mut scene| scene.get().fullscreen_request(nested.get(), active));
             (selector_pos, gpu_info_pos, switch, fullscreen)
         };
         let _ = world
             .root_scope()
-            .query_one::<&mut SelectorPos>(app)
+            .try_query_one::<&mut SelectorPos>(app)
             .map(|mut slot| slot.get().0 = selector_pos);
         let _ = world
             .root_scope()
-            .query_one::<&mut GpuInfoPos>(app)
+            .try_query_one::<&mut GpuInfoPos>(app)
             .map(|mut slot| slot.get().0 = gpu_info_pos);
         if let Some(def) = switch {
             switch_scene(world, app, def);
@@ -176,7 +172,7 @@ pub(crate) fn serve_scene_controls(app: Entity) -> OnFrame {
         }
         // The overlay publishes the URLs it was asked to open in the scene's own
         // world, so it is drained there rather than here in the host.
-        if let Ok(mut nested) = world.root_scope().query_one::<&World>(scene_entity) {
+        if let Ok(mut nested) = world.root_scope().try_query_one::<&World>(scene_entity) {
             for url in drain_open_urls(nested.get()) {
                 open_url(&url);
             }
@@ -192,18 +188,18 @@ pub(crate) fn advance_scene(app: Entity) -> OnFrame {
         }
         let Some(scene_entity) = world
             .root_scope()
-            .query_one::<&SceneEntity>(app)
+            .try_query_one::<&SceneEntity>(app)
             .ok()
             .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
-        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
+        let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(scene_entity) else {
             return;
         };
         let _ = world
             .root_scope()
-            .query_one::<&mut Scene>(scene_entity)
+            .try_query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| {
                 scene.get().advance(&mut *nested.get(), frame.delta_time);
             });
@@ -221,28 +217,24 @@ pub(crate) fn restate_viewport(app: Entity) -> OnFrame {
     OnFrame::with_order(VIEWPORT_ORDER, move |world, _entity, _frame| {
         let Some(scene_entity) = world
             .root_scope()
-            .query_one::<&SceneEntity>(app)
+            .try_query_one::<&SceneEntity>(app)
             .ok()
             .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
         let (scene_pass, viewport) = {
-            let mut scene = world
-                .root_scope()
-                .query_one::<&Scene>(scene_entity)
-                .expect("the scene entity carries a scene");
+            let mut scene = world.root_scope().query_one::<&Scene>(scene_entity);
             (scene.get().pass, scene.get().viewport)
         };
-        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
+        let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(scene_entity) else {
             return;
         };
-        nested
+        let mut pass = nested
             .get()
             .root_scope()
-            .query_one::<&mut FramePass>(scene_pass)
-            .map(|mut pass| pass.get().viewport = viewport)
-            .expect("the scene's own pass exists");
+            .query_one::<&mut FramePass>(scene_pass);
+        pass.get().viewport = viewport;
     })
 }
 
@@ -256,18 +248,18 @@ pub(crate) fn flush_scene(app: Entity) -> OnFrame {
     OnFrame::with_order(FLUSH_ORDER, move |world, _entity, _frame| {
         let Some(scene_entity) = world
             .root_scope()
-            .query_one::<&SceneEntity>(app)
+            .try_query_one::<&SceneEntity>(app)
             .ok()
             .and_then(|mut slot| slot.get().0)
         else {
             return;
         };
-        let Ok(mut nested) = world.root_scope().query_one::<&mut World>(scene_entity) else {
+        let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(scene_entity) else {
             return;
         };
         let _ = world
             .root_scope()
-            .query_one::<&mut Scene>(scene_entity)
+            .try_query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| {
                 if let Err(error) = scene.get().end_frame(&mut *nested.get()) {
                     log::error!("a command queued by a scene failed: {error}");

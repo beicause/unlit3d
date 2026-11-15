@@ -181,7 +181,7 @@ impl Presenter {
     /// sub-world that is gone presents nothing and returns `Ok`.
     pub fn present(&mut self, host: &World) -> Result<(), PresenterError> {
         let mut nested = match self.render {
-            Some(render) => match host.root_scope().query_one::<&World>(render) {
+            Some(render) => match host.root_scope().try_query_one::<&World>(render) {
                 Ok(nested) => Some(nested),
                 Err(_) => return Ok(()),
             },
@@ -193,7 +193,9 @@ impl Presenter {
         };
         let presenting = self.presenting();
         if self.surface.is_released() {
-            let mut renderer_row = world.root_scope().query_one::<&Renderer>(self.renderer)?;
+            let mut renderer_row = world
+                .root_scope()
+                .try_query_one::<&Renderer>(self.renderer)?;
             self.surface
                 .build(world, renderer_row.get())
                 .map_err(PresenterError::Surface)?;
@@ -206,7 +208,7 @@ impl Presenter {
         };
         let mut renderer_row = world
             .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)?;
+            .try_query_one::<&mut Renderer>(self.renderer)?;
         renderer_row.get().render(world);
         let context = renderer_row.get().context();
         let queue = context.queue(&world.root_scope())?;
@@ -231,7 +233,7 @@ impl Presenter {
         let mut nested = match self.render {
             Some(render) => Some(
                 host.root_scope()
-                    .query_one::<&World>(render)
+                    .try_query_one::<&World>(render)
                     .map_err(PresenterError::MissingResource)?,
             ),
             None => None,
@@ -243,7 +245,7 @@ impl Presenter {
         let size = {
             let mut renderer = world
                 .root_scope()
-                .query_one::<&mut Renderer>(self.renderer)?;
+                .try_query_one::<&mut Renderer>(self.renderer)?;
             self.surface
                 .resize(world, &mut *renderer.get(), size.0, size.1);
             self.surface.size()
@@ -253,7 +255,9 @@ impl Presenter {
             return Ok(());
         };
         let context = {
-            let mut renderer = world.root_scope().query_one::<&Renderer>(self.renderer)?;
+            let mut renderer = world
+                .root_scope()
+                .try_query_one::<&Renderer>(self.renderer)?;
             renderer.get().context()
         };
         let device = context.device(&world.root_scope())?;
@@ -279,7 +283,7 @@ impl Presenter {
         let mut nested = match self.render {
             Some(render) => Some(
                 host.root_scope()
-                    .query_one::<&World>(render)
+                    .try_query_one::<&World>(render)
                     .map_err(PresenterError::MissingResource)?,
             ),
             None => None,
@@ -291,11 +295,11 @@ impl Presenter {
         let presenting = self.presenting();
         let _ = world
             .root_scope()
-            .query_one::<&mut FramePass>(presenting)
+            .try_query_one::<&mut FramePass>(presenting)
             .map(|mut pass| pass.get().park());
         let mut renderer_row = world
             .root_scope()
-            .query_one::<&mut Renderer>(self.renderer)?;
+            .try_query_one::<&mut Renderer>(self.renderer)?;
         self.surface.release(world, &mut *renderer_row.get());
         Ok(())
     }
@@ -344,7 +348,7 @@ pub fn build_presenter(
         Some(render) => {
             let mut nested = world
                 .root_scope()
-                .query_one::<&mut World>(render)
+                .try_query_one::<&mut World>(render)
                 .map_err(PresenterError::NoRenderWorld)?;
             build_in(
                 nested.get(),
@@ -415,7 +419,7 @@ fn build_in(
 > {
     let context = world
         .root_scope()
-        .query_one::<&Renderer>(renderer)
+        .try_query_one::<&Renderer>(renderer)
         .map_err(PresenterError::NoRenderer)
         .map(|mut row| row.get().context())?;
     // The presenting pass's swap-chain attachments: without the offscreen
@@ -453,7 +457,7 @@ fn build_in(
         None => None,
         Some(target) => {
             let blit_pass = world.root_scope_mut().spawn(Pass::new(BLIT_PASS_ORDER));
-            world.scope_mut(blit_pass)?.spawn(bundle![Source::new(
+            world.try_scope_mut(blit_pass)?.spawn(bundle![Source::new(
                 FrameSourceOrder::MESH,
                 BlitSource::new(target.view.clone())
             )]);
@@ -463,7 +467,7 @@ fn build_in(
     let (surface, attachments) = {
         let mut renderer_row = world
             .root_scope()
-            .query_one::<&mut Renderer>(renderer)
+            .try_query_one::<&mut Renderer>(renderer)
             .map_err(PresenterError::NoRenderer)?;
         let renderer = renderer_row.get();
         {

@@ -221,7 +221,6 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let cube = world
         .root_scope()
         .query_one::<&GpuMesh>(cube_entity)
-        .expect("the cube carries a mesh")
         .get()
         .clone();
     gpu.despawn(&mut world, cube_entity);
@@ -373,7 +372,7 @@ async fn a_source_draws_only_its_own_subtree() {
     let near = gpu.allocate_cube_mesh(&world);
     let far = gpu.allocate_cube_mesh(&world);
     for (scope, mesh) in [(first, near), (second, far)] {
-        let mut scope = world.scope_mut(scope).expect("the source is a scope");
+        let mut scope = world.scope_mut(scope);
         scope.spawn(bundle![camera_view(WIDTH as f32 / HEIGHT as f32)]);
         scope.spawn(bundle![
             Transform::default(),
@@ -387,7 +386,6 @@ async fn a_source_draws_only_its_own_subtree() {
     for scope in [first, second] {
         let owned = world
             .scope(scope)
-            .expect("the source is a scope")
             .query::<(Entity, &GpuMesh)>()
             .iter()
             .count();
@@ -414,10 +412,8 @@ async fn a_source_draws_only_its_own_subtree() {
     ] {
         let drawn = {
             let root = world.root_scope();
-            let source_scope = world.scope(scope).expect("the source is a scope");
-            let mut source_row = root
-                .query_one::<&mut Source>(scope)
-                .expect("the source entity exists");
+            let source_scope = world.scope(scope);
+            let mut source_row = root.query_one::<&mut Source>(scope);
 
             let source = source_row.get();
             source

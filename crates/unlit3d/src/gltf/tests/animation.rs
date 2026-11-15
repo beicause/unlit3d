@@ -56,15 +56,11 @@ fn apply_animation_moves_a_node_and_carries_its_child() {
         world
             .root_scope()
             .query_one::<&Transform>(parent)
-            .expect("the parent carries a transform")
             .get()
             .translation,
         glam::Vec3::new(2.0, 0.0, 0.0)
     );
-    let mut transform_row = world
-        .root_scope()
-        .query_one::<&Transform>(child)
-        .expect("the child carries a transform");
+    let mut transform_row = world.root_scope().query_one::<&Transform>(child);
 
     // ...and the child, which no translation channel names, inherits it
     // along with the quarter turn its own channel reaches at the midpoint.
@@ -96,7 +92,6 @@ fn apply_animation_holds_a_step_keyframe() {
         world
             .root_scope()
             .query_one::<&Transform>(parent)
-            .expect("the parent carries a transform")
             .get()
             .translation,
         glam::Vec3::ZERO
@@ -126,7 +121,6 @@ fn apply_animation_resamples_a_clip_it_has_already_played() {
         world
             .root_scope()
             .query_one::<&Transform>(parent)
-            .expect("the parent carries a transform")
             .get()
             .translation
     };
@@ -175,7 +169,6 @@ fn two_documents_animate_in_the_same_frame() {
         world
             .root_scope()
             .query_one::<&Transform>(left_entity)
-            .expect("the entity carries a transform")
             .get()
             .translation,
         glam::Vec3::new(2.0, 0.0, 0.0)
@@ -184,7 +177,6 @@ fn two_documents_animate_in_the_same_frame() {
         world
             .root_scope()
             .query_one::<&Transform>(right_entity)
-            .expect("the entity carries a transform")
             .get()
             .translation,
         glam::Vec3::new(0.0, 4.0, 0.0)
@@ -208,10 +200,7 @@ fn apply_animation_rebuilds_a_skin_pose() {
         weights: None,
     }];
     gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
-    let mut skin_pose_row = world
-        .root_scope()
-        .query_one::<&SkinPose>(pose)
-        .expect("the pose entity carries a pose");
+    let mut skin_pose_row = world.root_scope().query_one::<&SkinPose>(pose);
 
     let pose = skin_pose_row.get();
     assert!(
@@ -240,10 +229,7 @@ fn apply_animation_writes_morph_weights() {
         weights: Some(weights),
     }];
     gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
-    let mut morph_weights_row = world
-        .root_scope()
-        .query_one::<&MorphWeights>(weights)
-        .expect("the weights entity carries weights");
+    let mut morph_weights_row = world.root_scope().query_one::<&MorphWeights>(weights);
 
     let weights = morph_weights_row.get();
     assert_eq!(weights.weights, vec![1.0]);

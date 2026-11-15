@@ -214,7 +214,6 @@ fn build(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .expect("the pass is alive")
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
     // One key per topology, reused by that topology's two cells: an indexed
@@ -227,15 +226,13 @@ fn build(
         .collect();
     let indices = index_buffer();
 
-    let camera_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle![camera_looking_at(
+    let camera_entity = world
+        .scope_mut(source_entity)
+        .spawn(bundle![camera_looking_at(
             glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
             glam::Vec3::ZERO,
             size,
-        ),],
-    );
+        ),]);
 
     let mut entities = Vec::new();
     for (column, key) in keys.iter().enumerate() {
@@ -269,14 +266,10 @@ fn build(
     }
 
     for (column, mesh) in entities {
-        super::spawn_in(
-            world,
-            source_entity,
-            Patch {
-                mesh,
-                pipeline: GpuRenderPipeline::new(keys[column].clone()),
-            },
-        );
+        world.scope_mut(source_entity).spawn(Patch {
+            mesh,
+            pipeline: GpuRenderPipeline::new(keys[column].clone()),
+        });
     }
 
     SceneControl {

@@ -307,7 +307,7 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     for (_, entity) in &order {
         world
             .root_scope()
-            .query_one::<&mut B>(*entity)
+            .try_query_one::<&mut B>(*entity)
             .map(|mut behaviour| {
                 let behaviour = behaviour.get();
                 behaviour.run(world, *entity, frame)
@@ -517,10 +517,7 @@ mod tests {
                 .root_scope_mut()
                 .spawn(bundle![OnFrame::new(move |world, _entity, _frame| {
                     let clock = {
-                        let mut row = world
-                            .root_scope()
-                            .query_one::<&FrameClock>(clock)
-                            .expect("the clock is spawned");
+                        let mut row = world.root_scope().query_one::<&FrameClock>(clock);
                         *row.get()
                     };
                     seen.borrow_mut().push(clock);

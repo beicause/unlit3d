@@ -527,7 +527,7 @@ pub enum VoiceError {
 /// sounding: nothing would ever drain its queue.
 pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job {
     Box::new(move |world| {
-        let Ok(mut guard) = world.root_scope().query_one::<&mut SynthVoice>(voice) else {
+        let Ok(mut guard) = world.root_scope().try_query_one::<&mut SynthVoice>(voice) else {
             return;
         };
         let voice = &mut *guard.get();
@@ -542,7 +542,7 @@ pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job {
 /// Builds the voice's synthesizer if it has none, adds the queue's messages at
 /// their offsets, and renders the whole fill into the chunk.
 fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
-    let Ok(mut guard) = world.root_scope().query_one::<&mut SynthVoice>(entity) else {
+    let Ok(mut guard) = world.root_scope().try_query_one::<&mut SynthVoice>(entity) else {
         return;
     };
     // Borrowed through the guard the fields are not disjoint; reborrowed as a

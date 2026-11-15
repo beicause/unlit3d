@@ -48,10 +48,7 @@ fn sub_world_jobs_drain_in_order() {
     let _ = proxy.sender.send(Box::new(move |_: &mut World| {
         *seen.lock().expect("the order lock") = Some("last");
     }));
-    let mut nested_world_row = host
-        .root_scope()
-        .query_one::<&mut World>(proxy.entity)
-        .expect("the nested world");
+    let mut nested_world_row = host.root_scope().query_one::<&mut World>(proxy.entity);
 
     let nested = nested_world_row.get();
     drain_sub_world(nested);
@@ -75,10 +72,7 @@ fn a_panicking_job_ends_the_sub_world() {
     let _ = proxy.sender.send(Box::new(move |_: &mut World| {
         seen.lock().expect("the order lock").push(7u64);
     }));
-    let mut nested_world_row_2 = host
-        .root_scope()
-        .query_one::<&mut World>(proxy.entity)
-        .expect("the nested world");
+    let mut nested_world_row_2 = host.root_scope().query_one::<&mut World>(proxy.entity);
 
     let nested = nested_world_row_2.get();
     drain_sub_world(nested);
@@ -122,10 +116,7 @@ fn a_panicking_job_does_not_run_the_collectors() {
     let _ = proxy.sender.send(Box::new(|_: &mut World| {
         panic!("this job cannot run");
     }));
-    let mut nested_world_row_3 = host
-        .root_scope()
-        .query_one::<&mut World>(proxy.entity)
-        .expect("the nested world");
+    let mut nested_world_row_3 = host.root_scope().query_one::<&mut World>(proxy.entity);
 
     let nested = nested_world_row_3.get();
     drain_sub_world(nested);
@@ -153,10 +144,7 @@ fn stopping_a_sub_world_ends_it_and_refuses_jobs() {
     let _ = proxy.sender.send(Box::new(move |_: &mut World| {
         *seen.lock().expect("the order lock") = true;
     }));
-    let mut nested_world_row_4 = host
-        .root_scope()
-        .query_one::<&mut World>(proxy.entity)
-        .expect("the nested world");
+    let mut nested_world_row_4 = host.root_scope().query_one::<&mut World>(proxy.entity);
 
     let nested = nested_world_row_4.get();
     drain_sub_world(nested);
@@ -234,10 +222,7 @@ fn stopping_a_sub_world_publishes_its_last_state() {
                 .map(|count| count.0)
         })
         .expect("the world accepts a subscription");
-    let mut nested_world_row_5 = host
-        .root_scope()
-        .query_one::<&mut World>(proxy.entity)
-        .expect("the nested world");
+    let mut nested_world_row_5 = host.root_scope().query_one::<&mut World>(proxy.entity);
 
     let nested = nested_world_row_5.get();
     // The first drain installs the collector; the counter arrives afterwards,

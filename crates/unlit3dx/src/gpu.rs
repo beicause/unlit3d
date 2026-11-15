@@ -169,7 +169,7 @@ impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
                 log::error!("failed to start the renderer: {error}");
                 let _ = world
                     .root_scope()
-                    .query_one::<&mut ExitRequest>(self.app)
+                    .try_query_one::<&mut ExitRequest>(self.app)
                     .map(|mut request| {
                         let request = request.get();
                         request.0 = true

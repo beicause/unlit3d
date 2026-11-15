@@ -193,7 +193,7 @@ fn ready_scene_state(world: &mut World, scene: &Scene, jobs: &async_channel::Rec
     // dropped rather than run: the assets the tick needs are put in by
     // hand.
     while jobs.try_recv().is_ok() {}
-    let Ok(mut state) = world.root_scope().query_one::<&mut SceneState>(entity) else {
+    let Ok(mut state) = world.root_scope().try_query_one::<&mut SceneState>(entity) else {
         panic!("the state was just spawned")
     };
     let state = state.get();

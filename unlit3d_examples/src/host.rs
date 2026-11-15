@@ -10,7 +10,7 @@ pub(crate) fn request_gpu(app: Entity) -> OnFrame {
     OnFrame::new(move |world, _entity, _frame| {
         if !world
             .root_scope()
-            .query_one::<&GpuState>(app)
+            .try_query_one::<&GpuState>(app)
             .is_ok_and(|mut state| matches!(state.get(), GpuState::Idle))
         {
             return;
@@ -29,14 +29,14 @@ pub(crate) fn request_gpu(app: Entity) -> OnFrame {
         };
         let Ok(proxy) = world
             .root_scope()
-            .query_one::<&WinitProxy<UserEvent>>(app)
+            .try_query_one::<&WinitProxy<UserEvent>>(app)
             .map(|mut proxy| proxy.get().0.clone())
         else {
             return;
         };
         let _ = world
             .root_scope()
-            .query_one::<&mut GpuState>(app)
+            .try_query_one::<&mut GpuState>(app)
             .map(|mut state| *state.get() = GpuState::Requested);
         // The display handle is owned, not borrowed: the instance it builds has
         // to outlive this callback. The descriptor is the environment-aware one
@@ -75,14 +75,14 @@ pub(crate) fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
         UserEvent::Ready(gpu) => {
             let _ = world
                 .root_scope()
-                .query_one::<&mut GpuState>(app)
+                .try_query_one::<&mut GpuState>(app)
                 .map(|mut state| {
                     *state.get() = GpuState::Ready(gpu.clone());
                 });
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
             if world
                 .root_scope()
-                .query_one::<&McpEnabled>(app)
+                .try_query_one::<&McpEnabled>(app)
                 .is_ok_and(|mut mcp| mcp.get().0)
             {
                 start_mcp(world, app);
@@ -99,7 +99,7 @@ pub(crate) fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
             log::error!("failed to start the renderer: {error}");
             let _ = world
                 .root_scope()
-                .query_one::<&mut ExitRequest>(app)
+                .try_query_one::<&mut ExitRequest>(app)
                 .map(|mut request| request.get().0 = true);
         }
     })
@@ -117,7 +117,7 @@ pub(crate) fn resize_scene(app: Entity) -> OnWindowEvent {
         let size = (size.width, size.height);
         let Some(scene_entity) = world
             .root_scope()
-            .query_one::<&SceneEntity>(app)
+            .try_query_one::<&SceneEntity>(app)
             .ok()
             .and_then(|mut slot| slot.get().0)
         else {
@@ -126,20 +126,19 @@ pub(crate) fn resize_scene(app: Entity) -> OnWindowEvent {
         let baseline = world
             .root_scope()
             .query_one::<&InitialScene>(app)
-            .expect("the app entity carries its initial scene")
             .get()
             .0
             .baseline;
         let _ = world
             .root_scope()
-            .query_one::<&mut Scene>(scene_entity)
+            .try_query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| scene.get().resize(size, baseline));
         let Some(presenter) = presenter_entity(world, app) else {
             return;
         };
         let resized = world
             .root_scope()
-            .query_one::<&mut Presenter>(presenter)
+            .try_query_one::<&mut Presenter>(presenter)
             .map(|mut presenter| presenter.get().resize(world, size));
         if let Ok(Err(error)) = resized {
             log::error!("failed to resize the presentation path: {error}");
@@ -163,7 +162,7 @@ pub(crate) fn release_on_suspend(app: Entity) -> OnSuspended {
 pub(crate) fn start_mcp(world: &World, app: Entity) {
     let Ok(proxy) = world
         .root_scope()
-        .query_one::<&WinitProxy<UserEvent>>(app)
+        .try_query_one::<&WinitProxy<UserEvent>>(app)
         .map(|mut proxy| proxy.get().0.clone())
     else {
         return;
@@ -194,7 +193,7 @@ pub(crate) fn dispatch_command(world: &World, command: unlit_ecs::mcp::McpComman
             name: "host",
         }];
         for (entity, _) in world.root_scope().query::<(Entity, &World)>().iter() {
-            let Ok(mut name) = world.root_scope().query_one::<&WorldName>(entity) else {
+            let Ok(mut name) = world.root_scope().try_query_one::<&WorldName>(entity) else {
                 continue;
             };
             let name = name.get();

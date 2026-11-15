@@ -265,10 +265,7 @@ fn take(world: &mut World) -> Result<RecordingHandle, ToolError> {
         .map(|(_active_recording, entity)| entity)
         .ok_or(ToolError::NoRecording)?;
     let handle = {
-        let mut recording = world
-            .root_scope()
-            .query_one::<&ActiveRecording>(entity)
-            .expect("the recording entity exists");
+        let mut recording = world.root_scope().query_one::<&ActiveRecording>(entity);
         recording.get().0.clone()
     };
     world.root_scope_mut().despawn(entity).unwrap();
