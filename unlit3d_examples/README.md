@@ -56,10 +56,11 @@ between the cube's mesh and the egui overlay, so one frame shows the three
 sources stacked in the order they declare. The page `blitz_only` draws carries
 an image and the controls a form has — a checkbox, a group of radios and a text
 field — and its `OnBlitzEvent` callback writes the name of every DOM event the
-page dispatches into its status line. A capture feeds the controls itself before
-it freezes the frame, so the snapshot holds the page after a click, a pick and
-some typing; a windowed run shows the same events arriving from the pointer and
-the keyboard.
+page dispatches into its status line. A capture feeds the controls itself and
+freezes the page twice: `blitz_only/frame_00.webp` as the markup declares it and
+`blitz_only/frame_01.webp` after a click, a pick and some typing, so a page that
+stops receiving events fails the second frame while still matching the first. A
+windowed run shows the same events arriving from the pointer and the keyboard.
 
 `custom_pipeline` registers two families of its own rather than drawing
 through the built-in lit one. A sky family reconstructs a view ray

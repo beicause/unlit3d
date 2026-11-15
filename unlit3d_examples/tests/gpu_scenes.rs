@@ -471,18 +471,20 @@ async fn mesh_and_ui_matches_its_snapshot() {
     .await;
 }
 
-/// The scene whose whole picture is a document Blitz lays out and paints.
+/// The scene whose whole picture is a document Blitz lays out and Vello paints.
 ///
-/// Its page is rasterized on the CPU, so the frame is the same on every backend
-/// down to the glyph antialiasing; only the composite into the target is the
-/// GPU's. A regression that stops the page resolving, stops its paint tree
+/// It freezes the page twice: once as its markup declares it, and once after the
+/// capture has clicked, picked and typed into its controls. The pair is what
+/// shows the input path reaching the document at all -- a page that stops
+/// receiving events still matches its first frame, and only the second one
+/// moves. A regression that stops the page resolving, stops its paint tree
 /// reaching the texture, or loses the premultiplied blend changes whole boxes of
 /// the frame, not a scatter of edges.
 async fn blitz_only_matches_its_snapshot() {
     compare_scene(
         &scenes::blitz_only::SCENE,
         SCENE_TOLERANCE,
-        &snapshots!["blitz_only.webp"],
+        &snapshots!["blitz_only/frame_00.webp", "blitz_only/frame_01.webp"],
     )
     .await;
 }

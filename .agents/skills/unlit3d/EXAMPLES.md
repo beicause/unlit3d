@@ -25,7 +25,7 @@
 | `spin_cube`                                                 | 纹理立方体 + 两块 egui 面板 + 键盘与拖拽；默认场景，也是窄宽高比快照的取样对象 |
 | `egui_only`                                                   | 没有 mesh source、没有相机也能出一帧 egui                          |
 | `mesh_and_ui`                                               | mesh、blitz、egui 三个 source 同帧叠放的顺序、scissor、load ops   |
-| `blitz_only`                                                | 没有 mesh source、没有相机，整帧只有一张 Blitz 布局的 HTML 页；页里有图像、checkbox、radio 与文本框，`OnBlitzEvent` 把事件名写进状态行。快照前场景自己注入点击与输入，因此基线记的是交互后的页面 |
+| `blitz_only`                                                | 没有 mesh source、没有相机，整帧只有一张 Blitz 布局的 HTML 页；页里有图像、checkbox、radio 与文本框，`OnBlitzEvent` 把事件名写进状态行。快照前场景自己注入点击与输入，并冻结两帧：`blitz_only/frame_00.webp` 是标记声明的样子，`frame_01` 是交互后的样子 |
 | `transparent`                                               | 透明 + `ZSortedDrawing` + blend                                  |
 | `animated`                                                  | 八帧内 mesh 的分配、回收、平移旋转                               |
 | `skinned` / `morphed` / `instanced_skinned_morph`           | 蒙皮、morph，以及共享一个 mesh 的实例合并                        |

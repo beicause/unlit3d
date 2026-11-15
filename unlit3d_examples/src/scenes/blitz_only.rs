@@ -1,11 +1,12 @@
 //! The Blitz-only scene: an HTML document painted over an empty frame.
 //!
 //! No mesh source and no camera: what the frame shows is the page alone, laid
-//! out by Blitz and rasterized on the CPU. The snapshot `blitz_only.webp`
-//! freezes the second frame, like every other overlay scene: the first frame of
-//! a source is the one that builds its document. The frame it freezes is the
-//! one after the capture drives the page's controls, so the picture shows a
-//! form in the state a reader left it rather than the state its markup states.
+//! out by Blitz and rasterized by Vello. The scene freezes two frames,
+//! `blitz_only/frame_00.webp` and `blitz_only/frame_01.webp`. The first holds
+//! the page as its markup declares it; the capture drives the controls between
+//! the two, so the second shows the form in the state a reader left it. A source
+//! builds its document on its first frame, which is drawn before the loop and
+//! is the frame both captures are taken after.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, spawn_in, spawn_shared};
 use unlit_ecs::bundle;
@@ -24,6 +25,9 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// The frames the scene freezes, and so the length of its sequence.
+const FRAMES: u32 = 2;
+
 /// The scene: one page and nothing else.
 pub static SCENE: SceneDef = SceneDef {
     id: "blitz_only",
@@ -32,7 +36,7 @@ pub static SCENE: SceneDef = SceneDef {
     size: TEST_SIZE,
     baseline: None,
     clear: Some(CLEAR_COLOR),
-    frames: 2,
+    frames: FRAMES,
     step_seconds: None,
     samples: 1,
     depth: false,
@@ -198,7 +202,9 @@ fn build(
             input.push_all(click([40.0, 146.0]));
             input.push(InputEvent::Text(TextEvent("输入".to_owned())));
         }),
-        snapshot: Box::new(|frame| (frame == 1).then(|| "blitz_only.webp".to_owned())),
+        snapshot: Box::new(|frame| {
+            (frame < FRAMES).then(|| format!("blitz_only/frame_{frame:02}.webp"))
+        }),
     }
 }
 
