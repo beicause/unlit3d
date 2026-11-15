@@ -17,6 +17,9 @@ directly, and you are expected to know WebGPU to use it well.
 | Feature | Default | Provides |
 |---------|---------|----------|
 | `blitz` | no | the `blitz` module: an HTML document laid out by [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source |
+| `blitz_epaint_fonts` | no | the font a page is laid out with: egui's default font, so the same markup paints the same glyphs on every target |
+| `blitz_sc_fonts` | no | adds a Noto Sans SC subset to the bundled fonts, covering the 3500 level-1 and 3000 level-2 characters of the Table of General Standard Chinese Characters |
+| `blitz_system_fonts` | no | lets a page fall back to the fonts the host has installed for whatever the bundled ones do not cover |
 | `egui` | yes | the `egui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into a `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
@@ -912,9 +915,14 @@ is answered with empty bytes, which a stylesheet reads as an empty sheet and an
 image as a failed load that leaves a hole: every request is answered, because a
 page that blocks on a stylesheet nobody replies to would never paint at all.
 
-Its only font is egui's default font, registered as the document's single font
-with the system fonts left off, so the same markup paints the same glyphs on
-every target rather than whatever the host has installed.
+The fonts come from the crate rather than the host, so the same markup paints
+the same glyphs on every target. The default font is egui's, which carries the
+Latin text; `blitz_sc_fonts` adds a Noto Sans SC subset for the Chinese
+characters, listed after it in every generic family and in the Han script's
+fallback list, so the Latin glyphs stay the ones a page already painted while a
+character the default font lacks still finds one. `blitz_system_fonts` adds
+the host's fonts behind both, at the cost of the painting depending on what the
+host installed.
 
 A page is laid out at the target's pixel size and repainted when its markup, its
 viewport or that size changed, when its input or a callback asked for it — and

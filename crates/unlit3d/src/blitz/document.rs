@@ -21,13 +21,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use blitz_dom::{BaseDocument, DocumentConfig, build_single_font_ctx};
+use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request, Url};
 use blitz_traits::shell::{ShellProvider, Viewport};
 use data_url::DataUrl;
 use hashbrown::HashMap;
 use unlit_ecs::sync;
+
+use super::fonts::fonts;
 
 /// The base a page's relative references resolve against.
 ///
@@ -163,7 +165,7 @@ impl BlitzDocument {
                 base_url: Some(base.to_string()),
                 net_provider: Some(Arc::clone(&self.resources) as Arc<dyn NetProvider>),
                 shell_provider: Some(Arc::clone(&self.shell) as Arc<dyn ShellProvider>),
-                font_ctx: Some(build_single_font_ctx(epaint_default_fonts::HACK_REGULAR)),
+                font_ctx: fonts(),
                 ..Default::default()
             };
             let document = HtmlDocument::from_html(&self.markup, config).into_inner();

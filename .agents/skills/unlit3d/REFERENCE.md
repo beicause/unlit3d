@@ -152,7 +152,7 @@
 | 输入 | 帧输入自动驱动文档：指针、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次 |
 | 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供，路径在加载时按当前基准解析；没人提供的路径收到空字节（样式表读成空表、图片读成加载失败），页面照常画 |
 | 布局与绘制 | 用 Blitz 布局、Vello 的 CPU 后端光栅化，位图以 `Rgba8Unorm` 纹理上传后由共享的全屏合成贴上目标；重绘时机 = 标记/视口/尺寸变化、输入或回调要求、文档有动画 |
-| 字体 | 只有 egui 的默认字体（`epaint_default_fonts::HACK_REGULAR`），系统字体关闭，各平台字形一致 |
+| 字体 | 默认字体是 egui 的 `epaint_default_fonts::HACK_REGULAR`（`blitz_epaint_fonts` 特性），`blitz_sc_fonts` 另加 Noto Sans SC 一级+二级子集承载汉字（四个通用族里排在默认字体之后，并挂上汉字回退表），系统字体默认关闭（`blitz_system_fonts` 才加载），各平台字形一致 |
 | 边界 | 页面只向宿主请求重绘；光标形状、IME 开关、剪贴板都没接通，事件含义由 Rust 决定 |
 
 ## winit 桥

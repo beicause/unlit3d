@@ -3,6 +3,9 @@ target/
 
 docs/internal/
 assets/
+# Except the font a Blitz page is laid out with: it ships inside the crate,
+# so a build with blitz_sc_fonts on carries it and needs nothing from the host.
+!crates/unlit3d/assets/
 
 # Built by `cargo xtask test-wasm`: the assembled page, the bindgen'd examples
 # and modules, and the runner's installed dependencies. All are reproduced from

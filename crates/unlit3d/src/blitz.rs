@@ -20,9 +20,11 @@
 //! Blitz cannot do without a scripting engine is left to [`OnBlitzEvent`]: a
 //! Rust callback sees every DOM event and may read or change the page there.
 //!
-//! A page is laid out with the single font `blitz-dom` registers for it rather
-//! than the host's fonts, so the same markup paints the same glyphs on every
-//! target.
+//! A page is laid out with the fonts the crate carries rather than the host's,
+//! so the same markup paints the same glyphs on every target. The default font
+//! carries the Latin text and the bundled Noto Sans SC subset the Chinese
+//! characters; `blitz_system_fonts` adds the host's fonts behind them for
+//! whatever they do not cover.
 //!
 //! ```rust
 //! use unlit3d::prelude::*;
@@ -59,6 +61,7 @@ use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 
 mod document;
 mod events;
+mod fonts;
 
 pub use document::BlitzDocument;
 pub use events::{BlitzEvent, OnBlitzEvent};

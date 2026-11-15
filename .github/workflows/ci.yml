@@ -144,11 +144,13 @@ jobs:
         # Windows has DX12, so neither needs anything installed.
         #
         # libasound2-dev is the ALSA headers cpal's Linux host links through,
-        # which any host build of unlit3dx needs.
+        # which any host build of unlit3dx needs. libfontconfig1-dev is what the
+        # all-features build links fontconfig through, for the Blitz page's
+        # system font fallback.
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes mesa-vulkan-drivers libasound2-dev
+          sudo apt-get install --yes mesa-vulkan-drivers libasound2-dev libfontconfig1-dev
 
       - name: Caching
         uses: Swatinem/rust-cache@v2
