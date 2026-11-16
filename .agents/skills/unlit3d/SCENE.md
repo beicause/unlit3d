@@ -60,7 +60,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 | 画一份   | `spawn(bundle![Transform, mesh, material, GpuRenderPipeline::new(key)])`，挂在 source 子树里                                                                           |
 | 画多份   | 同一个 `key` / `mesh` / `material` clone 到多个实体；每份差异用 `InstanceColor` / `InstanceCutoff` / `Transform`，**不要**为每个颜色重建 mesh                          |
 | 暂时隐藏 | `InstanceVisibility { visible: false }`，不要 despawn                                                                                                                     |
-| 释放     | `source.remove_mesh(mesh)`                                                                                                                                               |
+| 释放     | 直接 drop `GpuMesh`（并 despawn 绘制实体）：最后一个句柄一丢，mesh 在 source 下一次 `maintain` 时被收集，池子区间与 metadata 槽随之归还；无需手动调用释放方法 |
 
 每实例组件都是**具名字段结构体**：`InstanceColor { color }` / `InstanceCutoff { cutoff }` / `InstanceHullWidth { width }` / `InstanceVisibility { visible }`；前三个有 `new(..)`，四个都有 `Default`（`InstanceVisibility` 没有 `new`，用 `InstanceVisibility { visible: false }`）。写成 `InstanceColor(Vec4::ONE)` 编不过。
 

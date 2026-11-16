@@ -135,10 +135,10 @@ async fn create_mesh(commands: CommandSender, args: CreateMesh) -> ToolResult {
     .await
 }
 
-/// Release a mesh and despawn the entity that drew it.
+/// Free a mesh and despawn the entity that drew it.
 async fn remove_mesh(commands: CommandSender, args: EntityArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::remove_mesh(world, args.source.map(entity), entity(args.entity))
+        host::remove_mesh(world, entity(args.entity))
     })
     .await
 }
@@ -251,7 +251,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "remove_mesh",
-        "Release the mesh an entity draws and despawn the entity.",
+        "Free the mesh an entity draws and despawn the entity. The mesh's pooled storage is reclaimed at the source's next maintain.",
         remove_mesh,
     ));
     router.add_route(tool(

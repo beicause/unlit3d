@@ -33,7 +33,7 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
     // The root is the mesh's lifetime entry point; the mesh's vertices,
     // indices and displacements live in pools, so those are nodes the
     // source owns and survive the mesh — what the mesh loses is its share
-    // of them, which `remove_mesh` hands back.
+    // of them, which the maintain's sweep hands back.
     let before = ctx.graph(&h.world.root_scope()).get().len();
     let index_pool_free = h.source.pools.index_pool.free_space();
     assert!(matches!(
@@ -41,7 +41,12 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
         Some(Virtual)
     ));
     assert!(
-        mesh.parts.morph_deltas_allocation.is_some(),
+        h.source
+            .pending
+            .borrow()
+            .get(&mesh.parts.root.id())
+            .and_then(|entry| entry.morph_deltas)
+            .is_some(),
         "a morphing mesh holds a displacement range"
     );
 
@@ -49,7 +54,7 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
     // the frame's own maintain, which is what this drives by hand. No id
     // to the root is kept: an id is a strong reference, so holding one
     // would keep the very node this test watches the graph collect.
-    h.source.remove_mesh(mesh);
+    drop(mesh);
     h.source.maintain(&h.world.root_scope());
 
     assert!(
@@ -120,7 +125,8 @@ fn a_removed_mesh_frees_its_metadata_slot() {
     let first_index = first.parts.metadata_index;
     assert_ne!(first_index, second.parts.metadata_index);
 
-    h.source.remove_mesh(first);
+    drop(first);
+    h.source.maintain(&h.world.root_scope());
     let reused = h.tri_mesh();
 
     assert_eq!(
@@ -279,7 +285,8 @@ fn a_removed_mesh_marks_the_metadata_array_for_upload() {
 
     // Removing the mesh clears its entry in the array, so the array
     // reaches the GPU again on the next frame.
-    h.source.remove_mesh(mesh);
+    drop(mesh);
+    h.source.maintain(&h.world.root_scope());
     assert!(
         h.source.arrays.metadata_dirty,
         "removing a mesh marks the array"

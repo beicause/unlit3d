@@ -108,7 +108,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | 工具              | 作用                                 | 关键参数                                                                                              |
 | ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | `create_mesh`      | 用顶点数据建 mesh 并 spawn 绘制实体  | `positions`（必填）、`uvs`、`colors`、`normals`、`indices`、`transform`、`color`、`cutoff`、`hull_width`、`source` |
-| `remove_mesh`      | 释放 mesh 并删除实体                 | `entity`                                                                                              |
+| `remove_mesh`      | 删除绘制实体；mesh 由 source 下一次 `maintain` 回收   | `entity`                                                                                              |
 | `render_frame`     | 渲染一帧                             | `renderer`                                                                                            |
 | `read_screenshot`  | 渲染一帧并内联返回图像（不推荐）     | `renderer`、`target`、`format`                                                                       |
 | `save_screenshot`  | 渲染一帧并保存图像为文件（推荐）     | `directory`（必填）、`file_name`、`renderer`、`target`                                             |

@@ -161,7 +161,7 @@ fn build(
                             .scope_mut(source_entity)
                             .despawn(entity)
                             .expect("the scene owns the entity it despawns");
-                        super::remove_mesh(world, source_entity, mesh);
+                        super::remove_mesh(mesh);
                     }
                 }
                 allocated = 0;
@@ -176,7 +176,7 @@ fn build(
                     .scope_mut(source_entity)
                     .despawn(entity)
                     .expect("the scene owns the entity it despawns");
-                super::remove_mesh(world, source_entity, mesh);
+                super::remove_mesh(mesh);
             }
 
             for &cell in step.allocate {
@@ -188,7 +188,7 @@ fn build(
                         .scope_mut(source_entity)
                         .despawn(entity)
                         .expect("the scene owns the entity it despawns");
-                    super::remove_mesh(world, source_entity, mesh);
+                    super::remove_mesh(mesh);
                 }
                 // The allocation's offset is baked into the vertices, so every
                 // mesh draws different geometry even at the same transform.

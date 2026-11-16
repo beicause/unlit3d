@@ -27,6 +27,7 @@
 
 use arrayvec::ArrayVec;
 use core::any::TypeId;
+use core::cell::RefCell;
 use hashbrown::HashMap;
 use std::rc::Rc;
 
@@ -39,8 +40,11 @@ use unlit_wgpu::light::{
     LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight, is_perspective,
 };
 use unlit_wgpu::mesh::{JointMatrix, MeshMetadata};
+use unlit_wgpu::offset_allocator::Allocation;
 use unlit_wgpu::pipeline::supports_storage_buffers;
-use unlit_wgpu::resources::{ResHandle, Resource, ResourceGraph, TextureExt, TextureView, Virtual};
+use unlit_wgpu::resources::{
+    ResHandle, ResId, Resource, ResourceGraph, TextureExt, TextureView, Virtual,
+};
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, VertexBufferLayoutDesc, VertexLayout};
 use unlit_wgpu::staging::StagingBuffer;
@@ -113,6 +117,23 @@ struct RegisteredPipeline {
     global: Option<RegisteredGlobal>,
 }
 
+/// The shared-storage allocations one live mesh holds, waiting for the mesh
+/// to die so [`MeshSource::maintain`] can hand them back.
+///
+/// Keyed by the mesh's virtual root id, which the graph resolves only while
+/// some [`GpuMesh`] names the mesh. The metadata slot counts among them: a
+/// mesh's entry is its own even though the array is the source's.
+struct PendingAllocations {
+    /// The mesh's element range in the vertex pool.
+    vertex: Option<Allocation>,
+    /// The mesh's range in the index pool.
+    index: Option<Allocation>,
+    /// The mesh's range in the frame-wide morph-displacement pool.
+    morph_deltas: Option<Allocation>,
+    /// The mesh's entry in the metadata array.
+    metadata_index: u32,
+}
+
 /// The [FrameSource] that draws meshes.
 ///
 /// It owns the mesh pools, the pipeline families, the per-frame caches and the
@@ -157,6 +178,16 @@ pub struct MeshSource {
     /// key type.
     family_ids: TypeIdHashMap<FamilyId>,
 
+    /// The shared-storage allocations every live mesh holds, keyed by its root
+    /// id. The graph's [collect hook](ResourceGraph::on_collect) moves an
+    /// entry here out of `pending` when the root is collected, and the source
+    /// drains the collected ones — see [`MeshSource::drain_collected`].
+    pending: Rc<RefCell<HashMap<ResId, PendingAllocations>>>,
+
+    /// The allocations whose mesh the graph has collected, written by the
+    /// collect hook and drained by [`MeshSource::drain_collected`].
+    collected: Rc<RefCell<Vec<PendingAllocations>>>,
+
     // -- cached per-frame allocations ------------------------------------------
     /// The allocations this frame reuses: the visible set, the interned draw
     /// handles and the per-family bindings.
@@ -196,6 +227,23 @@ impl MeshSource {
 
         let pools = MeshPools::new(&device, graph);
 
+        // The hook writes only these two cells: it runs inside a maintain —
+        // which a caller may have reached through any of the frame's sources —
+        // while this source is borrowed mutably, so the release work is left
+        // for the drain. The hook captures no handle: a strong reference would
+        // pin the very mesh it reports.
+        let pending = Rc::new(RefCell::new(HashMap::default()));
+        let collected = Rc::new(RefCell::new(Vec::new()));
+        {
+            let pending = Rc::clone(&pending);
+            let collected = Rc::clone(&collected);
+            graph.on_collect(move |id| {
+                if let Some(entry) = pending.borrow_mut().remove(&id) {
+                    collected.borrow_mut().push(entry);
+                }
+            });
+        }
+
         Self {
             context: ctx,
             arrays,
@@ -204,6 +252,8 @@ impl MeshSource {
             pipelines: Vec::new(),
             families: Vec::new(),
             family_ids: TypeIdHashMap::default(),
+            pending,
+            collected,
             caches: FrameCaches::new(),
         }
     }
@@ -257,11 +307,40 @@ impl MeshSource {
     ///
     /// Collects the resources nothing holds any more, then rebuilds every
     /// dirty node whose recipe the graph holds — the global bind groups among
-    /// them. A built scene runs it once, at the point before the frame reads
-    /// any of those groups; [`RenderContext::maintain_scope`] is how a build
-    /// states that point without a call at each of its returns.
+    /// them. A mesh whose last [`GpuMesh`] handle was dropped is collected
+    /// here, and with it its pooled ranges and metadata slot are handed back
+    /// to the pools they came from. A built scene runs it once, at the point
+    /// before the frame reads any of those groups;
+    /// [`RenderContext::maintain_scope`] is how a build states that point
+    /// without a call at each of its returns.
     pub fn maintain(&mut self, world: &Scope<'_>) {
         self.context.graph(world).get().maintain();
+        self.drain_collected();
+    }
+
+    /// Hand back the shared-storage allocations of every mesh the graph has
+    /// collected.
+    ///
+    /// The [collect hook](ResourceGraph::on_collect) has already moved each
+    /// collected mesh's entry out of `pending` into the shared queue; this
+    /// releases its pool ranges and metadata slot. A caller that maintains
+    /// the graph elsewhere (a frame's `maintain_scope`, a surface resize)
+    /// collects roots too, and the hook hears of each whatever caller drove
+    /// the maintain; the drain catches up the next time it runs, so a dropped
+    /// mesh costs at most one frame of pool room.
+    fn drain_collected(&mut self) {
+        for entry in self.collected.borrow_mut().drain(..) {
+            if let Some(vertex) = entry.vertex {
+                self.pools.vertex_pool.release(vertex);
+            }
+            if let Some(index) = entry.index {
+                self.pools.index_pool.release(index);
+            }
+            if let Some(deltas) = entry.morph_deltas {
+                self.arrays.release_morph_deltas(deltas);
+            }
+            self.arrays.release_metadata(entry.metadata_index);
+        }
     }
 
     /// The ids of the source's global arrays, as a factory and a rebuild
@@ -319,6 +398,12 @@ impl FrameSource for MeshSource {
         // `scene` arrives cleared: the driver owns it, so a frame that records
         // it never replays the previous frame's draws, and an early return
         // below leaves it empty rather than stale.
+
+        // A mesh dropped since the last frame may have been collected by any
+        // of the maintains that ran meanwhile; reclaim its shared-storage
+        // allocations before the frame uploads, so a freed metadata slot is
+        // reused by what this frame allocates rather than growing the array.
+        self.drain_collected();
 
         // A frame that draws still has to publish a changed metadata array, but
         // one that does not draw can leave it for the next frame.

@@ -713,7 +713,8 @@ pub fn allocate_offset_cube_mesh(
     })
 }
 
-/// Free `mesh` through the source, releasing its pool ranges.
-pub fn remove_mesh(world: &World, source_entity: Entity, mesh: GpuMesh) {
-    with_mesh_source(world, source_entity, |source, _| source.remove_mesh(mesh));
+/// Give `mesh` up. The source reclaims the mesh's pooled storage at its next
+/// maintain, once nothing — entity or handle — names it any more.
+pub fn remove_mesh(mesh: GpuMesh) {
+    drop(mesh);
 }

@@ -140,6 +140,7 @@ impl MeshSource {
         let mut graph_holder = self.context.graph(world);
         let graph = graph_holder.get();
         let root = graph.insert(Virtual, None);
+        let root_id = root.id();
         for id in &buffers {
             graph.add_dependency(&root, id);
         }
@@ -151,15 +152,22 @@ impl MeshSource {
         }
         drop(graph_holder);
 
+        self.pending.borrow_mut().insert(
+            root_id,
+            PendingAllocations {
+                vertex: None,
+                index: None,
+                morph_deltas: morph_deltas_allocation,
+                metadata_index,
+            },
+        );
+
         GpuMesh {
             parts: Rc::new(MeshParts {
                 root,
                 vertex_buffers: vertex_slots,
                 index_buffer,
                 bind_group_id,
-                vertex_allocation: None,
-                index_allocation: None,
-                morph_deltas_allocation,
                 metadata_index,
             }),
             vertex_layout,
@@ -252,58 +260,6 @@ impl MeshSource {
         GpuMaterial { bind_group_id }
     }
 
-    /// Free `mesh` and every resource it owns, and drop its mesh-metadata
-    /// entry.
-    ///
-    /// The whole mesh hangs off its virtual root: the parts are held by the
-    /// root and by nothing else, so dropping `mesh` — the last holder of the
-    /// root — makes them collectable, and the next
-    /// [`Self::maintain`](MeshSource::maintain) frees the root, its bind group
-    /// and the per-mesh uniform that only fed that bind group. A mesh uploaded
-    /// through [`allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) keeps
-    /// its vertices and indices in pools the source shares between meshes;
-    /// those allocations are handed back here, and the pool buffers outlive the
-    /// mesh. A mesh uploaded with [`allocate_mesh`](MeshSource::allocate_mesh)
-    /// owns its buffers, and they die with it.
-    ///
-    /// Its metadata slot is freed and reused by a mesh allocated later, so
-    /// removing meshes does not grow the array a long-lived source uploads.
-    /// The next built scene uploads the array the shader reads. Removing a mesh
-    /// does not shrink the metadata buffer: it grows to the largest array it
-    /// has ever held and stays there.
-    ///
-    /// Any other [`GpuMesh`] value sharing this mesh's parts keeps it alive:
-    /// the parts are reference-counted, so a caller that cloned the handle
-    /// before calling this still reads a live mesh.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a clone of `mesh` still exists: the pool ranges and the
-    /// metadata slot are freed once, and freeing them while another holder
-    /// still draws the mesh hands the same range to the next mesh allocated.
-    /// Drop every clone first, or let this method consume the last one.
-    pub fn remove_mesh(&mut self, mesh: GpuMesh) {
-        // Unwrap only succeeds when this handle is the parts' last holder. A
-        // clone that survives would leave the ranges handed back while its
-        // draw still names them, so refuse instead of double-freeing.
-        let parts = Rc::try_unwrap(mesh.parts).unwrap_or_else(|shared| {
-            panic!(
-                "a clone of the mesh still holds its parts: drop every \
-                 clone before remove_mesh, or {} more of them",
-                Rc::strong_count(&shared) - 1,
-            )
-        });
-        if let Some(vertex) = parts.vertex_allocation {
-            self.pools.vertex_pool.release(vertex);
-        }
-        if let Some(index) = parts.index_allocation {
-            self.pools.index_pool.release(index);
-        }
-        if let Some(deltas) = parts.morph_deltas_allocation {
-            self.arrays.release_morph_deltas(deltas);
-        }
-        self.arrays.release_metadata(parts.metadata_index);
-    }
     /// The graph node of the vertex pool's buffer for `layout`, creating it if
     /// the pool has never been asked for the layout before.
     ///

@@ -239,9 +239,13 @@ impl TestGpu {
         })
     }
 
-    /// Free `mesh` through the source.
+    /// Give `mesh` up and drive the collection that reclaims its storage.
+    ///
+    /// Dropping the last handle makes the mesh collectable; the sweep that
+    /// runs with the maintain hands its pooled ranges and metadata slot back.
     pub fn remove_mesh(&self, world: &World, mesh: GpuMesh) {
-        self.with_mesh_source(world, |source, _| source.remove_mesh(mesh));
+        drop(mesh);
+        self.maintain(world);
     }
 
     /// Run the source's once-per-frame pass over the resource graph.

@@ -9,7 +9,6 @@ use std::rc::Rc;
 use arrayvec::ArrayVec;
 use unlit_ecs::Entity;
 use unlit_wgpu::mesh::JointMatrix;
-use unlit_wgpu::offset_allocator::Allocation;
 use unlit_wgpu::render_attachments::{color_clear, depth_clear, stencil_clear};
 use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
@@ -244,26 +243,6 @@ pub struct MeshParts {
     /// `None` when the mesh was uploaded without one.
     pub bind_group_id: Option<ResHandle<wgpu::BindGroup>>,
 
-    /// The mesh's vertex range in the pool it was allocated from, to hand back
-    /// when the mesh is removed.
-    ///
-    /// `None` when the mesh owns its vertex buffers whole.
-    pub(crate) vertex_allocation: Option<Allocation>,
-
-    /// The mesh's index range in the pool it was allocated from, to hand back
-    /// when the mesh is removed.
-    ///
-    /// `None` when the mesh owns its index buffer whole.
-    pub(crate) index_allocation: Option<Allocation>,
-
-    /// The mesh's morph displacements' range in the frame-wide pool, to hand
-    /// back when the mesh is removed.
-    ///
-    /// `None` when the mesh carries no morph targets. The displacements are the
-    /// mesh's own, but they live in one array the whole frame shares, so the
-    /// mesh holds a range rather than a resource.
-    pub(crate) morph_deltas_allocation: Option<Allocation>,
-
     /// Index of the mesh's entry in the source's mesh-metadata array.
     ///
     /// Every mesh owns an entry, whether or not the pipeline that draws it
@@ -277,8 +256,8 @@ pub struct MeshParts {
 /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh).
 /// The mesh is ready to draw immediately, and it lives as long as some
 /// [`GpuMesh`] names it: dropping the last handle makes it collectable by the
-/// next `maintain`, after which the pool ranges it held are handed back with
-/// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh).
+/// next `maintain`, which also hands the pool ranges and the metadata slot it
+/// held back to the source's shared storage.
 ///
 /// The fields here are the ones a per-entity walk reads while culling and
 /// resolving the visible set. Everything only drawing reads lives in

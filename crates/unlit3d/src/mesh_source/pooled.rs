@@ -212,8 +212,9 @@ impl MeshSource {
     /// nor its index buffer: its vertices go into the streams the source shares
     /// between meshes and its indices into the source's index pool, and the
     /// handle names the pool nodes together with the ranges this mesh holds.
-    /// The allocations are handed back by [`Self::remove_mesh`], while the pool
-    /// buffers outlive them.
+    /// Once the mesh dies — the last handle dropped and the graph's maintain
+    /// run — the sweep hands those ranges back while the pool buffers outlive
+    /// them.
     ///
     /// `write` fills each declared stream in turn, into the pool range it is
     /// handed; it is called once per stream whose layout declares a stride. The
@@ -379,10 +380,10 @@ impl MeshSource {
             vertex_offset,
         );
 
-        // The mesh's parts are complete only now: the pool-backed slots and
-        // ranges are known once the pools have been allocated above. The handle
-        // is freshly built and shared with nothing, so it is uniquely owned
-        // here and can be patched in place.
+        // The mesh's parts are complete only now: the pool-backed slots are
+        // known once the pools have been allocated above. The handle is
+        // freshly built and shared with nothing, so it is uniquely owned here
+        // and can be patched in place.
         let parts = Rc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
 
         // The mesh's layout is only the streams it draws from: the
@@ -391,10 +392,9 @@ impl MeshSource {
         let mut layout = ArrayVec::<_, MAX_VERTEX_BUFFERS>::new();
 
         // The mesh's slices of the pools it shares: the draw names its ranges
-        // by `first` and `base_vertex`, and the allocations are handed back on
-        // removal. The layout is the key's own, slot by slot: the family keys on
-        // it, so it is owned by the mesh even though the buffers behind it are
-        // the pool's.
+        // by `first` and `base_vertex`. The layout is the key's own, slot by
+        // slot: the family keys on it, so it is owned by the mesh even though
+        // the buffers behind it are the pool's.
         for (slot, stream_layout) in streams {
             if stream_layout.array_stride > 0 {
                 layout.push((*slot, stream_layout.clone()));
@@ -405,8 +405,15 @@ impl MeshSource {
             }
         }
         parts.index_buffer = index_buffer;
-        parts.index_allocation = index_allocation;
-        parts.vertex_allocation = Some(vertices.allocation);
+        // Record the pool ranges the mesh holds on the pending entry its
+        // allocation registered: when the mesh dies, these are what the
+        // collect hook hands back.
+        let mut pending = self.pending.borrow_mut();
+        let entry = pending
+            .get_mut(&mesh.parts.root.id())
+            .expect("the mesh's allocation registered its root");
+        entry.vertex = Some(vertices.allocation);
+        entry.index = index_allocation;
         mesh.vertex_layout = VertexLayout::new(layout);
         mesh.first = first;
         // Zero whenever the offset was baked into the indices instead, which is

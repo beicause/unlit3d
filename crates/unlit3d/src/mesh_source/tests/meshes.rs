@@ -34,12 +34,14 @@ fn indexed_meshes_share_one_index_buffer() {
     assert_ne!(first.first, second.first, "the slices do not overlap");
 
     // The ranges tile the pool in allocation order.
-    let first_range = h.source.pools.index_pool.allocation_size(
-        first
-            .parts
-            .index_allocation
-            .expect("the mesh holds an allocation"),
-    );
+    let first_range = h
+        .source
+        .pending
+        .borrow()
+        .get(&first.parts.root.id())
+        .and_then(|entry| entry.index)
+        .map(|allocation| h.source.pools.index_pool.allocation_size(allocation))
+        .expect("the mesh holds an index allocation");
     assert_eq!(
         first.first + first_range / size_of::<u16>() as u32,
         second.first,
@@ -52,7 +54,8 @@ fn a_removed_mesh_frees_its_index_range_for_the_next_mesh() {
     let mut h = harness();
     let first = h.tri_mesh();
     let first_offset = first.first;
-    h.source.remove_mesh(first);
+    drop(first);
+    h.source.maintain(&h.world.root_scope());
 
     let again = h.tri_mesh();
     assert_eq!(
@@ -120,7 +123,15 @@ fn a_non_indexed_mesh_holds_no_index_allocation() {
 
     assert!(!mesh.indexed);
     assert!(mesh.parts.index_buffer.is_none());
-    assert!(mesh.parts.index_allocation.is_none());
+    assert!(
+        h.source
+            .pending
+            .borrow()
+            .get(&mesh.parts.root.id())
+            .and_then(|entry| entry.index)
+            .is_none(),
+        "a non-indexed mesh holds no index allocation"
+    );
     assert_eq!(mesh.first, 0);
 }
 
@@ -159,7 +170,8 @@ fn a_removed_mesh_frees_its_vertex_range_for_the_next_mesh() {
     let mut h = harness();
     let first = h.tri_mesh();
     let vertex_offset = first.base_vertex;
-    h.source.remove_mesh(first);
+    drop(first);
+    h.source.maintain(&h.world.root_scope());
 
     let again = h.tri_mesh();
     assert_eq!(

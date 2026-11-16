@@ -45,7 +45,7 @@
 | 建纹理 | `register_texture_and_default_view` 返回 (纹理, 视图) 两个句柄 | 同上 |
 | 建采样器 | `register_sampler` | 同上 |
 | 建材质 | `allocate_material`，闭包拿到 `&ResourceGraph` 建 BindGroup | 同上 |
-| 释放 | `remove_mesh` / `maintain` | 同上 |
+| 释放 | drop 最后一个 `GpuMesh` 句柄即弃用 mesh；`maintain` 收集 root 并归还池区间与 metadata 槽 | 同上 |
 
 ## 内建 lit family
 

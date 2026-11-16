@@ -651,29 +651,20 @@ pub fn create_mesh(
     })
 }
 
-/// Release a mesh and despawn the entity that drew it.
-pub fn remove_mesh(
-    world: &mut World,
-    source: Option<Entity>,
-    entity: Entity,
-) -> Result<Value, String> {
-    // Take a handle and drop the row's own copy first: releasing the parts
-    // needs the last holder, and a clone left in the row would make
-    // MeshSource::remove_mesh refuse the double free.
-    let mesh = world
+/// Free the mesh an entity draws and despawn the entity. The mesh itself is
+/// collected by the source's next maintain, which reclaims its pooled ranges
+/// and metadata slot once no handle names it.
+pub fn remove_mesh(world: &mut World, entity: Entity) -> Result<Value, String> {
+    // A row without a mesh is a caller error: the tool frees meshes.
+    world
         .root_scope()
         .try_query_one::<&GpuMesh>(entity)
-        .map(|mut mesh| {
-            let mesh = mesh.get();
-            mesh.clone()
-        })
         .map_err(|_| format!("entity {entity:?} has no GpuMesh"))?;
     let name = world.entity_name(entity).unwrap_or("");
     let removed = world
         .root_scope_mut()
         .despawn(entity)
         .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
-    with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
     to_value(&Despawned { removed, name })
 }
 
