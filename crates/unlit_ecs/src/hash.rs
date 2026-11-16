@@ -9,7 +9,8 @@
 //!   spawned together land together.
 //! - [`TypeId`] is itself a high-quality hash, so [`TypeIdHashMap`] uses
 //!   [`NoOpHash`] and [`NoOpHasher`] forwards the `u64` the `Hash` impl
-//!   writes.
+//!   writes. A key of some other type that writes several `u64`s gets them
+//!   folded instead of keeping only the last one.
 //!
 //! [`EntityHasher`] panics on a key that is not `u64`-shaped, which is a
 //! programming error in this crate's own use of it. [`NoOpHasher`] does not:
@@ -52,7 +53,15 @@ impl Hasher for NoOpHasher {
     }
 
     fn write_u64(&mut self, value: u64) {
-        self.0 = value;
+        // Folded rather than overwritten. A fresh hasher still passes a single
+        // `u64` through, because rotating and multiplying zero leaves zero, but
+        // a key that hashes more than one no longer collapses onto its last
+        // half: every such key would otherwise land in one bucket.
+        self.0 = self
+            .0
+            .rotate_left(8)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(value);
     }
 }
 
@@ -119,6 +128,20 @@ mod tests {
         let mut hasher = NoOpHash.build_hasher();
         hasher.write_u64(0x1234_5678_9abc_def0);
         assert_eq!(hasher.finish(), 0x1234_5678_9abc_def0);
+    }
+
+    #[test]
+    fn the_no_op_hasher_keeps_every_u64_a_key_writes() {
+        let mut pair = NoOpHash.build_hasher();
+        pair.write_u64(1);
+        pair.write_u64(2);
+        let mut last = NoOpHash.build_hasher();
+        last.write_u64(2);
+        assert_ne!(
+            pair.finish(),
+            last.finish(),
+            "a key that writes two u64s is not its second half",
+        );
     }
 
     #[test]

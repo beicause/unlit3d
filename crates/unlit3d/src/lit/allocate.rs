@@ -267,9 +267,8 @@ impl MeshSource {
         view_id: ResHandle<TextureView>,
         sampler_id: ResHandle<wgpu::Sampler>,
     ) -> GpuMaterial {
-        let layout = options.material_bind_group_layout(&self.device(world));
-
         let device = self.device(world).clone();
+        let layout = options.material_bind_group_layout(&device);
         // The recipe reads the view and the sampler back out of the graph each
         // time it runs, so replacing either rebuilds the group from the current
         // handle rather than the one captured here.

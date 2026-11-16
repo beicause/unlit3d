@@ -63,6 +63,14 @@ use crate::global_uniforms::{FrameUniforms, UniformGroups};
 
 pub use unlit_wgpu::resources::Rebuild;
 
+/// How many bindings one global group can hold at once.
+///
+/// The three uniforms every pipeline binds, plus the mesh metadata, the joints,
+/// the two morph arrays and the five lighting arrays an optional entry each. A
+/// pipeline that adds a binding has to raise this too, which is why the count is
+/// spelled out here rather than inline where the array is built.
+const MAX_GLOBAL_BINDINGS: usize = 3 + 1 + 1 + 2 + 5;
+
 /// The ids of the source's global arrays and buffers.
 ///
 /// These are the resources every pipeline can rely on the source keeping up to
@@ -167,7 +175,7 @@ impl GlobalResources {
         // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
         // whenever a global buffer is replaced, and the optional entries depend
         // on the pipeline, so the group is assembled rather than truncated.
-        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 12>::new();
+        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, MAX_GLOBAL_BINDINGS>::new();
         entries.extend(uniform_entries(graph, uniforms));
         if bindings.metadata {
             entries.push(wgpu::BindGroupEntry {

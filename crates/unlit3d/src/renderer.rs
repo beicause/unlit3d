@@ -28,6 +28,7 @@ use unlit_wgpu::globals::Globals;
 use unlit_wgpu::scene::{Scene, ViewportRect};
 
 use crate::components::RenderLoadOps;
+use crate::frame::FrameClock;
 use crate::order::{OrderWarnings, Ordering};
 use crate::pass::{FramePass, FramePassOrder, PassInfo};
 use crate::source::{FrameSourceOrder, RenderContext, Source};
@@ -106,6 +107,10 @@ pub struct Renderer {
     /// The loss this renderer has already reported, so a dead device is
     /// announced once rather than every frame.
     reported_loss: Option<DeviceLost>,
+    /// Whether this renderer has already said that the world holds no
+    /// [`FrameClock`](crate::FrameClock), so a program run without one is told
+    /// once rather than every frame.
+    reported_missing_clock: bool,
 }
 
 /// The scene of one (pass, source) pair, kept between frames.
@@ -205,6 +210,7 @@ impl Renderer {
             reached: BTreeSet::new(),
             unreached: Vec::new(),
             reported_loss: None,
+            reported_missing_clock: false,
         }
     }
 
@@ -296,7 +302,22 @@ impl Renderer {
         // of a stepped frame would win.
         {
             profiling::scope!("renderer.frame.advance_globals");
-            let clock = self.context.clock(&world.root_scope()).unwrap_or_default();
+            // A world spawned without `spawn_context` holds no clock entity and
+            // the frame runs at time zero: animation stands still and every
+            // shader reading the frame time sees the same value, which is worth
+            // saying once.
+            let clock = match self.context.clock(&world.root_scope()) {
+                Ok(clock) => clock,
+                Err(error) => {
+                    if !self.reported_missing_clock {
+                        log::warn!(
+                            "the world holds no FrameClock, so every frame runs at time zero: {error}"
+                        );
+                        self.reported_missing_clock = true;
+                    }
+                    FrameClock::default()
+                }
+            };
             let globals = Globals {
                 time: clock.time,
                 delta_time: clock.delta_time,
@@ -379,9 +400,9 @@ impl Renderer {
             self.pass_warnings.check(self.passes.ambiguous());
         }
 
-        // One scratch per frame: every pass composites from this buffer and
-        // clears it once recorded, so a steady frame reallocates nothing
-        // however many passes it runs.
+        // One scratch for every pass of this frame: each pass composites from
+        // it and clears it once recorded, so the allocation is one per frame
+        // rather than one per pass.
         let mut scenes: Vec<&Scene> = Vec::new();
         for index in 0..self.passes.entities().len() {
             let pass_entity = self.passes.entities()[index];

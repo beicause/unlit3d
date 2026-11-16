@@ -35,7 +35,7 @@ use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
 use crate::borrow::{BorrowLedger, Rows};
-use crate::bundle::{Bundle, BundleComponent, DynamicBundle};
+use crate::bundle::{Bundle, BundleComponent, Components, DynamicBundle};
 use crate::column::AnyColumn;
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
@@ -139,10 +139,10 @@ impl World {
         // root that is being written here.
         let root = world.entities_write().alloc("root");
         world.root = root;
-        world.insert_row(root, root, crate::DynamicBundle::new());
+        world.insert_row(root, root, crate::DynamicBundle::new().finish());
         let shared = world.entities_write().alloc("shared");
         world.shared = shared;
-        world.insert_row(shared, root, crate::DynamicBundle::new());
+        world.insert_row(shared, root, crate::DynamicBundle::new().finish());
         world.scaffolding = world
             .location(root)
             .expect("the root has a row")
@@ -423,8 +423,12 @@ impl World {
         name: &'static str,
         bundle: DynamicBundle,
     ) -> Entity {
+        // Sorted before the handle is allocated: a bundle that names one
+        // component twice panics, and the entity allocated for it would then be
+        // neither spawned nor freed.
+        let components = bundle.finish();
         let entity = self.entities_write().alloc(name);
-        self.insert_row(entity, scope, bundle);
+        self.insert_row(entity, scope, components);
         self.finish_spawn(entity);
         entity
     }
@@ -441,12 +445,15 @@ impl World {
         scope: Entity,
         bundle: B,
     ) -> Result<(), EntityAccessError> {
+        // Sorted before the reservation is taken, so a rejected bundle leaves
+        // the handle reserved for a later attempt rather than leaking it.
+        let components = bundle.into_bundle().finish();
         if !self.entities_write().take_reserved(entity) {
             return Err(EntityAccessError::NotReserved { entity });
         }
         // The handle was named when it was reserved, which is where the caller
         // said what the entity is; the bundle does not rename it.
-        self.insert_row(entity, scope, bundle);
+        self.insert_row(entity, scope, components);
         self.finish_spawn(entity);
         Ok(())
     }
@@ -557,10 +564,8 @@ impl World {
 
     // -- the row itself ----------------------------------------------------
 
-    /// Insert a row for `entity` in `scope`, made of the components `bundle`
-    /// carries.
-    fn insert_row<B: Bundle>(&mut self, entity: Entity, scope: Entity, bundle: B) {
-        let components = bundle.into_bundle().finish();
+    /// Insert a row for `entity` in `scope`, made of `components`.
+    fn insert_row(&mut self, entity: Entity, scope: Entity, components: Components) {
         for component in &components {
             self.ctors
                 .entry(component.type_id)
@@ -616,10 +621,47 @@ impl World {
         let Some(callback) = self.take_lifecycle::<C>(entity) else {
             return;
         };
-        let scope = Scope::new(self, scope);
-        let mut callback = callback;
+        // `Held` puts the callback back on the way out, including when the
+        // callback panics: the row holds a no-op placeholder meanwhile, and an
+        // entity that lost its callback for good would never run one again.
+        struct Held {
+            world: *mut World,
+            entity: Entity,
+            restore: fn(&mut World, Entity, LifecycleCallback),
+            callback: Option<LifecycleCallback>,
+        }
+
+        impl Drop for Held {
+            fn drop(&mut self) {
+                let Some(callback) = self.callback.take() else {
+                    return;
+                };
+                // SAFETY: the guard is built from the `&mut World` the run was
+                // handed and holds it until it is dropped here.
+                let world = unsafe { &mut *self.world };
+                // A callback that despawned its own entity leaves no row to put
+                // the callback back in; the row is gone with it.
+                if world.location(self.entity).is_ok() {
+                    (self.restore)(world, self.entity, callback);
+                }
+            }
+        }
+
+        let mut held = Held {
+            world: self,
+            entity,
+            restore: World::restore_lifecycle::<C>,
+            callback: Some(callback),
+        };
+        // SAFETY: `held` holds the world exclusively as a raw pointer for
+        // exactly this borrow, which ends before the guard is dropped.
+        let world = unsafe { &mut *held.world };
+        let scope = Scope::new(world, scope);
+        let callback = held
+            .callback
+            .as_mut()
+            .expect("the guard holds the callback until it is dropped");
         callback(&scope, entity);
-        self.restore_lifecycle::<C>(entity, callback);
     }
 
     /// Move the callback of the lifecycle component `C` out of the entity's row.

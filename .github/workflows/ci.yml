@@ -68,7 +68,7 @@ jobs:
         uses: tombi-toml/setup-tombi@v1.4
 
       - name: Check for tombi
-        run: tombi lint --error-on-warnings; tombi format --check --diff
+        run: tombi lint --error-on-warnings && tombi format --check --diff
 
       - name: Install rust toolchain
         run: |

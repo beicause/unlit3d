@@ -15,11 +15,6 @@ impl MeshSource {
     ///
     /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) is the helper that builds the
     /// compressed layout the built-in lit shader expects.
-    ///
-    /// # Panics
-    ///
-    /// If `count` is zero for a non-empty draw, or if the index format does
-    /// not match the packed data.
     pub fn allocate_mesh(&mut self, world: &Scope<'_>, desc: MeshDesc) -> GpuMesh {
         let metadata = MeshMetadata {
             aabb_center: desc.aabb.center,

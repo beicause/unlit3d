@@ -398,6 +398,21 @@ impl FrameSource for MeshSource {
             )
         };
 
+        // A pair the pipelines no longer draw -- a camera that is gone, a
+        // viewport no pass uses -- gives its global group back here, so a world
+        // that changes cameras holds one group rather than one per camera it
+        // ever had. This runs before the visibility test below: a world whose
+        // visible set is empty draws nothing, and would otherwise never release
+        // the groups its last camera left behind.
+        {
+            profiling::scope!("mesh_source.uniforms.prune");
+            for pipeline in &mut self.pipelines {
+                if let Some(global) = pipeline.global.as_mut() {
+                    global.groups.prune(uniforms.frame);
+                }
+            }
+        }
+
         // A rebuild has to happen before the global groups are read, and the
         // metadata upload above may have replaced the buffer one of them binds.
         // The maintain below, just before the frame is assembled, is what

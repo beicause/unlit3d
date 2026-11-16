@@ -471,8 +471,9 @@ pub(crate) fn collect_and_sort_visible(
 
     // Sort: not z-sorted before z-sorted, then by pipeline, then by the key that
     // matters for that kind. Opaque draws are keyed by material so neighbours
-    // share a bind group; z-sorted ones keep their resolve order, because the
-    // depth their draw carries is the composite's business, not this sort's.
+    // share a bind group; z-sorted ones compare equal here, because the depth
+    // their draw carries is the composite's business, not this sort's. Being
+    // equal, they come out in no particular order.
     profiling::scope!("scene.sort");
     // The partition is what the sort decides: a pipeline id and a material key
     // order the opaque run so neighbours share state, and a z-sorted entry
@@ -632,12 +633,18 @@ pub(crate) fn assemble_scene(
         let count = (end - start) as u32;
 
         let first = shape.first;
+        let last = first
+            .checked_add(shape.count)
+            .expect("a draw's index range stays inside the 32-bit index space");
+        let instances = base
+            .checked_add(count)
+            .expect("a draw's instance range stays inside the 32-bit instance space");
         let range = if shape.indexed {
-            DrawRange::indexed(first..first + shape.count)
+            DrawRange::indexed(first..last)
                 .with_base_vertex(shape.base_vertex as i32)
-                .with_instances(base..base + count)
+                .with_instances(base..instances)
         } else {
-            DrawRange::vertices(first..first + shape.count).with_instances(base..base + count)
+            DrawRange::vertices(first..last).with_instances(base..instances)
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);

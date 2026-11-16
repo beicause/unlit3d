@@ -39,7 +39,17 @@ pub fn serve_mcp(world: &mut World) {
     let started = std::thread::Builder::new()
         .name("unlit3dx-mcp-transport".to_owned())
         .spawn(move || {
-            let sink = move |command| sender.try_send(command).is_ok();
+            // An unbounded inbox refuses a command only once its receiver
+            // is gone, which is to say once nothing drains the world any
+            // more; the pump treats a refused command as the end of the
+            // transport, so say why there is no one left to answer.
+            let sink = move |command| match sender.try_send(command) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("the MCP inbox is gone: {error}");
+                    false
+                }
+            };
             if let Err(error) = unlit_ecs::mcp::serve_stdio_with(sink) {
                 log::error!("the MCP server stopped: {error}");
             }
@@ -64,15 +74,19 @@ fn drain_mcp() -> OnAboutToWait {
     OnAboutToWait::new(move |world, _entity, ()| drain(world))
 }
 
-/// Drain the commands the transport posted.
+/// Drain the commands every transport posted.
+///
+/// Each `serve_mcp` call spawns its own inbox, so a world served twice -- over
+/// stdio and, say, a test's stream pair -- has two. Draining one and leaving
+/// the other unread would hold that transport's clients waiting for answers
+/// that never come.
 fn drain(world: &World) {
     let mut mcp_inbox_rows = world.root_scope().query::<&McpInbox>();
 
-    let Some(inbox) = mcp_inbox_rows.iter().next() else {
-        return;
-    };
-    while let Ok(command) = inbox.receiver.try_recv() {
-        dispatch_command(world, command);
+    for inbox in mcp_inbox_rows.iter() {
+        while let Ok(command) = inbox.receiver.try_recv() {
+            dispatch_command(world, command);
+        }
     }
 }
 

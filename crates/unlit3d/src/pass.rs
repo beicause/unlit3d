@@ -101,11 +101,10 @@ pub struct FramePass {
     /// state its own mapping — an egui source draws through a screen camera
     /// whatever the pass says.
     ///
-    /// `None` keeps the old behavior: a source falls back to the first
-    /// active `Camera` its scope reaches, which follows row order and may
-    /// change when an unrelated entity is despawned. Stating the camera is how
-    /// a caller opts out of that — and how a split screen states two passes
-    /// with two different ones.
+    /// `None` leaves the choice to each source, which takes the first active
+    /// `Camera` its scope reaches. That follows row order and may change when
+    /// an unrelated entity is despawned, which is why a split screen states a
+    /// camera per pass instead.
     pub camera: Option<Entity>,
     color: Option<ResHandle<TextureView>>,
     depth: Option<ResHandle<TextureView>>,

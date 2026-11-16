@@ -319,11 +319,16 @@ fn physics_world(world: &World) -> unlit_ecs::QueryOne<'_, &mut PhysicsWorld> {
 /// what a threaded one does: the only difference is that its host calls
 /// [`crate::world::step_stepped_world`] once per frame instead of a thread
 /// pacing itself.
+/// # Panics
+///
+/// Panics when [`PhysicsConfig::hz`] is not a positive finite number: the
+/// step every clock and every rapier integration is measured in comes from
+/// dividing by it.
 pub fn spawn_physics_world_with<R: WorldRunner>(
     host: &mut World,
     config: PhysicsConfig,
 ) -> WorldHandle {
-    let step_seconds = 1.0 / config.hz as f32;
+    let step_seconds = step_seconds(&config);
     let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
     let mut debt = 0.0;
     let mut started = false;
@@ -359,10 +364,28 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 /// Thread-free callers that drive [`step_once`] on their own cadence —
 /// deterministic tests, offline rendering — call this to get the world
 /// [`spawn_physics_world_with`] builds, contact events included.
+/// # Panics
+///
+/// Panics when [`PhysicsConfig::hz`] is not a positive finite number.
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = Physics::new(config.gravity);
-    physics.world.integration_parameters.dt = 1.0 / config.hz as f32;
+    physics.world.integration_parameters.dt = step_seconds(config);
     world.root_scope_mut().spawn(physics);
+}
+
+/// How long one step of `config` lasts, in seconds.
+///
+/// # Panics
+///
+/// Panics when the rate is not a positive finite number: the period is what
+/// the rate means, and there is none to measure a step by otherwise.
+fn step_seconds(config: &PhysicsConfig) -> f32 {
+    assert!(
+        config.hz.is_finite() && config.hz > 0.0,
+        "a physics rate must be a positive finite number, not {}",
+        config.hz
+    );
+    1.0 / config.hz as f32
 }
 
 /// Step the rapier world once, draining its contacts into

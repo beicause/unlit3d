@@ -165,6 +165,19 @@ impl Painter {
     }
 }
 
+/// `paint` with every colour it holds multiplied by `alpha`.
+///
+/// `peniko::Brush` multiplies alpha itself, but only for the image type its
+/// default parameter names, and a scene's paint carries an uploaded texture id
+/// instead of image bytes.
+fn scale_alpha(paint: PaintType, alpha: f32) -> PaintType {
+    match paint {
+        PaintType::Solid(color) => PaintType::Solid(color.multiply_alpha(alpha)),
+        PaintType::Gradient(gradient) => PaintType::Gradient(gradient.multiply_alpha(alpha)),
+        PaintType::Image(image) => PaintType::Image(image.multiply_alpha(alpha)),
+    }
+}
+
 impl Painter {
     /// The vello paint `paint` names, uploading what it stands for.
     fn convert_paint(&mut self, paint: PaintRef<'_>) -> PaintType {
@@ -362,12 +375,15 @@ impl PaintScene for Painter {
         embolden: vello_gpu::kurbo::Vec2,
         style: impl Into<StyleRef<'a>>,
         paint: impl Into<PaintRef<'a>>,
-        _brush_alpha: f32,
+        brush_alpha: f32,
         transform: Affine,
         glyph_transform: Option<Affine>,
         glyphs: impl Iterator<Item = anyrender::Glyph> + Clone,
     ) {
-        let paint = self.convert_paint(paint.into());
+        // The brush alpha reaches the paint itself rather than a layer: text is
+        // drawn straight into the page's scene, so a layer would need a matching
+        // pop. Multiplying each kind of brush keeps the alpha correct without one.
+        let paint = scale_alpha(self.convert_paint(paint.into()), brush_alpha);
         self.scene.set_paint(paint);
         self.scene.reset_paint_transform();
         self.scene.set_transform(transform);

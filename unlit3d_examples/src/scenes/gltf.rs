@@ -177,7 +177,17 @@ fn build(
                 (fox_duration * phase, morph_duration * phase)
             } else {
                 clock += delta;
-                (clock % fox_duration, clock % morph_duration)
+                // A clip with no duration has one pose to show, not a clock
+                // to take the remainder of: `x % 0.0` is NaN, and a NaN time
+                // samples nothing.
+                let loop_time = |duration: f32| {
+                    if duration > 0.0 {
+                        clock % duration
+                    } else {
+                        0.0
+                    }
+                };
+                (loop_time(fox_duration), loop_time(morph_duration))
             };
             let scope = world.scope(source_entity);
             fox.apply_animation(

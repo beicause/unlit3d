@@ -156,10 +156,13 @@ impl MeshSource {
             let mut graph_holder = self.context.graph(world);
             let graph = graph_holder.get();
             for entry in &self.caches.visible_cache {
-                let key = entry.handles_key.clone();
-                if handles.contains_key(&key) {
+                if handles.contains_key(&entry.handles_key) {
                     continue;
                 }
+                // Cloned only past the probe: the key is what the entry is
+                // cached under, so the clone is the inserted copy rather than a
+                // throwaway per visible entity.
+                let key = entry.handles_key.clone();
 
                 let mut mesh_row = world
                     .try_query_one::<&GpuMesh>(entry.mesh.entity)
@@ -233,11 +236,6 @@ impl MeshSource {
                     let group = global.groups.group(graph, key, frame, |graph| {
                         recipe.insert(&device, graph, uniforms)
                     });
-                    // A pair this pipeline no longer draws -- a camera that is
-                    // gone, a viewport no pass uses -- gives its group back, so
-                    // a world that changes cameras holds one group rather than
-                    // one per camera it ever had.
-                    global.groups.prune(frame);
                     graph.get(&group).expect("global group exists").clone()
                 });
                 RenderPipelineHandles {

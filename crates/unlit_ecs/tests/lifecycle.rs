@@ -237,3 +237,38 @@ fn a_panicking_callback_leaves_the_component_registered() {
         "the callback is still on the row it was spawned with"
     );
 }
+
+#[test]
+fn a_callback_that_panicked_runs_again_next_time() {
+    let seen = log();
+    let sink = Rc::clone(&seen);
+    let mut world = World::new();
+    let mut first = true;
+    let entity = world.root_scope_mut().spawn(bundle![
+        Marker(9),
+        OnDespawn::new(move |_scope, _doomed| {
+            if first {
+                first = false;
+                panic!("the first run fails");
+            }
+            sink.borrow_mut().push("despawn".to_owned());
+        }),
+    ]);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        world.root_scope_mut().despawn(entity)
+    }));
+    assert!(failed.is_err(), "the panic reaches the caller");
+    // A panic leaves the row in place, so the entity is still there and the
+    // callback has to be back in it: reaching for it again must run the same
+    // closure rather than the placeholder left behind by a failed run.
+    assert_eq!(seen.borrow().len(), 0, "the failing run logged nothing");
+    world
+        .root_scope_mut()
+        .despawn(entity)
+        .expect("the second despawn removes the entity");
+    assert_eq!(
+        *seen.borrow(),
+        ["despawn"],
+        "the callback ran a second time"
+    );
+}

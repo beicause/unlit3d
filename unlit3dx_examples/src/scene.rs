@@ -335,10 +335,17 @@ pub struct Scene {
 /// snapshot carries state, not history: a body that moved twice between two
 /// reads is seen once, where it is now.
 fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
+    // Two tables take turns: `previous` holds what the last snapshot carried,
+    // which is what the next step compares against, and `gathered` is filled from
+    // the world. Filling and exchanging them rather than building a fresh table
+    // each step is what keeps a step whose poses are unchanged allocation-free;
+    // the snapshot itself cannot be the working table, because it outlives the
+    // step that filled it.
     let mut previous: HashMap<RigidBodyHandle, (Vec3, Quat)> = HashMap::new();
+    let mut gathered: HashMap<RigidBodyHandle, (Vec3, Quat)> = HashMap::new();
     sender
         .watch(move |world: &World| {
-            let mut transforms = HashMap::new();
+            gathered.clear();
             if let Some(physics) = world
                 .root_scope()
                 .query::<(Entity, &PhysicsWorld)>()
@@ -347,17 +354,20 @@ fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
             {
                 for (handle, body) in physics.1.bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
-                        transforms.insert(handle, (body.translation(), *body.rotation()));
+                        gathered.insert(handle, (body.translation(), *body.rotation()));
                     }
                 }
             }
-            if transforms == previous {
+            if gathered == previous {
                 return None;
             }
-            // The collector keeps what it published to compare the next step
-            // against, so the world allocates only when the poses changed.
-            previous = transforms.clone();
-            Some(GamePhysics { transforms })
+            std::mem::swap(&mut previous, &mut gathered);
+            // `previous` holds the new poses and `gathered` the buffer the next
+            // step refills, so the snapshot takes a copy of what was published:
+            // the reader owns it and the collector has to keep comparing.
+            Some(GamePhysics {
+                transforms: previous.clone(),
+            })
         })
         .expect("the physics world accepts a subscription")
 }
@@ -604,6 +614,15 @@ fn publish_panels(world: &World, frame: &Frame) {
     }
 }
 
+/// The most audio one frame may be asked to fill, in seconds.
+///
+/// The audio debt is carried in sample frames rather than steps, so the
+/// physics catch-up limit says nothing about it. A host that stalled — a
+/// suspended window, a debugger pause — would otherwise ask the world to fill
+/// a buffer as long as the pause, which is neither wanted nor cheap; a
+/// quarter second is well past any jitter a running host shows.
+const MAX_AUDIO_CATCH_UP_SECONDS: f64 = 0.25;
+
 /// The pacing a host uses to step a scene's worlds frame by frame.
 ///
 /// The frame's own duration is what drives the worlds, and none of their
@@ -631,8 +650,21 @@ impl SceneStepper {
     ///
     /// Gameplay has no rate here: its world ticks once per frame, with the
     /// frame's own duration.
+    ///
+    /// The rate is turned into a period once, so a rate that is not a positive
+    /// finite number has no period to carry: it would divide the frame's
+    /// duration into an infinity or a NaN of steps. `sample_rate` is trusted as
+    /// given, being an integer the caller cannot make non-positive without
+    /// saying so.
+    ///
+    /// # Panics
+    /// Panics when `physics_hz` is not a positive finite number.
     #[must_use]
     pub fn new(physics_hz: f64, sample_rate: Option<u32>) -> Self {
+        assert!(
+            physics_hz.is_finite() && physics_hz > 0.0,
+            "a physics rate must be a positive finite number, not {physics_hz}"
+        );
         Self {
             physics_debt: 0.0,
             audio_debt: 0.0,
@@ -674,7 +706,13 @@ impl SceneStepper {
         let Some(period) = self.sample_period else {
             return 0;
         };
-        self.audio_debt += delta_seconds;
+        // Debt past the catch-up limit is discarded rather than owed, the way
+        // `fixed_steps` discards it: a host that stalled for a long while
+        // would otherwise ask the world to fill a buffer as long as the pause,
+        // and the audio that pause skipped is gone either way. A negative
+        // interval - a clock that went backwards - owes nothing.
+        self.audio_debt =
+            (self.audio_debt + delta_seconds.max(0.0)).min(MAX_AUDIO_CATCH_UP_SECONDS);
         let frames = (self.audio_debt / period) as usize;
         self.audio_debt -= frames as f64 * period;
         frames

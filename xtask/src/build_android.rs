@@ -40,8 +40,12 @@ const JNI_LIBS_DIR: &str = "android/app/src/main/jniLibs";
 
 /// Build the shared library and the APK that packages it.
 pub fn run(args: &BuildAndroidArgs) -> Result<(), String> {
-    library(args)?;
-    apk(args)
+    // The paths below are relative to the workspace root, while the task may be
+    // started from any directory inside it: they are resolved once here so
+    // neither tool reads them against the working directory.
+    let root = step::workspace_root()?;
+    library(args, &root)?;
+    apk(args, &root)
 }
 
 /// Cross-compile the libraries and stage them for the APK.
@@ -49,11 +53,13 @@ pub fn run(args: &BuildAndroidArgs) -> Result<(), String> {
 /// One `cargo ndk` run builds them all: it passes the packages through to
 /// `cargo build` and writes every resulting `.so` into the same `jniLibs`
 /// directory, which is what the activities load from at run time.
-fn library(args: &BuildAndroidArgs) -> Result<(), String> {
+fn library(args: &BuildAndroidArgs, root: &Path) -> Result<(), String> {
     let profile: &[&str] = if args.release { &["--release"] } else { &[] };
+    let jni_libs = root.join(JNI_LIBS_DIR);
     let mut cargo = Command::new("cargo");
     cargo
-        .args(["ndk", "-t", ABI, "-P", PLATFORM, "-o", JNI_LIBS_DIR])
+        .args(["ndk", "-t", ABI, "-P", PLATFORM, "-o"])
+        .arg(&jni_libs)
         .arg("build")
         .args(LIBRARY_CRATES.iter().flat_map(|krate| ["-p", krate]))
         .arg("--lib")
@@ -62,17 +68,18 @@ fn library(args: &BuildAndroidArgs) -> Result<(), String> {
 }
 
 /// Assemble the APK, which packages whatever `library` staged.
-fn apk(args: &BuildAndroidArgs) -> Result<(), String> {
+fn apk(args: &BuildAndroidArgs, root: &Path) -> Result<(), String> {
     let task = if args.release {
         ":app:assembleRelease"
     } else {
         ":app:assembleDebug"
     };
+    let android_dir = root.join(ANDROID_DIR);
     let mut gradle = Command::new("./gradlew");
-    gradle.current_dir(Path::new(ANDROID_DIR)).arg(task);
+    gradle.current_dir(&android_dir).arg(task);
     step::run(&mut gradle, "the Gradle build")?;
 
-    let apk = apk_path(args);
+    let apk = apk_path(args, root);
     if apk.is_file() {
         println!("built {}", apk.display());
         Ok(())
@@ -89,13 +96,13 @@ fn apk(args: &BuildAndroidArgs) -> Result<(), String> {
 /// Gradle puts it under `build/outputs/apk` on its own, so the path is the
 /// build type's name rather than anything this task asks for. A release APK
 /// is `-unsigned` because the project ships no signing configuration.
-fn apk_path(args: &BuildAndroidArgs) -> std::path::PathBuf {
+fn apk_path(args: &BuildAndroidArgs, root: &Path) -> std::path::PathBuf {
     let (build_type, file) = if args.release {
         ("release", "app-release-unsigned.apk")
     } else {
         ("debug", "app-debug.apk")
     };
-    Path::new(ANDROID_DIR)
+    root.join(ANDROID_DIR)
         .join("app/build/outputs/apk")
         .join(build_type)
         .join(file)

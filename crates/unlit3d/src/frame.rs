@@ -293,8 +293,11 @@ thread_local! {
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     // The list has the same shape every frame, so it is handed out and taken
     // back rather than allocated per frame. Taking it also keeps the slot free
-    // while a behaviour runs.
-    let mut order = BEHAVIOURS.with_borrow_mut(std::mem::take);
+    // while a behaviour runs, and the holder gives it back even when one
+    // unwinds: a panicking frame would otherwise leave the slot empty for the
+    // rest of the run.
+    let mut held = Behaviours::take();
+    let order = held.list();
     order.clear();
     order.extend(
         world
@@ -304,17 +307,47 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
             .map(|(behaviour, entity)| (behaviour.order(), entity)),
     );
     order.sort_unstable_by_key(|(order, _entity)| *order);
-    for (_, entity) in &order {
-        world
-            .root_scope()
-            .try_query_one::<&mut B>(*entity)
-            .map(|mut behaviour| {
-                let behaviour = behaviour.get();
-                behaviour.run(world, *entity, frame)
-            })
-            .unwrap_or_else(|_| panic!("the behaviour entity exists: {entity:?}"));
+    for (_, entity) in order.iter() {
+        // The list was resolved before the first behaviour ran, and a
+        // behaviour may queue structural work but cannot apply it, so a name
+        // in it is expected to still resolve. One that does not is reported
+        // rather than fatal: the rest of the frame still runs.
+        let Ok(mut behaviour) = world.root_scope().try_query_one::<&mut B>(*entity) else {
+            log::error!("the behaviour {entity:?} is gone, so its turn is skipped");
+            continue;
+        };
+        let behaviour = behaviour.get();
+        behaviour.run(world, *entity, frame);
     }
-    BEHAVIOURS.with_borrow_mut(|slot| *slot = order);
+}
+
+/// The behaviour list, held out of the thread-local slot for the dispatch.
+///
+/// Returning it in [`Drop`] rather than at the end of [`dispatch`] is what
+/// keeps the slot filled when a behaviour panics: the panic still propagates to
+/// the caller, and the next frame finds the list it left.
+struct Behaviours(Option<Vec<(FrameBehaviourOrder, Entity)>>);
+
+impl Behaviours {
+    /// Take the slot's list, leaving an empty one behind.
+    fn take() -> Self {
+        Self(Some(BEHAVIOURS.with_borrow_mut(std::mem::take)))
+    }
+
+    /// The list to fill, available until this holder is dropped.
+    fn list(&mut self) -> &mut Vec<(FrameBehaviourOrder, Entity)> {
+        self.0
+            .as_mut()
+            .expect("the list is held until the holder is dropped")
+    }
+}
+
+impl Drop for Behaviours {
+    fn drop(&mut self) {
+        if let Some(order) = self.0.take() {
+            BEHAVIOURS.with_borrow_mut(|slot| *slot = order);
+        }
+    }
 }
 
 #[cfg(test)]

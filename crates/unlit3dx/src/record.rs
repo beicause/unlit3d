@@ -425,12 +425,14 @@ impl RecordingHandle {
     /// Stop recording, despawn the source and take the captured samples.
     ///
     /// A recording that saw no fill has no format to write, so there is
-    /// nothing to hand back.
+    /// nothing to hand back -- and neither has one whose handle was already
+    /// finished, whether by another clone of this one or by the world
+    /// despawning the source itself.
     #[must_use]
     pub fn stop(self, world: &mut World) -> Option<RecordedAudio> {
-        world.root_scope_mut().despawn(self.entity).unwrap();
+        self.retire(world);
         let mut state = sync::lock(&self.state);
-        let format = state.format?;
+        let format = state.format.take()?;
         Some(RecordedAudio {
             format,
             samples: std::mem::take(&mut state.samples),
@@ -439,7 +441,20 @@ impl RecordingHandle {
 
     /// Stop recording, despawn the source and discard the captured samples.
     pub fn cancel(self, world: &mut World) {
-        world.root_scope_mut().despawn(self.entity).unwrap();
+        self.retire(world);
+        let mut state = sync::lock(&self.state);
+        state.format = None;
+        state.samples.clear();
+    }
+
+    /// Remove the source from the world, if it is still there.
+    ///
+    /// A handle is cloneable, so two of them may ask to finish, and the world
+    /// may have removed the source's subtree before either does. Neither is an
+    /// error to the caller: the samples are what the handle answers for, and
+    /// the source is gone either way.
+    fn retire(&self, world: &mut World) {
+        let _ = world.root_scope_mut().despawn(self.entity);
     }
 }
 

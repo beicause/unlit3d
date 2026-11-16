@@ -79,7 +79,13 @@ impl ScopeSummary {
         match self {
             Self::Empty => false,
             Self::Uniform(scope) => {
-                world.visible(caller, scope) || archetype.entities()[row] == caller
+                // Every row of a uniform archetype lives in `scope`, so the
+                // stored scope answers for all of them but one: the shared
+                // entity's own row sits in the root's scope while reaching every
+                // scope by handle, which is what a lookup of it has to agree
+                // with (`Scope::contains`, `World::visible`).
+                let entity = archetype.entities()[row];
+                entity == caller || entity == world.shared() || world.visible(caller, scope)
             }
             Self::Mixed => {
                 let entity = archetype.entities()[row];
@@ -297,6 +303,11 @@ impl Archetype {
     /// Returns the entity that was moved into the hole, so its location can be
     /// updated, or `None` when the row was the last one.
     pub(crate) fn swap_remove(&mut self, row: usize) -> Option<Entity> {
+        assert!(
+            row < self.entities.len(),
+            "row {row} is past the end of an archetype with {} rows",
+            self.entities.len(),
+        );
         let last = self.entities.len() - 1;
         let scope = self.scopes.swap_remove(row);
         for column in self.columns.iter_mut() {

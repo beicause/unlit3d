@@ -234,7 +234,10 @@ fn check_wasm_bindgen() -> Result<(), String> {
             )
         })?;
     let actual = String::from_utf8_lossy(&output.stdout);
-    if !actual.contains(expected.as_str()) {
+    // The line reads `wasm-bindgen 0.2.100`. Comparing the version whole keeps
+    // a prefix from passing for it: `0.2.10` occurs inside `0.2.100`.
+    let actual_version = actual.split_whitespace().nth(1);
+    if actual_version != Some(expected.as_str()) {
         return Err(format!(
             "the `wasm-bindgen` CLI does not match the `wasm-bindgen` the workspace \
              builds against.\n\

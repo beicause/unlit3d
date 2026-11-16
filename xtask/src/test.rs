@@ -25,8 +25,7 @@ const MISMATCH_DIR_ENV: &str = "UNLIT3D_SNAPSHOT_MISMATCH_DIR";
 /// frames somewhere different. Collecting them in one directory is what lets
 /// CI upload every frame that failed from a single path.
 fn mismatch_dir(tier: Option<&str>) -> Result<std::path::PathBuf, String> {
-    let root = std::env::current_dir()
-        .map_err(|error| format!("reading the working directory: {error}"))?;
+    let root = step::workspace_root()?;
     let name = match tier {
         Some(tier) => format!("snapshot-mismatches-{tier}"),
         None => "snapshot-mismatches".to_owned(),

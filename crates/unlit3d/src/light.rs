@@ -393,6 +393,11 @@ fn color_intensity(color: Vec4, intensity: f32) -> Vec4 {
 
 /// The area of a planar polygon, from its corners in order.
 fn polygon_area(vertices: &[Vec3]) -> f32 {
+    // Two corners are a line and none are nothing: both have zero area, and the
+    // wrap-around below divides by the count.
+    if vertices.len() < 3 {
+        return 0.0;
+    }
     let mut sum = Vec3::ZERO;
     for index in 0..vertices.len() {
         sum += vertices[index].cross(vertices[(index + 1) % vertices.len()]);

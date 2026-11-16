@@ -6,9 +6,11 @@
 //!
 //! A panic here is not a failure the runner can catch: wasm has no unwinding,
 //! so a panic traps the instance and the page dies with it. The panic hook
-//! therefore runs *before* the trap and is the only place the verdict can be
-//! decided — which is why a test's expected message is read from the catalog
-//! rather than from a `#[should_panic]` attribute no one would see.
+//! therefore runs *before* the trap and is the only place a panic's verdict can
+//! be decided — which is why a test's expected message is read from the catalog
+//! rather than from a `#[should_panic]` attribute no one would see. A body that
+//! returns without panicking still has to be judged, and that decision is made
+//! after the future finishes.
 
 use wasm_bindgen::prelude::*;
 
@@ -89,7 +91,16 @@ pub fn run(tests: Vec<TestEntry>, name: String) {
     // published when the future finishes.
     wasm_bindgen_futures::spawn_local(async move {
         (entry.body)().await;
-        test_success();
+        // Returning at all is only a pass for a test that declared no panic:
+        // the hook above decides the outcome of a panic, and a test that
+        // declared one has not exercised what it declared unless it panicked.
+        match entry.expected_panic {
+            None => test_success(),
+            Some(expected) => test_failure(format!(
+                "expected a panic whose message contains {expected:?}, \
+                 but the test returned without panicking"
+            )),
+        }
     });
 }
 

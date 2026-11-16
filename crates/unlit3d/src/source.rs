@@ -344,24 +344,23 @@ impl OpenUrls {
 /// on the web, and nothing at all where there is no browser. A world without a
 /// queue — one built without [`spawn_context`] — yields none.
 pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
-    // The scan claims every `OpenUrls` row and the write below claims one of
-    // them exclusively, so the scan's borrow has to end before it: the claim
-    // lasts as long as the row holder, not as long as the loop that read it.
+    // The scan claims the rows and the writes below claim each of them
+    // exclusively, so the scan's borrow has to end before them: a claim lasts
+    // as long as its row holder, not as long as the loop that read it.
     let scanned = {
         let mut rows = world.root_scope().query::<(Entity, &OpenUrls)>();
-        rows.iter().next().map(|(entity, _)| entity)
+        rows.iter().map(|(entity, _)| entity).collect::<Vec<_>>()
     };
-    let Some(entity) = scanned else {
-        return Vec::new();
-    };
-    world
-        .root_scope()
-        .try_query_one::<&mut OpenUrls>(entity)
-        .map(|mut urls| {
-            let urls = urls.get();
-            std::mem::take(&mut urls.0)
-        })
-        .unwrap_or_default()
+    let mut urls = Vec::new();
+    for entity in scanned {
+        // One queue per source that publishes URLs, and every one of them is
+        // the host's to open: taking only the first would drop the rest.
+        match world.root_scope().try_query_one::<&mut OpenUrls>(entity) {
+            Ok(mut row) => urls.append(&mut row.get().0),
+            Err(error) => log::warn!("the open-url queue of {entity:?} is unreachable: {error}"),
+        }
+    }
+    urls
 }
 
 /// A source of one frame's draws.

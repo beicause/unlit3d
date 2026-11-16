@@ -56,6 +56,8 @@ enum GpuRequest {
     Ready(Gpu),
     /// The request failed; the app is asked to exit instead.
     Failed(GpuRequestError),
+    /// The request never ran: the world that was to run it has no task set.
+    Unstartable,
 }
 
 /// The stages a GPU request moves through, one per frame behaviour.
@@ -146,7 +148,23 @@ where
                 };
                 *slot.borrow_mut() = Some(request);
             });
-            debug_assert!(spawned, "the frame's world carries its own tasks");
+            if !spawned {
+                // Nothing would ever have polled that future, so the answer
+                // slot would stay empty and the request would wait forever.
+                // Report it the way a failed request is reported, rather
+                // than leave the app waiting for a renderer that never
+                // comes.
+                log::error!("the world has no task set to run the GPU request on");
+                let Some(ready) = ready.take() else {
+                    return;
+                };
+                stage = RequestStage::Done;
+                world.root_scope().queue().push(RunGpuReady {
+                    app,
+                    request: GpuRequest::Unstartable,
+                    ready,
+                });
+            }
         },
     )
 }
@@ -167,15 +185,23 @@ impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
             GpuRequest::Ready(gpu) => (self.ready)(world, &gpu),
             GpuRequest::Failed(error) => {
                 log::error!("failed to start the renderer: {error}");
-                let _ = world
-                    .root_scope()
-                    .try_query_one::<&mut ExitRequest>(self.app)
-                    .map(|mut request| {
-                        let request = request.get();
-                        request.0 = true
-                    });
+                ask_to_exit(world, self.app);
             }
+            // The failure was logged where it was found: there is no error
+            // value to report, only the app left without a renderer.
+            GpuRequest::Unstartable => ask_to_exit(world, self.app),
         }
         Ok(())
     }
+}
+
+/// Ask the app on `app` to exit, for a renderer that could not be started.
+fn ask_to_exit(world: &mut World, app: Entity) {
+    let _ = world
+        .root_scope()
+        .try_query_one::<&mut ExitRequest>(app)
+        .map(|mut request| {
+            let request = request.get();
+            request.0 = true;
+        });
 }

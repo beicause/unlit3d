@@ -16,15 +16,17 @@
 //!
 //! Commands run in the order they were queued. A command that acts on a
 //! reserved entity must therefore be queued after the `Spawn` that brings it
-//! to life: for example [`Commands::despawn`] does nothing when the entity is
-//! not alive yet.
+//! to life: a [`Commands::despawn`] of a handle that has not been spawned yet is
+//! refused with [`EntityAccessError::NotAlive`](crate::EntityAccessError::NotAlive)
+//! when the queue is applied.
 //!
-//! A queue only queues changes to what its scope owns, and a despawn it cannot
-//! take is dropped when it is queued rather than left to fail quietly when it
-//! is applied. What a command does not decide up front is where the entity has
-//! moved by the time it runs: a queued despawn re-checks its scope when it is
-//! applied, so an entity that has since left that scope survives. A `Spawn`
-//! pushed by hand with [`Commands::push`] carries its own ordering.
+//! What a command does not decide up front is where the entity has moved by the
+//! time it runs. A queued despawn re-checks the queue's scope when it is applied,
+//! so an entity that has since left that scope survives, and one that left
+//! before the command ran is refused with
+//! [`EntityAccessError::NotOwned`](crate::EntityAccessError::NotOwned) rather
+//! than removed. A `Spawn` pushed by hand with [`Commands::push`] carries its
+//! own ordering.
 //!
 //! `````rust
 //! # use unlit_ecs::{World, bundle};

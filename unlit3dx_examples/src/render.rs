@@ -95,8 +95,6 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RemoteEntity, LitPipelineKey
 ///
 /// This is the mesh allocation a job that builds several things in one step
 /// makes for itself. Panics when the world carries no `MeshSource`.
-/// several things in one step. Panics when the world carries no
-/// `MeshSource`.
 pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> RemoteEntity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
@@ -409,6 +407,19 @@ pub fn rgba_texture(
         size.0 as usize * size.1 as usize,
         "the pixels do not fill the texture"
     );
+    // The format is what says how many bytes a texel is, so the row length
+    // comes from it rather than from the pixel type: a format whose texel is
+    // not the four bytes the pixels hold would have the queue read every row
+    // of the write out of step with the pixels.
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let texel_size = format
+        .block_copy_size(None)
+        .expect("an uncompressed format copies whole texels");
+    assert_eq!(
+        texel_size as usize,
+        core::mem::size_of::<[u8; 4]>(),
+        "the pixels are not the texel size of {format:?}"
+    );
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("rgba_texture"),
         size: wgpu::Extent3d {
@@ -419,7 +430,7 @@ pub fn rgba_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -428,7 +439,7 @@ pub fn rgba_texture(
         pixels.as_flattened(),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(size.0 * core::mem::size_of::<[u8; 4]>() as u32),
+            bytes_per_row: Some(size.0 * texel_size),
             rows_per_image: Some(size.1),
         },
         wgpu::Extent3d {

@@ -56,6 +56,18 @@ struct IndexOffset {
 }
 
 impl IndexOffset {
+    /// `index` with the pool offset baked in.
+    ///
+    /// # Panics
+    ///
+    /// When the sum overflows `u32`, which a pool too large to address at all
+    /// reaches; wrapping would silently point the index at another mesh.
+    fn baked_index(self, index: u32) -> u32 {
+        index
+            .checked_add(self.baked)
+            .expect("a pooled index stays inside the 32-bit index space")
+    }
+
     /// Split `vertex_offset` between the indices and the draw.
     fn new(supports_base_vertex: bool, vertex_offset: u32) -> Self {
         if supports_base_vertex {
@@ -88,7 +100,7 @@ impl IndexOffset {
     fn packed_len(self, indices: &[u32]) -> (wgpu::IndexFormat, usize) {
         let widened = indices
             .iter()
-            .any(|&index| !index_fits_u16(index + self.baked));
+            .any(|&index| !index_fits_u16(self.baked_index(index)));
         let element = if widened {
             size_of::<u32>()
         } else {
@@ -126,7 +138,7 @@ impl IndexOffset {
                 chunks.write_iter(
                     indices
                         .iter()
-                        .map(|&index| U16::new((index + self.baked) as u16).into()),
+                        .map(|&index| U16::new(self.baked_index(index) as u16).into()),
                 );
             }
             wgpu::IndexFormat::Uint32 => {
@@ -134,7 +146,7 @@ impl IndexOffset {
                 chunks.write_iter(
                     indices
                         .iter()
-                        .map(|&index| U32::new(index + self.baked).into()),
+                        .map(|&index| U32::new(self.baked_index(index)).into()),
                 );
             }
         }

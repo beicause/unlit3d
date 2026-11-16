@@ -36,6 +36,13 @@ const VERTEX_ENTRY: &str = "fullscreen_vertex_shader";
 const FRAGMENT_MODULE: &str = "blit_fragment";
 /// The entry point of the fragment module.
 const FRAGMENT_ENTRY: &str = "fs_main";
+/// The vertex the fullscreen triangle is drawn from: its three corners are
+/// written by the shader, so nothing is bound to feed them.
+const FULLSCREEN_VERTICES: u32 = 3;
+/// The binding the composited texture takes.
+const TEXTURE_BINDING: u32 = 0;
+/// The binding the sampler takes.
+const SAMPLER_BINDING: u32 = 1;
 
 /// The state a screen composite draws through, kept across the frames of one
 /// source.
@@ -177,8 +184,8 @@ impl ScreenBlit {
             .get(&core.bind_group)
             .expect("the bind group is registered in the graph");
         scene.draws.push(
-            DrawEntry::new(pipeline, DrawRange::vertices(0..3))
-                .with_bind_group(0, bind_group)
+            DrawEntry::new(pipeline, DrawRange::vertices(0..FULLSCREEN_VERTICES))
+                .with_bind_group(TEXTURE_BINDING, bind_group)
                 .with_order(self.order),
         );
     }
@@ -240,7 +247,7 @@ fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         label: Some("unlit3d::screen::bind_group_layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
-                binding: 0,
+                binding: TEXTURE_BINDING,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -250,7 +257,7 @@ fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 1,
+                binding: SAMPLER_BINDING,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
@@ -281,11 +288,11 @@ fn bind_group_recipe(
             layout: &layout,
             entries: &[
                 wgpu::BindGroupEntry {
-                    binding: 0,
+                    binding: TEXTURE_BINDING,
                     resource: wgpu::BindingResource::TextureView(view.view()),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 1,
+                    binding: SAMPLER_BINDING,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],

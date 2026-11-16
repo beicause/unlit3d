@@ -227,13 +227,16 @@ fn build(
             );
         }),
         snapshot: Box::new(|frame| {
-            // The live count walks the steps up to `frame`, applying each
+            // The sequence loops in `advance`, so a frame past its end names
+            // the step it lands on rather than a step that does not exist.
+            let step_index = frame as usize % STEPS.len();
+            // The live count walks the steps up to this one, applying each
             // frame's retirements and allocations in order — the same count
             // the snapshot name froze.
-            let live = STEPS[..=frame as usize].iter().fold(0usize, |live, step| {
-                live - step.free.len() + step.allocate.len()
+            let live = STEPS[..=step_index].iter().fold(0usize, |live, step| {
+                live.saturating_sub(step.free.len()) + step.allocate.len()
             });
-            let step = &STEPS[frame as usize];
+            let step = &STEPS[step_index];
             Some(format!(
                 "animated/frame_{frame:02}_alloc{}_free{}_live{live}.webp",
                 step.allocate.len(),

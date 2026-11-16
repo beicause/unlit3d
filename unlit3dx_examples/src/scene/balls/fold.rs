@@ -29,10 +29,11 @@ impl Balls {
         self.retired
             .advance(delta_seconds, &mut self.settled_retired);
         for (_, answer) in self.settled_retired.drain(..) {
+            // Settled either way, so the next sweep may be asked. An expiry
+            // leaves the instances it named in the render world rather than
+            // retiring them twice: the next sweep names them again.
+            self.sweep_asked = false;
             let Settled::Answered(answers) = answer else {
-                // A sweep that never answered leaves the instances it was
-                // asked about in the render world rather than retiring them
-                // twice: the next sweep names them again.
                 continue;
             };
             for answer in answers {

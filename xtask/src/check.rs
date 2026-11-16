@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::step;
 
-/// Run the typo and TOML checks, clippy twice, the doc build, then the
+/// Run the typo and TOML checks, clippy three times, the doc build, then the
 /// formatting check.
 ///
 /// The two checks that need no compiler go first, so a misspelling or an
@@ -17,10 +17,11 @@ use crate::step;
 /// — it should fail here rather than only in CI — while a doc comment it would
 /// rewrite is still rustfmt's to settle.
 ///
-/// Clippy runs twice, because each compiles a different set of code: the
-/// library crates with no default features at all, and the whole workspace
-/// with every feature, which is what the doc build and the full test run
-/// compile.
+/// Clippy runs three times, because each compiles a different set of code: the
+/// library crates with no default features at all, the whole workspace with the
+/// default features — the combination the platform binaries are built with —
+/// and the whole workspace with every feature, which is what the doc build and
+/// the full test run compile.
 ///
 /// The no-features pass is the one the test run cannot stand in for. Those
 /// crates' built-in backends are optional, so this is the combination that
@@ -76,6 +77,17 @@ pub fn run(release: bool) -> Result<(), String> {
         .args(profile)
         .args(deny);
     step::run(&mut bare, "clippy (no features)")?;
+
+    // The combination the platform binaries are built with. Its own pass
+    // because feature unification decides what each package compiles with:
+    // `--all-features` turns on code no binary ever includes, and the bare pass
+    // leaves out what they all do.
+    let mut default = Command::new("cargo");
+    default
+        .args(["clippy", "--workspace", "--all-targets"])
+        .args(profile)
+        .args(deny);
+    step::run(&mut default, "clippy (default features)")?;
 
     let mut all = Command::new("cargo");
     all.args(["clippy", "--workspace", "--all-targets", "--all-features"])

@@ -207,8 +207,10 @@ pub struct NoArgs {}
 pub fn serve_stdio_with(
     sink: impl Fn(McpCommand) -> bool + Send + 'static,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Every driver, not just the timer: a transport reads and writes pipes,
+    // which panics on a runtime without the IO driver.
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
+        .enable_all()
         .build()?;
     runtime.block_on(async move {
         let service = serve_with(rmcp::transport::stdio(), sink)
