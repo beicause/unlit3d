@@ -117,20 +117,21 @@ jobs:
           UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       # `--all-features` below turns on the audio bridge, whose Linux backend
-      # is built by `alsa-sys`; its build script needs ALSA's headers, which
-      # the runner image does not carry. The same install is in `ci.yml` and in
-      # `ci-main.yml`, both of which build the workspace's tests.
-      - name: Install ALSA headers
+      # is built by `alsa-sys`, and turns on the Blitz page's host font fallback,
+      # which links fontconfig through `yeslogic-fontconfig-sys`. Both build
+      # scripts need headers the runner image does not carry. The same install
+      # is in `ci.yml` and in `ci-main.yml`, both of which build the tests.
+      - name: Install ALSA and fontconfig headers
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libasound2-dev
+          sudo apt-get install --yes libasound2-dev libfontconfig1-dev
 
       # The API docs ship beside the examples, under `docs/`. Rustdoc writes the
       # page that lists the crates only with `--enable-index-page`, and the
       # crates' `doc(cfg(...))` labels appear only under `--cfg docsrs`; both are
       # nightly-only, so this is the one step that uses nightly. `--all-features`
-      # shows the optional modules — glTF, reflection, egui and winit — rather than
-      # the default set alone.
+      # shows the optional modules — glTF, reflection, egui, Blitz and winit
+      # — rather than the default set alone.
       #
       # Warnings are left alone here: a published page with a broken link is
       # worth more than a site that a doc warning holds back, and
