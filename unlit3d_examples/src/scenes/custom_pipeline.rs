@@ -207,10 +207,11 @@ fn build(
         },
         (),
     );
-    let sky_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("unlit3d_examples::custom_pipeline::sky"),
-        source: wgpu::ShaderSource::Wgsl(SKY_SHADER.into()),
-    });
+    let sky_module = unlit_wgpu::util::shader_module(
+        &device,
+        SKY_SHADER,
+        "unlit3d_examples::custom_pipeline::sky",
+    );
     let sky_pipeline = GpuRenderPipeline::new(SkyKey {
         module: sky_module,
         layout: sky_layout.clone(),
@@ -241,10 +242,11 @@ fn build(
         ParticleFactory,
         ParticleInstances,
     );
-    let particle_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("unlit3d_examples::custom_pipeline::particles"),
-        source: wgpu::ShaderSource::Wgsl(PARTICLE_SHADER.into()),
-    });
+    let particle_module = unlit_wgpu::util::shader_module(
+        &device,
+        PARTICLE_SHADER,
+        "unlit3d_examples::custom_pipeline::particles",
+    );
     let particle_pipeline = GpuRenderPipeline::new(ParticleKey {
         module: particle_module,
         layout: particle_layout.clone(),

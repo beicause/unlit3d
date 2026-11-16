@@ -286,10 +286,7 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
     let (pipeline, mesh) = gpu.with_mesh_source(&world, |source, world| {
         let device = source.device(world);
         let queue = source.queue(world);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::custom::shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
+        let shader = unlit_wgpu::util::shader_module(&device, SHADER, "test::custom::shader");
         let key = CustomPipelineKey {
             shader,
             layout: None,
@@ -393,10 +390,8 @@ async fn one_pipeline_draws_many_meshes() {
         // NoBindingFactory returns the compiled pipeline as-is, so one
         // pipeline serves both meshes; the tint each draw reads comes from the
         // per-mesh bind group the mesh was allocated with.
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::custom::tinted::shader"),
-            source: wgpu::ShaderSource::Wgsl(TINTED_SHADER.into()),
-        });
+        let shader =
+            unlit_wgpu::util::shader_module(&device, TINTED_SHADER, "test::custom::tinted::shader");
         let key = CustomPipelineKey {
             shader,
             layout: Some(layout.clone()),

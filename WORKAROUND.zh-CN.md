@@ -197,3 +197,52 @@ const server = spawn("Xvfb",
 **代价：**WebGPU 那趟变成 headed，读画布要经合成器，不再是一次纹理拷贝；WebGL2 那趟保持 headless 启动，因为它的画布确实能到得了 headless 的合成器。本来就在跑桌面的机器自带 OpenGL 实现，所以只有裸的 CI 镜像才需要装。
 
 **规矩：**只有读画布的检查才需要这一套，而示例检查是唯一一处。GPU 测试从离屏纹理读它那一帧——若有测试改成读画布，它在任何没有显示器的机器上都会挂。
+## DXC 把着色器模块的 label 当成源文件路径来读
+
+**位置：**[`crates/unlit_wgpu/src/util.rs`](crates/unlit_wgpu/src/util.rs)
+的 `shader_label`，本 crate 创建的每个模块都要经过它。
+
+**症状：**在 Windows 上，凡是着色器模块 label 里带冒号的管线全部创建失败：
+
+```
+wgpu error: Validation Error
+  In Device::create_render_pipeline, label = 'unlit_wgpu::lit'
+    Internal error in ShaderStages(FRAGMENT) shader:
+    DXC compile error: error: error reading 'unlit_wgpu::lit'
+```
+
+所有管线都建不出来，于是 Windows 上整份 GPU 测试与示例检查全数失败。自己拼
+描述符、不走本 crate 漏斗的 label 同样失败，除此之外再无别处：同形的管线、
+bind group、buffer 与 sampler 的 label 都没事，进入编译器的只有着色器模块的
+label。
+
+**成因：**wgpu-hal 30.0.2 把着色器模块的 label 当作这次编译的**源文件名**交给
+DXC。`Device::create_shader_module` 把 label 存成 `CString`（`dx12/device.rs` 里的
+`raw_name`），`create_render_pipeline` 再把它交给 `compile_dxc`，后者把它放在给
+DXC 的参数最前面。DXC 把这个参数读成正在编译的源文件路径，于是
+`unlit_wgpu::lit` 被读成盘符 `unlit_wgpu` 加文件 `lit`——一个它读不到的文件。
+同一份模块，label 里不带冒号就编得过。
+
+wgpu 的 trunk 会清洗这个名字并锚成 `./name`，30.0.2 这个发布版不会。这也是它成了
+回归而不是潜藏 bug 的原因：本仓库此前钉的 trunk 版本带有这项修复，所以在依赖取自
+trunk 的那段时间里这些 label 在 Windows 上编得过，随后改钉发布版才把 bug 带了进来。
+
+它是否发作还取决于宿主：wgpu 的 `Dx12Compiler::Auto` 只在能加载 `dxcompiler.dll`
+的地方用 DXC，否则退回 FXC。FXC 不接受源文件名，于是没有这个 DLL 的宿主把这些管线
+照常建出来。
+
+**绕法：**在 label 进入 `Device::create_shader_module` 之前，把 DXC 视为路径语法的
+字符——冒号、`/` 与 `\`——换成一个连字符，位置在 `util::shader_module`。本 crate
+创建的模块都走这里；自己拼描述符的调用方改为把 WGSL 与 label 交给
+`util::shader_module`，本仓库的测试与示例场景已如此。
+
+**代价：**图形调试器与校验报错打印的是清洗后的 label，于是 `unlit_wgpu::lit` 显示成
+`unlit_wgpu--lit`：名字里有一个字符让给了它不该被读成的路径。其余不受影响——不含
+路径语法的 label 是借用而非复制，而模块 label 不参与任何身份判定：`ShaderCache` 按
+recipe 建键，`Shader` 的 label 标识的是那份着色器，不是它组合出的模块。另一条路是把
+DX12 钉在 FXC 上（`Dx12Compiler::Fxc`），label 得以保全，代价是为一个字符串放弃
+DXC 的着色器模型与校验。
+
+**规矩：**每个着色器模块都走 `util::shader_module` 创建，绝不自己拼
+`ShaderModuleDescriptor`。正是这个漏斗把冒号挡在 DXC 的文件路径之外，任何形状的
+label 交给它都是安全的。

@@ -317,10 +317,8 @@ async fn a_custom_family_owns_its_instance_stream() {
     let (pipeline, mesh) = gpu.with_mesh_source(&world, |source, world| {
         let device = source.device(world);
         let queue = source.queue(world);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::custom_instances::shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
+        let shader =
+            unlit_wgpu::util::shader_module(&device, SHADER, "test::custom_instances::shader");
         let key = CustomInstanceKey { shader };
         // The family owns its instance stream; nothing here touches the unlit
         // family's buffer or slot.

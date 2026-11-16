@@ -3,6 +3,7 @@
 use core::hash::{BuildHasher, Hash, Hasher};
 use core::ops::Deref;
 use foldhash::fast::FixedState;
+use std::borrow::Cow;
 
 /// The hasher [`Hashed`] computes its words with.
 ///
@@ -99,12 +100,33 @@ impl<V> Hash for Hashed<V> {
 /// module of its own against the package and `unlit3d` hands whole composed
 /// modules in, so the source being build-time is no reason to skip them: those
 /// checks are what keeps a caller's shader inside its bindings.
+///
+/// The label goes through `shader_label` first. See WORKAROUND.md, “DXC reads
+/// a shader module's label as a source file path”.
 pub fn shader_module(device: &wgpu::Device, wgsl: &str, label: &str) -> wgpu::ShaderModule {
+    let label = shader_label(label);
     let desc = wgpu::ShaderModuleDescriptor {
-        label: Some(label),
+        label: Some(&label),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     };
     device.create_shader_module(desc)
+}
+
+/// A shader module's label with the characters DXC reads as path syntax
+/// replaced by a hyphen.
+///
+/// DXC takes a module's label as the path of the source file it compiles, so a
+/// colon in one reads as a drive designator and a separator names a file below a
+/// directory that does not exist: on Windows a label like `unlit_wgpu::lit`
+/// fails to compile, and the error reports only that DXC could not read the
+/// path. One hyphen per character keeps the label naming the same module. See
+/// WORKAROUND.md for the bug behind this.
+fn shader_label(label: &str) -> Cow<'_, str> {
+    const PATH_SYNTAX: [char; 3] = [':', '/', '\\'];
+    if !label.contains(PATH_SYNTAX) {
+        return Cow::Borrowed(label);
+    }
+    Cow::Owned(label.replace(PATH_SYNTAX, "-"))
 }
 
 /// Headless device setup shared by the crate's unit tests.
@@ -250,6 +272,21 @@ mod tests {
 
         assert_ne!(one, other);
         assert_eq!(compares.get(), 0, "the values were not compared");
+    }
+
+    /// A colon reads as a drive designator to DXC and a separator as a
+    /// directory, so both become a hyphen and the label keeps naming the same
+    /// module.
+    #[test]
+    fn a_shader_label_loses_the_path_it_names() {
+        assert_eq!(shader_label("unlit_wgpu::lit"), "unlit_wgpu--lit");
+        assert_eq!(shader_label("test\\custom\\shader"), "test-custom-shader");
+    }
+
+    /// A label with no path syntax is handed on untouched rather than copied.
+    #[test]
+    fn a_shader_label_without_path_syntax_is_borrowed() {
+        assert!(matches!(shader_label("flat"), Cow::Borrowed("flat")));
     }
 
     /// Equal hashes do reach the value comparison, which is what keeps a hash

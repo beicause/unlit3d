@@ -308,3 +308,62 @@ desktop has the OpenGL implementation, so only a bare CI image installs one.
 check is the only one that does. A GPU test reads its frame from an offscreen
 texture — one that started reading the canvas would fail on any machine without a
 display.
+## DXC reads a shader module's label as a source file path
+
+**Where:** [`crates/unlit_wgpu/src/util.rs`](crates/unlit_wgpu/src/util.rs)
+`shader_label`, which every module the crate creates goes through.
+
+**Symptom:** on Windows, every pipeline whose shader module label held a colon
+failed to create:
+
+```
+wgpu error: Validation Error
+  In Device::create_render_pipeline, label = 'unlit_wgpu::lit'
+    Internal error in ShaderStages(FRAGMENT) shader:
+    DXC compile error: error: error reading 'unlit_wgpu::lit'
+```
+
+Every pipeline failed to create, which took the whole GPU test suite and the
+example check down with it on Windows. The labels that were hand-built
+descriptors rather than the crate's own failed the same way, and nothing else
+did: pipeline, bind group, buffer and sampler labels of the same shape were
+fine, and only the shader module's label reaches the compiler.
+
+**Cause:** wgpu-hal 30.0.2 hands a shader module's label to DXC as the *source
+name* of the compilation. `Device::create_shader_module` stores the label as a
+`CString` (`raw_name` in `dx12/device.rs`), and `create_render_pipeline` passes
+it to `compile_dxc`, which puts it first in the arguments it gives DXC.
+DXC reads that argument as a path of the source file it is compiling, so
+`unlit_wgpu::lit` reads as drive `unlit_wgpu`, file `lit` -- a file it cannot
+read. A label with no colon in it compiles the very same module fine.
+
+wgpu's trunk sanitizes the name and anchors it as `./name`; the 30.0.2
+release does not. That is what made this a regression rather than a latent
+bug: the trunk revision this repository pinned before had the fix, so these
+labels compiled on Windows for as long as the build took wgpu from trunk, and
+the release pin taken afterwards brought the bug in.
+
+Whether it bites depends on the host as well: wgpu's `Dx12Compiler::Auto`
+uses DXC only where it can load `dxcompiler.dll`, and falls back to FXC
+everywhere else. FXC takes no source name, so a host without the DLL builds
+every one of these pipelines without complaint.
+
+**Workaround:** replace the characters DXC reads as path syntax -- `:`, `/` and
+`\` -- with a hyphen before the label reaches
+`Device::create_shader_module`, in `util::shader_module`. Every module the
+crate creates goes through it; a caller that builds a descriptor itself calls
+`util::shader_module` with its WGSL and label instead, which this repository's
+tests and example scenes now do.
+
+**Cost:** a graphics debugger and a validation error print the sanitized label,
+so `unlit_wgpu::lit` shows as `unlit_wgpu--lit`; one character of the name gives
+way to the path it must not read as. Nothing else changes: a label with no path
+syntax is borrowed rather than copied, and the module label takes part in no
+identity -- `ShaderCache` keys on the recipe, and a `Shader`'s label identifies
+the shader, not the module it composes to. Pinning DX12 to FXC with
+`Dx12Compiler::Fxc` would have kept the labels but forgone DXC's shader model
+and its validation for the sake of one string.
+
+**Rule:** every shader module is created through `util::shader_module`, never
+with a hand-built `ShaderModuleDescriptor`. The funnel is what keeps a colon
+out of DXC's file path, and a label of any shape is safe to hand it.

@@ -388,12 +388,7 @@ async fn a_texel_array_reads_back_the_elements_it_was_given() {
         }],
     });
 
-    let shader = ctx
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::texel::shader"),
-            source: wgpu::ShaderSource::Wgsl(TEXEL_SHADER.into()),
-        });
+    let shader = unlit_wgpu::util::shader_module(&ctx.device, TEXEL_SHADER, "test::texel::shader");
     let pipeline_layout = ctx
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
