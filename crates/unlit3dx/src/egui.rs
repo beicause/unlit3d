@@ -161,25 +161,27 @@ impl EguiPanelHost {
             input_events.copy_events_into(&mut events);
             active_touches = input_events.with_state(|state| state.touches.len());
         }
-        // A frame the queue refused keeps its place: it is what the drawing
-        // side should draw next, so sending a newly laid out frame would
-        // strand the texture deltas the refused one carries.
-        if let Some(frame) = self.refused.clone() {
-            match self.render.send(panel_frame_job(self.slot, frame)) {
-                Ok(()) => self.refused = None,
-                // Still no room: the frame keeps its place, and this tick
-                // lays nothing new out so its deltas stay the only pending
-                // ones.
-                Err(SendError::Full) => {
+        // A frame the queue refused keeps its place: its texture deltas are
+        // incremental state, so dropping it would strand a texture change the
+        // drawing side never saw. Retrying it first delivers it ahead of
+        // anything laid out this tick. A retry the queue still refuses does
+        // not stop a tick that brought new events: the new frame is laid out
+        // and the refused deltas ride along with it (see the send below).
+        let mut carried: Option<ExternalFrame> = None;
+        if let Some(frame) = self.refused.take() {
+            match self.render.send(panel_frame_job(self.slot, frame.clone())) {
+                Ok(()) => {}
+                // Still no room: the refused deltas fold into whatever this
+                // tick lays out. Without new events nothing new is laid out,
+                // so the frame simply keeps its place.
+                Err(SendError::Full) if events.is_empty() => {
+                    self.refused = Some(frame);
                     self.input_scratch = events;
                     return;
                 }
+                Err(SendError::Full) => carried = Some(frame),
                 // The drawing world is gone; the frame has nowhere to go.
-                Err(SendError::Closed) => {
-                    self.refused = None;
-                    self.input_scratch = events;
-                    return;
-                }
+                Err(SendError::Closed) => {}
             }
         }
         let due = self
@@ -227,6 +229,24 @@ impl EguiPanelHost {
                 deadline.is_finite().then_some(deadline)
             }
         };
+        // A refused frame from an earlier tick rides here: its texture deltas
+        // are incremental state the drawing side never applied, so they are
+        // folded into this frame's — the older ones first, the order the
+        // drawing side would have applied them in — while the geometry is the
+        // new frame's alone, an older frame never having been drawn. The
+        // fields are taken one by one: the frame drops its texture deltas, so
+        // it cannot be partially moved or unwrapped.
+        let mut laid_out = laid_out;
+        if let Some(mut refused) = carried {
+            let mut textures = core::mem::take(&mut refused.textures);
+            textures.append(core::mem::take(&mut laid_out.textures));
+            refused.textures = textures;
+            refused.primitives = core::mem::take(&mut laid_out.primitives);
+            refused.platform_output = core::mem::take(&mut laid_out.platform_output);
+            refused.repaint_delay = laid_out.repaint_delay;
+            refused.screen = laid_out.screen;
+            laid_out = refused;
+        }
         match self
             .render
             .send(panel_frame_job(self.slot, laid_out.clone()))

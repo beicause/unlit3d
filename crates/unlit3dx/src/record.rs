@@ -2,8 +2,10 @@
 //!
 //! A recording is an [`OnAudioPostFill`] behaviour, so it observes the mix the
 //! whole world produced. The samples it keeps are the ones the output stream
-//! would receive: every [`OnAudioFill`] source has added its samples, and the
-//! world's [`GlobalAudioGain`] has scaled the sum and clamped it, exactly as
+//! would receive: every [`OnAudioFill`](crate::audio::OnAudioFill) source has
+//! added its samples, and the world's
+//! [`GlobalAudioGain`](crate::audio::GlobalAudioGain) has scaled the sum and
+//! clamped it, exactly as
 //! [`dispatch_audio_fill`] finishes a fill.
 //!
 //! [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
@@ -98,7 +100,8 @@ impl RecordedAudio {
 /// Start recording everything `world` fills, for at most `max_seconds`.
 ///
 /// The recorder runs as an [`OnAudioPostFill`] behaviour, so it keeps the mix
-/// after every [`OnAudioFill`] source, the world's [`GlobalAudioGain`] and the
+/// after every [`OnAudioFill`](crate::audio::OnAudioFill) source, the world's
+/// [`GlobalAudioGain`](crate::audio::GlobalAudioGain) and the
 /// unit-range clamp: the result is what the output stream receives, observed
 /// rather than re-derived. No call fills the world: whichever driver usually
 /// does (the audio thread, [`dispatch_audio_fill`] directly, a stepped world)

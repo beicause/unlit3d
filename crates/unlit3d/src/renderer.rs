@@ -108,7 +108,7 @@ pub struct Renderer {
     /// announced once rather than every frame.
     reported_loss: Option<DeviceLost>,
     /// Whether this renderer has already said that the world holds no
-    /// [`FrameClock`](crate::FrameClock), so a program run without one is told
+    /// [`FrameClock`], so a program run without one is told
     /// once rather than every frame.
     reported_missing_clock: bool,
 }
