@@ -56,7 +56,7 @@ const CLUSTER_FAR: f32 = 120.0;
 /// It is far larger than the camera can see, so the frame is floor from edge to
 /// edge: the camera looks down at more than half the vertical field of view, and
 /// a floor that ended inside the frame would put a horizon across it and hide the
-/// slices furthest away -- exactly the ones a log-spaced grid packs together.
+/// slices furthest away — exactly the ones a log-spaced grid packs together.
 const CLUSTER_FLOOR: (f32, f32, f32) = (700.0, 600.0, 10.0);
 
 /// Where the debug camera sits and what it looks at.
@@ -79,7 +79,7 @@ const CLUSTER_COLUMNS: [f32; 5] = [-8.0, -4.0, 0.0, 4.0, 8.0];
 /// Where each row of lights sits, nearest first: its depth, the height its lights
 /// hover at, and how far each one reaches.
 ///
-/// One row per light kind -- point, spot, then quad -- so every kind's footprint
+/// One row per light kind — point, spot, then quad — so every kind's footprint
 /// is a band of its own and a kind written into the wrong cells shows up as a
 /// patch in the wrong band rather than as a change of level everywhere.
 const CLUSTER_ROWS: [(f32, f32, f32); 3] =
@@ -117,8 +117,8 @@ fn build_clusters(
 
     // The floor is one plane: the grid is a screen-space structure, so its cells
     // are not aligned with anything the geometry could carry.
-    // Wound right along x and up along -z, so the cross product of the two -- the
-    // side the front face is on -- is the world's up axis, which is the side the
+    // Wound right along x and up along -z, so the cross product of the two — the
+    // side the front face is on — is the world's up axis, which is the side the
     // camera looks down at.
     let mut floor = grid(
         glam::Vec3::new(0.0, 0.0, CLUSTER_FLOOR.2 - CLUSTER_FLOOR.1 * 0.5),
@@ -248,8 +248,8 @@ fn build_clusters(
 /// lookup switches:
 ///
 /// * the **cell fill**: a fixed heat ramp from an empty cell's dark blue to a
-///   full cell's red. Every record in a cell is a bounded light now -- the
-///   frame's directional lights live in the lighting uniform, not the grid -- so
+///   full cell's red. Every record in a cell is a bounded light now — the
+///   frame's directional lights live in the lighting uniform, not the grid — so
 ///   the whole count is what the ramp shows.
 /// * the **borders**, black for the cell's xy bounds and subdued white for its
 ///   depth slice. Both are measured in pixels, so they neither thicken into

@@ -58,8 +58,8 @@ pub use pollster::block_on;
 /// Install the harness's logger backend once, for the whole test process.
 ///
 /// Called by [`Ctx::headless`], so a test that builds a context logs without
-/// asking.  Tests that never build a context — the ECS ones — call this
-/// directly if they log.
+/// asking. A test that never builds a context can call this directly to
+/// install the same backend.
 ///
 /// `RUST_LOG` picks the level natively; without it the default is `warn`.
 /// A process holds one logger, so repeated calls are no-ops — and a test that

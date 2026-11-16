@@ -467,7 +467,7 @@ fn store_mismatch(name: &str, rgba: &[u8], width: u32, height: u32) {
 }
 
 /// Whether this run must not record baselines, read from
-/// [`REQUIRE_SNAPSHOTS_ENV].
+/// [`REQUIRE_SNAPSHOTS_ENV`].
 #[cfg(not(target_arch = "wasm32"))]
 fn require_snapshots() -> bool {
     std::env::var_os(REQUIRE_SNAPSHOTS_ENV).is_some()

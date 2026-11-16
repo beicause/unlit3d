@@ -21,18 +21,19 @@
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
 | `egui` | 否 | `egui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端 |
+| `reflect` | 否 | 给资源图的信息结构派生 [facet](https://docs.rs/facet)，桥接层可按原样序列化；渲染器从不读这些反射信息 |
 
 WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色器始终可用：它们是
 调用者自建管线所组合的通用设施，而不是藏在 feature 后面的特权内置管线。使用
-`--no-default-features` 时，本 crate 保留除 egui 后端之外的一切，CI 会单独检查
-这一组合。
+本 crate 不设默认 feature，普通构建不会启用任何可选 feature，CI 会单独检查
+这一全关组合。
 
 ## 内容概览
 
 各模块是调用者搭建任意管线都能用的通用设施；背后的机制见[设计](#设计)。
 
 - `resources` —— 一帧所用 GPU 资源的图：带类型的句柄、把「脏」传递给所有由某个资源
-  构建出的资源，以及每帧一次 `maintain`——回收已无任何持有的节点并重建其余。见
+  构建出的资源，以及幂等的 `maintain`——回收已无任何持有的节点并重建其余。见
   [资源](#资源一张依赖追踪图)。
 - `mesh` —— 顶点压缩（位置、UV、顶点色、八面体法线、骨骼索引与权重）、让紧凑格式可在
   着色器中解读的 `MeshMetadata` 解码参数，以及一个无需把各通道实体化即可打包的顶点流
@@ -40,7 +41,7 @@ WESL 包、`compose` 组合设施以及内置的 `lit` 与 `line` 入口着色�
 - `offset_allocator` —— 在一段连续区间上 O(1) 且不分配的次级分配器，即 Aaltonen 的
   `OffsetAllocator` 所用的两级分离适配。
 - `buffer_pool`、`vertex_pool` 与 `array_pool` —— 上述分配器用在 GPU 缓冲与
-  [`Array`](texel_array::Array) 上，使许多网格、许多变长切片共享一份分配而不是各占
+  [`Array`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/texel_array.rs#L143) 上，使许多网格、许多变长切片共享一份分配而不是各占
   一个资源。
 - `staging` —— 跨帧复用的 host 可见缓冲，用于逐帧上传。见[逐帧上传](#逐帧上传池化的-staging-buffer)。
 - `globals` —— 每条管线都绑定的三个 uniform：`Camera`（该 pass 绘制所用的变换）、
@@ -93,7 +94,7 @@ use unlit_wgpu::pipeline::{
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::util::Hashed;
 use unlit_wgpu::render_attachments::{
-    color_clear, create_render_target, depth_clear, stencil_clear,
+    color_clear, create_render_target, default_depth_stencil_format, depth_clear, stencil_clear,
 };
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use zerocopy::IntoBytes;
@@ -301,7 +302,7 @@ impl Example {
         // per pass.
         let attachments = create_render_target(
             &self.device,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
             width,
             height,
             4,
@@ -427,7 +428,7 @@ example.draw(256, 192);
 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 ```
 
-`mesh`、`array_pool`、`buffer_pool`、`offset_allocator`、`staging` 与
+`vertex_pool`、`array_pool`、`buffer_pool`、`offset_allocator`、`staging` 与
 `render_attachments` 的文档注释中也含有可运行示例。
 
 ## 着色器
@@ -450,7 +451,7 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 metadata 绑定」与「顶点阶段读它」成了同一个决定。
 
 若要编写自己的着色器，最近的一条路是 `pipeline::LitOptions::shader`，笔画则是
-[`LineOptions::shader`](line_shader::LineOptions::shader)：`pipeline::Shader` 携带一整块
+[`LineOptions::shader`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/line_shader.rs#L150)：`pipeline::Shader` 携带一整块
 WESL 模块，它被挂到所替换的内置入口着色器所处的包路径上并在那里参与组合。因此调用者的模块自己写 `vs_main` 与 `fs_main`，
 import 它想要的阶段模块，并按它想要的顺序调用：`package::lit_vertex` 分别暴露
 `vertex_world` 与 `vertex_out`，供需要在其间改形几何的调用者使用；`lit_fragment` 把材质颜色、
@@ -494,27 +495,27 @@ crate 自身创建着色器模块时走 `util::shader_module`，它是对 `Devic
   句柄变陈旧。依赖同样持有一份引用，这正是「只为供给某个消费者而存在的资源，其寿命
   与消费者相同」的实现方式。
 - **追踪精准，更新延迟。** `replace` 只把资源标记为脏——依赖它的资源同样需要更新。
-  变更发生时不立即生效，一帧在读取任何资源之前调用一次 `ResourceGraph::maintain`：
-  这一趟会回收已无任何持有的资源——沿着被回收节点释放的引用继续走，因此一整条链在
+  变更发生时不立即生效，一帧在读取任何资源之前至少调用一次 `ResourceGraph::maintain`：
+  这一趟是幂等的，按源整理的帧会调用多次。它回收已无任何持有的资源——沿着被回收节点释放的引用继续走，因此一整条链在
   一次调用内回收——并按依赖序执行脏资源的重建。往已有 buffer 写入新数据不会弄脏任何
   东西，重新分配它才会弄脏真正读取过旧句柄的资源。
 - **重建是「配方」而非调用点的回调。** 图能重建的资源在插入时附带一个 `Rebuild`
   闭包，它按 id 从图中读回自己的输入，因此运行时看到的是重新分配过的 buffer 或
   替换过的数组。没有配方的脏节点会一直保持脏：调用方改动了图自己无法重建的东西。
-- **图可以遍历。** [`ResourceGraph::nodes`](resources::ResourceGraph::nodes)
-  列出每个资源的 [`ResId`](resources::ResId)、[`kind_name`](resources::Resource::kind_name)、是否脏、
-  图能否自行重建，[`ResourceGraph::resolve`](resources::ResourceGraph::resolve) 再把
-  id 解析回句柄。[`ResourceGraph::info`](resources::ResourceGraph::info) 与
-  [`ResourceGraph::resource_infos`](resources::ResourceGraph::resource_infos) 是同一
+- **图可以遍历。** [`ResourceGraph::nodes`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L74)
+  列出每个资源的 [`ResId`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L421)、[`kind_name`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L316)、是否脏、
+  图能否自行重建，[`ResourceGraph::resolve`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L94) 再把
+  id 解析回句柄。[`ResourceGraph::info`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L26) 与
+  [`ResourceGraph::resource_infos`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L53) 是同一
   幅图的纯数据形式，供只做汇报的读取者使用。外部读取者——调试叠层、MCP 服务器——因此
   无需图的私有视图即可报告它。
-- **id 命名资源，句柄维持其存活。** [`ResId`](resources::ResId) 是资源可携带的纯值、[`Copy`] 形式：
+- **id 命名资源，句柄维持其存活。** [`ResId`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L421) 是资源可携带的纯值、[`Copy`] 形式：
   它带槽位的代际，因此指向已移除资源的 id 不再解析，而不会悄悄指向它的替身。
-  [`ResHandle`](resources::ResHandle) 持有引用，故资源在还有任何句柄指向它时存活；
-  [`ResId`](resources::ResId) 不持引用，
+  [`ResHandle`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L476) 持有引用，故资源在还有任何句柄指向它时存活；
+  [`ResId`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L421) 不持引用，
   这正是它能随报告或传输流动的原因。句柄经
-  [`ResHandle::id`](resources::ResHandle::id) 给出其 id，id 再经
-  [`resolve`](resources::ResourceGraph::resolve) 还原。
+  [`ResHandle::id`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L476) 给出其 id，id 再经
+  [`resolve`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L94) 还原。
 - **纹理视图的格式随视图记录。** 这是「不做不必要的包装」的唯一例外：`wgpu` 无法从
   `TextureView` 得知其创建时的格式，而 sRGB 视图覆盖非 sRGB 纹理时，管线要匹配的正是
   视图格式而非纹理格式。
@@ -556,9 +557,9 @@ for draw in scene.draws {
 录制过程会追踪 pass 状态——管线、绑定组、顶点缓冲、索引缓冲、scissor 与模板参考
 值——并跳过目标已绑定的 `set_*`，因此当场景的条目排列得让相邻绘制状态相同时，每段
 状态只需一次切换而不是每条绘制一次。这个排列是更高层的职责，不属于本 crate：
-[`Scene::record`](scene::Scene::record) 只按给定顺序录制；
-[`Scene::record_composited`](scene::Scene::record_composited) 再进一步——把多个场景
-合成进一个 pass，按每条绘制的 [`DrawOrder`](scene::DrawOrder) 排序：按场景顺序先录
+[`Scene::record`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L446) 只按给定顺序录制；
+[`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据) 再进一步——把多个场景
+合成进一个 pass，按每条绘制的 [`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据) 排序：按场景顺序先录
 顺次绘制，再合并所有场景的深度排序池从远到近，最后是压尾绘制。
 
 ### 管线特化：一个变体、一份蓝图、一条缓存的管线
@@ -587,7 +588,7 @@ for draw in scene.draws {
 **输入**，而不是蓝图本身：wgpu 句柄按身份比较与哈希，所以无论它背后的蓝图携带多少
 状态，命中相等的那一步都很廉价；`descriptor` 在未命中时用这些输入构造蓝图，这也是
 蓝图唯一被构造的时机。选项本身已经便宜可比时，家族改为用
-[`Hashed`](util::Hashed) 把选项当键。变体永不淘汰，这与「变体有限」的
+[`Hashed`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/util.rs#L36) 把选项当键。变体永不淘汰，这与「变体有限」的
 前提一致。
 
 **蓝图是语义描述，不是 wgpu 描述符的镜像。** 蓝图持有 `ShaderModule` 等需要用 device
@@ -597,17 +598,17 @@ for draw in scene.draws {
 **蓝图经着色器缓存组合，而不是每次重来。** wgpu 会池化管线的 bind-group layout，却不池化
 它的 shader module；而同一家族的变体差在管线状态——剔除模式、混合、写掩码、渲染目标——
 这些 WGSL 根本看不到。于是 `create` 接受一份
-[`ShaderCache`](pipeline::ShaderCache)，按
-[`ShaderRecipe`](pipeline::ShaderRecipe)（包模块、它的条件编译开关、调用者的替换源）向它
+[`ShaderCache`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/shader_cache.rs#L92)，按
+[`ShaderRecipe`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/shader_cache.rs#L28)（包模块、它的条件编译开关、调用者的替换源）向它
 要模块，只有未命中时才真正组合。内置 lit 家族因此为共享同一份源的全部变体只建一份模块，
 egui 则用第一个目标组合出的模块画其余每个目标。缓存属于一个 device，也属于在其上共享着色器
-的一方：[`Variants`](specialize::Variants) 为其家族留一份，蓝图自己不必再持有。模块固定的
+的一方：[`Variants`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/specialize.rs) 为其家族留一份，蓝图自己不必再持有。模块固定的
 家族——调用者手写的管线——忽略这份缓存即可。
 
 **针对渲染目标特化是家族的事，不是框架的事。** 管线的颜色格式、采样数与深度格式必须与
 它所在 pass 的附件匹配，因此渲染进某个目标的变体会把该目标折进自身。
-[`SurfaceKey`](specialize::SurfaceKey) 命名这样一个目标，
-[`SurfaceTarget`](specialize::SurfaceTarget) 则是蓝图实现以应用它的能力——但缓存从
+[`SurfaceKey`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/specialize.rs#L486) 命名这样一个目标，
+[`SurfaceTarget`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/specialize.rs#L521) 则是蓝图实现以应用它的能力——但缓存从
 不认识这两者。框架不该去猜变体的哪一部分是目标，而计算管线根本没有目标。「目标没有
 深度附件」也是合法用法，故蓝图按需应用目标：此时它**不带**深度状态，而不是留着一个
 过期的格式。
@@ -629,18 +630,18 @@ egui 则用第一个目标组合出的模块画其余每个目标。缓存属于
 
 ### 光照：前向聚簇的 Lambert
 
-光照是选项里的一个 flag：[`LitOptions::unlit`](pipeline::LitOptions::unlit) 关掉一个 WESL flag，组合出的片元阶段就把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——所以同一个家族两种模式都画，为一个模式分配的网格在另一个模式里也能画。
+光照是选项里的一个 flag：[`LitOptions::unlit`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#光照前向聚簇的-lambert) 关掉一个 WESL flag，组合出的片元阶段就把基础色乘上本帧的光照，而不是原样输出。其余一切共用——布局、顶点流、实例记录、网格分配器——所以同一个家族两种模式都画，为一个模式分配的网格在另一个模式里也能画。
 
 着色只有 Lambert：一盏灯贡献它的颜色乘一个亮度系数，求和后调制基础色。没有镜面项、没有金属反射、没有菲涅耳、也没有能量守恒，所以被照亮的表面是自身反照率的一种调制，而不是材质的物理模型。
 
 <details>
 <summary>一盏灯是什么，片元又如何找到照到自己的那些</summary>
 
-有界的三类共用一个记录：带范围（range）的**点光**、带锥角的**聚光**，以及**面光**——从自己平面的一侧辐射的凸平面多边形。不论哪种，记录都是同一个 [`LightGpu`](light::LightGpu)，由 `kind.x` 说明其余通道中哪些有意义，于是一个格（cell）里的灯就是一串指向同一个数组的下标。
+有界的三类共用一个记录：带范围（range）的**点光**、带锥角的**聚光**，以及**面光**——从自己平面的一侧辐射的凸平面多边形。不论哪种，记录都是同一个 [`LightGpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/light.rs#L91)，由 `kind.x` 说明其余通道中哪些有意义，于是一个格（cell）里的灯就是一串指向同一个数组的下标。
 
-**方向光**不进网格。它照亮每一个片元，写进每一格只会花掉格里的一个槽位却什么也没说明；它放进 [`LightingUniform`](light::LightingUniform)，其中最多携带 [`MAX_DIRECTIONAL_LIGHTS`](light::MAX_DIRECTIONAL_LIGHTS) 盏，外加本帧的环境项。每个被照亮的片元先读这个 uniform，再读自己格子里的灯。
+**方向光**不进网格。它照亮每一个片元，写进每一格只会花掉格里的一个槽位却什么也没说明；它放进 [`LightingUniform`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/light.rs#L342)，其中最多携带 [`MAX_DIRECTIONAL_LIGHTS`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/light.rs#L67) 盏，外加本帧的环境项。每个被照亮的片元先读这个 uniform，再读自己格子里的灯。
 
-聚簇是 CPU 上的工作。视野按约 [`cell_pixels`](light::ClusterConfig::cell_pixels) 的屏幕格子切开，并按 [`z_slices`](light::ClusterConfig::z_slices) 切成深度切片。第 0 片吸收近端，其余在透视投影下按对数切、在正交投影下按线性切，覆盖配置声明的固定场景范围。每盏灯的包围球被分配到它触及的格子，溢出的格子保留最强的那些灯——排序依据是这盏灯在相机所见的画面里贡献的照度，所以被丢掉的是最不可见的。片元随后把自己的屏幕位置与视深度映射到一个格子，读那个格子的灯表。片元的成本是它自己格子里的灯数，而不是本帧的灯数。
+聚簇是 CPU 上的工作。视野按约 [`cell_pixels`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/light.rs#L169) 的屏幕格子切开，并按 [`z_slices`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/light.rs#L171) 切成深度切片。第 0 片吸收近端，其余在透视投影下按对数切、在正交投影下按线性切，覆盖配置声明的固定场景范围。每盏灯的包围球被分配到它触及的格子，溢出的格子保留最强的那些灯——排序依据是这盏灯在相机所见的画面里贡献的照度，所以被丢掉的是最不可见的。片元随后把自己的屏幕位置与视深度映射到一个格子，读那个格子的灯表。片元的成本是它自己格子里的灯数，而不是本帧的灯数。
 
 放在 CPU 上做，正是同一套路径能同时服务两种设备的原因。GPU 聚簇要用计算着色器，而 WebGL2 完全没有；而且格数组和姿势数组一样是帧级数组，设备支持时按 storage buffer 上传，不支持时按 texel 上传。
 
@@ -652,13 +653,13 @@ egui 则用第一个目标组合出的模块画其余每个目标。缓存属于
 
 ### 墨线描边：翻转外壳
 
-[`LitOptions::inverted_hull`](pipeline::LitOptions::inverted_hull) 就是一组这样的选项，而不是一条自己的管线；它画的是水墨画沿轮廓勾出的那道带子。它是同一家族的变体，因此受光变体拥有的一切它都共用——网格、顶点流、实例记录、网格分配器，以及解析出它来的那个家族。
+[`LitOptions::inverted_hull`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/options.rs#L228) 就是一组这样的选项，而不是一条自己的管线；它画的是水墨画沿轮廓勾出的那道带子。它是同一家族的变体，因此受光变体拥有的一切它都共用——网格、顶点流、实例记录、网格分配器，以及解析出它来的那个家族。
 
-它改的是一个 flag 以及环绕这个 flag 的状态。[`expanded`](pipeline::LitOptions::expanded) 在顶点变换到裁剪空间之前，沿顶点自己的法线把它推出实例所携带的那个宽度；正面被剔除，于是被推出去的那一份只剩探出本体轮廓的部分；深度写入关掉，于是带子永远不会遮挡它围住的本体。它是无光的，这正是带子呈现为一抹平涂墨色而非受光表面的原因。
+它改的是一个 flag 以及环绕这个 flag 的状态。[`expanded`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/options.rs#L79) 在顶点变换到裁剪空间之前，沿顶点自己的法线把它推出实例所携带的那个宽度；正面被剔除，于是被推出去的那一份只剩探出本体轮廓的部分；深度写入关掉，于是带子永远不会遮挡它围住的本体。它是无光的，这正是带子呈现为一抹平涂墨色而非受光表面的原因。
 
-所以画面就是两个实体画同一个 `GpuMesh`——本体用 [`LitOptions::standard`](pipeline::LitOptions::standard)，外壳用 [`inverted_hull`](pipeline::LitOptions::inverted_hull)——在同一个 pass 里，共享同一个缓冲与同一次绘制。不需要第二个 pass，不需要第二份网格，也不需要模板技巧：外壳只填在本体自身轮廓够不到的地方，这是两次绘制与剔除共同的结果，而不是它们先后次序的结果。
+所以画面就是两个实体画同一个 `GpuMesh`——本体用 [`LitOptions::standard`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/options.rs#L175)，外壳用 [`inverted_hull`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/options.rs#L228)——在同一个 pass 里，共享同一个缓冲与同一次绘制。不需要第二个 pass，不需要第二份网格，也不需要模板技巧：外壳只填在本体自身轮廓够不到的地方，这是两次绘制与剔除共同的结果，而不是它们先后次序的结果。
 
-宽度是逐实例的——[`MeshInstance::hull_width`](mesh::MeshInstance::hull_width)，上层若有 [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md) 组件就填它，没有就填零——因为带宽属于实体而不属于管线：一份网格被多个实体绘制时，管线仍是一条，宽度却各有各的。它是**世界单位**下的宽度，所以离相机更远的本体带子更细。如果带宽必须在像素上保持不变，那属于屏幕空间笔画，由 [`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md) 绘制；两者互补，示例的 [`outline`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md) 场景把两者画在同一张图里。
+宽度是逐实例的——[`MeshInstance::hull_width`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/mesh.rs#L399)，上层若有 [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/lit.rs) 组件就填它，没有就填零——因为带宽属于实体而不属于管线：一份网格被多个实体绘制时，管线仍是一条，宽度却各有各的。它是**世界单位**下的宽度，所以离相机更远的本体带子更细。如果带宽必须在像素上保持不变，那属于屏幕空间笔画，由 [`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/line.rs) 绘制；两者互补，示例的 [`outline`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/src/scenes/outline.rs) 场景把两者画在同一张图里。
 
 外扩变体需要网格的法线通道：顶点要沿法线推出，没有法线的网格根本推不动。这一点在组合变体时就断言，而不是留给它去画成别的样子，因为这里没有回退可言——受光绘制所回退到的屏幕空间导数是片元阶段的事，而推出发生在顶点变换之前。同一份无法线的网格做受光绘制则没有问题：它逐片元导出法线。
 
@@ -672,19 +673,19 @@ egui 则用第一个目标组合出的模块画其余每个目标。缓存属于
 WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 `max_storage_buffers_per_shader_stage` 为 0，声明 storage buffer 的绑定组布局会被
 直接拒绝。因此同一批数组也提供纹理形式——把每个元素的字节当作 `Rgba32Float` 或
-`R32Float` 二维纹理的 `f32` 通道，用 `textureLoad` 读取。[`texel_array`] 负责这套
-布局与上传；[`shader`] 的 `array_access.wesl` 负责所有调用者都经过的取值函数，
+`R32Float` 二维纹理的 `f32` 通道，用 `textureLoad` 读取。[`texel_array`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/texel_array.rs) 负责这套
+布局与上传；[`array_access.wesl`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/shaders/array_access.wesl) 负责所有调用者都经过的取值函数，
 于是着色器主体只写一遍，只有那个模块知道到达的是哪种资源。
 
 两条路径保持相同的绑定编号、字节布局与元素顺序，差异因此被限制在资源类型上。
-用哪条由设备决定：[`LitVariant`](pipeline::LitVariant) 在编译管线时读取设备
+用哪条由设备决定：[`LitVariant`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/pipeline/variant.rs#L12) 在编译管线时读取设备
 limits，于是永远不会向没有 storage buffer 的设备索要一个会被拒绝的绑定。这一选择属于
 编译管线的设备而非变体，因此从不进入缓存键。
 
 每个 buffer 绑定都写明 `min_binding_size`，其中 uniform 的大小必须是 16 的整数倍。
 缺少 `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED` 的设备——WebGL2 与 ANGLE 的 GLES——会
 拒绝 uniform 绑定不满足该条件的管线，这也是 uniform 类型都派生
-[`const_shader_layout::ShaderLayoutCompat`] 的原因：它把结构体大小向上取整到 16，
+[`ShaderLayoutCompat`](https://docs.rs/const_shader_layout/latest/const_shader_layout/trait.ShaderLayoutCompat.html) 的原因：它把结构体大小向上取整到 16，
 使布局无从偏离该规则。storage 绑定没有这一要求，其最小值是一个元素的大小，这也正是
 数组增长不会让布局失效的原因。
 
@@ -721,7 +722,7 @@ staging buffer 上传，而不是逐次调用 `queue.write_buffer`：
 
 逐帧上传对调用方透明：调用方只维护 CPU 侧数据，如分配或移除 mesh，渲染帧时自动把
 变更同步到 GPU，无需记住调用上传 API。这不同于[资源](#资源一张依赖追踪图) 一节中依赖
-图的延迟更新，后者在 buffer 等资源被替换或交出后，由用户每帧调用一次 `maintain`。
+图的延迟更新，后者在 buffer 等资源被替换或交出后，由用户调用幂等的 `maintain`。
 
 一帧的上传与消费它们的 render pass 记录进同一个 encoder，因此一帧一次提交，这保持了
 渲染结束的确定性；没有内容的帧也提交，以带上该帧的上传。
@@ -743,9 +744,7 @@ target 跳过，于是 suite 悄无声息地不在这一趟里，只有单元测
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
 SSIMULACRA2 感知指标比较。该目录是指向
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
-submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取，
-`--checkout` 是为了越过它的 `update = none`——那让 git 依赖方不必拉取永远用不到的快照。
-若确有意改动后要重新生成快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查
+submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取。若确有意改动后要重新生成快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查
 图像差异。
 
 单元测试位于 `src/` 内，覆盖私有纯逻辑；`tests/` 下的集成测试只经公开 API 使用本

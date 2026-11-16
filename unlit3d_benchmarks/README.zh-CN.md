@@ -10,9 +10,8 @@
 三个目标：`frame` 测吞吐量，`ecs` 测一次组件读取的成本，`profile` 给出帧内各阶段的
 分解。
 
-本 crate 不属于测试运行：基准二进制没有测试 harness，因此 `cargo xtask test` 把它
-排除在外，改由 `cargo bench` 驱动。工作区的测试覆盖什么见
-[`TESTING.zh-CN.md`](../TESTING.zh-CN.md)。
+本 crate 不属于测试运行——`cargo xtask test` 把它跳过，改由 `cargo bench` 驱动；
+工作区的测试覆盖什么见 [`TESTING.zh-CN.md`](../TESTING.zh-CN.md)。
 
 ## `frame` —— 有多快
 
@@ -51,8 +50,10 @@ Criterion 把报告写在 `target/criterion` 下，并把每次运行与上一�
 | `query_one_three` | 在该 archetype 中解析查询的列并认领该行——即 `TypeId` 查找、向下转型与认领记账 |
 
 `get_one` 与 `get_three` 是逐实体一次和三次 `Scope::query_one`，`query` 则是
-对整个 world 的遍历，它按 archetype 只解析一次各组件的列，而不是逐实体解析一次。`ecs grouping` 组把逐实体形态与「同样的工作但顺序打乱、使实体表的缓存
-失效」以及按 archetype 的遍历对比，因此被测量的是顺序本身，而不是形态。
+对整个 world 的遍历，它按 archetype 只解析一次各组件的列，而不是逐实体解析一次。
+
+`ecs grouping` 组把逐实体形态与「同样的工作但顺序打乱、使实体表的缓存失效」以及按
+archetype 的遍历对比，因此被测量的是顺序本身，而不是形态。
 
 在 100000 个实体时，这条阶梯读作 `location` 743 µs、`matched_per_entity` 1.51 ms、
 `query_one_three` 9.96 ms，而 `query` 只要 579 µs：开销落在逐实体的认领上，按 archetype
@@ -85,28 +86,34 @@ cargo bench -p unlit3d_benchmarks --features profile-tracing \
 
 ```text
 renderer.frame
+├── renderer.frame.advance_globals
 ├── renderer.frame.build_sources
 │   └── mesh_source.build
 │       ├── mesh_source.metadata.upload
-│       ├── mesh_source.uniforms.upload
-│       ├── mesh_source.global_groups.rebuild
+│       ├── mesh_source.uniforms
+│       │   └── mesh_source.uniforms.prune
 │       ├── scene.cull
 │       ├── scene.resolve
 │       │   └── scene.resolve.family
 │       ├── scene.sort
-│       ├── mesh_source.poses.pack
-│       ├── mesh_source.poses.upload
 │       ├── mesh_source.instances.upload
+│       ├── mesh_source.skin_morph.upload
+│       ├── mesh_source.lights.upload
+│       ├── mesh_source.maintain
 │       └── mesh_source.assemble
 │           ├── mesh_source.assemble.handles
+│           ├── mesh_source.assemble.globals
 │           └── mesh_source.assemble.draws
-├── renderer.frame.resolve_order
-├── renderer.frame.record_passes
+├── renderer.frame.check_placement
+├── renderer.frame.resolve_passes
+├── renderer.frame.resolve_sources
+├── renderer.frame.record_pass
 └── renderer.frame.submit
 ```
 
-请把它们当作分解说明，而不是承诺：这些跨度覆盖的是帧自身的 CPU 工作，花在 GPU 驱动
-内部或等待设备的时间不会计入其中。
+请把它们当作分解说明，而不是承诺：`resolve_sources` 与 `record_pass` 每个 pass 各
+打印一对；这些跨度覆盖的是帧自身的 CPU 工作，花在 GPU 驱动内部或等待设备的时间不会
+计入其中。
 
 只取出某次运行中 `visible` 用例的各阶段：
 

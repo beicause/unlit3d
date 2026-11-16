@@ -15,13 +15,13 @@
 
 一个场景会记下其快照被捕获时的目标尺寸、帧数与采样数，因此离屏那一趟能精确重现它。
 窗口化循环显示命令行选中的场景，并在面板里列出所有场景，运行时即可切换。
-`--list-scenes` 打印场景表：
+`--list-scenes` 打印同一份场景列表，此处排版略作对齐：
 
 ```text
 Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
   egui_only                a rich egui panel, no mesh source and no camera
-  mesh_and_ui            a cube, a Blitz page and the rich egui panel, one pass
+  mesh_and_ui            a cube, a Blitz page and the rich egui panel in one pass
   blitz_only             an HTML page laid out by Blitz, no mesh source and no camera
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
@@ -58,8 +58,7 @@ Scenes:
 每帧写入的 uniform 块混合渐变与太阳；粒子 family 的每实例记录来自普通的 world 组件，
 每个精灵的动画由一个示例自己推进的时钟驱动。两者的网格都不带任何顶点属性——天空的三个
 顶点与每个粒子的六个顶点都来自顶点索引——因此这个场景检验的正是：调用方可以拥有自己的
-管线、绑定组、顶点布局与实例流，同时仍能读到当帧相机。它也是示例里最长的动画场景，
-绕行八帧。
+管线、绑定组、顶点布局与实例流，同时仍能读到当帧相机。它的绕行动画共八帧。
 
 `outline` 画出库提供的两种线条，并让同一张图替两者说话。三个本体戴着
 翻转外壳的带子——每一个都是同一份 mesh 从一个缓冲画两遍，先受光着色，再沿自身法线外扩
@@ -126,7 +125,7 @@ GPU 上下文是异步请求的，因为 adapter 与 device 请求本身就是�
 
 一帧自身的工作也按同样方式拆分。泵与重绘请求排队的帧命令算出 delta 后派发宿主 world 的
 `OnFrame` 行为，它们分别确保场景已呈现、处理场景切换与全屏请求、推进场景，再经库的
-[`present_frames`](unlit3d::winit::presenter::present_frames) 呈现。场景自己的 world 派发
+[`present_frames`](https://docs.rs/unlit3d/latest/unlit3d/winit/presenter/fn.present_frames.html) 呈现。场景自己的 world 派发
 同一个族，负责输入分发、序列步进与场景的 `advance` 闭包——后者经一个排队的命令执行，
 因为它需要 `&mut World`。派发在同一个顺序值内不保证先后，所以每个参与的行为都声明
 编码自身读写的顺序——宿主 world 里先做就绪检查，随后是控制、推进、区域重述、库的呈现
@@ -283,31 +282,26 @@ limits 与能力标志也是 WebGL2 的。
 
 默认容差适合整片表面的画面：回归会改变大片区域，分数因此远低于门槛。而细图元的画面
 不同——它的像素就是轮廓，而某个轮廓像素属于相邻两个三角形中的哪一个，由各自实现的光栅化
-tie-break 规则决定，API 把这件事留给实现。这样零星几个像素在这种画面上值几十分，所以
-`mesh_topologies` 有自己的一份容差，并与那几项实测数据一同写明：它们让该界限高于所有
-正确帧、低于所有出错帧。
+tie-break 规则决定，API 把这件事留给实现。这样零星几个像素在这种画面上值几十分。`mesh_topologies` 与不画面板的场景共用同一份
+容差：它的分数与它们进同一张表，表里记录的实测数据让这一个界限高于所有正确帧、
+低于所有出错帧。
 
 场景自己的快照只描述「精确重现该场景存储设置」的那一次运行，因此测试按场景自身的尺寸与帧
 数绘制。窗口化路径所做的 letterbox 适配由它自己的一个测试检查：在比基准更窄的渲染目标上
 绘制默认场景，把适配后的画面与专门为它捕获的一份快照比较。
 
-不匹配往往反映的是平台差异而非回归：存储图像来自某一套 GPU 栈，另一个驱动的舍入就足以
-让某个场景低于门槛，而并没有任何东西出错。因此失败的帧会在测试失败前被留下——原生下写在
-`UNLIT3D_SNAPSHOT_MISMATCH_DIR`，浏览器中则交给 runner（它才是拥有文件系统的进程）——
-供人直接查看而不是只凭日志里的分数去猜。测试失败时 CI 会把这些目录作为 artifact 上传。
+不匹配往往反映的是平台差异而非回归，因此失败的帧会在测试失败前被留下——原生下写在
+`UNLIT3D_SNAPSHOT_MISMATCH_DIR`，浏览器中则交给 runner（它才是拥有文件系统的进程）。
+测试失败时 CI 会把这些目录作为 artifact 上传。
 
 确有意改动渲染结果后，要重新生成快照，用 `SNAPSHOT_UPDATE=1` 运行，然后在提交前审查
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
-中的图像差异。该 submodule 用 `git submodule update --init --checkout` 检出，
-`--checkout` 是为了越过它的 `update = none`。
+中的图像差异。该 submodule 用 `git submodule update --init --checkout` 检出。
 
 ## 测试
 
-本 crate 自己的测试覆盖命令行（`src/cli.rs`）、场景切换与固定步长播放时钟
-（`src/tests.rs`）以及窗口浮层（`src/overlay/tests.rs`）；`tests/gpu_suite.rs` 覆盖
-渲染，`tests/selector_position.rs` 覆盖窗口外壳跨场景切换保留的浮动面板。
-
-测试各层在整个工作区中的位置，以及 CI 所跑的内容，见
+本 crate 自己的测试覆盖命令行、场景切换、固定步长播放时钟、窗口浮层、渲染快照，
+以及窗口外壳跨场景切换时保留拖拽位置的面板；测试各层作为整体与 CI 所跑的内容，见
 [`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 
 ## 许可证

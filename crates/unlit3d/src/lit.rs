@@ -140,7 +140,7 @@ impl RenderPipelineFactory<LitVariant> for LitFactory {
         // The layouts are a function of the variant the pipeline was compiled
         // from, so they are derived here rather than stored with the pipeline.
         // Only the global group is registered: the material group is the
-        // material own, built by `allocate_lit_material`, and the built-in
+        // material's own, built by `allocate_lit_material`, and the built-in
         // variants bind nothing at the mesh group.
         //
         // The layout and the recipe are the source's own general facilities,

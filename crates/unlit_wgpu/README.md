@@ -27,12 +27,13 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 | Feature | Default | Provides |
 |---------|---------|----------|
 | `egui` | no | the `egui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws |
+| `reflect` | no | derives [facet](https://docs.rs/facet) on the resource graph's information structures so a bridge can serialise them; the renderer never reads the reflection |
 
 The WESL package, the [`compose`] facilities and the built-in `lit` and `line`
 entry shaders are always available: they are general facilities a caller's own
 pipeline composes against, not a privileged built-in pipeline behind a feature.
-With `--no-default-features` the crate keeps everything but the egui backend,
-and CI checks that combination separately.
+The crate ships no default features, so a plain build enables neither optional
+feature; CI checks that all-off combination separately.
 
 ## What is in the box
 
@@ -40,8 +41,8 @@ The modules are general facilities a caller builds any pipeline on top of; the
 mechanisms behind them are in [Design](#design).
 
 - [`resources`] — the graph of the GPU resources a frame uses: typed handles,
-  dirty propagation to everything built from a changed resource, and one
-  `maintain` pass per frame that collects what nothing holds and rebuilds the
+  dirty propagation to everything built from a changed resource, and an
+  idempotent `maintain` pass that collects what nothing holds and rebuilds the
   rest. See [Resources](#resources-one-dependency-tracked-graph).
 - [`mesh`] — vertex compression (positions, UVs, colors, octahedral normals,
   joints, weights), the [`MeshMetadata`](mesh::MeshMetadata) decode parameters
@@ -458,8 +459,9 @@ example.draw(256, 192);
 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 ```
 
-The doc comments of `mesh`, `array_pool`, `buffer_pool`, `offset_allocator`,
-`staging` and `render_attachments` also contain runnable examples.
+The doc comments of `vertex_pool`, `array_pool`, `buffer_pool`,
+`offset_allocator`, `staging` and `render_attachments` also contain runnable
+examples.
 
 ## Shaders
 
@@ -554,8 +556,9 @@ graph:
 - **Tracking is precise, updates are lazy.** `replace` only marks a resource
   dirty — the resources depending on it need updating too. Nothing happens at
   the point of the change. A frame calls
-  [`ResourceGraph::maintain`](resources::ResourceGraph::maintain) exactly once,
-  before it reads any resource: that one pass collects the resources nothing
+  [`ResourceGraph::maintain`](resources::ResourceGraph::maintain) at least once,
+  before it reads any resource: the pass is idempotent, so a frame that
+  maintains per source runs it several times. It collects the resources nothing
   holds any more — following the references a collected node releases, so a
   whole chain goes in one call — and rebuilds the dirty resources in dependency
   order. Uploading new bytes into an existing buffer dirties nothing;
@@ -809,13 +812,13 @@ trick: the shell only fills where the body's own silhouette does not reach,
 which is a consequence of the two draws and the culling, not of their order.
 
 The width is per instance — [`MeshInstance::hull_width`](mesh::MeshInstance::hull_width),
-which the layer above fills from an [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)
+which the layer above fills from an [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/lit.rs)
 component if it is there and zero otherwise — because the band's width belongs
 to the entity and not to the pipeline: one mesh drawn by several entities keeps
 one pipeline and several widths. It is a width **in world units**, so a body
 further from the camera wears a thinner band. A band that must hold its width in
 pixels instead is a screen-space stroke, which is what
-[`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)
+[`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/line.rs)
 draws; the two are complements, and both are in one picture in the example's
 [`outline`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md)
 scene.
@@ -908,7 +911,7 @@ CPU-side data, such as allocating or removing meshes, and the changes are
 synchronized to the GPU automatically when the frame renders, with no upload API
 to remember. This differs from the lazy dependency-graph updates in
 [Resources](#resources-one-dependency-tracked-graph), which the user triggers
-through one `maintain` call per frame, after a buffer or other resource is
+through its idempotent `maintain` calls, after a buffer or other resource is
 replaced or given up.
 
 A frame's uploads and the render pass consuming them are recorded into one
@@ -936,9 +939,7 @@ The GPU integration tests render meshes into offscreen textures, read them back
 and compare them against the snapshots under `tests/snapshots` with the
 SSIMULACRA2 perceptual metric. That directory is a symlink into the
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
-submodule; clone it here with `git submodule update --init --checkout`, which is
-what gets past the `update = none` that keeps a git dependency from fetching
-snapshots it never compares against. To re-bless a snapshot
+submodule; clone it here with `git submodule update --init --checkout`. To re-bless a snapshot
 after an intentional change, run the test with `SNAPSHOT_UPDATE=1` set, then
 review the image diff before committing it.
 

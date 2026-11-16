@@ -1,4 +1,4 @@
-English | [简体中文](https://github.com/beicause/unlit3d/blob/main/xtask/README.zh-CN.md)
+English | [简体中文](README.zh-CN.md)
 
 # xtask
 
@@ -27,7 +27,7 @@ cargo xtask publish        # publish the workspace's crates to crates.io, in dep
 
 ### `cargo xtask check`
 
-Runs `typos` and `tombi`, then clippy twice, then the doc build, then
+Runs `typos` and `tombi`, then clippy three times, then the doc build, then
 `cargo fmt --all -- --check`. The two tools that need no compiler go
 first, so a misspelling or an unsorted feature table costs a second rather than
 the minutes clippy takes. Clippy comes next because its diagnostics may leave
@@ -46,7 +46,7 @@ formats every TOML file against the schemas the catalog it fetches names.
 Neither ships with cargo: when one is missing the step says which tool, not how to
 install it — both are distributed outside cargo.
 
-Clippy runs twice, because each compiles a different set of code:
+Clippy runs three times, because each compiles a different set of code:
 
 1. The library crates with no default features at all, which is the combination
    that proves their general facilities compile and lint on their own — and the
@@ -58,7 +58,11 @@ Clippy runs twice, because each compiles a different set of code:
    application crate asks `unlit3d` for `egui` and `winit`, so a workspace-wide
    run would compile the libraries with exactly the backends this pass exists to
    leave out.
-2. The workspace with every feature, which the doc build and the full test run
+2. The workspace with the default features, which is the combination the
+   platform binaries are built with — its own pass because feature unification
+   decides what each package compiles: `--all-features` turns on code no binary
+   ever includes, and the no-features pass leaves out what they all do.
+3. The workspace with every feature, which the doc build and the full test run
    compile.
 
 ### `cargo xtask test`
@@ -82,7 +86,7 @@ A frame that fails its snapshot comparison is written before the test fails, und
 `target/snapshot-mismatches` for the default pass and
 `target/snapshot-mismatches-webgl2` for the tier pass — a directory each, so a
 frame that differs under both tiers can be told apart. CI uploads them when a
-test fails, so a mismatch can be looked at rather than only scored.
+test fails.
 
 ### `cargo xtask line-count`
 

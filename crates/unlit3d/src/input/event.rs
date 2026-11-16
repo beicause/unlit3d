@@ -603,10 +603,10 @@ pub struct ImeEvent {
 
 /// Text a key or an input method produced, ready to be inserted.
 ///
-/// This is the same string a [`KeyEvent`] may carry alongside its key: a key
-/// translates to the character the user's layout produces there, while the
-/// key tells game controls which physical key moved. A consumer that inserts
-/// text wants this event, not the key.
+/// A key press that typed a character arrives as a [`KeyEvent`] and as this
+/// event beside it: the key tells game controls which physical key moved,
+/// while this carries the character the user's layout produced there. A
+/// consumer that inserts text wants this event, not the key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 #[cfg_attr(feature = "reflect", facet(transparent))]

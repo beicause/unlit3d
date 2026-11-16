@@ -63,7 +63,7 @@ impl OwnedLitMeshDesc {
 /// use.
 ///
 /// The key is the one installed in the render world: a caller that spawns
-/// an [`LitPipelineKey`] component chooses the options. Without one the
+/// a [`LitPipelineKey`] component chooses the options. Without one the
 /// standard unlit options are built from the mesh source's device, so a
 /// caller that only wants the built-in look never has to touch a device.
 ///

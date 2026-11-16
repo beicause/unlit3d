@@ -23,6 +23,7 @@
 //! |---|---|---|
 //! | mouse | [`MouseEvent`], [`PointerEvent`] | [`MouseEvent`], which names the button and the wheel unit |
 //! | touch | [`TouchEvent`], [`PointerEvent`] | [`TouchEvent`], which names the touch and reports the lift ordering |
+//! | trackpad | [`PointerEvent`] | nothing: its scroll is a [`MouseEvent::Wheel`] and its gestures go out as [`EguiEvent::Zoom`] and [`EguiEvent::Rotate`] |
 //! | pen and other | [`PointerEvent`] | [`PointerEvent`], there being nothing more detailed |
 //!
 //! # Touches
@@ -224,10 +225,10 @@ fn pointer_events(event: &PointerEvent, pixels_per_point: f32, out: &mut Vec<Egu
 /// The position a pointer event's point action is reported at, or `None` when
 /// the event must not reach egui's pointer at all.
 ///
-/// A mouse, a touch and a trackpad are that case: each moves the pointer
-/// through the same stream that already produces a [`MouseEvent`] or a
-/// [`TouchEvent`], so only a device with no such event — a pen, or one the
-/// platform did not classify — reaches egui here. The position falls back to
+/// A mouse, a touch and a trackpad are that case: the detail each device
+/// offers arrives as a [`MouseEvent`] or a [`TouchEvent`] beside its pointer
+/// events, so only a device with no such event — a pen, or one the platform
+/// did not classify — reaches egui here. The position falls back to
 /// the origin for an action that carries none, which egui treats as a pointer
 /// at the top-left corner rather than as no pointer at all.
 fn pointer_position(event: &PointerEvent, pixels_per_point: f32) -> Option<Pos2> {

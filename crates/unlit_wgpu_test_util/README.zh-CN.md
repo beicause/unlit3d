@@ -123,8 +123,6 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
   读取，因此可以改写。该目录是指向
   [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
   submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取。
-  `--checkout` 是为了越过该 submodule 的 `update = none`——它让把本库当作 git 依赖的
-  项目不必去拉取那些永远用不到的快照。
 - **web 上**没有文件系统，所以字节在编译期由 `include_bytes!` 内嵌进 wasm 二进制，
   相对于宏被调用的那个文件解析。除此之外比较完全相同——帧在浏览器里真的被解码、真的
   被打分。
@@ -137,9 +135,8 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 
 比较*失败*的帧会在断言失败前被留下，因此 CI 中失败的运行会把该帧留给任务去上传：
 原生下写在 `UNLIT3D_SNAPSHOT_MISMATCH_DIR`（默认为 `target/snapshot-mismatches`），
-web 上则在浏览器中编码后交给测试 runner——它才是拥有文件系统的那个进程。不匹配往往
-反映的是平台差异而非回归：存储的帧来自某一套 GPU 栈，另一个驱动的舍入就足以让某帧低于
-门槛——所以拿到这一帧，才能让人直接查看差异，而不是从分数去推断。
+web 上则在浏览器中编码后交给测试 runner——它才是拥有文件系统的那个进程。不匹配往往反映的是平台差异而非回归——所以拿到这一帧，才能让人直接查看差异，
+而不是从分数去推断。
 
 确有意改动渲染结果后，重新生成快照：
 

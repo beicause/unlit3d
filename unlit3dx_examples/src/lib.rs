@@ -136,8 +136,8 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     let render = spawn_sub_world(world, "render", RENDER_COMMAND_CAPACITY);
 
     // The worlds behind the scene: threads of their own by default,
-    // stepped by the frame when the target has none to give them - a
-    // browser - or when the run asked for the stepped path.
+    // stepped by the frame when the target has none to give them — a
+    // browser — or when the run asked for the stepped path.
     // The control panel lives in the gameplay world and sends each frame to
     // the render world, which draws it. Neither asks the other for anything.
     let panels = PanelSlots::default();

@@ -1,4 +1,4 @@
-//! Integration tests for the audio threaded world: the fill-source contract,
+//! Integration tests for the audio world: the fill-source contract,
 //! and the world's job channel with and without an output device.
 
 // The tests that need real samples read the workspace's own soundfont, which

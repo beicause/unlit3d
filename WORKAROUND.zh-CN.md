@@ -44,7 +44,7 @@ return lanes.x * select(0u, 1u, lane == 0u)
 
 ## 以带裁剪的绘制收尾，会让 pass 的多重采样解析在 GL 上被裁掉
 
-**位置：**[`crates/unlit3d/src/renderer.rs`](crates/unlit3d/src/renderer.rs) 的 `record_pass` 末尾，所有源都录完之后。
+**位置：**[`crates/unlit3d/src/renderer.rs`](crates/unlit3d/src/renderer.rs) 的 `Renderer::frame` pass 循环末尾，所有源都录完之后。
 
 **症状：**在 GL 后端开着 MSAA 时，以带裁剪的绘制收尾的场景（比如 egui 窗口）只解析了那一小块矩形，画面其余部分留着上一帧的像素。
 
@@ -103,7 +103,7 @@ var geometric = cross(world_dx, world_dy);
 
 **位置：**[`tests/wasm/runner/index.js`](tests/wasm/runner/index.js) 的 `BACKEND_ARGS.webgpu` 里那个 `--disable-gpu-watchdog`。
 
-**症状：**WebGPU 那趟每次跑都有几个示例快照测试失败，而且每次都不一样——118 个里四到七个，每个都在十九到二十八秒之后报 `the staging buffer could not be mapped: A valid external Instance reference no longer exists`。这些用例单独跑都过。失败开始的那一刻，Chrome 自己的 stderr 是：
+**症状：**WebGPU 那趟每次跑都有几个示例快照测试失败，而且每次都不一样——每个都在几十秒之后报 `the staging buffer could not be mapped: A valid external Instance reference no longer exists`。这些用例单独跑都过。失败开始的那一刻，Chrome 自己的 stderr 是：
 
 ```text
 ERROR:command_buffer_proxy_impl.cc:476] GPU state invalid after WaitForGetOffsetInRange.
@@ -120,7 +120,7 @@ gpu/ipc/service/gpu_init.cc: bool enable_watchdog = !gpu_preferences_.disable_gp
                                                     && !command_line->HasSwitch(switches::kHeadless);
 ```
 
-SwiftShader 的 Vulkan 设备慢到这个程度：同时画十六个页面——浏览器套件的默认并行度——足以让 GPU 主线程在两次出帧之间停过软件渲染拿到的三十秒。进程一死，浏览器里所有设备跟着死，于是正在画的那些测试都在下一次映射时报错，作决定的并不是浏览器自己。
+SwiftShader 的 Vulkan 设备慢到这个程度：测试套件的默认并行度会同时画多个页面，足以让 GPU 主线程在两次出帧之间停过软件渲染拿到的三十秒。进程一死，浏览器里所有设备跟着死，于是正在画的那些测试都在下一次映射时报错，作决定的并不是浏览器自己。
 
 headless 豁免正是只有这一趟中招的原因：WebGL2 那趟是 headless，从来没有 watchdog。
 
@@ -216,16 +216,17 @@ wgpu error: Validation Error
 bind group、buffer 与 sampler 的 label 都没事，进入编译器的只有着色器模块的
 label。
 
-**成因：**wgpu-hal 30.0.2 把着色器模块的 label 当作这次编译的**源文件名**交给
-DXC。`Device::create_shader_module` 把 label 存成 `CString`（`dx12/device.rs` 里的
+**成因：**本工作区写作时钉的 wgpu-hal 版本（30.0.2）把着色器模块的 label
+当作这次编译的**源文件名**交给 DXC。`Device::create_shader_module` 把 label
+存成 `CString`（`dx12/device.rs` 里的
 `raw_name`），`create_render_pipeline` 再把它交给 `compile_dxc`，后者把它放在给
 DXC 的参数最前面。DXC 把这个参数读成正在编译的源文件路径，于是
 `unlit_wgpu::lit` 被读成盘符 `unlit_wgpu` 加文件 `lit`——一个它读不到的文件。
 同一份模块，label 里不带冒号就编得过。
 
-wgpu 的 trunk 会清洗这个名字并锚成 `./name`，30.0.2 这个发布版不会。这也是它成了
-回归而不是潜藏 bug 的原因：本仓库此前钉的 trunk 版本带有这项修复，所以在依赖取自
-trunk 的那段时间里这些 label 在 Windows 上编得过，随后改钉发布版才把 bug 带了进来。
+wgpu 的 trunk 会清洗这个名字并锚成 `./name`，本仓库钉的发布版不会。
+这也是它成了回归而不是潜藏 bug 的原因：依赖取自 trunk 时这些 label 编得过，
+改用发布版就编不过。
 
 它是否发作还取决于宿主：wgpu 的 `Dx12Compiler::Auto` 只在能加载 `dxcompiler.dll`
 的地方用 DXC，否则退回 FXC。FXC 不接受源文件名，于是没有这个 DLL 的宿主把这些管线

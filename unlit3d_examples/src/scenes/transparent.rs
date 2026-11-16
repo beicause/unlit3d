@@ -134,14 +134,8 @@ fn build(
 
     // Two variants of the same unlit pipeline: the opaque one every other
     // scene draws with, and a translucent one that blends straight-alpha
-    // output over the target without writing depth.
-    //
-    // Depth writes are off because a blended pane must not hide the pane
-    // behind it, but depth *testing* stays on: the panes are composited among
-    // themselves by their draw order, and an opaque cube in front of them must
-    // still occlude them.
-    // Both variants read the instance tint: the backdrop is tinted through it,
-    // and every pane's tint is its own.
+    // output over the target. Both read the instance tint: the backdrop is
+    // tinted through it, and every pane's tint is its own.
     let opaque_key = LitPipelineKey::new(super::default_options());
     let mut translucent = super::default_options();
     translucent.blend = Some(wgpu::BlendState {

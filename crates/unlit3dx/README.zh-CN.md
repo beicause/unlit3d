@@ -87,7 +87,7 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 world 的线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
 
-job 也是世界改变另一个世界的唯一方式，而且它不回答任何东西：需要汇报什么的
+job 也是 world 改变另一个 world 的唯一方式，而且它不回答任何东西：需要汇报什么的
 world 改为通过订阅发布。回复会让发送方等待一个可能正忙、已停止或已经消失的
 world，而回来的东西是状态，状态有自己的通道。
 
@@ -125,14 +125,13 @@ tick 跑完后代为发布，因此 tick 体自己什么也不发布，也不可
   `subscribe`。
 - 一次 job、一个值——某次安装创建的实体、某次构建产出的资源——用 `Pending` 请求。
 
-载荷是调用方自己的类型——本库不定义任何载荷——所以场景只收集它真正要的数据，
-不为别的付出代价。
+载荷是调用方的类型，与用法一节的示例相同。
 
 快照 reader 是一个单槽信箱：`latest` 窥视最新一份，没有积压，也没有需要推演的
 顺序，未被读取的那份直接被替换。槽是 `ArcSwapOption`，因此双方都不必去抢对方持有
 的锁：world 把最新一份换进去，已经持有旧快照的 reader 可以一直把那一份读完。按 tick
-收集的世界与按帧读取的消费者在中间会合，谁也不阻塞谁。收集闭包返回 `None` 时保留
-最新一份快照，状态未变的世界因此保持安静。还没有任何 reader 时发布的值同样会保留，
+收集的 world 与按帧读取的消费者在中间会合，谁也不阻塞谁。收集闭包返回 `None` 时保留
+最新一份快照，状态未变的 world 因此保持安静。还没有任何 reader 时发布的值同样会保留，
 后来才订阅的 reader 仍能看到它，而不必等下一次发布。
 
 流 reader 持有自己的队列：每 tick `pump` 一次，把期间到达的值折成这一 tick 的批次，
@@ -155,8 +154,8 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
   它先运行一次性的 `init` 闭包（在第一次清空 job 队列之前），再检查
   `ThreadControl::stop_requested`，在 `catch_unwind` 里运行 tick，并在线程结束前
   报告 panic，于是宿主知道自己的 world 为何而死，而不是 join 到一具尸体。销毁代理
-  实体会请求停止其线程并至多等待两秒；拒绝停止的 tick 会被遗弃（detach），而不是把
-  销毁方挂住。句柄负责汇报 world 的状态——`is_finished`，以及 `state`（一个
+  实体会请求停止其线程并至多等几秒（`STOP_TIMEOUT`）；拒绝停止的 tick 会被遗弃
+  （detach），而不是把销毁方挂住。句柄负责汇报 world 的状态——`is_finished`，以及 `state`（一个
   `SnapshotReader<WorldState>`，读到 `Running`、`Stopped` 或
   `Panicked(message)`）——`stop` 则请求它结束；`join_timeout` 与 `detach` 在
   `WorldThread` 本身之上，留给直接持有它的调用方。
@@ -186,7 +185,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
 ## 桥
 
-按 feature 划分的模块是世界之间的桥。它们是核心之上的便利层，而非特权：每一座都把
+按 feature 划分的模块是 world 之间的桥。它们是核心之上的便利层，而非特权：每一座都把
 一个外部库——rapier、cpal、rustysynth-ext——包进同一套 job 与快照的形状里，想要换库的
 调用方就自己搭这套形状。`unlit3dx_examples` crate 就是现成的范例：它的 render 桥是写在
 示例 crate 里的资源服务器，建立在 `unlit3d` 的 `MeshSource` 这个通用注册表之上，注册
@@ -242,20 +241,20 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   会设定循环点；文件从未标记过的段落，也可以直接写 `loop_point` 让它重复。示例里的
   `install_synth` 把整个安装收进一个函数，作为 job 排给音频 world，并回传音色的实体。
 - **egui**（随 `render` 开启）：把 `egui::EguiPanelHost` 生成在面板旁边，它把一个 world 的
-  `EguiPanel` 布局给另一个 world 里的 `EguiSource` 绘制。面板只能在它自己的 egui context
-  所运行的地方构建——回调拿到的是正在构建它的那一趟 pass 的 `&mut egui::Ui`——所以面板
-  所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录回来的结果。它持有通向绘制
+  `EguiPanel` 布局给另一个 world 里的 `EguiSource` 绘制。面板只能在它自己的 egui context 所运行的地方构建（缘由见
+  [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
+  的 egui 一节），所以面板所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录
+  回来的结果。它持有通向绘制
   world 的 sender，以及绘制侧报回的屏幕尺寸所经的 `unlit3d::relay::SnapshotReader`；绘制
   侧的 source 用 `unlit3d::egui::EguiSource::publish_target` 接收目标，槽位由它自己持有。帧以
-  job 的形式过去，槽位因此留在绘制它的那条线程上；绘制侧量出的目标反向以快照回来，因为
-  布局永远只需要最新的那一个。无事可画的一 tick——面板静止、没有输入、目标未变、没有到期
+  job 的形式过去；无事可画的一 tick——面板静止、没有输入、目标未变、没有到期
   的重绘——什么都不发，所以静止的 egui 零开销；已有的那一帧会一直被绘制，直到更新的一帧
   取代它。绘制 world 的队列拒收的帧会再次发送，而不是被当作已送达，因此队列满只会推迟
   画面，不会丢帧。egui 的动画时钟走的是各帧时长累加出来的帧时间，而不是墙钟：同一串帧
   里动画在同样的帧上走到同样的位置，与这一趟实际跑了多久无关，为此截下的帧也就不取决于
-  机器当时有多忙。两侧保持独立的 context：共用会让两个 world 同时写同一份 memory 与字体
-  图集，而 egui 把一次 `run_ui` 当作一个完整帧。两侧的纹理 id 都从零开始分配，所以帧保留
-  它被布局时拿到的 id，GPU 集成按来源与 id 建键——不重编号任何东西。
+  机器当时有多忙。两侧保持独立的 context，纹理 id 也从不重编号（缘由见
+  [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
+  的 egui 一节）。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的
   子 world，或自有一条线程的 world——通过
   [模型上下文协议](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) 对外服务，
@@ -289,8 +288,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
    安装——见示例的 `install_synth`——就是一个函数包成一个 job。快照信箱承载的是从
    world 里**取出**的状态，读它的一方决定这意味着什么；而另一个 world 的内容**变成**
    什么仍然是 job，因此玩法从物理快照推出的姿态是发给 render world 的 job，而不是留在
-   信箱里等它自己去应用。检验标准是一行搭建代码能否属于另一个场景：若它提到了游戏称
-   之为某个东西的东西，它就该是一个 job。
+   信箱里等它自己去应用。检验标准是一行搭建代码能否属于另一个场景：若它提到了游戏
+   自己定义的东西，它就该是一个 job。
 3. **场景为每个要对话的 world 持有一个端口。** world 的地址就是一个 `JobSender`
    加上它建立的那些订阅，于是场景把它们收进自己的一个值里——示例的 `Scene` 带着
    render、physics、audio 三个 sender 与物理快照——并把它交给需要触达 world 的一切：

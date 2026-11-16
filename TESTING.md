@@ -40,7 +40,7 @@ Each crate's integration tests are **one binary**, not one per source file: the
 files under `tests/` are modules of the suite file beside them (`gpu_suite.rs`,
 or `suite.rs` where the tests are plain `libtest`), pulled in with `#[path]`.
 They share the crate's code and, on the GPU side, the shared harness, so
-splitting them into targets meant linking that code once per file — thirty
+splitting them into targets meant linking that code once per file — dozens of
 binaries across the workspace, each carrying its own copy of the same runtime.
 The binary's name is the crate's, and its `required-features` are the features
 its cases need, so a crate whose suite needs an optional feature runs it only
@@ -105,20 +105,17 @@ without a window and a GL driver".
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour, deferred commands, and the MCP server's ECS tools. |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
 | [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back, including an end-to-end MCP test that serves a world over a pair of streams and speaks JSON-RPC to it. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the scene switch and the fixed-step playback clock (`src/tests.rs`), and the window overlays (`src/overlay/tests.rs`). Its rendering output is snapshotted by `tests/gpu_suite.rs`, and `tests/selector_position.rs` covers the panels the window shell keeps across a scene switch. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the scene switch and the fixed-step playback clock (`src/tests.rs`), and the window overlays (`src/overlay/tests.rs`). Its rendering output is snapshotted by `tests/gpu_suite.rs`, and `tests/selector_position.rs` covers the dragged panels the window shell keeps across a scene switch. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: jobs reaching their world, snapshot and stream subscriptions, the state a world publishes about itself, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
 | [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |
 
 ## Benchmarks
 
-[`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) holds three targets: `frame`
-for throughput, `ecs` for what one component read costs, and `profile` for a
-frame's phase breakdown. It is not part of
-the test run: a benchmark binary has no test harness, so it is excluded from
-`cargo xtask test` and driven by `cargo bench` instead. What each target covers,
-and how to read its output, is in
-[that crate's README](unlit3d_benchmarks/README.md).
+[`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) is not part of the test
+run: a benchmark binary has no test harness, so `cargo xtask test` excludes it
+and `cargo bench` drives it instead. What its targets cover, and how to read
+their output, is in [that crate's README](unlit3d_benchmarks/README.md).
 
 ## Continuous integration
 
@@ -183,10 +180,8 @@ run warmer than a cold one would be.
 The frames a failed run leaves behind are uploaded per pass, each from its own
 directory: `target/snapshot-mismatches` and `target/snapshot-mismatches-webgl2`
 from `build`, and `target/snapshot-mismatches-wasm` and
-`target/snapshot-mismatches-wasm-webgl2` from `build-wasm`. A
-mismatch is often the platform showing through rather than a regression, so
-having the frame is what makes the difference something to look at rather than to
-infer from a score.
+`target/snapshot-mismatches-wasm-webgl2` from `build-wasm`. A mismatch is often
+the platform showing through rather than a regression.
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes the site
 to GitHub Pages on every push to `main`: a landing page at the root linking the

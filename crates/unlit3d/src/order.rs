@@ -93,7 +93,6 @@ impl<K: OrderKey> Ordering<K> {
             .extend(self.keys.iter().map(|(_, entity)| *entity));
     }
 
-    /// The entities to record, in the order they record.
     /// Room the entity buffer holds, so a test can show it is reused rather
     /// than reallocated when the order changes size.
     #[cfg(test)]

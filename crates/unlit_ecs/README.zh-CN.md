@@ -7,9 +7,8 @@
 那些格子本会容许的别名由借用账本抓住：访问路径在交出任何引用之前先认领它要触及的
 组件，冲突时的 panic 指名双方。
 
-设计刻意保持精简：没有变化检测、没有事件与观察者、没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器
-外本 crate 没有其他依赖，也不依赖工作区中的任何其他 crate，因此可以单独使用；它对
-渲染一无所知。唯一的例外是可选的 `reflect` feature，它为[世界信息](crate::WorldInfo)
+设计刻意保持精简：没有变化检测、没有事件与观察者、没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器（hashbrown）与 thiserror 外本 crate 没有其他无条件依赖，也不依赖
+工作区中的任何其他 crate，因此可以单独使用；它对渲染一无所知。唯一的例外是可选的 `reflect` feature，它为[世界信息](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/src/info.rs)
 结构体派生 [facet](https://docs.rs/facet)，好让桥接层直接序列化它们，并导出实体字段所经由的
 `EntityProxy`。类型为实体的反射字段指名该 proxy，于是 ECS 自己的结构体与任何调用者的组件
 都用同一种方式书写实体——即它的 [`Entity::to_bits`] 整数。ECS 本身从不读取这份反射。
@@ -190,7 +189,7 @@ assert!(!cube.name().is_empty(), "bundle names the entity it builds");
 | 实体的来源 | 它的名字 |
 | --- | --- |
 | 实现了 `Bundle` 的自定义类型 | 该类型自己的名字，如 `unlit3d_examples::scenes::spin_cube::TexturedCube` |
-| `bundle!` | 宏所在的源码位置，如 `crates/unlit3d/src/source.rs:514` |
+| `bundle!` | 宏所在的源码位置（`file!()`/`line!()`） |
 | `DynamicBundle::named` | 在那里给的标签 |
 | `spawn_named` | 在那里给的标签 |
 | `World::reserve_entity` | 预留时给的标签 |
@@ -229,7 +228,7 @@ assert!(matches!(
 句柄会被拒，而不是由下一个造出来的 world 代答。id 背后的数字按创建顺序分配，跨运行
 不稳定；它用于在一个进程内分辨 world，不用于把 world 写进文件。
 
-裸 `Entity` 是 world 内部代码用的形态。它不带 world id，也就保住了 16 字节——每个
+裸 `Entity` 是 world 内部代码用的形态。它不带 world id，也就保持了小巧——每个
 archetype 行、每个查询结果都装着一个，把它变胖要花的是 ECS 存在意义所在的打包密度。
 边界——job、channel、线程——才是这一对出场的地方。`RemoteEntity` 是 `Copy`，字段公开，
 里面没有 world，所以消息可以在手里没有 world 的时候拼出来、拆开来。
@@ -384,7 +383,8 @@ assert!(scope.query_one::<Has<f32>>(entity).get());
 传输侧必须指名一个 `World` 并把工作交给它：`crate::mcp::McpCommand` 携带着一个 job，由拥有该
 world 的线程运行。桥接层不在这个边界上借用任何东西，也没有别的 crate 拥有传输所需的类型。
 
-本 crate 依旧保持「只有一个哈希器依赖」的形态：该模块在 `wasm32` 上被关掉（协议的
+本 crate 依旧保持「无条件依赖只有一个哈希器与 thiserror」的形态：该模块在 `wasm32`
+上被关掉（协议的
 传输在该目标上无法构建），它新增的每个依赖都是可选且按目标门控的，因此浏览器构建
 完全不带上它们。
 
@@ -402,9 +402,9 @@ fn register(router: &mut ToolRouter<McpServer>) {
 }
 ```
 
-`unlit_ecs` 自己注册实体与组件工具——`world_summary`、`list_components`、
-`list_archetypes`、`list_entities`、`get_entity`、`get_component`、
-`set_component`、`spawn_entity`、`despawn_entity`——它们只需要 ECS；
+`unlit_ecs` 自己注册实体与组件工具——`world_summary`、`list_worlds`、
+`list_components`、`list_archetypes`、`list_entities`、`get_entity`、
+`get_component`、`set_component`、`spawn_entity`、`despawn_entity`——它们只需要 ECS；
 `unlit3d` 注册渲染类工具，`unlit3dx` 注册音频类工具。这些 crate 都不是本 crate 的
 依赖，而宿主建起的服务器会带上它们全部。
 
@@ -459,8 +459,8 @@ cargo xtask test                 # 整个工作区
 [`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 
 本 crate 的访问路径由 [`unlit3d_benchmarks`](../../unlit3d_benchmarks/README.zh-CN.md)
-的 `ecs` 目标做基准测试，`World::get` 与「一次性解析整个 archetype 的列」两种取法的
-成本对比就是在那里测的：
+的 `ecs` 目标做基准测试，`Scope::query_one` 的逐实体取法与「一次性解析整个 archetype
+的列」的成本对比就是在那里测的：
 
 ```text
 cargo bench -p unlit3d_benchmarks --bench ecs

@@ -11,9 +11,10 @@ conflict names both holders.
 
 The design is deliberately small: no change detection, no events or observers,
 and no scheduler. Everything that would need
-one of those is done by the caller on the entities themselves. The crate has no
-dependencies beyond a hasher and depends on nothing else in the workspace, so it
-can be used on its own; it knows nothing about rendering. The one exception is
+one of those is done by the caller on the entities themselves. The crate's unconditional
+dependencies are a hasher (hashbrown) and thiserror, and it depends on nothing
+else in the workspace, so it can be used on its own; it knows nothing about
+rendering. The one exception is
 the optional `reflect` feature, which derives [facet](https://docs.rs/facet) for
 the [world information](crate::WorldInfo) structures so a bridge can serialise
 them as they are, and exports the `EntityProxy` an entity field reflects
@@ -263,7 +264,7 @@ integer.
 | The entity was spawned by | Its name |
 | --- | --- |
 | a type implementing `Bundle` | the type's own name, `unlit3d_examples::scenes::spin_cube::TexturedCube` |
-| `bundle!` | the source position of the macro, `crates/unlit3d/src/source.rs:514` |
+| `bundle!` | the source position of the macro — the `file!()`/`line!()` where it appears |
 | `DynamicBundle::named` | the label given there |
 | `spawn_named` | the label given there |
 | `World::reserve_entity` | the label given at the reservation |
@@ -282,8 +283,8 @@ if it was produced by the world it is read in, and that is a rule a caller can
 forget.
 
 So a handle that leaves its world carries the world with it:
-`World::remote(entity)` builds a `RemoteEntity` - the handle and the `WorldId`
-of the world that made it - and `World::resolve(remote)` reads one back. The
+`World::remote(entity)` builds a `RemoteEntity` — the handle and the `WorldId`
+of the world that made it — and `World::resolve(remote)` reads one back. The
 resolving world compares the id against its own and answers
 `RemoteEntityError::ForeignWorld` when they differ, naming both worlds, rather
 than resolving the handle into an unrelated local entity:
@@ -309,9 +310,9 @@ order and is not stable across runs; it is for telling worlds apart inside one
 process, not for naming one in a file.
 
 The plain `Entity` is what a world's own code uses. It carries no world id, and
-it stays 16 bytes because every archetype row and every query result holds one:
-making it fatter would cost the storage the ECS exists to pack. A boundary - a
-job, a channel, a thread - is where the pair takes over. `RemoteEntity` is
+it stays small because every archetype row and every query result holds one:
+making it fatter would cost the storage the ECS exists to pack. A boundary — a
+job, a channel, a thread — is where the pair takes over. `RemoteEntity` is
 `Copy`, its fields are public, and it has no world in it, so a message can be
 built and taken apart without a world at hand.
 ## What is in the box
@@ -490,7 +491,8 @@ name a [`World`] and hand it work: `McpCommand` carries a job, and the thread
 that owns the world runs it. Nothing in the bridge borrows across that
 boundary, and no other crate owns a type the transport needs.
 
-The crate still keeps its one-dependency shape. The module is gated off on
+The crate still keeps its unconditional dependencies to a hasher and thiserror.
+The module is gated off on
 `wasm32`, where the protocol's transport cannot build, and every dependency it
 adds is optional and target-gated, so a browser build carries none of them.
 
@@ -510,9 +512,10 @@ fn register(router: &mut ToolRouter<McpServer>) {
 ```
 
 `unlit_ecs` itself registers the entity and component tools —
-`world_summary`, `list_components`, `list_archetypes`, `list_entities`,
-`get_entity`, `get_component`, `set_component`, `spawn_entity`,
-`despawn_entity` — which need nothing but the ECS; `unlit3d` registers the
+`world_summary`, `list_worlds`, `list_components`, `list_archetypes`,
+`list_entities`, `get_entity`, `get_component`, `set_component`,
+`spawn_entity`, `despawn_entity` — which need nothing but the ECS; `unlit3d`
+registers the
 rendering ones and `unlit3dx` the audio ones. None of those crates is a
 dependency of this one, and the server a host builds carries all of them.
 
@@ -582,8 +585,8 @@ layers as a whole, and what CI runs, are described in the
 
 This crate's access paths are benchmarked by
 [`unlit3d_benchmarks`](../../unlit3d_benchmarks/README.md)'s `ecs` target, which
-is where the cost of a `World::get` against resolving a whole archetype's
-columns once is measured:
+is where the cost of a per-entity `Scope::query_one` lookup against resolving
+a whole archetype's columns once is measured:
 
 ```text
 cargo bench -p unlit3d_benchmarks --bench ecs

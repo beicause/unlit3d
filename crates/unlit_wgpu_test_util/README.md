@@ -142,10 +142,7 @@ is what arranges it:
   process's working directory, and read at comparison time so it can be
   rewritten. That directory is a symlink into the
   [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
-  submodule; clone it here with `git submodule update --init --checkout`. The
-  `--checkout` is what gets past the submodule's `update = none`, which spares a
-  project that depends on this one through git from fetching snapshots it never
-  compares against.
+  submodule; clone it here with `git submodule update --init --checkout`.
 - **On the web** there is no filesystem, so the bytes are embedded into the wasm
   binary at compile time with `include_bytes!`, resolved relative to the file the
   macro is invoked from. The comparison is otherwise the same one — the frame is
@@ -165,10 +162,8 @@ that fails in CI leaves the frame behind for the job to upload: natively it is
 written under `UNLIT3D_SNAPSHOT_MISMATCH_DIR` (or `target/snapshot-mismatches`),
 and on the web it is encoded in the browser and handed to the test runner, which
 is the process that has a filesystem. A mismatch is often the platform showing
-through rather than a regression — the stored frames come from one GPU stack, and
-another driver's rounding is enough to put a frame below the bar — so having the
-frame is what makes the difference something to look at rather than to infer from
-a score.
+through rather than a regression, so having the frame is what makes the
+difference something to look at rather than to infer from a score.
 
 To re-bless a snapshot after an intentional rendering change:
 

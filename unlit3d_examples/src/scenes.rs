@@ -213,7 +213,7 @@ pub struct SceneOptions {
     /// A capture runs without a window, so nothing would ever push an event
     /// into a scene that drives its own controls: it spawns a writer and feeds
     /// the frames it draws. A windowed run clears this, because input is
-    /// distributed to a nested world that has no writer of its own -- one the
+    /// distributed to a nested world that has no writer of its own — one the
     /// scene spawned would be the one it reads, and the window's events would
     /// never arrive.
     pub own_input: bool,
@@ -225,7 +225,8 @@ pub struct SceneOptions {
 // The fixtures every scene shares.
 // ---------------------------------------------------------------------------
 
-/// The size the scenes draw at, matching their snapshots.
+/// The size most scenes draw at, matching their snapshots; also the baseline
+/// aspect they keep in the windowed path.
 pub const TEST_SIZE: (u32, u32) = (256, 192);
 
 /// The aspect the windowed example keeps its 3D content to, as a reference

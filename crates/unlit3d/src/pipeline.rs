@@ -66,7 +66,7 @@ pub use unlit_wgpu::resources::Rebuild;
 /// How many bindings one global group can hold at once.
 ///
 /// The three uniforms every pipeline binds, plus the mesh metadata, the joints,
-/// the two morph arrays and the five lighting arrays an optional entry each. A
+/// the two morph arrays and the five lighting buffers an optional entry each. A
 /// pipeline that adds a binding has to raise this too, which is why the count is
 /// spelled out here rather than inline where the array is built.
 const MAX_GLOBAL_BINDINGS: usize = 3 + 1 + 1 + 2 + 5;

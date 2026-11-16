@@ -5,8 +5,8 @@ use super::*;
 /// Deliberately knows nothing about how a frame reaches a display: it advances
 /// the scene's behaviour and renders into whatever target is bound, so the
 /// windowed run and the snapshot tests differ only in what they bind and what
-/// with the result. The scene itself is a [`scenes::SceneDef`] whose build
-/// populated the world and returned the [`SceneControl`] this drives.
+/// they do with the result. The scene itself is a [`scenes::SceneDef`] whose
+/// build populated the world and returned the [`SceneControl`] this drives.
 ///
 /// Public because the snapshot tests drive the same scenes offscreen: the web
 /// renders them and compares each frame against its snapshot, which is the
@@ -43,9 +43,9 @@ pub struct Scene {
     pub pass: Entity,
     /// The snapshot the scene's test compares each frame against, if any.
     ///
-    /// The scene's per-frame behaviour is not here: it was moved into the
-    /// scene's own world as a frame behaviour at build time, so a frame
-    /// advances it without `&mut Scene`.
+    /// The scene's per-frame behaviour is not here: it lives in the scene's
+    /// own world as a frame behaviour added at build time, so a frame advances
+    /// it without `&mut Scene`.
     pub snapshot: scenes::Snapshot,
     /// The frame-rate measurement the windowed shell's readout displays.
     ///

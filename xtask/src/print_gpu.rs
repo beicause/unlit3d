@@ -6,7 +6,7 @@
 //! so the description comes from `unlit_wgpu_test_util`'s `gpu-info` binary,
 //! which is built and run here.
 //!
-//! A test run draws through two tiers -- the default one, then `webgl2` -- so
+//! A test run draws through two tiers — the default one, then `webgl2` — so
 //! both are described, each labelled with the tier it belongs to.
 
 use std::process::Command;

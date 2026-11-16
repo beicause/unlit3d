@@ -85,7 +85,7 @@ time. The scene renders into an offscreen texture the client reads with
 the MIDI sequence and the centre of every panel button, and `request_exit`
 stops the process. Automatic ball drops and the background track's autoplay
 are off in this mode, so every visible and audible change comes from the
-client. The [`mcp_input` test](tests/mcp_input/main.rs) starts that binary and
+client. The [`mcp_input` test](tests/mcp_input.rs) starts that binary and
 never touches its internals: it clicks the panel through `send_input`, captures
 three image snapshots, compares the mix it recorded while the sequence played
 against a fourth baseline, asserts that the mix recorded after the pause is
@@ -191,16 +191,10 @@ a play, a pause, a rewind is a field write on the `MidiSequencer` of the row
 that was clicked. The render world holds only a `EguiSource` with those slots
 attached, which uploads and records what it finds there.
 
-The two sides keep separate egui contexts. Sharing one would have both worlds
-writing the same memory and font atlas, and egui treats one `run_ui` call as
-one whole frame, so two worlds running it against one context would interleave
-two frames into one. Their texture ids both start at zero, so a frame keeps the
-ids it was laid out with and the GPU integration keys textures by origin and
-id — nothing renumbers them.
+The two sides keep separate egui contexts, and their texture ids both start
+at zero — the why, and what a frame keeps because of it, is in
+[`unlit3d`](../crates/unlit3d/README.md)'s egui section.
 
-A frame that could not differ from the one the drawing side holds is not laid
-out at all: one is laid out only when there is none yet, the target the drawing
-side reports has moved, input arrived, or the last frame asked to be laid out
-again — at once, or once a delay it named has elapsed. A panel nobody is
-touching therefore costs nothing on the wire, and the frame it last published
-keeps being drawn until a newer one replaces it.
+A quiet panel costs nothing on the wire, and the frame it last published keeps
+being drawn until a newer one replaces it — the full rule for when a frame gets
+laid out at all is in [`unlit3dx`](../crates/unlit3dx/README.md)'s egui bridge.

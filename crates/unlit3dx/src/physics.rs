@@ -1,4 +1,4 @@
-//! The physics threaded world: a fixed-step rapier simulation on its own thread.
+//! The physics world: a fixed-step rapier simulation, on its own thread or stepped by the host.
 //!
 //! Gameplay sends jobs that build bodies; the thread steps the simulation at
 //! a fixed rate. A step drains rapier's contact events into

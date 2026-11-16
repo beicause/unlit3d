@@ -146,8 +146,7 @@ Which one to reach for follows from the answer the caller needs:
 - One value, once, from one job — the entity an install created, the assets
   a build made — is a `Pending` request.
 
-The payload is the caller's type — the library defines none — so a scene
-collects exactly the data it wants and pays for nothing else.
+As in the usage example, the payload is the caller's type.
 
 A snapshot reader is a single-slot mailbox: `latest` peeks the newest
 snapshot, there is no backlog and no ordering to reason about, and an unread
@@ -186,7 +185,7 @@ tick body has to know which one it is under.
   drains, then checks `ThreadControl::stop_requested` and runs the tick inside
   `catch_unwind`, reporting a panic before the thread ends so the host learns
   why its world died rather than joining a corpse. Despawning the proxy entity
-  stops its thread and waits at most two seconds for it; a tick that will not
+  stops its thread and waits at most a few seconds (`STOP_TIMEOUT`) for it; a tick that will not
   stop is left detached rather than hanging the dropper. The handle reports on
   the world — `is_finished`, and `state`, a `SnapshotReader<WorldState>` that
   reads `Running`, `Stopped` or `Panicked(message)` — and `stop` asks it to
@@ -312,17 +311,15 @@ The bridges:
   world as a job that answers the voice's entity.
 - **egui** (on with `render`): [`egui::EguiPanelHost`] lays a world's
   `unlit3d::egui::EguiPanel`s out for a `unlit3d::egui::EguiSource` in another
-  world. A panel can only be built where its egui context runs — its callback
-  is handed a `&mut egui::Ui` from the pass building it — so the panel's
-  world lays the frame out and tessellates it, and the drawing world uploads
-  and records what comes back. Spawn a [`egui::EguiPanelHost`] beside the panels;
+  world. A panel can only be built where its egui context runs (the why is in
+  [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
+  egui section), so the panel's world lays the frame out and tessellates it,
+  and the drawing world uploads and records what comes back. Spawn a [`egui::EguiPanelHost`] beside the panels;
   it holds a sender to the drawing world and the
   [`unlit3d::relay::SnapshotReader`] the target comes back through, and the
   source is set up with [`unlit3d::egui::EguiSource::publish_target`] to keep the
-  slots frames land in. A frame travels as a job, so the slots stay on the
-  thread that draws them; the target the drawing side measures travels the
-  other way as a snapshot, since a layout only ever needs the newest one. A
-  tick that could not change the picture — a settled panel, no input, the same
+  slots frames land in. A frame travels as a job; a tick that could not
+  change the picture — a settled panel, no input, the same
   target, no repaint due — sends nothing, so a still egui costs nothing, and the
   frame already there is drawn until a newer one replaces it. A frame the
   drawing world's queue refused is sent again rather than counted as
@@ -331,11 +328,9 @@ The bridges:
   frame's duration rather than read off the wall clock: an animation is at the
   same point at the same frame however long the run took, so a frame captured
   for comparison does not depend on how busy the machine was. The two sides
-  keep separate contexts: sharing one would have both worlds writing the same
-  memory and font atlas, and egui treats one `run_ui` call as one whole frame.
-  Their texture ids both start at zero, so a frame keeps the ids it was laid
-  out with and the GPU integration keys textures by origin and id — nothing
-  renumbers them.
+  keep separate contexts, and texture ids are never renumbered (the why is in
+  [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
+  egui section).
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
   over the
@@ -385,8 +380,8 @@ headless, because no mode ever reaches into another world's data.
    that means; what another world's content *becomes* is a job, so a pose
    gameplay derived from a physics snapshot is sent to the render world
    rather than left in a mailbox for it to apply. The test is whether a line
-   of setup could belong to another scene: if it names something the game
-   calls a thing, it belongs in a job.
+   of setup could belong to another scene: if it names a thing the game
+   itself defines, it belongs in a job.
 3. **A scene holds one port per world it talks to.** A world's address is a
    `JobSender` and the subscriptions it made, so the scene keeps those in one
    value of its own — the demo's `Scene` carries the render, physics and audio

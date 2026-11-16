@@ -2,8 +2,7 @@
 //!
 //! Some work a world starts is asynchronous — a GPU request that resolves
 //! once a device is ready, for instance — and [`crate::executor::LocalTasks`]
-//! is the pool that carries it. A world owns its tasks, so a task lasts as
-//! long as the world does, whatever call started it.
+//! is the pool that carries it.
 //!
 //! The executor is the ecosystem's own, re-exported so a caller needs no
 //! futures dependency of their own. It is the one that fits a frame loop: it

@@ -1,4 +1,4 @@
-//! Integration tests for the physics threaded world: bodies built by jobs,
+//! Integration tests for the physics world: bodies built by jobs,
 //! snapshots subscribed to on the host, contacts reported as events.
 
 use std::sync::Arc;

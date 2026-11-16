@@ -638,11 +638,8 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
             ))
             .default_pos(gpu_info_default_pos(ui.ctx())),
     };
-    // A titled window that is movable discards `current_pos`: egui re-applies
-    // the pivot it had stored before the area began, so the position given here
-    // would not stick. The reposition pass therefore also turns the window
-    // immovable; every other pass is movable again and a user's drag works as
-    // before.
+    // As in the selector: a movable titled window discards `current_pos`, so
+    // the reposition pass also turns the window immovable.
     let window = match follow_screen_corner(ui.ctx(), id, pivot) {
         Some(pos) => window.current_pos(pos).movable(false),
         None => window,
@@ -676,11 +673,11 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
 
 /// Mount the fullscreen button in the window's top-right corner.
 ///
-/// A button rather than the old "the first press asks for fullscreen": a press
-/// on the canvas is not discoverable — a phone shows no hint that it would
-/// work, and nothing tells a user who left fullscreen that they may ask again —
-/// whereas a button is visible on every platform and keeps working after the
-/// browser has left fullscreen. Nothing about the request is latched, so the
+/// A visible button rather than a gesture on the canvas: a press on the canvas
+/// is not discoverable — a phone shows no hint that it would work, and nothing
+/// tells a user who left fullscreen that they may ask again — while a button is
+/// visible on every platform and keeps working after the browser has left
+/// fullscreen. Nothing about the request is latched, so the
 /// display can be entered and left as often as the button is pressed.
 ///
 /// The click is recorded rather than served here: a panel runs while the world
@@ -704,10 +701,9 @@ pub(crate) fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, s
 
 /// Mount the link to the API docs in the window's top-right corner.
 ///
-/// The link lives in the overlay rather than in the page so the two corner overlays
-/// are laid out by the same code and cannot collide: the page's own link knew
-/// nothing about the button, which is what put the two on top of each other.
-/// Mounted after [`mount_fullscreen`], because the link is placed under the
+/// The link lives in the overlay rather than in the page so the two corner
+/// overlays are laid out by the same code and cannot collide. Mounted after
+/// [`mount_fullscreen`], because the link is placed under the
 /// button it measures.
 ///
 /// The click is recorded rather than served here: a panel runs while the world

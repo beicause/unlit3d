@@ -102,8 +102,8 @@ pub fn setup_presenter(
 /// pass -- and the offscreen path's copying pass, when there is one -- both
 /// record on this one call.
 ///
-/// The behaviour holds while the winit host reports the app suspended; a
-/// host with no winit loop counts as resumed. When the host carries more
+/// While the winit host reports the app suspended, the behaviour does
+/// nothing; a host with no winit loop counts as resumed. When the host carries more
 /// than one presenter, the first one the query yields presents.
 pub fn draw_presented(render: Entity) -> OnFrame {
     OnFrame::with_order(

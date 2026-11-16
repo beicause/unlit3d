@@ -189,13 +189,6 @@ const LETTERBOX_TOLERANCE: Tolerance = Tolerance {
     channel_delta: 8,
 };
 
-/// Draw the scene at its own size and compare every frame it freezes.
-///
-/// The capture settings are the ones the snapshots were taken with: the scene's
-/// own size and frame count, no letterbox, and a sequence that advances once per
-/// drawn frame. `frames` names the snapshots in frame order, and the scene's own
-/// table is walked alongside it — a scene freezes only some of the frames it
-/// draws, and the two have to agree on which.
 /// The live texture behind a bound target's handle.
 ///
 /// A target's handle outlives its textures: a resize replaces what the node
@@ -216,6 +209,13 @@ fn target_texture(world: &World, scene: &Scene, target: &PersistentTarget) -> wg
         .expect("the target texture is a resource node")
 }
 
+/// Draw the scene at its own size and compare every frame it freezes.
+///
+/// The capture settings are the ones the snapshots were taken with: the scene's
+/// own size and frame count, no letterbox, and a sequence that advances once per
+/// drawn frame. `frames` names the snapshots in frame order, and the scene's own
+/// table is walked alongside it — a scene freezes only some of the frames it
+/// draws, and the two have to agree on which.
 async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[Snapshot]) {
     let ctx = Ctx::headless().await;
     let size = def.size;
@@ -257,11 +257,11 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     // Only the frames a scene freezes are read back, so the frames between two
     // captures are stepped without being drawn. That leans on a draw not
     // advancing the scene: it reads what the steps left behind, and the state it
-    // does write is only what a frame publishes for its readers -- the target a
-    // panel lays itself out against and the URLs its widgets opened -- which the
+    // does write is only what a frame publishes for its readers — the target a
+    // panel lays itself out against and the URLs its widgets opened — which the
     // next frame replaces anyway. So a frame drawn late is the frame that would
-    // have been drawn on time. A scene that accumulates across draws -- a
-    // ping-pong target, a temporal filter -- would have to draw every frame. One
+    // have been drawn on time. A scene that accumulates across draws — a
+    // ping-pong target, a temporal filter — would have to draw every frame. One
     // frame is drawn before the loop: egui lays a window out over two passes
     // — the first records only the space it will take — so a capture that were
     // the first drawn frame would compare against an empty panel.
@@ -472,7 +472,7 @@ async fn mesh_and_ui_matches_its_snapshot() {
 ///
 /// It freezes the page twice: once as its markup declares it, and once after the
 /// capture has clicked, picked and typed into its controls. The pair is what
-/// shows the input path reaching the document at all -- a page that stops
+/// shows the input path reaching the document at all — a page that stops
 /// receiving events still matches its first frame, and only the second one
 /// moves. A regression that stops the page resolving, stops its paint tree
 /// reaching the texture, or loses the premultiplied blend changes whole boxes of

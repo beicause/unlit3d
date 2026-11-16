@@ -11,7 +11,7 @@
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
 | 建渲染上下文 | `spawn_context(&mut world, RenderDevice, ResourceGraph)` 每 world 调一次，GPU 状态进 shared 子树；`RenderDevice` 收 device/queue/capabilities/health | `crates/unlit3d/src/source.rs` |
-| 上下文句柄 | `RenderContext`，Copy。**六个字段都是 `pub(crate) Entity`，不是 GPU 句柄**，要从外部用只能走它的访问函数（`device` / `queue` / `capabilities` / `clock` / `try_graph` / `graph` / `uniforms` / `maintain_scope`，都吃 `Scope`）；只有 `of(world, anchor)` 是 pub | 同上，搜 `pub fn device` |
+| 上下文句柄 | `RenderContext`，Copy。**它的字段都是 `pub(crate) Entity`，不是 GPU 句柄**，要从外部用只能走它的访问函数（`device` / `queue` / `capabilities` / `clock` / `try_graph` / `graph` / `uniforms` / `maintain_scope`，都吃 `Scope`）；只有 `of(world, anchor)` 是 pub | 同上，搜 `pub fn device` |
 | 根作用域 | `World` 的 `root_scope` / `root_scope_mut` / `scope` / `scope_mut` / `shared` / `is_shared`；前两组里按句柄开 scope 的两个直接交出 `Scope` / `ScopeMut`，失败即 panic，要 `Result` 就用 `try_scope` / `try_scope_mut` | `crates/unlit_ecs/src/world.rs` |
 | 作用域只读 | `Scope`：`entity` / `query` / `query_one` / `archetype_of` / `children` / `queue` 等；`query_one` 找不到那一行即 panic，预料缺席用 `try_query_one` | `crates/unlit_ecs/src/view.rs` |
 | 作用域可写 | `ScopeMut`：`spawn` / `spawn_named` / `spawn_at` / `despawn` / `link` / `unlink` / `apply` 等 | 同上 |
@@ -96,7 +96,7 @@
 | 分簇配置 | `MeshSource` 的 `lights.clustering` 字段（`pub`），类型 `ClusterConfig { cell_pixels, z_slices, max_clusters, first_slice_depth, far }` + `ClusterConfig::DEFAULT`；从 prelude 直接可用 | `crates/unlit_wgpu/src/light.rs` / `crates/unlit3d/src/mesh_source/lighting.rs` |
 | 多边形光 | 少于 3 个角无面积、不画；重复一个角可以拼三角，相差极小的角会被合并 | `crates/unlit3d/src/light.rs` |
 | 关闭某盏灯 | `describe.intensity <= 0.0` 的灯在收集时直接跳过（不用 despawn，但 despawn 更省一次遍历） | 同上 |
-| 上传 | `upload_lights`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，前提与实例上传相同——这帧有活动相机且可见集非空——但**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source.rs` |
+| 上传 | `upload`（`mesh_source/lighting.rs`）每帧在 `build_scene` 里跑，前提与实例上传相同——这帧有活动相机且可见集非空——但**与画不画受光 mesh 无关**：分簇在 CPU 上重算一遍并整块重传，因为相机与灯都可能动 | `crates/unlit3d/src/mesh_source.rs` |
 
 ## 相机与变换
 

@@ -68,7 +68,7 @@ dynamic vector subscript left in the shader tree; keep it that way.
 ## A clipped draw left last clips the pass's multisample resolve on GL
 
 **Where:** [`crates/unlit3d/src/renderer.rs`](crates/unlit3d/src/renderer.rs),
-the end of `record_pass`, after every source has recorded.
+the end of `Renderer::frame`'s pass loop, after every source has recorded.
 
 **Symptom:** with MSAA on the GL backend, a scene whose last draw was clipped —
 an egui window, say — resolved only that rectangle and left the rest of the frame
@@ -162,10 +162,10 @@ far enough for one to be told apart from a device that went away.
 `--disable-gpu-watchdog` in `BACKEND_ARGS.webgpu`.
 
 **Symptom:** the WebGPU pass fails a different handful of the examples' snapshot
-tests on every run — four to seven of the 118 — each after nineteen to
-twenty-eight seconds, with `the staging buffer could not be mapped: A valid
-external Instance reference no longer exists`. Every one of them passes when run
-alone. Chrome's own stderr, at the point the failures start, says:
+tests on every run — each after tens of seconds, with `the staging buffer could
+not be mapped: A valid external Instance reference no longer exists`. Every one
+of them passes when run alone. Chrome's own stderr, at the point the failures
+start, says:
 
 ```text
 ERROR:command_buffer_proxy_impl.cc:476] GPU state invalid after WaitForGetOffsetInRange.
@@ -185,9 +185,9 @@ gpu/ipc/service/gpu_init.cc: bool enable_watchdog = !gpu_preferences_.disable_gp
                                                     && !command_line->HasSwitch(switches::kHeadless);
 ```
 
-A SwiftShader Vulkan device is slow enough that sixteen pages drawn at once — the
-browser suite's default parallelism — leave the GPU main thread between two
-frames past the thirty seconds software rendering gets. Once the process dies
+A SwiftShader Vulkan device is slow enough that the suite's default parallelism
+— several pages drawn at once — leaves the GPU main thread between two frames
+past the thirty seconds software rendering gets. Once the process dies
 every device in the browser dies with it, so the tests that were mid-frame all
 fail at their next map, and the browser is not the one that decided to stop.
 
@@ -329,27 +329,26 @@ descriptors rather than the crate's own failed the same way, and nothing else
 did: pipeline, bind group, buffer and sampler labels of the same shape were
 fine, and only the shader module's label reaches the compiler.
 
-**Cause:** wgpu-hal 30.0.2 hands a shader module's label to DXC as the *source
-name* of the compilation. `Device::create_shader_module` stores the label as a
+**Cause:** the wgpu-hal release this workspace pinned at the time of writing
+(30.0.2) hands a shader module's label to DXC as the *source name* of the
+compilation. `Device::create_shader_module` stores the label as a
 `CString` (`raw_name` in `dx12/device.rs`), and `create_render_pipeline` passes
 it to `compile_dxc`, which puts it first in the arguments it gives DXC.
 DXC reads that argument as a path of the source file it is compiling, so
-`unlit_wgpu::lit` reads as drive `unlit_wgpu`, file `lit` -- a file it cannot
+`unlit_wgpu::lit` reads as drive `unlit_wgpu`, file `lit` — a file it cannot
 read. A label with no colon in it compiles the very same module fine.
 
-wgpu's trunk sanitizes the name and anchors it as `./name`; the 30.0.2
-release does not. That is what made this a regression rather than a latent
-bug: the trunk revision this repository pinned before had the fix, so these
-labels compiled on Windows for as long as the build took wgpu from trunk, and
-the release pin taken afterwards brought the bug in.
+wgpu's trunk sanitizes the name and anchors it as `./name`; the pinned release
+does not. That is what made this a regression rather than a latent bug: a build
+taking wgpu from trunk compiles these labels fine, and a release pin does not.
 
 Whether it bites depends on the host as well: wgpu's `Dx12Compiler::Auto`
 uses DXC only where it can load `dxcompiler.dll`, and falls back to FXC
 everywhere else. FXC takes no source name, so a host without the DLL builds
 every one of these pipelines without complaint.
 
-**Workaround:** replace the characters DXC reads as path syntax -- `:`, `/` and
-`\` -- with a hyphen before the label reaches
+**Workaround:** replace the characters DXC reads as path syntax — `:`, `/` and
+`\` — with a hyphen before the label reaches
 `Device::create_shader_module`, in `util::shader_module`. Every module the
 crate creates goes through it; a caller that builds a descriptor itself calls
 `util::shader_module` with its WGSL and label instead, which this repository's
@@ -359,7 +358,7 @@ tests and example scenes now do.
 so `unlit_wgpu::lit` shows as `unlit_wgpu--lit`; one character of the name gives
 way to the path it must not read as. Nothing else changes: a label with no path
 syntax is borrowed rather than copied, and the module label takes part in no
-identity -- `ShaderCache` keys on the recipe, and a `Shader`'s label identifies
+identity — `ShaderCache` keys on the recipe, and a `Shader`'s label identifies
 the shader, not the module it composes to. Pinning DX12 to FXC with
 `Dx12Compiler::Fxc` would have kept the labels but forgone DXC's shader model
 and its validation for the sake of one string.

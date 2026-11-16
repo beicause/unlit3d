@@ -15,10 +15,6 @@ use crate::source::spawn_context;
 /// cannot keep state in itself.
 struct Runs(u32);
 
-/// The frame target the tests draw into.
-///
-/// Nothing here records a pass, so only the target's key and size matter —
-/// no attachment has to exist behind them.
 /// The target a frame is laid out against in these tests: the same size
 /// the source was built for, so its clip rectangles are packed in pixels
 /// that agree.
@@ -32,6 +28,9 @@ fn test_egui_target() -> EguiTarget {
     }
 }
 
+/// The pass target the tests build scenes against. Nothing here records a
+/// pass, so only the target's key and size matter — no attachment has to
+/// exist behind them.
 fn test_target() -> PassInfo {
     PassInfo {
         surface: SurfaceKey {

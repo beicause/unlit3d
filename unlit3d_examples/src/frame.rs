@@ -241,7 +241,7 @@ pub(crate) fn restate_viewport(app: Entity) -> OnFrame {
 /// Apply the commands the scene world queued while presenting.
 ///
 /// The library's present renders the scene world, so its commands are applied
-/// after it -- a later order -- rather than by the presenter itself. A skipped
+/// after it — a later order — rather than by the presenter itself. A skipped
 /// frame still flushes: the commands queue up on the scene world either way,
 /// and dropping none of them keeps the scene's own record intact.
 pub(crate) fn flush_scene(app: Entity) -> OnFrame {

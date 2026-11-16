@@ -1,4 +1,4 @@
-[English](https://github.com/beicause/unlit3d/blob/main/xtask/README.md) | 简体中文
+[English](README.md) | 简体中文
 
 # xtask
 
@@ -15,7 +15,7 @@
 cargo xtask check          # typos、tombi、clippy 与文档构建，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
 cargo xtask line-count     # 打印每个 Rust 文件的行数，标记达到 1000 行的
-cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备（两个档位各一份）
+cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备
 cargo xtask miri           # 在 Miri 下跑 ECS 的测试，那是校验其 unsafe 的门禁
 cargo xtask test-wasm      # 经由 wasm，在浏览器的两个 GPU 后端上各跑一遍 GPU 测试
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
@@ -25,7 +25,7 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask check`
 
-先跑 `typos` 与 `tombi`，再跑两趟 clippy，然后跑文档构建，最后运行
+先跑 `typos` 与 `tombi`，再跑三趟 clippy，然后跑文档构建，最后运行
 `cargo fmt --all -- --check`。两个不需要编译器的工具排在最前，因此一处拼写错误或一张
 没排序的 feature 表只花一秒钟，而不是 clippy 那几分钟。clippy 紧随其后，因为它的诊断
 可能让代码树处于 `rustfmt` 会重写的状态，因此格式化拥有最后发言权；文档构建夹在两者
@@ -40,7 +40,7 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 文件。两者都不随 cargo 一起提供：缺了哪一个，该步骤会说明是哪个工具缺了，而不给安装命令——两者都在
 cargo 之外分发。
 
-clippy 跑两趟，因为每一趟编译的代码集合不同：
+clippy 跑三趟，因为每一趟编译的代码集合不同：
 
 1. 库 crate 全部关闭默认 features，这一组合证明它们的通用设施能单独编译与 lint，
    也正是那个假的可选 feature（依赖它的地方其实从没在没有它的情况下编过）编不过的
@@ -48,7 +48,10 @@ clippy 跑两趟，因为每一趟编译的代码集合不同：
    于命令点名的包，其余包的 features 来自抵达它的依赖边，feature 统一会把它们全应用
    上去。应用层的 crate 每个都向 `unlit3d` 要 `egui` 与 `winit`，因此工作区范围的
    那一趟会正好带着这一趟要排除的后端去编库。
-2. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
+2. 工作区用默认 features——平台二进制编译时用的正是这一组合。单列一趟是因为
+   feature 统一决定每个包用什么编：`--all-features` 会打开任何二进制都不会
+   包含的代码，而无 features 那一趟又会漏掉它们全在用的部分。
+3. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
 
 ### `cargo xtask test`
 
@@ -67,8 +70,7 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 
 与其快照不匹配的帧会在测试失败前被写下：默认那趟放在 `target/snapshot-mismatches`，
 档位那趟放在 `target/snapshot-mismatches-webgl2`——各占一个目录，因此两个档位下都
-不同的帧可以被区分开。测试失败时 CI 会上传它们，于是不匹配可以被人查看，而不只是被
-打分。
+不同的帧可以被区分开。测试失败时 CI 会上传它们。
 
 ### `cargo xtask line-count`
 

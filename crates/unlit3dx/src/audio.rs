@@ -1,4 +1,4 @@
-//! The audio threaded world: a callback-driven output stream fed by a ring.
+//! The audio world: a callback-driven output stream fed by a ring.
 //!
 //! The audio thread owns the stream and a lock-free ring buffer; the
 //! operating system's callback pops whatever is newest and silences the
@@ -317,18 +317,16 @@ struct OpenOutput {
 /// ([`Threaded`](crate::world::Threaded)), or stepped by the host
 /// ([`Stepped`](crate::world::Stepped)).
 ///
-/// The world's entity carries the command channel. A self-driven world opens
-/// the default output device on its first tick and keeps it open, spawning
-/// [`AudioFormat`] and [`AudioOutputOpen`] once it knows them; until then,
-/// and whenever no device exists, the world runs silently. A stepped world
-/// follows its [`AudioOutputMode`] config instead: [`AudioOutputMode::Pulled`]
+/// The world's entity carries the command channel. Whether a device is
+/// opened follows [`AudioOutputMode`] for either runner: [`AudioOutputMode::Pulled`]
 /// opens nothing — the host pulls its fills with [`dispatch_audio_fill`] — and
 /// [`AudioOutputMode::OnRequest`]
 /// waits for a [`request_audio_output`] job, which a page sends from a
 /// user-gesture handler because that is where a browser allows a context to
-/// start. Until the device comes up the world gains neither component. Either
-/// way the world mixes whatever [`OnAudioFill`] sources a caller has since
-/// queued into it, and a world nobody has installed stays silent.
+/// start. Until the device comes up the world gains neither [`AudioFormat`]
+/// nor [`AudioOutputOpen`], and whenever no device exists it runs silently.
+/// Either way the world mixes whatever [`OnAudioFill`] sources a caller has
+/// since queued into it, and a world nobody has installed stays silent.
 ///
 /// Nothing is published until someone subscribes: a subscriber's collector
 /// runs once per tick, after the output's state has been updated.

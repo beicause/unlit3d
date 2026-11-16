@@ -17,10 +17,11 @@ CI workflow。基准测试也放在这里，因为它与测试走的是同一条
   离屏渲染后回读像素断言，但不与存储图像比较。
 - **快照测试**：把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知比较。低层 API 的
   快照留在 `unlit_wgpu` 的测试里；高层 ECS 场景的快照由
-  [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的 `tests/gpu_suite.rs` 运行
-  （`SNAPSHOT_UPDATE=1` 重新生成），因为它既是示例也是 CI 的渲染回归检查；而
+  [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的 `tests/gpu_suite.rs` 运行，
+  因为它既是示例也是 CI 的渲染回归检查；而
   [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) 的 `tests/gpu_cli.rs` 通过命令行工具的库
-  渲染同一个参考 glTF 场景，与同一批快照比较。
+  渲染同一个参考 glTF 场景，与同一批快照比较。两者都可用
+  `SNAPSHOT_UPDATE=1` 重新生成。
 
 单元层里还有一些性质是用生成而非手写的输入来检查的：`proptest` 驱动 offset 分配器
 （偏移始终对齐且互不重叠，装得进最大空闲区的请求必定获批）、依赖图（它接受的每条边
@@ -31,7 +32,7 @@ CI workflow。基准测试也放在这里，因为它与测试走的是同一条
 每个 crate 的集成测试都是**一个二进制**，而不是每个源文件一个：`tests/` 下的文件是它们
 旁边那个 suite 文件（`gpu_suite.rs`，纯 `libtest` 的测试则为 `suite.rs`）的模块，用
 `#[path]` 引入。它们共用该 crate 的代码，GPU 那侧还共用同一套骨架，因此把它们拆成多个
-target 就意味着同一份代码按文件各链接一次——此前整个工作区有三十个测试二进制，每一个
+target 就意味着同一份代码按文件各链接一次——全工作区几十个测试二进制，每一个
 都带着同一套运行时。二进制的名字就是 crate 的名字，其 `required-features` 是它的用例
 所需的功能，因此若某个 suite 用到了可选功能，该功能打开时它才会运行。
 
@@ -86,18 +87,16 @@ WebGPU 画布读出来全是透明」。
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令，以及 MCP 服务器的 ECS 工具。 |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素，其中有一个端到端 MCP 测试，用一对流把 world 服务出去并用 JSON-RPC 与它对话。其多帧快照覆盖位于 `unlit3d_examples`。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、场景切换与固定步长播放时钟（`src/tests.rs`）、窗口浮层（`src/overlay/tests.rs`），以及 `tests/gpu_suite.rs` 的渲染快照；`tests/selector_position.rs` 覆盖窗口外壳跨场景切换保留的面板。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、场景切换与固定步长播放时钟（`src/tests.rs`）、窗口浮层（`src/overlay/tests.rs`），以及 `tests/gpu_suite.rs` 的渲染快照；`tests/selector_position.rs` 覆盖窗口外壳跨场景切换时保留拖拽位置的面板。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 抵达目标 world、快照与流订阅、world 对自己状态的发布、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
 
 ## 基准测试
 
-[`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) 下有三个目标：`frame` 测
-吞吐量，`ecs` 测一次组件读取的成本，`profile` 给出帧内各阶段的分解。它不属于测试运行：
-基准二进制没有测试 harness，
-因此被排除在 `cargo xtask test` 之外，改由 `cargo bench` 驱动。各目标覆盖什么、如何
-读它的输出，见[该 crate 的 README](unlit3d_benchmarks/README.zh-CN.md)。
+[`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) 不属于测试运行：基准二进制
+没有测试 harness，因此被排除在 `cargo xtask test` 之外，改由 `cargo bench` 驱动。各目标
+覆盖什么、如何读它们的输出，见[该 crate 的 README](unlit3d_benchmarks/README.zh-CN.md)。
 
 ## 持续集成
 
@@ -149,8 +148,7 @@ web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的
 失败运行留下的帧按各趟分别上传，各来自自己的目录：`build` 的
 `target/snapshot-mismatches` 与 `target/snapshot-mismatches-webgl2`，`build-wasm` 的
 `target/snapshot-mismatches-wasm` 与 `target/snapshot-mismatches-wasm-webgl2`。不匹配
-往往反映的是平台差异而非回归，所以拿到这一帧，才能让人直接查看差异，而不是从分数去
-推断。
+往往反映的是平台差异而非回归。
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次推送到 `main` 时
 把站点发布到 GitHub Pages：根目录是一个首页，链接两个 web 示例与 API 文档，每个示例

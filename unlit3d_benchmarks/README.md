@@ -11,9 +11,9 @@ and are worth measuring without a device in the way.
 The three targets are `frame` for throughput, `ecs` for what one component read
 costs, and `profile` for a frame's phase breakdown.
 
-The crate is not part of the test run: a benchmark binary has no test harness, so
-`cargo xtask test` excludes it and `cargo bench` drives it instead. What the
-workspace's tests cover is in [`TESTING.md`](../TESTING.md).
+The crate is not part of the test run — `cargo xtask test` skips it and
+`cargo bench` drives it instead; what the workspace's tests cover is in
+[`TESTING.md`](../TESTING.md).
 
 ## `frame` — how fast
 
@@ -101,29 +101,34 @@ with many entities breaks down like this:
 
 ```text
 renderer.frame
+├── renderer.frame.advance_globals
 ├── renderer.frame.build_sources
 │   └── mesh_source.build
 │       ├── mesh_source.metadata.upload
-│       ├── mesh_source.uniforms.upload
-│       ├── mesh_source.global_groups.rebuild
+│       ├── mesh_source.uniforms
+│       │   └── mesh_source.uniforms.prune
 │       ├── scene.cull
 │       ├── scene.resolve
 │       │   └── scene.resolve.family
 │       ├── scene.sort
-│       ├── mesh_source.poses.pack
-│       ├── mesh_source.poses.upload
 │       ├── mesh_source.instances.upload
+│       ├── mesh_source.skin_morph.upload
+│       ├── mesh_source.lights.upload
+│       ├── mesh_source.maintain
 │       └── mesh_source.assemble
 │           ├── mesh_source.assemble.handles
+│           ├── mesh_source.assemble.globals
 │           └── mesh_source.assemble.draws
-├── renderer.frame.resolve_order
-├── renderer.frame.record_passes
+├── renderer.frame.check_placement
+├── renderer.frame.resolve_passes
+├── renderer.frame.resolve_sources
+├── renderer.frame.record_pass
 └── renderer.frame.submit
 ```
 
-Read them as a breakdown, not as a promise: the scopes cover the frame's own CPU
-work, so time spent inside the GPU driver or waiting on the device is not
-attributed to any of them.
+Read them as a breakdown, not as a promise: `resolve_sources` and `record_pass`
+print once per pass, the scopes cover the frame's own CPU work, so time spent
+inside the GPU driver or waiting on the device is not attributed to any of them.
 
 To pull just the phases of the `visible` cases out of a run:
 

@@ -113,6 +113,7 @@ struct RegisteredPipeline {
     global: Option<RegisteredGlobal>,
 }
 
+/// The [FrameSource] that draws meshes.
 ///
 /// It owns the mesh pools, the pipeline families, the per-frame caches and the
 /// [`Scene`] the frame's draws are assembled into, and it fetches the device,

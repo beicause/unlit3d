@@ -133,7 +133,7 @@ pub(super) async fn resource_graph_rebuilds_a_dependent_after_a_resource_change(
 /// declare no depth state either — `wgpu` rejects the mismatch when the
 /// pipeline is bound. A pipeline that kept the base options' depth format
 /// therefore could not be drawn into a color-only target at all, which is what
-/// an overlay-only or overlay-only pass needs.
+/// an overlay-only pass needs.
 pub(super) async fn a_color_only_target_draws_a_cube() {
     let ctx = Ctx::headless().await;
     // State the depth-less target the same way a caller would: the surface

@@ -15,7 +15,7 @@
 |---------|------|-----------|
 | `blitz` | 否 | `blitz` 模块：由 [Blitz](https://crates.io/crates/blitz-dom) 布局的 HTML 文档，作为帧源绘制 |
 | `blitz_epaint_fonts` | 否 | 页面布局所用的字体：egui 的默认字体，使同一份标记在每个目标上画出同样的字形 |
-| `blitz_sc_fonts` | 否 | 给内置字体加上 Noto Sans SC 子集，覆盖通用规范汉字表一级 3500 字与二级 3000 字 |
+| `blitz_sc_fonts` | 否 | 给内置字体加上 Noto Sans SC 子集，覆盖通用规范汉字表一级与二级汉字 |
 | `blitz_system_fonts` | 否 | 让页面回退到宿主已装的字体，补上内置字体没有覆盖的部分 |
 | `egui` | 是 | `egui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；`presenter`，建在它之上的现成窗口循环；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
@@ -97,7 +97,7 @@ world root                              根 scope 看得见所有实体
 ├── FramePass(FramePassOrder(0)) + RenderLoadOps
 │   ├── Source(MeshSource)                    源自身也是一个 scope
 │   │   ├── Camera
-│   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
+│   │   ├── Transform + GpuMesh + GpuMaterial + GpuRenderPipeline
 │   │   └── ...
 │   ├── Source(LineSource)                    笔画；混合的与网格按深度合成
 │   ├── Source(BlitzSource)                   合成在网格之上的 HTML 页面
@@ -123,8 +123,9 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 - pass 就是普通实体：它携带自己绘入的附件、开启时使用的 `RenderLoadOps`，以及场景
   被裁剪到的视口。视口是 pass 状态，所以渲染器在每个场景之前把它设回整个目标；场景的
   绘制所设置的裁剪矩形同样是 pass 状态，会一直留到 pass 结束，因此渲染器在录完所有源
-  之后用整个目标盖掉它。否则一个以带裁剪的绘制收尾的 pass，在 GL 后端上只会解析那一
-  小块——那里的多重采样解析是一次 blit，而 blit 会受裁剪矩形限制。其下的源就是它录制
+  之后用整个目标盖掉它——否则一个以带裁剪的绘制收尾的 pass，在 GL 后端上只会解析那一
+  小块（GL 后端的缘由见
+  [WORKAROUND.zh-CN.md](../../WORKAROUND.zh-CN.md)）。其下的源就是它录制
   的源，因此一个 world 可以按帧的需要放任意多个 pass——一个画进离屏目标的 pass 与一个
   把该目标贴到交换链的 pass 是同一个 world 里的两个实体，而不是两个 world。
 - pass 用自己实体的名字录制：wgpu 把它当作这个 pass 录制期间所报校验错误的标签打印出
@@ -137,10 +138,10 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   颜色 view 是它自己的纹理、只在 resize 时变——正因如此，截图才能在呈现之后回读这一帧。
 - 每个源在 `build_scene` 中填充一个 `Scene`，随后渲染器把该场景录制进以这个 pass
   自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
-- 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：内置
-  lit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
-  东西——它的 key、实例记录、mesh 与材质辅助方法——都住在 `lit` 模块里。
-  渲染器里没有任何 mesh 专用的字段或绘制路径。
+- 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：
+  渲染器里没有任何 mesh 专用的字段或绘制路径，内置 lit 家族通过与调用者家族相同的
+  `MeshSource::register_family` 注册（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)），
+  一切专属于它的东西都住在 `lit` 模块里。
 - 共享源池子的 mesh 一律经由 `MeshSource::allocate_pooled_mesh` 分配，内置家族用的
   也是它：调用者声明自己的 mesh 占用哪几条流并填充它们，源负责分配顶点与索引区段、
   在设备没有 `base_vertex` 时把池偏移烘进索引，并交回一个完整的 `GpuMesh`。
@@ -203,10 +204,9 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 单个场景之内，源产出的顺序（它的可见条目、它的实例 run）不变。源之间的
 顺序不是被 pass 级状态逼出来的硬约束——`Scene` 已携带必要的 pass 状态信息，在录制时
 都会重设 pass 状态——但「egui 要合成在 3D 之上」等类似语义不再只靠它：
-[`Scene::record_composited`](unlit_wgpu::scene::Scene::record_composited) 把各源的
-场景合成每 pass 一份绘制清单——按场景顺序先录顺次绘制，再合并所有场景的深度排序池，
-最后是压尾绘制——由各源以
-[`DrawOrder`](unlit_wgpu::scene::DrawOrder) 标注。
+[`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据)
+把各源的场景合成每 pass 一份绘制清单，由各源以
+[`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据) 标注；排序规则本身见该节。
 
 </details>
 
@@ -240,10 +240,10 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 
 带 `ZSortedDrawing` 的实体会在不透明实体之后绘制，并按「网格包围盒中心沿相机视线轴的
 深度」由远及近排序——见 `Camera::view_depth`——因此枢轴点偏离几何体的网格仍按它实际
-绘制的几何体排序，而不是按实体原点。这一顺序是 pass 的合成，不是源的：该条目加入
-所有源共同贡献的深度排序池，与混合网格、深度排序笔画一起分层。
+绘制的几何体排序，而不是按实体原点。这一顺序是 pass 的合成，不是源的——见
+[帧模型](#帧模型)。
 
-source 通过它所在 pass 指定的相机绘制：[`FramePass::with_camera`](pass::FramePass::with_camera)
+source 通过它所在 pass 指定的相机绘制：[`FramePass::with_camera`](https://docs.rs/unlit3d/latest/unlit3d/pass/struct.FramePass.html#method.with_camera)
 指名相机实体，pass 的每个 source 都会经 `PassInfo::camera` 拿到它——整条 pass 一句话，
 分屏就是两趟 pass 各配一个相机。pass 没指名时才回退到该 source **自己 scope 内**第一个
 **active** 的 `Camera`——`Camera::active` 为 `false` 的实体会被跳过，而「第一个」取决于
@@ -307,17 +307,15 @@ z-sorted 绘制排序与透视相机完全一致。
 绘制顺序**就是**结果，合并后的 draw 会改为按记录顺序光栅化各实例。它们的顺序来自每个
 网格包围盒中心沿相机视线轴的深度，因此跟随网格实际绘制的几何体，而不是它的枢轴点或到
 眼睛的直线距离。源不再自行排序：条目携带
-[`DrawOrder::Sorted`](unlit_wgpu::scene::DrawOrder::Sorted)，由 pass 的合成把所有源
-共同贡献的池从远到近排序，混合网格与不同源的深度排序笔画在此汇成一份列表。
+[`DrawOrder::Sorted`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据)，由 pass 的合成把所有源共同贡献的池从
+远到近排序（见[帧模型](#帧模型)）。
 
 </details>
 
 ## lit 管线
 
 内置 lit 管线作为普通家族注册，实体所用的着色器变体只含其网格实际拥有的通道。它
-没有任何特权：调用者自己的家族通过同一个 `MeshSource::register_family` 注册，
-拥有自己的逐实例顶点流，并通过同一套公开构造函数绑定本帧共享输入。见
-[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)。
+没有任何特权；注册路径与逐实例流见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)。
 
 <details>
 <summary>内置变体支持什么，以及姿势数据放在哪里</summary>
@@ -356,7 +354,7 @@ z-sorted 绘制排序与透视相机完全一致。
 
 ### 受光或无光
 
-[`LitOptions::unlit`](unlit_wgpu::pipeline::LitOptions::unlit) 是调用方选项里的一个
+[`LitOptions::unlit`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#光照前向聚簇的-lambert) 是调用方选项里的一个
 开关，只决定一件事：片段阶段要不要累加本帧的光源。两种模式走同一个家族——网格通道、
 实例流、绑定组布局、着色器包都是共用的——因此为一种模式分配的网格在另一种模式下照画。
 两种模式都没有 prepass、没有阴影贴图、没有计算通道。
@@ -367,9 +365,9 @@ z-sorted 绘制排序与透视相机完全一致。
 
 - `LineSource` 画**笔画**：一个笔画是一个挂着 `Line` 组件的实体——一条线段记录，
   带世界空间中的两个端点、两端各自的颜色、一个半宽，以及两端是否为圆头，再外加记录
-  本身装不下的绘制策略：[`LineOptions`](unlit_wgpu::line_shader::LineOptions) 声明
+  本身装不下的绘制策略：[`LineOptions`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/line_shader.rs) 声明
   入口着色器与拼进它的调用者代码片段、硬边切割、深度模板策略、混合与写入掩码。
-  [`Line::opaque`](line::Line::opaque) 与 [`Line::blended`](line::Line::blended)
+  [`Line::opaque`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/line.rs) 与 [`Line::blended`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/line.rs)
   给出两种常用策略；选项相同的笔画合为一次绘制，选项不同的各画各的。每条线段变成一个
   实例；顶点阶段把它展开成一条携带该宽度的屏幕空间四边形，片元阶段用胶囊的距离场覆盖
   它，因此无论多宽边缘都是平滑的。不透明策略改为在半覆盖处切割这条边缘——覆写画面的
@@ -489,7 +487,7 @@ impl InstanceContext<'_> {
 想要相机、帧 globals、视图或姿势与元数据数组的自定义管线，通过公开构造函数绑定
 它们，而无需自己重造布局：`GlobalResources::layout` 从 `GlobalBindings` 描述构造
 `wgpu::BindGroupLayout`，`GlobalResources::recipe` 返回渲染器注册的
-`GlobalRecipe` 配方，因此数组变化时该组会被重建。内置的 `LitFactory` 调用的正是
+`GlobalRecipe` 配方，因此数组变化时该组会被重建。内置 lit 家族调用的正是
 同一批函数。
 
 相机、globals 与视图不归 source 所有：帧为每个可见相机与视口各上传一份记录，配方
@@ -585,7 +583,7 @@ impl InstanceContext<'_> {
 布局页面，再用 Vello 的 GPU 后端光栅化，然后把结果合成到帧上。它是
 `EguiSource` 面向整页文档而非控件的对应物。
 
-页面不属于源本身，而是一个 [`BlitzDocument`](blitz::BlitzDocument) 组件；源绘制它
+页面不属于源本身，而是一个 [`BlitzDocument`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/document.rs) 组件；源绘制它
 作用域里携带的第一个。把页面挂在绘制它的源之下，就像面板挂在 egui 源之下一样。标记因此
 和别的行为一样住在 world 里，持有该实体的代码可以在帧继续绘制的同时把它换掉。
 
@@ -609,13 +607,13 @@ CSS 滤镜只在画场有对应图元时才画：单原语图里的 flood、高�
 页面是被驱动的，不是被拍的。帧的输入按 Blitz 期望的指针、滚轮、键盘、文本与 IME 事件送进
 它的文档，且换算成 CSS 像素而不是输入报出的物理像素，于是悬停、焦点、滚动、文本编辑与表单
 控件的勾选状态都由 Blitz 自己维持。但它没有脚本：一件事该做什么是 Rust 的决定，
-[`OnBlitzEvent`](blitz::OnBlitzEvent) 就是做决定的地方——一个行为组件，对 Blitz 派发的
+[`OnBlitzEvent`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/events.rs) 就是做决定的地方——一个行为组件，对 Blitz 派发的
 每个 DOM 事件运行，拿到它将要冒泡经过的节点链与它指向的文档。
 
 字节来自页面自己：网络够不到它。`data:` URL 当场解码，其余的由
-[`BlitzDocument::insert_resource`](blitz::BlitzDocument::insert_resource) 用实体为该路径
+[`BlitzDocument::insert_resource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/document.rs) 用实体为该路径
 登记的字节提供。路径在页面加载它时按页面基准解析，所以
-[`BlitzDocument::set_base_url`](blitz::BlitzDocument::set_base_url) 会把同一份登记挪到新
+[`BlitzDocument::set_base_url`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/document.rs) 会把同一份登记挪到新
 基准给出的地址上。没人提供的路径收到空字节：样式表把它读成一张空表，图片把它读成一次失败
 的加载、在页面上留个洞。每个请求都必须有回答，因为卡在一张没人回应的样式表上的页面永远画不
 出来。
@@ -634,7 +632,7 @@ egui 的，承载拉丁文；`blitz_sc_fonts` 另加一份 Noto Sans SC 子集�
 页面不会被它绘制，而两个源都看得见的页面只吃这一个 tick 的输入，由帧里先构建的那个源派发。
 
 页面只向宿主请求一件事：再画一帧。光标形状与剪贴板没有接通，页面从不会索要它们，一次点击
-或一次按键意味着什么由 Rust 通过 [`OnBlitzEvent`](blitz::OnBlitzEvent) 决定。输入法的组合会以
+或一次按键意味着什么由 Rust 通过 [`OnBlitzEvent`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/events.rs) 决定。输入法的组合会以
 Blitz 用来组字的预编辑与提交两种事件送到页面，但窗口从不打开平台的输入法，所以窗口运行里
 只有在宿主自己打开时才看得到组合。
 
@@ -675,10 +673,10 @@ mesh 共用同一 pass 是常见情形），egui 管线仍须声明**相同的**
 不深度测试」来避免干扰 mesh 的深度——「不需要深度」不等于「不声明深度」。「目标没有
 深度附件」也是合法用法，因此管线的深度状态是可选的；可选的深度状态服务于**目标本身
 没有深度附件**的情形，那时 pass 里的所有管线都必须不声明深度，并非 egui 独有：只由
-[`BlitSource`](blit::BlitSource) 绘制的一帧同样没有深度附件。这一点与 egui 官方后端
+[`BlitSource`](https://docs.rs/unlit3d/latest/unlit3d/blit/struct.BlitSource.html) 绘制的一帧同样没有深度附件。这一点与 egui 官方后端
 一致：它默认不带深度状态，但在被给予深度格式时，仍会建出同一格式、不写深度、比较函数
 为 `Always` 的状态。帧究竟带不带深度附件由调用方决定：
-[`FrameAttachments::new`](attachments::FrameAttachments::new) 只在被要求时才分配深度附件，
+[`FrameAttachments::new`](https://docs.rs/unlit3d/latest/unlit3d/attachments/struct.FrameAttachments.html#method.new) 只在被要求时才分配深度附件，
 因此源都不声明深度的窗口绘制进的就是不带深度附件的帧。
 
 </details>
@@ -892,17 +890,16 @@ egui 是否想独占指针/键盘是**egui 自己的答案**，不由源再写�
 `CreateWindowRequest` 与 `ExitRequest` 由宿主在分发后执行，`WinitWindow` 是组件
 请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。
 
-一帧之内的推进同样是行为。[`frame`](frame) 模块只有一个族
-[`OnFrame`](frame::OnFrame)，由 [`dispatch_frame`](frame::dispatch_frame) 驱动；
+一帧之内的推进同样是行为。[`frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/index.html) 模块只有一个族
+[`OnFrame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html)，由 [`dispatch_frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/fn.dispatch_frame.html) 驱动；
 帧行为拿到 `&World`、它所在实体，以及一个 `&mut`
-[`Frame`](frame::Frame)——里面是这一帧的 delta、序号与尺寸。形状与事件族完全一致，
+[`Frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.Frame.html)——里面是这一帧的 delta、序号与尺寸。形状与事件族完全一致，
 只是把「事件」换成了「这一帧的上下文」。用
-[`OnFrame::new`](frame::OnFrame::new) 生成的行为不声明顺序，这些不声明顺序的行为构成一个
+[`OnFrame::new`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html#method.new) 生成的行为不声明顺序，这些不声明顺序的行为构成一个
 顺序带，带内的先后不做任何保证。若某个行为的读写被另一个行为依赖，就用
-[`OnFrame::with_order`](frame::OnFrame::with_order) 配一个
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder) 在两端都把顺序声明出来。库自身不声明
-任何顺序值，谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
-所以场景侧也用同样的方式组件化。用 [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn)
+[`OnFrame::with_order`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html#method.with_order) 配一个
+[`FrameBehaviourOrder`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.FrameBehaviourOrder.html) 在两端都把顺序声明出来。库自身只声明一个顺序值——[`PRESENT_ORDER`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/winit/presenter.rs)，把 [`present_frames`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/winit/presenter.rs) 排在默认带之后；其余谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
+所以场景侧也用同样的方式组件化。用 [`ScopeMut::spawn`](https://docs.rs/unlit_ecs/latest/unlit_ecs/struct.ScopeMut.html#method.spawn)
 生成行为。需要跳过本帧其余工作的行为写一个标志，由声明了更晚顺序的行为去读；需要结构
 变更的行为把变更排队，因为回调只持有 `&World`。
 
@@ -994,8 +991,7 @@ GPU 集成测试把场景渲染到离屏目标并检查回读的像素。打开 
 [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)：
 它的 `tests/gpu_suite.rs` 把这些场景与
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
-下的 SSIMULACRA2 快照比较。在本仓库用 `git submodule update --init --checkout` 拉取
-submodule（`--checkout` 是为了越过它的 `update = none`）；有意改动
+下的 SSIMULACRA2 快照比较。在本仓库用 `git submodule update --init --checkout` 拉取 submodule；有意改动
 后用 `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` 重新生成，并审查图像差异。各测试层在整个工作区中的位置，以及 CI 所跑的内容，
 见[`TESTING.zh-CN.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.zh-CN.md)。
 

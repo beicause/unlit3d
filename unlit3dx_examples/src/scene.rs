@@ -710,7 +710,7 @@ impl SceneStepper {
         // `fixed_steps` discards it: a host that stalled for a long while
         // would otherwise ask the world to fill a buffer as long as the pause,
         // and the audio that pause skipped is gone either way. A negative
-        // interval - a clock that went backwards - owes nothing.
+        // interval — a clock that went backwards — owes nothing.
         self.audio_debt =
             (self.audio_debt + delta_seconds.max(0.0)).min(MAX_AUDIO_CATCH_UP_SECONDS);
         let frames = (self.audio_debt / period) as usize;

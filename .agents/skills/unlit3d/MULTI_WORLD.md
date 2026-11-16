@@ -25,9 +25,10 @@ let render = spawn_sub_world(world, "render", 64);
 let app = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
 world.root_scope_mut().spawn(bundle![request_gpu(app, move |world, gpu| {
     // 回调拿 &mut World，在两次事件回调之间执行：正好一次建完渲染 world 与展示路径。
-    let (renderer, pass) = setup_render_world(world, render.entity, &gpu.device, &gpu.queue, gpu.capabilities);
+    let (renderer, pass) = setup_render_world(world, render.entity, gpu.render_device);
     mount_scene_content(&render, pass, panels);   // 场景内容一律走 job
     // renderer / pass 是示例的 RemoteEntity：同号的 Entity 在别的 world 里指别的东西，setup_presenter 要里面的 Entity，所以取 .entity。
+// 设备以 RenderDevice 传入（RenderDevice::unwatched 或从 GpuContext 转换而来）。
     // 尺寸给「还没有窗口时的兜底大小」，示例用的是 WINDOW_SIZE = (1024, 720)。
     setup_presenter(
         world, render.entity, renderer.entity, pass.entity, gpu, (1024, 720), false,

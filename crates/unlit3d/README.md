@@ -18,7 +18,7 @@ directly, and you are expected to know WebGPU to use it well.
 |---------|---------|----------|
 | `blitz` | no | the `blitz` module: an HTML document laid out by [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source |
 | `blitz_epaint_fonts` | no | the font a page is laid out with: egui's default font, so the same markup paints the same glyphs on every target |
-| `blitz_sc_fonts` | no | adds a Noto Sans SC subset to the bundled fonts, covering the 3500 level-1 and 3000 level-2 characters of the Table of General Standard Chinese Characters |
+| `blitz_sc_fonts` | no | adds a Noto Sans SC subset to the bundled fonts, covering the level-1 and level-2 characters of the Table of General Standard Chinese Characters |
 | `blitz_system_fonts` | no | lets a page fall back to the fonts the host has installed for whatever the bundled ones do not cover |
 | `egui` | yes | the `egui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
@@ -130,7 +130,7 @@ world root                              the root scope sees every entity
 ├── FramePass(FramePassOrder(0)) + RenderLoadOps
 │   ├── Source(MeshSource)                    a source is a scope of its own
 │   │   ├── Camera
-│   │   ├── Transform + GpuMesh + GpuMaterial + LitPipeline
+│   │   ├── Transform + GpuMesh + GpuMaterial + GpuRenderPipeline
 │   │   └── ...
 │   ├── Source(LineSource)                    strokes; blended ones composite with the meshes by depth
 │   ├── Source(BlitzSource)                   an HTML page composited over the meshes
@@ -163,10 +163,11 @@ without the tree changing.
   scenes are clipped to. The viewport is pass state, so the renderer sets it
   back to the whole target before each scene; the scissor a scene's draws set
   is pass state as well, and it is left set until the pass closes, so the
-  renderer covers the whole target with it once every source is recorded. A
+  renderer covers the whole target with it once every source is recorded — a
   pass that ends with a clipped draw would otherwise resolve only that
-  rectangle on the GL backend, where the multisample resolve is a blit and a
-  blit is clipped by the scissor. The sources under it are the ones it records,
+  rectangle (the GL-backend why is in
+  [WORKAROUND.md](../../WORKAROUND.md)). The sources under it are the ones it
+  records,
   so a world holds as many passes as the frame needs — a pass drawing into an
   offscreen target and a pass copying that target onto the swap chain are two
   entities in one world, not two worlds.
@@ -190,12 +191,11 @@ without the tree changing.
   attachments. A frame is therefore still one encoder and one submission, no
   matter how many passes it has.
 - The built-in mesh rendering is one source, [`MeshSource`](mesh_source::MeshSource), and it has no more
-  privilege than a caller's own. There is no mesh-specific field or draw path in
-  the renderer: the built-in lit family is registered through the same
+  privilege than a caller's own: there is no mesh-specific field or draw path in
+  the renderer, the built-in lit family is registered through the same
   [`MeshSource::register_family`](mesh_source::MeshSource::register_family) a
-  caller's own family uses, and everything specific to it — its key, its
-  instance record, its mesh and material helpers — lives in the
-  [`lit`](lit) module.
+  caller's own family uses (see [Custom shaders and per-instance data](#custom-shaders-and-per-instance-data)),
+  and everything specific to it lives in the [`lit`](lit) module.
 - Meshes that share the source's pools are allocated through
   [`MeshSource::allocate_pooled_mesh`](mesh_source::MeshSource::allocate_pooled_mesh),
   which is also what the built-in family uses: the caller states the streams
@@ -304,10 +304,9 @@ constraint forced by pass-level state — a scene carries the pass state it
 needs and resets it while recording — but semantics like "egui composites over
 3D" no longer rest on it alone:
 [`Scene::record_composited`](unlit_wgpu::scene::Scene::record_composited)
-composites the sources' scenes into one draw list per pass — sequenced draws
-first in scene order, then every scene's depth-sorted pool together, then the
-trailing draws — as each source tags them with
-[`DrawOrder`](unlit_wgpu::scene::DrawOrder).
+composites the sources' scenes into one draw list per pass, each draw tagged
+with [`DrawOrder`](unlit_wgpu::scene::DrawOrder); the ordering rule itself is
+specified in [`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.md).
 
 </details>
 
@@ -361,9 +360,8 @@ opaque ones and ordered back-to-front by the depth of its mesh's bounds centre
 along the camera's view axis — see
 [`Camera::view_depth`](components::Camera::view_depth) — so a mesh whose pivot
 is offset from its geometry still sorts by what it draws rather than by its
-origin. The order is the pass's composite, not the source's: the entry joins
-the depth-sorted pool every source contributes to, so it layers against
-blended meshes and depth-sorted strokes alike.
+origin. The order is the pass's composite, not the source's — see
+[The frame model](#the-frame-model).
 
 A source is drawn through the camera its pass states, when it states one:
 [`FramePass::with_camera`](pass::FramePass::with_camera) names the entity, and
@@ -468,9 +466,7 @@ centre along the camera's view axis, so it follows the geometry a mesh actually
 draws rather than its pivot or its straight-line distance to the eye. The
 source no longer sorts them itself: its entries carry
 [`DrawOrder::Sorted`](unlit_wgpu::scene::DrawOrder::Sorted), and the pass's
-composite orders the pool every source contributes to, farthest first, where
-blended meshes and depth-sorted strokes from different sources meet as one
-list.
+composite orders the pool (see [The frame model](#the-frame-model)).
 
 </details>
 
@@ -478,11 +474,9 @@ list.
 
 The built-in lit pipeline is registered as an ordinary family, and the shader
 variant an entity uses contains exactly the channels its mesh has. Nothing about
-it is privileged: a caller's own family is registered through the same
-[`MeshSource::register_family`](mesh_source::MeshSource::register_family) call,
-owns its own per-instance vertex stream and binds the frame's shared inputs
-through the same public builders. See
-[Custom shaders and per-instance data](#custom-shaders-and-per-instance-data).
+it is privileged over a caller's own family; see
+[Custom shaders and per-instance data](#custom-shaders-and-per-instance-data) for
+the registration route and the per-instance stream.
 
 <details>
 <summary>What the built-in variant supports, and where pose data lives</summary>
@@ -1290,8 +1284,10 @@ the frame context in place of an event. A behaviour spawned with
 none form a band, and the dispatch promises nothing about the order within it.
 One whose reads or writes another behaviour depends on states the order at both
 ends, with [`OnFrame::with_order`](frame::OnFrame::with_order) and a
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), and the library declares no
-order values of its own: what runs before what is the application's to define. A
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), and the only order value the
+library itself declares is [`PRESENT_ORDER`](winit::presenter::PRESENT_ORDER),
+which places [`present_frames`](winit::presenter::present_frames) after the
+default band; beyond that, what runs before what is the application's to define. A
 windowed application's host world and each world it drives dispatch the same
 family, so the scene side is componentised the same way. Spawn a behaviour with
 [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn). A behaviour that needs the rest
@@ -1414,8 +1410,7 @@ the screenshot pixel by pixel. The multi-frame snapshot coverage of those scenes
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
 whose `tests/gpu_suite.rs` compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md).
-Clone the submodule here with `git submodule update --init --checkout`, which is
-what gets past its `update = none`; re-bless intentional
+Clone the submodule here with `git submodule update --init --checkout`; re-bless intentional
 changes with `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` and review
 the image diff. Where each test layer sits across the workspace, and what CI
 runs, is in the

@@ -108,8 +108,8 @@ pub enum PresentationPath {
 }
 
 impl Default for PresentationPath {
-    /// The plain window: a swap-chain frame at four samples with depth, the
-    /// presentation path's long-standing default.
+    /// The plain window: a swap-chain frame at the built-in sample count,
+    /// with depth.
     fn default() -> Self {
         Self::Surface {
             samples: crate::offscreen::OFFSCREEN_SAMPLES,

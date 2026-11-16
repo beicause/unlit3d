@@ -56,8 +56,8 @@ pub static SCENE: SceneDef = SceneDef {
 /// decoded from its `data:` URL, a checkbox, a group of radios with one checked,
 /// and an empty text field. Its labels are Chinese, which is what the
 /// bundled Noto Sans SC subset is for. The capture drives them before it
-/// freezes a frame -- it unticks the checkbox, picks the second radio and types
-/// into the field -- so the picture shows the state it left rather than the
+/// freezes a frame — it unticks the checkbox, picks the second radio and types
+/// into the field — so the picture shows the state it left rather than the
 /// state the markup states, and the status line holds the name of the last
 /// event the page dispatched. Every control is
 /// positioned rather than flowed, so the layout does not depend on how an

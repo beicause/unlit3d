@@ -60,7 +60,7 @@ use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::relay::Snapshot;
 use crate::source::{FrameSource, RenderContext};
-/// egui, re-exported because a [`EguiPanel`] is written against its types.
+/// egui, re-exported because an [`EguiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
 /// widgets, so a caller needs the crate that defines them. Re-exporting it

@@ -65,7 +65,7 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 `--headless --mcp` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
 离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告帧号、球数、MIDI
 序列状态与每个面板按钮的中心，`request_exit` 让进程退出。该模式下自动掉球与背景自动播放
-均关闭，因此每个可见与可听的变化都来自客户端。[`mcp_input` 集成测试](tests/mcp_input/main.rs)
+均关闭，因此每个可见与可听的变化都来自客户端。[`mcp_input` 集成测试](tests/mcp_input.rs)
 启动这个二进制，只通过 MCP 的 `send_input` 点击面板、捕获三张图片快照、把序列播放期间
 录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，并请求进程正常退出。
 
@@ -137,12 +137,9 @@ egui context 所运行的地方构建，所以由这个 world 负责布局并发
 倒回就是往被点那一行的 `MidiSequencer` 上写字段。渲染 world 只持有一个挂上那些槽位的
 `EguiSource`，负责上传并记录它在槽位里找到的帧。
 
-两侧各持有一个 egui context。共用会让两个 world 同时写同一份 memory 与字体图集，而
-egui 把一次 `run_ui` 调用当作一个完整帧，两个 world 对同一个 context 跑它就会把两帧
-交错成一帧。两侧的纹理 id 都从零开始，因此帧保留它被布局时拿到的 id，GPU 集成按来源与
-id 索引纹理，没有人给它重编号。
+两侧各持有一个 egui context，纹理 id 也都从零开始——缘由与后果见
+[`unlit3d`](../crates/unlit3d/README.zh-CN.md) 的 egui 一节。
 
-与绘制侧持有的那一帧不可能不同的帧根本不会被布局：只有还没有任何帧、绘制侧报告的目标
-变了、有输入到达，或上一帧要求再次布局——立即要求，或在它指定的延迟到期后要求——时才
-会布局一帧。因此没人操作的面板不会在通道上产生任何开销，它最后发布的那一帧会一直被绘制，
-直到有更新的一帧取代它。
+没人操作的面板不会在通道上产生任何开销，它最后发布的那一帧会一直被绘制，直到有更新的
+一帧取代它——何时才会布局一帧的完整规则，见 [`unlit3dx`](../crates/unlit3dx/README.zh-CN.md)
+的 egui 桥一节。

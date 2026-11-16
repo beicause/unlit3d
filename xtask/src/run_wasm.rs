@@ -21,10 +21,9 @@ pub const TARGET: &str = "wasm32-unknown-unknown";
 /// Where the bindgen output lands, inside `target/`.
 pub const OUT_DIR: &str = "generated";
 /// The cargo profile every wasm build of this repository uses, defined in the
-/// workspace manifest: release's settings at a size-oriented `opt-level`, the
-/// trade-off the name keeps from the `wasm-dev` it was renamed from — wasm
-/// builds are only ever made for a browser to download, so none of them pay
-/// for the larger binary `--release` produces.
+/// workspace manifest: release's settings at a size-oriented `opt-level` —
+/// wasm builds are only ever made for a browser to download, so none of them
+/// pay for the larger binary `--release` produces.
 pub const PROFILE: &str = "wasm-release";
 /// The port the site prefers to be served on. Fixed, so the URL to open
 /// is predictable; if it is taken, the server tries the ports after it.

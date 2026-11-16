@@ -226,8 +226,9 @@ where
 ///
 /// # Panics
 ///
-/// Panics when `command_capacity` is zero: a queue that can never hold
-/// a job would silently block every sender.
+/// Panics when `command_capacity` is zero: a rendezvous queue can never
+/// hold a job, so a send would only land if it happened to coincide with
+/// a drain.
 pub fn spawn_threaded_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,

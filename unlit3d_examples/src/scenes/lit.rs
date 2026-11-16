@@ -20,15 +20,15 @@
 //!   upright right where it meets the floor, and a teal triangle standing on its
 //!   base just above the floor to its left. They are the lights whose shading is
 //!   not a point term, so a form factor that is zero, negative or far too bright
-//!   shows up as a missing or blown-out patch -- and the pane's outline lands on
+//!   shows up as a missing or blown-out patch — and the pane's outline lands on
 //!   the wall as a triangle, which a form factor that integrates the wrong
 //!   corners cannot match.
 //!
 //! Each light owns its own corner of the frame, so the patches stay apart and
 //! every shape reads on its own.
 //!
-//! Every light has a colour no other has -- gold and blue suns, red/green/blue
-//! points, an amber spot, a violet quad -- so a light that is packed, clustered
+//! Every light has a colour no other has — gold and blue suns, red/green/blue
+//! points, an amber spot, a violet quad — so a light that is packed, clustered
 //! or shaded wrongly changes a hue rather than only a brightness.
 //!
 //! The wall is a relief rather than a plane, displaced out of its own plane by a

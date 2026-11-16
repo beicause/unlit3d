@@ -17,13 +17,14 @@ parts of them that are still under construction.
 A scene records the target size, frame count and sample count its snapshots
 were captured at, so the offscreen run reproduces it exactly. The windowed loop
 shows the scene the command line selected and lists every scene in a panel, so
-one can be switched to at runtime. `--list-scenes` prints the table:
+one can be switched to at runtime. `--list-scenes` prints the same list,
+reflowed here for reading:
 
 ```text
 Scenes:
   spin_cube              the example's own scene: a textured cube with two panels
   egui_only                a rich egui panel, no mesh source and no camera
-  mesh_and_ui            a cube, a Blitz page and the rich egui panel, one pass
+  mesh_and_ui            a cube, a Blitz page and the rich egui panel in one pass
   blitz_only             an HTML page laid out by Blitz, no mesh source and no camera
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
@@ -71,8 +72,7 @@ and animates each sprite from a clock the example advances. Neither mesh carries
 a vertex attribute — the sky's three vertices and each particle's six come from
 the vertex index — so the scene is what checks that a caller can own a pipeline,
 its bind groups, its vertex layout and its instance stream, and still read the
-frame's camera. It is also the example's longest animated scene, at eight frames
-of an orbit.
+frame's camera. Its orbit plays out over eight frames.
 
 `outline` draws two kinds of line the library offers and lets one picture
 argue for both. Three bodies wear an inverted-hull band — each is one
@@ -377,9 +377,10 @@ The default tolerance suits a frame of whole surfaces, where a regression moves
 large regions and so lands far below the line. A frame of thin primitives is
 different: its pixels are outlines, and which triangle an outline pixel belongs
 to is a rasterizer's tie-breaking rule to decide — one the API leaves to each
-implementation. A scatter of such pixels is worth tens of points there, so
-`mesh_topologies` is given a tolerance of its own, stated with the measurements
-that put its bound above every correct frame and below every broken one.
+implementation. A scatter of such pixels is worth tens of points there.
+`mesh_topologies` shares the plain scene tolerance: its scores land in the same
+table as the panel-less scenes, and the measurements recorded there put one
+bound above every correct frame and below every broken one.
 
 A scene's own snapshots only describe a run that reproduces the scene's stored
 settings, so a test draws at the scene's own size and frame count. The letterbox
@@ -387,31 +388,23 @@ fitting the windowed path applies is checked by a test of its own, which draws
 the default scene at a target narrower than its baseline and compares the fitted
 picture against a capture made for it.
 
-A mismatch is frequently the platform showing through rather than a regression:
-the stored images come from one GPU stack, and another driver's rounding can put
-a scene below the line with nothing wrong. A frame that fails is therefore
-written before the test fails — natively under
+A mismatch is frequently the platform showing through rather than a regression,
+so a frame that fails is written before the test fails — natively under
 `UNLIT3D_SNAPSHOT_MISMATCH_DIR`, and in a browser through the runner, which is
-the process that has a filesystem — so the frame can be looked at instead of
-guessed at from a score. CI uploads those directories as artifacts when a test
-fails.
+the process that has a filesystem. CI uploads those directories as artifacts
+when a test fails.
 
 To re-bless a snapshot after an intentional rendering change, run with
 `SNAPSHOT_UPDATE=1`, then review the image diffs in
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)
-before committing them. That submodule is checked out with
-`git submodule update --init --checkout`, which is what gets past its
-`update = none`.
+before committing them. That submodule is checked out with `git submodule update --init --checkout`.
 
 ## Tests
 
-The crate's own tests cover the command line (`src/cli.rs`), the scene
-switch and the fixed-step playback clock (`src/tests.rs`), and the window
-overlays (`src/overlay/tests.rs`); `tests/gpu_suite.rs` covers the
-rendering, and `tests/selector_position.rs` the dragged panels the window
-shell keeps across a scene switch.
-
-Where each test layer sits across the workspace, and what CI runs, is in the
+The crate's own tests cover the command line, the scene switch, the
+fixed-step playback clock, the window overlays, the rendered snapshots, and
+the dragged panels the window shell keeps across a scene switch; the layers
+as a whole and what CI runs are in the
 [`TESTING.md`](https://github.com/beicause/unlit3d/blob/main/TESTING.md).
 
 ## License

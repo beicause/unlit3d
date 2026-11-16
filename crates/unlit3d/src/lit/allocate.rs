@@ -3,8 +3,6 @@
 use super::*;
 use crate::mesh_source::{PooledMeshDesc, PooledStream};
 
-/// Mesh allocation and family registration for the built-in lit pipeline.
-///
 /// The allocation below is a use of [`MeshSource::allocate_pooled_mesh`], the
 /// same pooled path a caller's own family allocates its meshes through: the
 /// built-in shader's channel layout and packed stream writers are what this
@@ -166,8 +164,6 @@ impl MeshSource {
             );
             (joints, weights)
         } else {
-            // A variant that reads none ignores the joints it was handed, as
-            // it ignores UVs it does not declare.
             (&[] as &[[u16; 4]], &[] as &[[f32; 4]])
         };
 
