@@ -30,7 +30,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 harness = false
 name = "unlit3d"
 path = "tests/gpu_suite.rs"
-required-features = ["blitz_epaint_fonts", "gltf", "mcp", "egui"]
+required-features = ["blitz_epaint_fonts", "egui", "gltf", "mcp"]
 
 [dependencies]
 anyrender = { workspace = true, optional = true }
@@ -97,6 +97,43 @@ wasm-bindgen.workspace = true
 
 [features]
 default = ["egui", "winit"]
+## The [`blitz`](crate::blitz) module: HTML documents laid out by
+## [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source, with
+## the frame's pointer, wheel, key, text and IME input driving them. The page is
+## rasterized by Vello's GPU backend into a texture of its own, which the source
+## composites over the frame's target.
+blitz = [
+  "dep:anyrender",
+  "dep:blitz-dom",
+  "dep:blitz-html",
+  "dep:blitz-paint",
+  "dep:blitz-traits",
+  "dep:data-url",
+  "dep:glifo",
+  "dep:keyboard-types",
+  "dep:url",
+  "dep:vello_gpu",
+]
+## Lay pages out with the fonts the crate carries: egui's default font for the
+## Latin text and, with `blitz_sc_fonts`, a Noto Sans SC subset for the Chinese
+## characters. Without it, and without `blitz_system_fonts`, a page paints no
+## glyphs at all. It is a feature of its own because it carries a font file, and
+## a build that has fonts on the host need not ship one.
+blitz_epaint_fonts = ["blitz", "dep:epaint_default_fonts", "dep:parley"]
+## Add a Noto Sans SC subset to the bundled fonts, covering the 3500 level-1 and
+## 3000 level-2 characters of the Table of General Standard Chinese Characters.
+## Off by default: it is 977 kB of the binary, and a page that carries no Chinese
+## has no use for it.
+blitz_sc_fonts = ["blitz_epaint_fonts"]
+## Let a page fall back to the fonts the host has installed, for glyphs and
+## families its own font does not cover. Off by default: a page then paints the
+## same glyphs on every target, which is what lets one snapshot hold across
+## machines, and a Linux host needs fontconfig's development files to build it.
+blitz_system_fonts = ["blitz-dom/system-fonts", "blitz_epaint_fonts"]
+## The [`egui`](crate::egui) module: an egui overlay drawn as a frame source, and
+## the [`unlit_wgpu`] egui backend it draws with. The overlay's frame clock
+## is the one place that needs a browser-capable `Instant`.
+egui = ["dep:egui", "dep:web-time", "unlit_wgpu/egui"]
 ## Load glTF documents and patch them into another world's [`MeshSource`] with
 ## the [`gltf`](crate::gltf) module: upload textures, materials and meshes into
 ## an existing resource graph, unload them again, and spawn entities that draw
@@ -122,43 +159,6 @@ mcp = [
 ## by default because it is only the bridge that needs it; the engine itself
 ## never reads the reflection.
 reflect = ["dep:facet", "dep:facet-json", "dep:inventory", "unlit_ecs/reflect"]
-## The [`blitz`](crate::blitz) module: HTML documents laid out by
-## [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source, with
-## the frame's pointer, wheel, key, text and IME input driving them. The page is
-## rasterized by Vello's GPU backend into a texture of its own, which the source
-## composites over the frame's target.
-blitz = [
-  "dep:anyrender",
-  "dep:glifo",
-  "dep:vello_gpu",
-  "dep:blitz-dom",
-  "dep:blitz-html",
-  "dep:blitz-paint",
-  "dep:blitz-traits",
-  "dep:data-url",
-  "dep:keyboard-types",
-  "dep:url",
-]
-## Lay pages out with the fonts the crate carries: egui's default font for the
-## Latin text and, with `blitz_sc_fonts`, a Noto Sans SC subset for the Chinese
-## characters. Without it, and without `blitz_system_fonts`, a page paints no
-## glyphs at all. It is a feature of its own because it carries a font file, and
-## a build that has fonts on the host need not ship one.
-blitz_epaint_fonts = ["blitz", "dep:epaint_default_fonts", "dep:parley"]
-## Add a Noto Sans SC subset to the bundled fonts, covering the 3500 level-1 and
-## 3000 level-2 characters of the Table of General Standard Chinese Characters.
-## Off by default: it is 977 kB of the binary, and a page that carries no Chinese
-## has no use for it.
-blitz_sc_fonts = ["blitz_epaint_fonts"]
-## Let a page fall back to the fonts the host has installed, for glyphs and
-## families its own font does not cover. Off by default: a page then paints the
-## same glyphs on every target, which is what lets one snapshot hold across
-## machines, and a Linux host needs fontconfig's development files to build it.
-blitz_system_fonts = ["blitz_epaint_fonts", "blitz-dom/system-fonts"]
-## The [`egui`](crate::egui) module: an egui overlay drawn as a frame source, and
-## the [`unlit_wgpu`] egui backend it draws with. The overlay's frame clock
-## is the one place that needs a browser-capable `Instant`.
-egui = ["dep:egui", "dep:web-time", "unlit_wgpu/egui"]
 ## Integration with [winit](https://docs.rs/winit): the [`winit`](crate::winit)
 ## module, which presents a [`Renderer`](crate::Renderer) into a window's swap
 ## chain.
