@@ -28,8 +28,8 @@ use crate::source::{FrameSource, RenderContext};
 /// that knows its target, the way
 /// [`EguiSource`](crate::egui::EguiSource) specializes its own.
 ///
-/// The blit covers the whole target, so it records at
-/// [`FrameSourceOrder::MESH`].
+/// The blit covers the whole target, so spawn it at
+/// [`FrameSourceOrder::MESH`](crate::source::FrameSourceOrder::MESH).
 pub struct BlitSource {
     /// The view the source copies, in the frame's resource graph.
     ///

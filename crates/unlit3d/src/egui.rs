@@ -154,9 +154,9 @@ struct Target {
 ///
 /// The source owns egui's [`Context`](egui::Context) — its font atlas and
 /// memory survive across frames — and drives every [`EguiPanel`] in the world.
-/// Spawn it like any other source ([`Source::new`](crate::source::Source::new));
-/// it declares
-/// [`FrameSourceOrder::EGUI`], so it records after the meshes.
+/// Spawn it like any other source ([`Source::new`](crate::source::Source::new)) at
+/// [`FrameSourceOrder::EGUI`](crate::source::FrameSourceOrder::EGUI), so it records
+/// after the meshes.
 ///
 /// Nothing is built until the first frame: the source's pipeline is
 /// specialized on the frame's target, which is only known in
