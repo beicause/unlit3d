@@ -207,7 +207,7 @@
 | 物理 | `Physics::new(gravity)`、`init_physics_world`、`spawn_physics_world_with::<R>` | `crates/unlit3dx/src/physics.rs` |
 | 刚体 | `spawn_body`、`spawn_fixed_cuboid`、`despawn_body`、`step_once` | 同上 |
 | 常量 | `PHYSICS_HZ = 60.0`、`FRAME_SECONDS` | 同上 / `crates/unlit3dx/src/lib.rs` |
-| 音频 | `spawn_audio_world_with::<R>`、`dispatch_audio_fill`、`OnAudioFill::new(order, f)`（**第一个参数是 `AudioFillOrder`**）、`AudioFillOrder`、`GlobalAudioGain`、`AudioConfig` | `crates/unlit3dx/src/audio.rs` |
+| 音频 | `spawn_audio_world_with::<R>`、`dispatch_audio_fill`、`OnAudioFill::new(order, f)`（**第一个参数是 `AudioFillOrder`**）、`AudioFillOrder`、`OnAudioPostFill::new(f)`（观察 `AudioMix`，不可改样本）、`AudioMix`、`GlobalAudioGain`、`AudioConfig` | `crates/unlit3dx/src/audio.rs` |
 | 合成 | `load_soundfont`、`load_midi_file_with_loop_type(bytes, loop_type)`（**没有无 loop_type 的 `load_midi_file`**；手搓事件序列用 `midi_file`）、`SynthVoice::from_font`、`MidiSequencer::new` / `advance` / `rewind`、`midi_job` | `crates/unlit3dx/src/synth.rs` |
 
 ## glTF

@@ -250,7 +250,9 @@ The bridges:
   the building blocks; `init_physics_world` spawns the same world as a
   `Physics` bundle for a caller that steps it inline with `step_once`.
 - **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
-  device and owns its stream on the audio thread. Its `OnAudioFill` components are
+  device on the audio thread for an `OnRequest` world once the page has asked;
+  a `Pulled` world opens nothing, and its host fills with `dispatch_audio_fill`.
+  Its `OnAudioFill` components are
   the sources, and one entity may hold several layers in one component, each
   with an `AudioFillOrder` of its own:
   `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
@@ -350,9 +352,9 @@ The bridges:
   what a caller gets when it names none, with `.wav` beside it. `request_exit`
   asks a host carrying `ExitRequest` to stop, and `pump_mcp` dispatches
   commands when no window event loop runs, which is what lets a host without
-  winit serve MCP at all. A recording source mounts at the end of the fill
-  order, so it captures the mix after every other source and the world's
-  `GlobalAudioGain`. The recorder is compiled only for these tools, so `mcp`
+  winit serve MCP at all. A recording is an `OnAudioPostFill` behaviour, so it
+  observes the mix the output stream would receive, after every other source
+  and the world's `GlobalAudioGain`. The recorder is compiled only for these tools, so `mcp`
   turns `audio` on itself.
 
 ## Best practices

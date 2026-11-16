@@ -331,7 +331,6 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
     let step_seconds = step_seconds(&config);
     let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
     let mut debt = 0.0;
-    let mut started = false;
     R::spawn(
         host,
         "physics",
@@ -344,14 +343,19 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
             if control.self_driven() {
                 let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
                 // The first turn steps immediately, before its first wait.
-                for _ in 0..steps.max(u32::from(!started)) {
+                for _ in 0..steps.max(1) {
                     step_once(world);
                 }
-                started = true;
                 clock.wait(control);
             } else {
-                // A stepped host has already decided that one step is due.
-                step_once(world);
+                // A stepped host paces the world the same way a threaded one
+                // paces itself: the tick's delta accrues debt and steps only
+                // when a whole step period has gathered, so a host's frame
+                // rate never changes the simulation's rate.
+                let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
+                for _ in 0..steps {
+                    step_once(world);
+                }
             }
             true
         },

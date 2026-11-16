@@ -34,6 +34,8 @@ path = "tests/gpu_suite.rs"
 
 [dependencies]
 argh.workspace = true
+# The custom-pipeline scenes allocate a mesh with no vertex channels directly.
+arrayvec.workspace = true
 # The scene that owns a pipeline lays its uniform blocks out against WGSL's
 # alignment rules, so it declares the layout the same way the engine does.
 const_shader_layout.workspace = true

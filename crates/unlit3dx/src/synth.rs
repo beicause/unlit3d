@@ -425,7 +425,9 @@ impl MidiSequencer {
                     if let Some(kind) = MidiEventKind::from_message(message) {
                         self.pressed(kind);
                         let delay = (time - (self.time - delta)).max(0.0);
-                        let _ = audio.send(midi_job(voice, kind, delay));
+                        if let Err(error) = audio.send(midi_job(voice, kind, delay)) {
+                            log::warn!("the audio world dropped a MIDI command: {error}");
+                        }
                     }
                 }
                 MidiMessage::LoopStart => {
@@ -504,7 +506,9 @@ impl MidiSequencer {
         self.silent = false;
         for (channel, key) in std::mem::take(&mut self.held) {
             let kind = MidiEventKind::NoteOff { channel, key };
-            let _ = audio.send(midi_job(voice, kind, 0.0));
+            if let Err(error) = audio.send(midi_job(voice, kind, 0.0)) {
+                log::warn!("the audio world dropped a MIDI note-off: {error}");
+            }
         }
     }
 }

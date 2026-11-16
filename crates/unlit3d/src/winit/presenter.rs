@@ -487,6 +487,7 @@ fn build_in(
                 surface.size(),
                 samples,
                 with_depth,
+                false,
             );
             (surface, attachments)
         }

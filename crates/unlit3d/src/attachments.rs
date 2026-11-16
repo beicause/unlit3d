@@ -44,6 +44,10 @@ pub struct FrameAttachments {
     size: (u32, u32),
     /// The sample count the attachments are allocated with.
     sample_count: u32,
+    /// Whether the depth attachment keeps its previous contents readable, so
+    /// a pass may load them. A resized target rebuilds its depth texture the
+    /// same way.
+    persistent_depth: bool,
     /// The depth-stencil view, in the frame's graph; `None` when the frame
     /// carries no depth attachment.
     pub depth_view: Option<ResHandle<TextureView>>,
@@ -59,6 +63,10 @@ impl FrameAttachments {
     /// A depth-stencil texture is allocated only when `with_depth`, and a
     /// multisample one only when `sample_count > 1`. `format` is the color
     /// attachment's, which the multisample attachment resolves into.
+    /// `persistent_depth` keeps the depth texture's previous contents
+    /// readable — a pass on this target may open with
+    /// [`LoadOp::Load`](wgpu::LoadOp) — at the cost of storing the results
+    /// after every pass instead of discarding them.
     pub fn new(
         world: &World,
         ctx: RenderContext,
@@ -66,6 +74,7 @@ impl FrameAttachments {
         size: (u32, u32),
         sample_count: u32,
         with_depth: bool,
+        persistent_depth: bool,
     ) -> Self {
         let device = ctx
             .device(&world.root_scope())
@@ -73,7 +82,8 @@ impl FrameAttachments {
         let mut graph_holder = ctx.graph(&world.root_scope());
         let graph = graph_holder.get();
         let depth_view = with_depth.then(|| {
-            let texture = create_depth_target(&device, size.0, size.1, sample_count);
+            let texture =
+                create_depth_target(&device, size.0, size.1, sample_count, !persistent_depth);
             graph.insert(
                 TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default()),
                 None,
@@ -91,6 +101,7 @@ impl FrameAttachments {
             format,
             size,
             sample_count,
+            persistent_depth,
             depth_view,
             msaa_view,
         }
@@ -114,7 +125,13 @@ impl FrameAttachments {
         let mut graph_holder = self.ctx.graph(&world.root_scope());
         let graph = graph_holder.get();
         if let Some(id) = self.depth_view.as_ref() {
-            let texture = create_depth_target(&device, size.0, size.1, self.sample_count);
+            let texture = create_depth_target(
+                &device,
+                size.0,
+                size.1,
+                self.sample_count,
+                !self.persistent_depth,
+            );
             graph
                 .replace(
                     id,

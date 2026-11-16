@@ -210,10 +210,9 @@ impl Lights {
         self.light_vertices_array
             .upload(&device, encoder, self.light_vertices.as_bytes());
 
-        let uniform = self.clustering.uniform(
-            size,
-            camera.clip_from_view.row(3).truncate() != glam::Vec3::ZERO,
-        );
+        let uniform = self
+            .clustering
+            .uniform(size, is_perspective(&camera.clip_from_view));
         let buffer = ctx
             .graph(world)
             .get()

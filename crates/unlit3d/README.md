@@ -1126,6 +1126,7 @@ let attachments = FrameAttachments::new(
     (1280, 720),
     1,
     true,
+    false,
 );
 let scope = world.scope(source);
 let color_view = {

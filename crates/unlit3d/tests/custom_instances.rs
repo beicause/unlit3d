@@ -140,6 +140,19 @@ fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
     }
 }
 
+/// The axis-aligned box the vertices actually span.
+fn aabb_of(vertices: &[Vertex]) -> Aabb {
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for vertex in vertices {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(vertex.position[axis]);
+            max[axis] = max[axis].max(vertex.position[axis]);
+        }
+    }
+    Aabb::new(min.into(), max.into())
+}
+
 /// Build the pipeline descriptor for the family from `shader`.
 ///
 /// Returning the descriptor rather than the compiled pipeline is what lets it
@@ -330,8 +343,12 @@ async fn a_custom_family_owns_its_instance_stream() {
             MeshDesc {
                 vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
                     .expect("one buffer fits"),
+                index_buffer: None,
                 count: SQUARE.len() as u32,
-                ..Default::default()
+                indexed: false,
+                aabb: aabb_of(&SQUARE),
+                bind_group: None,
+                morph_deltas: None,
             },
         );
         (pipeline, mesh)

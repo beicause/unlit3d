@@ -76,12 +76,23 @@ impl LocalTasks {
     /// turn with it, exactly as a panicking job or tick would.
     pub fn pump(world: &mut World) {
         Self::install(world);
-        let mut local_tasks_rows = world.root_scope().query::<&mut LocalTasks>();
-
-        let Some(local_tasks) = local_tasks_rows.iter().next() else {
-            return;
+        // The pool runs without the borrow held: a polled task that reaches
+        // the world again — through a job it queued, for one — must not meet
+        // a claim the pump still holds. The pool comes back after the run; a
+        // task that panics takes the turn with it (documented above), which
+        // ends the pump before the restore.
+        let mut pool = {
+            let mut local_tasks_rows = world.root_scope().query::<&mut LocalTasks>();
+            let Some(local_tasks) = local_tasks_rows.iter().next() else {
+                return;
+            };
+            core::mem::take(&mut local_tasks.0)
         };
-        local_tasks.0.run_until_stalled();
+        pool.run_until_stalled();
+        let mut restore = world.root_scope().query::<&mut LocalTasks>();
+        if let Some(local_tasks) = restore.iter().next() {
+            local_tasks.0 = pool;
+        }
     }
 
     /// Hand `future` to the tasks `world` runs, answering whether it took it.

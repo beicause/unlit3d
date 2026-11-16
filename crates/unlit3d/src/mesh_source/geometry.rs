@@ -275,18 +275,34 @@ impl MeshSource {
     /// Any other [`GpuMesh`] value sharing this mesh's parts keeps it alive:
     /// the parts are reference-counted, so a caller that cloned the handle
     /// before calling this still reads a live mesh.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a clone of `mesh` still exists: the pool ranges and the
+    /// metadata slot are freed once, and freeing them while another holder
+    /// still draws the mesh hands the same range to the next mesh allocated.
+    /// Drop every clone first, or let this method consume the last one.
     pub fn remove_mesh(&mut self, mesh: GpuMesh) {
-        if let Some(vertex) = mesh.parts.vertex_allocation {
+        // Unwrap only succeeds when this handle is the parts' last holder. A
+        // clone that survives would leave the ranges handed back while its
+        // draw still names them, so refuse instead of double-freeing.
+        let parts = Rc::try_unwrap(mesh.parts).unwrap_or_else(|shared| {
+            panic!(
+                "a clone of the mesh still holds its parts: drop every \
+                 clone before remove_mesh, or {} more of them",
+                Rc::strong_count(&shared) - 1,
+            )
+        });
+        if let Some(vertex) = parts.vertex_allocation {
             self.pools.vertex_pool.release(vertex);
         }
-        if let Some(index) = mesh.parts.index_allocation {
+        if let Some(index) = parts.index_allocation {
             self.pools.index_pool.release(index);
         }
-        if let Some(deltas) = mesh.parts.morph_deltas_allocation {
+        if let Some(deltas) = parts.morph_deltas_allocation {
             self.arrays.release_morph_deltas(deltas);
         }
-
-        self.arrays.release_metadata(mesh.parts.metadata_index);
+        self.arrays.release_metadata(parts.metadata_index);
     }
     /// The graph node of the vertex pool's buffer for `layout`, creating it if
     /// the pool has never been asked for the layout before.

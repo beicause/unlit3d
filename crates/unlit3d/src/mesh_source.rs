@@ -36,7 +36,7 @@ use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::Camera as CameraUniform;
 use unlit_wgpu::light::{
     CELL_WORDS, ClusterConfig, ClusterUniform, DirectionalGpu, LightClusters, LightGpu,
-    LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight,
+    LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight, is_perspective,
 };
 use unlit_wgpu::mesh::{JointMatrix, MeshMetadata};
 use unlit_wgpu::pipeline::supports_storage_buffers;

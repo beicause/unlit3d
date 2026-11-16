@@ -356,6 +356,20 @@ pub struct LightClusters {
     pub dims: [u32; 3],
 }
 
+/// Whether `clip_from_view` is a perspective projection, as far as the
+/// cluster grid's depth slicing is concerned.
+///
+/// A perspective projection is the one that gives a clip-space `w` that
+/// varies with the vertex: its matrix's fourth row then has nonzero x, y or
+/// z entries. An orthographic projection keeps `w` at one, so its fourth
+/// row is `(0, 0, 0, 1)`. The depth convention — reverse `z`, infinite far,
+/// OpenGL or DirectX — never touches the fourth row, so the test holds for
+/// every projection a camera actually carries.
+#[must_use]
+pub fn is_perspective(clip_from_view: &Mat4) -> bool {
+    clip_from_view.row(3).truncate() != Vec3::ZERO
+}
+
 impl LightClusters {
     /// Assign `lights` to the cells of `cfg`'s grid for this frame's camera.
     ///
@@ -384,7 +398,7 @@ impl LightClusters {
         // deterministic when two lights rank the same.
         lights.sort_by(|a, b| b.importance.total_cmp(&a.importance));
 
-        let perspective = clip_from_view.row(3).truncate() != Vec3::ZERO;
+        let perspective = is_perspective(clip_from_view);
         let uniform = cfg.uniform(size, perspective);
         let last_slice = (dims[2] - 1) as f32;
         let slice_of = |depth: f32| -> u32 { depth_slice(depth, &uniform).min(last_slice as u32) };

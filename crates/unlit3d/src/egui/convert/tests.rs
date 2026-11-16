@@ -103,7 +103,7 @@ fn a_mouse_position_is_converted_to_points() {
 fn a_mouse_button_keeps_its_position_button_and_state() {
     let events = at(
         InputEvent::Mouse(MouseEvent::Button {
-            position: [10.0, 30.0],
+            position: Some([10.0, 30.0]),
             button: MouseButton::Secondary,
             pressed: true,
             modifiers: Modifiers {
@@ -425,6 +425,45 @@ fn a_cancelled_touch_also_releases_the_pointer() {
     );
 }
 
+/// egui hears one pointer, not one per finger: the second finger's arrival
+/// must not re-press, and the first finger's lift must not release while the
+/// second is still down.
+#[test]
+fn a_second_finger_does_not_end_the_first_fingers_drag() {
+    let mut converted = Vec::new();
+    let touch = |id, phase, position| {
+        InputEvent::Touch(TouchEvent {
+            id,
+            phase,
+            position,
+            force: None,
+        })
+    };
+    let events = [
+        touch(7, TouchPhase::Started, [1.0, 1.0]),
+        touch(8, TouchPhase::Started, [9.0, 1.0]),
+        touch(7, TouchPhase::Ended, [1.0, 2.0]),
+        touch(8, TouchPhase::Ended, [9.0, 2.0]),
+    ];
+    to_egui_events_into(&events, 1.0, 0, &mut converted);
+
+    let presses = converted
+        .iter()
+        .filter(|event| matches!(event, EguiEvent::PointerButton { pressed: true, .. }))
+        .count();
+    let releases = converted
+        .iter()
+        .filter(|event| matches!(event, EguiEvent::PointerButton { pressed: false, .. }))
+        .count();
+    let gone = converted
+        .iter()
+        .filter(|event| matches!(event, EguiEvent::PointerGone))
+        .count();
+    assert_eq!(presses, 1, "one press for two fingers");
+    assert_eq!(releases, 1, "one release for two fingers");
+    assert_eq!(gone, 1, "the pointer leaves once, after the last finger");
+}
+
 #[test]
 fn a_preedit_range_is_remeasured_in_characters() {
     // "héllo": `é` is two bytes, so byte offsets and character offsets
@@ -520,7 +559,7 @@ fn a_frame_keeps_its_event_order() {
             position: [1.0, 1.0],
         }),
         InputEvent::Mouse(MouseEvent::Button {
-            position: [1.0, 1.0],
+            position: Some([1.0, 1.0]),
             button: MouseButton::Primary,
             pressed: true,
             modifiers: Modifiers::default(),
@@ -528,7 +567,7 @@ fn a_frame_keeps_its_event_order() {
         InputEvent::Mouse(MouseEvent::Left),
     ];
     let mut converted = Vec::new();
-    to_egui_events_into(&events, 1.0, &mut converted);
+    to_egui_events_into(&events, 1.0, 0, &mut converted);
     assert_eq!(
         converted,
         vec![
@@ -547,7 +586,7 @@ fn a_frame_keeps_its_event_order() {
 #[test]
 fn an_empty_frame_converts_to_nothing() {
     let mut converted = Vec::new();
-    to_egui_events_into([], 1.0, &mut converted);
+    to_egui_events_into([], 1.0, 0, &mut converted);
     assert!(converted.is_empty());
 }
 

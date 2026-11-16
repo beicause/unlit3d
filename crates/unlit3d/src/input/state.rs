@@ -142,7 +142,20 @@ impl InputState {
             InputEvent::Touch(event) => self.apply_touch(event),
             InputEvent::Ime(_) | InputEvent::Text(_) => {}
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = *modifiers,
-            InputEvent::FocusChanged(focused) => self.focused = *focused,
+            InputEvent::FocusChanged(focused) => {
+                self.focused = *focused;
+                // Without focus the window stops receiving the events that lift
+                // a button or a finger, so whatever it held at the loss would
+                // stay held forever; dropping the pressed state lets a stale
+                // hold end at the focus edge.
+                if !focused {
+                    self.modifiers = Modifiers::default();
+                    self.buttons = MouseButtons::empty();
+                    self.pointers.clear();
+                    self.pointer_down = false;
+                    self.touches.clear();
+                }
+            }
             InputEvent::Resized { size_px } => self.size_px = *size_px,
             InputEvent::ScaleFactorChanged { scale_factor } => self.scale_factor = *scale_factor,
         }
@@ -158,7 +171,12 @@ impl InputState {
                 pressed,
                 ..
             } => {
-                self.cursor = Some(position);
+                // A press with no position (the cursor was outside the
+                // window) leaves the last known one standing: fabricating a
+                // corner would misdirect every later hit test.
+                if let Some(position) = position {
+                    self.cursor = Some(position);
+                }
                 if let Some(bit) = MouseButtons::bit_of(button) {
                     self.buttons.set(bit, pressed);
                 }
@@ -204,7 +222,14 @@ impl InputState {
                 self.pointers
                     .retain(|contact| (contact.kind, contact.id) != (event.kind, event.id));
             }
-            PointerAction::Left => self.pointer = None,
+            // Leaving the window takes the mouse's contact with it: no release
+            // arrives while it is outside, so keeping the contact would hold
+            // the down flag forever.
+            PointerAction::Left => {
+                self.pointer = None;
+                self.pointers
+                    .retain(|contact| contact.kind != PointerKind::Mouse);
+            }
             PointerAction::Moved => {
                 // A move only updates a contact that is down; a hover is the
                 // pointer position above and nothing more.

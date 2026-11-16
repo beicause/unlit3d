@@ -166,13 +166,13 @@ fn feed(input: &InputWriter, events: &InputEvents, batch: impl IntoIterator<Item
 fn click(position: [f32; 2]) -> [InputEvent; 2] {
     [
         InputEvent::Mouse(MouseEvent::Button {
-            position,
+            position: Some(position),
             button: MouseButton::Primary,
             pressed: true,
             modifiers: Modifiers::default(),
         }),
         InputEvent::Mouse(MouseEvent::Button {
-            position,
+            position: Some(position),
             button: MouseButton::Primary,
             pressed: false,
             modifiers: Modifiers::default(),
@@ -188,8 +188,15 @@ fn bind_target(gpu: &TestGpu, world: &World, pass: Entity) -> wgpu::Texture {
         .expect("the context device");
     let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
     let (_, color_view) = gpu.register_texture(world, color.clone());
-    let attachments =
-        FrameAttachments::new(world, gpu.context, COLOR_FORMAT, (WIDTH, HEIGHT), 1, false);
+    let attachments = FrameAttachments::new(
+        world,
+        gpu.context,
+        COLOR_FORMAT,
+        (WIDTH, HEIGHT),
+        1,
+        false,
+        false,
+    );
     let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
     pass.get().set_attachments(&attachments, color_view);
     color

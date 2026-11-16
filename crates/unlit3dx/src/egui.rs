@@ -83,6 +83,12 @@ pub struct EguiPanelHost {
     /// frame laid out asked to be laid out again: a frame that named a moment
     /// rather than asking for the next possible pass.
     repaint_at: Option<f64>,
+    /// A frame the drawing world's queue refused, kept so its texture deltas
+    /// are not lost: the queue holds a bounded number of frames, and a frame
+    /// dropped here would take the texture changes it carries — a font atlas
+    /// upload, usually — with it, leaving the drawing side to draw the panel
+    /// against textures it never received.
+    refused: Option<ExternalFrame>,
 }
 
 impl EguiPanelHost {
@@ -100,6 +106,7 @@ impl EguiPanelHost {
             input_scratch: Vec::new(),
             laid_out_at: None,
             repaint_at: None,
+            refused: None,
         }
     }
 
@@ -149,8 +156,31 @@ impl EguiPanelHost {
         // twice.
         let mut events = core::mem::take(&mut self.input_scratch);
         events.clear();
+        let mut active_touches = 0;
         if let Some(input_events) = world.root_scope().query::<&InputEvents>().iter().next() {
             input_events.copy_events_into(&mut events);
+            active_touches = input_events.with_state(|state| state.touches.len());
+        }
+        // A frame the queue refused keeps its place: it is what the drawing
+        // side should draw next, so sending a newly laid out frame would
+        // strand the texture deltas the refused one carries.
+        if let Some(frame) = self.refused.clone() {
+            match self.render.send(panel_frame_job(self.slot, frame)) {
+                Ok(()) => self.refused = None,
+                // Still no room: the frame keeps its place, and this tick
+                // lays nothing new out so its deltas stay the only pending
+                // ones.
+                Err(SendError::Full) => {
+                    self.input_scratch = events;
+                    return;
+                }
+                // The drawing world is gone; the frame has nowhere to go.
+                Err(SendError::Closed) => {
+                    self.refused = None;
+                    self.input_scratch = events;
+                    return;
+                }
+            }
         }
         let due = self
             .repaint_at
@@ -167,6 +197,7 @@ impl EguiPanelHost {
         unlit3d::egui::convert::to_egui_events_into(
             &events,
             target.screen.pixels_per_point,
+            active_touches,
             &mut scratch,
         );
         self.input_scratch = events;
@@ -196,12 +227,17 @@ impl EguiPanelHost {
                 deadline.is_finite().then_some(deadline)
             }
         };
-        match self.render.send(panel_frame_job(self.slot, laid_out)) {
+        match self
+            .render
+            .send(panel_frame_job(self.slot, laid_out.clone()))
+        {
             Ok(()) => self.laid_out_at = Some(target),
-            // The queue is full: nobody took the frame, and it was dropped
-            // with its texture deltas. Leaving the target unset sends it
-            // again on the next tick.
-            Err(SendError::Full) => {}
+            // The queue is full: nobody took the frame. Keeping it is what
+            // keeps its texture deltas alive — a dropped frame would leave
+            // the drawing side missing a texture change, such as a font
+            // atlas upload. The refused frame is sent again on the next
+            // tick, before anything new is laid out.
+            Err(SendError::Full) => self.refused = Some(laid_out),
             // The drawing world is gone; there is nothing left to draw.
             Err(SendError::Closed) => self.laid_out_at = Some(target),
         }

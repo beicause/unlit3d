@@ -202,8 +202,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方把同样的 world 作为
   `Physics` bundle 生成。
-- **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
-  持有其流。它的 `OnAudioFill` 组件就是音源，一个实体可以在一个组件里叠加多层，
+- **audio**（默认开启）：`spawn_audio_world_with::<R>` 对 `OnRequest` 的 world 在页面
+  首次请求后于音频线程上打开输出设备并持有其流；`Pulled` 的 world 什么都不打开，
+  由宿主用 `dispatch_audio_fill` 填充。它的 `OnAudioFill` 组件就是音源，一个实体可以在一个组件里叠加多层，
   每层带着自己的 `AudioFillOrder`：
   `dispatch_audio_fill` 按该顺序每块运行每个回调，把各自叠加的样本混进由 `AudioConfig`
   定长的环形缓冲，并按 world 的 `GlobalAudioGain` 缩放混音；
@@ -268,9 +269,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   直接返回的工具则接受一个 `format` 参数；调用方什么都不指名时拿到的是 `.flac`——无损
   且体积更小——另有 `.wav` 可选。`request_exit`
   请求携带 `ExitRequest` 的宿主退出；没有窗口事件循环时，`pump_mcp` 负责分发命令，
-  这也正是没有 winit 的宿主仍能对外服务 MCP 的原因。录音音源挂在填充顺序的最末，
-  因此它捕获到的是所有其他音源与 world 的 `GlobalAudioGain` 之后的混音。
-  录音器只为这些工具编译，故 `mcp` 自身蕴含 `audio`。
+  这也正是没有 winit 的宿主仍能对外服务 MCP 的原因。录音是一段 `OnAudioPostFill`
+  后处理，因此它观察到的正是输出流会收到的混音——所有其他音源与 world 的
+  `GlobalAudioGain` 之后。录音器只为这些工具编译，故 `mcp` 自身蕴含 `audio`。
 
 ## 最佳实践
 

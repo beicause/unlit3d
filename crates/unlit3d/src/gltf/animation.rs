@@ -112,18 +112,22 @@ pub(super) fn interpolation_stride(interpolation: Interpolation) -> usize {
 ///
 /// Returns the left frame's index, always in `0..times.len() - 1` so a caller
 /// can read both ends of the interval, and the fraction of the way through it.
+/// Validation guarantees a sampler at least two keyframes, so an empty `times`
+/// only reaches a hand-built document; the clamp keeps it from panicking.
 pub(super) fn keyframe(times: &[f32], time: f32) -> (usize, f32) {
-    let last = times.len() - 1;
+    let Some(last) = times.len().checked_sub(1) else {
+        return (0, 0.0);
+    };
     if time <= times[0] {
         return (0, 0.0);
     }
     if time >= times[last] {
-        return (last - 1, 1.0);
+        return (last.saturating_sub(1), 1.0);
     }
     let frame = times
         .partition_point(|&key| key <= time)
         .saturating_sub(1)
-        .min(last - 1);
+        .min(last.saturating_sub(1));
     let span = times[frame + 1] - times[frame];
     let t = if span > 0.0 {
         (time - times[frame]) / span

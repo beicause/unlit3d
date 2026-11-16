@@ -63,6 +63,7 @@
 //!     window_surface.size(),
 //!     4,
 //!     true,
+//!     false,
 //! );
 //! (window_surface, attachments)
 //! # }

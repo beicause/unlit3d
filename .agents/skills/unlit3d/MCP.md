@@ -126,7 +126,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | `cancel_audio_recording`   | 停止录音并丢弃已捕获的内容                                   | 无                                          |
 | `audio_recording_status`   | 报告当前录到的帧数与秒数                                     | 无                                          |
 
-录音器排在填充顺序的最末，录到的是所有音源与 world 的 `GlobalAudioGain` 之后的混音；格式（采样率与声道数）在第一次填充时学到，所以 `--stepped` 或设备尚未打开时也能录。同一个 world 同时只允许一段录音，第二段会被拒绝。两种格式装的是同一批 16-bit 样本，选法与图片工具一致：落盘时看 `file_name` 的扩展名（`.flac` 无损且更小，是无扩展名时的默认，另有 `.wav`），内联返回时看 `format` 参数。`read_audio_recording` 是给自动化断言用的：要在内存里判断「这段混音是不是静音」时，别先落盘再读回来。
+录音器是一段 `OnAudioPostFill` 后处理，录到的是所有音源与 world 的 `GlobalAudioGain` 之后、输出流会收到的混音；格式（采样率与声道数）在第一次填充时学到，所以 `--stepped` 或设备尚未打开时也能录。同一个 world 同时只允许一段录音，第二段会被拒绝。两种格式装的是同一批 16-bit 样本，选法与图片工具一致：落盘时看 `file_name` 的扩展名（`.flac` 无损且更小，是无扩展名时的默认，另有 `.wav`），内联返回时看 `format` 参数。`read_audio_recording` 是给自动化断言用的：要在内存里判断「这段混音是不是静音」时，别先落盘再读回来。
 
 ### 宿主控制
 

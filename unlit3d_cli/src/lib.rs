@@ -32,9 +32,9 @@ pub enum Error {
     /// The configuration file is not valid JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    /// A glTF document could not be read.
+    /// A glTF document could not be read or spawned.
     #[error(transparent)]
-    Gltf(#[from] gltf::Error),
+    Gltf(#[from] unlit3d::gltf::Error),
     /// The image could not be encoded.
     #[error(transparent)]
     Image(#[from] image::ImageError),
@@ -189,7 +189,7 @@ pub fn build_world(
         });
         let nodes = {
             let mut scope = world.scope_mut(source_entity);
-            gltf.spawn_default_scene(&mut scope, &resources)
+            gltf.spawn_default_scene(&mut scope, &resources)?
         };
         if let Some(placement) = &document.placement {
             let transform = placement.transform();

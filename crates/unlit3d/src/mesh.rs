@@ -41,7 +41,7 @@ pub struct VertexBufferDesc {
 /// [`crate::mesh_source::MeshSource::allocate_mesh`] takes one of these and returns a
 /// [`crate::components::GpuMesh`] handle. The buffers are moved into the source's
 /// resource graph, so the caller hands over ownership.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct MeshDesc {
     /// Vertex buffers, each tagged with its slot.
     ///
@@ -57,7 +57,8 @@ pub struct MeshDesc {
     /// The mesh's local-space bounding box, recorded in the mesh-metadata
     /// array and used for CPU frustum culling.
     ///
-    /// Defaults to [`Aabb::ZERO`]: a zero-extent box at the origin.
+    /// There is no default: a box the caller guessed at culls better than a
+    /// zero box at the origin, which culls every mesh away.
     pub aabb: Aabb,
     /// A bind group bound at
     /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP), for a

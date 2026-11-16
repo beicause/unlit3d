@@ -294,7 +294,7 @@ fn a_button_press_uses_the_current_cursor() {
     assert_eq!(
         events(&input)[2],
         InputEvent::Mouse(MouseEvent::Button {
-            position: CURSOR,
+            position: Some(CURSOR),
             button: CrateButton::Primary,
             pressed: true,
             modifiers: Modifiers::default(),
@@ -317,7 +317,7 @@ fn a_button_press_uses_the_current_cursor() {
 }
 
 #[test]
-fn a_button_press_without_a_cursor_falls_back_to_the_origin() {
+fn a_button_release_without_a_cursor_carries_no_position() {
     let input = input();
 
     assert!(input.on_window_event(&WindowEvent::MouseInput {
@@ -330,7 +330,7 @@ fn a_button_press_without_a_cursor_falls_back_to_the_origin() {
         events(&input),
         [
             InputEvent::Mouse(MouseEvent::Button {
-                position: NO_CURSOR,
+                position: None,
                 button: CrateButton::Secondary,
                 pressed: false,
                 modifiers: Modifiers::default(),
@@ -339,7 +339,7 @@ fn a_button_press_without_a_cursor_falls_back_to_the_origin() {
                 kind: PointerKind::Mouse,
                 id: MOUSE_POINTER,
                 action: PointerAction::Released { cancelled: false },
-                position: Some(NO_CURSOR),
+                position: None,
                 modifiers: Modifiers::default(),
             }),
         ]

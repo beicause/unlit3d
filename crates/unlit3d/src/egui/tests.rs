@@ -9,7 +9,7 @@ use crate::input::{
     refresh_input,
 };
 use crate::pass::PassInfo;
-use crate::source::spawn_context;
+use crate::source::{OpenUrl, drain_open_urls, spawn_context};
 
 /// How many times a panel's closure ran, in a sibling component: a panel
 /// cannot keep state in itself.
@@ -64,6 +64,47 @@ fn encoder(world: &World, ctx: RenderContext) -> wgpu::CommandEncoder {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test::encoder"),
         })
+}
+
+/// A frame's published requests join whatever the queue already holds, so a
+/// request a drain has not taken yet survives the next frame's publish.
+#[test]
+fn a_published_frame_joins_what_the_queue_already_holds() {
+    let (world, _ctx) = test_world();
+    let scope = world.root_scope();
+    publish_open_urls(
+        &scope,
+        &mut vec![OpenUrl {
+            url: "https://first.example".into(),
+            new_tab: false,
+        }],
+    );
+    publish_open_urls(
+        &scope,
+        &mut vec![OpenUrl {
+            url: "https://second.example".into(),
+            new_tab: true,
+        }],
+    );
+    let urls = drain_open_urls(&world);
+    assert_eq!(
+        urls,
+        vec![
+            OpenUrl {
+                url: "https://first.example".into(),
+                new_tab: false,
+            },
+            OpenUrl {
+                url: "https://second.example".into(),
+                new_tab: true,
+            },
+        ],
+        "the second frame's requests join the first frame's, not replace them",
+    );
+    assert!(
+        drain_open_urls(&world).is_empty(),
+        "draining empties the queue"
+    );
 }
 
 /// Every panel in the world runs, once, and a panel may read and write a
@@ -409,13 +450,13 @@ fn a_mouse_click_reaches_a_widget() {
     for event in [
         MouseEvent::Moved { position: centre },
         MouseEvent::Button {
-            position: centre,
+            position: Some(centre),
             button: MouseButton::Primary,
             pressed: true,
             modifiers: Modifiers::default(),
         },
         MouseEvent::Button {
-            position: centre,
+            position: Some(centre),
             button: MouseButton::Primary,
             pressed: false,
             modifiers: Modifiers::default(),

@@ -87,6 +87,7 @@ fn bind_target(
         (WIDTH, HEIGHT),
         samples,
         with_depth,
+        false,
     );
     {
         let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);

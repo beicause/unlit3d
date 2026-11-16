@@ -94,7 +94,8 @@ fn offscreen_world(ctx: &Ctx) -> World {
         graph.add_dependency(&view, &texture);
         view
     };
-    let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true);
+    let attachments =
+        FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true, false);
     world
         .root_scope()
         .query_one::<&mut FramePass>(pass)

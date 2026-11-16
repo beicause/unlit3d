@@ -326,14 +326,15 @@ impl OpenUrls {
         });
     }
 
-    /// Replace everything queued with `urls`.
+    /// Move every URL `urls` holds onto the queue, leaving `urls` empty so
+    /// its allocation is reused by the next frame.
     ///
     /// A source that publishes the requests of a frame in one go uses this
-    /// rather than pushing, so a frame's requests never mix with a stale
-    /// queue.
-    pub fn replace(&mut self, urls: impl IntoIterator<Item = OpenUrl>) {
-        self.0.clear();
-        self.0.extend(urls);
+    /// rather than pushing one by one, and the queue grows by them instead
+    /// of being emptied first: what a previous frame left behind is served
+    /// by a later [ `drain_open_urls` ] rather than dropped.
+    pub fn append(&mut self, urls: &mut Vec<OpenUrl>) {
+        self.0.append(urls);
     }
 }
 

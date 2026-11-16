@@ -56,6 +56,39 @@ fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
     ),]);
 }
 
+/// A post-fill behaviour observes the finished mix: the samples it sees match
+/// the buffer the output stream would receive, gain and clamp included, and
+/// it runs once per fill.
+#[test]
+fn a_post_fill_sees_the_finished_mix() {
+    let mut world = World::new();
+    world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
+    let counts = Arc::new(AtomicUsize::new(0));
+    counting_source(&mut world, 0.6, &counts);
+    let seen: Arc<Mutex<Vec<f32>>> = Arc::default();
+    let observer = Arc::clone(&seen);
+    world.root_scope_mut().spawn(bundle![OnAudioPostFill::new(
+        move |_world, _entity, mix: &AudioMix| {
+            observer.lock().unwrap().extend(mix.samples.iter().copied());
+        },
+    ),]);
+    let mut out = vec![0.0f32; 4];
+    dispatch_audio_fill(&world, &mut out, 48_000, 1);
+    assert!(
+        out.iter().all(|sample| *sample == 1.0),
+        "0.6 scaled by 2 clamps"
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        out,
+        "the post fill saw the finished mix"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 4, "one fill, one observation");
+
+    dispatch_audio_fill(&world, &mut out, 48_000, 1);
+    assert_eq!(seen.lock().unwrap().len(), 8, "every fill is observed");
+}
+
 /// A world with no sources fills with silence; a source adds to the chunk
 /// the dispatcher hands it, and several sources mix.
 #[test]

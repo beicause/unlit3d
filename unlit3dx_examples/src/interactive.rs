@@ -164,7 +164,7 @@ impl Interactive {
     pub fn click(&mut self, host: &World, position: [f32; 2]) {
         let button = |pressed| {
             InputEvent::Mouse(unlit3d::input::MouseEvent::Button {
-                position,
+                position: Some(position),
                 button: unlit3d::input::MouseButton::Primary,
                 pressed,
                 modifiers: Default::default(),

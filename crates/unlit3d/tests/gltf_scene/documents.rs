@@ -146,6 +146,7 @@ pub(super) fn spawn_scene(
     let source = gpu.mesh_source();
     let mut scope = world.scope_mut(source);
     gltf.spawn_default_scene(&mut scope, resources)
+        .expect("the test document spawns")
 }
 
 /// The glTF JSON of one quad skinned to a single joint, whose node sits at

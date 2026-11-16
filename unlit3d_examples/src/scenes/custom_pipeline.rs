@@ -221,7 +221,11 @@ fn build(
         MeshDesc {
             count: SKY_VERTICES,
             aabb: Aabb::new(glam::Vec3::ZERO, glam::Vec3::splat(SKY_EXTENT)),
-            ..Default::default()
+            vertex_buffers: arrayvec::ArrayVec::new(),
+            index_buffer: None,
+            indexed: false,
+            bind_group: None,
+            morph_deltas: None,
         },
     );
 
@@ -259,7 +263,11 @@ fn build(
                 glam::Vec3::new(0.0, 1.30, 0.0),
                 glam::Vec3::new(3.0, 1.60, 3.0),
             ),
-            ..Default::default()
+            vertex_buffers: arrayvec::ArrayVec::new(),
+            index_buffer: None,
+            indexed: false,
+            bind_group: None,
+            morph_deltas: None,
         },
     );
     let particle_material = {

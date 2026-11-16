@@ -109,6 +109,26 @@ impl AudioChunk<'_> {
     }
 }
 
+/// The finished mix a post-fill behaviour observes: every [`OnAudioFill`]
+/// source has added its samples and the world's [`GlobalAudioGain`] has
+/// scaled the sum, so these are the samples the output stream would receive.
+pub struct AudioMix<'a> {
+    /// The chunk's samples, interleaved frames.
+    pub samples: &'a [f32],
+    /// The output's sample rate, in hertz.
+    pub sample_rate: u32,
+    /// The output's channel count.
+    pub channels: u16,
+}
+
+impl AudioMix<'_> {
+    /// How many frames the mix holds.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.samples.len() / usize::from(self.channels.max(1))
+    }
+}
+
 /// The callback a fill behaviour runs: it adds its source's samples to the
 /// chunk it is handed.
 type AudioFillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
@@ -157,6 +177,43 @@ impl OnAudioFill {
     }
 }
 
+/// The callback a post-fill behaviour runs: it observes the finished mix
+/// without changing it.
+type AudioPostFillCallback = Box<dyn FnMut(&World, Entity, &AudioMix)>;
+
+/// The state every post-fill behaviour shares: its callback.
+struct AudioPostFillSlot {
+    callback: AudioPostFillCallback,
+}
+
+/// An observer of the finished mix: a component the audio thread runs once
+/// per filled chunk, after every [`OnAudioFill`] source has added its
+/// samples and the world's [`GlobalAudioGain`] has scaled and clamped the
+/// sum.
+///
+/// The samples [`dispatch_audio_fill`] hands a post-fill behaviour are the
+/// ones the output stream would receive, so a limiter, a level meter, or a
+/// recorder mounts here rather than among the sources: it observes the mix
+/// instead of repeating the dispatcher's gain and clamp itself. A post-fill
+/// behaviour cannot change the mix — it sees a shared slice — and two of
+/// them run in no stated order between themselves.
+pub struct OnAudioPostFill(AudioPostFillSlot);
+
+impl OnAudioPostFill {
+    /// Wrap `f` as an [`OnAudioPostFill`].
+    #[must_use]
+    pub fn new(f: impl FnMut(&World, Entity, &AudioMix) + 'static) -> Self {
+        Self(AudioPostFillSlot {
+            callback: Box::new(f),
+        })
+    }
+
+    /// Run this behaviour for `entity`, observing `mix`.
+    fn run(&mut self, world: &World, entity: Entity, mix: &AudioMix) {
+        (self.0.callback)(world, entity, mix);
+    }
+}
+
 thread_local! {
     /// The source list [`dispatch_audio_fill`] reuses across fills.
     ///
@@ -169,6 +226,14 @@ thread_local! {
         reason = "the initializer is already a const block"
     )]
     static SOURCES: RefCell<Vec<(AudioFillOrder, Entity)>> = const { RefCell::new(Vec::new()) };
+
+    /// The post-fill list [`dispatch_audio_fill`] reuses across fills, with
+    /// the same reasoning as `SOURCES` above.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
+    static POST_SOURCES: RefCell<Vec<Entity>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The factor the mixed samples scale by, read from the audio world.
@@ -183,8 +248,9 @@ thread_local! {
 ///
 /// A source runs before the gain is applied, so it sees the mix at the
 /// sources' own levels. One that mirrors the output — a recorder does —
-/// applies the gain itself rather than expecting the buffer it is handed to
-/// carry it.
+/// runs after it instead: an [`OnAudioPostFill`] behaviour sees the finished
+/// mix, gain and clamp included, rather than scaling the buffer it observes
+/// itself.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GlobalAudioGain(pub f32);
 
@@ -196,8 +262,11 @@ pub struct GlobalAudioGain(pub f32);
 /// Then the world's [`GlobalAudioGain`] — one when it carries none — scales
 /// the sum, which clamps to the unit range. This is the whole of the audio
 /// thread's per-chunk work, and a caller stepping a world inline calls it the
-/// same way. The gain is the finished buffer's alone: every source ran before
-/// it, which is why a source that mirrors the output applies it itself.
+/// same way.
+///
+/// Every [`OnAudioPostFill`] in `world` then observes the finished mix: its
+/// samples are the ones the output stream would receive, gain and clamp
+/// included, and a post-fill behaviour cannot change them.
 ///
 /// A source must not change the world's set of sources while it runs: it
 /// has a shared `&World`, so structural work goes through
@@ -241,6 +310,33 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
     for sample in chunk.out.iter_mut() {
         *sample = (*sample * gain).clamp(-1.0, 1.0);
     }
+    // The mix is finished: its samples are what the output stream would
+    // receive. The post-fill stage observes it and cannot change it, so a
+    // recorder or a limiter mounts here rather than repeating the gain and
+    // the clamp themselves.
+    let mix = AudioMix {
+        samples: &chunk.out[..],
+        sample_rate,
+        channels,
+    };
+    let mut posts = POST_SOURCES.with_borrow_mut(std::mem::take);
+    posts.clear();
+    posts.extend(
+        world
+            .root_scope()
+            .query::<(&OnAudioPostFill, Entity)>()
+            .iter()
+            .map(|(_post, entity)| entity),
+    );
+    for entity in &posts {
+        if let Ok(mut post) = world
+            .root_scope()
+            .try_query_one::<&mut OnAudioPostFill>(*entity)
+        {
+            post.get().run(world, *entity, &mix);
+        }
+    }
+    POST_SOURCES.with_borrow_mut(|slot| *slot = posts);
 }
 
 /// The format the audio world's output stream opened at.
@@ -331,10 +427,11 @@ struct OpenOutput {
 /// Nothing is published until someone subscribes: a subscriber's collector
 /// runs once per tick, after the output's state has been updated.
 ///
-/// Both runners share one tick body, so a stepped world opens its output and
-/// fills its ring exactly as a threaded one does; the only difference is
+/// Both runners share one tick body, so a stepped world honours
+/// [`AudioOutputMode`] exactly as a threaded one does; the only difference is
 /// that its host calls [`crate::world::step_stepped_world`] once per frame
-/// instead of a thread pacing itself.
+/// instead of a thread pacing itself. A Pulled one therefore sounds only
+/// while its host keeps pulling, whatever drives it.
 ///
 /// # Panics
 ///
@@ -365,6 +462,17 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
     // sample rate is known and then keeps its own cadence, so a slow tick
     // does not push every later wakeup out.
     let mut clock: Option<FixedClock> = None;
+    // A self-driven world never pulls its own fills, so a Pulled config
+    // leaves it silent until its host starts calling
+    // [`dispatch_audio_fill`]. The default config is Pulled, so a caller
+    // that wanted sound is told here instead of chasing a missing device.
+    if R::SELF_DRIVEN && config.output == AudioOutputMode::Pulled {
+        log::warn!(
+            "the audio world is self-driven in the Pulled mode, so nothing \
+             fills it; the host calls dispatch_audio_fill, or the config asks \
+             for OnRequest"
+        );
+    }
     R::spawn(
         host,
         "audio",
@@ -423,10 +531,9 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             // A source takes time to build — a soundfont is parsed on this
             // thread — so a device may be open for seconds before the world
             // carries one. Log the transition, not the state, so the log
-            // stays quiet.
-            // A [`AudioOutputMode::Pulled`] world is open by definition: its host pulls the
-            // fills. One waiting for its page's first click — or for a
-            // device — is not, whatever its sources are doing.
+            // stays quiet. A Pulled world has no transition of its own to
+            // log: whether it sounds is whether its host pulls, which the
+            // host already knows. Only an OnRequest world reports one.
             let open = output.is_some() || config.output == AudioOutputMode::Pulled;
             // The marker goes on the first tick the output is open, and the
             // world keeps it: an entity's components are fixed once spawned.
@@ -440,19 +547,21 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             {
                 world.root_scope_mut().spawn(bundle![AudioOutputOpen]);
             }
-            let sounding = open
-                && world
-                    .root_scope()
-                    .query::<&OnAudioFill>()
-                    .iter()
-                    .next()
-                    .is_some();
-            if sounding != ready {
-                ready = sounding;
-                if sounding {
-                    log::info!("the audio world can sound");
-                } else {
-                    log::warn!("the audio world cannot sound");
+            if let AudioOutputMode::OnRequest = config.output {
+                let sounding = output.is_some()
+                    && world
+                        .root_scope()
+                        .query::<&OnAudioFill>()
+                        .iter()
+                        .next()
+                        .is_some();
+                if sounding != ready {
+                    ready = sounding;
+                    if sounding {
+                        log::info!("the audio world can sound");
+                    } else {
+                        log::warn!("the audio world cannot sound");
+                    }
                 }
             }
             if let Some(output) = output.as_mut() {

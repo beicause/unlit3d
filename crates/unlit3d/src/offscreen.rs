@@ -38,6 +38,11 @@ pub struct TargetConfig {
     pub samples: u32,
     /// Whether the target carries a depth-stencil attachment.
     pub with_depth: bool,
+    /// Whether the depth attachment keeps its previous contents readable, so
+    /// a pass on this target may open with [`LoadOp::Load`](wgpu::LoadOp).
+    /// The default clears and discards the depth of every frame, which lets
+    /// the driver skip storing it.
+    pub persistent_depth: bool,
     /// How an intermediate target presented to a window follows its size.
     /// Purely offscreen rendering states an explicit pixel size instead.
     pub size: IntermediateSize,
@@ -49,6 +54,7 @@ impl Default for TargetConfig {
             format: OFFSCREEN_FORMAT,
             samples: OFFSCREEN_SAMPLES,
             with_depth: true,
+            persistent_depth: false,
             size: IntermediateSize::Scale(1.0),
         }
     }
@@ -119,6 +125,7 @@ impl PersistentTarget {
             size,
             config.samples,
             config.with_depth,
+            config.persistent_depth,
         );
         let mut pass_row = world.root_scope().try_query_one::<&mut FramePass>(pass)?;
         pass_row.get().set_attachments(&attachments, view.clone());

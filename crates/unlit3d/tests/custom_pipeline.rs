@@ -96,6 +96,19 @@ fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
     }
 }
 
+/// The axis-aligned box the vertices actually span.
+fn aabb_of(vertices: &[Vertex]) -> Aabb {
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for vertex in vertices {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(vertex.position[axis]);
+            max[axis] = max[axis].max(vertex.position[axis]);
+        }
+    }
+    Aabb::new(min.into(), max.into())
+}
+
 /// The pipeline key a custom family draws with.
 ///
 /// It names the inputs its descriptor is built from: the shader, and the
@@ -308,8 +321,12 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
             MeshDesc {
                 vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
                     .expect("one buffer fits"),
+                index_buffer: None,
                 count: TRIANGLE.len() as u32,
-                ..Default::default()
+                indexed: false,
+                aabb: aabb_of(&TRIANGLE),
+                bind_group: None,
+                morph_deltas: None,
             },
         );
         (pipeline, mesh)
@@ -424,9 +441,12 @@ async fn one_pipeline_draws_many_meshes() {
                 MeshDesc {
                     vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
                         .expect("one buffer fits"),
+                    index_buffer: None,
                     count: TRIANGLE.len() as u32,
+                    indexed: false,
+                    aabb: aabb_of(&TRIANGLE),
                     bind_group: Some(bind_group),
-                    ..Default::default()
+                    morph_deltas: None,
                 },
             )
         };

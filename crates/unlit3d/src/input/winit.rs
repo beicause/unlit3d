@@ -52,10 +52,6 @@ use super::{
     TouchEvent, TouchPhase, WheelUnit,
 };
 
-/// The position a mouse event falls back to while the cursor is outside the
-/// window and [`InputState::cursor`](super::InputState::cursor) is `None`.
-const NO_CURSOR: [f32; 2] = [0.0, 0.0];
-
 /// The pointer id of the one pointer a mouse is.
 ///
 /// A mouse cannot be several contacts at once, so it always reports this id. A
@@ -170,7 +166,6 @@ impl WinitInput {
                 let pressed = state.is_pressed();
                 let button = to_button(*button);
                 let (position, modifiers) = self.stamp();
-                let position = position.unwrap_or(NO_CURSOR);
                 self.push_all([
                     InputEvent::Mouse(MouseEvent::Button {
                         position,
@@ -186,7 +181,7 @@ impl WinitInput {
                         } else {
                             PointerAction::Released { cancelled: false }
                         },
-                        position: Some(position),
+                        position,
                         modifiers,
                     }),
                 ])

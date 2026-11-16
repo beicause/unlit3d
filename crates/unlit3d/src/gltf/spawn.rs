@@ -36,17 +36,20 @@ impl LitGltf {
     /// [`Self::skin_pose`]. Children are not spawned; use
     /// [`Self::spawn_default_scene`] for the whole scene.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If the node's mesh (or a mesh it shares primitives with) was not
-    /// inserted into `resources`, or a primitive's material is `None` there
-    /// while it samples a base-color texture.
+    /// Returns [`Error::MeshNotInserted`](super::Error::MeshNotInserted) when
+    /// the node's mesh (or a mesh it shares primitives with) was not inserted
+    /// into `resources`, and
+    /// [`Error::MaterialNotInserted`](super::Error::MaterialNotInserted) when a
+    /// primitive's material is `None` there while it samples a base-color
+    /// texture.
     pub fn spawn_node(
         &self,
         world: &mut ScopeMut<'_>,
         node: NodeId,
         resources: &GltfResources,
-    ) -> GltfNode {
+    ) -> Result<GltfNode, super::Error> {
         let index = node.index();
         let transform = self.node_transforms[index].clone();
         let node = self.node(index);
@@ -66,7 +69,7 @@ impl LitGltf {
                         handle.mesh_index == MeshId::new(mesh.index())
                             && handle.primitive_index == PrimitiveId::new(primitive.index())
                     })
-                    .expect("a document mesh must be inserted before the node that draws it");
+                    .ok_or(super::Error::MeshNotInserted { node: index })?;
                 // The base-color factor tints the instance whether or not the
                 // material samples a texture; a primitive naming no material
                 // falls back to the glTF default, opaque white.
@@ -79,8 +82,12 @@ impl LitGltf {
                 // read before the primitive is handed to the material lookup,
                 // which takes it by value.
                 let cutoff = alpha_cutoff(&primitive.material());
-                let material = samples_base_color_texture(&primitive)
-                    .then(|| self.primitive_material(primitive, &resources.materials));
+                let material = match samples_base_color_texture(&primitive) {
+                    true => {
+                        Some(self.primitive_material(&mesh, primitive, &resources.materials)?)
+                    }
+                    false => None,
+                };
                 let z_sorted = mesh_handle.key.options.blend.is_some();
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
@@ -133,12 +140,12 @@ impl LitGltf {
                 entities.push(world.spawn(bundle));
             }
         }
-        GltfNode {
+        Ok(GltfNode {
             node: NodeId::new(index),
             entities,
             pose,
             weights: morphs,
-        }
+        })
     }
 
     /// Spawn every node reachable from the document's default scene.
@@ -150,50 +157,61 @@ impl LitGltf {
     /// contributes its primitives exactly where its world-space transform sits
     /// in the hierarchy.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If the document declares no default scene, or any spawn fails (see
-    /// [`Self::spawn_node`]).
+    /// Returns [`Error::NoDefaultScene`](super::Error::NoDefaultScene) when the
+    /// document declares no default scene, or whatever
+    /// [`Self::spawn_node`] returns for any visited node.
     pub fn spawn_default_scene(
         &self,
         world: &mut ScopeMut<'_>,
         resources: &GltfResources,
-    ) -> Vec<GltfNode> {
+    ) -> Result<Vec<GltfNode>, super::Error> {
         let scene = self
             .document
             .default_scene()
-            .expect("the glTF document declares a default scene");
+            .ok_or(super::Error::NoDefaultScene)?;
         let mut nodes = Vec::new();
         let mut stack: Vec<NodeId> = scene
             .nodes()
             .map(|node| NodeId::new(node.index()))
             .collect();
         while let Some(node) = stack.pop() {
-            nodes.push(self.spawn_node(world, node, resources));
+            nodes.push(self.spawn_node(world, node, resources)?);
             stack.extend(
                 self.node(node.index())
                     .children()
                     .map(|child| NodeId::new(child.index())),
             );
         }
-        nodes
+        Ok(nodes)
     }
 
     /// The inserted material a primitive draws with.
     ///
+    /// The inserted material a primitive draws with.
+    ///
     /// A primitive without a material index, or whose material is `None` in
-    /// `materials` (no base-color texture), draws untextured.
+    /// `materials` (no base-color texture), draws untextured — but a primitive
+    /// that samples its material's base-color texture needs the material
+    /// inserted, which [`Self::spawn_node`] reports as
+    /// [`Error::MaterialNotInserted`](super::Error::MaterialNotInserted).
     fn primitive_material<'m>(
         &self,
+        mesh: &gltf::Mesh<'_>,
         primitive: gltf::Primitive<'_>,
         materials: &'m [Option<GltfMaterial>],
-    ) -> &'m GltfMaterial {
+    ) -> Result<&'m GltfMaterial, super::Error> {
+        let missing = || super::Error::MaterialNotInserted {
+            mesh: mesh.index(),
+            primitive: primitive.index(),
+        };
         match primitive.material().index() {
             Some(index) => materials
                 .get(index)
                 .and_then(Option::as_ref)
-                .expect("every material a spawned mesh reads must have been inserted"),
-            None => panic!("a primitive that samples a texture must name a material"),
+                .ok_or_else(missing),
+            None => Err(missing()),
         }
     }
 }

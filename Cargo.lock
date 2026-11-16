@@ -6006,6 +6006,7 @@ version = "0.1.0-dev.3"
 dependencies = [
  "android_logger",
  "argh",
+ "arrayvec",
  "console_error_panic_hook",
  "console_log",
  "const_shader_layout",

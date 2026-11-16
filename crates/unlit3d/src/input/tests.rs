@@ -362,10 +362,16 @@ fn push_updates_the_state_it_leaves_behind() {
         shift: true,
         ..Modifiers::default()
     }));
+    assert!(state.modifiers.shift);
     state.push(InputEvent::FocusChanged(false));
+    // The loss drops the pressed state: the window stops hearing the events
+    // that lift a button or a finger, so a hold carried across would outlive
+    // its press forever.
+    assert!(!state.focused);
+    assert_eq!(state.modifiers, Modifiers::default());
     state.push(InputEvent::Mouse(MouseEvent::Moved { position: CURSOR }));
     state.push(InputEvent::Mouse(MouseEvent::Button {
-        position: CURSOR,
+        position: Some(CURSOR),
         button: MouseButton::Primary,
         pressed: true,
         modifiers: Modifiers::default(),
@@ -384,8 +390,6 @@ fn push_updates_the_state_it_leaves_behind() {
         force: Some(0.5),
     }));
 
-    assert!(state.modifiers.shift);
-    assert!(!state.focused);
     assert_eq!(state.cursor, Some(CURSOR));
     assert!(state.buttons.contains(MouseButtons::PRIMARY));
     assert_eq!(state.pointer, Some(CURSOR));
@@ -395,7 +399,7 @@ fn push_updates_the_state_it_leaves_behind() {
     // An unnamed button has no bit to occupy, but its event is still
     // delivered.
     state.push(InputEvent::Mouse(MouseEvent::Button {
-        position: CURSOR,
+        position: Some(CURSOR),
         button: MouseButton::Other(9),
         pressed: true,
         modifiers: Modifiers::default(),
@@ -405,7 +409,7 @@ fn push_updates_the_state_it_leaves_behind() {
     // Releasing clears the bit; ending the touch drops it from the active
     // set.
     state.push(InputEvent::Mouse(MouseEvent::Button {
-        position: CURSOR,
+        position: Some(CURSOR),
         button: MouseButton::Primary,
         pressed: false,
         modifiers: Modifiers::default(),
@@ -445,6 +449,50 @@ fn push_updates_the_state_it_leaves_behind() {
     }));
     assert!(state.touches.is_empty());
     assert_eq!(state.buttons.held().count(), 0);
+}
+
+#[test]
+fn losing_focus_drops_the_pressed_state() {
+    // Without focus the window stops hearing the events that lift a button
+    // or a finger, so a hold carried across the loss would outlive its
+    // press forever; the focus edge drops it instead.
+    let mut state = InputState::default();
+
+    state.push(InputEvent::ModifiersChanged(Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    }));
+    state.push(InputEvent::Mouse(MouseEvent::Button {
+        position: Some(CURSOR),
+        button: MouseButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::default(),
+    }));
+    state.push(InputEvent::Pointer(PointerEvent {
+        kind: PointerKind::Mouse,
+        id: 0,
+        action: PointerAction::Pressed,
+        position: Some(CURSOR),
+        modifiers: Modifiers::default(),
+    }));
+    state.push(InputEvent::Touch(TouchEvent {
+        id: 7,
+        phase: TouchPhase::Started,
+        position: CURSOR,
+        force: Some(0.5),
+    }));
+
+    state.push(InputEvent::FocusChanged(false));
+
+    assert_eq!(state.modifiers, Modifiers::default());
+    assert!(state.buttons.is_empty());
+    assert!(state.pointers.is_empty());
+    assert!(!state.pointer_down);
+    assert!(state.touches.is_empty());
+    // Focus coming back starts nothing: a press that arrives later re-adds
+    // its own state.
+    state.push(InputEvent::FocusChanged(true));
+    assert!(state.buttons.is_empty());
 }
 
 #[test]

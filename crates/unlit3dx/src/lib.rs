@@ -93,9 +93,9 @@ pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
 pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
-        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioOutputMode, AudioOutputOpen,
-        AudioOutputRequest, GlobalAudioGain, OnAudioFill, dispatch_audio_fill,
-        request_audio_output, spawn_audio_world_with,
+        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioMix, AudioOutputMode,
+        AudioOutputOpen, AudioOutputRequest, GlobalAudioGain, OnAudioFill, OnAudioPostFill,
+        dispatch_audio_fill, request_audio_output, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};

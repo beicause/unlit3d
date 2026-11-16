@@ -319,7 +319,11 @@ impl Translator {
                 pressed,
                 modifiers,
             } => {
-                self.position = *position;
+                // A press with no position leaves the last known one: a
+                // fabricated corner would misdirect the document's hit test.
+                if let Some(position) = *position {
+                    self.position = position;
+                }
                 self.modifiers = *modifiers;
                 // A button neither side has a name for is not pressed on the
                 // page: the mouse of a platform with more buttons than a

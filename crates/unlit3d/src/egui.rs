@@ -335,11 +335,18 @@ impl FrameSource for EguiSource {
         // does not take it. A world without one is not an error: the overlay still
         // lays out at the target's own size, unfeed.
         let state = input_events_rows.iter().next().map(|input_events| {
-            input_events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
+            input_events.with_state(|state| {
+                (
+                    state.scale_factor,
+                    state.size_px,
+                    state.focused,
+                    state.touches.len(),
+                )
+            })
         });
-        let (scale_factor, size_px, focused) = match state {
+        let (scale_factor, size_px, focused, active_touches) = match state {
             Some(state) => state,
-            None => (1.0, (target.width, target.height), true),
+            None => (1.0, (target.width, target.height), true, 0),
         };
         // A caller that has not learned the window's size yet leaves `size_px`
         // at zero; the target's own pixel size lays the overlay out correctly, where
@@ -363,7 +370,12 @@ impl FrameSource for EguiSource {
         event_scratch.clear();
         if let Some(input_events) = scope.query::<&InputEvents>().iter().next() {
             input_events.with_batch(|batch| {
-                convert::to_egui_events_into(batch, pixels_per_point, &mut event_scratch);
+                convert::to_egui_events_into(
+                    batch,
+                    pixels_per_point,
+                    active_touches,
+                    &mut event_scratch,
+                );
             });
         }
         let screen = ScreenDescriptor {
@@ -550,9 +562,12 @@ fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '
 /// The resource is looked up by type, so a world gets one from `spawn_context`
 /// — the frame's own setup — and a caller never has to create it. A world
 /// without one is not an error: the overlay still draws, and the request is simply
-/// dropped. The queue is replaced rather than appended to, so a request that
-/// a previous frame left behind cannot be served twice; `urls` is emptied
-/// either way, so its allocation is reused by the next frame.
+/// dropped. The frame's requests are appended to whatever a previous frame
+/// left behind — [`drain_open_urls`] is what empties the queue, and a request
+/// left in it is served by a later drain rather than dropped; `urls` is
+/// emptied either way, so its allocation is reused by the next frame.
+///
+/// [`drain_open_urls`]: crate::source::drain_open_urls
 fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
     let Some(entity) = ({
         let mut open_urls_rows = scope.query::<(&OpenUrls, Entity)>();
@@ -563,10 +578,7 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
     };
     let _ = scope
         .try_query_one::<&mut OpenUrls>(entity)
-        .map(|mut slot| {
-            let slot = slot.get();
-            slot.replace(urls.drain(..))
-        });
+        .map(|mut slot| slot.get().append(urls));
 }
 
 /// A frame of egui that was laid out somewhere other than the world drawing it.
@@ -580,6 +592,7 @@ fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
 ///
 /// Everything here is plain owned data, which is what lets it cross the
 /// boundary: it carries neither egui's context nor any borrow of it.
+#[derive(Clone)]
 pub struct ExternalFrame {
     /// The frame's texture updates, keyed by the context that laid it out.
     pub textures: egui::TexturesDelta,

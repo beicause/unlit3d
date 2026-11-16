@@ -120,9 +120,13 @@ fn build(
     // the weights entity its morph targets read.
     let (fox_nodes, morph_nodes) = {
         let mut scope = world.scope_mut(source_entity);
+        // The embedded assets are checked in, so their scenes always spawn.
         (
-            fox.spawn_default_scene(&mut scope, &fox_resources),
-            morph.spawn_default_scene(&mut scope, &morph_resources),
+            fox.spawn_default_scene(&mut scope, &fox_resources)
+                .expect("the fox asset spawns"),
+            morph
+                .spawn_default_scene(&mut scope, &morph_resources)
+                .expect("the morph asset spawns"),
         )
     };
 

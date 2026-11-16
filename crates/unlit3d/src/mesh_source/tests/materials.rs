@@ -73,9 +73,13 @@ fn a_mesh_registers_its_pooled_parts_nowhere_under_its_root() {
         &h.world.root_scope(),
         MeshDesc {
             vertex_buffers: ArrayVec::new(),
+            index_buffer: None,
             count: 3,
+            indexed: false,
+            // No vertices, so the truthful bound is a zero box at the origin.
+            aabb: crate::bounds::Aabb::new(glam::Vec3::ZERO, glam::Vec3::ZERO),
             bind_group: Some(bind_group.clone()),
-            ..Default::default()
+            morph_deltas: None,
         },
     );
     let ctx = h.source.context();

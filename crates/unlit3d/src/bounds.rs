@@ -183,7 +183,10 @@ mod tests {
     }
 
     fn test_perspective() -> glam::Mat4 {
-        glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
+        // The renderer's own projection: reverse-z, infinite far. Tests that cull
+        // against the near plane exercise it; the far plane has no finite answer
+        // under this convention.
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(1.0, 1.0, 0.1)
     }
 
     #[test]
@@ -199,10 +202,13 @@ mod tests {
         let clip_from_world = test_perspective() * view;
         let planes = FrustumPlanes::from_clip_from_world(clip_from_world);
         assert!(planes.test_obb(&unit_obb()));
-        let far = |z| {
-            Aabb::new(Vec3::new(0.0, 0.0, z), Vec3::splat(0.5)).transformed(&Affine3A::IDENTITY)
+        // No finite far plane exists under the reverse-z projection, so what sits
+        // between the camera and its near plane is the second thing culled: the
+        // box spans 4.92 to 4.98, and the near plane cuts at 4.9.
+        let near = |z| {
+            Aabb::new(Vec3::new(0.0, 0.0, z), Vec3::splat(0.03)).transformed(&Affine3A::IDENTITY)
         };
-        assert!(!planes.test_obb(&far(20.0)));
+        assert!(!planes.test_obb(&near(4.95)));
     }
 
     #[test]

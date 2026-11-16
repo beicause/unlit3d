@@ -453,8 +453,14 @@ pub fn step_stepped_world(
 /// This walks the proxies directly, so a caller that must answer a
 /// command before its next frame does not need to gather entities into
 /// a separate buffer first.
-pub fn drain_all_stepped_worlds(host: &World) {
+///
+/// Returns the names of the worlds whose queued jobs panicked during this
+/// drain. A panicked world is already over — its state records the panic,
+/// its queue is closed — so the names are for the caller's report, not for
+/// deciding whether to keep stepping.
+pub fn drain_all_stepped_worlds(host: &World) -> Vec<&'static str> {
     let mut proxies = host.root_scope().query::<&mut WorldProxy>();
+    let mut panicked = Vec::new();
     for proxy in proxies.iter() {
         let WorldKind::Stepped(stepped) = &mut proxy.kind else {
             continue;
@@ -462,8 +468,11 @@ pub fn drain_all_stepped_worlds(host: &World) {
         if stepped.status.is_finished() || stepped.control.stop_requested() {
             continue;
         }
-        run_queued_jobs(stepped);
+        if !run_queued_jobs(stepped) {
+            panicked.push(stepped.name);
+        }
     }
+    panicked
 }
 
 /// Run the jobs a stepped world has queued, stopping at the first panic.

@@ -548,8 +548,11 @@ pub enum MouseEvent {
     },
     /// A mouse button changed state.
     Button {
-        /// The mouse position when the button changed.
-        position: [f32; 2],
+        /// The mouse position when the button changed, or `None` when the
+        /// cursor was outside the window and the platform reports no position
+        /// for it. A press the cursor's position cannot vouch for carries
+        /// `None` rather than a fabricated corner.
+        position: Option<[f32; 2]>,
         /// Which button.
         button: MouseButton,
         /// Whether the button went down (`true`) or came up (`false`).

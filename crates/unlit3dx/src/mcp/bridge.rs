@@ -97,11 +97,13 @@ fn drain(world: &World) {
 /// command for a world the host steps is queued as a job of that world, so the
 /// turn ends by draining those queues: the reply must not wait for a frame the
 /// client has not asked for yet.
-pub fn pump_mcp(world: &mut World) -> Result<(), EntityAccessError> {
+///
+/// Returns the names of the stepped worlds whose queued jobs panicked during
+/// the turn — see [`drain_all_stepped_worlds`].
+pub fn pump_mcp(world: &mut World) -> Result<Vec<&'static str>, EntityAccessError> {
     drain(world);
     world.apply()?;
-    drain_all_stepped_worlds(world);
-    Ok(())
+    Ok(drain_all_stepped_worlds(world))
 }
 
 /// Run one MCP command against the world it names.

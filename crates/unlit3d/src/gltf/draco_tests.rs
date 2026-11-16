@@ -598,7 +598,10 @@ fn a_validation_failure_without_draco_is_returned_unchanged() {
         Err(error) => error,
         Ok(_) => panic!("an unsupported extension is rejected"),
     };
-    assert!(matches!(error, gltf::Error::Validation(_)));
+    assert!(matches!(
+        error,
+        super::Error::Parse(gltf::Error::Validation(_))
+    ));
 }
 
 #[test]
@@ -618,7 +621,7 @@ fn an_unrelated_validation_failure_on_a_draco_document_is_returned_unchanged() {
         Err(error) => error,
         Ok(_) => panic!("an out-of-range scene is rejected even on a Draco document"),
     };
-    let gltf::Error::Validation(errors) = &error else {
+    let super::Error::Parse(gltf::Error::Validation(errors)) = &error else {
         panic!("the original validation error is returned");
     };
     assert!(
@@ -647,7 +650,7 @@ fn an_unrelated_validation_failure_survives_the_repair() {
         Err(error) => error,
         Ok(_) => panic!("an out-of-range scene is rejected after the Draco repair"),
     };
-    let gltf::Error::Validation(errors) = &error else {
+    let super::Error::Parse(gltf::Error::Validation(errors)) = &error else {
         panic!("the re-validation error is returned");
     };
     assert!(
@@ -702,7 +705,7 @@ fn a_corrupt_draco_stream_returns_an_error() {
         Err(error) => error,
         Ok(_) => panic!("a truncated Draco stream is rejected"),
     };
-    let gltf::Error::Validation(errors) = &error else {
+    let super::Error::Parse(gltf::Error::Validation(errors)) = &error else {
         panic!("the decode failure is reported as a validation error");
     };
     assert!(
@@ -797,7 +800,7 @@ fn a_short_draco_attribute_is_rejected_instead_of_zero_filled() {
         Err(error) => error,
         Ok(_) => panic!("a Draco attribute with too few components is rejected"),
     };
-    let gltf::Error::Validation(errors) = &error else {
+    let super::Error::Parse(gltf::Error::Validation(errors)) = &error else {
         panic!("the malformed stream is reported as a validation error");
     };
     assert!(

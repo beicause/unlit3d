@@ -399,21 +399,33 @@ pub fn create_color_target(
     })
 }
 
-/// Allocate a transient depth-stencil texture in the format
+/// Allocate a depth-stencil texture in the format
 /// [`default_depth_stencil_format`] picks for `device`.
 ///
-/// It is created with
+/// A `transient` texture is created with
 /// [`RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT) and
 /// [`TRANSIENT_ATTACHMENT`](wgpu::TextureUsages::TRANSIENT_ATTACHMENT): it is
 /// cleared and discarded inside the frame's single pass, so nothing is ever
-/// read back from it. `sample_count` must be the color attachment's, which
-/// this one is paired with in the pass.
+/// read back from it. A persistent one drops the transient usage so a pass
+/// may load its previous contents — a shadow map, a preprocessed depth
+/// buffer — at the cost of keeping the results for as long as the texture
+/// lives. `sample_count` must be the color attachment's, which this one is
+/// paired with in the pass.
 pub fn create_depth_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
     sample_count: u32,
+    transient: bool,
 ) -> wgpu::Texture {
+    // A texture wgpu may discard on store gains the transient usage, which is
+    // what lets the driver skip the store entirely; a texture a pass loads
+    // from must not claim it.
+    let transient = if transient {
+        wgpu::TextureUsages::TRANSIENT_ATTACHMENT
+    } else {
+        wgpu::TextureUsages::empty()
+    };
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("unlit_wgpu::depth"),
         size: wgpu::Extent3d {
@@ -425,7 +437,7 @@ pub fn create_depth_target(
         sample_count,
         dimension: wgpu::TextureDimension::D2,
         format: default_depth_stencil_format(device),
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | transient,
         view_formats: &[],
     })
 }
@@ -500,7 +512,7 @@ pub fn create_render_target(
 ) -> FrameTextures {
     let color = create_color_target(device, format, width, height);
     let color_view = TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default());
-    let depth = create_depth_target(device, width, height, sample_count);
+    let depth = create_depth_target(device, width, height, sample_count, true);
     let depth_view = TextureExt::create_view(&depth, &wgpu::TextureViewDescriptor::default());
     let msaa =
         (sample_count > 1).then(|| create_msaa_target(device, format, width, height, sample_count));

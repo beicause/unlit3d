@@ -657,6 +657,9 @@ pub fn remove_mesh(
     source: Option<Entity>,
     entity: Entity,
 ) -> Result<Value, String> {
+    // Take a handle and drop the row's own copy first: releasing the parts
+    // needs the last holder, and a clone left in the row would make
+    // MeshSource::remove_mesh refuse the double free.
     let mesh = world
         .root_scope()
         .try_query_one::<&GpuMesh>(entity)
@@ -666,11 +669,11 @@ pub fn remove_mesh(
         })
         .map_err(|_| format!("entity {entity:?} has no GpuMesh"))?;
     let name = world.entity_name(entity).unwrap_or("");
-    with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
     let removed = world
         .root_scope_mut()
         .despawn(entity)
         .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
+    with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
     to_value(&Despawned { removed, name })
 }
 
@@ -801,7 +804,9 @@ pub fn load_gltf(
     let mut scope = world
         .try_scope_mut(scope)
         .map_err(|_| format!("no scope {scope:?}"))?;
-    let nodes = gltf.spawn_default_scene(&mut scope, &resources);
+    let nodes = gltf
+        .spawn_default_scene(&mut scope, &resources)
+        .map_err(|error| error.to_string())?;
     let entities: Vec<Entity> = nodes
         .iter()
         .flat_map(|node| node.entities.iter())

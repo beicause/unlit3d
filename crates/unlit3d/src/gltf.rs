@@ -24,7 +24,7 @@
 //!
 //! ```rust,no_run
 //! use unlit3d::gltf::LitGltf;
-//! # fn run() -> Result<(), gltf::Error> {
+//! # fn run() -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
 //! # Ok(()) }
 //! ```
@@ -36,7 +36,7 @@
 //! # use unlit3d::gltf::LitGltf;
 //! # use unlit3d::prelude::MeshSource;
 //! # use unlit_ecs::ScopeMut;
-//! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), gltf::Error> {
+//! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
 //! let resources = gltf.insert_resources(source, &world.as_scope());
 //! let entities = gltf.spawn_default_scene(world, &resources);
@@ -180,6 +180,38 @@ use self::scene::{
     decompose, node_children, node_locals, node_order, node_parents, node_world_matrices,
     nodes_morph_targets,
 };
+
+/// Everything that can stop a load, a spawn or an animation of a glTF document.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The document could not be read, validated or decoded — the glTF crate's
+    /// own report, which covers the file's JSON, its buffers and its images.
+    #[error(transparent)]
+    Parse(#[from] gltf::Error),
+    /// A primitive's mesh was never inserted into the
+    /// [`GltfResources`] the spawn draws from.
+    #[error("the mesh of node {node} was not inserted into the resources")]
+    MeshNotInserted {
+        /// The node that draws the missing mesh.
+        node: usize,
+    },
+    /// A primitive samples its material's base-color texture, but no material
+    /// was inserted for its document material.
+    #[error(
+        "the primitive {primitive} of mesh {mesh} samples a base-color texture, \
+         but no material was inserted for it"
+    )]
+    MaterialNotInserted {
+        /// The mesh the primitive belongs to.
+        mesh: usize,
+        /// The primitive that samples the texture.
+        primitive: usize,
+    },
+    /// The document declares no default scene, so
+    /// [`LitGltf::spawn_default_scene`] has nothing to spawn.
+    #[error("the glTF document declares no default scene")]
+    NoDefaultScene,
+}
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
 /// out.
@@ -424,9 +456,9 @@ impl LitGltf {
     /// Load a glTF document from `path`, decoding its buffers and images.
     ///
     /// External URIs resolve against the file's directory. Fails with
-    /// [`gltf::Error`] when the file cannot be read or parsed, or a referenced
+    /// [`Error`] when the file cannot be read or parsed, or a referenced
     /// buffer or image cannot be decoded.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, gltf::Error> {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
         let base = path.parent().unwrap_or_else(|| Path::new("./"));
         let imported = gltf::import(path).or_else(|error| {
@@ -449,7 +481,7 @@ impl LitGltf {
     /// arrive as embedded data URIs or, for a GLB, the `BIN` chunk; images
     /// must be embedded too (as data URIs or buffer views), because there is
     /// no base URI to resolve external references against.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, gltf::Error> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let (document, buffers, images) = gltf::import_slice(bytes).or_else(|error| {
             Self::import_draco(
                 error,

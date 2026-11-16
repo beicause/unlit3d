@@ -101,7 +101,8 @@ mod tests {
     use crate::components::MeshParts;
 
     fn test_perspective() -> glam::Mat4 {
-        glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
+        // The renderer's own projection: reverse-z, infinite far.
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(1.0, 1.0, 0.1)
     }
 
     fn frustum_at(eye: Vec3) -> FrustumPlanes {
@@ -161,10 +162,12 @@ mod tests {
         let near = world
             .root_scope_mut()
             .spawn(bundle![mesh.clone(), Transform::default()]);
-        let far = world.root_scope_mut().spawn(bundle![
+        // An infinite reverse-z projection has no far plane, so the second mesh
+        // hides behind the camera instead of beyond a far one.
+        let hidden = world.root_scope_mut().spawn(bundle![
             mesh,
             Transform {
-                translation: Vec3::new(0.0, 0.0, 20.0),
+                translation: Vec3::new(0.0, 0.0, 5.5),
                 rotation: glam::Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
@@ -174,7 +177,7 @@ mod tests {
         collect_visible(&world.root_scope(), &frustum, &mut out);
         let found: Vec<_> = out.iter().map(|mesh| mesh.entity).collect();
         assert_eq!(found, [near]);
-        assert_ne!(found, [far]);
+        assert_ne!(found, [hidden]);
     }
 
     /// Two entities at the same place, differing only in whether they are

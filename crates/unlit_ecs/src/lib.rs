@@ -7,7 +7,6 @@ mod borrow;
 mod bundle;
 mod column;
 mod command;
-mod component;
 mod entity;
 mod error;
 mod hash;
@@ -33,8 +32,6 @@ mod world;
 pub use archetype::{Archetype, Archetypes};
 pub use bundle::{Bundle, DynamicBundle};
 pub use command::{Command, CommandErase, Commands};
-#[doc(hidden)]
-pub use component::Component;
 pub use entity::{Entity, Location};
 #[cfg(feature = "reflect")]
 #[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]

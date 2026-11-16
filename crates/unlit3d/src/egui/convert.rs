@@ -63,7 +63,16 @@ pub fn to_egui_event(event: &InputEvent, pixels_per_point: f32, out: &mut Vec<Eg
         InputEvent::Key(event) => key_events(*event, out),
         InputEvent::Mouse(event) => mouse_events(event, pixels_per_point, out),
         InputEvent::Pointer(event) => pointer_events(event, pixels_per_point, out),
-        InputEvent::Touch(event) => touch_events(*event, pixels_per_point, out),
+        // One event at a time has no count to consult, so the touch is treated
+        // as the only contact: the same press and release a lone finger gives.
+        // A frame's batch goes through [`to_egui_events_into`], which counts.
+        InputEvent::Touch(event) => {
+            let mut lone = usize::from(matches!(
+                event.phase,
+                TouchPhase::Ended | TouchPhase::Cancelled
+            ));
+            touch_events(*event, pixels_per_point, &mut lone, out);
+        }
         InputEvent::Text(text) => out.push(EguiEvent::Text(text.0.clone())),
         InputEvent::Ime(event) => ime_events(event, out),
         InputEvent::ModifiersChanged(modifiers) => {
@@ -83,13 +92,24 @@ pub fn to_egui_event(event: &InputEvent, pixels_per_point: f32, out: &mut Vec<Eg
 /// on a press coming before the release that follows it. The caller clears
 /// `out` first and keeps it across frames, so a run of frames reuses one
 /// allocation for the events egui is handed.
+///
+/// `active_touches` is how many touches the world's state held when the
+/// batch was queued: egui's pointer is one synthetic contact, so a finger
+/// presses it only when the first one lands and lifts it only when the last
+/// one leaves — not on every finger's own edge.
 pub fn to_egui_events_into<'a>(
     events: impl IntoIterator<Item = &'a InputEvent>,
     pixels_per_point: f32,
+    mut active_touches: usize,
     out: &mut Vec<EguiEvent>,
 ) {
     for event in events {
-        to_egui_event(event, pixels_per_point, out);
+        match event {
+            InputEvent::Touch(touch) => {
+                touch_events(*touch, pixels_per_point, &mut active_touches, out);
+            }
+            _ => to_egui_event(event, pixels_per_point, out),
+        }
     }
 }
 
@@ -140,8 +160,14 @@ fn mouse_events(event: &MouseEvent, pixels_per_point: f32, out: &mut Vec<EguiEve
             let Some(button) = to_pointer_button(*button) else {
                 return;
             };
+            // A press the cursor's position cannot vouch for names no pos:
+            // egui falls back to its last known pointer position, which is
+            // where the pointer the user sees actually is.
+            let Some(position) = *position else {
+                return;
+            };
             out.push(EguiEvent::PointerButton {
-                pos: to_pos(*position, pixels_per_point),
+                pos: to_pos(position, pixels_per_point),
                 button,
                 pressed: *pressed,
                 modifiers: to_modifiers(*modifiers),
@@ -245,7 +271,18 @@ fn pointer_position(event: &PointerEvent, pixels_per_point: f32) -> Option<Pos2>
 
 /// A touch, reported as egui asks: the touch itself plus the pointer events
 /// that make a widget respond to it.
-fn touch_events(event: TouchEvent, pixels_per_point: f32, out: &mut Vec<EguiEvent>) {
+///
+/// egui hears one pointer, not one per finger: `active_touches` counts the
+/// contacts the world holds, updated in place as this batch's touches land
+/// and leave. The synthetic pointer presses only when the first finger lands
+/// and releases only when the last one leaves, so a second finger's edge
+/// never ends the first finger's drag.
+fn touch_events(
+    event: TouchEvent,
+    pixels_per_point: f32,
+    active_touches: &mut usize,
+    out: &mut Vec<EguiEvent>,
+) {
     let pos = to_pos(event.position, pixels_per_point);
     out.push(EguiEvent::Touch {
         // The crate numbers touches per device without naming the device, so
@@ -258,30 +295,41 @@ fn touch_events(event: TouchEvent, pixels_per_point: f32, out: &mut Vec<EguiEven
     });
 
     match event.phase {
-        // A finger down is the pointer arriving and pressing its primary
-        // button, which is what a tap on a widget is.
         TouchPhase::Started => {
-            out.push(EguiEvent::PointerMoved(pos));
-            out.push(EguiEvent::PointerButton {
-                pos,
-                button: EguiPointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::default().into(),
-            });
+            *active_touches += 1;
+            // The first finger down is the pointer arriving and pressing its
+            // primary button, which is what a tap on a widget is.
+            if *active_touches == 1 {
+                out.push(EguiEvent::PointerMoved(pos));
+                out.push(EguiEvent::PointerButton {
+                    pos,
+                    button: EguiPointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::default().into(),
+                });
+            } else {
+                // A later finger still moves the pointer to its own position:
+                // egui tracks one pointer, and the latest contact is the
+                // position a drag follows.
+                out.push(EguiEvent::PointerMoved(pos));
+            }
         }
         TouchPhase::Moved => out.push(EguiEvent::PointerMoved(pos)),
         // Lifting ends the touch, and egui wants the release before the
         // pointer leaves the screen.
         TouchPhase::Ended | TouchPhase::Cancelled => {
-            out.push(EguiEvent::PointerButton {
-                pos,
-                button: EguiPointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::default().into(),
-            });
-            // Nothing follows the last finger, so the pointer is gone. A
-            // cancellation is not a hover, so it leaves the screen too.
-            out.push(EguiEvent::PointerGone);
+            *active_touches = active_touches.saturating_sub(1);
+            if *active_touches == 0 {
+                out.push(EguiEvent::PointerButton {
+                    pos,
+                    button: EguiPointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::default().into(),
+                });
+                // Nothing follows the last finger, so the pointer is gone. A
+                // cancellation is not a hover, so it leaves the screen too.
+                out.push(EguiEvent::PointerGone);
+            }
         }
     }
 }

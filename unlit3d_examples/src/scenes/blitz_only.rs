@@ -209,6 +209,7 @@ fn build(
 
 /// The press and release at a position that a document reads as a click.
 fn click(position: [f32; 2]) -> [InputEvent; 2] {
+    let position = Some(position);
     [
         InputEvent::Mouse(MouseEvent::Button {
             position,

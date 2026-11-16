@@ -1,10 +1,10 @@
 //! Recording the mix an audio world fills into its output buffer.
 //!
-//! A recording is an [`OnAudioFill`] source ordered after every other one, so it
-//! sees the samples the whole world contributed. The samples it keeps are the
-//! ones the output stream would receive: the world's [`GlobalAudioGain`] scales the
-//! sum and it clamps to the unit range, exactly as [`dispatch_audio_fill`] finishes a
-//! fill.
+//! A recording is an [`OnAudioPostFill`] behaviour, so it observes the mix the
+//! whole world produced. The samples it keeps are the ones the output stream
+//! would receive: every [`OnAudioFill`] source has added its samples, and the
+//! world's [`GlobalAudioGain`] has scaled the sum and clamped it, exactly as
+//! [`dispatch_audio_fill`] finishes a fill.
 //!
 //! [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
 //!
@@ -25,7 +25,7 @@ use unlit_ecs::{Entity, World, bundle};
 use zerocopy::IntoBytes;
 use zerocopy::byteorder::little_endian::{I16, U16, U32};
 
-use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill};
+use crate::audio::{AudioFormat, AudioMix, OnAudioPostFill};
 
 /// Why a recording, or the format it is written in, was refused.
 #[derive(Debug, thiserror::Error)]
@@ -50,9 +50,9 @@ pub enum RecordingError {
 
 /// A recording in progress on a world.
 ///
-/// The handle owns the shared buffer the [`OnAudioFill`] source writes into. Keep it
-/// around — as a component of the world, for instance — and hand it back to
-/// [`RecordingHandle::stop`] or [`RecordingHandle::cancel`] to finish.
+/// The handle owns the shared buffer the [`OnAudioPostFill`] behaviour writes
+/// into. Keep it around — as a component of the world, for instance — and hand
+/// it back to [`RecordingHandle::stop`] or [`RecordingHandle::cancel`] to finish.
 #[derive(Clone, Debug)]
 pub struct RecordingHandle {
     entity: Entity,
@@ -97,13 +97,12 @@ impl RecordedAudio {
 
 /// Start recording everything `world` fills, for at most `max_seconds`.
 ///
-/// The recorder runs after every other [`OnAudioFill`] source and keeps the mix after
-/// the world's [`GlobalAudioGain`] and the unit-range clamp, so the result is what
-/// the output stream receives. Because a source is handed the buffer before
-/// the dispatcher scales it, the recorder applies the gain itself; that is the
-/// one step it repeats rather than observes. No call fills the world: whichever
-/// driver usually does (the audio thread, [`dispatch_audio_fill`] directly, a
-/// stepped world) keeps doing it, and the recording grows as it goes.
+/// The recorder runs as an [`OnAudioPostFill`] behaviour, so it keeps the mix
+/// after every [`OnAudioFill`] source, the world's [`GlobalAudioGain`] and the
+/// unit-range clamp: the result is what the output stream receives, observed
+/// rather than re-derived. No call fills the world: whichever driver usually
+/// does (the audio thread, [`dispatch_audio_fill`] directly, a stepped world)
+/// keeps doing it, and the recording grows as it goes.
 ///
 /// [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
 pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
@@ -116,23 +115,13 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
         max_seconds: max_seconds.max(0.0),
     }));
     let recorder = Arc::clone(&state);
-    let entity = world.root_scope_mut().spawn(bundle![OnAudioFill::new(
-        AudioFillOrder(i32::MAX),
-        move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
-            // The gain is read before the lock is taken. A query is the
-            // world's to arbitrate and panics on a conflicting borrow, and a
-            // panic is only recoverable because the lock sees none of it: the
-            // recorder's guard covers the samples and nothing else.
-            let gain = {
-                let mut rows = world.root_scope().query::<&GlobalAudioGain>();
-                rows.iter().next().map(|audio_gain| audio_gain.0)
-            }
-            .unwrap_or(1.0);
+    let entity = world.root_scope_mut().spawn(bundle![OnAudioPostFill::new(
+        move |_world: &World, _entity: Entity, mix: &AudioMix| {
             let mut state = sync::lock(&recorder);
             if state.format.is_none() {
                 let format = AudioFormat {
-                    sample_rate: chunk.sample_rate,
-                    channels: chunk.channels,
+                    sample_rate: mix.sample_rate,
+                    channels: mix.channels,
                 };
                 let frames =
                     (f64::from(format.sample_rate) * f64::from(state.max_seconds)) as usize;
@@ -140,13 +129,7 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
                 state.format = Some(format);
             }
             let room = state.max_samples.saturating_sub(state.samples.len());
-            state.samples.extend(
-                chunk
-                    .out
-                    .iter()
-                    .take(room)
-                    .map(|sample| (sample * gain).clamp(-1.0, 1.0)),
-            );
+            state.samples.extend(mix.samples.iter().take(room).copied());
         },
     ),]);
     RecordingHandle { entity, state }
@@ -461,7 +444,9 @@ impl RecordingHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::dispatch_audio_fill;
+    use crate::audio::{
+        AudioChunk, AudioFillOrder, GlobalAudioGain, OnAudioFill, dispatch_audio_fill,
+    };
     use zerocopy::FromBytes;
 
     fn constant_source(world: &mut World, level: f32) -> Entity {
@@ -501,10 +486,11 @@ mod tests {
 
     #[test]
     fn a_recording_keeps_what_the_output_receives() {
-        // The recorder runs as a source, before the dispatcher scales the mix,
-        // so it applies the gain itself. This pins that second gain step to
-        // the dispatcher's own: a change to one without the other shows up
-        // here as samples that no longer match the buffer the stream sends.
+        // The recorder observes the dispatcher's finished output, so its
+        // samples match the buffer the output stream receives whatever the
+        // gain and the clamp do: this pins the observer to the dispatcher's
+        // own gain step and clamp. A change to one without the other shows up
+        // here as samples that no longer match.
         let mut world = World::new();
         constant_source(&mut world, 0.2);
         world.root_scope_mut().spawn(bundle![GlobalAudioGain(3.0)]);
