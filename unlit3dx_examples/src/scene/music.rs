@@ -2,6 +2,12 @@
 //!
 //! The demo carries no MIDI asset: both tracks are short enough to state,
 //! and stating them keeps the notes in the source that shapes them.
+//!
+//! Both tracks play into the demo's one synthesizer voice, so they carve
+//! up its sixteen MIDI channels between them: the background loop takes
+//! three, and the sequence takes the one after those. A channel sounds
+//! with whatever instrument the last ProgramChange on it named, so two
+//! files playing on one channel would overwrite each other's instruments.
 
 use std::sync::Arc;
 
@@ -15,6 +21,20 @@ pub const MUSIC_BOX_PROGRAM: u8 = 10;
 /// The General MIDI electric piano, as a zero-based program number: soft
 /// enough to sit under the sequence without competing with it.
 pub const ELECTRIC_PIANO_PROGRAM: u8 = 4;
+
+/// The channel the background loop's bass plays on.
+const BGM_BASS_CHANNEL: u8 = 0;
+
+/// The channel the background loop's arpeggio plays on.
+const BGM_ARPEGGIO_CHANNEL: u8 = 1;
+
+/// The channel the background loop's melody plays on.
+const BGM_MELODY_CHANNEL: u8 = 2;
+
+/// The channel the demo sequence plays on, the one after the background
+/// loop's three: see the module docs for why the two files must not
+/// share a channel.
+const SEQUENCE_CHANNEL: u8 = 3;
 
 /// The pentatonic scale the sequence walks, as MIDI keys.
 ///
@@ -43,18 +63,20 @@ fn note(events: &mut Vec<MidiEvent>, channel: u8, key: i32, start: f64, hold: f6
 }
 
 /// The demo's MIDI sequence: the scale walked up and back down, one note
-/// every 0.28 seconds, each held for 0.25 of them, on the music box.
+/// every 0.28 seconds, each held for 0.25 of them, on the music box, on
+/// its own channel so its ProgramChange cannot reach the background
+/// loop's instruments.
 pub fn sequence_midi() -> Arc<MidiFile> {
     let mut events = vec![(
         0.0,
         MidiEventKind::ProgramChange {
-            channel: 0,
+            channel: SEQUENCE_CHANNEL,
             program: MUSIC_BOX_PROGRAM,
         },
     )];
     for (index, &key) in SCALE.iter().chain(SCALE.iter().rev().skip(1)).enumerate() {
         let start = index as f64 * 0.28;
-        note(&mut events, 0, key, start, 0.25, 96);
+        note(&mut events, SEQUENCE_CHANNEL, key, start, 0.25, 96);
     }
     midi_file(events).expect("the demo sequence is well formed")
 }
@@ -102,9 +124,10 @@ const BGM_BAR_SECONDS: f64 = 2.0;
 const BGM_ARPEGGIO: [usize; 8] = [0, 1, 2, 1, 0, 1, 2, 1];
 
 /// The looping background music: a bass note per bar, the chord's keys
-/// arpeggiated across its eight eighths, and a slow melody on top, all on
-/// the electric piano. Written out as events rather than read from a file:
-/// the demo carries no MIDI asset, and the loop is short enough to state.
+/// arpeggiated across its eight eighths, and a slow melody on top — the
+/// bass and arpeggio electric piano, the melody the music box. Written
+/// out as events rather than read from a file: the demo carries no MIDI
+/// asset, and the loop is short enough to state.
 pub fn bgm_midi() -> Arc<MidiFile> {
     let eighth = BGM_BAR_SECONDS / 8.0;
     // Three channels, one instrument each: the bass, the arpeggio and the
@@ -113,21 +136,21 @@ pub fn bgm_midi() -> Arc<MidiFile> {
         (
             0.0,
             MidiEventKind::ProgramChange {
-                channel: 0,
+                channel: BGM_BASS_CHANNEL,
                 program: ELECTRIC_PIANO_PROGRAM,
             },
         ),
         (
             0.0,
             MidiEventKind::ProgramChange {
-                channel: 1,
+                channel: BGM_ARPEGGIO_CHANNEL,
                 program: ELECTRIC_PIANO_PROGRAM,
             },
         ),
         (
             0.0,
             MidiEventKind::ProgramChange {
-                channel: 2,
+                channel: BGM_MELODY_CHANNEL,
                 program: MUSIC_BOX_PROGRAM,
             },
         ),
@@ -135,14 +158,21 @@ pub fn bgm_midi() -> Arc<MidiFile> {
     for (bar, chord) in BGM_CHORDS.iter().enumerate() {
         let start = bar as f64 * BGM_BAR_SECONDS;
         // The bass holds the bar: an octave below its root.
-        note(&mut events, 0, chord[0] - 12, start, BGM_BAR_SECONDS, 56);
+        note(
+            &mut events,
+            BGM_BASS_CHANNEL,
+            chord[0] - 12,
+            start,
+            BGM_BAR_SECONDS,
+            56,
+        );
         // The chord walks up and back over the bar's eighths, so the
         // accompaniment moves without ever leaving the harmony.
         for (step, &finger) in BGM_ARPEGGIO.iter().enumerate() {
             let key = chord[finger] + 12;
             note(
                 &mut events,
-                1,
+                BGM_ARPEGGIO_CHANNEL,
                 key,
                 start + step as f64 * eighth,
                 eighth,
@@ -156,7 +186,7 @@ pub fn bgm_midi() -> Arc<MidiFile> {
             };
             note(
                 &mut events,
-                2,
+                BGM_MELODY_CHANNEL,
                 SCALE[degree] + 12,
                 start + half as f64 * (BGM_BAR_SECONDS / 2.0),
                 BGM_BAR_SECONDS / 2.0 * 0.9,
@@ -225,5 +255,41 @@ mod tests {
             "the loop is {bars} bars long"
         );
         assert!(bars >= 4.0, "a four-bar loop is the shortest that breathes");
+    }
+
+    /// The two tracks carve up the voice's sixteen channels: a channel
+    /// sounds with the instrument its last ProgramChange named, so two
+    /// files playing on one channel overwrite each other's instruments.
+    #[test]
+    fn the_tracks_play_on_disjoint_channels() {
+        // The channels a file plays on, read off its program changes: a
+        // program change carries its channel in the status byte's low
+        // four bits, as every channel voice message does.
+        let channels = |file: &MidiFile| {
+            let mut set = Vec::new();
+            for message in file.get_messages() {
+                let MidiMessage::Normal { status, .. } = message else {
+                    continue;
+                };
+                if status & 0xF0 == 0xC0 {
+                    set.push(status & 0x0F);
+                }
+            }
+            set.sort_unstable();
+            set.dedup();
+            set
+        };
+        let bgm = channels(&bgm_midi());
+        let sequence = channels(&sequence_midi());
+        assert!(
+            !bgm.is_empty() && !sequence.is_empty(),
+            "a track sets no instrument"
+        );
+        for channel in &sequence {
+            assert!(
+                !bgm.contains(channel),
+                "both tracks play on channel {channel}"
+            );
+        }
     }
 }
