@@ -258,7 +258,9 @@ The bridges:
   `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
   `AudioConfig`, in that order, mixing their samples and scaling the sum by the
   world's `GlobalAudioGain`; the device callback drains the ring and underruns to
-  silence.
+  silence. The gain is one per world — the dispatcher reads the first
+  `GlobalAudioGain` a query hands back — so a scene spawns one and shapes a
+  source's loudness in its own fill.
   A world that carries no source plays nothing.
   Gameplay never touches audio directly — it sends jobs. The world spawns an
   `AudioFormat` component the moment its stream opens — a source that renders
@@ -292,7 +294,17 @@ The bridges:
   device has said which rate it runs at; messages sent before then wait in the
   voice and are played by that first fill. `midi_job` sends one
   `MidiEventKind` to the voice it names, optionally after a delay in seconds.
-  The voices are the whole of the audio world's synth surface.
+  The voices are the whole of the audio world's synth surface, and each is
+  bound to one soundfont: `load_soundfont` parses the bytes once, and
+  `from_font` can spawn several voices off that one `Arc<SoundFont>`, each
+  with its own sixteen MIDI channels and its own synthesizer. One voice is
+  the usual shape — a voice plays every instrument the font holds, chosen
+  per channel by ProgramChange — so what shares a voice shares channels: a
+  channel sounds with whatever instrument its last ProgramChange named, and
+  files playing into one voice play on disjoint channels (the demo's
+  `music.rs` carves three for the background loop and one for the one-shot
+  sequence). A second voice is the shape for a second font, not for a
+  second instrument.
 
   Sequencing belongs to the gameplay world, which owns the clock:
   `MidiSequencer` holds a file, the time reached, the index of the next event
