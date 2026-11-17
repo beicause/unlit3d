@@ -405,15 +405,12 @@ impl MeshSource {
             }
         }
         parts.index_buffer = index_buffer;
-        // Record the pool ranges the mesh holds on the pending entry its
-        // allocation registered: when the mesh dies, these are what the
-        // collect hook hands back.
-        let mut pending = self.pending.borrow_mut();
-        let entry = pending
-            .get_mut(&mesh.parts.root.id())
-            .expect("the mesh's allocation registered its root");
-        entry.vertex = Some(vertices.allocation);
-        entry.index = index_allocation;
+        // Record the pool ranges the mesh holds on the storage it carries:
+        // when the mesh dies, its drop posts them to the inbox for the
+        // source's reclaim to hand back. The displacement range is already on
+        // the ticket its allocation wrote.
+        parts.storage.ticket.vertex = Some(vertices.allocation);
+        parts.storage.ticket.index = index_allocation;
         mesh.vertex_layout = VertexLayout::new(layout);
         mesh.first = first;
         // Zero whenever the offset was baked into the indices instead, which is

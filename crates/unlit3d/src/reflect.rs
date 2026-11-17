@@ -23,8 +23,8 @@ mod registry;
 
 pub use proxies::{
     AabbProxy, ColorLoadOpProxy, DepthLoadOpProxy, GpuMaterialProxy, GpuMeshProxy,
-    GpuRenderPipelineProxy, InputEventsProxy, LineProxy, Mat4Proxy, Mat4VecProxy, QuatProxy,
-    StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
+    GpuRenderPipelineProxy, InputEventsProxy, InputStateProxy, LineProxy, Mat4Proxy, Mat4VecProxy,
+    QuatProxy, StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
 };
 pub use unlit_ecs::reflect::{
     ComponentEntry, ComponentError, contains, current_partial, default_partial, encode_json,
@@ -46,7 +46,7 @@ pub fn decode_events(text: &str) -> Result<Vec<InputEvent>, facet_json::Deserial
 mod tests {
     use facet::Facet;
     use glam::{Mat4, Quat, Vec3, Vec4};
-    use unlit_ecs::{Entity, EntityProxy, bundle};
+    use unlit_ecs::{Entity, EntityProxy};
 
     use super::*;
     use crate::components::{Camera, MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform};
@@ -104,13 +104,15 @@ mod tests {
 
     /// The frame's events are part of what a reader reads: a state alone
     /// cannot say which key went down, so the reflection carries them too.
-    /// A world's buffer is a component, so both what it has not ticked on yet
-    /// and the state the events it did tick on left are readable from outside,
-    /// which is how a tool sees another world's input.
+    /// A world's buffer and the state beside it are components, so both what
+    /// it has not ticked on yet and the state the events it did tick on left
+    /// are readable from outside, which is how a tool sees another world's
+    /// input.
     #[test]
     fn a_buffer_reflects_its_events_and_the_state_they_left() {
         use crate::input::{
-            InputEvent, InputEvents, InputWriter, Key, KeyEvent, KeyLocation, Modifiers,
+            InputEvent, InputEvents, InputPair, InputState, InputWriter, Key, KeyEvent,
+            KeyLocation, Modifiers,
         };
 
         let key = InputEvent::Key(KeyEvent {
@@ -122,20 +124,28 @@ mod tests {
         });
         let writer = InputWriter::new();
         let mut world = unlit_ecs::World::new();
-        let entity = world.root_scope_mut().spawn(bundle![writer.subscribe()]);
+        let entity = world.root_scope_mut().spawn(InputPair(writer.subscribe()));
         writer.push(key.clone());
         writer.push(InputEvent::FocusChanged(false));
-        world
-            .root_scope()
-            .query_one::<&InputEvents>(entity)
-            .get()
-            .refresh();
+        // The exclusive borrow ends before the encoding reads the components
+        // back: the encoder shares the scope's borrows with nothing held.
+        {
+            let mut row = world
+                .root_scope()
+                .query_one::<(&InputEvents, &mut InputState)>(entity);
+            let (buffer, state) = row.get();
+            buffer.refresh(state);
+        }
 
         let encoded =
             encode_json(&world.root_scope(), entity, "InputEvents").expect("the buffer encodes");
         let decoded: InputEventsProxy =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(decoded.events, vec![key, InputEvent::FocusChanged(false)]);
+        let encoded =
+            encode_json(&world.root_scope(), entity, "InputState").expect("the state encodes");
+        let decoded: InputStateProxy =
+            facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert!(!decoded.focused, "the state the events left is read too");
     }
 

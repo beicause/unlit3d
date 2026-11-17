@@ -13,7 +13,7 @@ use std::sync::Arc;
 use unlit_ecs::{Entity, World, bundle};
 use unlit_wgpu::resources::ResHandle;
 use unlit3d::frame::{Frame, dispatch_frame};
-use unlit3d::input::{InputEvent, InputWriter, dispatch_input};
+use unlit3d::input::{InputEvent, InputPair, InputWriter, dispatch_input};
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
@@ -278,7 +278,7 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
     let mut host = World::new();
     let input = InputWriter::new();
     host.root_scope_mut()
-        .spawn(bundle![input.clone(), input.subscribe()]);
+        .spawn(bundle![input.clone(), ..InputPair(input.subscribe())]);
     let render = spawn_sub_world(&mut host, "render", 64);
     let panels = PanelSlots::default();
     let audio_setup = if config.soundfont.is_empty() {

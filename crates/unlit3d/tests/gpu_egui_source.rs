@@ -293,14 +293,12 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
     let events = input.subscribe();
     // Input is shared by every view, so it belongs to the shared subtree: a
     // source reads it from its own scope, which cannot see a sibling's.
-    world
-        .scope_mut(world.shared())
-        .spawn(bundle![events.clone()]);
+    world.scope_mut(world.shared()).spawn(InputPair(events));
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
     });
     input.push(InputEvent::ScaleFactorChanged { scale_factor });
-    events.refresh();
+    refresh_input(world);
 }
 
 /// State the load ops every egui test opens its pass with.

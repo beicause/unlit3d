@@ -154,6 +154,15 @@ impl VertexStreamPool {
         self.allocator.size()
     }
 
+    /// How many elements are free, across the pool's whole allocator.
+    ///
+    /// This is the measure [`BufferPool::free_space`](crate::buffer_pool::BufferPool::free_space)
+    /// reports for the index pool, in elements instead of bytes: a released
+    /// mesh's share of the pool shows up here again.
+    pub fn free_elements(&self) -> u32 {
+        self.allocator.storage_report().total_free_space
+    }
+
     /// The byte offset of element `index` in a layout's buffer.
     ///
     /// This is `index` times the layout's stride, which is always a multiple

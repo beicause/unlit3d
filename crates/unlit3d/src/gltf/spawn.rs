@@ -189,8 +189,6 @@ impl LitGltf {
 
     /// The inserted material a primitive draws with.
     ///
-    /// The inserted material a primitive draws with.
-    ///
     /// A primitive without a material index, or whose material is `None` in
     /// `materials` (no base-color texture), draws untextured — but a primitive
     /// that samples its material's base-color texture needs the material

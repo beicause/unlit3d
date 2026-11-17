@@ -15,7 +15,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh, GpuRenderPipeline};
-use crate::input::{InputEvent, InputEvents};
+use crate::input::{InputEvent, InputEvents, InputState};
 
 /// A [wgpu::LoadOp] over an `f32` as either a clear to a value or a load.
 ///
@@ -250,17 +250,40 @@ impl TryFrom<LineProxy> for crate::line::Line {
     }
 }
 
-/// A world's input as a reader sees it: how the devices are, and this tick's
-/// events.
+/// A world's input events as a reader sees it: this tick's batch.
 ///
-/// Both halves are one component because both are built by the same tick: the
-/// state is what the events left behind, so a reader that wants to know what
-/// happened and what it means reads the same place.
+/// The state the earlier ticks left behind is a component of its own, with its
+/// own proxy: the batch is what arrived, the state is what the world made of
+/// the batches before it.
 #[derive(Facet, Default)]
 pub struct InputEventsProxy {
     /// This tick's events, oldest first.
     #[facet(default)]
     pub events: Vec<InputEvent>,
+}
+
+impl From<&InputEvents> for InputEventsProxy {
+    fn from(events: &InputEvents) -> Self {
+        Self {
+            events: events.with_batch(|batch| batch.to_vec()),
+        }
+    }
+}
+
+impl TryFrom<InputEventsProxy> for InputEvents {
+    type Error = String;
+
+    fn try_from(_proxy: InputEventsProxy) -> Result<Self, Self::Error> {
+        Err("InputEvents is built by a world's own tick; feed it with send_input".to_string())
+    }
+}
+
+/// A world's input state as a reader sees it: how the devices are.
+///
+/// The state is what a world's own ticks left behind, so as with the events
+/// there is nothing to decode a proxy back into.
+#[derive(Facet, Default)]
+pub struct InputStateProxy {
     /// Where the pointer is, or `None` while it is outside the window.
     #[facet(default)]
     pub pointer: Option<[f32; 2]>,
@@ -287,10 +310,9 @@ pub struct InputEventsProxy {
     pub touches: Vec<(u64, [f32; 2])>,
 }
 
-impl From<&InputEvents> for InputEventsProxy {
-    fn from(events: &InputEvents) -> Self {
-        let state = events.with_state(|state| Self {
-            events: Vec::new(),
+impl From<&InputState> for InputStateProxy {
+    fn from(state: &InputState) -> Self {
+        Self {
             pointer: state.pointer,
             cursor: state.cursor,
             pointer_down: state.pointer_down,
@@ -299,19 +321,15 @@ impl From<&InputEvents> for InputEventsProxy {
             size_px: [state.size_px.0, state.size_px.1],
             scale_factor: state.scale_factor,
             touches: state.touches.clone(),
-        });
-        Self {
-            events: events.with_batch(|batch| batch.to_vec()),
-            ..state
         }
     }
 }
 
-impl TryFrom<InputEventsProxy> for InputEvents {
+impl TryFrom<InputStateProxy> for InputState {
     type Error = String;
 
-    fn try_from(_proxy: InputEventsProxy) -> Result<Self, Self::Error> {
-        Err("InputEvents is built by a world's own tick; feed it with send_input".to_string())
+    fn try_from(_proxy: InputStateProxy) -> Result<Self, Self::Error> {
+        Err("InputState is built by a world's own tick; feed it with send_input".to_string())
     }
 }
 

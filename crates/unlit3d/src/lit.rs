@@ -360,7 +360,7 @@ impl InstanceData for LitInstance {
         let instance = MeshInstance::new(context.world_from_local, base_color)
             .with_joints_base(joints_base)
             .with_morph_base(morph_base)
-            .with_metadata_index(mesh.parts.metadata_index)
+            .with_metadata_index(mesh.parts.storage.metadata_index)
             .with_cutoff(cutoff)
             .with_hull_width(hull_width);
         out.copy_from_slice(instance.as_bytes());

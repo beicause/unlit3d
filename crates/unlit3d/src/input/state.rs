@@ -17,15 +17,16 @@ use super::event::{
 /// here: they belong to the tick of the world that received them, in its
 /// [`InputEvents`](super::InputEvents).
 ///
-/// It lives inside a world's [`InputEvents`](super::InputEvents), built by that world's own tick,
-/// so a behaviour component reads it while it handles an event:
+/// It is the component a world's own tick builds beside its
+/// [`InputEvents`](super::InputEvents) buffer, so a behaviour component reads it while it
+/// handles an event:
 ///
 /// ```rust
 /// use unlit3d::prelude::*;
 ///
-/// // A callback reads the state from the world it was handed, through the
-/// // buffer that holds it. Keeping the count in a sibling component, not in
-/// // the behaviour, is what makes that borrow legal.
+/// // A callback reads the state from the world it was handed. Keeping the
+/// // count in a sibling component, not in the behaviour, is what makes that
+/// // borrow legal.
 /// struct CtrlPresses(u32);
 ///
 /// let mut world = World::new();
@@ -36,13 +37,10 @@ use super::event::{
 ///     OnInput::new(|world, entity, _event| {
 ///         let ctrl = world
 ///             .root_scope()
-///             .query::<&InputEvents>()
+///             .query::<&InputState>()
 ///             .iter()
 ///             .next()
-///             .is_some_and(|input_events| {
-///                 input_events
-///                     .with_state(|state| state.modifiers.ctrl)
-///             });
+///             .is_some_and(|state| state.modifiers.ctrl);
 ///         if ctrl {
 ///             let _ = world.root_scope().try_query_one::<&mut CtrlPresses>(entity).map(|mut presses| presses.get().0 += 1);
 ///         }
@@ -55,6 +53,11 @@ use super::event::{
 /// assert_eq!(world.root_scope().query_one::<&CtrlPresses>(observer).get().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::InputStateProxy)
+)]
 pub struct InputState {
     /// The modifier keys currently held.
     pub modifiers: Modifiers,

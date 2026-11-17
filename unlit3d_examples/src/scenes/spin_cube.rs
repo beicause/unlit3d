@@ -186,10 +186,10 @@ fn build(
                     // the user is working in.
                     ui.separator();
                     let held = world
-                        .query::<(Entity, &InputEvents)>()
+                        .query::<(&InputEvents, &InputState)>()
                         .iter()
                         .next()
-                        .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
+                        .is_some_and(|(_, state)| state.pointer_down);
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.try_query_one::<&CameraOrbit>(orbit) {
                         Ok(mut orbit) => {

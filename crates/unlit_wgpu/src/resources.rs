@@ -663,27 +663,6 @@ impl core::fmt::Debug for Rebuild {
     }
 }
 
-/// A registration of a [collection hook](ResourceGraph::on_collect) with a
-/// [`ResourceGraph`].
-///
-/// Hand back with [`ResourceGraph::remove_collect_hook`] to retire the hook;
-/// a registration left in place runs for the graph's whole life.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CollectHook(u64);
-
-/// A hook the graph calls with the [`ResId`] of every resource it collects.
-///
-/// See [`ResourceGraph::on_collect`] for what it may capture and when it runs.
-#[derive(Clone)]
-struct CollectHookFn(Arc<dyn Fn(ResId)>);
-
-impl core::fmt::Debug for CollectHookFn {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // The closure has no useful representation, so print the type alone.
-        f.debug_struct("CollectHookFn").finish_non_exhaustive()
-    }
-}
-
 /// One resource as [`ResourceGraph::nodes`] reports it.
 ///
 /// A borrowed view rather than an owned handle: the [`id`](NodeInfo::id) names
@@ -787,13 +766,4 @@ pub struct ResourceGraph {
     /// [`Self::maintain`]'s rebuild pass exists for. Kept beside the graph so
     /// a pass with none can skip the topological walk entirely.
     dirty_rebuilds: usize,
-    /// Reused list of the ids a collection pass takes, one round-trip per
-    /// [`Self::maintain`], so the hooks run against a buffer that does not
-    /// allocate per pass.
-    collected: Vec<NodeId>,
-    /// The registered [collection hooks](Self::on_collect), each with the
-    /// registration number [`CollectHook`] names.
-    hooks: Vec<(u64, CollectHookFn)>,
-    /// The next registration number [`Self::on_collect`] hands out.
-    next_hook: u64,
 }

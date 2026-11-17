@@ -220,12 +220,12 @@ fn a_callback_may_read_the_input_state() {
     world
         .root_scope_mut()
         .spawn(bundle![OnKey::new(move |world, _, _| {
-            let mut input_events_rows_2 = world.root_scope().query::<&InputEvents>();
+            let mut input_state_rows = world.root_scope().query::<&InputState>();
 
-            let ctrl = input_events_rows_2
+            let ctrl = input_state_rows
                 .iter()
                 .next()
-                .is_some_and(|input_events| input_events.with_state(|state| state.modifiers.ctrl));
+                .is_some_and(|state| state.modifiers.ctrl);
             if ctrl {
                 held.set(held.get() + 1);
             }
@@ -692,17 +692,15 @@ fn a_dispatch_leaves_the_state_the_events_built() {
 
     assert!(dispatch_input(&world));
     world.apply().unwrap();
-    let mut input_events_rows_3 = world.root_scope().query::<&InputEvents>();
+    let mut input_state_rows = world.root_scope().query::<&InputState>();
 
-    let input_events = input_events_rows_3
+    let state = input_state_rows
         .iter()
         .next()
-        .expect("the world has a buffer");
-    input_events.with_state(|state| {
-        assert_eq!(state.size_px, (800, 600));
-        assert_eq!(state.scale_factor, 1.5);
-        assert!(!state.focused);
-    });
+        .expect("the world has a state");
+    assert_eq!(state.size_px, (800, 600));
+    assert_eq!(state.scale_factor, 1.5);
+    assert!(!state.focused);
 }
 
 /// A world that ticks less often than input arrives still reads every
@@ -736,9 +734,10 @@ fn a_slow_consumer_reads_every_event() {
 fn every_reader_of_a_world_sees_the_same_batch() {
     let input = InputWriter::new();
     let buffer = input.subscribe();
+    let mut state = InputState::default();
 
     input.push(key_event(Key::A));
-    buffer.refresh();
+    buffer.refresh(&mut state);
 
     assert_eq!(
         buffer.with_batch(|batch| batch.to_vec()),
@@ -751,7 +750,7 @@ fn every_reader_of_a_world_sees_the_same_batch() {
     );
 
     // The next tick replaces it, so an event is delivered exactly once.
-    buffer.refresh();
+    buffer.refresh(&mut state);
     assert!(buffer.with_batch(|batch| batch.to_vec()).is_empty());
 }
 
@@ -762,6 +761,8 @@ fn each_world_builds_its_own_state() {
     let input = InputWriter::new();
     let first = input.subscribe();
     let second = input.subscribe();
+    let mut first_state = InputState::default();
+    let mut second_state = InputState::default();
 
     input.push(InputEvent::ModifiersChanged(Modifiers {
         shift: true,
@@ -769,15 +770,15 @@ fn each_world_builds_its_own_state() {
     }));
 
     // One world ticks, the other has not yet.
-    first.refresh();
-    assert!(first.with_state(|state| state.modifiers.shift));
+    first.refresh(&mut first_state);
+    assert!(first_state.modifiers.shift);
     assert!(
-        !second.with_state(|state| state.modifiers.shift),
+        !second_state.modifiers.shift,
         "a world that has not ticked is still in its previous state"
     );
 
-    second.refresh();
-    assert!(second.with_state(|state| state.modifiers.shift));
+    second.refresh(&mut second_state);
+    assert!(second_state.modifiers.shift);
 }
 
 /// A world that ticks slower still ends up with the state its own event
@@ -786,6 +787,7 @@ fn each_world_builds_its_own_state() {
 fn a_slow_world_builds_the_state_its_events_describe() {
     let input = InputWriter::new();
     let buffer = input.subscribe();
+    let mut state = InputState::default();
 
     input.push(InputEvent::ModifiersChanged(Modifiers {
         ctrl: true,
@@ -793,10 +795,10 @@ fn a_slow_world_builds_the_state_its_events_describe() {
     }));
     input.push(InputEvent::ModifiersChanged(Modifiers::default()));
 
-    buffer.refresh();
+    buffer.refresh(&mut state);
 
     assert!(
-        !buffer.with_state(|state| state.modifiers.ctrl),
+        !state.modifiers.ctrl,
         "the later event is what the state ends up as"
     );
     assert_eq!(
@@ -804,6 +806,59 @@ fn a_slow_world_builds_the_state_its_events_describe() {
         2,
         "both events are still delivered"
     );
+}
+
+/// The touch baseline is the count the state held before the batch folded in,
+/// not after: translating the batch from it and correcting it with the
+/// batch's own events counts every touch once. Reading the state instead is
+/// what double-counted them.
+#[test]
+fn the_touch_baseline_is_the_count_before_the_batch() {
+    let input = InputWriter::new();
+    let buffer = input.subscribe();
+    let mut state = InputState::default();
+
+    // One finger lands and is folded in by this tick.
+    input.push(InputEvent::Touch(TouchEvent {
+        id: 1,
+        phase: TouchPhase::Started,
+        position: CURSOR,
+        force: None,
+    }));
+    buffer.refresh(&mut state);
+    assert_eq!(state.touches.len(), 1);
+    assert_eq!(
+        buffer.touch_baseline(),
+        0,
+        "the batch was queued while nothing was held: its own touch is counted by the fold alone"
+    );
+
+    // The next tick presses two more fingers and lifts the first.
+    for (id, phase) in [
+        (2, TouchPhase::Started),
+        (3, TouchPhase::Started),
+        (1, TouchPhase::Ended),
+    ] {
+        input.push(InputEvent::Touch(TouchEvent {
+            id,
+            phase,
+            position: CURSOR,
+            force: None,
+        }));
+    }
+    buffer.refresh(&mut state);
+
+    // The state folded this batch in; the baseline did not move with it.
+    assert_eq!(state.touches.len(), 2);
+    assert_eq!(
+        buffer.touch_baseline(),
+        1,
+        "the baseline is the count before the batch folded in, so the batch's touches are counted once more by its translation, not twice"
+    );
+
+    // A refresh that brings nothing re-reads the folded state.
+    buffer.refresh(&mut state);
+    assert_eq!(buffer.touch_baseline(), 2);
 }
 
 #[test]

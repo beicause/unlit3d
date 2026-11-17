@@ -269,20 +269,9 @@ impl ResourceGraph {
     pub fn maintain(&mut self) {
         while self
             .graph
-            .remove_where_drop_into(|node| node.strong.strong_count() == 0, &mut self.collected)
+            .remove_where_drop_into(|node| node.strong.strong_count() == 0)
             > 0
         {
-            // The buffer names every node the pass removed, so a hook sees
-            // each resource this pass takes, whatever caller drove the
-            // maintain. Converted in place, and cleared before the next pass
-            // refills the buffer.
-            for node in &self.collected {
-                let id = ResId::from_node(*node);
-                for (_, hook) in &self.hooks {
-                    hook.0(id);
-                }
-            }
-            self.collected.clear();
             // A collected node may have been one of the counted dirty ones;
             // what remains is cheap to recount and only happens when something
             // was actually collected.
@@ -291,42 +280,6 @@ impl ResourceGraph {
         if self.dirty_rebuilds > 0 {
             self.rebuild_dirty();
         }
-    }
-
-    /// Register a hook that runs with the [`ResId`] of every resource this
-    /// graph collects.
-    ///
-    /// The hook runs inside [`Self::maintain`], for every caller's maintain —
-    /// the graph is shared, so a consumer that books shared-storage state
-    /// against resource lifetimes hears about each collection however the
-    /// maintain was reached. It runs after the pass's drops, before any
-    /// rebuild, and may run several times per maintain: a chain of resources
-    /// only a dropped consumer kept alive takes one pass each.
-    ///
-    /// The hook must not hold a [`ResHandle`] (or any other strong reference
-    /// into the graph): holding one would pin the very resources it observes,
-    /// and a collect would never fire. A [`ResId`] is the right thing to carry
-    /// out of it — it names without holding. The closure runs while the graph
-    /// is borrowed mutably by the collection pass, so it cannot read the graph;
-    /// a consumer that needs to react with state of its own captures that
-    /// state as shared bookkeeping (an `Rc<RefCell<_>>`), and acts on what the
-    /// hook left there at its own pace.
-    ///
-    /// The registration runs until [`Self::remove_collect_hook`] retires it
-    /// or the graph dies; a hook nobody retires whose consumer is gone simply
-    /// writes into bookkeeping nobody drains.
-    pub fn on_collect(&mut self, hook: impl Fn(ResId) + 'static) -> CollectHook {
-        let registration = self.next_hook;
-        self.next_hook += 1;
-        self.hooks
-            .push((registration, CollectHookFn(Arc::new(hook))));
-        CollectHook(registration)
-    }
-
-    /// Retire the registration `hook` names; the hook runs no more.
-    pub fn remove_collect_hook(&mut self, hook: &CollectHook) {
-        self.hooks
-            .retain(|(registration, _)| registration != &hook.0);
     }
 
     /// Recount the dirty nodes that carry a rebuild recipe, from the graph.

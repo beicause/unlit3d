@@ -140,7 +140,6 @@ impl MeshSource {
         let mut graph_holder = self.context.graph(world);
         let graph = graph_holder.get();
         let root = graph.insert(Virtual, None);
-        let root_id = root.id();
         for id in &buffers {
             graph.add_dependency(&root, id);
         }
@@ -152,23 +151,22 @@ impl MeshSource {
         }
         drop(graph_holder);
 
-        self.pending.borrow_mut().insert(
-            root_id,
-            PendingAllocations {
-                vertex: None,
-                index: None,
-                morph_deltas: morph_deltas_allocation,
-                metadata_index,
-            },
-        );
-
         GpuMesh {
             parts: Rc::new(MeshParts {
                 root,
                 vertex_buffers: vertex_slots,
                 index_buffer,
                 bind_group_id,
-                metadata_index,
+                storage: MeshStorage {
+                    inbox: self.inbox.clone(),
+                    ticket: StorageTicket {
+                        vertex: None,
+                        index: None,
+                        morph_deltas: morph_deltas_allocation,
+                        metadata_index,
+                    },
+                    metadata_index,
+                },
             }),
             vertex_layout,
             count,

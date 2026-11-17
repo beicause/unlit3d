@@ -172,6 +172,14 @@ impl ArrayPool {
         self.array.capacity()
     }
 
+    /// How many elements no range currently holds.
+    ///
+    /// Grown ranges, freed or not yet allocated, all count here; growth is
+    /// tracked by [`capacity`](Self::capacity), not by this.
+    pub fn free_space(&self) -> u32 {
+        self.allocator.storage_report().total_free_space
+    }
+
     /// Reserves `count` elements, growing the array if they do not fit.
     ///
     /// Returns `None` only if the pool cannot grow any further (its size would

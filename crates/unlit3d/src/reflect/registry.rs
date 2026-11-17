@@ -12,7 +12,7 @@ use crate::components::{
     Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceVisibility, MorphBinding,
     MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
 };
-use crate::input::InputEvents;
+use crate::input::{InputEvents, InputState};
 use crate::light::AmbientLight;
 use crate::line::{Line, LineSegment};
 use crate::lit::{InstanceColor, InstanceCutoff, InstanceHullWidth};
@@ -34,6 +34,7 @@ inventory::submit! { ComponentEntry::new::<InstanceCutoff>() }
 inventory::submit! { ComponentEntry::new::<InstanceHullWidth>() }
 inventory::submit! { ComponentEntry::new::<AmbientLight>() }
 inventory::submit! { ComponentEntry::new::<InputEvents>() }
+inventory::submit! { ComponentEntry::new::<InputState>() }
 inventory::submit! { ComponentEntry::new::<Line>() }
 inventory::submit! { ComponentEntry::new::<LineSegment>() }
 
@@ -130,6 +131,7 @@ mod tests {
 
         use crate::bounds::Aabb;
         use crate::components::MeshParts;
+        use crate::mesh_source::MeshStorage;
 
         let mut world = World::new();
         let mut graph = ResourceGraph::new();
@@ -140,7 +142,7 @@ mod tests {
                 vertex_buffers: ArrayVec::new(),
                 index_buffer: None,
                 bind_group_id: None,
-                metadata_index: 0,
+                storage: MeshStorage::default(),
             }),
             vertex_layout: VertexLayout::default(),
             count: 3,

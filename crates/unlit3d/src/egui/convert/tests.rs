@@ -464,6 +464,43 @@ fn a_second_finger_does_not_end_the_first_fingers_drag() {
     assert_eq!(gone, 1, "the pointer leaves once, after the last finger");
 }
 
+/// A finger a previous batch left down is already in the count the batch
+/// starts from: a new finger landing on the pressed pointer presses nothing,
+/// and its own lift releases nothing while the older finger is still down.
+#[test]
+fn a_batch_starts_from_the_touches_its_state_already_held() {
+    let touch = |id, phase, position| {
+        InputEvent::Touch(TouchEvent {
+            id,
+            phase,
+            position,
+            force: None,
+        })
+    };
+    // One finger from an earlier tick is still down; this batch lands and
+    // lifts a second one.
+    let events = [
+        touch(8, TouchPhase::Started, [9.0, 1.0]),
+        touch(8, TouchPhase::Ended, [9.0, 2.0]),
+    ];
+    let mut converted = Vec::new();
+    to_egui_events_into(&events, 1.0, 1, &mut converted);
+
+    assert!(
+        !converted
+            .iter()
+            .any(|event| matches!(event, EguiEvent::PointerButton { .. })),
+        "the pointer was already pressed by the earlier touch"
+    );
+    // The pointer still follows the newest contact.
+    assert!(
+        converted.iter().any(
+            |event| matches!(event, EguiEvent::PointerMoved(pos) if *pos == Pos2::new(9.0, 1.0))
+        ),
+        "the new finger still moves the pointer"
+    );
+}
+
 #[test]
 fn a_preedit_range_is_remeasured_in_characters() {
     // "héllo": `é` is two bytes, so byte offsets and character offsets

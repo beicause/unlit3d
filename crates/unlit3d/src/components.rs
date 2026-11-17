@@ -15,6 +15,7 @@ use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexLayout;
 
 use crate::bounds::Aabb;
+use crate::mesh_source::MeshStorage;
 /// World-space transform (translation, rotation, scale).
 ///
 /// The renderer reads this component to position each entity in world space.
@@ -220,7 +221,7 @@ impl Default for RenderLoadOps {
 ///
 /// Cloning a [`GpuMesh`] shares these parts rather than copying them, which is
 /// what makes one mesh cheap to give to many entities.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MeshParts {
     /// The mesh's virtual root node in the resource graph.
     ///
@@ -243,11 +244,10 @@ pub struct MeshParts {
     /// `None` when the mesh was uploaded without one.
     pub bind_group_id: Option<ResHandle<wgpu::BindGroup>>,
 
-    /// Index of the mesh's entry in the source's mesh-metadata array.
-    ///
-    /// Every mesh owns an entry, whether or not the pipeline that draws it
-    /// reads one.
-    pub metadata_index: u32,
+    /// The mesh's shared-storage holdings: the metadata entry it owns and the
+    /// pool ranges it draws from, which the drop of the mesh's last handle
+    /// posts back to the source.
+    pub storage: MeshStorage,
 }
 
 /// A handle to a mesh stored in the source's GPU resource graph.
@@ -255,9 +255,9 @@ pub struct MeshParts {
 /// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
 /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh).
 /// The mesh is ready to draw immediately, and it lives as long as some
-/// [`GpuMesh`] names it: dropping the last handle makes it collectable by the
-/// next `maintain`, which also hands the pool ranges and the metadata slot it
-/// held back to the source's shared storage.
+/// [`GpuMesh`] names it: dropping the last handle posts the pool ranges and
+/// the metadata slot it held to the source's inbox, and the source's next
+/// maintain hands them back to what they came from.
 ///
 /// The fields here are the ones a per-entity walk reads while culling and
 /// resolving the visible set. Everything only drawing reads lives in
@@ -283,7 +283,8 @@ pub struct GpuMesh {
     /// entities: a clone is then a handle copy, where an owned copy would
     /// duplicate every buffer id per entity and give each its own set of
     /// resources to free. The parts are immutable once the mesh is uploaded, so
-    /// sharing them costs no synchronization on the frame path.
+    /// sharing them costs no synchronization on the frame path; the one shared
+    /// cell a mesh's own death writes to is its [`MeshStorage`].
     pub parts: Rc<MeshParts>,
 
     /// The vertex layout of the draw, slot by slot.

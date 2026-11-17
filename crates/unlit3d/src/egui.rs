@@ -55,7 +55,7 @@ use web_time::Instant;
 pub use crate::source::{OpenUrl, OpenUrls};
 
 use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
-use crate::input::InputEvents;
+use crate::input::{InputEvents, InputState};
 use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::relay::Snapshot;
@@ -327,27 +327,30 @@ impl FrameSource for EguiSource {
         let queue = ctx
             .queue(scope)
             .expect("the context's queue resource exists");
-        let mut input_events_rows = scope.query::<&InputEvents>();
-
-        // Input arrives as world resources: the world's own [`InputEvents`] is
-        // both the state and what arrived for this tick. It is shared with
-        // everything else in the world — the overlay reads this tick's batch, it
-        // does not take it. A world without one is not an error: the overlay still
-        // lays out at the target's own size, unfeed.
-        let state = input_events_rows.iter().next().map(|input_events| {
-            input_events.with_state(|state| {
-                (
-                    state.scale_factor,
-                    state.size_px,
-                    state.focused,
-                    state.touches.len(),
-                )
-            })
+        // Input arrives as world components: the world's own [`InputEvents`]
+        // holds what arrived this tick, and the [`InputState`] beside it
+        // holds what the ticks before it left behind. One query reads the two
+        // together, so a world with two buffers can never pair one's batch
+        // with the other's state. They are shared with everything else in the
+        // world — the overlay reads this tick's batch, it does not take it. A
+        // world without a buffer is not an error: the overlay still lays out
+        // at the target's own size, unfeed.
+        let mut input_rows = scope.query::<(&InputEvents, &InputState)>();
+        let input = input_rows.iter().next().map(|(input_events, state)| {
+            (
+                // The count the batch is translated from, not the state it has
+                // since folded into: the state already holds the batch, and
+                // counting it against itself would count every touch twice.
+                input_events.touch_baseline(),
+                (state.scale_factor, state.size_px, state.focused),
+            )
         });
-        let (scale_factor, size_px, focused, active_touches) = match state {
-            Some(state) => state,
-            None => (1.0, (target.width, target.height), true, 0),
+        let (active_touches, state) = match input {
+            Some((baseline, state)) => (baseline, Some(state)),
+            None => (0, None),
         };
+        let (scale_factor, size_px, focused) =
+            state.unwrap_or((1.0, (target.width, target.height), true));
         // A caller that has not learned the window's size yet leaves `size_px`
         // at zero; the target's own pixel size lays the overlay out correctly, where
         // a zero-sized screen would lay out nothing.
@@ -368,7 +371,9 @@ impl FrameSource for EguiSource {
         // once the pass is over rather than allocated again.
         let mut event_scratch = core::mem::take(&mut self.event_scratch);
         event_scratch.clear();
-        if let Some(input_events) = scope.query::<&InputEvents>().iter().next() {
+        if let Some((input_events, _state)) =
+            scope.query::<(&InputEvents, &InputState)>().iter().next()
+        {
             input_events.with_batch(|batch| {
                 convert::to_egui_events_into(
                     batch,
@@ -403,14 +408,16 @@ impl FrameSource for EguiSource {
             event_scratch,
         );
 
-        // The URLs every frame asked to open are gathered here and published
+        // The URLs every frame asked to open are taken out here and published
         // in one go below, so a published frame's requests join this world's
-        // own instead of overwriting them.
+        // own instead of overwriting them. Taking them is what keeps a frame
+        // that sits in its slot across many drawn frames — a settled panel —
+        // from asking again on every one of them.
         let mut url_scratch = core::mem::take(&mut self.url_scratch);
         url_scratch.clear();
         self.frames.with_frames(|slots| {
-            for slot in slots.iter().flatten() {
-                url_scratch.extend(open_urls(&slot.platform_output));
+            for slot in slots.iter_mut().flatten() {
+                take_open_urls(&mut slot.platform_output, &mut url_scratch);
             }
         });
 
@@ -424,9 +431,10 @@ impl FrameSource for EguiSource {
         // A URL egui was asked to open is a request for the host rather than
         // the frame: a panel cannot open a browser tab itself, so the requests
         // of every frame drawn here are published in the world for whoever
-        // owns the page to serve. Read before the integration takes the
-        // output, because it consumes it.
-        url_scratch.extend(open_urls(&output.platform_output));
+        // owns the page to serve. They are taken out of the output, so this
+        // world's own requests are served once and the integration consumes
+        // the rest of the output below.
+        take_open_urls(&mut output.platform_output, &mut url_scratch);
         publish_open_urls(scope, &mut url_scratch);
         self.url_scratch = url_scratch;
 
@@ -540,21 +548,26 @@ impl FrameSource for EguiSource {
     }
 }
 
-/// The URLs a frame asked the host to open.
+/// Take the URLs a frame asked the host to open out of its output.
 ///
-/// Reading them is all this does; a frame's requests join every other frame's
-/// before they reach the world, so one frame's list cannot drop another's.
-fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '_ {
-    output.commands.iter().filter_map(|command| match command {
-        egui::OutputCommand::OpenUrl(open) => Some(OpenUrl {
-            url: open.url.clone(),
-            new_tab: open.new_tab,
-        }),
-        // Copying text or an image is the integration's to serve on the
-        // platform it runs on; only a URL needs something a frame source is
-        // not: a page to open it in.
-        _ => None,
-    })
+/// The requests are appended to `out` and removed from the output, so a frame
+/// that is drawn again — a slot holding its frame across many drawn frames —
+/// asks once and is served once. The other commands stay where they are:
+/// copying text or an image is the integration's to serve on the platform it
+/// runs on; only a URL needs something a frame source is not: a page to open
+/// it in.
+fn take_open_urls(output: &mut egui::PlatformOutput, out: &mut Vec<OpenUrl>) {
+    for command in &output.commands {
+        if let egui::OutputCommand::OpenUrl(open) = command {
+            out.push(OpenUrl {
+                url: open.url.clone(),
+                new_tab: open.new_tab,
+            });
+        }
+    }
+    output
+        .commands
+        .retain(|command| !matches!(command, egui::OutputCommand::OpenUrl(_)));
 }
 
 /// Publish the URLs egui was asked to open as an [`OpenUrls`] resource.
@@ -598,7 +611,9 @@ pub struct ExternalFrame {
     pub textures: egui::TexturesDelta,
     /// The frame's tessellated geometry.
     pub primitives: Vec<egui::ClippedPrimitive>,
-    /// What the frame asked the platform to do, such as a URL to open.
+    /// What the frame asked the platform to do, such as a URL to open. The
+    /// world that draws the frame takes the URL requests out when it reads
+    /// them, so a frame drawn again does not ask twice.
     pub platform_output: egui::PlatformOutput,
     /// How long after the pass the frame asked to be laid out again, where
     /// [Duration::MAX] is a frame that asked for nothing.

@@ -34,12 +34,11 @@ fn indexed_meshes_share_one_index_buffer() {
     assert_ne!(first.first, second.first, "the slices do not overlap");
 
     // The ranges tile the pool in allocation order.
-    let first_range = h
-        .source
-        .pending
-        .borrow()
-        .get(&first.parts.root.id())
-        .and_then(|entry| entry.index)
+    let first_range = first
+        .parts
+        .storage
+        .ticket
+        .index
         .map(|allocation| h.source.pools.index_pool.allocation_size(allocation))
         .expect("the mesh holds an index allocation");
     assert_eq!(
@@ -124,12 +123,7 @@ fn a_non_indexed_mesh_holds_no_index_allocation() {
     assert!(!mesh.indexed);
     assert!(mesh.parts.index_buffer.is_none());
     assert!(
-        h.source
-            .pending
-            .borrow()
-            .get(&mesh.parts.root.id())
-            .and_then(|entry| entry.index)
-            .is_none(),
+        mesh.parts.storage.ticket.index.is_none(),
         "a non-indexed mesh holds no index allocation"
     );
     assert_eq!(mesh.first, 0);

@@ -128,11 +128,11 @@
 | 项 | 是什么 |
 | --- | --- |
 | 写端 | `InputWriter::new` + `push(event)` |
-| 订阅组件 | `InputFeed(InputWriter)`，spawn 进世界才收事件 |
+| 订阅组件 | `InputFeed(InputWriter)`（带写端）与 `InputPair(InputEvents)`（只带缓冲，配 `InputState::default()` 一同落实体）；spawn 进世界才收事件 |
 | 派发 | `dispatch_input(&World) -> bool`：取一个 batch、折进 `InputState`、跑行为；不 apply 结构变更 |
-| 读状态 | `InputEvents::with_state` / `with_batch` / `refresh` / `copy_events_into` |
+| 读状态 | 直读 `InputState` 组件（与 buffer 同实体、由本 world 的 tick 独占写入）；批走 `InputEvents::with_batch` / `copy_events_into`，tick 用 `refresh`（把批折进同实体的 state） |
 | 行为 | `OnInput`（catch-all）/ `OnKey` / `OnPointer` / `OnMouse` / `OnTouch` / `OnText` / `OnIme` |
-| 分发 | `subscribe_input(&mut World)`（向各 world 的缓冲登记订阅）、`distribute_input(&World)`（把已到的事件发给行为组件） |
+| 分发 | `subscribe_input(&mut World)`（给 world 自己的缓冲登记订阅）、`distribute_input(&World)`（把根 world 的 writer 复制进每个嵌套 world 并登记订阅） |
 
 ## egui
 

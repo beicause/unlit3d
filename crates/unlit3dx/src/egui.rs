@@ -159,7 +159,7 @@ impl EguiPanelHost {
         let mut active_touches = 0;
         if let Some(input_events) = world.root_scope().query::<&InputEvents>().iter().next() {
             input_events.copy_events_into(&mut events);
-            active_touches = input_events.with_state(|state| state.touches.len());
+            active_touches = input_events.touch_baseline();
         }
         // A frame the queue refused keeps its place: its texture deltas are
         // incremental state, so dropping it would strand a texture change the
@@ -242,7 +242,13 @@ impl EguiPanelHost {
             textures.append(core::mem::take(&mut laid_out.textures));
             refused.textures = textures;
             refused.primitives = core::mem::take(&mut laid_out.primitives);
+            // The refused frame's own requests were made first, and a request
+            // only exists for the pass that made it: replacing the output
+            // whole would drop them, so they lead the new frame's.
+            let mut commands = core::mem::take(&mut refused.platform_output.commands);
+            commands.append(&mut laid_out.platform_output.commands);
             refused.platform_output = core::mem::take(&mut laid_out.platform_output);
+            refused.platform_output.commands = commands;
             refused.repaint_delay = laid_out.repaint_delay;
             refused.screen = laid_out.screen;
             laid_out = refused;
@@ -288,7 +294,7 @@ mod tests {
     use unlit_ecs::bundle;
     use unlit_wgpu::egui::ScreenDescriptor;
     use unlit3d::egui::EguiPanel;
-    use unlit3d::input::{InputWriter, Modifiers, refresh_input};
+    use unlit3d::input::{InputPair, InputWriter, Modifiers, refresh_input};
     use unlit3d::relay::Snapshot;
     use unlit3d::source::FrameSourceOrder;
 
@@ -452,7 +458,7 @@ mod tests {
         let (mut world, runs) = counting_world();
         let mut test = TestUi::new();
         let writer = InputWriter::new();
-        world.root_scope_mut().spawn(bundle![writer.subscribe()]);
+        world.root_scope_mut().spawn(InputPair(writer.subscribe()));
         settle(&mut test, &world);
 
         let settled = runs.get();
@@ -585,5 +591,91 @@ mod tests {
         test.publish(&world);
         assert!(runs.get() > laid_out, "the frame was laid out again");
         assert_eq!(test.published_slots(), 1, "the retry reached the source");
+    }
+
+    /// A refused frame rides into whatever the next tick lays out — its
+    /// requests were made first, so they lead the newer frame's — and the
+    /// fold itself survives a second refusal: waiting for room loses
+    /// nothing the drawing side never applied.
+    #[test]
+    fn a_refused_frame_joins_the_next_frame_its_requests_leading() {
+        let mut world = World::new();
+        // Each laid-out pass asks for its own URL, so the fold's order is
+        // readable: the frame that was refused first must ask first.
+        let urls = Rc::new(Cell::new(0usize));
+        let counted = Rc::clone(&urls);
+        world
+            .root_scope_mut()
+            .spawn(bundle![EguiPanel::new(move |_, _, ui: &mut egui::Ui| {
+                let pass = counted.get();
+                counted.set(pass + 1);
+                ui.label("hello");
+                ui.ctx().open_url(egui::OpenUrl {
+                    url: format!("frame-{pass}"),
+                    new_tab: false,
+                });
+            }),]);
+        let writer = InputWriter::new();
+        world.root_scope_mut().spawn(InputPair(writer.subscribe()));
+        let mut test = TestUi::with_capacity(1);
+        test.target.publish(test_target());
+
+        test.publish(&world);
+        assert_eq!(test.published_slots(), 1, "the first frame was delivered");
+
+        // Fill the queue, then bring input: the frame laid out for it is
+        // refused. The queue is drained but not refilled, and newer input
+        // arrives: the refused frame is refused again, and joins the frame
+        // that tick lays out.
+        test.sender
+            .try_send(Box::new(|_: &mut World| {}))
+            .expect("the queue has room");
+        writer.push(InputEvent::ModifiersChanged(Modifiers::default()));
+        assert!(refresh_input(&world), "the world has a buffer");
+        test.host.publish(&world, &frame(1.0 / 60.0));
+        assert_eq!(test.jobs.len(), 1, "the placeholder is still queued");
+
+        test.drain();
+        test.sender
+            .try_send(Box::new(|_: &mut World| {}))
+            .expect("the queue has room");
+        writer.push(InputEvent::ModifiersChanged(Modifiers::default()));
+        assert!(refresh_input(&world), "the world has a buffer");
+        test.host.publish(&world, &frame(1.0 / 60.0));
+        assert_eq!(test.jobs.len(), 1, "the placeholder is still queued");
+
+        // Room again, and no newer input: what is sent is the fold, the
+        // refused frame's requests leading the newer frame's.
+        test.drain();
+        assert!(refresh_input(&world), "the world has a buffer");
+        test.publish(&world);
+        assert_eq!(test.published_slots(), 1, "the folded frame was delivered");
+        // Every pass that laid a frame out had asked for a URL, and egui makes
+        // the pass after such a request due at once, so all four publishes
+        // laid a frame out. Only the two refusals' requests are lost, and the
+        // delivering pass lays one more frame whose request the fold will
+        // carry on the next publish.
+        assert_eq!(
+            urls.get(),
+            4,
+            "one layout per publish, none retried by a refusal"
+        );
+        test.frames(|slots| {
+            let frame = slots[0].as_ref().expect("published");
+            let urls: Vec<_> = frame
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    egui::OutputCommand::OpenUrl(open) => Some(open.url.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                urls,
+                ["frame-1", "frame-2"],
+                "the refused frame's requests lead, in the order they were made"
+            );
+        });
     }
 }

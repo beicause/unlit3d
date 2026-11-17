@@ -36,17 +36,14 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
     // of them, which the maintain's sweep hands back.
     let before = ctx.graph(&h.world.root_scope()).get().len();
     let index_pool_free = h.source.pools.index_pool.free_space();
+    let vertex_pool_free = h.source.pools.vertex_pool.free_elements();
+    let morph_pool_free = h.source.arrays.morph_pool_free_space();
     assert!(matches!(
         ctx.graph(&h.world.root_scope()).get().get(&mesh.parts.root),
         Some(Virtual)
     ));
     assert!(
-        h.source
-            .pending
-            .borrow()
-            .get(&mesh.parts.root.id())
-            .and_then(|entry| entry.morph_deltas)
-            .is_some(),
+        mesh.parts.storage.ticket.morph_deltas.is_some(),
         "a morphing mesh holds a displacement range"
     );
 
@@ -64,6 +61,14 @@ fn removing_a_mesh_frees_every_resource_built_from_it() {
     assert!(
         h.source.pools.index_pool.free_space() > index_pool_free,
         "the mesh's index range is free again"
+    );
+    assert!(
+        h.source.pools.vertex_pool.free_elements() > vertex_pool_free,
+        "the mesh's vertex ranges are free again"
+    );
+    assert!(
+        h.source.arrays.morph_pool_free_space() > morph_pool_free,
+        "the mesh's displacement range is free again"
     );
 }
 
@@ -122,18 +127,21 @@ fn a_removed_mesh_frees_its_metadata_slot() {
     let mut h = harness();
     let first = h.tri_mesh();
     let second = h.tri_mesh();
-    let first_index = first.parts.metadata_index;
-    assert_ne!(first_index, second.parts.metadata_index);
+    let first_index = first.parts.storage.metadata_index;
+    assert_ne!(first_index, second.parts.storage.metadata_index);
 
     drop(first);
     h.source.maintain(&h.world.root_scope());
     let reused = h.tri_mesh();
 
     assert_eq!(
-        reused.parts.metadata_index, first_index,
+        reused.parts.storage.metadata_index, first_index,
         "the slot the removed mesh held is handed out again"
     );
-    assert_ne!(reused.parts.metadata_index, second.parts.metadata_index);
+    assert_ne!(
+        reused.parts.storage.metadata_index,
+        second.parts.storage.metadata_index
+    );
 }
 
 #[test]

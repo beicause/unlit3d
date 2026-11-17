@@ -1171,9 +1171,10 @@ world.scope_mut(ui).spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
 components that react to them, depending on neither winit nor egui. A frame
 feeds events through an [`InputWriter`](input::InputWriter), which drops each
 one into the buffer of every world subscribed to it. A world's buffer is its
-[`InputEvents`](input::InputEvents): the events that arrived since its last
-tick, plus the [`InputState`](input::InputState) they built — modifiers,
-pointers, buttons, window size. [`dispatch_input`](input::dispatch_input)
+[`InputEvents`](input::InputEvents), which holds the events that arrived
+since its last tick and lives beside the [`InputState`](input::InputState)
+they fold into — modifiers, pointers, buttons, window size.
+[`dispatch_input`](input::dispatch_input)
 takes this world's queue as this tick's batch, folds it into the state, and
 drives the behaviours. A world owns the events it has not ticked on, so a
 world that ticks less often than input arrives still reads every event in
@@ -1208,9 +1209,10 @@ crate's events into egui's.
   `InputState` is mouse-only.
 - **`InputState` holds the state the events left behind** (modifiers, pointer
   position and the pointers pressed, cursor, buttons pressed, focus, window
-  size and scale) and no events. It lives inside a world's `InputEvents`,
-  which is how everything in that world reaches it: one buffer per world,
-  refreshed by that world's own tick. A shared state would make one world's
+  size and scale) and no events. It lives on the same entity as a world's
+  `InputEvents`, which is how everything in that world reaches it: one
+  buffer-state pair per world, the buffer refreshed by that world's own tick.
+  A shared state would make one world's
   reading depend on another's rate, and `InputWriter` therefore keeps none —
   it is only the fan-out. A
   pointer's pressed state is recorded per "contact point"

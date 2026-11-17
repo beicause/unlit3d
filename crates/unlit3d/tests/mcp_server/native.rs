@@ -75,7 +75,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared);
-        shared_view.spawn(bundle![input.subscribe()]);
+        shared_view.spawn(InputPair(input.subscribe()));
         shared_view.spawn(bundle![input]);
     }
 

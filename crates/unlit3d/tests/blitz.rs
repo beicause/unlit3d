@@ -98,7 +98,6 @@ type WatchedPage = (
     Entity,
     Arc<Mutex<Vec<Seen>>>,
     InputWriter,
-    InputEvents,
 );
 
 /// Spawn a page and a callback that records every event it dispatches.
@@ -135,30 +134,29 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
             });
         })]);
     let input = spawn_input(&mut world);
-    (world, gpu, target, source, seen, input.0, input.1)
+    (world, gpu, target, source, seen, input)
 }
 
 /// Spawn an input buffer at the target's size and a density of one.
-fn spawn_input(world: &mut World) -> (InputWriter, InputEvents) {
+fn spawn_input(world: &mut World) -> InputWriter {
     let input = InputWriter::new();
     let events = input.subscribe();
     // Input is shared by every view, so it belongs to the shared subtree: a
     // source reads it from its own scope, which cannot see a sibling's.
-    world
-        .scope_mut(world.shared())
-        .spawn(bundle![events.clone()]);
+    world.scope_mut(world.shared()).spawn(InputPair(events));
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
     });
     input.push(InputEvent::ScaleFactorChanged { scale_factor: 1.0 });
-    events.refresh();
-    (input, events)
+    refresh_input(world);
+    input
 }
 
-/// Feed `batch` as the next frame's input.
-fn feed(input: &InputWriter, events: &InputEvents, batch: impl IntoIterator<Item = InputEvent>) {
+/// Feed `batch` as the next frame's input, and tick the world's buffers the
+/// way a frame's start does.
+fn feed(world: &World, input: &InputWriter, batch: impl IntoIterator<Item = InputEvent>) {
     input.push_all(batch);
-    events.refresh();
+    refresh_input(world);
 }
 
 /// A press and a release at `position`, which is the pair a document reads as a
@@ -347,10 +345,10 @@ async fn a_click_toggles_a_checkbox() {
         <input type="checkbox" id="box"
                style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([20.0, 20.0]));
+    feed(&world, &input, click([20.0, 20.0]));
     gpu.render(&world);
 
     let seen = seen.lock().expect("the log is not poisoned").clone();
@@ -477,7 +475,7 @@ async fn one_tick_reaches_a_shared_page_once() {
     gpu.bind_offscreen_target_with(&world, 1, false);
     bind_target(&gpu, &world, nested);
 
-    let (input, events) = spawn_input(&mut world);
+    let input = spawn_input(&mut world);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
     let html = r#"<html style="background: #808080"><body style="margin: 0">
@@ -502,7 +500,7 @@ async fn one_tick_reaches_a_shared_page_once() {
     ]);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([20.0, 20.0]));
+    feed(&world, &input, click([20.0, 20.0]));
     gpu.render(&world);
 
     let seen = seen.lock().expect("the log is not poisoned").clone();
@@ -521,16 +519,16 @@ async fn losing_focus_leaves_the_text_field() {
         <input type="text" id="box"
                style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([40.0, 20.0]));
+    feed(&world, &input, click([40.0, 20.0]));
     gpu.render(&world);
-    feed(&input, &events, [InputEvent::FocusChanged(false)]);
+    feed(&world, &input, [InputEvent::FocusChanged(false)]);
     gpu.render(&world);
     feed(
+        &world,
         &input,
-        &events,
         [InputEvent::Text(TextEvent("no".to_owned()))],
     );
     gpu.render(&world);
@@ -550,12 +548,12 @@ async fn a_key_release_reaches_the_page() {
         <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
         </div>
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
     feed(
+        &world,
         &input,
-        &events,
         [
             InputEvent::Key(KeyEvent {
                 key: Key::Enter,
@@ -591,7 +589,7 @@ async fn a_wheel_scrolls_the_page() {
         <div style="height: 400px; background: #0000ff"></div>
     </body></html>"#;
     let (mut world, gpu, target, _source, _page) = render_page(&ctx, html);
-    let (input, events) = spawn_input(&mut world);
+    let input = spawn_input(&mut world);
     gpu.render_frames(&world, 2);
 
     let before = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
@@ -601,8 +599,8 @@ async fn a_wheel_scrolls_the_page() {
     );
 
     feed(
+        &world,
         &input,
-        &events,
         [
             // The pointer has to be over the page for it to be the one
             // scrolled, and a wheel reports where it is used.
@@ -633,12 +631,12 @@ async fn leaving_the_page_is_reported_to_it() {
         <div id="left" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
         </div>
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
     feed(
+        &world,
         &input,
-        &events,
         [
             InputEvent::Mouse(MouseEvent::Moved {
                 position: [20.0, 20.0],
@@ -664,7 +662,7 @@ async fn a_callback_can_cancel_the_default_action() {
         <input type="checkbox" id="box"
                style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
     </body></html>"#;
-    let (mut world, gpu, target, source, seen, input, events) = render_watched_page(&ctx, html);
+    let (mut world, gpu, target, source, seen, input) = render_watched_page(&ctx, html);
     world
         .scope_mut(source)
         .spawn(bundle![OnBlitzEvent::new(|_scope, _entity, event| {
@@ -674,7 +672,7 @@ async fn a_callback_can_cancel_the_default_action() {
         })]);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([20.0, 20.0]));
+    feed(&world, &input, click([20.0, 20.0]));
     gpu.render(&world);
 
     let seen = seen.lock().expect("the log is not poisoned").clone();
@@ -703,15 +701,15 @@ async fn input_is_dispatched_once() {
         <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
         </div>
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([20.0, 20.0]));
+    feed(&world, &input, click([20.0, 20.0]));
     gpu.render(&world);
     // The frames after it tick the world, which is what hands the source a
     // batch with nothing in it.
     for _ in 0..3 {
-        events.refresh();
+        refresh_input(&world);
         gpu.render(&world);
     }
 
@@ -731,14 +729,14 @@ async fn typing_reaches_a_text_field() {
         <input type="text" id="box"
                style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([40.0, 20.0]));
+    feed(&world, &input, click([40.0, 20.0]));
     gpu.render(&world);
     feed(
+        &world,
         &input,
-        &events,
         [InputEvent::Text(TextEvent("hi".to_owned()))],
     );
     gpu.render(&world);
@@ -763,7 +761,7 @@ async fn a_pen_click_toggles_a_checkbox() {
         <input type="checkbox" id="box"
                style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
     let pen = |action: PointerAction| {
@@ -776,8 +774,8 @@ async fn a_pen_click_toggles_a_checkbox() {
         })
     };
     feed(
+        &world,
         &input,
-        &events,
         [
             pen(PointerAction::Pressed),
             pen(PointerAction::Released { cancelled: false }),
@@ -807,14 +805,14 @@ async fn an_ime_commit_reaches_a_text_field() {
         <input type="text" id="box"
                style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
-    feed(&input, &events, click([40.0, 20.0]));
+    feed(&world, &input, click([40.0, 20.0]));
     gpu.render(&world);
     feed(
+        &world,
         &input,
-        &events,
         [
             InputEvent::Ime(ImeEvent {
                 kind: ImeKind::Preedit {
@@ -855,15 +853,15 @@ async fn a_key_reaches_the_page_as_a_code_and_a_side() {
         <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
         </div>
     </body></html>"#;
-    let (world, gpu, _target, _source, seen, input, events) = render_watched_page(&ctx, html);
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
     // A character key is dropped while it types nothing but text, so the two
     // keys here are ones a page reads as keys: an arrow, and a key the crate
     // only carries the platform code of, on the numeric keypad.
     feed(
+        &world,
         &input,
-        &events,
         [
             InputEvent::Key(KeyEvent {
                 key: Key::ArrowLeft,

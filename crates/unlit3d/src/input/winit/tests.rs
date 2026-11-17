@@ -23,6 +23,8 @@ fn cursor_position() -> PhysicalPosition<f64> {
 struct TestInput {
     input: WinitInput,
     buffer: InputEvents,
+    /// The state a world would have built from what it has ticked on.
+    state: RefCell<InputState>,
     /// What the subscription has yielded so far, kept so a test can look at
     /// a stream it has already read.
     seen: RefCell<Vec<InputEvent>>,
@@ -43,6 +45,7 @@ fn input() -> TestInput {
     TestInput {
         input,
         buffer,
+        state: RefCell::default(),
         seen: RefCell::new(Vec::new()),
     }
 }
@@ -53,7 +56,7 @@ fn input() -> TestInput {
 /// The adapter feeds a writer, so this is the same stream a world
 /// dispatching input reads.
 fn events(input: &TestInput) -> Vec<InputEvent> {
-    input.buffer.refresh();
+    input.buffer.refresh(&mut input.state.borrow_mut());
     let mut batch = Vec::new();
     input.buffer.copy_events_into(&mut batch);
     let mut seen = input.seen.borrow_mut();
@@ -66,8 +69,8 @@ fn events(input: &TestInput) -> Vec<InputEvent> {
 /// Building it means ticking first, which is what a world does before it
 /// reads anything.
 fn state<R>(input: &TestInput, f: impl FnOnce(&InputState) -> R) -> R {
-    input.buffer.refresh();
-    input.buffer.with_state(f)
+    input.buffer.refresh(&mut input.state.borrow_mut());
+    f(&input.state.borrow())
 }
 
 fn moved() -> WindowEvent {

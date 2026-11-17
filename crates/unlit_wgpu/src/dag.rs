@@ -315,24 +315,13 @@ impl<N> Dag<N> {
         self.order = order;
     }
 
-    /// Remove every node `is_dead` reports, writing the id of each into
-    /// `collected`, and return how many were removed.
+    /// Remove every node `is_dead` reports and return how many were removed.
     ///
     /// A node is dropped with the weights of the nodes that depend on it still
     /// in place, so a weight whose drop releases something another node was
-    /// waiting for only shows up on the next call: a caller that has to reach a
-    /// fixpoint sweeps until this reports `0`.
-    ///
-    /// `collected` is cleared first and keeps its allocation, so a caller that
-    /// observes every pass passes the same buffer each time. Every id names a
-    /// node this call removed, gone by the time the call returns: a consumer
-    /// keeps what it needs from them and discards the rest. A caller that
-    /// observes nothing passes a fresh buffer and ignores it.
-    pub fn remove_where_drop_into(
-        &mut self,
-        is_dead: impl Fn(&N) -> bool,
-        collected: &mut Vec<NodeId>,
-    ) -> usize {
+    /// waiting for only shows up on the next call: a caller that has to reach
+    /// a fixpoint sweeps until this reports `0`.
+    pub fn remove_where_drop_into(&mut self, is_dead: impl Fn(&N) -> bool) -> usize {
         self.order.clear();
         self.order.extend(
             (0..self.nodes.len())
@@ -342,7 +331,6 @@ impl<N> Dag<N> {
         let order = core::mem::take(&mut self.order);
         let removed = order.len();
         for &index in &order {
-            collected.push(self.node_id(index));
             let id = self.node_id(index);
             self.remove(id);
         }
@@ -745,8 +733,7 @@ mod tests {
         dag.add_edge(base, middle).unwrap();
         dag.add_edge(middle, root).unwrap();
 
-        let mut collected = Vec::new();
-        let removed = dag.remove_where_drop_into(|&name| name == "middle", &mut collected);
+        let removed = dag.remove_where_drop_into(|&name| name == "middle");
         assert_eq!(removed, 1);
         assert_eq!(dag.get(base), Some(&"base"), "the node it depends on stays");
         assert_eq!(dag.get(outside), Some(&"outside"));
@@ -773,7 +760,7 @@ mod tests {
         let mut sweeps = 0;
         loop {
             sweeps += 1;
-            let removed = dag.remove_where_drop_into(|&name| name != "keep", &mut Vec::new());
+            let removed = dag.remove_where_drop_into(|&name| name != "keep");
             if removed == 0 {
                 break;
             }
@@ -890,7 +877,7 @@ mod tests {
             }
 
             let removed: Vec<usize> = removed.into_iter().filter(|&index| index < nodes).collect();
-            dag.remove_where_drop_into(|&index| removed.contains(&index), &mut Vec::new());
+            dag.remove_where_drop_into(|&index| removed.contains(&index));
 
             let mut order = Vec::new();
             dag.topological_order_into(&mut order);

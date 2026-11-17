@@ -219,6 +219,12 @@ impl FrameArrays {
         self.morph_deltas_pool.release(allocation);
     }
 
+    /// How many displacement elements no mesh currently holds.
+    #[cfg(test)]
+    pub(super) fn morph_pool_free_space(&self) -> u32 {
+        self.morph_deltas_pool.free_space()
+    }
+
     /// Grow the frame's joint-matrix array if the packed data outgrew it, and
     /// upload it through the frame's encoder.
     ///

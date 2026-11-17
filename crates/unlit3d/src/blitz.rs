@@ -52,7 +52,7 @@ use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawOrder, Scene};
 use unlit_wgpu::specialize::SurfaceKey;
 
-use crate::input::{InputEvent, InputEvents, MouseButtons};
+use crate::input::{InputEvent, InputEvents, InputState, MouseButtons};
 use crate::pass::PassInfo;
 use crate::screen::ScreenBlit;
 use crate::source::{FrameSource, RenderContext};
@@ -221,20 +221,15 @@ impl FrameSource for BlitzSource {
         let mut buttons = MouseButtons::empty();
         let mut focused = true;
         {
-            let mut input = scope.query::<&InputEvents>();
-            if let Some(events) = input.iter().next() {
-                let state = events.with_state(|state| {
-                    (
-                        state.scale_factor,
-                        state.cursor,
-                        state.buttons,
-                        state.focused,
-                    )
-                });
-                scale_factor = state.0;
-                cursor = state.1;
-                buttons = state.2;
-                focused = state.3;
+            // One query reads the buffer and the state beside it together, so
+            // a world with two buffers can never pair one's batch with the
+            // other's state.
+            let mut input = scope.query::<(&InputEvents, &InputState)>();
+            if let Some((events, state)) = input.iter().next() {
+                scale_factor = state.scale_factor;
+                cursor = state.cursor;
+                buttons = state.buttons;
+                focused = state.focused;
                 // A page is built by every source and pass that see it, and each
                 // of them reads the same batch, so the page takes a tick's events
                 // once: a click is one click however many times the frame draws

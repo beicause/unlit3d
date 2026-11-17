@@ -201,6 +201,25 @@ impl Array {
         }
     }
 
+    /// Assert what both storage paths promise their callers: the bytes make up
+    /// whole elements and no more than the capacity holds. The texel path
+    /// asserts this itself in its packing; the check exists for the buffer
+    /// path, where nothing else would catch a length past the buffer.
+    fn validate(&self, elements: &[u8]) {
+        assert!(
+            (elements.len() as u64).is_multiple_of(self.element_size),
+            "{} bytes are not a whole number of {}-byte elements",
+            elements.len(),
+            self.element_size
+        );
+        assert!(
+            elements.len() as u64 <= self.capacity() * self.element_size,
+            "{} bytes hold more than the {} elements the array has room for",
+            elements.len(),
+            self.capacity()
+        );
+    }
+
     /// Whether the elements are held in a texture rather than a buffer.
     pub fn is_texel(&self) -> bool {
         matches!(self.storage, ArrayStorage::Texel(_))
@@ -261,6 +280,7 @@ impl Array {
         encoder: &mut wgpu::CommandEncoder,
         elements: &[u8],
     ) {
+        self.validate(elements);
         match &mut self.storage {
             ArrayStorage::Buffer { buffer, staging } => {
                 staging.write(device, encoder, buffer, 0, elements);
@@ -283,6 +303,7 @@ impl Array {
     /// If `elements` is not a whole number of elements, or holds more than
     /// [`Self::capacity`] of them.
     pub fn write(&mut self, queue: &wgpu::Queue, elements: &[u8]) {
+        self.validate(elements);
         match &mut self.storage {
             ArrayStorage::Buffer { buffer, .. } => queue.write_buffer(buffer, 0, elements),
             ArrayStorage::Texel(texel) => texel.write(queue, elements),

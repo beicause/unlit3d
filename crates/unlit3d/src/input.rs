@@ -22,9 +22,10 @@
 //!    changes; the caller does.
 //!
 //! Nothing clears the events afterwards. A world's [`InputEvents`] is the one
-//! buffer everything in that world reads — the events of this tick and the
-//! state they built — replaced on the next tick, so a slower world still sees
-//! every event in order and no two readers of one world can disagree.
+//! buffer everything in that world reads — this tick's events, replaced on the
+//! next tick — and the [`InputState`] they have built up is the component on
+//! the entity beside it, built by the same tick. A slower world still sees
+//! every event in order, and no two readers of one world can disagree.
 //!
 //! ```rust
 //! use unlit3d::prelude::*;
@@ -72,11 +73,10 @@
 //! State a callback needs across events belongs in a sibling component. Two
 //! different behaviour types on the same entity are fine: they are different
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
 
 use crate::relay::{Stream, StreamReader};
-use unlit_ecs::sync;
 use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 
 use crate::behaviour::behaviour;
@@ -94,14 +94,15 @@ pub use state::InputState;
 #[cfg(feature = "winit")]
 pub mod winit;
 
-/// A world's input: the state the events left behind, and this tick's events.
+/// A world's input buffer: the events this tick has not read yet.
 ///
 /// This is the one input buffer a world has. [`InputWriter`] drops every event
 /// into the queue here, and the world's tick — [`dispatch_input`] — moves
-/// whatever queued into the batch and folds it into the state. Everything in
-/// the world then reads that same batch and that same state, so a world that
-/// ticks slower than input arrives still sees every event, in order, and no two
-/// readers of one world can disagree or steal from each other.
+/// whatever queued into the batch and folds it into the [`InputState`] on the
+/// entity beside this buffer. Everything in the world then reads that same
+/// batch and that same state, so a world that ticks slower than input arrives
+/// still sees every event, in order, and no two readers of one world can
+/// disagree or steal from each other.
 ///
 /// The batch is replaced by the next tick, which is what keeps an event from
 /// arriving twice. The state outlives it: which modifiers are held, where the
@@ -116,24 +117,15 @@ pub mod winit;
 pub struct InputEvents {
     /// The events fed since the last refresh, queued for this world alone.
     events: StreamReader<InputEvent>,
-    /// The state the events so far left behind.
-    state: Arc<RwLock<InputState>>,
+    /// How many touches the state held when the current batch was queued: the
+    /// count a translation of the batch starts from, before the batch's own
+    /// events correct it.
+    touch_baseline: Arc<AtomicU64>,
     /// How many ticks this world has taken.
     ticks: Arc<AtomicU64>,
 }
 
 impl InputEvents {
-    /// Run `f` over the state the events so far left behind.
-    ///
-    /// Reading takes the lock shared, so every reader in the world reads the
-    /// same batch at once; only a tick takes it exclusively. A panicking
-    /// writer leaves the lock poisoned, and the value is still readable, so
-    /// the poison is ignored rather than propagated.
-    pub fn with_state<R>(&self, f: impl FnOnce(&InputState) -> R) -> R {
-        let state = sync::read(&self.state);
-        f(&state)
-    }
-
     /// Run `f` over this tick's events, oldest first.
     ///
     /// Reading does not consume: the whole world reads the same batch, so no
@@ -158,20 +150,35 @@ impl InputEvents {
         self.ticks.load(Ordering::Relaxed)
     }
 
+    /// How many touches the state held when the current batch was queued.
+    ///
+    /// A translation of the batch starts from this count and corrects it with
+    /// the batch's own touch events. The current state is the wrong start: it
+    /// already includes the batch, so counting the batch against it would
+    /// count every touch the batch carries twice.
+    pub fn touch_baseline(&self) -> usize {
+        self.touch_baseline.load(Ordering::Relaxed) as usize
+    }
+
     /// Start this world's input tick: take everything queued as the batch, and
-    /// fold it into the state.
+    /// fold it into `state`.
     ///
     /// Whatever the previous tick left is dropped, so an event is delivered on
     /// exactly one tick. [`dispatch_input`] calls this; a world that reads
     /// input without dispatching anything calls it itself, once per tick,
-    /// before anything reads the batch.
-    pub fn refresh(&self) {
+    /// before anything reads the batch. `state` is the [`InputState`] the
+    /// same entity holds, which the tick alone writes.
+    pub fn refresh(&self, state: &mut InputState) {
         self.ticks.fetch_add(1, Ordering::Relaxed);
+        // The baseline is the count `state` held before this batch folds in:
+        // the state only ever changes when a batch folds into it, so what
+        // stands now is what stood when the batch was queued. A translation
+        // of the batch starts from it and corrects it event by event; reading
+        // the state after the fold would count the batch's touches twice.
+        self.touch_baseline
+            .store(state.touches.len() as u64, Ordering::Relaxed);
         self.events.pump();
-        // The batch is out of its lock before the closure runs, so folding
-        // the events into the state is the only lock held here.
         self.events.with_batch(|batch| {
-            let mut state = sync::write(&self.state);
             for event in batch {
                 state.record(event);
             }
@@ -219,32 +226,54 @@ impl InputWriter {
     ///
     /// The buffer lives as long as the component holding it: a world that drops
     /// it stops being fed on the next push.
+    ///
+    /// The buffer must live beside an [`InputState`] on the same entity, which
+    /// each [`refresh`](InputEvents::refresh) folds the batch into: spawn the
+    /// two together with [`InputFeed`], as
+    /// `bundle![writer.subscribe(), InputState::default()]` does. A buffer
+    /// alone compiles, but nothing ever folds its batch out, so every event it
+    /// is fed piles up unread.
     pub fn subscribe(&self) -> InputEvents {
         InputEvents {
             events: self.0.subscribe(),
-            state: Arc::new(RwLock::new(InputState::default())),
+            touch_baseline: Arc::default(),
             ticks: Arc::default(),
         }
     }
 }
 
-/// One world's input feed: the writer it is fed through, and the buffer that
-/// receives what the writer publishes.
+/// One world's input feed: the writer it is fed through, and the buffer and
+/// state that receive what the writer publishes.
 ///
-/// Spawning it gives a world both halves at once, so the caller keeps feeding
-/// through its own handle while the world's tick reads the events out of the
-/// buffer beside it. The buffer holds the events the world has not read yet,
-/// which is what lets a world that dispatches its own key behaviours subscribe
-/// to the same writer without sharing a list with anyone.
+/// Spawning it gives a world all three at once, so the caller keeps feeding
+/// through its own handle while the world's tick folds the events out of the
+/// buffer into the state beside it. The buffer holds the events the world has
+/// not read yet, which is what lets a world that dispatches its own key
+/// behaviours subscribe to the same writer without sharing a list with anyone.
 pub struct InputFeed(pub InputWriter);
 
 impl Bundle for InputFeed {
     fn into_bundle(self) -> DynamicBundle {
-        bundle![self.0.clone(), self.0.subscribe()]
+        bundle![self.0.clone(), self.0.subscribe(), InputState::default()]
     }
 }
 
-/// Start `world`'s input tick: everything queued becomes the tick's batch.
+/// One world's input buffer and the state beside it: what subscribing to a
+/// writer hands out, in the pairing the world's tick requires.
+///
+/// A buffer without its state beside it is never consumed by the tick, so
+/// this is the one way to spawn a subscription that cannot come out of pair:
+/// the state is created on the same entity, at the same moment.
+pub struct InputPair(pub InputEvents);
+
+impl Bundle for InputPair {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.0, InputState::default()]
+    }
+}
+
+/// Start `world`'s input tick: everything queued becomes the tick's batch, and
+/// the batch folds into the [`InputState`] on each buffer's entity.
 ///
 /// [`dispatch_input`] calls this, so a world that dispatches needs nothing
 /// else. A world that reads input without dispatching — one where a
@@ -253,6 +282,11 @@ impl Bundle for InputFeed {
 ///
 /// Calling it in the same tick as [`dispatch_input`] is harmless but wasteful:
 /// the refresh has already happened, and the dispatch finds nothing new.
+///
+/// A buffer whose entity holds no [`InputState`] is skipped with a warning:
+/// spawn the two together, as [`InputFeed`] and [`subscribe_input`] do,
+/// because a buffer alone has nothing to fold its batch into and every event
+/// it is fed piles up unread.
 ///
 /// Returns whether the world has an input buffer at all.
 pub fn refresh_input(world: &World) -> bool {
@@ -264,8 +298,21 @@ pub fn refresh_input(world: &World) -> bool {
         .collect();
     let present = !entities.is_empty();
     for entity in entities {
-        if let Ok(mut buffer) = world.root_scope().try_query_one::<&InputEvents>(entity) {
-            buffer.get().refresh();
+        if let Ok(mut row) = world
+            .root_scope()
+            .try_query_one::<(&InputEvents, &mut InputState)>(entity)
+        {
+            let (buffer, state) = row.get();
+            buffer.refresh(state);
+        } else {
+            // A buffer that was spawned without the state it folds into. The
+            // archetype is fixed once the entity exists, so there is nothing
+            // to repair here; warn so the pile-up is traced to its cause.
+            log::warn!(
+                "an input buffer on {entity:?} has no InputState beside it, so \
+                its events are never consumed; spawn InputEvents and InputState \
+                together, as InputFeed does"
+            );
         }
     }
     present
@@ -305,7 +352,9 @@ pub fn subscribe_input(world: &mut World) -> bool {
     // The buffer belongs to the shared subtree: a source reads the world's
     // input from its own scope, and a sibling's component is out of reach.
     let shared = world.shared();
-    world.scope_mut(shared).spawn(bundle![events]);
+    world
+        .scope_mut(shared)
+        .spawn(bundle![events, InputState::default()]);
     true
 }
 
@@ -423,7 +472,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 ///
 /// The events are taken out of the queue before any callback runs, so a
 /// callback may freely read and write the [`InputState`] — a common need,
-/// since the resource is where "is Ctrl still held?" lives — and may even
+/// since the state is where "is Ctrl still held?" lives — and may even
 /// feed input, which lands in the next dispatch.
 ///
 /// Two things stay off limits, both consequences of `unlit_ecs` borrowing a

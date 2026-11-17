@@ -497,11 +497,10 @@ fn single_entity<T: 'static>(
     found.ok_or_else(|| format!("the world has no {what}"))
 }
 
-/// A world's input for this tick, encoded: its state and the events that built
-/// it.
+/// A world's input state, encoded: how its devices are.
 pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
-    let entity = single_entity::<InputEvents>(world, entity, "input buffer")?;
-    let text = reflect::encode_json(&world.root_scope(), entity, "InputEvents")
+    let entity = single_entity::<InputState>(world, entity, "input state")?;
+    let text = reflect::encode_json(&world.root_scope(), entity, "InputState")
         .map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
@@ -651,9 +650,9 @@ pub fn create_mesh(
     })
 }
 
-/// Free the mesh an entity draws and despawn the entity. The mesh itself is
-/// collected by the source's next maintain, which reclaims its pooled ranges
-/// and metadata slot once no handle names it.
+/// Free the mesh an entity draws and despawn the entity. Dropping the last
+/// handle posts the mesh's pooled ranges and metadata slot to the source's
+/// inbox, and the source's next maintain hands them back.
 pub fn remove_mesh(world: &mut World, entity: Entity) -> Result<Value, String> {
     // A row without a mesh is a caller error: the tool frees meshes.
     world

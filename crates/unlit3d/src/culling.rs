@@ -99,6 +99,7 @@ mod tests {
     use unlit_wgpu::specialize::VertexLayout;
 
     use crate::components::MeshParts;
+    use crate::mesh_source::MeshStorage;
 
     fn test_perspective() -> glam::Mat4 {
         // The renderer's own projection: reverse-z, infinite far.
@@ -145,7 +146,7 @@ mod tests {
                 vertex_buffers: ArrayVec::new(),
                 index_buffer: None,
                 bind_group_id: None,
-                metadata_index: 0,
+                storage: MeshStorage::default(),
             }),
             vertex_layout: VertexLayout::default(),
             count: 0,
@@ -191,7 +192,7 @@ mod tests {
                 vertex_buffers: ArrayVec::new(),
                 index_buffer: None,
                 bind_group_id: None,
-                metadata_index: 0,
+                storage: MeshStorage::default(),
             }),
             vertex_layout: VertexLayout::default(),
             count: 0,

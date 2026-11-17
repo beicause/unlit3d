@@ -98,7 +98,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 | 工具           | 作用                           | 关键参数             |
 | -------------- | ------------------------------ | -------------------- |
-| `input_state`   | 读输入状态（含本帧到达的事件） | `entity`             |
+| `input_state`   | 读输入状态（设备此刻的状态，不含事件） | `entity`             |
 | `send_input`    | 注入事件并投递                 | `events`、`entity`   |
 
 `send_input` 走窗口同一条 `dispatch_input`，行为组件看到的事件与真人操作一致。
