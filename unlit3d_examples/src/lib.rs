@@ -284,9 +284,9 @@ use self::frame::{
     advance_scene, dispatch_input_on_frame, ensure_presented, flush_scene, restate_viewport,
     run_scene_advance, serve_scene_controls, step_sequence,
 };
-use self::host::{handle_user_event, request_gpu, resize_scene};
 #[cfg(target_os = "android")]
 use self::host::release_on_suspend;
+use self::host::{handle_user_event, request_gpu, resize_scene};
 use self::present::{present, presenter_entity, switch_scene};
 use self::scene::tick;
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
