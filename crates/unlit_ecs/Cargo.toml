@@ -38,12 +38,20 @@ thiserror.workspace = true
 # build entirely, even under --all-features.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-channel = { workspace = true, optional = true }
+hyper = { workspace = true, features = ["http1", "server"], optional = true }
+hyper-util = { workspace = true, optional = true }
 rmcp = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync"], optional = true }
 uuid = { workspace = true, optional = true }
+
+# The tests drive the server with rmcp's own streamable-HTTP client. Dev
+# dependencies are invisible to a crate that depends on this one, so the
+# client stack stays out of a server-only build.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 
 [features]
 ## The [mcp](crate::mcp) module: the Model Context Protocol server, its transport
@@ -59,6 +67,15 @@ mcp = [
   "dep:tokio",
   "dep:uuid",
   "reflect",
+]
+## The [mcp](crate::mcp) module served over HTTP/1.x: the same protocol stack as
+## `mcp`, plus the hyper server loop that answers requests on a TCP port. Implies
+## `mcp`. Not built on wasm.
+mcp-http = [
+  "dep:hyper",
+  "dep:hyper-util",
+  "mcp",
+  "rmcp/transport-streamable-http-server",
 ]
 ## Derive [facet](https://docs.rs/facet) for the [`info`](crate::WorldInfo)
 ## structures and provide the [`reflect`](crate::reflect) registry, whose

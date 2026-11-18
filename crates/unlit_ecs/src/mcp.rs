@@ -14,6 +14,9 @@
 //! directly rather than through this protocol.
 
 pub mod host;
+#[cfg(feature = "mcp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mcp-http")))]
+pub mod http;
 mod server;
 mod tools;
 
@@ -25,6 +28,8 @@ pub use host::{
     Despawned, EncodedAudio, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity,
     WorldEntry, WorldRef, extension_of, saved_name, to_value, with_extension, write_file,
 };
+#[cfg(feature = "mcp-http")]
+pub use http::{McpHttpServer, serve_http_with};
 pub use inventory;
 pub use server::{
     CommandSender, ContextArg, CreateMesh, EntityArg, GetComponent, HandleArg, InputArg,

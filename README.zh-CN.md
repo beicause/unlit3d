@@ -66,7 +66,7 @@ ECS 层。内置 **Lambert** 管线——由平行光、点光、聚光与多边
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 lit 管线、egui 后端。不认识 ECS。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、egui 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
-| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 或 HTTP 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_suite.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.zh-CN.md) | `unlit3d_examples` 所绘制的模型，随身带在二进制里：`include_bytes!` 写在 `#[inline(never)]` 的函数体内，这些字节因此不进任何下游的元数据。 |

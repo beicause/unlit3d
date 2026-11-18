@@ -485,8 +485,10 @@ assert!(scope.query_one::<Has<f32>>(entity).get());
 ## The MCP server
 
 The `mcp` feature (off by default, native only) turns the crate into a
-[Model Context Protocol](https://modelcontextprotocol.io) server that a client
-drives over stdio. It lives here because the protocol's transport side has to
+[Model Context Protocol](https://modelcontextprotocol.io) server. The `mcp-http`
+feature adds a second transport beside stdio: the same server on a TCP port,
+spoken by any streamable-HTTP client, rmcp's own reqwest client among them. The
+server lives here because the protocol's transport side has to
 name a [`World`] and hand it work: `McpCommand` carries a job, and the thread
 that owns the world runs it. Nothing in the bridge borrows across that
 boundary, and no other crate owns a type the transport needs.

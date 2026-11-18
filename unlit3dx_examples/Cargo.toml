@@ -74,8 +74,8 @@ unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1
 schemars.workspace = true
 serde.workspace = true
 # The library's `mcp` feature wraps the Model Context Protocol server the
-# demo serves with --mcp.
-unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["app", "audio", "mcp", "physics", "render", "synth"] }
+# demo serves with --mcp and --mcp-http.
+unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["app", "audio", "mcp", "mcp-http", "physics", "render", "synth"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dev-dependencies]
 # The native driver of the input sequence decodes the PNG bytes an MCP

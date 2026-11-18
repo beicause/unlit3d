@@ -378,8 +378,10 @@ assert!(scope.query_one::<Has<f32>>(entity).get());
 
 ## MCP 服务器
 
-`mcp` feature（默认关闭，仅原生目标）把本 crate 变成一个经 stdio 由客户端驱动的
-[模型上下文协议](https://modelcontextprotocol.io) 服务器。它放在这里，是因为协议的
+`mcp` feature（默认关闭，仅原生目标）把本 crate 变成一个
+[模型上下文协议](https://modelcontextprotocol.io) 服务器。`mcp-http` feature 在 stdio
+之外增加第二个传输：同一个服务器经由 TCP 端口对外服务，任何 streamable-HTTP
+客户端都能连上，rmcp 自带的 reqwest 客户端就是其中之一。服务器放在这里，是因为协议的
 传输侧必须指名一个 `World` 并把工作交给它：`crate::mcp::McpCommand` 携带着一个 job，由拥有该
 world 的线程运行。桥接层不在这个边界上借用任何东西，也没有别的 crate 拥有传输所需的类型。
 

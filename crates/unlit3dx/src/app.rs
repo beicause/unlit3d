@@ -20,7 +20,8 @@
 //! - `headless` steps the same scene without a window and reads back the
 //!   frames and the mix it captured.
 //! - `interactive` steps it one frame at a time, driven by its caller.
-//! - `serve` runs `interactive` on a host and answers MCP tools over stdio.
+//! - `serve` runs `interactive` on a host and answers MCP tools over the
+//!   transports it is given: stdio, streamable HTTP, or both.
 //!
 //! The worlds the scene hands back are driven by `Stepping`, which owns the
 //! step remainders: gameplay ticks once per frame, physics and audio step as
@@ -74,7 +75,7 @@ pub use windowed::{WindowOptions, windowed};
     not(target_os = "android")
 ))]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
-pub use serve::serve;
+pub use serve::{Transports, serve};
 
 /// The rate a scene's physics world runs at when its application says
 /// nothing else, in hertz.
@@ -188,9 +189,11 @@ fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions,
 /// `--help` describes both — and then:
 ///
 /// - `--headless` captures frames and a mix without a window, writing them
-///   under `--out`; with `--mcp` it serves the interactive host instead.
+///   under `--out`; with `--mcp` or `--mcp-http` it serves the interactive
+///   host instead.
 /// - otherwise it opens a window, stepped inline unless the platform
-///   drives the worlds on threads of their own.
+///   drives the worlds on threads of their own; `--mcp-http` serves the
+///   same scene to network clients while the window stays up.
 ///
 /// The windowed path is the one a browser and an Android activity take:
 /// neither has a headless run.
@@ -225,12 +228,27 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
     }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     let _ = &options;
+    // The same refusal the headless path serves: a build without the
+    // mcp-http feature cannot serve the address, so it says so instead of
+    // silently running with the switch ignored.
+    if options.mcp_http_run() && !cfg!(feature = "mcp-http") {
+        log::error!("the HTTP transport needs the mcp-http feature");
+        return std::process::ExitCode::FAILURE;
+    }
+    let mcp_http_addr = match options.mcp_http_bind() {
+        Ok(addr) => addr,
+        Err(message) => {
+            log::error!("{message}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let event_loop = EventLoop::<()>::with_user_event()
         .build()
         .expect("the platform builds an event loop");
     let window = WindowOptions {
         stepped: options.stepped || cfg!(target_arch = "wasm32"),
         mcp: options.mcp,
+        mcp_http_addr,
         ..WindowOptions::for_app::<A>()
     };
     windowed(app, window, event_loop);
@@ -271,9 +289,25 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     };
     let device = RenderDevice::from(gpu);
     #[cfg(feature = "mcp")]
-    if options.mcp {
-        serve(app, device);
-        return std::process::ExitCode::SUCCESS;
+    if options.mcp || options.mcp_http_run() {
+        let http = match options.mcp_http_bind() {
+            Ok(addr) => addr,
+            Err(message) => {
+                log::error!("{message}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        let transports = Transports {
+            stdio: options.mcp,
+            http,
+        };
+        match serve(app, device, transports) {
+            Ok(_) => return std::process::ExitCode::SUCCESS,
+            Err(message) => {
+                log::error!("the MCP server did not start: {message}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
     }
     let config = HeadlessConfig {
         size: A::SIZE,

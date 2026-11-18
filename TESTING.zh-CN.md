@@ -84,7 +84,7 @@ WebGPU 画布读出来全是透明」。
 
 | Crate | 测试覆盖的内容 |
 |-------|----------------|
-| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令，以及 MCP 服务器的 ECS 工具。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令，以及 MCP 服务器的 ECS 工具，含经 HTTP（真实客户端）的端到端 MCP 运行；经 stdio 的端到端运行在 `unlit3d`。 |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素，其中有一个端到端 MCP 测试，用一对流把 world 服务出去并用 JSON-RPC 与它对话。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、场景切换与固定步长播放时钟（`src/tests.rs`）、窗口浮层（`src/overlay/tests.rs`），以及 `tests/gpu_suite.rs` 的渲染快照；`tests/selector_position.rs` 覆盖窗口外壳跨场景切换时保留拖拽位置的面板。 |

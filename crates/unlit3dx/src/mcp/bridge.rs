@@ -1,4 +1,5 @@
-//! The MCP stdio transport, wired straight into a world.
+//! The MCP transports, wired straight into a world: stdio, and streamable
+//! HTTP on a TCP port.
 //!
 //! Serving the protocol blocks and runs on a thread of its own; the
 //! commands it receives are posted through a channel and drained by an
@@ -6,6 +7,9 @@
 //! ever touched on its own thread.
 
 use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "mcp-http")]
+use std::net::SocketAddr;
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldRef};
@@ -62,6 +66,39 @@ pub fn serve_mcp(world: &mut World) {
         }
         Err(error) => log::error!("the MCP transport thread failed to start: {error}"),
     }
+}
+
+/// Serve the MCP streamable-HTTP transport against `world` on `addr`.
+///
+/// The call returns once the port is bound, naming the address it was
+/// given — the caller that asked for port 0 learns the port here. The
+/// server runs on a thread of its own and lives as long as `world` does:
+/// the handle is a component of it, so a world that dies stops serving,
+/// and the inbox behaviour drains whatever arrives every turn of the
+/// event loop.
+///
+/// # Errors
+///
+/// Fails when the port cannot be bound, carrying the underlying message.
+#[cfg(feature = "mcp-http")]
+pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr, String> {
+    let (sender, receiver) = unbounded::<McpCommand>();
+    let sink = move |command| match sender.try_send(command) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("the MCP inbox is gone: {error}");
+            false
+        }
+    };
+    let server = unlit_ecs::mcp::serve_http_with(sink, addr).map_err(|error| error.to_string())?;
+    let bound = server.local_addr();
+    world.root_scope_mut().spawn(McpInbox {
+        receiver: Arc::new(receiver),
+    });
+    // The handle is the component that keeps the server alive: the world
+    // dropping it stops the transport.
+    world.root_scope_mut().spawn(bundle![server]);
+    Ok(bound)
 }
 
 /// The event-loop behaviour that runs the commands the transport posted.

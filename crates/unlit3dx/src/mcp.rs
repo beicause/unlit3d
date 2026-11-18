@@ -7,6 +7,8 @@
 
 mod bridge;
 
+#[cfg(feature = "mcp-http")]
+pub use bridge::serve_http_mcp;
 pub use bridge::{pump_mcp, serve_mcp};
 
 use unlit_ecs::mcp::serde_json::{self, Value};

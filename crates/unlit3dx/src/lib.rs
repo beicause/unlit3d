@@ -115,6 +115,12 @@ pub mod prelude {
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
     #[cfg(all(
+        feature = "mcp-http",
+        not(target_arch = "wasm32"),
+        not(target_os = "android")
+    ))]
+    pub use crate::mcp::serve_http_mcp;
+    #[cfg(all(
         feature = "mcp",
         not(target_arch = "wasm32"),
         not(target_os = "android")

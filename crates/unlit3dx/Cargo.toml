@@ -120,6 +120,14 @@ mcp = [
   "unlit3d/mcp",
   "unlit3d/winit",
 ]
+## The MCP streamable-HTTP server on a TCP port, driven from the host
+## world: the same protocol stack as `mcp` plus the HTTP transport, with
+## the run's `--mcp-http` switch serving the scene to network clients.
+## Not built on wasm or Android, where there is no host to serve from.
+mcp-http = [
+  "mcp",
+  "unlit_ecs/mcp-http",
+]
 ## The physics world on its own thread, backed by rapier.
 physics = ["dep:rapier3d"]
 ## The window-facing half: a GPU context and a presenter over a sub-world

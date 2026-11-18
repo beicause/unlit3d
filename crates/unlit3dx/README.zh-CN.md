@@ -268,8 +268,10 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
   的 egui 一节）。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的
   子 world，或自有一条线程的 world——通过
-  [模型上下文协议](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) 对外服务，
-  场景运行时即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
+  [模型上下文协议](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md)
+  经 stdio 对外服务；`mcp-http` feature 再加 `serve_http_mcp`：同一组 world
+  经一个 TCP 端口对外服务，网络客户端由此连进运行中的场景——窗口或无头循环
+  照常运行时，即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
   `WorldSender` 与一个 `WorldName`：前者让传输层能把命令投进一个它借不到的
   world，后者就是 `list_worlds` 报告的名字。录音工具——
   `start_audio_recording`、`stop_audio_recording`、`read_audio_recording`、
@@ -342,7 +344,7 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 应用实现 `App` trait——`spawn_scene` 建世界、`setup_render` 在 GPU 回调里建管线——
 再由 `windowed` / `headless` / `interactive` / `serve` 四个入口之一运行它：窗口、输入
 馈送、定步配速（`Stepping`）、离屏目标与 MCP 服务器的接线都在里面。运行自己的
-开关（`--mcp`、`--stepped`、`--headless --frames`、`--out`）与应用的
+开关（`--mcp`、`--mcp-http`、`--stepped`、`--headless --frames`、`--out`）与应用的
 `App::Args` 由同一个 clap 解析器读入，一份 `--help` 同时描述两者；解析好的
 参数以结构体交给 `App::configure`，未声明的名字会被拒绝。日志与捕获落盘
 （`frame_<index>.png` 加 `audio.flac`）也住在模块里——应用只需给出场景与它的音源，

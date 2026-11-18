@@ -105,6 +105,10 @@ glifo = { version = "0.5.0", default-features = false, features = ["std"] }
 gltf = { version = "1.4.1", default-features = false, features = ["extensions", "import", "names", "utils"] }
 half = { version = "2.7.1", default-features = false }
 hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
+# The MCP HTTP server drives HTTP/1.x connections with. hyper 1 moved its tokio
+# adapters out to hyper-util, so the two are pinned together.
+hyper = { version = "1.11.1", default-features = false }
+hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Components are registered by submitting an entry to a link-time table, so a
 # crate that defines its own components registers them without a call into

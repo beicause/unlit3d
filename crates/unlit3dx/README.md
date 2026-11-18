@@ -354,9 +354,11 @@ The bridges:
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
   over the
-  [Model Context Protocol](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md),
-  so a live scene can be inspected and screenshotted from a terminal while
-  it runs. Each spawn leaves a `WorldSender` and a `WorldName` on the proxy
+  [Model Context Protocol](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md)
+  over stdio, and the `mcp-http` feature adds `serve_http_mcp`: the same
+  world set on a TCP port, so a network client reaches a live scene —
+  inspected and screenshotted from a terminal while the window, or the
+  headless loop, stays up. Each spawn leaves a `WorldSender` and a `WorldName` on the proxy
   entity beside the proxy: the sender is what lets the transport post a
   command into a world it cannot borrow, and the name is what `list_worlds`
   reports. The crate registers recording tools — `start_audio_recording`,
@@ -458,7 +460,8 @@ the `App` trait — `spawn_scene` builds its worlds, `setup_render` builds its
 pipeline inside the GPU callback — and one of `windowed`, `headless`,
 `interactive` or `serve` runs it, wiring the window, the input feed, the
 stepped pacing (`Stepping`), the offscreen target and the MCP server. The
-run's own switches (`--mcp`, `--stepped`, `--headless --frames`, `--out`)
+run's own switches (`--mcp`, `--mcp-http`, `--stepped`, `--headless
+--frames`, `--out`)
 and the application's `App::Args` are read by one clap parser, so a single
 `--help` describes both; the parsed arguments reach `App::configure` as a
 structure, unknown names are refused. Logging and the capture's

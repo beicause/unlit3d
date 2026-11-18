@@ -7,6 +7,7 @@
 //! from the frame loop that draws them. What differs is who calls a tick
 //! and how it is paced; the scene is the same either way.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -49,6 +50,11 @@ pub struct WindowOptions {
     /// Serve the scene over the Model Context Protocol, drawing into an
     /// offscreen target so a client can read frames back.
     pub mcp: bool,
+    /// Serve the scene over MCP on a TCP port as well, so network clients
+    /// reach the host while the window stays up. The address is bound once
+    /// the GPU request resolves; port 0 leaves the port to the OS. Only a
+    /// build with the mcp-http feature serves it.
+    pub mcp_http_addr: Option<SocketAddr>,
     /// How the surface presents.
     pub surface: SurfaceOptions,
 }
@@ -73,6 +79,7 @@ impl Default for WindowOptions {
             render_capacity: RENDER_COMMAND_CAPACITY,
             stepped: cfg!(target_arch = "wasm32"),
             mcp: false,
+            mcp_http_addr: None,
             surface: SurfaceOptions::default(),
         }
     }
@@ -182,8 +189,11 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                         panel: Some(panel.clone()),
                     },
                 );
-                // Only an MCP-driven scene needs the offscreen target: it is what
-                // a screenshot reads back. A plain window draws into the swap chain.
+                // Only an MCP-driven scene needs the offscreen target: it is
+                // what a screenshot reads back, whichever transport serves
+                // the tools. A plain window draws into the swap chain.
+                let offscreen =
+                    mcp || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some());
                 let outcome = setup_presenter(
                     world,
                     render.entity,
@@ -191,7 +201,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                     setup.pass.entity,
                     gpu,
                     options.size,
-                    mcp,
+                    offscreen,
                     options.surface,
                 );
                 if let Err(error) = outcome {
@@ -206,6 +216,21 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                 ))]
                 if mcp {
                     crate::mcp::serve_mcp(world);
+                }
+                #[cfg(all(
+                    feature = "mcp-http",
+                    not(target_arch = "wasm32"),
+                    not(target_os = "android")
+                ))]
+                if let Some(addr) = options.mcp_http_addr {
+                    match crate::mcp::serve_http_mcp(world, addr) {
+                        Ok(bound) => {
+                            log::info!("the MCP HTTP server is listening on http://{bound}/");
+                        }
+                        Err(message) => {
+                            log::error!("the MCP HTTP server failed to start: {message}");
+                        }
+                    }
                 }
             }
         }),]);

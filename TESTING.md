@@ -102,7 +102,7 @@ without a window and a GL driver".
 
 | Crate | What its tests cover |
 |-------|----------------------|
-| [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour, deferred commands, and the MCP server's ECS tools. |
+| [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour, deferred commands, and the MCP server's ECS tools, including end-to-end MCP runs over HTTP with a real client; the stdio end-to-end run lives in `unlit3d`. |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
 | [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back, including an end-to-end MCP test that serves a world over a pair of streams and speaks JSON-RPC to it. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`), the scene switch and the fixed-step playback clock (`src/tests.rs`), and the window overlays (`src/overlay/tests.rs`). Its rendering output is snapshotted by `tests/gpu_suite.rs`, and `tests/selector_position.rs` covers the dragged panels the window shell keeps across a scene switch. |
