@@ -33,8 +33,6 @@ use unlit3d::winit::builtin::{
     DisplayHandle, ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, WinitProxy,
     request_redraw_while_foreground, window, winit_input_behaviour,
 };
-#[cfg(target_os = "android")]
-use unlit3d::winit::event::OnSuspended;
 use unlit3d::winit::event::{OnUserEvent, OnWindowEvent, WinitHost};
 use unlit3d::winit::presenter::SCENE_PASS_ORDER;
 use winit::event::WindowEvent;

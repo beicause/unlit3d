@@ -154,9 +154,9 @@ pub(crate) fn resize_scene(app: Entity) -> OnWindowEvent {
 
 /// Drop the swap chain the platform is about to invalidate.
 #[cfg(target_os = "android")]
-pub(crate) fn release_on_suspend(app: Entity) -> OnSuspended {
-    OnSuspended::new(move |world, _entity, ()| {
-        release(world, app);
+pub(crate) fn release_on_suspend(app: Entity) -> unlit3d::winit::event::OnSuspended {
+    unlit3d::winit::event::OnSuspended::new(move |world, _entity, ()| {
+        present::release(world, app);
     })
 }
 

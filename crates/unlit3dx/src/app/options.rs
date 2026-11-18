@@ -57,8 +57,8 @@ mod tests {
 
     #[test]
     fn the_switches_parse() {
-        let options =
-            RunOptions::try_parse_from(["unlit3dx", "--mcp", "--stepped"]).expect("the switches parse");
+        let options = RunOptions::try_parse_from(["unlit3dx", "--mcp", "--stepped"])
+            .expect("the switches parse");
         assert!(options.mcp);
         assert!(options.stepped);
         assert!(!options.headless_run());
@@ -66,16 +66,19 @@ mod tests {
 
     #[test]
     fn a_capture_option_asks_for_the_headless_run() {
-        let options = RunOptions::try_parse_from(["unlit3dx", "--frames", "12"]).expect("the value parses");
+        let options =
+            RunOptions::try_parse_from(["unlit3dx", "--frames", "12"]).expect("the value parses");
         assert!(options.headless_run());
         assert_eq!(options.frames, Some(12));
-        let options = RunOptions::try_parse_from(["unlit3dx", "--out=/tmp/capture"]).expect("the value parses");
+        let options = RunOptions::try_parse_from(["unlit3dx", "--out=/tmp/capture"])
+            .expect("the value parses");
         assert!(options.headless_run());
         assert_eq!(
             options.out.as_deref(),
             Some(std::path::Path::new("/tmp/capture"))
         );
-        let options = RunOptions::try_parse_from(["unlit3dx", "--headless"]).expect("the switch parses");
+        let options =
+            RunOptions::try_parse_from(["unlit3dx", "--headless"]).expect("the switch parses");
         assert!(options.headless_run());
     }
 
