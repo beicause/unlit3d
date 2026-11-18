@@ -1,6 +1,6 @@
 //! The storage a mesh carries so the source can reclaim what it shared.
 
-use super::*;
+use super::{Allocation, Rc, RefCell};
 
 /// The shared-storage holdings of one mesh, posted to the source when the
 /// mesh dies.
@@ -20,16 +20,19 @@ pub(crate) struct StorageTicket {
     pub(super) metadata_index: u32,
 }
 
-/// The shared-storage holdings a mesh carries inside its [`MeshParts`].
+/// The shared-storage holdings a mesh carries inside its
+/// [`MeshParts`](crate::components::MeshParts).
 ///
-/// Dropping the last [`GpuMesh`] handle drops this, and the drop posts the
+/// Dropping the last [`GpuMesh`](crate::components::GpuMesh) handle drops this,
+/// and the drop posts the
 /// mesh's ticket to the inbox it shares with the source: the mesh
 /// cannot release the ranges itself, because the pools they came from are
 /// reached only through the world a drop holds no borrow of. The source's
 /// next maintain drains the inbox and hands the ranges back, so a freed
 /// metadata slot is reused by what the next frame allocates.
 ///
-/// A mesh is shared by cloning its [`GpuMesh`], which shares the parts; the
+/// A mesh is shared by cloning its [`GpuMesh`](crate::components::GpuMesh), which
+/// shares the parts; the
 /// storage is neither cloned nor handed out, so one mesh's death posts
 /// exactly one ticket.
 ///

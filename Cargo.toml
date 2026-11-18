@@ -180,6 +180,13 @@ allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
 print_stderr = "warn"
 print_stdout = "warn"
+# A glob import hides which names a file depends on, so a rename or a new
+# sibling has to be traced through every glob rather than through the one
+# import that names it. Doc comments that teach the prelude still write
+# `use unlit3d::prelude::*`, and a unit test still pulls its own module in
+# wholesale: the lint exempts both, a prelude by its last path segment and a
+# `cfg(test)` module's `super` import by the module it sits in.
+wildcard_imports = "deny"
 
 [workspace.lints.rust]
 missing_docs = "deny"

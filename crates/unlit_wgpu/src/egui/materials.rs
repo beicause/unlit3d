@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, EguiIntegration, MaterialKey, Rebuild,
+    ResHandle, Resource, ResourceGraph, Source, TEXTURE_FORMAT, TextureExt, TextureKey,
+    TextureSlot, address_mode, texture_bytes, texture_filter,
+};
 
 impl EguiIntegration {
     /// The material bind group for (`id`, `options`), if it exists.

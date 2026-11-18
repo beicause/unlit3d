@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, EdgeError, Node, NodeId, NodeInfo, Rebuild, ResHandle, ResId, Resource, ResourceGraph,
+    ResourceGraphInfo, ResourceInfo, ResourceKind, ResourceKindCount, Weak,
+};
 
 impl ResourceGraph {
     /// Create an empty graph.
@@ -110,7 +113,8 @@ impl ResourceGraph {
     ///
     /// The kind of the returned id is the resource's own:
     /// `graph.insert(buffer, None)` yields a buffer id, and
-    /// `insert(Virtual, None)` a [virtual](Virtual) one. The node is added at
+    /// `insert(Virtual, None)` a
+    /// [virtual](crate::resources::Virtual) one. The node is added at
     /// once; declare what it was built from with [`Self::add_dependency`].
     ///
     /// Pass a [`Rebuild`] recipe for a derived resource — a bind group, say —

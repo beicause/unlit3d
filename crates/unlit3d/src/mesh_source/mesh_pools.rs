@@ -1,6 +1,8 @@
 //! The pools a pooled mesh shares with every other pooled mesh.
 
-use super::*;
+use super::{
+    BufferPool, HashMap, ResHandle, ResourceGraph, VertexBufferLayoutDesc, VertexStreamPool,
+};
 
 /// The vertex and index pools every mesh uploaded through
 /// [`MeshSource::allocate_pooled_mesh`](crate::mesh_source::MeshSource::allocate_pooled_mesh)
@@ -13,9 +15,11 @@ pub(crate) struct MeshPools {
     /// The pool every pooled mesh keeps its indices in, as one large buffer
     /// shared by every indexed mesh.
     ///
-    /// A mesh names it through [`MeshParts::index_buffer`], which is why the
-    /// buffer is a node in the resource graph and has to be replaced there when
-    /// the pool grows; see [`MeshSource::sync_pool_node`].
+    /// A mesh names it through
+    /// [`MeshParts::index_buffer`](crate::components::MeshParts::index_buffer), which
+    /// is why the buffer is a node in the resource graph and has to be replaced
+    /// there when the pool grows; see
+    /// [`MeshSource::sync_pool_node`](crate::mesh_source::MeshSource::sync_pool_node).
     pub index_pool: BufferPool,
     /// The graph node of [`Self::index_pool`]'s buffer.
     pub index_pool_id: ResHandle<wgpu::Buffer>,

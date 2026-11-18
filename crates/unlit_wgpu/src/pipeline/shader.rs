@@ -1,4 +1,4 @@
-use super::*;
+use super::Arc;
 
 /// A caller's own entry shader, composed in place of a built-in one.
 ///

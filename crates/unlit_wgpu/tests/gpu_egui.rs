@@ -4,7 +4,7 @@
 //! that come back, so a broken projection, a wrong blend or a missing texture
 //! shows up as a wrong frame rather than as a passing unit test.
 
-use crate::common::*;
+use crate::common::{Ctx, Frame, assert_image_snapshot, rgb};
 use unlit_wgpu::egui::{
     EguiIntegration, ScreenDescriptor, egui_variant, screen_view, screen_viewport,
 };

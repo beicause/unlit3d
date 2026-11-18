@@ -6,7 +6,10 @@
 //! The snapshot tests additionally compare frames against stored references
 //! with the SSIMULACRA2 perceptual metric.
 
-use crate::common::*;
+use crate::common::{
+    Ctx, Frame, assert_image_snapshot, assert_image_snapshot_with_tolerance, bg_entry,
+    count_pixels_off_background, rgb, srgb_to_linear_u8,
+};
 use unlit_wgpu::globals::{Camera, Globals, View};
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, SecondaryFlags,
@@ -95,7 +98,26 @@ mod readback;
 mod scene;
 mod snapshots;
 
-use self::{graph::*, readback::*, scene::*, snapshots::*};
+use self::{
+    graph::{
+        a_color_only_target_draws_a_cube, a_loaded_color_attachment_keeps_its_contents,
+        resource_graph_rebuilds_a_dependent_after_a_resource_change,
+    },
+    readback::{
+        a_readback_handles_a_row_that_is_not_copy_aligned,
+        the_readback_module_returns_a_buffer_slice,
+        the_readback_module_returns_a_texture_as_tight_rows,
+    },
+    scene::{
+        base_color_reaches_the_frame, depth_ordering_hides_the_far_instance,
+        msaa_produces_more_partial_coverage_than_no_msaa, renders_a_cube_over_the_clear_color,
+    },
+    snapshots::{
+        a_caller_module_replaces_the_built_in_stages, instanced_cubes_match_snapshot,
+        lit_cube_matches_snapshot, position_less_variant_draws_points_at_instance_origins,
+        textured_cube_matches_snapshot,
+    },
+};
 
 // This file's share of the suite's registry: the suite root concatenates
 // it with its siblings', and `gpu_test_main!` there runs the result under

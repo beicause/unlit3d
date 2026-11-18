@@ -1,7 +1,12 @@
 //! The lights a frame draws with: the clustered arrays they are read through
 //! and the uniforms that describe the clustering.
 
-use super::*;
+use super::{
+    Array, ArrayHandle, CELL_WORDS, Camera, ClusterConfig, ClusterUniform, DirectionalGpu,
+    IntoBytes, LightClusters, LightGpu, LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight,
+    RenderContext, ResHandle, ResourceGraph, Scope, StagingBuffer, grow_array_to_fit,
+    is_perspective,
+};
 
 /// The frame's lights, the cluster assignment they are read through and the two
 /// uniforms that describe both.

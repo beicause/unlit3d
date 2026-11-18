@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CAMERA_BINDING, CLUSTER_BINDING, FRAME_BINDING, JOINTS_BINDING, LIGHT_CELLS_BINDING,
+    LIGHT_VERTICES_BINDING, LIGHTING_BINDING, LIGHTS_BINDING, LitVariant, MESH_METADATA_BINDING,
+    MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, VIEW_BINDING,
+};
 
 /// Which of a source's global buffers a pipeline reads.
 ///
@@ -229,7 +233,8 @@ pub struct LitBindGroupLayouts {
 /// The built-in lit pipeline: a compiled [wgpu::RenderPipeline] together
 /// with the [`LitVariant`] it was built from.
 ///
-/// [`LitVariant`] is its own [`PipelineVariant`] and [`PipelineDescriptor`],
+/// [`LitVariant`] is its own [`PipelineVariant`](crate::specialize::PipelineVariant) and
+/// [`PipelineDescriptor`](crate::specialize::PipelineDescriptor),
 /// so the built-in shader compiles through the same cache a caller's own
 /// variant does, and the layouts it declares are derived from the variant
 /// rather than stored beside the pipeline.

@@ -4,7 +4,7 @@
 //! Multi-frame snapshots of the same frames are verified by the `skinned`
 //! scene in `unlit3d_examples`.
 
-use crate::common::*;
+use crate::common::{Ctx, HEIGHT, TestGpu, WIDTH, camera_looking_at, default_options};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

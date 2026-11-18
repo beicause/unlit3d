@@ -4,7 +4,9 @@
 //! frames offscreen, and inspects the returned pixels.  Snapshot tests compare
 //! against stored WebP references with the SSIMULACRA2 perceptual metric.
 
-use crate::common::*;
+use crate::common::{
+    CLEAR, Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view, count_pixels_off_background,
+};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

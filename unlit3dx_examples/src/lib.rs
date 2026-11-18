@@ -52,7 +52,9 @@ use argh::FromArgs;
 use std::process::ExitCode;
 use unlit_ecs::bundle;
 
-use crate::scene::*;
+use crate::scene::{
+    PanelSlots, RENDER_COMMAND_CAPACITY, WINDOW_SIZE, setup_render_world, spawn_windowed_scene,
+};
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use image::ImageEncoder;
 use unlit3d::input::winit::WinitInput;

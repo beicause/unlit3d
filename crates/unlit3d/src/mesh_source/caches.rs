@@ -4,7 +4,9 @@
 //! refills them instead of allocating, so the frame reaches the GPU without
 //! touching the allocator.
 
-use super::*;
+use super::{
+    DrawHandlesKey, EntryHandles, HashMap, RenderPipelineHandles, VisibleEntry, VisibleMesh,
+};
 
 /// The allocations one frame of the mesh path reuses.
 pub(crate) struct FrameCaches {
@@ -13,7 +15,7 @@ pub(crate) struct FrameCaches {
     /// Reused Vec for visible-entity collection and per-frame sorting.
     pub visible_cache: Vec<VisibleEntry>,
     /// Reused Vec of the instance-stream binding of each registered family,
-    /// indexed by [FamilyId].
+    /// indexed by [FamilyId](crate::scene::FamilyId).
     pub family_instance_cache: Vec<Option<(u32, wgpu::Buffer)>>,
     /// Reused Vec for cloned pipeline handles while the scene is built.
     pub pipeline_handle_cache: Vec<RenderPipelineHandles>,

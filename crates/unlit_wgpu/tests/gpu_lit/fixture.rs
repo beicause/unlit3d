@@ -1,6 +1,16 @@
 //! The scene every lit test renders: a cube, its texture and the variant that draws it.
 
-use super::*;
+use super::{
+    Array, BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, CLEAR,
+    COLOR_FORMAT, Camera, ChannelEncoding, Ctx, DrawEntry, DrawRange, FRAME_BINDING, Frame,
+    GLOBAL_GROUP, Globals, HEIGHT, Hashed, INSTANCE_SLOT, IntoBytes, LitOptions, LitVariant,
+    LitVertexChannels, MATERIAL_GROUP, MESH_METADATA_BINDING, MeshInstance, MeshMetadata,
+    PRIMARY_SLOT, PositionStreamChannels, RenderAttachments, SECONDARY_SLOT, Scene, SecondaryFlags,
+    ShaderCache, SpecializedLitPipeline, SpecializedPipeline, SurfaceKey, TextureExt, TextureView,
+    VIEW_BINDING, View, WIDTH, bg_entry, compress_indices, compress_positions,
+    create_render_target, default_depth_stencil_format, depth_clear, quantize_colors, rgb,
+    stencil_clear, supports_storage_buffers,
+};
 
 /// A uniformly scaled, Y-rotated instance at `translation`.
 pub(super) fn placed(

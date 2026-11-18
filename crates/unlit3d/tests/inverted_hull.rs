@@ -11,7 +11,7 @@
 //! here is the behaviour behind it, which is why every assertion is a count or
 //! a containment over classified pixels rather than a stored frame.
 
-use crate::common::*;
+use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_looking_at, sphere, stored};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

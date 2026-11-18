@@ -9,7 +9,7 @@
 use core::cell::Cell;
 use std::rc::Rc;
 
-use crate::common::*;
+use crate::common::{COLOR_FORMAT, Ctx, HEIGHT, TestGpu, WIDTH};
 use unlit_ecs::Scope;
 use unlit_ecs::bundle;
 use unlit_wgpu::scene::Scene;

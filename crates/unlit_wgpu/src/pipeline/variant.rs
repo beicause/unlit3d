@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    BUILT_IN_MODULE, BUILT_IN_SHADER_LABEL, BaseColorChannels, ChannelEncoding, FEATURE_COUNT,
+    FS_MAIN, GlobalBindings, Hashed, LitBindGroupLayouts, LitOptions, LitVertexChannels,
+    PipelineDescriptor, PipelineVariant, PositionStreamWriter, SecondaryFlags,
+    SecondaryStreamWriter, Shader, ShaderCache, ShaderRecipe, SurfaceKey, VS_MAIN,
+    VertexBufferLayoutDesc, global_bind_group_layout, location, supports_storage_buffers,
+};
 
 /// The complete identity of a built-in lit pipeline, and its blueprint.
 ///
@@ -251,7 +257,8 @@ impl LitVariant {
     /// The instance stream every built-in variant expects.
     ///
     /// One record layout serves every variant of a frame — the source uploads a
-    /// single `&[MeshInstance]` buffer and binds it at [`INSTANCE_SLOT`] for
+    /// single `&[MeshInstance]` buffer and binds it at
+    /// [`INSTANCE_SLOT`](crate::pipeline::INSTANCE_SLOT) for
     /// every draw — so the stride is always the whole [`MeshInstance`]. The
     /// declared attributes mirror the shader's own input declarations: the
     /// model matrix, the base color, the pose bases and the metadata index

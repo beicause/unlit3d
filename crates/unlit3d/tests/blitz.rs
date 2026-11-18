@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::common::*;
+use crate::common::{COLOR_FORMAT, Ctx, HEIGHT, TestGpu, WIDTH};
 use keyboard_types::{Code, Location};
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

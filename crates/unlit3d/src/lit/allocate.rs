@@ -1,6 +1,12 @@
 //! Mesh allocation and family registration for the built-in lit pipeline.
 
-use super::*;
+use super::{
+    ArrayVec, BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, ChannelEncoding, GpuMaterial,
+    GpuMesh, Hashed, LitFactory, LitInstance, LitMeshDesc, LitOptions, LitPipelineKey, LitVariant,
+    LitVertexChannels, MeshSource, PRIMARY_SLOT, PositionStreamChannels, ResHandle, SECONDARY_SLOT,
+    Scope, SecondaryFlags, SurfaceKey, TextureView, VertexAttributes, VertexBufferLayoutDesc,
+    compress_weights,
+};
 use crate::mesh_source::{PooledMeshDesc, PooledStream};
 
 /// The allocation below is a use of [`MeshSource::allocate_pooled_mesh`], the

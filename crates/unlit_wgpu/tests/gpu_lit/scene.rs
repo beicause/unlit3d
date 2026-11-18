@@ -1,7 +1,9 @@
 //! The tests that judge the frame as a whole: clear color, depth order and coverage.
 
-use super::fixture::*;
-use super::*;
+use super::fixture::{SceneFixture, fixture, placed, placed_cube, render, vertex_color_variant};
+use super::{
+    CLEAR, Ctx, HEIGHT, MeshInstance, WIDTH, count_pixels_off_background, srgb_to_linear_u8,
+};
 
 pub(super) async fn renders_a_cube_over_the_clear_color() {
     let ctx = Ctx::headless().await;

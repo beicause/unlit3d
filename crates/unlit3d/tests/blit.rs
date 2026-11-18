@@ -6,7 +6,7 @@
 //! texture registered in the graph reaches the rasterizer, and that pointing
 //! the source at another view swaps what the frame shows.
 
-use crate::common::*;
+use crate::common::{Ctx, HEIGHT, TestGpu, WIDTH};
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 

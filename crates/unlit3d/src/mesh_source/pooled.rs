@@ -12,7 +12,10 @@
 //! is the built-in family's use of it; a caller's own family allocates its
 //! meshes the same way.
 
-use super::*;
+use super::{
+    ArrayVec, GpuMesh, MAX_VERTEX_BUFFERS, MeshDesc, MeshMetadata, MeshSource, Rc, Scope,
+    VertexBufferLayoutDesc, VertexLayout, VertexStreamPool,
+};
 use crate::bounds::Aabb;
 use crate::mesh::MorphDeltas;
 use core::mem::size_of;

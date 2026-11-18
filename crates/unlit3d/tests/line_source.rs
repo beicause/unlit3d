@@ -10,7 +10,7 @@
 //! its width when the camera moves away, that a rounded end reaches further
 //! than a square one, and that what the segment passes behind hides it.
 
-use crate::common::*;
+use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_looking_at};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

@@ -8,7 +8,7 @@
 //! comparing one frame against the frame the same scene draws with the ambient
 //! term alone.
 
-use crate::common::*;
+use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_looking_at, default_options};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

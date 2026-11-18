@@ -1,7 +1,11 @@
 //! The snapshot comparisons: each stored baseline of the lit cube.
 
-use super::fixture::*;
-use super::*;
+use super::fixture::{fixture, placed, placed_cube, render, variant, vertex_color_variant};
+use super::{
+    CLEAR, CUBE_TOLERANCE, ChannelEncoding, Ctx, HEIGHT, LitOptions, LitVertexChannels,
+    MeshInstance, PositionStreamChannels, SecondaryFlags, Shader, WIDTH, assert_image_snapshot,
+    assert_image_snapshot_with_tolerance, snapshot,
+};
 
 pub(super) async fn lit_cube_matches_snapshot() {
     let ctx = Ctx::headless().await;

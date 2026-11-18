@@ -137,9 +137,12 @@ mod particles;
 mod shaders;
 mod sky;
 
-use self::particles::*;
-use self::shaders::*;
-use self::sky::*;
+use self::particles::{
+    ParticleFactory, ParticleInstances, ParticleKey, ParticleUniforms, Sprite, particle_cloud,
+    particle_material_layout,
+};
+use self::shaders::{PARTICLE_SHADER, SKY_SHADER};
+use self::sky::{Sky, SkyFactory, SkyKey, SkyUniforms, sky_bind_group_layout, upload_sky_cubemap};
 
 /// Build the scene's world content.
 fn build(

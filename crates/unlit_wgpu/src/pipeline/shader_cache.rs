@@ -1,4 +1,4 @@
-use super::*;
+use super::Shader;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
@@ -7,7 +7,8 @@ use smallvec::SmallVec;
 ///
 /// It is a capacity hint rather than a limit — [`ShaderRecipe`] grows past it
 /// when a caller composes with more — so the only thing it has to keep up
-/// with is the largest list a family returns: the [`LitVariant`] `features`
+/// with is the largest list a family returns: the [`LitVariant`](crate::pipeline::LitVariant)
+/// `features`
 /// list, which is declared with this same constant.
 pub const FEATURE_COUNT: usize = 18;
 
@@ -16,7 +17,7 @@ pub const FEATURE_COUNT: usize = 18;
 ///
 /// A pipeline's state — its blend, its cull mode, which surface it draws into —
 /// changes nothing about the source a stage is compiled from. So the pipeline
-/// key ([`PipelineVariant`]) is finer than
+/// key ([`PipelineVariant`](crate::specialize::PipelineVariant)) is finer than
 /// this one: many variants of one family compose the same module, and
 /// [`ShaderCache`] builds it once for all of them.
 ///

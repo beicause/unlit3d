@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    DrawEntry, DrawOrder, DrawRange, EguiFrame, EguiIntegration, GLOBAL_GROUP, GeometryCounts,
+    HashMap, INSTANCE_SLOT, MATERIAL_GROUP, POSITION_STRIDE, PRIMARY_SLOT, ResourceGraph,
+    SECONDARY_SLOT, SECONDARY_STRIDE, Scene, ScreenDescriptor, Source, SpecializedLitPipeline,
+    StagingBuffer, default_instance, measure, pack_geometry,
+};
 
 impl EguiIntegration {
     /// Build the overlay integration around a caller-supplied `pipeline`,

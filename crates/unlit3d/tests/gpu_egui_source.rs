@@ -9,7 +9,7 @@
 //! second. Nothing here reads the clock or the layout feedback, so a frame is
 //! reproducible.
 
-use crate::common::*;
+use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view, stored};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

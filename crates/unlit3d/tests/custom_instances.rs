@@ -7,7 +7,7 @@
 //! -- proving the per-instance stream is a general mechanism a caller drives,
 //! not a privilege of the built-in shader.
 
-use crate::common::*;
+use crate::common::{COLOR_FORMAT, Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view};
 use arrayvec::ArrayVec;
 use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{

@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ArrayVec, Camera, EntryHandles, Family, FamilyId, FrameUniforms, GpuMesh, InstanceContext,
+    InstanceData, MeshSource, PipelineVariant, RenderPipelineFactory, RenderPipelineHandles,
+    RenderPipelineKey, Scene, SceneFrame, Scope, SurfaceKey, TypeId, assemble_scene,
+    collect_and_sort_visible, register_concrete,
+};
 
 impl MeshSource {
     // -- pipeline registration -------------------------------------------------
@@ -140,7 +145,8 @@ impl MeshSource {
     ///
     /// A scene usually draws many entities per mesh, and every one of them
     /// names the same handles. The visible set therefore carries a
-    /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
+    /// [`DrawHandlesKey`](crate::scene::DrawHandlesKey) by value rather than the
+    /// handles themselves, and the
     /// expensive part — reading the mesh component and cloning its buffers out
     /// of the graph — happens once per distinct key instead of once per entity.
     pub(super) fn assemble_frame(

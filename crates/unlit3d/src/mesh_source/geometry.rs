@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    ArrayVec, BufferPool, GpuMaterial, GpuMesh, MAX_VERTEX_BUFFERS, MeshDesc, MeshMetadata,
+    MeshParts, MeshSource, MeshStorage, Rc, Rebuild, ResHandle, Resource, ResourceGraph, Scope,
+    StorageTicket, TextureExt, TextureView, VertexBufferLayoutDesc, VertexLayout, Virtual,
+};
 
 impl MeshSource {
     // -- mesh allocation -------------------------------------------------------

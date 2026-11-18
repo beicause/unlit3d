@@ -1,7 +1,9 @@
 //! What spawning a document's default scene puts in the frame: textures, hierarchy, flat colour, and unloading.
 
-use super::documents::*;
-use super::*;
+use super::documents::{QuadDoc, camera, count_colour, quad_document, spawn_scene};
+use super::{
+    CLEAR, Ctx, HEIGHT, LitGltf, TestGpu, WIDTH, World, bundle, count_pixels_off_background,
+};
 
 /// A textured quad covers the frame in four colour quarters: the rows of
 /// the 4x4 PNG (red, green, blue, white) map one each.

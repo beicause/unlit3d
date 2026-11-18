@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BuildPresenter, Entity, InitialScene, McpEnabled, PanelRects, PresentationPath, Presenter,
+    PresenterEntity, RenderDevice, RenderWorld, SAMPLE_COUNT, Scene, SceneEntity, SurfaceOptions,
+    TargetConfig, World, gpu, scenes, window,
+};
 
 /// Bring the scene and its presentation path up, as far as the state allows.
 ///

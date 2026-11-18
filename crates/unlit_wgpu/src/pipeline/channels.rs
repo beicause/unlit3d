@@ -1,13 +1,16 @@
-use super::*;
+use super::{
+    ChannelEncoding, PRIMARY_SLOT, PositionStreamChannels, SECONDARY_SLOT, SecondaryFlags,
+    VertexBufferLayoutDesc, location,
+};
 
 /// The per-vertex channels the built-in shader variant reads.
 ///
-/// These are not part of [`LitOptions`]: they are a property of the geometry
+/// These are not part of [`LitOptions`](crate::pipeline::LitOptions): they are a property of the geometry
 /// rather than of anything a caller picks, so a pipeline reads them off the
 /// vertex buffers its draws are recorded with — every draw of a mesh carries
 /// the channels that mesh's buffers hold, so there is nothing to specialize on
 /// and nothing for a caller to get wrong. A family resolves them into
-/// [`LitVariant::channels`].
+/// [`LitVariant::channels`](crate::pipeline::LitVariant::channels).
 ///
 /// The two halves are [`crate::mesh`]'s own channel types, so the attributes a
 /// pipeline declares and the bytes a packed mesh writes come from one

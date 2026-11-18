@@ -1,6 +1,9 @@
 //! Folding the answers back in: what a ball waits for, and when it gives up.
 
-use super::*;
+use super::{
+    BALL_COLORS, Ball, BallPhase, Balls, Entity, Scene, SceneState, SendError, Settled,
+    ShowCandidate, Waiting, World, show, waiting, world_ended,
+};
 
 impl Balls {
     /// Fold the answers the other worlds sent since the last tick into the

@@ -1,6 +1,8 @@
 //! The glTF documents the tests render, built in memory as JSON plus a data-URI buffer.
 
-use super::*;
+use super::{
+    Camera, GltfNode, GltfResources, HEIGHT, LitGltf, TestGpu, WIDTH, World, camera_looking_at,
+};
 
 /// The buffer: 4 positions (f32), 4 uvs (f32), 6 indices (u16), the PNG.
 /// `quad_document` puts it in the doc as a data URI.

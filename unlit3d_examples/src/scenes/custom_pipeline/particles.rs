@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    Bundle, DrawContext, DynamicBundle, FamilyContext, GlobalBindings, GpuMaterial, GpuMesh,
+    GpuRenderPipeline, InstanceContext, InstanceData, InstanceStreamDesc, IntoBytes,
+    PARTICLE_COUNT, PARTICLE_INSTANCE_SLOT, PARTICLE_TINTS, PipelineVariant,
+    RegisteredRenderPipeline, RenderPipelineDesc, RenderPipelineFactory, RenderPipelineKey,
+    SpecializedPipeline, SurfaceKey, SurfaceTarget, TEST_FORMAT, bundle, global_bind_group_layout,
+    supports_storage_buffers,
+};
 
 /// The particle family's uniform block, as the shader reads it.
 #[repr(C)]

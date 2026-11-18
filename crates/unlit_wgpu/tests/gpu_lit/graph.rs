@@ -1,7 +1,10 @@
 //! The tests that go through the resource graph and the depth-less target.
 
-use super::fixture::*;
-use super::*;
+use super::fixture::{fixture, placed_cube, render, render_target, vertex_color_variant};
+use super::{
+    CLEAR, COLOR_FORMAT, Ctx, Frame, HEIGHT, Scene, SurfaceKey, WIDTH, depth_clear, rgb,
+    stencil_clear,
+};
 
 /// A loaded color attachment keeps its previous contents: the second pass
 /// draws nothing, so the frame the first pass left is still there.

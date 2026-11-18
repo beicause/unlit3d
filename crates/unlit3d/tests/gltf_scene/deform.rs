@@ -1,7 +1,13 @@
 //! Deforming the drawn mesh: morph weights, skin poses and an animation clip.
 
-use super::documents::*;
-use super::*;
+use super::documents::{
+    animated_skinned_document, camera, count_colour, morphed_document, skinned_document,
+    spawn_scene,
+};
+use super::{
+    AnimationId, Ctx, HEIGHT, LitGltf, MorphBinding, MorphWeights, NodeId, SkinBinding, SkinPose,
+    TestGpu, WIDTH, World, bundle,
+};
 
 /// A morphed quad follows its weights: spawning binds the mesh to a weight
 /// entity holding the document's starting weights, and writing that entity

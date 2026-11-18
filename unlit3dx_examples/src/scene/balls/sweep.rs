@@ -1,6 +1,9 @@
 //! Cleaning up: despawning what left the view, and publishing the poses.
 
-use super::*;
+use super::{
+    Arc, Ball, BallInstance, BallPhase, Balls, Entity, STATUS_PERIOD, Scene, ScenePoses, SendError,
+    World, despawn_body, despawn_instances_job, live_poses, pose_job, sweep,
+};
 
 impl Balls {
     /// Despawn the bodies the tick has collected, in one job.

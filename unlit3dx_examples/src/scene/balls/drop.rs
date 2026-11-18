@@ -1,6 +1,10 @@
 //! Dropping a ball and putting them all away: the two commands the panel sends.
 
-use super::*;
+use super::{
+    BALL_COLORS, Ball, BallPhase, Balls, BodyDesc, Entity, SHAPE_KINDS, SPAWN_HEIGHT, SPAWN_SPREAD,
+    Scene, SceneState, Transform, Vec3, World, bundle, create_instance, look, shape_body,
+    spawn_body,
+};
 
 impl Balls {
     /// Spawn one ball and ask the render and physics worlds for its halves.

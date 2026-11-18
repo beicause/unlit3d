@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Advance, Bundle, DynamicBundle, Entity, EventLoopProxy, ExitRequest, FrameSkip, Scene,
+    WinitProxy, World, bundle, egui, scenes,
+};
 
 /// Events delivered to the winit loop from outside a `WindowEvent`.
 pub(crate) enum UserEvent {
@@ -60,7 +63,7 @@ pub(crate) struct SceneSwitch(pub(crate) Option<&'static scenes::SceneDef>);
 /// change, and which way it changes is read from the window itself at the
 /// moment the request is served. A panel runs while the world is borrowed to
 /// lay the overlay out, so it can only record the click; the frame loop owns the
-/// window the request is served on. See [`fullscreen`].
+/// window the request is served on. See [`fullscreen`](crate::fullscreen).
 pub(crate) struct FullscreenRequest(pub(crate) bool);
 
 /// Whether the window is fullscreen, written once per frame by the frame loop.
@@ -120,7 +123,8 @@ pub(crate) struct WorldName(pub(crate) &'static str);
 /// surface are ready.
 ///
 /// The path is its own entity rather than a component of the app because the
-/// library's frame behaviours find it by querying for a [Presenter]; dropping
+/// library's frame behaviours find it by querying for a
+/// [Presenter](unlit3d::winit::presenter::Presenter); dropping
 /// the entity is how a scene switch gives the path up.
 pub(crate) struct PresenterEntity(pub(crate) Option<Entity>);
 
@@ -205,7 +209,7 @@ impl PanelRects {
 /// drive a scene on this thread.
 ///
 /// False on the web and on Android, which have no stdio transport; see
-/// [`MCP_SUPPORTED`].
+/// [`MCP_SUPPORTED`](crate::MCP_SUPPORTED).
 pub(crate) struct McpEnabled(pub(crate) bool);
 
 /// The interval a scene's index advances at, in seconds, or `None` to advance

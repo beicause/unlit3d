@@ -3,8 +3,8 @@
 //! The panel lives in the gameplay world with the rest of the scene's objects,
 //! and the render world draws it. A [`EguiPanel`] can only be built where its
 //! egui context runs, so the gameplay world lays the panel out on its own tick
-//! and sends the frame to the render world, whose [`EguiSource`] holds and draws
-//! it.
+//! and sends the frame to the render world, whose
+//! [`EguiSource`](unlit3d::egui::EguiSource) holds and draws it.
 //!
 //! Everything the panel decides is decided here, beside the objects it acts
 //! on: the drop and clear buttons call the scene's own helpers, and the

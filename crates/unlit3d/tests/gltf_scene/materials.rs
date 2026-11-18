@@ -1,7 +1,12 @@
 //! How a material's alpha mode and sidedness reach the frame: blending, depth writes, masking and back faces.
 
-use super::documents::*;
-use super::*;
+use super::documents::{
+    QuadDoc, camera, count_colour, quad_document, reversed_document, spawn_scene,
+};
+use super::{
+    CLEAR, Ctx, Entity, HEIGHT, LitGltf, MeshId, PrimitiveId, TestGpu, WIDTH, World,
+    ZSortedDrawing, bundle, count_pixels_off_background,
+};
 
 /// A `doubleSided` material draws the geometry's back faces too: a quad wound
 /// away from the camera is culled when single-sided and covered when not.

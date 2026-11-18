@@ -11,7 +11,7 @@
 //! what "no content here" looks like in these frames; the cube is drawn in its
 //! own vertex colours, so any pixel that is not black is content.
 
-use crate::common::*;
+use crate::common::{Ctx, Frame, TestGpu, camera_view};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;

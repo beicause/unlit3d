@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    EguiSource, Entity, EntityAccessError, Frame, FramePass, FrameRate, FrameSkip,
+    FrameSourceOrder, FullscreenActive, FullscreenRequest, GPU_INFO_AREA, PanelRects, Pass,
+    RenderDevice, RenderLoadOps, Renderer, ResourceGraph, SCENE_PASS_ORDER, SELECTOR_WINDOW,
+    SceneControl, SceneFrame, SceneSwitch, Source, ViewportRect, World, bundle, color_clear,
+    dispatch_frame, dispatch_input_on_frame, egui, mount_api_docs, mount_frame_rate,
+    mount_fullscreen, mount_gpu_info, mount_selector, run_scene_advance, scenes, spawn_context,
+    step_sequence,
+};
 
 /// The scene's world and the frame loop that drives it.
 ///
@@ -223,8 +231,9 @@ impl Scene {
     /// Called on every resize and on the first frame that knows the window's
     /// size, so the projection and the size the scene's behaviour is handed
     /// follow the target together. The region is the scene's own state here and
-    /// reaches the pass that draws it from [`restate_viewport`], which is the one
-    /// place holding both that pass and this scene.
+    /// reaches the pass that draws it from
+    /// [`restate_viewport`](crate::frame::restate_viewport), which is the one place
+    /// holding both that pass and this scene.
     pub(crate) fn resize(&mut self, target: (u32, u32), baseline: Option<(u32, u32)>) {
         let (viewport, content) = letterbox(baseline, target, true);
         self.size = content;

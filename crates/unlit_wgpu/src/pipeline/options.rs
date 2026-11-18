@@ -1,10 +1,11 @@
-use super::*;
+use super::{BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, BaseColorChannels, Shader};
 
 /// The policy a caller decides about a built-in lit pipeline.
 ///
 /// Everything a draw resolves is absent: the vertex channels, whether the draw
 /// samples a material, whether its mesh morphs, the render target and the
-/// device's array path are facts a family folds into an [`LitVariant`] when
+/// device's array path are facts a family folds into an
+/// [`LitVariant`](crate::pipeline::LitVariant) when
 /// it resolves a draw, not choices a caller can make. The target owns the
 /// color format, the sample count and whether there is a depth attachment at
 /// all; what is left is what a caller actually picks.
@@ -123,7 +124,8 @@ pub struct LitOptions {
 /// The depth-test policy of a lit pipeline, without the attachment's format.
 ///
 /// The format belongs to the target a pipeline is specialized for
-/// ([`SurfaceKey::depth_stencil_format`]), not to the policy: one policy
+/// ([`SurfaceKey::depth_stencil_format`](crate::specialize::SurfaceKey::depth_stencil_format)),
+/// not to the policy: one policy
 /// serves every target, and the variant's descriptor fills the format in when
 /// it builds the pipeline. The options could not carry it and stay a
 /// policy — a pipeline built for one attachment's format cannot bind against a
@@ -245,7 +247,8 @@ impl LitOptions {
     ///
     /// The layout holds the base-color texture and its sampler; whether a
     /// variant actually declares it is the draw's answer
-    /// ([`LitVariant::base_color_texture`]), so this is only the shape of the
+    /// ([`LitVariant::base_color_texture`](crate::pipeline::LitVariant::base_color_texture)),
+    /// so this is only the shape of the
     /// group. Building it here rather than from a variant lets a caller
     /// allocate a material without having resolved a draw first.
     pub fn material_bind_group_layout(&self, device: &wgpu::Device) -> wgpu::BindGroupLayout {

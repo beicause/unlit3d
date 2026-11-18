@@ -279,12 +279,23 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use self::commands::*;
-use self::frame::*;
-use self::host::*;
-use self::present::*;
-use self::scene::*;
-use self::state::*;
+use self::commands::{BuildPresenter, RunSceneAdvance, gpu};
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+use self::commands::{RunInHost, RunInWorld};
+use self::frame::{
+    advance_scene, dispatch_input_on_frame, ensure_presented, flush_scene, restate_viewport,
+    run_scene_advance, serve_scene_controls, step_sequence,
+};
+use self::host::{handle_user_event, request_gpu, resize_scene};
+use self::present::{present, presenter_entity, switch_scene};
+use self::scene::tick;
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+use self::state::WorldName;
+use self::state::{
+    App, FullscreenActive, FullscreenRequest, GpuInfoPos, GpuState, InitialScene, McpEnabled,
+    PresenterEntity, RenderWorld, SceneAdvance, SceneEntity, SceneFrame, SceneSwitch, SelectorPos,
+    SequenceClock, SequenceStep, SequenceStepped, UserEvent,
+};
 
 pub use self::scene::Scene;
 pub use self::state::PanelRects;

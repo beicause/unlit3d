@@ -5,7 +5,7 @@
 //! unlit pipeline, no renderer-provided bindings — to show that registering a
 //! pipeline family and drawing with it needs nothing from the built-in shader.
 
-use crate::common::*;
+use crate::common::{COLOR_FORMAT, Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view};
 use arrayvec::ArrayVec;
 use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{

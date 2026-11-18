@@ -7,7 +7,9 @@
 //! buffer holding the vertices, indices and a 4x4 PNG (rows red, green, blue,
 //! white) as a buffer view, so `LitGltf::from_bytes` needs no base path.
 
-use crate::common::*;
+use crate::common::{
+    CLEAR, Ctx, HEIGHT, TestGpu, WIDTH, camera_looking_at, count_pixels_off_background,
+};
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::gltf::{AnimationId, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId};
@@ -18,7 +20,21 @@ mod documents;
 mod materials;
 mod scene;
 
-use self::{deform::*, materials::*, scene::*};
+use self::{
+    deform::{
+        a_morphed_quad_follows_its_weights, a_skinned_quad_follows_its_joint,
+        an_animation_moves_the_drawn_mesh,
+    },
+    materials::{
+        a_blended_material_composites_over_the_frame, a_blended_material_writes_no_depth,
+        a_double_sided_material_draws_back_faces,
+        a_masked_material_discards_fragments_below_its_cutoff,
+    },
+    scene::{
+        node_hierarchy_translates_the_quad, textured_quad_renders_four_colours,
+        unload_empties_the_frame, untextured_material_draws_flat,
+    },
+};
 
 gpu_tests! {
     textured_quad_renders_four_colours,
