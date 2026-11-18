@@ -13,8 +13,8 @@
 use std::path::Path;
 
 use unlit_wgpu_test_util::snapshot_path;
+use unlit3dx::app::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use unlit3dx::prelude::{AudioFormat, RecordingFormat};
-use unlit3dx_examples::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 
 /// How far a sample may sit from its baseline.
 ///

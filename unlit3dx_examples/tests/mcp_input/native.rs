@@ -6,7 +6,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use unlit_wgpu_test_util::{Tolerance, assert_image_snapshot_with_tolerance, snapshots};
-use unlit3dx_examples::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use unlit3dx::app::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use unlit3dx_examples::scene::WINDOW_SIZE;
 
 use crate::mcp_input::shared;
@@ -274,8 +274,17 @@ impl Mcp {
         self.tool("step_frames", json!({ "frames": frames }));
     }
 
+    /// The run status and the scene status, merged into one object.
+    ///
+    /// The run-level `scene_status` reports the frame and the world ids;
+    /// the demo's `scene_extra_status` reports what only the scene knows.
     fn status(&mut self) -> Value {
-        self.tool("scene_status", json!({}))
+        let mut status = self.tool("scene_status", json!({}));
+        let extra = self.tool("scene_extra_status", json!({}));
+        if let Value::Object(map) = &mut status {
+            map.extend(extra.as_object().expect("a JSON object").clone());
+        }
+        status
     }
 
     /// Press and release a panel button, then advance one frame so the panel

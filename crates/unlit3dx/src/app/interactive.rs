@@ -1,31 +1,33 @@
-//! The interactive run: the whole scene, stepped inline and driven by input.
+//! The interactive run: the scene, stepped inline and driven by its caller.
 //!
-//! The windowed mode runs the same scene across threads, paced by the display.
-//! This run keeps every world stepped on one thread and advances it one frame
-//! at a time, so a caller reproduces exactly what it drove: the wasm test that
-//! clicks buttons and reads frames back, or a native one that does the same
-//! without a process boundary. The GPU is injected, the way the headless run
-//! takes one, so a test asks for a headless device and a windowed caller
-//! builds its own from the surface.
-
-use std::sync::Arc;
+//! Every world is stepped on one thread and advanced one frame at a time, so
+//! a caller reproduces exactly what it drove: a test that clicks buttons and
+//! reads frames back, or an MCP host that does the same over a process
+//! boundary. The GPU is injected, the way the headless run takes one.
 
 use unlit_ecs::{Entity, World, bundle};
+use unlit_wgpu::context::RenderDevice;
+use unlit_wgpu::readback::readback_texture;
 use unlit_wgpu::resources::ResHandle;
+use unlit3d::egui::EguiTarget;
 use unlit3d::frame::Frame;
-use unlit3d::input::{InputEvent, InputPair, InputWriter, refresh_input};
-use unlit3d::prelude::*;
-use unlit3dx::prelude::*;
+use unlit3d::input::{InputEvent, InputPair, InputWriter, MouseButton, MouseEvent, refresh_input};
+use unlit3d::offscreen::{PersistentTarget, TargetConfig};
+use unlit3d::relay::Snapshot;
+use unlit3d::renderer::Renderer;
 
-use crate::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
-use crate::scene::{
-    AudioSetup, Ball, HEADLESS_HZ, PanelLayout, PanelSlots, RENDER_COMMAND_CAPACITY, SceneHandles,
-    SceneStepper, SceneTracks, Track, WINDOW_SIZE, setup_render_world, spawn_scene,
-};
+use super::App;
+use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, RENDER_COMMAND_CAPACITY};
+use super::scene::{Mode, RenderPorts, ScenePorts, SceneWorlds, Stepping};
+use crate::audio::{AudioFormat, dispatch_audio_fill};
+use crate::host::{drain_sub_world, spawn_sub_world, tick_sub_world};
+use crate::record::{RecordedAudio, RecordingHandle, start_recording};
+use crate::world::{Stepped, with_stepped_world, with_stepped_world_mut};
 
-/// An interactive scene stepping inline: one frame per call, no pacing of its own.
+/// An interactive scene stepping inline: one frame per call, no pacing of
+/// its own.
 pub struct Interactive {
-    worlds: SceneHandles,
+    worlds: SceneWorlds,
     render: Entity,
     renderer: Entity,
     /// The entity the render sub-world is spawned under.
@@ -33,10 +35,10 @@ pub struct Interactive {
     /// The texture the offscreen pass draws into. Its resource id is what a
     /// caller reads frames back through.
     pub target: ResHandle<wgpu::Texture>,
-    stepper: SceneStepper,
+    stepper: Stepping,
     frame: Frame,
     samples: Vec<f32>,
-    recording: Option<unlit3dx::record::RecordingHandle>,
+    recording: Option<RecordingHandle>,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
@@ -47,18 +49,18 @@ impl Interactive {
     ///
     /// Nothing is drawn here, so a run that only reads the state back rather
     /// than the picture costs no draw calls. [`Interactive::draw`] draws the
-    /// frame where the scene then stands, which is the same frame a step would
-    /// have drawn: a draw does not advance the scene, and what it does write is
-    /// only what a frame publishes for its readers, which the next frame
-    /// replaces anyway.
+    /// frame where the scene then stands, which is the same frame a step
+    /// would have drawn: a draw does not advance the scene, and what it does
+    /// write is only what a frame publishes for its readers, which the next
+    /// frame replaces anyway.
     pub fn step(&mut self, host: &World, frames: u32) {
         for _ in 0..frames {
             // The host has no behaviour of its own to route input to, but it
-            // holds a buffer so the MCP tools can feed and read one, and a
-            // buffer no one folds keeps every event it is fed. Folding it is
-            // the whole of what this world needs on a tick.
+            // holds a buffer so a caller can feed and read one, and a buffer
+            // no one folds keeps every event it is fed. Folding it is the
+            // whole of what this world needs on a tick.
             refresh_input(host);
-            self.stepper.step(host, &self.worlds, 1.0 / HEADLESS_HZ);
+            self.stepper.step(host, 1.0 / HEADLESS_HZ);
             let frames = self.stepper.audio_frames(1.0 / HEADLESS_HZ);
             if frames > 0 {
                 self.samples.clear();
@@ -80,45 +82,22 @@ impl Interactive {
     }
 
     /// The frame the next step draws.
+    #[must_use]
     pub fn frame(&self) -> u32 {
         self.frame.index
     }
 
     /// The handles the scene's worlds were spawned under.
-    pub fn worlds_handle(&self) -> &SceneHandles {
+    #[must_use]
+    pub fn worlds(&self) -> &SceneWorlds {
         &self.worlds
-    }
-
-    /// The panel buttons the last drawn frame laid out, keyed by label.
-    ///
-    /// The layout lives on the gameplay world, refreshed on every tick.
-    pub fn panel_buttons(
-        host: &World,
-        worlds: &SceneHandles,
-    ) -> Vec<(&'static str, unlit3d::egui::egui::Rect)> {
-        with_stepped_world(host, worlds.gameplay.entity, |world| {
-            world
-                .root_scope()
-                .query::<&PanelLayout>()
-                .iter()
-                .next()
-                .map(|layout| {
-                    layout
-                        .buttons
-                        .iter()
-                        .map(|(label, rect)| (*label, *rect))
-                        .collect()
-                })
-                .unwrap_or_default()
-        })
-        .expect("the gameplay world is a stepped world")
     }
 
     /// Draw the frame where the scene stands and read its pixels back.
     ///
     /// The await is the readback: the pixels cannot exist before the copy
-    /// lands. Drawing is what publishes the target the panels lay out against,
-    /// so nothing is laid out until one frame has been drawn.
+    /// lands. Drawing is what publishes the target the panels lay out
+    /// against, so nothing is laid out until one frame has been drawn.
     pub async fn render_frame(&self, host: &World) -> Vec<u8> {
         self.draw(host);
         let texture = {
@@ -138,13 +117,13 @@ impl Interactive {
                 .cloned()
                 .expect("the target texture is a resource node")
         };
-        unlit_wgpu::readback::readback_texture(&self.device, &self.queue, &texture).await
+        readback_texture(&self.device, &self.queue, &texture).await
     }
 
     /// Draw the frame where the scene stands, into the offscreen texture.
     ///
-    /// The render sub-world catches up on the jobs queued for it first, so the
-    /// frame draws the scene as the steps left it rather than as the jobs
+    /// The render sub-world catches up on the jobs queued for it first, so
+    /// the frame draws the scene as the steps left it rather than as the jobs
     /// found it.
     pub fn draw(&self, host: &World) {
         let mut nested = host.root_scope().query_one::<&mut World>(self.render);
@@ -157,17 +136,18 @@ impl Interactive {
     }
 
     /// The samples the last step pulled from the audio world.
+    #[must_use]
     pub fn samples(&self) -> &[f32] {
         &self.samples
     }
 
     /// Click at `position`: move the pointer there, then press and release
-    /// before the next frame, the sequence the MCP input tool sends.
+    /// before the next frame, the sequence an input tool sends.
     pub fn click(&mut self, host: &World, position: [f32; 2]) {
         let button = |pressed| {
-            InputEvent::Mouse(unlit3d::input::MouseEvent::Button {
+            InputEvent::Mouse(MouseEvent::Button {
                 position: Some(position),
-                button: unlit3d::input::MouseButton::Primary,
+                button: MouseButton::Primary,
                 pressed,
                 modifiers: Default::default(),
             })
@@ -178,7 +158,7 @@ impl Interactive {
             .next()
             .expect("the interactive run carries an input writer")
             .push_all([
-                InputEvent::Mouse(unlit3d::input::MouseEvent::Moved { position }),
+                InputEvent::Mouse(MouseEvent::Moved { position }),
                 button(true),
                 button(false),
             ]);
@@ -191,7 +171,7 @@ impl Interactive {
     pub fn start_recording(&mut self, host: &World, max_seconds: f32) {
         let mut handle = None;
         with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
-            handle = Some(unlit3dx::record::start_recording(audio, max_seconds));
+            handle = Some(start_recording(audio, max_seconds));
         })
         .expect("the audio world is a stepped world");
         self.recording = handle;
@@ -210,9 +190,6 @@ impl Interactive {
 }
 
 /// A finished recording: the format it captured at, and the samples it held.
-///
-/// The recorder answers [`unlit3dx::record::RecordedAudio`]; this type carries
-/// the same samples across the module boundary that hides the crate's internals.
 pub struct Recording {
     /// The rate the mix was pulled at, and its channel count.
     pub format: AudioFormat,
@@ -220,8 +197,8 @@ pub struct Recording {
     pub samples: Vec<f32>,
 }
 
-impl From<unlit3dx::record::RecordedAudio> for Recording {
-    fn from(audio: unlit3dx::record::RecordedAudio) -> Self {
+impl From<RecordedAudio> for Recording {
+    fn from(audio: RecordedAudio) -> Self {
         Self {
             format: audio.format,
             samples: audio.samples,
@@ -229,116 +206,71 @@ impl From<unlit3dx::record::RecordedAudio> for Recording {
     }
 }
 
-/// The scene state a caller asserts on: the balls and the sequence.
-#[derive(Clone, Copy)]
-pub struct SceneStatus {
-    /// How many balls the gameplay world holds.
-    pub balls: usize,
-    /// Whether the MIDI sequence is paused, and where it has got to.
-    pub sequence: Option<(bool, f64, bool)>,
-}
-
-/// Report the scene state: the balls the gameplay world holds and where its
-/// MIDI sequence stands.
-pub fn scene_status(host: &World, worlds: &SceneHandles) -> SceneStatus {
-    with_stepped_world(host, worlds.gameplay.entity, |world| {
-        let scope = world.root_scope();
-        let balls = scope.query::<&Ball>().iter().count();
-        let sequence = scope
-            .query::<&SceneTracks>()
-            .iter()
-            .next()
-            .and_then(|tracks| {
-                scope
-                    .try_query_one::<&Track>(tracks.sequence)
-                    .ok()
-                    .map(|mut track| {
-                        let track = track.get();
-                        (track.midi.paused, track.midi.time, track.midi.finished)
-                    })
-            });
-        SceneStatus { balls, sequence }
-    })
-    .expect("the gameplay world is a stepped world")
-}
-
-/// The settings one interactive run builds with.
-pub struct InteractiveConfig {
-    /// The GPU the scene renders with, and what was asked of it.
-    pub device: RenderDevice,
-    /// The soundfont the synthesizer plays, as raw bytes; an empty slice
-    /// silences the audio world the way the headless run's does.
-    pub soundfont: Arc<[u8]>,
-}
-
-/// Build the interactive scene: an input writer on the host, the scene's
+/// Build an interactive scene: an input writer on the host, the scene's
 /// worlds, an offscreen render target and the stepping interactive.
 ///
 /// The host owns everything; the caller steps it through the returned
-/// [`Interactive`] and draws nothing to any window.
-pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
+/// [`Interactive`] and draws nothing to any window. The offscreen target
+/// draws at [`App::SIZE`].
+pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, InputWriter, Interactive) {
     let mut host = World::new();
     let input = InputWriter::new();
     host.root_scope_mut()
         .spawn(bundle![input.clone(), ..InputPair(input.subscribe())]);
     let render = spawn_sub_world(&mut host, "render", RENDER_COMMAND_CAPACITY);
-    let panels = PanelSlots::default();
-    let audio_setup = if config.soundfont.is_empty() {
-        AudioSetup::Silent
-    } else {
-        AudioSetup::Pulled {
-            soundfont: config.soundfont,
-            autoplay_background: false,
-        }
-    };
-    let worlds = spawn_scene::<Stepped>(
+    let panel = Snapshot::<EguiTarget>::new();
+    let worlds = app.spawn_scene::<Stepped>(
         &mut host,
-        render.clone(),
-        audio_setup,
-        panels.clone(),
-        &input,
-        false,
+        ScenePorts {
+            render: &render,
+            input: &input,
+            panel: &panel,
+            refresh_millihertz: Default::default(),
+            mode: Mode::Interactive,
+        },
     );
-    let (renderer, pass) = setup_render_world(
+    let setup = app.setup_render(
         &mut host,
-        render.entity,
-        config.device.clone(),
-        Some(panels.target.clone()),
+        RenderPorts {
+            world: render.entity,
+            device: &device,
+            panel: Some(panel),
+        },
     );
     let target = {
         let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
         let context = world
             .root_scope()
-            .query_one::<&Renderer>(renderer.entity)
+            .query_one::<&Renderer>(setup.renderer.entity)
             .get()
             .context();
         PersistentTarget::bind(
             world,
             context,
-            pass.entity,
-            &config.device.device,
-            WINDOW_SIZE,
+            setup.pass.entity,
+            &device.device,
+            A::SIZE,
             TargetConfig::default(),
         )
         .expect("the offscreen target binds")
     };
     let interactive = Interactive {
+        stepper: Stepping::new(worlds.clone(), A::PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
         worlds,
         render: render.entity,
-        renderer: renderer.entity,
+        renderer: setup.renderer.entity,
         render_world: render.entity,
         target: target.texture,
-        stepper: SceneStepper::new(PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
         frame: Frame {
             delta_time: (1.0 / HEADLESS_HZ) as f32,
             index: 0,
-            size: WINDOW_SIZE,
+            size: A::SIZE,
         },
         samples: Vec::new(),
         recording: None,
-        device: config.device.device,
-        queue: config.device.queue,
+        device: device.device,
+        queue: device.queue,
     };
     // One frame is drawn before the caller takes over: a drawn frame is what
     // publishes the target the panels lay out against, so a run that never

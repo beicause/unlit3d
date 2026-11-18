@@ -212,7 +212,8 @@ thread and returns at once when the control is not self-driven, so the same
 tick body serves both: `FixedClock` waits out a wall-clock deadline under
 `Threaded`, and under `Stepped` the tick is simply due again on the next
 call. A caller stepping a world therefore owns the rate — it decides how many
-steps a frame is worth, which is what the demo's `SceneStepper` does.
+steps a frame is worth, which is what the `app` skeleton's `Stepping` does
+for every run it hosts.
 
 Both modes turn a measured interval into whole steps with the same rule:
 `fixed_steps` carries the fraction of a step a tick did not spend into the
@@ -450,6 +451,19 @@ filling. `pump_presented` keeps frames coming while the window lives, and
 bridge a drawing world needs — the asset server and the mesh and camera
 helpers around it — is the caller's to build; `unlit3dx_examples` ships one
 as `src/render.rs`.
+
+These primitives are the parts an application assembles itself. The **app**
+module (feature `app`) is the assembly done once: an application implements
+the `App` trait — `spawn_scene` builds its worlds, `setup_render` builds its
+pipeline inside the GPU callback — and one of `windowed`, `headless`,
+`interactive` or `serve` runs it, wiring the window, the input feed, the
+stepped pacing (`Stepping`), the offscreen target and the MCP server. The
+run's own switches (`--mcp`, `--stepped`, `--headless --frames`, `--out`)
+and the application's `App::Args` are read by one clap parser, so a single
+`--help` describes both; the parsed arguments reach `App::configure` as a
+structure, unknown names are refused. Logging and the capture's
+write-out (`frame_<index>.png` plus `audio.flac`) live in the module too, so
+an application supplies a scene and its soundfont, not a `main`.
 
 ## Tests
 

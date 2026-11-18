@@ -8,9 +8,9 @@
 //! the scene a browser serves behaves like the scene the protocol serves.
 
 use unlit_wgpu_test_util::{Ctx, Tolerance, assert_image_snapshot_with_tolerance, snapshot};
-use unlit3dx_examples::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
-use unlit3dx_examples::interactive::{InteractiveConfig, run as interactive_run, scene_status};
-use unlit3dx_examples::scene::WINDOW_SIZE;
+use unlit3dx::app::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, interactive as interactive_run};
+use unlit3dx_examples::demo::Demo;
+use unlit3dx_examples::scene::{self, WINDOW_SIZE};
 
 use crate::mcp_input::shared;
 
@@ -31,17 +31,14 @@ const FRAME_TOLERANCE: Tolerance = Tolerance {
 pub async fn run() {
     let ctx = Ctx::headless().await;
     let soundfont = shared::soundfont_bytes().to_vec().into();
-    let (host, _input, mut interactive) = interactive_run(InteractiveConfig {
-        device: ctx.render_device(),
-        soundfont,
-    });
+    let (host, _input, mut interactive) = interactive_run(Demo { soundfont }, ctx.render_device());
 
     // A recording before anything plays captures silence. Its frames also
     // give the panel time to lay out and the synthesizer install to answer,
     // exactly as the native driver's opening recording does.
     interactive.start_recording(&host, shared::RECORDING_SECONDS);
     interactive.step(&host, shared::WARMUP_FRAMES);
-    let status = scene_status(&host, interactive.worlds_handle());
+    let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 0, "a fresh scene holds no balls");
     assert_eq!(
         status.sequence.map(|state| state.0),
@@ -59,7 +56,7 @@ pub async fn run() {
     // One ball, one frame set.
     shared::click(&host, &mut interactive, "Drop the next ball");
     interactive.step(&host, shared::SETTLE_FRAMES);
-    let status = scene_status(&host, interactive.worlds_handle());
+    let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 1, "one drop lands one ball");
     assert_eq!(
         status.sequence.map(|state| state.0),
@@ -81,7 +78,7 @@ pub async fn run() {
     shared::click(&host, &mut interactive, "Drop the next ball");
     shared::click(&host, &mut interactive, "Play");
     interactive.step(&host, shared::PLAY_FRAMES);
-    let status = scene_status(&host, interactive.worlds_handle());
+    let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 3, "three drops land three balls");
     assert_eq!(
         status.sequence.map(|state| state.0),
@@ -119,7 +116,7 @@ pub async fn run() {
     shared::click(&host, &mut interactive, "Clear the balls");
     shared::click(&host, &mut interactive, "Pause");
     interactive.step(&host, shared::RELEASE_FRAMES);
-    let status = scene_status(&host, interactive.worlds_handle());
+    let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 0, "the clear takes every ball back");
     assert_eq!(
         status.sequence.map(|state| state.0),

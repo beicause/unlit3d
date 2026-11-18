@@ -17,6 +17,7 @@ repository = "https://github.com/beicause/unlit3d"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+android_logger = "0.15.1"
 # The drawing interface a document is painted through: blitz-paint records
 # shapes into it and a backend rasterizes them. Only the interface is used, since
 # no backend of its own fits a frame source.
@@ -37,6 +38,11 @@ blitz-html = { version = "=0.3.0-beta.4", default-features = false }
 blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["svg"] }
 # The viewport and colour-scheme types a document is configured through.
 blitz-traits = { version = "=0.3.0-beta.4", default-features = false }
+# The command line parser the application skeleton shares with the
+# application: one parser reads the run's switches and the application's
+# arguments together, so one --help describes both.
+clap = { version = "4.5", default-features = false, features = ["derive", "error-context", "help", "std", "usage"] }
+
 # The FLAC decoder a test reads a stream back with, so an encoder is
 # checked against something other than itself.
 claxon = "0.4.3"

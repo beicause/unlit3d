@@ -38,9 +38,10 @@ cargo run -p unlit3dx_examples
 The synthesizer plays a soundfont embedded into the binary at build time by
 [`asset_bytes`](asset_bytes/README.md), the crate that carries it: the same
 bytes reach a window, a browser and an Android activity, and no file is needed
-at run time. That crate's README also covers why the bytes sit in a crate of
-their own and what a checkout without the gitignored
-`assets/FluidR3Mono_GM.sf3` does.
+at run time. `--soundfont <path>` loads another soundfont instead; the run
+refuses any argument it does not know. That crate's README also covers why
+the bytes sit in a crate of their own and what a checkout without the
+gitignored `assets/FluidR3Mono_GM.sf3` does.
 
 The `--mcp` switch serves the worlds over the [Model Context
 Protocol](../crates/unlit_ecs/README.md) instead of exiting with the
@@ -66,12 +67,13 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 The `--headless` switch runs the very same scene without a window, threads
 or an audio device. It is the browser's path with the frames handed over by
 the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
-in the host's own world, and `SceneStepper` advances them one frame at a
-time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes due, the
-synth fills as its sample rate does, and gameplay ticks once per frame with
-the duration the run gives it (`HEADLESS_HZ`). After `--frames` frames the
-run's last frame and its whole audio mix land in `--out` as
-`screenshot.png` and `audio.flac`. Because every frame is the same length and
+in the host's own world, and the skeleton's `Stepping` advances them one
+frame at a time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes
+due, the synth fills as its sample rate does, and gameplay ticks once per
+frame with the duration the run gives it (`HEADLESS_HZ`). After `--frames`
+frames the run's last frame and its whole audio mix land in `--out` as
+`frame_299.png` and `audio.flac` — one image per captured frame, named after
+its frame index. Because every frame is the same length and
 the spawn rolls are seeded, a run is reproducible, which is what the
 [snapshot tests](tests/headless.rs) build on: rendered frames compare against
 webp baselines and the mix against a FLAC baseline, both kept in the
@@ -81,8 +83,10 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 `--headless --mcp` goes one step further: instead of running a fixed number
 of frames it waits for MCP commands, and only the `step_frames` tool advances
 time. The scene renders into an offscreen texture the client reads with
-`read_texture_as_image`, `scene_status` reports the frame, the ball count,
-the MIDI sequence and the centre of every panel button, and `request_exit`
+`read_texture_as_image`, `scene_status` reports the run — the frame, the
+world handles, the offscreen target — while the demo's own
+`scene_extra_status` adds the scene: the ball count, the MIDI sequence and
+the centre of every panel button. `request_exit`
 stops the process. Automatic ball drops and the background track's autoplay
 are off in this mode, so every visible and audible change comes from the
 client. The [`mcp_input` test](tests/mcp_input.rs) starts that binary and

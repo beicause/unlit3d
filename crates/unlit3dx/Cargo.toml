@@ -34,6 +34,7 @@ required-features = ["audio", "physics", "synth"]
 [dependencies]
 async-channel.workspace = true
 base64 = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
 # The lossless encoder the audio tools write a captured mix with. Only the
 # encoder itself is used: the parallel, serde and log features are its own
@@ -65,15 +66,46 @@ zerocopy-derive.workspace = true
 claxon.workspace = true
 serde_json.workspace = true
 
+# The host build's own pieces of the application skeleton: the platform
+# logger, the command-line entry's blocking GPU open, and the PNG encoder a
+# capture writes. A browser and an Android activity log and encode through
+# their platform targets instead.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+env_logger = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+
 # On this target cpal swaps its OS audio backends for the `wasm-bindgen` one,
 # which drives a Web Audio context; every other dependency here is pure Rust
 # and builds as-is.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = { workspace = true, optional = true }
+console_log = { workspace = true, optional = true }
 cpal = { workspace = true, features = ["wasm-bindgen"], optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
+# The Android activity's logger, and the winit backend that builds its event
+# loop, belong to the application skeleton's windowed run.
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = { workspace = true, optional = true }
+
 [features]
-default = ["audio", "physics", "render", "synth"]
+default = ["app", "audio", "physics", "render", "synth"]
+## The application skeleton: the windowed, headless, interactive and MCP runs
+## an `App` plugs its scene into, plus the command line and the capture's
+## file output. Audio is what the runs mix; the scene's own features stay the
+## application's to choose.
+app = [
+  "audio",
+  "dep:android_logger",
+  "dep:clap",
+  "dep:console_error_panic_hook",
+  "dep:console_log",
+  "dep:env_logger",
+  "dep:image",
+  "dep:pollster",
+  "render",
+]
 ## The audio output thread, backed by cpal and a ring buffer.
 audio = ["dep:cpal", "dep:ringbuf"]
 ## The MCP stdio server driven from the host world. Its audio tools record

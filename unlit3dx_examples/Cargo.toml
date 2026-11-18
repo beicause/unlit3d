@@ -34,14 +34,14 @@ name = "unlit3dx_examples"
 path = "tests/gpu_suite.rs"
 
 [dependencies]
-argh.workspace = true
+clap.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
 log.workspace = true
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", default-features = false }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["egui", "winit"] }
-unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["audio", "physics", "render", "synth"] }
+unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["app", "audio", "physics", "render", "synth"] }
 # The soundfont the demo embeds. Its own crate because the bytes are fourteen
 # megabytes: a constant holding them would copy them into this crate's own
 # metadata and slow every downstream rebuild.
@@ -65,35 +65,22 @@ serde_json.workspace = true
 # against baselines kept in the asset submodule.
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.3", default-features = false, features = ["snapshot"] }
 
-# The logger backend, which differs by platform even though there is only one
-# per target: `env_logger` writes to the terminal a command line runs in.
 # `--mcp` serves the worlds over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
-env_logger.workspace = true
-# The library's `mcp` feature wraps the Model Context Protocol server the
-# demo serves with --mcp.
-unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["audio", "mcp", "physics", "render", "synth"] }
-
-# The headless mode encodes its last frame as a PNG on the way out.
-image = { workspace = true, default-features = false, features = ["png"] }
-# The interactive headless host describes its own tools to MCP, which needs a
-# JSON schema and a deserializer for each tool's arguments.
+# The demo's tools describe their arguments to MCP, which needs a JSON schema
+# and a deserializer for each.
 schemars.workspace = true
 serde.workspace = true
+# The library's `mcp` feature wraps the Model Context Protocol server the
+# demo serves with --mcp.
+unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["app", "audio", "mcp", "physics", "render", "synth"] }
 
-# The GPU request runs off the main thread: `pollster` drives it on a worker
-# thread on native, and the browser's task queue drives it on the web.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# The browser has no terminal: the web build logs to the console and
-# reports panics there.
-console_error_panic_hook.workspace = true
-console_log.workspace = true
-wasm-bindgen-futures.workspace = true
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dev-dependencies]
+# The native driver of the input sequence decodes the PNG bytes an MCP
+# screenshot returns to compare frames against baselines.
+image.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 # The export the test page calls is what `gpu_test_main!` generates.
@@ -104,10 +91,7 @@ wasm-bindgen.workspace = true
 # here rather than passing a feature means a plain Android build works; a
 # feature would have to be turned on by every caller. `GameActivity` supports
 # the wider range of Android versions.
-#
-# There is no terminal behind an activity, so the logger backend is logcat.
 [target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.15.1"
 winit = { workspace = true, features = ["android-game-activity"] }
 
 [lints]

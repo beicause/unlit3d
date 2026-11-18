@@ -20,8 +20,9 @@ use std::sync::Arc;
 use unlit_wgpu_test_util::{
     Ctx, Tolerance, assert_image_snapshot_with_tolerance, gpu_tests, snapshots,
 };
+use unlit3dx::app::{AUDIO_SAMPLE_RATE, HeadlessConfig, headless as headless_run};
 use unlit3dx_asset_bytes::soundfont as embedded_soundfont;
-use unlit3dx_examples::headless::{AUDIO_SAMPLE_RATE, HeadlessConfig, run};
+use unlit3dx_examples::demo::Demo;
 use unlit3dx_examples::scene::WINDOW_SIZE;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -124,13 +125,13 @@ fn required_soundfont() -> Option<Arc<[u8]>> {
     soundfont
 }
 
-fn config(soundfont: Arc<[u8]>, frames: u32, capture: Vec<u32>) -> HeadlessConfig {
+fn config(frames: u32, capture: Vec<u32>) -> HeadlessConfig {
     HeadlessConfig {
         size: WINDOW_SIZE,
         frames,
         capture,
         audio_sample_rate: AUDIO_SAMPLE_RATE,
-        soundfont,
+        ..Default::default()
     }
 }
 
@@ -143,8 +144,9 @@ async fn frames_match_the_baselines() {
     // insists on the real font.
     let soundfont = soundfont().unwrap_or_else(|| Arc::from(embedded_soundfont()));
     let ctx = Ctx::headless().await;
-    let output = run(
-        &config(soundfont, FRAMES, CAPTURE.to_vec()),
+    let output = headless_run(
+        Demo { soundfont },
+        &config(FRAMES, CAPTURE.to_vec()),
         ctx.render_device(),
     )
     .await;
@@ -185,13 +187,17 @@ async fn an_undrawn_frame_matches_a_drawn_one() {
     let frames = 60;
     let captured = [15, 30, 45, frames - 1];
     let last = frames - 1;
-    let alone = run(
-        &config(soundfont.clone(), frames, vec![last]),
+    let alone = headless_run(
+        Demo {
+            soundfont: soundfont.clone(),
+        },
+        &config(frames, vec![last]),
         ctx.render_device(),
     )
     .await;
-    let surrounded = run(
-        &config(soundfont, frames, captured.to_vec()),
+    let surrounded = headless_run(
+        Demo { soundfont },
+        &config(frames, captured.to_vec()),
         ctx.render_device(),
     )
     .await;
@@ -229,8 +235,9 @@ async fn audio_matches_the_baseline() {
     };
     support::assert_baselines_exist(&["unlit3dx/audio.flac"]);
     let ctx = Ctx::headless().await;
-    let output = run(
-        &config(soundfont, AUDIO_FRAMES, Vec::new()),
+    let output = headless_run(
+        Demo { soundfont },
+        &config(AUDIO_FRAMES, Vec::new()),
         ctx.render_device(),
     )
     .await;

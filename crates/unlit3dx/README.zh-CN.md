@@ -174,8 +174,8 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
 模式改变的是配速。`ThreadControl::wait_timeout` 会阻塞一条真实线程，而当 control
 并非自驱时立刻返回，于是同一个 tick 体服务两者：在 `Threaded` 下 `FixedClock` 等
 一个挂钟期限过去，在 `Stepped` 下这次 tick 在下次调用时就又到期了。因此步进一个
-world 的调用方自己拥有节奏——由它决定一帧值多少步，示例里的 `SceneStepper` 正是
-这么做的。
+world 的调用方自己拥有节奏——由它决定一帧值多少步，`app` 骨架的 `Stepping`
+对它承载的每个运行正是这么做的。
 
 两种模式用同一条规则把实测的间隔换成整数步：`fixed_steps` 把一次 tick 没花掉的
 零头记到下一次，超过 `MAX_CATCH_UP_STEPS`（四步）的部分则直接丢弃，于是停摆的宿主
@@ -337,6 +337,16 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 窗口变化。绘制 world 所需的 render
 桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`
 自带一份，位于 `src/render.rs`。
+
+以上原语是应用自己拼装的部分。**app** 模块（feature `app`）则是拼装好的那一份：
+应用实现 `App` trait——`spawn_scene` 建世界、`setup_render` 在 GPU 回调里建管线——
+再由 `windowed` / `headless` / `interactive` / `serve` 四个入口之一运行它：窗口、输入
+馈送、定步配速（`Stepping`）、离屏目标与 MCP 服务器的接线都在里面。运行自己的
+开关（`--mcp`、`--stepped`、`--headless --frames`、`--out`）与应用的
+`App::Args` 由同一个 clap 解析器读入，一份 `--help` 同时描述两者；解析好的
+参数以结构体交给 `App::configure`，未声明的名字会被拒绝。日志与捕获落盘
+（`frame_<index>.png` 加 `audio.flac`）也住在模块里——应用只需给出场景与它的音源，
+而不是一个 `main`。
 
 ## 测试
 

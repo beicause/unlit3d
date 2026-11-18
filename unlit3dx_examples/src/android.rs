@@ -4,7 +4,7 @@
 //! shared library and calls [`android_main`] on a thread of its own, handing it
 //! the activity; there is no command line to parse and no `main`, so this is
 //! the one entry point that is not [`crate::run`]. Once the event loop is
-//! built, the windowed loop it is handed to is the same one the binary drives.
+//! built, the windowed run it is handed to is the same one the binary drives.
 //!
 //! The shared library itself is `unlit3dx_examples_android`: it exports the
 //! symbol the activity looks up and calls the function here. An unmangled
@@ -12,6 +12,7 @@
 //! library so that a desktop or a browser build does not link a shared library
 //! nothing loads.
 
+use unlit3dx::app::{WindowOptions, windowed};
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
@@ -30,13 +31,15 @@ use winit::platform::android::activity::AndroidApp;
 /// A panic here is caught and logged by the glue instead of reaching the
 /// activity.
 pub fn android_main(app: AndroidApp) {
-    crate::init_logging();
+    unlit3dx::app::init_logging();
 
-    // The example's own defaults: an activity is started without arguments,
-    // and the window size it asks for is the display's to overrule.
     let event_loop = EventLoop::<()>::with_user_event()
         .with_android_app(app)
         .build()
         .expect("an event loop");
-    crate::windowed(false, false, event_loop);
+    windowed(
+        crate::demo::Demo::default(),
+        WindowOptions::for_app::<crate::demo::Demo>(),
+        event_loop,
+    );
 }

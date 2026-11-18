@@ -6042,15 +6042,22 @@ dependencies = [
 name = "unlit3dx"
 version = "0.1.0-dev.3"
 dependencies = [
+ "android_logger",
  "async-channel",
  "base64 0.23.1",
+ "clap",
  "claxon",
+ "console_error_panic_hook",
+ "console_log",
  "cpal",
+ "env_logger",
  "flacenc",
  "futures-executor",
  "futures-util",
  "glam 0.33.12",
+ "image",
  "log",
+ "pollster",
  "rapier3d",
  "ringbuf",
  "rustysynth-ext",
@@ -6077,19 +6084,14 @@ version = "0.1.0-dev.3"
 name = "unlit3dx_examples"
 version = "0.1.0-dev.3"
 dependencies = [
- "android_logger",
- "argh",
  "async-channel",
  "base64 0.23.1",
+ "clap",
  "claxon",
- "console_error_panic_hook",
- "console_log",
- "env_logger",
  "glam 0.33.12",
  "hashbrown 0.17.1",
  "image",
  "log",
- "pollster",
  "schemars",
  "serde",
  "serde_json",
@@ -6100,7 +6102,6 @@ dependencies = [
  "unlit_wgpu",
  "unlit_wgpu_test_util",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wgpu",
  "winit",
 ]

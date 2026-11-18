@@ -36,6 +36,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
+/// The application skeleton: the runs a scene plugs into.
+#[cfg(feature = "app")]
+#[cfg_attr(docsrs, doc(cfg(feature = "app")))]
+pub mod app;
 #[cfg(feature = "audio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "audio")))]
 pub mod audio;
@@ -56,8 +60,19 @@ pub mod handle;
 pub mod host;
 /// Jobs, the work handed to another world.
 pub mod job;
-#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "mcp", not(target_arch = "wasm32")))))]
+#[cfg(all(
+    feature = "mcp",
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(
+        feature = "mcp",
+        not(target_arch = "wasm32"),
+        not(target_os = "android")
+    )))
+)]
 pub mod mcp;
 #[cfg(feature = "physics")]
 #[cfg_attr(docsrs, doc(cfg(feature = "physics")))]
@@ -99,7 +114,11 @@ pub mod prelude {
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
-    #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        feature = "mcp",
+        not(target_arch = "wasm32"),
+        not(target_os = "android")
+    ))]
     pub use crate::mcp::serve_mcp;
     #[cfg(feature = "physics")]
     pub use crate::physics::{

@@ -1,8 +1,9 @@
 //! The demo's scene: its constants, its objects, and the worlds that run them.
 //!
-//! The windowed binary and the headless run both build on this module:
-//! everything here is world-shaped, free of window and thread plumbing, so the
-//! same objects drive the windowed show and the deterministic headless capture.
+//! Every run builds on this module through the application's
+//! [`crate::demo::Demo`]: everything here is world-shaped, free of window and
+//! thread plumbing, so the same objects drive the windowed show, the
+//! deterministic headless capture and the interactive session.
 //!
 //! The gameplay world is a set of objects rather than one state blob. The
 //! `tick` module says how one is put together; the objects themselves are:
@@ -59,6 +60,8 @@ use unlit3dx::egui::EguiPanelHost;
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 
+use unlit3dx::app::SceneWorlds;
+
 use crate::render::{camera_looking_at, mesh_source};
 
 use self::audio::Music;
@@ -78,7 +81,6 @@ pub use shapes::{
     shape_kind, shape_mesh,
 };
 pub use shared::{SceneAssets, SceneState};
-pub use windowed::spawn_windowed_scene;
 
 mod audio;
 mod balls;
@@ -88,22 +90,12 @@ mod music;
 mod shapes;
 mod shared;
 mod tick;
-mod windowed;
 
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
 
-/// The render sub-world's command queue depth. A frame sends the scene
-/// build, the ground, one creation and one show per drop, one pose job and a
-/// periodic sweep, with the clears adding a batch despawn, so the capacity
-/// keeps every request in flight.
-pub const RENDER_COMMAND_CAPACITY: usize = 64;
-
 /// Where a hidden instance waits, far below everything the camera sees.
 pub const HIDDEN_POSITION: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
-
-/// The rate a run without a window steps its frames at, in hertz.
-pub const HEADLESS_HZ: f64 = 60.0;
 
 /// The gameplay world's pacing rate, in hertz, until the window reports the
 /// refresh rate of the display it is on.
@@ -395,46 +387,6 @@ pub(super) fn world_ended(state: &SnapshotReader<WorldState>) -> bool {
     )
 }
 
-/// The scene's worlds, however they are driven.
-///
-/// Every world is a host entity carrying the runner's proxy, so the host's
-/// data is the same whether the worlds run on threads or the host steps
-/// them; only who calls their ticks differs. What the objects reach them
-/// through is a [`Scene`], built beside them and handed to every tick.
-#[derive(Clone)]
-pub struct SceneHandles {
-    /// The rapier world.
-    pub physics: WorldHandle,
-    /// The synthesizer's world.
-    pub audio: WorldHandle,
-    /// The world the scene's objects live in; its sender is the control
-    /// panel's handle on them.
-    pub gameplay: WorldHandle,
-    /// The refresh rate of the display the window is on, in millihertz, as
-    /// the frame loop last read it; zero until a window reports one.
-    ///
-    /// It paces the gameplay thread, nothing else: a tick's duration is the
-    /// one it measured, so a stale rate only makes the thread wake more or
-    /// less often than the display redraws.
-    pub refresh_millihertz: Arc<AtomicU32>,
-}
-
-/// The slot a panel publishes its frames into.
-const PANEL_SLOT: usize = 0;
-
-/// What the two worlds holding the panel share.
-///
-/// A panel's frames travel the other way, as jobs to the source drawing them:
-/// the drawing side owns the slots, and no frame crosses a thread except in
-/// the job that carries it. What comes back this way is the target the
-/// drawing side measured, which a publisher has to match for its clip
-/// rectangles to be packed in the right pixels.
-#[derive(Clone, Default)]
-pub struct PanelSlots {
-    /// The target the drawing side measures every frame it draws.
-    pub target: Snapshot<EguiTarget>,
-}
-
 /// The clickable rectangles the control panel laid out most recently.
 ///
 /// A headless client uses these positions to send the same pointer input a
@@ -461,10 +413,11 @@ pub fn spawn_scene<R: WorldRunner>(
     host: &mut World,
     render: WorldHandle,
     audio_setup: AudioSetup,
-    panels: PanelSlots,
+    panel: Snapshot<EguiTarget>,
+    refresh_millihertz: Arc<AtomicU32>,
     input: &InputWriter,
     automatic_drops: bool,
-) -> SceneHandles {
+) -> SceneWorlds {
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
     let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default());
@@ -513,15 +466,16 @@ pub fn spawn_scene<R: WorldRunner>(
     // world's frame. A world the host steps is ticked once per call, so it
     // does not pace itself; a thread of its own wakes as often as the
     // display redraws and sleeps between ticks.
-    let refresh_millihertz = Arc::new(AtomicU32::new(0));
     let gameplay = R::spawn(
         host,
         "gameplay",
+        // Nothing sends here after setup: the queue holds the install jobs
+        // and any first drops, so the default depth is plenty.
         64,
         {
             let scene = scene.clone();
             let soundfont = soundfont.clone();
-            let panels = panels.clone();
+            let panel = panel.clone();
             let input = input.clone();
             move |world: &mut World| {
                 // This world is a sibling of the host, not a world nested in
@@ -571,8 +525,8 @@ pub fn spawn_scene<R: WorldRunner>(
                 // render world draws whatever is there.
                 world.root_scope_mut().spawn(bundle![EguiPanelHost::new(
                     render.sender.clone(),
-                    panels.target.reader(),
-                    PANEL_SLOT,
+                    panel.reader(),
+                    unlit3dx::app::PANEL_SLOT,
                 ),]);
                 mount_controls(world);
                 world.root_scope_mut().spawn(bundle![OnFrame::with_order(
@@ -618,11 +572,10 @@ pub fn spawn_scene<R: WorldRunner>(
         },
     );
 
-    SceneHandles {
+    SceneWorlds {
         physics,
         audio,
         gameplay,
-        refresh_millihertz,
     }
 }
 
@@ -642,111 +595,6 @@ fn publish_panels(world: &World, frame: &Frame) {
     }
 }
 
-/// The most audio one frame may be asked to fill, in seconds.
-///
-/// The audio debt is carried in sample frames rather than steps, so the
-/// physics catch-up limit says nothing about it. A host that stalled — a
-/// suspended window, a debugger pause — would otherwise ask the world to fill
-/// a buffer as long as the pause, which is neither wanted nor cheap; a
-/// quarter second is well past any jitter a running host shows.
-const MAX_AUDIO_CATCH_UP_SECONDS: f64 = 0.25;
-
-/// The pacing a host uses to step a scene's worlds frame by frame.
-///
-/// The frame's own duration is what drives the worlds, and none of their
-/// rates is an integer multiple of the display's, so each frame carries
-/// the fraction of a step it did not spend into the next one. Counting
-/// seconds rather than frames is what keeps the simulation at its rates on
-/// a display that redraws at anything but 60 Hz; a fixed-rate run passes an
-/// exact step instead of a measured one, which is what makes it
-/// reproducible.
-pub struct SceneStepper {
-    /// The physics time the last frame did not spend.
-    physics_debt: f32,
-    /// The audio time the last frame did not spend.
-    audio_debt: f64,
-    /// How long one physics step lasts.
-    physics_period: f32,
-    /// How long one audio frame lasts, or none when the host pulls no
-    /// audio.
-    sample_period: Option<f64>,
-}
-
-impl SceneStepper {
-    /// A stepper for a scene whose physics world runs at `physics_hz`, and
-    /// — when `sample_rate` is given — whose synthesizer runs at that rate.
-    ///
-    /// Gameplay has no rate here: its world ticks once per frame, with the
-    /// frame's own duration.
-    ///
-    /// The rate is turned into a period once, so a rate that is not a positive
-    /// finite number has no period to carry: it would divide the frame's
-    /// duration into an infinity or a NaN of steps. `sample_rate` is trusted as
-    /// given, being an integer the caller cannot make non-positive without
-    /// saying so.
-    ///
-    /// # Panics
-    /// Panics when `physics_hz` is not a positive finite number.
-    #[must_use]
-    pub fn new(physics_hz: f64, sample_rate: Option<u32>) -> Self {
-        assert!(
-            physics_hz.is_finite() && physics_hz > 0.0,
-            "a physics rate must be a positive finite number, not {physics_hz}"
-        );
-        Self {
-            physics_debt: 0.0,
-            audio_debt: 0.0,
-            physics_period: 1.0 / physics_hz as f32,
-            sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
-        }
-    }
-
-    /// Step the scene once for `delta_seconds`: gameplay ticks, physics
-    /// steps as its rate comes due, and the audio world drains the note jobs
-    /// those ticks sent.
-    ///
-    /// The render world is not stepped here: it is a sub-world the draw
-    /// drains, not one with a rate of its own.
-    pub fn step(&mut self, host: &World, worlds: &SceneHandles, delta_seconds: f64) {
-        // Gameplay runs once per host frame with its measured duration: its
-        // requests reach the other worlds before they step, and a slow frame
-        // never causes a burst of catch-up ticks.
-        step_stepped_world(host, worlds.gameplay.entity, delta_seconds as f32)
-            .expect("the stepped world starts");
-        let steps = fixed_steps(
-            &mut self.physics_debt,
-            delta_seconds as f32,
-            self.physics_period,
-        );
-        for _ in 0..steps {
-            step_stepped_world(host, worlds.physics.entity, self.physics_period)
-                .expect("the stepped world starts");
-        }
-        step_stepped_world(host, worlds.audio.entity, delta_seconds as f32)
-            .expect("the stepped world starts");
-    }
-
-    /// The audio frames this frame's duration asks for, carrying the
-    /// fraction it did not spend into the next frame.
-    ///
-    /// Zero when the stepper was built without a sample rate.
-    pub fn audio_frames(&mut self, delta_seconds: f64) -> usize {
-        let Some(period) = self.sample_period else {
-            return 0;
-        };
-        // Debt past the catch-up limit is discarded rather than owed, the way
-        // `fixed_steps` discards it: a host that stalled for a long while
-        // would otherwise ask the world to fill a buffer as long as the pause,
-        // and the audio that pause skipped is gone either way. A negative
-        // interval — a clock that went backwards — owes nothing.
-        self.audio_debt =
-            (self.audio_debt + delta_seconds.max(0.0)).min(MAX_AUDIO_CATCH_UP_SECONDS);
-        let frames = (self.audio_debt / period) as usize;
-        self.audio_debt -= frames as f64 * period;
-        frames
-    }
-}
-
 /// Ask the balls to drop the next one.
 pub fn drop_ball_in(world: &Scope<'_>) {
     if let Some((_, balls)) = world.query::<(Entity, &mut Balls)>().iter().next() {
@@ -763,6 +611,65 @@ pub fn clear_balls_in(world: &Scope<'_>) {
     }
 }
 
+/// The panel buttons the last drawn frame laid out, keyed by label.
+///
+/// The layout lives on the gameplay world, refreshed on every tick. A headless
+/// client uses these positions to send the same pointer input a window
+/// receives, without duplicating egui's layout in the client.
+pub fn panel_buttons(
+    host: &World,
+    worlds: &SceneWorlds,
+) -> Vec<(&'static str, unlit3d::egui::egui::Rect)> {
+    with_stepped_world(host, worlds.gameplay.entity, |world| {
+        world
+            .root_scope()
+            .query::<&PanelLayout>()
+            .iter()
+            .next()
+            .map(|layout| {
+                layout
+                    .buttons
+                    .iter()
+                    .map(|(label, rect)| (*label, *rect))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .expect("the gameplay world is a stepped world")
+}
+
+/// The scene state a caller asserts on: the balls and the sequence.
+#[derive(Clone, Copy)]
+pub struct SceneStatus {
+    /// How many balls the gameplay world holds.
+    pub balls: usize,
+    /// Whether the MIDI sequence is paused, and where it has got to.
+    pub sequence: Option<(bool, f64, bool)>,
+}
+
+/// Report the scene state: the balls the gameplay world holds and where its
+/// MIDI sequence stands.
+pub fn scene_status(host: &World, worlds: &SceneWorlds) -> SceneStatus {
+    with_stepped_world(host, worlds.gameplay.entity, |world| {
+        let scope = world.root_scope();
+        let balls = scope.query::<&Ball>().iter().count();
+        let sequence = scope
+            .query::<&SceneTracks>()
+            .iter()
+            .next()
+            .and_then(|tracks| {
+                scope
+                    .try_query_one::<&Track>(tracks.sequence)
+                    .ok()
+                    .map(|mut track| {
+                        let track = track.get();
+                        (track.midi.paused, track.midi.time, track.midi.finished)
+                    })
+            });
+        SceneStatus { balls, sequence }
+    })
+    .expect("the gameplay world is a stepped world")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,13 +701,21 @@ mod tests {
         let mut host = World::new();
         let render = spawn_sub_world(&mut host, "render", 8);
         let input = InputWriter::new();
-        let panels = PanelSlots::default();
+        let panel = Snapshot::new();
         // The target is published before the panel exists to subscribe to it:
         // a snapshot keeps its newest value, so the panel finds it on its
         // first tick instead of waiting for another draw.
-        panels.target.publish(measured_target());
-        let worlds =
-            spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input, true);
+        panel.publish(measured_target());
+        let refresh = Arc::new(AtomicU32::new(0));
+        let worlds = spawn_scene::<Stepped>(
+            &mut host,
+            render,
+            AudioSetup::Silent,
+            panel,
+            refresh,
+            &input,
+            true,
+        );
         let runs = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&runs);
         worlds
@@ -855,14 +770,22 @@ mod tests {
         let render = spawn_sub_world(&mut host, "render", 8);
         let input = InputWriter::new();
         let pressed = Arc::new(AtomicUsize::new(0));
-        let panels = PanelSlots::default();
+        let panel = Snapshot::new();
         // Published before the panel exists to subscribe to it, which a
         // snapshot keeps for it.
-        panels.target.publish(measured_target());
+        panel.publish(measured_target());
+        let refresh = Arc::new(AtomicU32::new(0));
         // The wiring is the scene's, but the panel is this test's: it counts
         // the space presses it saw, the way the real one reads a click.
-        let worlds =
-            spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input, true);
+        let worlds = spawn_scene::<Stepped>(
+            &mut host,
+            render,
+            AudioSetup::Silent,
+            panel,
+            refresh,
+            &input,
+            true,
+        );
         let counted = Arc::clone(&pressed);
         worlds
             .gameplay

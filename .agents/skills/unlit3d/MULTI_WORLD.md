@@ -11,51 +11,41 @@
 
 ## 两种骨架
 
-**窗口版**——**示意，不是库 API**：`setup_render_world` / `spawn_scene` / `SceneStepper` 是示例自己的装配助手（`unlit3dx_examples/src/scene.rs`，是 `pub` 的，但属于示例、不属于库），库只提供 `spawn_context` / `Pass` / `Renderer` / `setup_presenter` 那一层，照抄时要把它们换成自己的装配；完整骨架见 `unlit3dx_examples/src/lib.rs`（窗口与管线）与 `unlit3dx_examples/src/scene/windowed.rs`（世界与 runner 的选择）。GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
+**窗口 / 离屏 / 交互 / MCP 四种运行**——骨架已在库里，模块 `unlit3dx::app`：应用实现 [`App`] trait（`spawn_scene` 装世界、`setup_render` 装管线，`Args` 关联类型声明自己的参数结构），骨架提供 `windowed` / `headless` / `interactive` / `serve` 四个入口；运行开关（`--mcp` / `--stepped` / `--headless` 等）与应用参数由一个 clap 解析器合并读入，解析好的 `App::Args` 结构体交给 `App::configure`，无参数应用用 `NoArgs`。步进节奏用库的 `Stepping`，配速知识（物理 60 Hz、采样周期记账）都在里面，应用不再自己写步进器。窗口与管线级别的原语（`setup_presenter` / `request_gpu` / `Pass` / `Renderer`）仍然导出，不想用骨架的应用直接拼它们；GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
 
 边界：**场景内容由玩法 world 发 job**（相机在 `spawn_scene` 里就排在渲染 world 的收件箱，网格、材质、实例、姿态同理）；**管线由宿主在 GPU 回调里同步建**（资源图、renderer、mesh source、pass、绘制面板的 `EguiSource`）。后者必须同步，因为 pass 在 GPU 应答那一刻才存在，而 job 要等 `draw_presented` 的 drain 才会执行——那时帧已经画完了。
 
 输入同理，边界是**谁 tick 一个 world，谁折叠它的输入**。子 world 没有自己的回合，所以驱动它那一帧的地方负责：`tick_sub_world`（一次 drain + 折叠输入 + 跑本地任务 + `dispatch_frame`）就是这条不变式的唯一落点，`draw_presented` 与自己驱动子 world 的进程都调它。没人折叠的缓冲会把收到的每个事件都留着——`StreamReader::pump` 一 tick 只能调一次，调两次会丢掉第一次收的批次。
 
 ```rust
+struct Demo;
+
+impl App for Demo {
+    fn spawn_scene<R: WorldRunner>(&mut self, host: &mut World, ports: ScenePorts<'_>) -> SceneWorlds {
+        // 玩法 / 物理 / 音频三个 world 在这里装配，场景内容经 ports.render 发 job：
+        // 相机、网格、材质、实例、姿态，与下面「装配规则」一节相同。
+        // audio_setup 与 automatic_drops 按模式选择，示例见
+        // unlit3dx_examples/src/demo.rs 的转发。
+        scene::spawn_scene::<R>(host, ports.render.clone(), audio_setup, ports.panel.clone(), ports.refresh_millihertz.clone(), ports.input, automatic_drops)
+    }
+
+    fn setup_render(&mut self, host: &mut World, ports: RenderPorts<'_>) -> RenderSetup {
+        // GPU 应答那一刻才走到这里；面板 source 属于 pass，不画面板传 None。
+        setup_render_world(host, ports.world, ports.device.clone(), ports.panel)
+    }
+}
+
 let event_loop = EventLoop::new()?;
-let mut host = WinitHost::new();
-let world = host.world_mut();
-
-world.root_scope_mut().spawn(WindowSetup { attributes: Window::default_attributes().with_title("app") });
-world.root_scope_mut().spawn(ExitOn(ExitTrigger::CloseRequested));
-
-let render = spawn_sub_world(world, "render", 64);
-// 面板的帧落在哪个快照槽里：玩法 world 发，渲染 world 的 EguiSource 收。
-let panels = PanelSlots::default();
-let app = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
-world.root_scope_mut().spawn(bundle![request_gpu(app, move |world, gpu| {
-    // 回调拿 &mut World，在两次事件回调之间执行：正好一次建完渲染 world 与展示路径。
-    // 管线：面板的 source 属于 pass，而 pass 只有在 GPU 应答之后才存在，
-    // 所以连它一起在这个回调里同步装配——排队成 job 会排在那次 draw 的 drain 之后。
-    // 最后一个参数是面板帧落进的槽；不画面板的进程传 None。
-    let (renderer, pass) = setup_render_world(
-        world, render.entity, RenderDevice::from(gpu), Some(panels.target.clone()),
-    );
-    // renderer / pass 是示例的 RemoteEntity：同号的 Entity 在别的 world 里指别的东西，
-    // setup_presenter 要的是渲染 world 里的 Entity，所以取 .entity。
-    // 尺寸给「还没有窗口时的兜底大小」，示例用的是 WINDOW_SIZE = (1024, 720)。
-    setup_presenter(
-        world, render.entity, renderer.entity, pass.entity, gpu, (1024, 720), false,
-        SurfaceOptions::default(),
-    )
-        .expect("the presenter is built");
-})]);
-
-world.root_scope_mut().spawn(bundle![draw_presented(render.entity)]);
-let (pump, redraw) = pump_presented();
-world.root_scope_mut().spawn(bundle![pump]);
-world.root_scope_mut().spawn(bundle![redraw]);
-world.root_scope_mut().spawn(bundle![resize_presented()]);
-host.run(event_loop)?;
+windowed(
+    Demo,
+    WindowOptions { title: "demo".into(), ..WindowOptions::default() },
+    event_loop,
+);
 ```
 
-**无窗口 / 定步长**（测试、离屏、wasm）——**示意骨架**，进程自己驱动每一帧：
+不想用骨架时，窗口与管线照旧一层层拼：`WindowSetup` / `ExitOn` / `request_gpu` 回调里 `setup_render_world` + `setup_presenter`，`draw_presented` / `pump_presented` / `resize_presented` 收尾——示例的旧写法，仍是有效路径。
+
+**无窗口 / 定步长**（测试、离屏、wasm）——`headless` / `interactive` 两个入口覆盖它；要自己驱动每一帧时（测试驱动器就这么做），步进与取帧是：
 
 ```rust
 // 示意骨架：render_world/pass/device 来自 setup_render_world 返回的装配（ctx 是它的
@@ -66,9 +56,12 @@ let step = 1.0 / HEADLESS_HZ;                                 // 每帧时长（
 let target = PersistentTarget::bind(&render_world, ctx, pass.0, &device, size, TargetConfig::default())
     .expect("the offscreen target is bound");
 let mut frame = Frame { delta_time: step as f32, index: 0, size };
+// Stepping 记物理与音频两笔账：物理按 PHYSICS_HZ 攒步，音频按采样周期攒块，
+// audio_frames 返回这一帧该填多少采样。
+let mut stepping = Stepping::new(worlds.clone(), PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE));
 for index in 0..frames {
     frame.index = index;
-    stepper.step(&host, &worlds, step);                       // 玩法 → 物理 → 音频
+    stepping.step(&host, step);                               // 玩法 → 物理 → 音频
     let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
     let world = nested.get();                                 // QueryOne 没有 Deref，先 get() 借出 &mut World
     tick_sub_world(world, &mut frame);                        // drain job → 折叠输入 → 跑本地任务 → 分发帧

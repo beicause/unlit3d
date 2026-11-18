@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use unlit_ecs::World;
-use unlit3dx_examples::interactive::Interactive;
+use unlit3dx::app::Interactive;
 
 /// How many frames the first recording runs: long enough to be sure an idle
 /// scene stays silent, short enough to keep the test quick.
@@ -39,7 +39,7 @@ pub fn soundfont_bytes() -> &'static [u8] {
 /// Click a button's centre: the three input events the MCP `send_input`
 /// tool sends, then the frame that delivers them.
 pub fn click(host: &World, interactive: &mut Interactive, label: &str) {
-    let at = Interactive::panel_buttons(host, interactive.worlds_handle())
+    let at = unlit3dx_examples::scene::panel_buttons(host, interactive.worlds())
         .into_iter()
         .find_map(|(name, rect)| (name == label).then_some(rect.center()))
         .unwrap_or_else(|| panic!("the panel has a {label} button"));

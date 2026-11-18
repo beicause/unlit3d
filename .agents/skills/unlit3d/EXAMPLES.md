@@ -58,7 +58,8 @@
 
 - `crates/unlit3dx/README.md`；代码在 `crates/unlit3dx/src/world.rs`、`host.rs`、`job.rs`、`channel.rs`、`request.rs`。
 - 展示路径与 GPU 请求：`crates/unlit3dx/src/present.rs`、`crates/unlit3dx/src/gpu.rs`。
-- 参考装配（真正的骨架长什么样）：`unlit3dx_examples/src/lib.rs`、`scene.rs`、`render.rs`、`headless.rs`。
+- 应用骨架（窗口 / 离屏 / 交互 / MCP 四种运行的入口与 `App` trait）：`crates/unlit3dx/src/app.rs` 与 `app/` 子模块；运行开关与应用参数由一个 clap 解析器合并读入。
+- 参考装配（应用侧怎么实现 `App`）：`unlit3dx_examples/src/demo.rs`、`scene.rs`、`render.rs`。
 
 ### MCP 与调试宿主
 
@@ -74,6 +75,6 @@
 ### 示例与测试
 
 - 单 world 的完整可跑实现：`unlit3d_cli/src/lib.rs` 的 `build_world` / `offscreen_world`。
-- 无窗口的交互式 MCP 宿主（按帧驱动、离屏渲染、自有工具）：`unlit3dx_examples/src/mcp.rs`。
+- 无窗口的交互式 MCP 宿主（按帧驱动、离屏渲染）：库侧 `crates/unlit3dx/src/app/serve.rs` 与 `interactive.rs`；示例补充的场景工具在 `unlit3dx_examples/src/demo/mcp.rs`。
 - 端到端快照测试的写法（起子进程 + 手写 JSON-RPC 客户端）：`unlit3dx_examples/tests/mcp_input/native.rs`。
 - `unlit3d_examples/src/lib.rs` —— 走 winit 用户事件；`unlit3d_cli/src/lib.rs` —— 走 mpsc channel。
