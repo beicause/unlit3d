@@ -8,10 +8,10 @@
 //! the renderer and the passes live in a render sub-world. Frames are
 //! queued as a command rather than drawn inline, so the host's own async
 //! tasks are polled between the event callbacks, and the draw behaviour
-//! drains the sub-world's command queue before dispatching the frame into
-//! it -- which is what makes the sub-world a server: clients' requests
-//! land as jobs here, on the main thread, between one frame's render and
-//! the next.
+//! ticks the sub-world before drawing it -- drains its command queue, folds
+//! the input it has been fed, runs its tasks, then dispatches the frame --
+//! which is what makes the sub-world a server: clients' requests land as
+//! jobs here, on the main thread, between one frame's render and the next.
 
 use unlit_ecs::{Entity, World};
 
@@ -19,7 +19,7 @@ pub use unlit3d::winit::presenter::{
     BLIT_PASS_ORDER, Presenter, PresenterError, SCENE_PASS_ORDER, resize_presented,
 };
 
-use unlit3d::frame::{FrameBehaviourOrder, OnFrame, dispatch_frame};
+use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::offscreen::{OFFSCREEN_SAMPLES, TargetConfig};
 use unlit3d::winit::SurfaceOptions;
 use unlit3d::winit::builtin::{Resumed, window};
@@ -28,7 +28,7 @@ use unlit3d::winit::presenter::{PRESENT_ORDER, PresentationPath, pump_presented_
 
 use crate::executor::LocalTasks;
 use crate::gpu::Gpu;
-use crate::host::drain_sub_world;
+use crate::host::tick_sub_world;
 
 /// Build the presentation path and spawn its [`Presenter`] in the host
 /// world.
@@ -90,13 +90,16 @@ pub fn setup_presenter(
     .map(|_| ())
 }
 
-/// The draw behaviour: drain the render sub-world's command queue, then
-/// dispatch the frame into it and present the result.
+/// The draw behaviour: drive one frame of the render sub-world, then present
+/// the result.
 ///
 /// `render` names the render sub-world the presenter presents from.
 /// Draining is what makes the sub-world a server: clients' requests land
 /// as jobs here, on the main thread, between one frame's render and the
-/// next.
+/// next. The same call folds the input the sub-world has been fed, which
+/// nothing else would do for it: it has no turn of its own, so the
+/// behaviour that drives its frame is the one that keeps its event queue
+/// from filling.
 ///
 /// The renderer walks every pass of the sub-world here, so the scene's own
 /// pass -- and the offscreen path's copying pass, when there is one -- both
@@ -127,11 +130,7 @@ pub fn draw_presented(render: Entity) -> OnFrame {
             let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(render) else {
                 return;
             };
-            drain_sub_world(&mut *nested.get());
-            // The render world's tasks run between the jobs that queued them
-            // and the dispatch that draws what they landed.
-            LocalTasks::pump(&mut *nested.get());
-            dispatch_frame(&mut *nested.get(), frame);
+            tick_sub_world(&mut *nested.get(), frame);
             drop(nested);
             if let Err(error) = presenter.present(world) {
                 log::error!("failed to present a frame: {error}");

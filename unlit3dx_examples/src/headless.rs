@@ -14,12 +14,12 @@
 use std::sync::Arc;
 
 use unlit_wgpu::readback::readback_texture;
-use unlit3d::frame::{Frame, dispatch_frame};
+use unlit3d::frame::Frame;
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
 use crate::scene::{
-    AudioSetup, HEADLESS_HZ, PanelSlots, SceneStepper, mount_scene_content, setup_render_world,
+    AudioSetup, HEADLESS_HZ, PanelSlots, RENDER_COMMAND_CAPACITY, SceneStepper, setup_render_world,
     spawn_scene,
 };
 
@@ -91,7 +91,7 @@ pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutpu
 
     // The render sub-world, drained inline every frame, exactly as the
     // windowed mode's draw behaviour drains it.
-    let render = spawn_sub_world(&mut host, "render", 64);
+    let render = spawn_sub_world(&mut host, "render", RENDER_COMMAND_CAPACITY);
 
     // The scene's worlds, stepped by this run: the same worlds, queues and
     // mailboxes the windowed mode builds on threads, so both modes share
@@ -122,10 +122,12 @@ pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutpu
         &input,
         true,
     );
-    let (renderer, pass) = setup_render_world(&mut host, render.entity, device.clone());
-    // No control panel headless: nothing is there to click. The camera is
-    // still the scene's, so it arrives as a job like the meshes do.
-    mount_scene_content(&render, pass, None);
+    // No panel source, so the capture holds the scene alone whatever the
+    // gameplay world lays out. The camera arrived with the rest of the scene,
+    // queued when it was spawned: the job lands on this run's first tick of the
+    // render world, which is after this setup and so after the mesh source it
+    // hangs under.
+    let (renderer, pass) = setup_render_world(&mut host, render.entity, device.clone(), None);
     let offscreen = {
         let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
@@ -205,8 +207,7 @@ pub async fn run(config: &HeadlessConfig, device: RenderDevice) -> HeadlessOutpu
         // filter — would have to draw every frame.
         let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
-        drain_sub_world(world);
-        dispatch_frame(world, &mut frame);
+        tick_sub_world(world, &mut frame);
         if config.capture.contains(&index) {
             let target = offscreen.as_ref().expect("the offscreen target exists");
             let context = {

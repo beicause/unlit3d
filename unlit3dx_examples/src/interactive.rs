@@ -12,15 +12,15 @@ use std::sync::Arc;
 
 use unlit_ecs::{Entity, World, bundle};
 use unlit_wgpu::resources::ResHandle;
-use unlit3d::frame::{Frame, dispatch_frame};
-use unlit3d::input::{InputEvent, InputPair, InputWriter, dispatch_input};
+use unlit3d::frame::Frame;
+use unlit3d::input::{InputEvent, InputPair, InputWriter, refresh_input};
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
 use crate::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use crate::scene::{
-    AudioSetup, Ball, HEADLESS_HZ, PanelLayout, PanelSlots, SceneHandles, SceneStepper,
-    SceneTracks, Track, WINDOW_SIZE, mount_scene_content, setup_render_world, spawn_scene,
+    AudioSetup, Ball, HEADLESS_HZ, PanelLayout, PanelSlots, RENDER_COMMAND_CAPACITY, SceneHandles,
+    SceneStepper, SceneTracks, Track, WINDOW_SIZE, setup_render_world, spawn_scene,
 };
 
 /// An interactive scene stepping inline: one frame per call, no pacing of its own.
@@ -42,8 +42,8 @@ pub struct Interactive {
 }
 
 impl Interactive {
-    /// Step `frames` frames: dispatch the queued input, advance every world and
-    /// pull the mix the frames would have played.
+    /// Step `frames` frames: advance every world and pull the mix the frames
+    /// would have played.
     ///
     /// Nothing is drawn here, so a run that only reads the state back rather
     /// than the picture costs no draw calls. [`Interactive::draw`] draws the
@@ -53,7 +53,11 @@ impl Interactive {
     /// replaces anyway.
     pub fn step(&mut self, host: &World, frames: u32) {
         for _ in 0..frames {
-            dispatch_input(host);
+            // The host has no behaviour of its own to route input to, but it
+            // holds a buffer so the MCP tools can feed and read one, and a
+            // buffer no one folds keeps every event it is fed. Folding it is
+            // the whole of what this world needs on a tick.
+            refresh_input(host);
             self.stepper.step(host, &self.worlds, 1.0 / HEADLESS_HZ);
             let frames = self.stepper.audio_frames(1.0 / HEADLESS_HZ);
             if frames > 0 {
@@ -70,9 +74,7 @@ impl Interactive {
                 assert!(filled.is_ok(), "the audio world is a stepped world");
             }
             let mut nested = host.root_scope().query_one::<&mut World>(self.render);
-            let world = nested.get();
-            drain_sub_world(world);
-            dispatch_frame(world, &mut self.frame);
+            tick_sub_world(nested.get(), &mut self.frame);
             self.frame.index = self.frame.index.wrapping_add(1);
         }
     }
@@ -279,7 +281,7 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
     let input = InputWriter::new();
     host.root_scope_mut()
         .spawn(bundle![input.clone(), ..InputPair(input.subscribe())]);
-    let render = spawn_sub_world(&mut host, "render", 64);
+    let render = spawn_sub_world(&mut host, "render", RENDER_COMMAND_CAPACITY);
     let panels = PanelSlots::default();
     let audio_setup = if config.soundfont.is_empty() {
         AudioSetup::Silent
@@ -297,8 +299,12 @@ pub fn run(config: InteractiveConfig) -> (World, InputWriter, Interactive) {
         &input,
         false,
     );
-    let (renderer, pass) = setup_render_world(&mut host, render.entity, config.device.clone());
-    mount_scene_content(&render, pass, Some(panels));
+    let (renderer, pass) = setup_render_world(
+        &mut host,
+        render.entity,
+        config.device.clone(),
+        Some(panels.target.clone()),
+    );
     let target = {
         let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();

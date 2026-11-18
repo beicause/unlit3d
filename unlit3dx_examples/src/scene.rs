@@ -29,6 +29,13 @@
 //! this world's own buffer, so the events that move it are the ones this
 //! world's tick dispatched.
 //!
+//! Everything the scene owns in the render world arrives there as a job this
+//! world queues: its assets, instances, poses and its camera. What it does not
+//! own is the pipeline — the pass, and the source the panel draws through,
+//! which belongs to that pass. The host builds those in the GPU callback,
+//! because a pass exists only once the device has answered and a job would
+//! have to wait behind the drain that draws.
+//!
 //! The setup spawns the objects in whatever order reads best, and only the two
 //! that read what another object writes state an order: the balls tick after
 //! the default band the assets are built in, and the panel's publish after both.
@@ -60,7 +67,7 @@ use self::shared::SceneBuild;
 
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
 pub use balls::{Ball, BallPhase, Balls};
-pub use egui::{control_panel_job, mount_controls};
+pub use egui::mount_controls;
 pub use floor::{
     GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
     checker_ground, spawn_floor,
@@ -71,6 +78,7 @@ pub use shapes::{
     shape_kind, shape_mesh,
 };
 pub use shared::{SceneAssets, SceneState};
+pub use windowed::spawn_windowed_scene;
 
 mod audio;
 mod balls;
@@ -80,6 +88,7 @@ mod music;
 mod shapes;
 mod shared;
 mod tick;
+mod windowed;
 
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
@@ -169,21 +178,34 @@ pub(super) const BALLS_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(100);
 pub(super) const PUBLISH_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(200);
 
 /// Set up the render sub-world: the resource graph, the renderer, the pass
-/// its sources draw into, and the asset-server source. Answers the renderer
+/// its sources draw into, the asset-server source, and — when `panel` names a
+/// slot — the source that draws the control panel. Answers the renderer
 /// resource entity and the pass entity.
 ///
 /// This is the whole of what a render world needs before it can draw, and
 /// none of it is this scene's: no camera, no shape, no panel. Everything
-/// the scene puts in the world — meshes, materials, instances, poses,
-/// camera, egui — arrives as a job, through the sub-world's drain in the
-/// draw behaviour.
+/// the scene puts in the world — meshes, materials, instances, poses and
+/// the camera — arrives as a job, through the sub-world's drain in the draw
+/// behaviour.
+///
+/// The panel's source is here rather than queued from the scene because it
+/// belongs to the pass, and a pass records the sources spawned below it: this
+/// function is what makes the pass, so it is the only place the source can be
+/// put under it. Passing `None` leaves the pass with one source, which is what
+/// a run that captures frames rather than drawing them wants — the gameplay
+/// world still lays its panel out, but no source carries the frame to a pass,
+/// so the captured image holds the scene alone.
 pub fn setup_render_world(
     host: &mut World,
     render_world: Entity,
     device: RenderDevice,
+    panel: Option<Snapshot<EguiTarget>>,
 ) -> (RemoteEntity, RemoteEntity) {
     let Ok(mut nested) = host.root_scope().try_query_one::<&mut World>(render_world) else {
-        unreachable!("the sub-world is a child of the host world");
+        panic!(
+            "render_world {:?} is not a sub-world of the host world",
+            render_world
+        );
     };
     let world = nested.get();
     let context = spawn_context(world, device, ResourceGraph::new());
@@ -198,6 +220,13 @@ pub fn setup_render_world(
     world
         .scope_mut(pass)
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+    if let Some(screen) = panel {
+        let mut source = EguiSource::new();
+        source.publish_target(screen);
+        world
+            .scope_mut(pass)
+            .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source)]);
+    }
     (world.remote(renderer), world.remote(pass))
 }
 
@@ -206,11 +235,14 @@ pub fn setup_render_world(
 /// it around its orbit.
 ///
 /// Where a scene looks from is the scene's to say, so it reaches the
-/// render world the same way its meshes and poses do. The behaviour keeps
-/// the projection matched to the frame's own aspect, and advances the
-/// orbit by each frame's delta, so the speed does not follow the redraw
-/// rate.
-pub fn camera_job() -> Job {
+/// render world the same way its meshes and poses do: as a job the scene
+/// sends when it is built. The render world runs no job until it is drained,
+/// and it is drained only where its frame is driven — after its own setup has
+/// run — so the mesh source the camera hangs under exists by the time the job
+/// executes. The behaviour keeps the projection matched to the frame's own
+/// aspect, and advances the orbit by each frame's delta, so the speed does not
+/// follow the redraw rate.
+fn camera_job() -> Job {
     let mut azimuth = ORBIT_START;
     Box::new(move |world: &mut World| {
         // The camera belongs to the mesh source: a source frames what its own
@@ -246,27 +278,6 @@ pub fn camera_job() -> Job {
                     });
             }),]);
     })
-}
-
-/// Queue this scene's own content on the render world: its camera, and —
-/// where there is a panel to draw — the egui source that draws it.
-///
-/// `pass` is the pass returned by [`setup_render_world`], where the panel's
-/// source belongs.
-///
-/// Both are jobs, so a world that was set up to draw can be given a scene
-/// without its setup ever hearing of one. The panel itself lives in the
-/// gameplay world and nothing here reaches it: the source draws whatever the
-/// slots hold, and the world holding the panel fills them.
-pub fn mount_scene_content(render: &WorldHandle, pass: RemoteEntity, panels: Option<PanelSlots>) {
-    if let Err(error) = render.sender.send(camera_job()) {
-        log::error!("the render world refused its camera ({error:?})");
-    }
-    if let Some(panels) = panels
-        && let Err(error) = render.sender.send(control_panel_job(panels, pass))
-    {
-        log::error!("the render world refused its control panel ({error:?})");
-    }
 }
 
 /// The point on the orbit the camera sits at for one azimuth.
@@ -522,6 +533,23 @@ pub fn spawn_scene<R: WorldRunner>(
                     .spawn(bundle![OnFrame::new(|world, _entity, _frame| {
                         dispatch_input(world);
                     }),]);
+                // The scene's own camera: it hangs under the mesh source the
+                // render world builds on the GPU's answer, which is later than
+                // this setup, so it travels as a job and lands before the first
+                // frame draws.
+                if let Err(error) = scene.render.send(camera_job()) {
+                    log::error!("the render world refused its camera ({error:?})");
+                }
+                // Space drops a ball. The key arrives on this world's own
+                // buffer, the way every event it reacts to does.
+                world
+                    .root_scope_mut()
+                    .spawn(bundle![OnKey::new(move |world, _entity, key| {
+                        if !key.pressed || key.repeat || key.key != Key::Space {
+                            return;
+                        }
+                        drop_ball_in(&world.root_scope());
+                    },),]);
                 spawn_floor(&scene);
                 world.root_scope_mut().spawn(bundle![scene.clone()]);
                 world.root_scope_mut().spawn(SceneBuild::new(&scene));
@@ -719,20 +747,7 @@ impl SceneStepper {
     }
 }
 
-/// Ask the balls to drop the next one, from another world.
-///
-/// The host's keyboard behaviour lives outside the gameplay world, so it
-/// reaches the balls through a job; the panel, which lives inside it, calls
-/// [`drop_ball_in`] instead.
-pub fn drop_ball(sender: &JobSender) {
-    sender
-        .send(Box::new(|world: &mut World| {
-            drop_ball_in(&world.root_scope());
-        }))
-        .ok();
-}
-
-/// Ask the balls to drop the next one, from inside the gameplay world.
+/// Ask the balls to drop the next one.
 pub fn drop_ball_in(world: &Scope<'_>) {
     if let Some((_, balls)) = world.query::<(Entity, &mut Balls)>().iter().next() {
         balls.queue_drop();

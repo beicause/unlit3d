@@ -121,7 +121,7 @@ pub mod prelude {
         channel::{Snapshot, SnapshotReader, Stream, StreamReader, publish_collected},
         executor::{LocalPool, LocalSpawnExt, LocalTasks},
         handle::WorldHandle,
-        host::{drain_sub_world, spawn_sub_world},
+        host::{drain_sub_world, spawn_sub_world, tick_sub_world},
         job::{Job, JobSender, SendError},
         request::{Pending, Settled},
         thread::{

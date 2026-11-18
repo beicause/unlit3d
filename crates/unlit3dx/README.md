@@ -59,6 +59,7 @@ keeps its owner on the main thread but takes jobs like a threaded world:
 let render = spawn_sub_world(&mut host, "render", 64); // 64 queued jobs
 let mut nested = host.root_scope_mut().get_mut::<World>(render.entity).expect("the nested world");
 drain_sub_world(&mut nested); // run the jobs other threads posted
+tick_sub_world(&mut nested, &mut frame); // or a whole frame: jobs, input, tasks, dispatch
 ```
 
 The **physics** bridge drains rapier's contacts into a `PhysicsContacts`
@@ -81,6 +82,9 @@ one world per concern, and never share one.
   `spawn_sub_world` wires one up, other threads post jobs through the
   `WorldHandle` it returns, and the owner calls `drain_sub_world` between its
   own steps — the same protocol as a threaded world, minus the thread.
+  `tick_sub_world` is that step when the owner drives the world's frame: it
+  drains, folds the input the world has been fed, runs its tasks and dispatches
+  the frame, in the one order those steps depend on each other.
 - A **threaded world** is a `World` that belongs to its own thread. Physics,
   audio and gameplay each run one.
 
@@ -258,9 +262,10 @@ The bridges:
   `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
   `AudioConfig`, in that order, mixing their samples and scaling the sum by the
   world's `GlobalAudioGain`; the device callback drains the ring and underruns to
-  silence. The gain is one per world — the dispatcher reads the first
-  `GlobalAudioGain` a query hands back — so a scene spawns one and shapes a
-  source's loudness in its own fill.
+  silence. The gain is one per world: the dispatcher reads the first
+  `GlobalAudioGain` a query hands back, and a world that holds more than one
+  picks by no stated rule, so a scene spawns one and shapes a source's loudness
+  in its own fill.
   A world that carries no source plays nothing.
   Gameplay never touches audio directly — it sends jobs. The world spawns an
   `AudioFormat` component the moment its stream opens — a source that renders
@@ -435,10 +440,13 @@ and with its offscreen path on builds
 pass in the same world that copies it over the surface, which keeps the frame
 long enough to read back, so screenshots and snapshot tests ask for it. Both
 paths take a `SurfaceOptions`: the present mode and how many frames may be in
-flight, which decide whether the swap chain waits for the display. `draw_presented`
-is the per-frame behaviour that drains the sub-world, dispatches the
-frame and presents it, `pump_presented` keeps frames coming while the
-window lives, and `resize_presented` follows the window around. The render
+flight, which decide whether the swap chain waits for the display.
+`draw_presented` is the per-frame behaviour that ticks the sub-world —
+drains its jobs, folds the input it has been fed, runs its tasks, dispatches
+the frame — and presents it; a sub-world has no turn of its own, so the
+behaviour that drives its frame is also what keeps its input queue from
+filling. `pump_presented` keeps frames coming while the window lives, and
+`resize_presented` follows the window around. The render
 bridge a drawing world needs — the asset server and the mesh and camera
 helpers around it — is the caller's to build; `unlit3dx_examples` ships one
 as `src/render.rs`.

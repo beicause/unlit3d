@@ -112,24 +112,25 @@ same entities and components either way, and only who calls a tick and how
 it is paced differs.
 
 - The **host** owns the window and drives frames. It requests the GPU, and
-  once the GPU answers, the library's behaviours take over: `draw_presented`
+  once the GPU answers it assembles the render world and the presentation
+  path; from then on the library's behaviours take over: `draw_presented`
   drains the render world's job inbox every frame, dispatches the frame and
   presents it, `pump_presented` keeps the frames coming while the window
   lives, and `resize_presented` follows the window around — the host knows
-  nothing about physics or audio. Space is forwarded to the gameplay world
-  as a job.
+  nothing about physics or audio, and nothing about what the scene contains.
 - The **render world** is a sub-world on the main thread that behaves like a
   Godot-style resource server: gameplay requests meshes, materials and
   instances with jobs, and the entity of each spawned instance comes back
   as its handle. Everything the scene puts in it arrives the same way —
-  its orbiting camera, the source that draws its control panel, and the
-  poses its bodies carry are jobs too, drained before anything draws. The
-  world's own setup is
-  only the resource graph, the renderer and the mesh source. The server
-  itself — the mesh, material and instance allocations, the sweep that
-  retires what the camera cannot see, and the camera helpers — is this crate's own
-  built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
-  render bridge.
+  its orbiting camera and the poses its bodies carry are jobs too, drained
+  before anything draws. What the host builds there instead — the resource
+  graph, the renderer, the mesh source, and the source that draws the
+  control panel — is the pipeline rather than the scene, and it is built
+  the moment the GPU answers, before the first drain could run anything.
+  The server itself — the mesh, material and instance allocations, the sweep
+  that retires what the camera cannot see, and the camera helpers — is this
+  crate's own, built over `unlit3d`'s generic `MeshSource` registry;
+  `unlit3dx` ships no render bridge.
 - The **physics world** steps rapier at a fixed rate (`PHYSICS_HZ`, 60 Hz)
   and drains its contacts each step. The balls subscribe to it with a
   collector of their own — the
@@ -189,7 +190,11 @@ the slots hold: the panel's entity carries the `EguiPanel`, while the
 publishes for it. Its transport buttons write the sequences this world owns —
 a play, a pause, a rewind is a field write on the `MidiSequencer` of the row
 that was clicked. The render world holds only a `EguiSource` with those slots
-attached, which uploads and records what it finds there.
+attached, which uploads and records what it finds there — [`setup_render_world`](src/scene.rs)
+spawns it under the pass it builds, since a source belongs to the pass that
+records it. A run that captures frames passes `None` instead and gets a pass
+with the scene's source alone: the panel is still laid out and still published,
+but no source carries it into a frame.
 
 The two sides keep separate egui contexts, and their texture ids both start
 at zero — the why, and what a frame keeps because of it, is in

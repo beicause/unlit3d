@@ -18,10 +18,10 @@
 //! world with the rest: it lays its frames out there and sends them to the
 //! render world, which holds and draws them.
 //!
-//! Space drops a body. The render world's control panel drives two music
-//! tracks — a looping background piece and a one-shot MIDI sequence — each
-//! of which pauses, resumes and rewinds on its own, and it drops the next
-//! ball or puts every live ball away.
+//! The control panel drives two music tracks — a looping background piece
+//! and a one-shot MIDI sequence — each of which pauses, resumes and rewinds
+//! on its own, and it drops the next ball or puts every live ball away. Space
+//! drops one too, on the keyboard, from inside the world that holds them.
 //! Bodies fall, bounce off the ground and each other while the music plays.
 //! The soundfont is embedded at
 //! build time: build.rs reads the FluidR3Mono_GM.sf3 file the repository
@@ -50,7 +50,6 @@ pub mod android;
 
 use argh::FromArgs;
 use std::process::ExitCode;
-use std::sync::atomic::Ordering;
 use unlit_ecs::bundle;
 
 use crate::scene::*;
@@ -59,7 +58,7 @@ use image::ImageEncoder;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::winit::builtin::{
-    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground, window,
+    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground,
     winit_input_behaviour,
 };
 use unlit3d::winit::event::WinitHost;
@@ -135,68 +134,22 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // Its content lands once the GPU request resolves.
     let render = spawn_sub_world(world, "render", RENDER_COMMAND_CAPACITY);
 
-    // The worlds behind the scene: threads of their own by default,
-    // stepped by the frame when the target has none to give them — a
-    // browser — or when the run asked for the stepped path.
-    // The control panel lives in the gameplay world and sends each frame to
-    // the render world, which draws it. Neither asks the other for anything.
+    // The worlds behind the scene: threads of their own by default, stepped
+    // by the frame when the target has none to give them — a browser — or
+    // when the run asked for the stepped path. The control panel lives in the
+    // gameplay world and sends each frame to the render world, which draws
+    // it. Neither asks the other for anything.
     let panels = PanelSlots::default();
-    let worlds = if stepped {
-        spawn_scene::<Stepped>(
-            world,
-            render.clone(),
-            stepped_audio(),
-            panels.clone(),
-            &input,
-            true,
-        )
-    } else {
-        spawn_scene::<Threaded>(
-            world,
-            render.clone(),
-            AudioSetup::Device,
-            panels.clone(),
-            &input,
-            true,
-        )
-    };
-    let gameplay_sender = worlds.gameplay.sender.clone();
+    spawn_windowed_scene(world, render.clone(), panels.clone(), &input, stepped);
 
-    // The frame's input: the host dispatches the events its own key
-    // behaviours react to. Nothing clears anything afterwards — each world and
-    // the render world's egui source read their own copy of the stream — and no
-    // other behaviour in this world reads what a key behaviour wrote, so the
-    // dispatch states no order and joins the default band.
+    // The host holds a buffer so the MCP tools can feed one, and a buffer no
+    // one folds keeps every event it is fed. Nothing here dispatches: the
+    // host has no key behaviour of its own.
     world
         .root_scope_mut()
         .spawn(bundle![OnFrame::new(|world, _entity, _frame| {
-            dispatch_input(world);
+            refresh_input(world);
         }),]);
-
-    // The display the window is on paces the gameplay thread, and the
-    // frame loop reads its refresh rate every frame: it moves the window to
-    // another display, or the display changes mode, the next frame follows.
-    // A display that reports nothing leaves the rate at zero, which the
-    // gameplay world reads as "keep the default".
-    let refresh_millihertz = worlds.refresh_millihertz.clone();
-    world
-        .root_scope_mut()
-        .spawn(bundle![OnFrame::new(move |world, _entity, _frame| {
-            let rate = window(world)
-                .and_then(|window| window.current_monitor())
-                .and_then(|monitor| monitor.refresh_rate_millihertz())
-                .unwrap_or(0);
-            refresh_millihertz.store(rate, Ordering::Relaxed);
-        }),]);
-
-    // The stepped worlds run before the draw, so the transforms they
-    // publish are the ones this frame shows.
-    if stepped {
-        let stepper = SceneStepper::new(PHYSICS_HZ, None);
-        world
-            .root_scope_mut()
-            .spawn(bundle![stepped_frame(worlds, stepper)]);
-    }
 
     // The app entity and the behaviours that drive it. The GPU request
     // resolves into the scene setup, which fills the render sub-world and
@@ -209,14 +162,15 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
         // a screenshot reads back. A plain window draws into the swap chain.
         let offscreen = mcp;
         move |world, gpu| {
-            let (renderer, pass) =
-                setup_render_world(world, render.entity, RenderDevice::from(gpu));
-            // The scene's own content — its camera, and the source that draws
-            // whatever the gameplay world publishes — reaches the world it was
-            // set up to draw as jobs. The panels themselves never leave the
-            // world that holds them; what crosses is the slots they publish
-            // into.
-            mount_scene_content(&render, pass, Some(panels.clone()));
+            // The panel's source is pipeline, so it goes in with the rest of
+            // it: the panel itself never leaves the world that holds it, and
+            // what crosses is the slot its frames land in.
+            let (renderer, pass) = setup_render_world(
+                world,
+                render.entity,
+                RenderDevice::from(gpu),
+                Some(panels.target.clone()),
+            );
             let outcome = setup_presenter(
                 world,
                 render.entity,
@@ -246,46 +200,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     world.root_scope_mut().spawn(bundle![redraw]);
     world.root_scope_mut().spawn(bundle![resize_presented()]);
 
-    // Space drops a ball; the music and the balls are driven from the
-    // render world's control panel.
-    world
-        .root_scope_mut()
-        .spawn(bundle![OnKey::new(move |_world, _entity, key| {
-            if !key.pressed || key.repeat {
-                return;
-            }
-            if key.key == Key::Space {
-                drop_ball(&gameplay_sender);
-            }
-        },),]);
     host.run(event_loop).expect("the event loop runs");
-}
-
-/// Step the scene's worlds once per frame, before the draw.
-///
-/// A stepped run has no threads, so the host steps what a threaded build
-/// would leave to them. The stepper follows the frame's own duration and
-/// carries the step remainders, so the worlds keep their rates whatever
-/// the display redraws at.
-fn stepped_frame(worlds: SceneHandles, mut stepper: SceneStepper) -> OnFrame {
-    OnFrame::new(move |world, _entity, frame| {
-        stepper.step(world, &worlds, f64::from(frame.delta_time));
-    })
-}
-
-/// The audio setup a windowed run takes when the host steps the worlds.
-///
-/// A browser's stepped world opens the page's Web Audio context once the
-/// user's first click on Play asks for it: a context may only start inside
-/// a gesture, so the scene stays silent until then even though the page
-/// has been up the whole time. A desktop run that asked for the stepped
-/// path has nothing to play to and stays silent.
-fn stepped_audio() -> AudioSetup {
-    if cfg!(target_arch = "wasm32") {
-        AudioSetup::Device
-    } else {
-        AudioSetup::Silent
-    }
 }
 
 /// The example's command line: switches for the Model Context Protocol,

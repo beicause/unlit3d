@@ -258,20 +258,22 @@ mod tests {
     }
 
     /// The two tracks carve up the voice's sixteen channels: a channel
-    /// sounds with the instrument its last ProgramChange named, so two
-    /// files playing on one channel overwrite each other's instruments.
+    /// sounds with the instrument its last ProgramChange named, and the
+    /// sequencer releases a note by (channel, key), so two files on one
+    /// channel overwrite each other's instruments and cut each other's notes.
     #[test]
     fn the_tracks_play_on_disjoint_channels() {
-        // The channels a file plays on, read off its program changes: a
-        // program change carries its channel in the status byte's low
-        // four bits, as every channel voice message does.
+        // The channels a file plays on, read off its channel voice messages:
+        // each carries its channel in the status byte's low four bits. Every
+        // such message counts -- a note on or off, a controller, a program
+        // change -- because any of them lands on the voice the channel drives.
         let channels = |file: &MidiFile| {
             let mut set = Vec::new();
             for message in file.get_messages() {
                 let MidiMessage::Normal { status, .. } = message else {
                     continue;
                 };
-                if status & 0xF0 == 0xC0 {
+                if matches!(status & 0xF0, 0x80 | 0x90 | 0xA0 | 0xB0 | 0xC0 | 0xE0) {
                     set.push(status & 0x0F);
                 }
             }

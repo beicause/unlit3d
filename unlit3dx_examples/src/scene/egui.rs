@@ -13,13 +13,12 @@
 //! message to another world, and a row reads the transport state it shows
 //! instead of remembering it.
 
+use unlit_ecs::World;
 use unlit_ecs::bundle;
-use unlit_ecs::{RemoteEntity, World};
-use unlit3d::egui::{EguiPanel, EguiSource, egui};
-use unlit3d::prelude::*;
+use unlit3d::egui::{EguiPanel, egui};
 use unlit3dx::prelude::*;
 
-use super::{PanelLayout, PanelSlots, Scene, SceneTracks, Track, clear_balls_in, drop_ball_in};
+use super::{PanelLayout, Scene, SceneTracks, Track, clear_balls_in, drop_ball_in};
 
 /// What one of the panel's two track rows shows.
 ///
@@ -95,18 +94,24 @@ impl TrackButton {
 /// The row names the track so the buttons need no suffix of their own. A
 /// sequence that played to its end is idle again, so its row offers the same
 /// Play, which returns it to its start before starting it.
+///
+/// `layout` is the panel's button map, and a caller passes it only for the row
+/// whose buttons a caller of the panel presses by name: an entry replaces the
+/// label-to-rect mapping for that label, so two rows recording the same button
+/// would leave whichever drew last.
 fn track_controls(
     ui: &mut egui::Ui,
     label: &str,
     sequencer: &mut MidiSequencer,
-    layout: &mut PanelLayout,
+    layout: Option<&mut PanelLayout>,
     audio: &JobSender,
 ) {
     ui.horizontal(|ui| {
         ui.label(label);
+        let mut layout = layout;
         for button in TrackStatus::of(sequencer).buttons() {
             let response = ui.button(button.label());
-            if label == "MIDI sequence" {
+            if let Some(layout) = layout.as_deref_mut() {
                 layout.buttons.insert(button.label(), response.rect);
             }
             if !response.clicked() {
@@ -204,7 +209,7 @@ pub fn mount_controls(world: &mut World) {
                             ui,
                             "Background music",
                             &mut track.get().midi,
-                            layout,
+                            None,
                             &scene.audio,
                         );
                     }
@@ -216,7 +221,7 @@ pub fn mount_controls(world: &mut World) {
                             ui,
                             "MIDI sequence",
                             &mut track.get().midi,
-                            layout,
+                            Some(layout),
                             &scene.audio,
                         );
                     }
@@ -236,24 +241,6 @@ pub fn mount_controls(world: &mut World) {
                 });
             });
         }),]);
-}
-
-/// A job that gives the render world the source drawing this scene's panel.
-///
-/// The panel itself is not here: it lives in the gameplay world, which lays it
-/// out and sends the frame over. This world owns the slots those frames land
-/// in, and measures the target the publisher has to match.
-///
-/// `pass` is the pass the source draws into: a pass records the sources below
-/// it, so a source spawned anywhere else would never reach the frame.
-pub fn control_panel_job(panels: PanelSlots, pass: RemoteEntity) -> Job {
-    Box::new(move |world: &mut World| {
-        let mut source = EguiSource::new();
-        source.publish_target(panels.target);
-        world
-            .scope_mut(pass.entity)
-            .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source)]);
-    })
 }
 
 #[cfg(test)]

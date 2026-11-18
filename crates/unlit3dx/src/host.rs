@@ -11,6 +11,8 @@ use crate::thread::ThreadStatus;
 use crate::thread::panic_message;
 use crate::world::WorldName;
 use unlit_ecs::bundle;
+use unlit3d::frame::{Frame, dispatch_frame};
+use unlit3d::input::dispatch_input;
 
 /// The sub-world's command inbox, a component of the nested world itself.
 ///
@@ -166,4 +168,29 @@ pub fn drain_sub_world(nested: &mut World) {
         }
     }
     publish_collected(nested);
+}
+
+/// Drive one frame of a sub-world: run the jobs queued for it, fold the input
+/// it has been fed, run its tasks, then dispatch the frame.
+///
+/// This is everything a sub-world needs between two draws, in the order the
+/// steps depend on each other: jobs land before anything reads what they
+/// built, the input becomes this tick's batch and reaches its behaviours
+/// before a source reads it, and tasks run between the jobs that queued them
+/// and the dispatch that draws what they landed.
+///
+/// The input tick belongs here rather than to the caller because a world that
+/// never takes one keeps every event it is fed until it does: a sub-world has
+/// no turn of its own, so the call that drives its frame is the only place
+/// that can empty its queue.
+pub fn tick_sub_world(nested: &mut World, frame: &mut Frame) {
+    drain_sub_world(nested);
+    // The jobs' structural changes land before the input dispatch looks for
+    // the behaviours they spawned, and before a source reads what they built.
+    if let Err(error) = nested.apply() {
+        log::error!("a command queued by a sub-world job failed: {error}");
+    }
+    dispatch_input(nested);
+    LocalTasks::pump(nested);
+    dispatch_frame(nested, frame);
 }

@@ -84,16 +84,18 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 构建它们——窗口里是 `Threaded`，浏览器与离屏运行是 `Stepped`——因此宿主在两种
 情况下都携带同样的实体与组件，差别只在于谁调用 tick、以及如何配速。
 
-- **宿主（host）** 拥有窗口并驱动帧。它请求 GPU；GPU 应答之后，一切交给库里的
-  行为：`draw_presented` 每帧排空渲染 world 的 job 收件箱、分发帧并呈现，
-  `pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随窗口
-  变化——宿主对物理与音频一无所知。空格键作为一个 job 转发给玩法 world。
+- **宿主（host）** 拥有窗口并驱动帧。它请求 GPU；GPU 应答之后它装配渲染 world
+  与展示路径，随后一切交给库里的行为：`draw_presented` 每帧排空渲染 world 的
+  job 收件箱、分发帧并呈现，`pump_presented` 在窗口存活期间让帧持续到来，
+  `resize_presented` 跟随窗口变化——宿主对物理与音频一无所知，也不知道场景里
+  有什么。
 - **渲染 world** 是主线程上的子 world，表现得像一台 Godot 式的资源服务器：
   玩法用 job 请求网格、材质与实例，每个生成实例的实体作为句柄传回。场景往里
-  放的一切都以同样的方式到达：环绕的相机、绘制控制面板的那个 source、刚体所带的姿态也都是
-  job，并在任何绘制之前被排空。这个 world 自身的初始化只有资源图、renderer
-  与 mesh source。资源服务器本身——网格、材质与实例的分配，回收镜头看不见的实例的
-  那一轮清扫，以及相机辅助——就是本 crate 自己的 `src/render.rs`，
+  放的一切都以同样的方式到达：环绕的相机、刚体所带的姿态也都是 job，并在任何绘制
+  之前被排空。宿主在那里建的则是管线而不是场景——资源图、renderer、mesh source，
+  以及绘制控制面板的那个 source——它们在 GPU 应答的那一刻就建好，早于第一次
+  drain 可能执行任何 job。资源服务器本身——网格、材质与实例的分配，回收镜头看不见
+  的实例的那一轮清扫，以及相机辅助——就是本 crate 自己的 `src/render.rs`，
   建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
 - **物理 world** 以固定频率（`PHYSICS_HZ`，60 Hz）步进 rapier，每一步排空碰撞事件。
   球们用自己的收集闭包
@@ -135,7 +137,10 @@ egui context 所运行的地方构建，所以由这个 world 负责布局并发
 槽位里存着的那一帧：面板实体携带 `EguiPanel`，而生成在它旁边的 `EguiPanelHost` 承载
 那个 context 并替它发布。它的传送按钮直接写这个 world 拥有的序列——播放、暂停、
 倒回就是往被点那一行的 `MidiSequencer` 上写字段。渲染 world 只持有一个挂上那些槽位的
-`EguiSource`，负责上传并记录它在槽位里找到的帧。
+`EguiSource`，负责上传并记录它在槽位里找到的帧——[`setup_render_world`](src/scene.rs)
+在它建 pass 的那一处把它生成在 pass 之下，因为 source 属于记录它的那个 pass。捕获帧的
+运行改传 `None`，pass 下就只有场景自己的 source：面板照常布局、照常发布，只是没有
+source 把它带进帧里。
 
 两侧各持有一个 egui context，纹理 id 也都从零开始——缘由与后果见
 [`unlit3d`](../crates/unlit3d/README.zh-CN.md) 的 egui 一节。

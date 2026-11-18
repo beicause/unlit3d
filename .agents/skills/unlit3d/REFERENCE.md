@@ -171,7 +171,7 @@
 | 自带线程 | `spawn_threaded_world` / `..._with_init`；tick 返回 bool 表示继续 | 同上 |
 | 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world`、`with_stepped_world` | 同上 |
 | 节拍 | `ThreadControl::self_driven` / `wait_timeout`、`FixedClock::new` / `set_step` / `wait`、`fixed_steps` 与 `MAX_CATCH_UP_STEPS = 4` | `crates/unlit3dx/src/thread.rs` |
-| 子 world | `spawn_sub_world`、`drain_sub_world` | `crates/unlit3dx/src/host.rs` |
+| 子 world | `spawn_sub_world`、`drain_sub_world`、`tick_sub_world`（drain + 折叠输入 + 本地任务 + `dispatch_frame`，驱动子 world 一帧就用它） | `crates/unlit3dx/src/host.rs` |
 | 句柄 | `WorldHandle { entity, sender, state }` + `new` / `is_finished` / `stop` | `crates/unlit3dx/src/handle.rs` |
 | 名字与状态 | `WorldName(&'static str)`；`Threaded` / `Stepped` 标记；`WorldState` = `Running` / `Stopped` / `Panicked(Arc<str>)`——**带 panic 消息，`match` 时要绑定** | `crates/unlit3dx/src/world.rs`、`thread.rs` |
 
@@ -194,7 +194,7 @@
 | 装配（库） | `build_presenter(world, render, renderer, scene_pass, surface, instance, adapter, fallback_size, path, surface_options)` → `Presenter`；`setup_presenter(..)` 同参再 spawn 成组件并返回 `Entity`。`surface` 由调用方 `instance.create_surface(window)` 造 | 同上 |
 | 装配（dx） | `setup_presenter(world, render, renderer, scene_pass, gpu, fallback_size, offscreen: bool, surface_options)`，内部造 surface 并映射成 `Intermediate(TargetConfig::default())` / `Surface`，返回 `Result<(), PresenterError>`——**是 enum，不是 `String`** | `crates/unlit3dx/src/present.rs` |
 | 组件方法 | `Presenter::present(host)` / `resize(host, size)` / `release(host)`；三者都只借 `&mut self`，所以宿主可以直接把 `Presenter` 挂成组件、暂停时 `release` 而不必拆掉实体，恢复后继续 `present` 会自动重开交换链；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
-| 每帧行为（dx） | `draw_presented(render)`——它自己 drain sub-world + 分发帧再调 `Presenter::present`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn（内部就是 `pump_presented_with(Some(LocalTasks::pump))`）；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
+| 每帧行为（dx） | `draw_presented(render)`——它自己 `tick_sub_world`（drain + 折叠输入 + 本地任务 + 分发帧）再调 `Presenter::present`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn（内部就是 `pump_presented_with(Some(LocalTasks::pump))`）；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
 | 每帧行为（单 world） | `present_frames()` / `pump_presented()` / `resize_presented()`：`present_frames` 跳过 `FrameSkip` 标记的帧、且 winit 宿主报告挂起时不呈现（无 `Resumed` 组件的 world 视为已恢复），所以设标志的行为要给更小的 order；它不懂示例的 `Scene`，重述 viewport、`Scene::end_frame` 要自己挂行为 | 同上 |
 | 宿主前置任务 | `pump_presented_with(Some(Box::new(pump)))`：`pump: HostPump = Box<dyn FnMut(&mut World)>`，每帧 dispatch 前在宿主 world 上跑一次，用来排空子 world 的 job、poll 宿主任务 | 同上 |
 | 纯离屏 | `PersistentTarget::bind(world, context, pass, &device, size, TargetConfig { format, samples, with_depth, size })` + `readback_texture`；`resize` 原地 `replace` 纹理与 view，节点 id 不变 | `crates/unlit3d/src/offscreen.rs` |

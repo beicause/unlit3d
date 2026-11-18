@@ -7,6 +7,11 @@ use std::time::Duration;
 
 use unlit_ecs::World;
 use unlit_ecs::bundle;
+use unlit3d::frame::{Frame, OnFrame};
+use unlit3d::input::{
+    InputEvent, InputEvents, InputFeed, InputState, InputWriter, Key, KeyEvent, KeyLocation,
+    Modifiers, OnKey,
+};
 use unlit3dx::prelude::*;
 
 /// A threaded world that idles between ticks, for the tests to drive.
@@ -376,6 +381,98 @@ fn subscriptions_flow_from_thread_to_host() {
         host.root_scope().contains(world.entity),
         "the proxy lives on a host entity"
     );
+}
+
+/// A sub-world's frame is its jobs, its input, its tasks and its dispatch, in
+/// that order: `tick_sub_world` is the one call that states the order.
+#[test]
+fn tick_sub_world_runs_jobs_folds_input_and_dispatches_the_frame() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 8);
+    let input = InputWriter::new();
+    let keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let frames = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // The world's own buffer, fed by the writer and folded on its tick: a
+    // sub-world never gets the host's fan-out, so it subscribes itself.
+    let seen_keys = Arc::clone(&keys);
+    let seen_frames = Arc::clone(&frames);
+    let fed = input.clone();
+    proxy
+        .sender
+        .send(Box::new(move |world: &mut World| {
+            world.root_scope_mut().spawn(InputFeed(fed));
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |_world, _entity, frame| {
+                    seen_frames.lock().expect("the frame log").push(frame.index);
+                })]);
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnKey::new(move |_world, _entity, key| {
+                    seen_keys.lock().expect("the key log").push(key.key);
+                })]);
+        }))
+        .expect("the sub-world accepts a job");
+
+    let mut frame = Frame {
+        delta_time: 1.0 / 60.0,
+        index: 0,
+        size: (16, 16),
+    };
+    // The job's own tick comes first: the buffer it spawns subscribes to the
+    // writer as it is spawned, and an event fed before that has no
+    // subscriber to reach.
+    let mut nested_row = host.root_scope().query_one::<&mut World>(proxy.entity);
+    tick_sub_world(nested_row.get(), &mut frame);
+    drop(nested_row);
+    keys.lock().expect("the key log").clear();
+    frames.lock().expect("the frame log").clear();
+
+    input.push(InputEvent::Key(KeyEvent {
+        key: Key::Space,
+        location: KeyLocation::Standard,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::default(),
+    }));
+    frame.index = 7;
+    let mut nested_row = host.root_scope().query_one::<&mut World>(proxy.entity);
+    tick_sub_world(nested_row.get(), &mut frame);
+    drop(nested_row);
+
+    assert_eq!(
+        *keys.lock().expect("the key log"),
+        vec![Key::Space],
+        "the job and the input event both landed on this one tick"
+    );
+    assert_eq!(
+        *frames.lock().expect("the frame log"),
+        vec![7],
+        "the frame was dispatched, at the index it was handed"
+    );
+    // The batch is the tick's own fold rather than the queue as it was fed:
+    // a reader that only reads, without dispatching anything, still finds the
+    // events of this tick after it.
+    let folded = {
+        let mut nested_row = host.root_scope().query_one::<&mut World>(proxy.entity);
+        let nested = nested_row.get();
+        let mut batch = Vec::new();
+        for events in nested.root_scope().query::<&InputEvents>().iter() {
+            events.copy_events_into(&mut batch);
+        }
+        // The state folded in the same tick, and it is what a pointer-reading
+        // source consults in place of the events.
+        let state = nested
+            .root_scope()
+            .query::<&InputState>()
+            .iter()
+            .next()
+            .is_some();
+        (batch, state)
+    };
+    assert_eq!(folded.0.len(), 1, "the tick's batch holds the one event");
+    assert!(folded.1, "the buffer keeps the state it folds into");
 }
 
 /// The counter the persistence test shares with its threaded world.

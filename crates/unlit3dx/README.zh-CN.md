@@ -55,6 +55,7 @@ if let Some(latest) = reader.latest() {
 let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
 let mut nested = host.root_scope_mut().get_mut::<World>(render.entity).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
+tick_sub_world(&mut nested, &mut frame); // 或者整整一帧：job、输入、任务、分发
 ```
 
 **physics** 桥每步把 rapier 的碰撞事件排空进 `PhysicsContacts` 组件，**synth** 桥把
@@ -72,7 +73,9 @@ note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的�
   绘制 world 就是其一：它在主线程上绘制，宿主只在事件之间进入它。它同样有一个
   job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过它返回的
   `WorldHandle` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
-  与独占线程的 world 相同的协议，只是没有线程。
+  与独占线程的 world 相同的协议，只是没有线程。当持有者驱动该 world 的帧时，
+  那一「步」就是 `tick_sub_world`：排空、折叠它收到的输入、跑它的本地任务、分发帧，
+  顺序就是这几步互相依赖的顺序。
 - **独占线程的 world（threaded world）** 是属于自己的线程的 `World`。物理、音频与玩法
   各运行一个。
 
@@ -208,8 +211,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   每层带着自己的 `AudioFillOrder`：
   `dispatch_audio_fill` 按该顺序每块运行每个回调，把各自叠加的样本混进由 `AudioConfig`
   定长的环形缓冲，并按 world 的 `GlobalAudioGain` 缩放混音；
-  设备回调消费这个缓冲，欠载时静音。增益每 world 只有一份——分发器读的是查询交回的第一份
-  `GlobalAudioGain`——因此场景只生成一份，音源自己的响度由它自己的填充去塑造。没有任何音源的 world 不出声。
+  设备回调消费这个缓冲，欠载时静音。增益每 world 只有一份：分发器读的是查询交回的第一份
+  `GlobalAudioGain`，一个 world 里放了多份时按未规定的顺序取其一，因此场景只生成一份，
+  音源自己的响度由它自己的填充去塑造。没有任何音源的 world 不出声。
   玩法从不直接触碰音频——它发送 job。world 在流打开的那一刻生成 `AudioFormat`
   组件——按固定速率渲染的音源必须按设备实际采用的速率构建，而这一点在流打开之前
   无从知晓——并同时生成 `AudioOutputOpen` 标记，调用方由此区分有地方播放的 world
@@ -327,9 +331,10 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 打开离屏路径后改建 `PresentationPath::Intermediate`，即一张常驻目标加同一个 world 里
 的第二个 pass，把目标拷到表面——这让帧存活得足够久、可以读回，截图与快照测试就走
 这条路。两条路都收一个 `SurfaceOptions`：呈现模式与允许在途的帧数，它们决定交换链是否
-等显示器。`draw_presented` 是每帧排空
-子 world、分发帧并呈现的行为，`pump_presented` 在窗口
-存活期间让帧持续到来，`resize_presented` 跟随窗口变化。绘制 world 所需的 render
+等显示器。`draw_presented` 是每帧驱动子 world 再呈现它的行为：排空它的 job、折叠它收到的输入、
+跑它的本地任务、分发帧。子 world 没有自己的回合，所以驱动它那一帧的地方也是让它输入队列
+不堆满的地方。`pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随
+窗口变化。绘制 world 所需的 render
 桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`
 自带一份，位于 `src/render.rs`。
 

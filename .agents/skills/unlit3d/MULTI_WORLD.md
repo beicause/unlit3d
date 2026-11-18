@@ -11,7 +11,11 @@
 
 ## 两种骨架
 
-**窗口版**——**示意，不是库 API**：`setup_render_world` / `mount_scene_content` / `SceneStepper` 是示例自己的装配助手（`unlit3dx_examples/src/scene.rs`，是 `pub` 的，但属于示例、不属于库），库只提供 `spawn_context` / `Pass` / `Renderer` / `setup_presenter` 那一层，照抄时要把它们换成自己的装配；完整骨架见 `unlit3dx_examples/src/lib.rs`。GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
+**窗口版**——**示意，不是库 API**：`setup_render_world` / `spawn_scene` / `SceneStepper` 是示例自己的装配助手（`unlit3dx_examples/src/scene.rs`，是 `pub` 的，但属于示例、不属于库），库只提供 `spawn_context` / `Pass` / `Renderer` / `setup_presenter` 那一层，照抄时要把它们换成自己的装配；完整骨架见 `unlit3dx_examples/src/lib.rs`（窗口与管线）与 `unlit3dx_examples/src/scene/windowed.rs`（世界与 runner 的选择）。GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
+
+边界：**场景内容由玩法 world 发 job**（相机在 `spawn_scene` 里就排在渲染 world 的收件箱，网格、材质、实例、姿态同理）；**管线由宿主在 GPU 回调里同步建**（资源图、renderer、mesh source、pass、绘制面板的 `EguiSource`）。后者必须同步，因为 pass 在 GPU 应答那一刻才存在，而 job 要等 `draw_presented` 的 drain 才会执行——那时帧已经画完了。
+
+输入同理，边界是**谁 tick 一个 world，谁折叠它的输入**。子 world 没有自己的回合，所以驱动它那一帧的地方负责：`tick_sub_world`（一次 drain + 折叠输入 + 跑本地任务 + `dispatch_frame`）就是这条不变式的唯一落点，`draw_presented` 与自己驱动子 world 的进程都调它。没人折叠的缓冲会把收到的每个事件都留着——`StreamReader::pump` 一 tick 只能调一次，调两次会丢掉第一次收的批次。
 
 ```rust
 let event_loop = EventLoop::new()?;
@@ -22,13 +26,19 @@ world.root_scope_mut().spawn(WindowSetup { attributes: Window::default_attribute
 world.root_scope_mut().spawn(ExitOn(ExitTrigger::CloseRequested));
 
 let render = spawn_sub_world(world, "render", 64);
+// 面板的帧落在哪个快照槽里：玩法 world 发，渲染 world 的 EguiSource 收。
+let panels = PanelSlots::default();
 let app = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
 world.root_scope_mut().spawn(bundle![request_gpu(app, move |world, gpu| {
     // 回调拿 &mut World，在两次事件回调之间执行：正好一次建完渲染 world 与展示路径。
-    let (renderer, pass) = setup_render_world(world, render.entity, gpu.render_device);
-    mount_scene_content(&render, pass, panels);   // 场景内容一律走 job
-    // renderer / pass 是示例的 RemoteEntity：同号的 Entity 在别的 world 里指别的东西，setup_presenter 要里面的 Entity，所以取 .entity。
-// 设备以 RenderDevice 传入（RenderDevice::unwatched 或从 GpuContext 转换而来）。
+    // 管线：面板的 source 属于 pass，而 pass 只有在 GPU 应答之后才存在，
+    // 所以连它一起在这个回调里同步装配——排队成 job 会排在那次 draw 的 drain 之后。
+    // 最后一个参数是面板帧落进的槽；不画面板的进程传 None。
+    let (renderer, pass) = setup_render_world(
+        world, render.entity, RenderDevice::from(gpu), Some(panels.target.clone()),
+    );
+    // renderer / pass 是示例的 RemoteEntity：同号的 Entity 在别的 world 里指别的东西，
+    // setup_presenter 要的是渲染 world 里的 Entity，所以取 .entity。
     // 尺寸给「还没有窗口时的兜底大小」，示例用的是 WINDOW_SIZE = (1024, 720)。
     setup_presenter(
         world, render.entity, renderer.entity, pass.entity, gpu, (1024, 720), false,
@@ -49,7 +59,8 @@ host.run(event_loop)?;
 
 ```rust
 // 示意骨架：render_world/pass/device 来自 setup_render_world 返回的装配（ctx 是它的
-// RenderContext），size 是你要的离屏尺寸；名字对应该文其它片段。
+// RenderContext），size 是你要的离屏尺寸；名字对应该文其它片段。捕获帧的进程给
+// setup_render_world 的 panel 参数传 None，pass 下就只有 mesh source。
 let step = 1.0 / HEADLESS_HZ;                                 // 每帧时长（秒）
 // 目标建在它在的那个 world 里；pass 由 setup_render_world 建好。
 let target = PersistentTarget::bind(&render_world, ctx, pass.0, &device, size, TargetConfig::default())
@@ -60,8 +71,7 @@ for index in 0..frames {
     stepper.step(&host, &worlds, step);                       // 玩法 → 物理 → 音频
     let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
     let world = nested.get();                                 // QueryOne 没有 Deref，先 get() 借出 &mut World
-    drain_sub_world(world);                                   // render world 的 job 在宿主线程跑
-    dispatch_frame(world, &mut frame);
+    tick_sub_world(world, &mut frame);                        // drain job → 折叠输入 → 跑本地任务 → 分发帧
     // render 要 &World，不能再借 &mut；行只在这次调用里借出，写完即释放。
     world.root_scope().query_one::<&mut Renderer>(renderer.0)
         .get().render(&world);
