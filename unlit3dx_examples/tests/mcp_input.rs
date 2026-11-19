@@ -43,6 +43,7 @@ async fn the_interactive_scene_matches_the_snapshots() {
 gpu_tests! {
     #[host_only]
     the_mcp_input_and_audio_match_the_snapshots,
+    #[host_only]
     the_self_paced_run_serves_mcp,
     the_interactive_scene_matches_the_snapshots,
 }

@@ -40,8 +40,8 @@ pub use rmcp::model::{CallToolResult, ContentBlock};
 pub use server::{
     CommandSender, ContextArg, EntityArg, GetComponent, HandleArg, InputArg, ListEntities,
     McpServer, NoArgs, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot, SendInput,
-    SetComponent, SpawnEntity, SpawnGltf, ToolResult, ToolRouter,
-    ToolSource, WorldArg, command, entity, run, send, serve_stdio_with, serve_with, tool,
+    SetComponent, SpawnEntity, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, command,
+    entity, run, send, serve_stdio_with, serve_with, tool,
 };
 
 /// The JSON crate a tool uses to build structured output.

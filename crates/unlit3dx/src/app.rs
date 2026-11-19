@@ -76,6 +76,12 @@ pub use windowed::{WindowOptions, windowed};
 ))]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub use scene::ClientPacing;
+#[cfg(all(
+    feature = "mcp",
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
+#[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub use serve::{Transports, serve};
 
 /// The rate a scene's physics world runs at when its application says
