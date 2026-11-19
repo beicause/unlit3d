@@ -61,11 +61,11 @@ between the `unlit3d` and `unlit3dx` activities.
 ## The headless mode
 
 ```sh
-cargo run -p unlit3dx_examples -- --headless-frames 300 --headless-out headless
+cargo run -p unlit3dx_examples -- --headless --headless-frames 300 --headless-out headless
 ```
 
-Naming `--headless-frames` or `--headless-out` runs the very same scene without a window, threads
-or an audio device. It is the browser's path with the frames handed over by
+`--headless` runs the very same scene without a window, threads or an audio
+device. It is the browser's path with the frames handed over by
 the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
 in the host's own world, and the skeleton's `Stepping` advances them one
 frame at a time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes
@@ -80,7 +80,7 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 [`unlit3d_asset_files`](../unlit3d_asset_files) submodule;
 `SNAPSHOT_UPDATE=1` re-stores them.
 
-`--headless-frames 1 --mcp-stdio` goes one step further: instead of running a
+`--headless --mcp-stdio` goes one step further: instead of running a
 fixed number of frames it waits for MCP commands, and only the `step_frames`
 tool advances time. The scene renders into an offscreen texture the client
 reads with

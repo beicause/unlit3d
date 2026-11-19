@@ -49,10 +49,10 @@ Android APK 加载的 `.so` 则由 `unlit3dx_examples_android` 构建——该 c
 ## 离屏模式
 
 ```sh
-cargo run -p unlit3dx_examples -- --headless-frames 300 --headless-out headless
+cargo run -p unlit3dx_examples -- --headless --headless-frames 300 --headless-out headless
 ```
 
-`--headless-frames` 或 `--headless-out` 运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
+`--headless` 运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
 宿主自己的 world，骨架的 `Stepping` 一帧一帧地推进它们：物理按它自己的频率
 （`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
@@ -64,7 +64,7 @@ cargo run -p unlit3dx_examples -- --headless-frames 300 --headless-out headless
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
 `SNAPSHOT_UPDATE=1` 重新保存基准。
 
-`--headless-frames 1 --mcp-stdio` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
+`--headless --mcp-stdio` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
 离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告运行本身——帧号、
 各 world 的句柄、离屏目标——而示例自己的 `scene_extra_status` 补充场景：球数、MIDI
 序列状态与每个面板按钮的中心。`request_exit` 让进程退出。该模式下自动掉球与背景自动播放

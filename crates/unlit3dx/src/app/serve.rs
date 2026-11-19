@@ -68,16 +68,23 @@ pub struct Transports {
 ///
 /// # Errors
 ///
-/// Fails when the HTTP transport cannot bind its port, carrying the
-/// underlying message, and serves nothing then. Naming an HTTP address on
-/// a build without the mcp-http feature fails the same way, and so does a
-/// capture that cannot be written, after the run has ended.
+/// Fails without serving anything when [Transports] names no transport at
+/// all: the host is paced by its client, and without a transport no client
+/// reaches it. Fails when the HTTP transport cannot bind its port, carrying
+/// the underlying message. Naming an HTTP address on a build without the
+/// mcp-http feature fails the same way, and so does a capture that cannot
+/// be written, after the run has ended.
 pub fn serve<A: App>(
     app: A,
     device: RenderDevice,
     transports: Transports,
     out: Option<PathBuf>,
 ) -> Result<Option<SocketAddr>, String> {
+    if !transports.stdio && transports.http.is_none() {
+        return Err(
+            "the interactive host is paced by its client, and without a transport nothing paces it; name a transport with Transports or drive the frames in process with [interactive]".to_owned(),
+        );
+    }
     let (mut host, _input) = interactive_host(app, device);
     if transports.stdio {
         serve_mcp(&mut host);

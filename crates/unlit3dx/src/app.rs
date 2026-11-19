@@ -188,9 +188,10 @@ fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions,
 /// application's [`App::Args`] read together by one parser, whose
 /// `--help` describes both — and then:
 ///
-/// - naming `--headless-frames` or `--headless-out` captures frames and a mix
-///   without a window; with `--mcp-stdio` or `--mcp-http` it serves the
-///   interactive host instead.
+/// - `--headless` runs without a window: with `--mcp-stdio` or `--mcp-http`
+///   it serves the interactive host to a client, and otherwise it steps the
+///   frames `--headless-frames` names and captures when `--headless-out`
+///   names a directory.
 /// - otherwise it opens a window, stepped inline unless the platform
 ///   drives the worlds on threads of their own; `--mcp-stdio` serves the
 ///   scene to a client over standard input and output and `--mcp-http`
@@ -256,12 +257,13 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// The headless entry [`run`] takes when a headless capture is named.
+/// The headless entry [`run`] takes when a headless run is named.
 ///
 /// The GPU is opened here rather than by the caller so the run owns the
-/// whole of a capture: it picks the device tier from the environment,
-/// steps the frames the command line named, and writes the pictures and
-/// the mix beside each other.
+/// whole of a capture: it picks the device tier from the environment, and
+/// steps the frames the command line named. A served run hands those
+/// frames to its client instead; a capture writes the pictures and the
+/// mix only when `--headless-out` names a directory.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode {
     use crate::gpu::Gpu;
@@ -271,10 +273,7 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     let frames = options
         .headless_frames
         .unwrap_or(RunOptions::DEFAULT_HEADLESS_FRAMES);
-    let out = options
-        .headless_out
-        .clone()
-        .unwrap_or(std::path::PathBuf::from(RunOptions::DEFAULT_HEADLESS_OUT));
+    let out = options.headless_out.clone();
     if frames == 0 {
         log::error!("--headless-frames must be at least 1");
         return std::process::ExitCode::FAILURE;
@@ -325,6 +324,9 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
         ..HeadlessConfig::default()
     };
     let output = pollster::block_on(headless::headless(app, &config, device));
+    let Some(out) = out else {
+        return std::process::ExitCode::SUCCESS;
+    };
     match write::capture(&output, &config, &out) {
         Ok(written) => {
             for path in written {
