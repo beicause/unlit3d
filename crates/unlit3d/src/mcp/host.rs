@@ -16,7 +16,7 @@ use image::ImageEncoder as _;
 use unlit_ecs::mcp::host::{
     SavedFile, SpawnedEntity, extension_of, saved_name, to_value, write_file,
 };
-use unlit_ecs::mcp::serde_json::{self, Value, json};
+use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{EncodedImage, Output, SpawnMesh};
 use unlit_ecs::{DynamicBundle, Entity, Scope, World, bundle};
 use unlit_wgpu::pipeline::LitOptions;
@@ -861,15 +861,38 @@ fn frame_monitor(monitor: Arc<Mutex<FrameMonitor>>) -> OnFrame {
     })
 }
 
-/// Report a world's frame ordinal, last frame duration, elapsed time and
-/// frame rate, spawning what reports them on first call.
+/// What the frame-clock tools report about one world.
 ///
-/// A world whose driver dispatches frames carries a clock already; one that
-/// does not gets a clock here, so a world the host only steps reports the
-/// ordinal it stands at instead of nothing. The average covers the last
-/// [`FRAME_WINDOW`] frames, which is finer than a client can sample for
-/// itself and survives the frames between two calls.
-pub fn frame_clock(world: &mut World) -> Result<Value, String> {
+/// Every field but the averages is the world's own [`FrameClock`], so a world
+/// that never dispatched a frame reports none of them: a client can tell a
+/// world with no pacing of its own from one standing at its first frame.
+#[derive(Debug, Clone, Copy, PartialEq, facet::Facet)]
+pub struct FrameClockReport {
+    /// The world's frame ordinal, or none when it never dispatched a frame.
+    pub index: Option<u32>,
+    /// How long the world's last frame took, in seconds.
+    pub delta_time: Option<f32>,
+    /// The time the world's frames have covered, in seconds.
+    pub time: Option<f32>,
+    /// The rate the last frame ran at, in frames per second.
+    pub fps: Option<f32>,
+    /// The average rate over the measured window, or none before the monitor
+    /// has seen a frame.
+    pub average_fps: Option<f32>,
+    /// How many frames the average covers.
+    pub average_window_frames: Option<usize>,
+}
+
+/// Report a world's frame ordinal, last frame duration, elapsed time and
+/// frame rate, spawning the monitor that measures the average on first call.
+///
+/// The frame state is the world's own [`FrameClock`], which a world that
+/// dispatches frames spawns when it initialises. A world that never dispatched
+/// a frame — the host world of a windowed run, which carries no scene — reports
+/// no frame rather than a made-up zero, so a client can tell the two apart.
+/// The average covers the last [`FRAME_WINDOW`] frames, which is finer than a
+/// client can sample for itself and survives the frames between two calls.
+pub fn frame_clock(world: &mut World) -> Result<FrameClockReport, String> {
     let existing = world
         .root_scope()
         .query::<&FrameMonitorState>()
@@ -897,37 +920,22 @@ pub fn frame_clock(world: &mut World) -> Result<Value, String> {
         .iter()
         .next()
         .copied();
-    let FrameClock {
-        time,
-        delta_time,
-        index,
-    } = match clock {
-        Some(clock) => clock,
-        None => {
-            // Nothing dispatches frames into this world yet. A clock spawned
-            // here is advanced by the first frame its driver dispatches, so a
-            // world read before it ever ticked reports frame zero rather than
-            // no frame at all.
-            world.root_scope_mut().spawn(bundle![FrameClock::default()]);
-            FrameClock::default()
-        }
-    };
     // A zero-duration frame would report an infinite rate; leave the
     // instantaneous fps out instead.
-    let fps = (delta_time > 0.0).then(|| 1.0 / delta_time);
+    let fps = clock.and_then(|clock| (clock.delta_time > 0.0).then(|| 1.0 / clock.delta_time));
     let average_fps = monitor
         .average_delta()
         .filter(|delta| *delta > 0.0)
         .map(|delta| 1.0 / delta);
     let window_frames = monitor.window.len();
-    Ok(json!({
-        "index": index,
-        "delta_time": delta_time,
-        "time": time,
-        "fps": fps,
-        "average_fps": average_fps,
-        "average_window_frames": average_fps.map(|_| window_frames),
-    }))
+    Ok(FrameClockReport {
+        index: clock.map(|clock| clock.index),
+        delta_time: clock.map(|clock| clock.delta_time),
+        time: clock.map(|clock| clock.time),
+        fps,
+        average_fps,
+        average_window_frames: average_fps.map(|_| window_frames),
+    })
 }
 
 #[cfg(test)]
@@ -955,56 +963,57 @@ mod tests {
             let mut frame = crate::frame::Frame {
                 delta_time: 1.0 / 60.0,
                 index,
-                size: (64, 64),
             };
             dispatch_frame(&mut world, &mut frame);
         }
 
         // The first call spawns the monitor, which has seen no frame yet.
         let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock["index"], json!(2));
-        assert_eq!(clock["average_fps"], Value::Null);
+        assert_eq!(clock.index, Some(2));
+        assert_eq!(clock.average_fps, None);
 
         // The frames after it fold into the rolling window.
         for index in 3..5u32 {
             let mut frame = crate::frame::Frame {
                 delta_time: 1.0 / 30.0,
                 index,
-                size: (64, 64),
             };
             dispatch_frame(&mut world, &mut frame);
         }
         let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock["index"], json!(4));
-        assert_eq!(clock["average_window_frames"], json!(2));
-        let fps = clock["fps"].as_f64().expect("the last frame states a rate");
+        assert_eq!(clock.index, Some(4));
+        assert_eq!(clock.average_window_frames, Some(2));
+        let fps = clock.fps.expect("the last frame states a rate");
         assert!(
             (fps - 30.0).abs() < 0.1,
-            "the instantaneous rate is the last frame's: {clock}"
+            "the instantaneous rate is the last frame's: {clock:?}"
         );
-        let average = clock["average_fps"].as_f64().expect("an average exists");
+        let average = clock.average_fps.expect("an average exists");
         assert!(
             (average - 30.0).abs() < 0.1,
-            "the window is the two 30 Hz frames: {clock}"
+            "the window is the two 30 Hz frames: {clock:?}"
         );
     }
 
     #[test]
-    fn a_world_that_never_dispatched_a_frame_still_reports_one() {
+    fn a_world_that_never_dispatched_a_frame_reports_none() {
         let mut world = World::new();
         let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock["index"], json!(0));
-        assert_eq!(clock["delta_time"], json!(0.0));
-        assert_eq!(clock["fps"], Value::Null);
+        assert_eq!(clock.index, None);
+        assert_eq!(clock.delta_time, None);
+        assert_eq!(clock.time, None);
+        assert_eq!(clock.fps, None);
+        assert_eq!(clock.average_fps, None);
 
-        // The clock the first call spawned is the one the driver advances.
+        // A world without a clock gains none behind the client's back, so a
+        // frame dispatched into it still reads as no frame rather than a zero
+        // the client would take for a real first frame.
         let mut frame = crate::frame::Frame {
             delta_time: 1.0 / 60.0,
             index: 7,
-            size: (64, 64),
         };
         dispatch_frame(&mut world, &mut frame);
         let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock["index"], json!(7));
+        assert_eq!(clock.index, None);
     }
 }

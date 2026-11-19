@@ -22,7 +22,7 @@ use unlit3d::winit::builtin::ExitRequest;
 use super::App;
 use super::headless::{AUDIO_SAMPLE_RATE, HEADLESS_HZ, HeadlessConfig, HeadlessOutput};
 use super::interactive::{Interactive, interactive};
-use super::scene::SteppingState;
+use super::scene::ClientPacing;
 use super::write;
 use crate::mcp::{pump_mcp, serve_mcp};
 
@@ -312,7 +312,7 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
             return Ok(json!({ "frame": interactive.frame() }));
         }
         drop(interactive);
-        let mut parked = host.root_scope().query::<&SteppingState>();
+        let mut parked = host.root_scope().query::<&ClientPacing>();
         let Some(state) = parked.iter().next() else {
             return Err("the host paces its own frames and takes no stepping".to_owned());
         };

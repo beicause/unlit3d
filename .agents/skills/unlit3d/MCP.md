@@ -50,7 +50,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 - **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless --interactive --mcp-stdio`，它不建 winit 事件循环。
 - **`--mcp-stdio` 与 `--mcp-http` 会改变渲染路径**：带任一开关时场景自己的 pass 画进常驻纹理（`PresentationPath::Intermediate`），同一个 world 里再加一个 blit pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。不改这条路径的话，MCP 截图拿不到画面——交换链图像不是资源图节点。
-- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过停靠在 host world 里的 `Stepping` 组件推进场景，返回 `{"stepped": n}` 而没有帧号，且 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主没有帧号可报，帧率要问 `frame_clock`。`--interactive` 必须搭配一个传输，否则运行拒绝启动。
+- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"stepped": n}` 而没有帧号，且 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主没有帧号可报，帧率要问 `frame_clock`。`--interactive` 必须搭配一个传输，否则运行拒绝启动。
 - **截图只能读到常驻纹理**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，此时工具会报 `the world has no readable texture to screenshot; pass \`target\``。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
@@ -124,11 +124,14 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 | 工具           | 作用                                       | 关键参数 |
 | -------------- | ------------------------------------------ | -------- |
-| `frame_clock`   | 报告帧序数、帧时长、瞬时与窗口平均帧率     | 无       |
+| `frame_clock`   | 报告某个 world 的帧序数、帧时长、瞬时与窗口平均帧率 | `world` |
+| `frame_clocks`  | 一次报出 `list_worlds` 列出的每个 world 的帧钟     | 无       |
 
 `frame_clock` 报告该 world 帧循环的 `index`（帧序数，从零起）、`delta_time` 与 `time`（上次与前次的帧时长与累计秒数）、`fps`（`1.0 / delta_time`，帧时长为零时省略）与 `average_fps`（最近 120 帧的滑动平均，窗口帧数见 `average_window_frames`）。第一次调用才往该 world 派生监控行为，它只从那之后的帧开始计数——所以在首次调用前 `average_fps` 是空的，多 world 宿主里每个 world 各有自己的窗口。
 
-节奏随 world 而不同，也随 world 而报：每个真正按自己节奏循环的 world 都在自己那一拍里派发帧——渲染子世界每帧一次，物理 world 每个 tick 一次（`delta_time` 是该 tick 实测的步长，不是配置的名义 hz），音频 world 每个 tick 一次（即每次填充），gameplay 在它自己的 tick 里派。所以同一个宿主里物理、音频与渲染三个 world 的帧率各自不同，问哪个 world 就得到哪个 world 的节奏。不派帧的 world（例如只被宿主逐个 tick 推进、自身无循环的 world）第一次查时由工具给它补一个时钟，报它当下的序数而不是什么都不报。
+节奏随 world 而不同，也随 world 而报：每个真正按自己节奏循环的 world 都在自己那一拍里派发帧——渲染子世界每帧一次，物理 world 每个 tick 一次（`delta_time` 是该 tick 实测的步长，不是配置的名义 hz），音频 world 每个 tick 一次（即每次填充），gameplay 在它自己的 tick 里派。所以同一个宿主里物理、音频与渲染三个 world 的帧率各自不同，问哪个 world 就得到哪个 world 的节奏。
+
+不派帧的 world 报空：窗口宿主自己携带的 host world 没有场景、也不派帧，它的 `index` / `delta_time` / `time` / `fps` 都是 `null`（平均值仍可来自监控行为），客户端据此区分「没有节奏」与「停在第零帧」。`frame_clocks` 把同一份报告按 `list_worlds` 的顺序排成数组（每项带 `world`、`name` 与 `clock`），比逐个 world 各采样一次更适合并排比较节奏。
 
 ### 音频录音
 

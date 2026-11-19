@@ -26,11 +26,17 @@ pub use crate::reflect::{
 };
 pub use host::{
     Despawned, EncodedAudio, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity,
-    WorldEntry, WorldRef, extension_of, saved_name, to_value, with_extension, write_file,
+    WorldEntry, WorldRef, extension_of, from_value, saved_name, to_value, with_extension,
+    write_file,
 };
 #[cfg(feature = "mcp-http")]
 pub use http::{McpHttpServer, serve_http_with};
 pub use inventory;
+/// The reply types a tool answers with, re-exported from the protocol crate so
+/// a crate that registers tools builds its replies without depending on the
+/// protocol itself.
+pub use rmcp::ErrorData;
+pub use rmcp::model::{CallToolResult, ContentBlock};
 pub use server::{
     CommandSender, ContextArg, EntityArg, GetComponent, HandleArg, InputArg, ListEntities,
     McpServer, MeshTransform, NoArgs, ReadBuffer, RendererArg, SaveBuffer, SaveScreenshot,

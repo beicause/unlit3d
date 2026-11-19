@@ -5,8 +5,9 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
-use unlit_ecs::World;
 use unlit_ecs::sync;
+use unlit_ecs::{World, bundle};
+use unlit3d::frame::FrameClock;
 use web_time::Instant;
 
 use crate::channel::{Snapshot, SnapshotReader};
@@ -311,6 +312,12 @@ impl WorldThread {
                 };
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let mut world = World::new();
+                    // A world is born with its frame state, so a behaviour
+                    // subscribed to the first turn already reads a clock
+                    // rather than finding none.
+                    world
+                        .root_scope_mut()
+                        .spawn_named("frame_clock", bundle![FrameClock::default()]);
                     // The world's async tasks are its own from here on: the
                     // setup may spawn one, and every tick drives them.
                     LocalTasks::install(&mut world);

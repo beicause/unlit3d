@@ -378,7 +378,9 @@ The bridges:
   and either write the mix out to a file or hand it back in memory, so a test
   can assert on the samples without touching the disk. `frame_clock` reports a
   world's frame index, delta time, and the instantaneous and window-averaged
-  frame rate, so a client reads the pacing off one call instead of sampling.
+  frame rate, so a client reads the pacing off one call instead of sampling;
+  `frame_clocks` does the same for every world the host lists, so the
+  scene, physics and audio worlds are compared in one answer.
   Both answers carry the
   same samples in the format the caller names, the way the image tools do: a
   file name's extension picks it, and a tool that answers inline takes a

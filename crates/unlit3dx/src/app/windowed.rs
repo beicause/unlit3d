@@ -34,7 +34,7 @@ use super::headless::RENDER_COMMAND_CAPACITY;
     not(target_arch = "wasm32"),
     not(target_os = "android")
 ))]
-use super::scene::SteppingState;
+use super::scene::ClientPacing;
 use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
 use crate::gpu::request_gpu;
 use crate::host::spawn_sub_world;
@@ -186,7 +186,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
             ))]
             world
                 .root_scope_mut()
-                .spawn(bundle![SteppingState(Arc::clone(&stepper))]);
+                .spawn(bundle![ClientPacing(Arc::clone(&stepper))]);
         } else {
             world
                 .root_scope_mut()

@@ -270,6 +270,17 @@ pub fn to_value<'a, T: facet::Facet<'a>>(value: &T) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
+/// Read a value back through the reflection it derives, the inverse of
+/// [`to_value`].
+///
+/// A reply crosses the transport as JSON, so a tool that reads another tool's
+/// answer goes through the same reflection that wrote it instead of spelling
+/// the shape out a second time.
+pub fn from_value<T: facet::Facet<'static>>(value: &Value) -> Result<T, String> {
+    let text = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    facet_json::from_str(&text).map_err(|error| error.to_string())
+}
+
 /// A spawned entity, as the tools report it.
 #[derive(facet::Facet)]
 pub struct SpawnedEntity {

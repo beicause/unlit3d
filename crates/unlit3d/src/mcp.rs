@@ -8,11 +8,14 @@
 
 mod host;
 
+use host::FrameClockReport;
+
 use unlit_ecs::mcp::serde_json::Value;
 use unlit_ecs::mcp::{
-    CommandSender, ContextArg, HandleArg, InputArg, McpServer, ReadBuffer, SaveBuffer,
-    SaveScreenshot, SaveTexture, Screenshot, SendInput, SpawnGltf, SpawnMesh, ToolResult,
-    ToolRouter, ToolSource, WorldArg, command, entity, run, tool,
+    CallToolResult, CommandSender, ContextArg, ErrorData, HandleArg, InputArg, McpCommand,
+    McpServer, NoArgs, Output, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot,
+    SendInput, SpawnGltf, SpawnMesh, ToolResult, ToolRouter, ToolSource, WorldArg, WorldRef,
+    command, entity, from_value, run, to_value, tool,
 };
 use unlit_wgpu::resources::ResId;
 
@@ -137,7 +140,101 @@ async fn spawn_mesh(commands: CommandSender, args: SpawnMesh) -> ToolResult {
 
 /// Report a world's frame ordinal, frame duration and frame rate.
 async fn frame_clock(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, host::frame_clock).await
+    command(&commands, args.world, move |world| {
+        host::frame_clock(world).and_then(|report| to_value(&report))
+    })
+    .await
+}
+
+/// Report a frame clock for every world the host carries.
+async fn frame_clocks(commands: CommandSender, _args: NoArgs) -> ToolResult {
+    let worlds = request_worlds(&commands).await?;
+    let mut reports = Vec::with_capacity(worlds.len());
+    for entry in worlds {
+        reports.push(FrameClockEntry {
+            world: entry.world,
+            name: entry.name,
+            clock: world_frame_clock(&commands, entry.world).await?,
+        });
+    }
+    to_value(&reports)
+        .map(CallToolResult::structured)
+        .map_err(|error| ErrorData::internal_error(error, None))
+}
+
+/// One world as this crate reads it back from a listing.
+///
+/// The listing's `WorldEntry` names its world with a `&'static str`, which is
+/// what the host has rather than what a reply can carry, so the reply is read
+/// into an owned name here.
+#[derive(facet::Facet)]
+struct ListedWorld {
+    world: WorldRef,
+    name: String,
+}
+
+/// Ask the host which worlds it carries.
+async fn request_worlds(commands: &CommandSender) -> Result<Vec<ListedWorld>, ErrorData> {
+    let (request, receiver) = McpCommand::list_worlds();
+    commands
+        .send(request)
+        .await
+        .map_err(|_| ErrorData::internal_error("the world thread is gone", None))?;
+    match receiver.recv().await {
+        Ok(Ok(Output::Json(value))) => from_value(&value).map_err(|error| {
+            ErrorData::internal_error(format!("list_worlds answered unreadably: {error}"), None)
+        }),
+        Ok(Ok(_)) => Err(ErrorData::internal_error(
+            "list_worlds was answered with something other than JSON",
+            None,
+        )),
+        Ok(Err(message)) => Err(ErrorData::internal_error(message, None)),
+        Err(_) => Err(ErrorData::internal_error(
+            "the world thread dropped the command",
+            None,
+        )),
+    }
+}
+
+/// Ask one world for its frame clock.
+async fn world_frame_clock(
+    commands: &CommandSender,
+    world: WorldRef,
+) -> Result<FrameClockReport, ErrorData> {
+    let (command, receiver) = McpCommand::new(move |world| {
+        host::frame_clock(world)
+            .and_then(|report| to_value(&report))
+            .map(Output::from)
+    });
+    commands
+        .send(command.with_world(world))
+        .await
+        .map_err(|_| ErrorData::internal_error("the world thread is gone", None))?;
+    match receiver.recv().await {
+        Ok(Ok(Output::Json(value))) => from_value(&value).map_err(|error| {
+            ErrorData::internal_error(format!("a frame clock answered unreadably: {error}"), None)
+        }),
+        Ok(Ok(_)) => Err(ErrorData::internal_error(
+            "a frame clock was answered with something other than JSON",
+            None,
+        )),
+        Ok(Err(message)) => Err(ErrorData::internal_error(message, None)),
+        Err(_) => Err(ErrorData::internal_error(
+            "the world thread dropped the command",
+            None,
+        )),
+    }
+}
+
+/// One world's line in the frame-clock listing.
+#[derive(facet::Facet)]
+struct FrameClockEntry {
+    /// The reference every other tool names this world by.
+    world: WorldRef,
+    /// The name the world was spawned under.
+    name: String,
+    /// The world's frame clock.
+    clock: FrameClockReport,
 }
 
 /// Render a frame and read it back as an inline image.
@@ -240,8 +337,13 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "frame_clock",
-        "Report a world's frame ordinal, last frame duration, elapsed time, instantaneous fps, and the average fps over the last 120 frames. Pass the world whose frame pacing to inspect: every world paces its own frames, so a scene, a physics world and an audio world each answer for themselves. The average is measured by a monitor spawned on the first call, and covers only the frames since.",
+        "Report a world's frame ordinal, last frame duration, elapsed time, instantaneous fps, and the average fps over the last 120 frames. Pass the world whose frame pacing to inspect: every world paces its own frames, so a scene, a physics world and an audio world each answer for themselves. Fields that come from the world's own clock are null for a world that never dispatched a frame. The average is measured by a monitor spawned on the first call, and covers only the frames since.",
         frame_clock,
+    ));
+    router.add_route(tool(
+        "frame_clocks",
+        "Report the frame clock of every world the host carries, as list_worlds names them, in one call. Each entry carries the world's reference, its name, and the same clock frame_clock reports; a client comparing the pacing of a scene, its physics world and its audio world reads them side by side instead of sampling each one at a different moment.",
+        frame_clocks,
     ));
     router.add_route(tool(
         "read_screenshot",

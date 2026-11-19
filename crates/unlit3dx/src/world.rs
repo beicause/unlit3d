@@ -12,6 +12,7 @@
 
 use async_channel::{Receiver, bounded};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, World, bundle};
+use unlit3d::frame::FrameClock;
 
 use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
@@ -290,6 +291,11 @@ where
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     let mut world = World::new();
+    // A world is born with its frame state, so a behaviour subscribed to the
+    // first turn already reads a clock rather than finding none.
+    world
+        .root_scope_mut()
+        .spawn_named("frame_clock", bundle![FrameClock::default()]);
     // The world's async tasks are its own from here on: the setup may spawn
     // one, and every step drives them.
     LocalTasks::install(&mut world);

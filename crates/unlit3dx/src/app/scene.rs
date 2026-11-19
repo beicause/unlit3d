@@ -196,21 +196,24 @@ impl Stepping {
     }
 }
 
-/// The stepper a windowed run parks in its host world, so more than the
-/// frame behaviour can reach it.
+/// The stepper a client-paced host parks in its world.
 ///
-/// A self-paced windowed run steps from its frame behaviour and holds the
-/// lock only while stepping; a client-paced run spawns no frame behaviour
-/// and its MCP tools step through the same state instead. The worlds are
-/// stepped worlds either way: threads of their own would step behind the
-/// client's back.
+/// Spawning one is what declares a host client-paced: the `step_frames` tool
+/// advances the scene through the stepper it finds here, and reports the host
+/// as pacing its own frames when it finds none. The worlds stay stepped
+/// worlds either way, because a world on a thread of its own would step
+/// behind the client's back.
 ///
-/// Only a build with the tools has anyone to hand the state to, so it does
-/// not exist without them and a client-paced switch falls back to the frame
-/// behaviour.
+/// A self-paced host keeps its stepper inside the frame behaviour that drives
+/// it, which no tool can reach — that is what stops a client from advancing
+/// the scene a second way beside the host's own loop.
+///
+/// Only a build with the tools has a client to hand the state to, so the type
+/// exists only there.
 #[cfg(all(
     feature = "mcp",
     not(target_arch = "wasm32"),
     not(target_os = "android")
 ))]
-pub(crate) struct SteppingState(pub(crate) Arc<Mutex<Stepping>>);
+#[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
+pub struct ClientPacing(pub Arc<Mutex<Stepping>>);

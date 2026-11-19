@@ -169,7 +169,6 @@ impl Server {
                     let mut frame = Frame {
                         delta_time: 1.0 / 60.0,
                         index,
-                        size: SIZE,
                     };
                     dispatch_frame(&mut world, &mut frame);
                 }
@@ -442,6 +441,7 @@ pub fn run() {
             "spawn_mesh",
             "spawn_gltf",
             "frame_clock",
+            "frame_clocks",
             "send_input",
             "read_buffer",
             "save_buffer",
@@ -598,6 +598,18 @@ pub fn run() {
             clock["average_window_frames"],
             serde_json::Value::Null,
             "so the window it averages over is empty: {clock}"
+        );
+
+        // The listing reports the same clock under the name the world list
+        // gives it, so a client compares worlds without sampling each one.
+        let clocks = server.tool("frame_clocks", json!({})).await;
+        let clocks = clocks.as_array().expect("frame_clocks returns an array");
+        assert_eq!(clocks.len(), 1, "the host holds one world: {clocks:?}");
+        assert_eq!(clocks[0]["name"], "host", "under the name it was spawned");
+        assert_eq!(
+            clocks[0]["clock"]["index"].as_u64(),
+            Some(2),
+            "the listed clock is the one frame_clock reports: {clocks:?}"
         );
 
         // `target` names the texture or any view of it: the pass that draws
