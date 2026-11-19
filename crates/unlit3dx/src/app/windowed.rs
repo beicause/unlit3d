@@ -29,7 +29,13 @@ use winit::window::Window;
 
 use super::App;
 use super::headless::RENDER_COMMAND_CAPACITY;
-use super::scene::{Mode, RenderPorts, ScenePorts, Stepping, SteppingState};
+#[cfg(all(
+    feature = "mcp",
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
+use super::scene::SteppingState;
+use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
 use crate::gpu::request_gpu;
 use crate::host::spawn_sub_world;
 use crate::present::{draw_presented, pump_presented, setup_presenter};
@@ -163,7 +169,21 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     if stepped {
         let stepper = Stepping::new(worlds, A::PHYSICS_HZ, None);
         let stepper = Arc::new(Mutex::new(stepper));
-        if options.interactive {
+        // Parking the stepper is what lets a client step the scene, and
+        // only a build with the tools has a client: without them the
+        // switch changes nothing and the frame behaviour paces the run.
+        let parked = options.interactive
+            && cfg!(all(
+                feature = "mcp",
+                not(target_arch = "wasm32"),
+                not(target_os = "android")
+            ));
+        if parked {
+            #[cfg(all(
+                feature = "mcp",
+                not(target_arch = "wasm32"),
+                not(target_os = "android")
+            ))]
             world
                 .root_scope_mut()
                 .spawn(bundle![SteppingState(Arc::clone(&stepper))]);

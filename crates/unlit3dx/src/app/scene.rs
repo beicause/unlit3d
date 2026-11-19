@@ -1,8 +1,14 @@
 //! What a run hands its scene, and the pacing that drives the worlds the
 //! scene hands back.
 
+use std::sync::Arc;
+#[cfg(all(
+    feature = "mcp",
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
 
 use unlit_ecs::{Entity, RemoteEntity, World};
 use unlit_wgpu::context::RenderDevice;
@@ -198,4 +204,13 @@ impl Stepping {
 /// and its MCP tools step through the same state instead. The worlds are
 /// stepped worlds either way: threads of their own would step behind the
 /// client's back.
+///
+/// Only a build with the tools has anyone to hand the state to, so it does
+/// not exist without them and a client-paced switch falls back to the frame
+/// behaviour.
+#[cfg(all(
+    feature = "mcp",
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
 pub(crate) struct SteppingState(pub(crate) Arc<Mutex<Stepping>>);

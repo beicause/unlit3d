@@ -235,19 +235,24 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     }
+    // A build without the server cannot serve a transport the command line
+    // names, so it says which feature to turn on instead of running the
+    // scene with the switch quietly ignored. Both entries share the refusal,
+    // which is why it sits before either of them starts.
+    if (options.mcp_stdio || options.mcp_http_run()) && !cfg!(feature = "mcp") {
+        log::error!("the MCP server needs the mcp feature");
+        return std::process::ExitCode::FAILURE;
+    }
+    if options.mcp_http_run() && !cfg!(feature = "mcp-http") {
+        log::error!("the HTTP transport needs the mcp-http feature");
+        return std::process::ExitCode::FAILURE;
+    }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     if options.headless_run() {
         return headless_main(app, &options);
     }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     let _ = &options;
-    // The same refusal the headless path serves: a build without the
-    // mcp-http feature cannot serve the address, so it says so instead of
-    // silently running with the switch ignored.
-    if options.mcp_http_run() && !cfg!(feature = "mcp-http") {
-        log::error!("the HTTP transport needs the mcp-http feature");
-        return std::process::ExitCode::FAILURE;
-    }
     let mcp_http_addr = match options.mcp_http_bind() {
         Ok(addr) => addr,
         Err(message) => {
