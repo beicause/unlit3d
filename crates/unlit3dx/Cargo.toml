@@ -36,10 +36,10 @@ async-channel.workspace = true
 base64 = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
-# The lossless encoder the audio tools write a captured mix with. Only the
+# The lossless encoder the recorder writes a captured mix with. Only the
 # encoder itself is used: the parallel, serde and log features are its own
 # plumbing, not something a one-shot file write needs.
-flacenc = { workspace = true, default-features = false }
+flacenc = { workspace = true, default-features = false, optional = true }
 futures-executor.workspace = true
 futures-util.workspace = true
 glam.workspace = true
@@ -106,8 +106,9 @@ app = [
   "dep:pollster",
   "render",
 ]
-## The audio output thread, backed by cpal and a ring buffer.
-audio = ["dep:cpal", "dep:ringbuf"]
+## The audio output thread, backed by cpal and a ring buffer, and the
+## recorder that encodes a captured mix with flacenc.
+audio = ["dep:cpal", "dep:flacenc", "dep:ringbuf"]
 ## The MCP stdio server driven from the host world. Its audio tools record
 ## what a world fills, so it turns the audio feature on itself rather than
 ## leaving a caller to pair the two — the recorder is compiled only for them.
