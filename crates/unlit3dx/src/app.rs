@@ -189,11 +189,12 @@ fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions,
 /// `--help` describes both — and then:
 ///
 /// - naming `--headless-frames` or `--headless-out` captures frames and a mix
-///   without a window; with `--mcp` or `--mcp-http` it serves the interactive
-///   host instead.
+///   without a window; with `--mcp-stdio` or `--mcp-http` it serves the
+///   interactive host instead.
 /// - otherwise it opens a window, stepped inline unless the platform
-///   drives the worlds on threads of their own; `--mcp-http` serves the
-///   same scene to network clients while the window stays up.
+///   drives the worlds on threads of their own; `--mcp-stdio` serves the
+///   scene to a client over standard input and output and `--mcp-http`
+///   serves it to network clients while the window stays up.
 ///
 /// The windowed path is the one a browser and an Android activity take:
 /// neither has a headless run.
@@ -247,7 +248,7 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         .expect("the platform builds an event loop");
     let window = WindowOptions {
         stepped: options.stepped || cfg!(target_arch = "wasm32"),
-        mcp: options.mcp,
+        mcp_stdio: options.mcp_stdio,
         mcp_http_addr,
         ..WindowOptions::for_app::<A>()
     };
@@ -291,7 +292,7 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     };
     let device = RenderDevice::from(gpu);
     #[cfg(feature = "mcp")]
-    if options.mcp || options.mcp_http_run() {
+    if options.mcp_stdio || options.mcp_http_run() {
         let http = match options.mcp_http_bind() {
             Ok(addr) => addr,
             Err(message) => {
@@ -300,10 +301,15 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
             }
         };
         let transports = Transports {
-            stdio: options.mcp,
+            stdio: options.mcp_stdio,
             http,
         };
-        match serve(app, device, transports) {
+        // A served run shares the headless switches: an output directory has
+        // it write what it drove when the client ends the run, and a frame
+        // budget keeps meaning what it means without MCP — how long a
+        // capture-only run drives.
+        let out = options.headless_out.clone();
+        match serve(app, device, transports, out) {
             Ok(_) => return std::process::ExitCode::SUCCESS,
             Err(message) => {
                 log::error!("the MCP server did not start: {message}");

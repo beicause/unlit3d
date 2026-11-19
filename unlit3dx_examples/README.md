@@ -43,7 +43,7 @@ refuses any argument it does not know. That crate's README also covers why
 the bytes sit in a crate of their own and what a checkout without the
 gitignored `assets/FluidR3Mono_GM.sf3` does.
 
-The `--mcp` switch serves the worlds over the [Model Context
+The `--mcp-stdio` switch serves the worlds over the [Model Context
 Protocol](../crates/unlit_ecs/README.md) instead of exiting with the
 window: tools can then inspect every world, save screenshots of the render
 world, and record the audio world's mix to a file — FLAC, the smaller of the
@@ -80,9 +80,10 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 [`unlit3d_asset_files`](../unlit3d_asset_files) submodule;
 `SNAPSHOT_UPDATE=1` re-stores them.
 
-`--headless --mcp` goes one step further: instead of running a fixed number
-of frames it waits for MCP commands, and only the `step_frames` tool advances
-time. The scene renders into an offscreen texture the client reads with
+`--headless-frames 1 --mcp-stdio` goes one step further: instead of running a
+fixed number of frames it waits for MCP commands, and only the `step_frames`
+tool advances time. The scene renders into an offscreen texture the client
+reads with
 `read_texture_as_image`, `scene_status` reports the run — the frame, the
 world handles, the offscreen target — while the demo's own
 `scene_extra_status` adds the scene: the ball count, the MIDI sequence and

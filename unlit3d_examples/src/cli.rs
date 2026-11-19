@@ -46,7 +46,7 @@ pub struct Args {
     /// serve the scene over the Model Context Protocol on standard input and
     /// output, showing the frames it renders in the window
     #[argh(switch)]
-    pub mcp: bool,
+    pub mcp_stdio: bool,
 }
 
 impl Default for Args {
@@ -55,7 +55,7 @@ impl Default for Args {
             scene: default_scene(),
             list_scenes: false,
             size: None,
-            mcp: false,
+            mcp_stdio: false,
         }
     }
 }
@@ -162,13 +162,13 @@ mod tests {
         assert_eq!(args.scene, "skinned");
         assert_eq!(args.size, Some((320, 240)));
         assert!(args.list_scenes);
-        assert!(!args.mcp);
+        assert!(!args.mcp_stdio);
     }
 
     #[test]
     fn the_mcp_switch_is_read() {
-        let args = run(&["--mcp"]).expect("the switch parses");
-        assert!(args.mcp);
+        let args = run(&["--mcp-stdio"]).expect("the switch parses");
+        assert!(args.mcp_stdio);
         assert_eq!(args.scene, scenes::default().id);
     }
 

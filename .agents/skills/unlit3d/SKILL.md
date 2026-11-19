@@ -58,4 +58,4 @@ description: 用 unlit3d（单 world 渲染库）与 unlit3dx（多 world 运行
 
 ## 两个入口怎么衔接
 
-写代码与改设计看 [SCENE.md](SCENE.md) / [MULTI_WORLD.md](MULTI_WORLD.md)；连上 world 观察与操纵运行时看 [MCP.md](MCP.md)。用 MCP 查「这个 pass 为什么没画东西」时要带着本文的心智模型去读 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)；反过来，`--mcp` 会改变渲染路径（见 [MCP.md](MCP.md)），别拿桌面帧去推断离屏帧。
+写代码与改设计看 [SCENE.md](SCENE.md) / [MULTI_WORLD.md](MULTI_WORLD.md)；连上 world 观察与操纵运行时看 [MCP.md](MCP.md)。用 MCP 查「这个 pass 为什么没画东西」时要带着本文的心智模型去读 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)；反过来，`--mcp-stdio` 与 `--mcp-http` 会改变渲染路径（见 [MCP.md](MCP.md)），别拿桌面帧去推断离屏帧。

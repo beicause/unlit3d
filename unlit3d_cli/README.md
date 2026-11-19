@@ -16,7 +16,7 @@ whole render, and command-line options override the same-named fields of it.
 The command line is parsed with [`argh`](https://docs.rs/argh), so every option
 is `--name value` or a bare flag, and the value must be the next argument;
 `--name=value` is not accepted. `--output` is the only required option — except
-under `--mcp`, which renders nothing — and its extension chooses the image
+under `--mcp-stdio`, which renders nothing — and its extension chooses the image
 format: `png`, `webp` and `jpeg` are supported.
 
 ```text
@@ -120,7 +120,7 @@ frame rather than failed on, and `SNAPSHOT_UPDATE=1` rewrites one that exists.
 
 ## Model Context Protocol
 
-`--mcp` serves a headless world over stdio as a
+`--mcp-stdio` serves a headless world over stdio as a
 [Model Context Protocol](https://modelcontextprotocol.io) server. `--output` is
 not required in that mode, and the world starts empty — no document is loaded —
 so a client can build the scene itself. See
@@ -128,7 +128,7 @@ so a client can build the scene itself. See
 crate registers, and the transport.
 
 ```text
-cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
+cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp-stdio
 ```
 
 ## License

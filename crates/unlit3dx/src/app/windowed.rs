@@ -47,9 +47,9 @@ pub struct WindowOptions {
     /// Drive the worlds from the frame loop rather than threads of their
     /// own. A browser always takes this path, whatever the option says.
     pub stepped: bool,
-    /// Serve the scene over the Model Context Protocol, drawing into an
-    /// offscreen target so a client can read frames back.
-    pub mcp: bool,
+    /// Serve the scene over MCP on standard input and output, drawing into
+    /// an offscreen target so a client can read frames back.
+    pub mcp_stdio: bool,
     /// Serve the scene over MCP on a TCP port as well, so network clients
     /// reach the host while the window stays up. The address is bound once
     /// the GPU request resolves; port 0 leaves the port to the OS. Only a
@@ -78,7 +78,7 @@ impl Default for WindowOptions {
             size: (1024, 720),
             render_capacity: RENDER_COMMAND_CAPACITY,
             stepped: cfg!(target_arch = "wasm32"),
-            mcp: false,
+            mcp_stdio: false,
             mcp_http_addr: None,
             surface: SurfaceOptions::default(),
         }
@@ -176,7 +176,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     // requests dispatch frames into it.
     let app_entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
     let render_entity = render.entity;
-    let mcp = options.mcp;
+    let mcp = options.mcp_stdio;
     world
         .root_scope_mut()
         .spawn(bundle![request_gpu(app_entity, {

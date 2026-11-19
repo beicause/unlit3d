@@ -463,7 +463,7 @@ the `App` trait — `spawn_scene` builds its worlds, `setup_render` builds its
 pipeline inside the GPU callback — and one of `windowed`, `headless`,
 `interactive` or `serve` runs it, wiring the window, the input feed, the
 stepped pacing (`Stepping`), the offscreen target and the MCP server. The
-run's own switches (`--mcp`, `--mcp-http`, `--stepped`, `--headless-frames`,
+run's own switches (`--mcp-stdio`, `--mcp-http`, `--stepped`, `--headless-frames`,
 `--headless-out`)
 and the application's `App::Args` are read by one clap parser, so a single
 `--help` describes both; the parsed arguments reach `App::configure` as a

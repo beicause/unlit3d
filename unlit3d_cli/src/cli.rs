@@ -25,9 +25,9 @@ pub struct Args {
     /// The host starts from an empty offscreen world and the tool calls build
     /// the scene; every other option is ignored.
     #[argh(switch)]
-    pub mcp: bool,
+    pub mcp_stdio: bool,
     /// the output image path; its extension chooses the format (png, webp or jpeg).
-    /// Required unless --mcp is given.
+    /// Required unless --mcp-stdio is given.
     #[argh(option)]
     pub output: Option<PathBuf>,
     /// the output image size, as WxH.
@@ -196,8 +196,8 @@ where
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match Args::from_args(&[PROGRAM], &refs) {
-        Ok(parsed) if parsed.output.is_none() && !parsed.mcp => Err(String::from(
-            "--output is required unless --mcp is given, because a render needs somewhere to write the image",
+        Ok(parsed) if parsed.output.is_none() && !parsed.mcp_stdio => Err(String::from(
+            "--output is required unless --mcp-stdio is given, because a render needs somewhere to write the image",
         )),
         Ok(parsed) => Ok(Parsed::Run(Box::new(parsed))),
         Err(exit) if exit.status.is_ok() => Ok(Parsed::Help(usage())),
@@ -304,9 +304,9 @@ mod tests {
             args(&["--output", "out.png"]).output,
             Some(PathBuf::from("out.png"))
         );
-        assert!(args(&["--mcp"]).mcp);
-        assert_eq!(args(&["--mcp"]).output, None);
-        assert!(parse(["--mcp"]).is_ok());
+        assert!(args(&["--mcp-stdio"]).mcp_stdio);
+        assert_eq!(args(&["--mcp-stdio"]).output, None);
+        assert!(parse(["--mcp-stdio"]).is_ok());
     }
 
     #[test]

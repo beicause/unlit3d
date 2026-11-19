@@ -189,7 +189,7 @@ struct Mcp {
 impl Mcp {
     fn start() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_unlit3dx-examples"))
-            .args(["--headless-frames", "2", "--mcp"])
+            .args(["--headless-frames", "2", "--mcp-stdio"])
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -231,7 +231,7 @@ the activity's `android.app.lib_name` entry is unchanged.
 
 ## Model Context Protocol
 
-`--mcp` serves the scene the example would otherwise have rendered, over stdio,
+`--mcp-stdio` serves the scene the example would otherwise have rendered, over stdio,
 as a [Model Context Protocol](https://modelcontextprotocol.io) server. The
 chosen scene is built first — `--scene` still selects it — and the client then
 reads and drives it through the tools. The example's own event loop serves it,
@@ -246,7 +246,7 @@ See [`unlit_ecs`](../crates/unlit_ecs/README.md) for the server, the tools
 each crate registers, and the transport.
 
 ```text
-cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
+cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp-stdio --scene spin_cube
 ```
 
 ## Android
@@ -315,7 +315,7 @@ the value must be the next argument, so `--name=value` is not accepted.
 | `--scene <ID>` | `spin_cube` | The scene to start from |
 | `--list-scenes` | off | Print the scene table and exit |
 | `--size <WxH>` | the scene's own | Initial window size in pixels |
-| `--mcp` | off | Serve the world over stdio, showing its frames in the window |
+| `--mcp-stdio` | off | Serve the world over stdio, showing its frames in the window |
 
 ### Playback pace
 

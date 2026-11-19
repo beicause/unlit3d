@@ -34,7 +34,7 @@ crate 嵌入二进制：同一份字节能到达窗口、浏览器与 Android ac
 「这些字节为什么单独放一个 crate」以及缺了被 gitignore 的
 `assets/FluidR3Mono_GM.sf3` 时会怎样，见该 crate 的 README。
 
-`--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit_ecs/README.zh-CN.md)
+`--mcp-stdio` 开关把各个 world 通过[模型上下文协议](../crates/unlit_ecs/README.zh-CN.md)
 对外服务，而不是随窗口一起退出：工具随后可以检视每个 world，为渲染 world 保存截图，
 并把音频 world 的混音录成文件——默认 FLAC（两者中更小的那个），文件名另有要求时
 则录成 WAV。
@@ -64,7 +64,7 @@ cargo run -p unlit3dx_examples -- --headless-frames 300 --headless-out headless
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
 `SNAPSHOT_UPDATE=1` 重新保存基准。
 
-`--headless --mcp` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
+`--headless-frames 1 --mcp-stdio` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
 离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告运行本身——帧号、
 各 world 的句柄、离屏目标——而示例自己的 `scene_extra_status` 补充场景：球数、MIDI
 序列状态与每个面板按钮的中心。`request_exit` 让进程退出。该模式下自动掉球与背景自动播放

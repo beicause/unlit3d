@@ -12,11 +12,11 @@ use clap::Parser;
 /// cover both sides.
 #[derive(Clone, Debug, Parser)]
 pub struct RunOptions {
-    /// Serve the scene over the Model Context Protocol: in a windowed run
-    /// the presenter draws into an offscreen target, and a headless run
+    /// Serve the scene over MCP on standard input and output: in a windowed
+    /// run the presenter draws into an offscreen target, and a headless run
     /// serves the interactive host instead of capturing.
     #[arg(long)]
-    pub mcp: bool,
+    pub mcp_stdio: bool,
     /// Serve the scene over MCP on a TCP port as well, so network clients
     /// reach it while the run keeps its window (or its headless loop).
     /// Without `--mcp-http-addr` the server listens on the loopback on a
@@ -97,9 +97,9 @@ mod tests {
 
     #[test]
     fn the_switches_parse() {
-        let options = RunOptions::try_parse_from(["unlit3dx", "--mcp", "--stepped"])
+        let options = RunOptions::try_parse_from(["unlit3dx", "--mcp-stdio", "--stepped"])
             .expect("the switches parse");
-        assert!(options.mcp);
+        assert!(options.mcp_stdio);
         assert!(options.stepped);
         assert!(!options.headless_run());
         assert!(!options.mcp_http_run());

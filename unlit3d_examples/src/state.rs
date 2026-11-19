@@ -152,7 +152,7 @@ pub(crate) struct App {
     /// The proxy a callback posts an event to the loop it runs on with.
     pub(crate) proxy: EventLoopProxy<UserEvent>,
     /// Whether to serve the world over the Model Context Protocol.
-    pub(crate) mcp: bool,
+    pub(crate) mcp_stdio: bool,
 }
 
 impl Bundle for App {
@@ -164,7 +164,7 @@ impl Bundle for App {
             InitialScene(self.scene),
             SelectorPos(None),
             GpuInfoPos(None),
-            McpEnabled(self.mcp),
+            McpEnabled(self.mcp_stdio),
             ExitRequest(false),
             WinitProxy(self.proxy),
             FrameSkip::default(),

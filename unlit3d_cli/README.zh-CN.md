@@ -12,7 +12,7 @@
 覆盖其中同名的字段。
 
 命令行用 [`argh`](https://docs.rs/argh) 解析，因此每个选项都是 `--name value` 或裸开关，
-值必须作为下一个参数传入，不支持 `--name=value`。`--output` 是唯一必需的选项——`--mcp`
+值必须作为下一个参数传入，不支持 `--name=value`。`--output` 是唯一必需的选项——`--mcp-stdio`
 模式除外，它不渲染任何东西——它的扩展名决定图片格式：支持 `png`、`webp` 与 `jpeg`。
 
 ```text
@@ -103,14 +103,14 @@ cargo nextest run -p unlit3d_cli
 
 ## MCP
 
-`--mcp` 会把一个无头 world 经 stdio 服务出去，作为
+`--mcp-stdio` 会把一个无头 world 经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。该模式下不需要
 `--output`，且 world 从空开始——不加载任何文档——以便客户端自行搭建场景。服务器、
 各 crate 注册的工具与传输见
 [`unlit_ecs`](../crates/unlit_ecs/README.zh-CN.md)。
 
 ```text
-cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
+cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp-stdio
 ```
 
 ## 许可证

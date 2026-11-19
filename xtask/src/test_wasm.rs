@@ -308,7 +308,7 @@ fn build_workspace() -> Result<(), String> {
     // `unlit3dx_examples` runs its worlds inline on this target: the library
     // spawns them through its stepped runner, so the host carries the same
     // entities a threaded run would and the browser needs no thread support.
-    // Its GPU request runs on the browser's task queue, and its `--mcp`
+    // Its GPU request runs on the browser's task queue, and its `--mcp-stdio`
     // dependency is target-gated away.
     let mut build = Command::new("cargo");
     build

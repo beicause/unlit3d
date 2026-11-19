@@ -65,7 +65,7 @@ serde_json.workspace = true
 # against baselines kept in the asset submodule.
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.3", default-features = false, features = ["snapshot"] }
 
-# `--mcp` serves the worlds over the Model Context Protocol, which needs a
+# `--mcp-stdio` serves the worlds over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
@@ -74,7 +74,7 @@ unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1
 schemars.workspace = true
 serde.workspace = true
 # The library's `mcp` feature wraps the Model Context Protocol server the
-# demo serves with --mcp and --mcp-http.
+# demo serves with --mcp-stdio and --mcp-http.
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.3", default-features = false, features = ["app", "audio", "mcp", "mcp-http", "physics", "render", "synth"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dev-dependencies]

@@ -6,8 +6,8 @@
 
 | 目的                       | 命令                                                                                                        |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 单 world 的窗口示例        | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --scene spin_cube`（`--list-scenes` 看全部，`--mcp` 开调试宿主） |
-| 多 world 的示例            | `cargo run -p unlit3dx_examples --bin unlit3dx-examples`（另有 `--mcp` / `--stepped` / `--headless`；`--headless --mcp` 是无窗口、按帧驱动的 MCP 宿主） |
+| 单 world 的窗口示例        | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --scene spin_cube`（`--list-scenes` 看全部，`--mcp-stdio` 开调试宿主） |
+| 多 world 的示例            | `cargo run -p unlit3dx_examples --bin unlit3dx-examples`（另有 `--mcp-stdio` / `--stepped`；`--headless-frames 1 --mcp-stdio` 是无窗口、按帧驱动的 MCP 宿主） |
 | glTF 出图                  | `cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2`（`--output` 是唯一必填项，不带就是用法错误） |
 | 整个工作区测试             | `cargo xtask test`（内部是 `cargo nextest run` 加 `cargo test --doc`）                                     |
 | 单 crate                   | `cargo nextest run -p unlit3d --all-features`                                                               |

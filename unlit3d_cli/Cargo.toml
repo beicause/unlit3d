@@ -40,7 +40,7 @@ wgpu = { workspace = true, features = ["static-dxc"] }
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", default-features = false, features = ["snapshot"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["gltf"] }
 
-# `--mcp` serves the Model Context Protocol, which is a native command line's
+# `--mcp-stdio` serves the Model Context Protocol, which is a native command line's
 # concern: rmcp's stdio transport runs on tokio, which has no stdio to read in a
 # browser. The switch stays in the parsed arguments everywhere, so the two
 # targets differ only in what the branch does.

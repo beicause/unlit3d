@@ -232,7 +232,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     let app = world.root_scope_mut().spawn(App {
         scene,
         proxy,
-        mcp: args.mcp && MCP_SUPPORTED,
+        mcp_stdio: args.mcp_stdio && MCP_SUPPORTED,
     });
     // The frame's own behaviours. Requesting the GPU states no order: nothing
     // reads what it writes in the same frame. The rest state one, chained from

@@ -170,7 +170,7 @@ cargo xtask run-wasm --app unlit3d
 
 ## MCP
 
-`--mcp` 会把示例原本要渲染的那个场景经 stdio 服务出去，作为
+`--mcp-stdio` 会把示例原本要渲染的那个场景经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。所选场景会先被构建——
 `--scene` 仍然生效——随后客户端通过各工具读取并驱动它。示例自己的事件循环在持有它的线程上
 服务它，因此窗口照旧绘制，输入也照旧到达场景：场景自己的 pass 离屏渲染，同一个
@@ -181,7 +181,7 @@ world 里的第二个 pass 把这一帧拷进交换链，画面便随客户端�
 [`unlit_ecs`](../crates/unlit_ecs/README.zh-CN.md)。
 
 ```text
-cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
+cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp-stdio --scene spin_cube
 ```
 
 ## Android
@@ -240,7 +240,7 @@ cargo nextest run -p unlit3d_examples
 | `--scene <ID>` | `spin_cube` | 起始场景 |
 | `--list-scenes` | 关 | 打印场景表并退出 |
 | `--size <WxH>` | 场景自己的 | 窗口初始尺寸（像素） |
-| `--mcp` | 关 | 经 stdio 服务这个 world，并在窗口中显示它的画面 |
+| `--mcp-stdio` | 关 | 经 stdio 服务这个 world，并在窗口中显示它的画面 |
 
 ### 播放节奏
 

@@ -60,13 +60,13 @@
 | 现象                                                     | 检查什么                                                                                                                     |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `failed to deserialize parameters: missing field 'directory'` | `save_*` 系列必须给 `directory`                                                                                              |
-| `the world has no renderer` / `the world has no render context` | 指名的 world 不带 `Renderer`。`unlit3dx_examples --mcp` 下要指名渲染子 world，不是 `Host`                             |
+| `the world has no renderer` / `the world has no render context` | 指名的 world 不带 `Renderer`。`unlit3dx_examples --mcp-stdio` 下要指名渲染子 world，不是 `Host`                             |
 | `entity N carries no world`                              | 该实体既不带 `World` 也不带 `WorldSender`，不是可调度的 world                                                             |
 | 某个 world 不在 `list_worlds` 里                         | 它没带 `WorldName`，桥接层无法给它命名，于是不报告                                                                          |
 | `the world on entity N has stopped`                      | 那个 world 已经结束，job 不会再跑                                                                                            |
-| 无响应                                                   | 宿主没起来（缺 DISPLAY 会 panic），或宿主没带 `--mcp`，或宿主没泵命令（无窗口宿主必须每轮调 `pump_mcp`）                 |
+| 无响应                                                   | 宿主没起来（缺 DISPLAY 会 panic），或宿主没带 `--mcp-stdio`，或宿主没泵命令（无窗口宿主必须每轮调 `pump_mcp`）                 |
 | 发给 stepped world 的命令一直不回                        | 宿主没在泵，或没跑 `pump_mcp` 的 job 阶段；stepped world 的队列只在推进帧时被 drain                                        |
 | `the host has no exit request`                           | 该宿主没挂 `ExitRequest` 组件，`request_exit` 对它无效                                                                      |
-| `the host is not an interactive headless scene`          | `step_frames` / `scene_status` 只存在于 `unlit3dx_examples --headless --mcp`                                              |
+| `the host is not an interactive headless scene`          | `step_frames` / `scene_status` 只存在于 `unlit3dx_examples --headless-frames 1 --mcp-stdio`                                              |
 | `the world has no input writer`                          | 指名的 world 没挂 `InputWriter`；给玩法 world 发输入，不是 `Host`                                                          |
 | `the world has more than one readable texture` / `the world has no readable texture to screenshot` | 不传 `id` / `target` 时服务器会猜，离屏宿主里猜不出来；用 `scene_status` 的 `target`                                    |

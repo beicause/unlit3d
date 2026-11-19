@@ -26,7 +26,7 @@ fn run(args: &cli::Args) -> ExitCode {
     // Serving MCP needs the stdio transport and a tokio runtime, neither of
     // which a browser has; the switch is parsed everywhere but only acts here.
     #[cfg(not(target_arch = "wasm32"))]
-    if args.mcp {
+    if args.mcp_stdio {
         return match unlit3d_cli::serve_stdio_offscreen((960, 720), 4, true) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -52,7 +52,7 @@ fn run(args: &cli::Args) -> ExitCode {
     let output = args
         .output
         .as_ref()
-        .expect("parse rejects a missing --output unless --mcp is given");
+        .expect("parse rejects a missing --output unless --mcp-stdio is given");
     if let Err(error) = unlit3d_cli::save(output, &frame) {
         stderr(&format!("error: {error}\n"));
         return ExitCode::from(1);

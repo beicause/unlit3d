@@ -44,7 +44,7 @@ log.workspace = true
 # The GPU-info panel reads the device's facts from their serde description
 # rather than a hand-written field list; see limit_rows.
 serde_json.workspace = true
-# The MCP command types the `--mcp` mode carries come from the ECS crate.
+# The MCP command types the `--mcp-stdio` mode carries come from the ECS crate.
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.3", default-features = false, features = ["mcp"] }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["blitz_epaint_fonts", "blitz_sc_fonts", "egui", "gltf", "winit"] }
@@ -76,7 +76,7 @@ unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", default-featur
 # per target: `env_logger` writes to the terminal a command line runs in.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 env_logger.workspace = true
-# `--mcp` serves the scene over the Model Context Protocol, which needs a
+# `--mcp-stdio` serves the scene over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.3", default-features = false, features = ["blitz_epaint_fonts", "blitz_sc_fonts", "egui", "gltf", "mcp", "winit"] }
