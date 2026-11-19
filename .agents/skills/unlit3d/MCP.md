@@ -128,6 +128,8 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 `frame_clock` 报告该 world 帧循环的 `index`（帧序数，从零起）、`delta_time` 与 `time`（上次与前次的帧时长与累计秒数）、`fps`（`1.0 / delta_time`，帧时长为零时省略）与 `average_fps`（最近 120 帧的滑动平均，窗口帧数见 `average_window_frames`）。第一次调用才往该 world 派生监控行为，它只从那之后的帧开始计数——所以在首次调用前 `average_fps` 是空的，多 world 宿主里每个 world 各有自己的窗口。
 
+节奏随 world 而不同，也随 world 而报：每个真正按自己节奏循环的 world 都在自己那一拍里派发帧——渲染子世界每帧一次，物理 world 每个 tick 一次（`delta_time` 是该 tick 实测的步长，不是配置的名义 hz），音频 world 每个 tick 一次（即每次填充），gameplay 在它自己的 tick 里派。所以同一个宿主里物理、音频与渲染三个 world 的帧率各自不同，问哪个 world 就得到哪个 world 的节奏。不派帧的 world（例如只被宿主逐个 tick 推进、自身无循环的 world）第一次查时由工具给它补一个时钟，报它当下的序数而不是什么都不报。
+
 ### 音频录音
 
 | 工具                      | 作用                                                         | 关键参数                                    |

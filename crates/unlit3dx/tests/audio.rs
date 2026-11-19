@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use unlit_ecs::{Entity, World, bundle};
+use unlit3d::frame::{Frame, OnFrame};
 use unlit3dx::prelude::*;
 use unlit3dx::synth::{MidiFile, MidiFileLoopType, MidiMessage};
 
@@ -56,6 +57,34 @@ fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
     ),]);
 }
 
+/// An audio world dispatches its own frame: a tick is its frame, so a
+/// behaviour pacing itself by the world sees one frame per tick.
+#[test]
+fn an_audio_tick_dispatches_its_frame() {
+    let mut host = World::new();
+    let world = spawn_audio_world_with::<Stepped>(&mut host, AudioConfig::default());
+    let seen: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    world
+        .sender
+        .send(Box::new(move |world: &mut World| {
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
+                move |_world, _entity, frame: &mut Frame| {
+                    record.lock().unwrap().push((frame.index, frame.delta_time));
+                },
+            ),]);
+        }))
+        .expect("the audio world accepts jobs");
+    for _ in 0..3 {
+        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(0, FRAME_SECONDS), (1, FRAME_SECONDS), (2, FRAME_SECONDS)],
+        "a frame per tick, indexed by the tick it ran in"
+    );
+}
+
 /// A post-fill behaviour observes the finished mix: the samples it sees match
 /// the buffer the output stream would receive, gain and clamp included, and
 /// it runs once per fill.
@@ -73,7 +102,7 @@ fn a_post_fill_sees_the_finished_mix() {
         },
     ),]);
     let mut out = vec![0.0f32; 4];
-    dispatch_audio_fill(&world, &mut out, 48_000, 1);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 1);
     assert!(
         out.iter().all(|sample| *sample == 1.0),
         "0.6 scaled by 2 clamps"
@@ -85,7 +114,7 @@ fn a_post_fill_sees_the_finished_mix() {
     );
     assert_eq!(seen.lock().unwrap().len(), 4, "one fill, one observation");
 
-    dispatch_audio_fill(&world, &mut out, 48_000, 1);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 1);
     assert_eq!(seen.lock().unwrap().len(), 8, "every fill is observed");
 }
 
@@ -93,19 +122,19 @@ fn a_post_fill_sees_the_finished_mix() {
 /// the dispatcher hands it, and several sources mix.
 #[test]
 fn the_dispatcher_mixes_the_worlds_sources() {
+    let mut world = World::new();
     let mut out = vec![1.0f32; 128];
-    dispatch_audio_fill(&World::new(), &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0), "nothing to play");
 
-    let mut world = World::new();
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.25, &counts);
-    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.25));
     assert_eq!(counts.load(Ordering::SeqCst), 1);
 
     counting_source(&mut world, 0.5, &counts);
-    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     assert!(
         out.iter().all(|sample| (sample - 0.75).abs() < 1e-6),
         "both sources must add up"
@@ -121,13 +150,13 @@ fn the_worlds_gain_scales_the_mix() {
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.4, &counts);
     let mut out = vec![0.0f32; 8];
-    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| (sample - 0.8).abs() < 1e-6));
 
     // A second source pushes the sum past full scale: the clamp lands on
     // the unit range, not on a wrapped sample.
     counting_source(&mut world, 0.4, &counts);
-    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 1.0));
 }
 
@@ -158,7 +187,7 @@ fn a_later_order_runs_after_the_default_band() {
         ),]);
     }
     let mut out = vec![0.0f32; 2];
-    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     let ran = ran.lock().unwrap();
     assert_eq!(ran.len(), 3);
     assert_eq!(ran[2], "late", "the stated order runs last");
@@ -410,7 +439,7 @@ fn a_failed_soundfont_leaves_the_world_silent() {
         "a world whose soundfont failed carries no source"
     );
     let mut out = vec![1.0f32; 256];
-    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0));
 }
 
@@ -548,7 +577,7 @@ fn a_voice_builds_its_synthesizer_on_the_first_fill() {
         "a voice built a synthesizer before any fill"
     );
     let mut out = vec![0.0f32; BLOCK * 2];
-    dispatch_audio_fill(&world, &mut out, SAMPLE_RATE, 2);
+    dispatch_audio_fill(&mut world, &mut out, SAMPLE_RATE, 2);
     assert!(built(&world), "the first fill left the voice unbuilt");
 }
 
@@ -574,7 +603,7 @@ fn a_message_sent_before_the_first_fill_still_sounds() {
         },
         0.0,
     )(&mut world);
-    let heard = fills_until_sound(&world, ONSET_FILLS);
+    let heard = fills_until_sound(&mut world, ONSET_FILLS);
     assert!(
         heard < ONSET_FILLS,
         "the note never sounded: the queue was dropped with the first fill"
@@ -605,9 +634,9 @@ fn a_delayed_message_lands_after_its_offset() {
         },
         1.0,
     )(&mut world);
-    let early = fills_until_sound(&world, ONSET_FILLS);
+    let early = fills_until_sound(&mut world, ONSET_FILLS);
     assert_eq!(early, ONSET_FILLS, "the note sounded before its delay");
-    let heard = fills_until_sound(&world, ONSET_FILLS);
+    let heard = fills_until_sound(&mut world, ONSET_FILLS);
     assert!(heard < ONSET_FILLS, "the delayed note never sounded");
 }
 
@@ -647,7 +676,7 @@ fn a_loop_marker_repeats_the_pass() {
             sequencer.advance(step, voice, &audio);
             pump(&mut world, &receiver);
             peak = peak.max(
-                fill(&world)
+                fill(&mut world)
                     .iter()
                     .fold(0.0f32, |one, sample| one.max(sample.abs())),
             );
@@ -702,19 +731,19 @@ const SAMPLE_RATE: u32 = 48_000;
 const ONSET_FILLS: usize = SAMPLE_RATE as usize / BLOCK;
 
 /// Render one chunk and answer whether any sample moved.
-fn sounding(world: &World) -> bool {
+fn sounding(world: &mut World) -> bool {
     fill(world).iter().any(|sample| *sample != 0.0)
 }
 
 /// Render one chunk of interleaved frames.
-fn fill(world: &World) -> Vec<f32> {
+fn fill(world: &mut World) -> Vec<f32> {
     let mut out = vec![0.0f32; BLOCK * 2];
     dispatch_audio_fill(world, &mut out, SAMPLE_RATE, 2);
     out
 }
 
 /// How many fills until a sample moves, or `limit` when none does.
-fn fills_until_sound(world: &World, limit: usize) -> usize {
+fn fills_until_sound(world: &mut World, limit: usize) -> usize {
     for index in 0..limit {
         if sounding(world) {
             return index;

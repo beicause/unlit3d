@@ -21,6 +21,7 @@ use rapier3d::prelude::*;
 
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, World};
+use unlit3d::frame::{Frame, dispatch_frame};
 
 use crate::handle::WorldHandle;
 use crate::thread::{FixedClock, fixed_steps};
@@ -331,6 +332,10 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
     let step_seconds = step_seconds(&config);
     let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
     let mut debt = 0.0;
+    // The world's own frame ordinal. A tick is the world's frame — it steps
+    // the simulation by whatever debt gathered — so a reader sees the pacing
+    // the steps really ran at, not the host's frame rate.
+    let mut frame_index = 0_u32;
     R::spawn(
         host,
         "physics",
@@ -357,6 +362,16 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
                     step_once(world);
                 }
             }
+            // The tick is this world's frame: a behaviour pacing itself by the
+            // simulation reads a clock that matches the steps. The size is the
+            // simulation's own, which no frame carries.
+            let mut frame = Frame {
+                delta_time: delta_seconds,
+                index: frame_index,
+                size: (0, 0),
+            };
+            dispatch_frame(world, &mut frame);
+            frame_index = frame.index.wrapping_add(1);
             true
         },
     )

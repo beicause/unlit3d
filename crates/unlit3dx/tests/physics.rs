@@ -1,12 +1,13 @@
 //! Integration tests for the physics world: bodies built by jobs,
 //! snapshots subscribed to on the host, contacts reported as events.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
-use unlit_ecs::World;
+use unlit_ecs::{World, bundle};
+use unlit3d::frame::{Frame, OnFrame};
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 
@@ -139,6 +140,34 @@ fn a_threaded_world_steps_what_a_job_builds() {
         wait_for(|| poses.latest().is_some_and(|poses| falling(&poses))),
         "the threaded world never stepped the body its job built: {:?}",
         poses.latest(),
+    );
+}
+
+/// A physics world dispatches its own frame: a tick is its frame, so a
+/// behaviour pacing itself by the simulation sees one frame per tick.
+#[test]
+fn a_physics_tick_dispatches_its_frame() {
+    let mut host = World::new();
+    let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default());
+    let seen: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
+    let record = Arc::clone(&seen);
+    world
+        .sender
+        .send(Box::new(move |world: &mut World| {
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
+                move |_world, _entity, frame: &mut Frame| {
+                    record.lock().unwrap().push((frame.index, frame.delta_time));
+                },
+            ),]);
+        }))
+        .expect("the physics world accepts jobs");
+    for _ in 0..3 {
+        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(0, FRAME_SECONDS), (1, FRAME_SECONDS), (2, FRAME_SECONDS)],
+        "a frame per tick, indexed by the tick it ran in"
     );
 }
 

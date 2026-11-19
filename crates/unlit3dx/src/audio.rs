@@ -18,6 +18,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World, bundle};
+use unlit3d::frame::{Frame, dispatch_frame};
 
 use crate::handle::WorldHandle;
 use crate::job::{JobSender, SendError};
@@ -268,10 +269,13 @@ pub struct GlobalAudioGain(pub f32);
 /// samples are the ones the output stream would receive, gain and clamp
 /// included, and a post-fill behaviour cannot change them.
 ///
-/// A source must not change the world's set of sources while it runs: it
-/// has a shared `&World`, so structural work goes through
-/// [`unlit_ecs::Scope::queue`] and is applied by the world's own driver between fills.
-pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
+/// A source runs with a shared `&World`, so a structural change it makes goes
+/// through [`unlit_ecs::Scope::queue`]. The fill applies that queue itself once
+/// every source has run, exactly as [`unlit3d::frame::dispatch_frame`] does for
+/// a frame: a caller filling a world the host does not otherwise drive — a
+/// recorder draining a stepped audio world between frames — still gets its
+/// change committed.
+pub fn dispatch_audio_fill(world: &mut World, out: &mut [f32], sample_rate: u32, channels: u16) {
     out.fill(0.0);
     // The list has the same shape every fill, so it is handed out and taken
     // back rather than allocated per chunk on the audio thread. Taking it also
@@ -296,17 +300,16 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
             .root_scope()
             .try_query_one::<&mut OnAudioFill>(*entity)
         {
-            fill.get().run(world, *entity, &mut chunk);
+            fill.get().run(&*world, *entity, &mut chunk);
         }
     }
     SOURCES.with_borrow_mut(|slot| *slot = sources);
-    let mut global_audio_gain_rows = world.root_scope().query::<&GlobalAudioGain>();
-
-    let gain = global_audio_gain_rows
-        .iter()
-        .next()
-        .map(|audio_gain| audio_gain.0)
-        .unwrap_or(1.0);
+    // The query holds a borrow of the world, so it ends before the queue is
+    // applied below.
+    let gain = {
+        let mut rows = world.root_scope().query::<&GlobalAudioGain>();
+        rows.iter().next().map_or(1.0, |audio_gain| audio_gain.0)
+    };
     for sample in chunk.out.iter_mut() {
         *sample = (*sample * gain).clamp(-1.0, 1.0);
     }
@@ -333,10 +336,13 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
             .root_scope()
             .try_query_one::<&mut OnAudioPostFill>(*entity)
         {
-            post.get().run(world, *entity, &mix);
+            post.get().run(&*world, *entity, &mix);
         }
     }
     POST_SOURCES.with_borrow_mut(|slot| *slot = posts);
+    if let Err(error) = world.apply() {
+        log::error!("a command queued by an audio source failed: {error}");
+    }
 }
 
 /// The format the audio world's output stream opened at.
@@ -473,12 +479,16 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
              for OnRequest"
         );
     }
+    // The world's own frame ordinal. The tick is the world's frame: one fill
+    // of the ring is one turn, so the pacing a reader sees is the rate the
+    // device really consumes samples at.
+    let mut frame_index = 0_u32;
     R::spawn(
         host,
         "audio",
         config.command_capacity,
         |_| (),
-        move |world, control, (), _| {
+        move |world, control, (), delta_seconds| {
             if control.stop_requested() {
                 return false;
             }
@@ -582,6 +592,16 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                 // retrying every frame, so a stepped world just returns.
                 control.wait_timeout(Duration::from_secs(1));
             }
+            // The tick is this world's frame: sources that pace themselves by
+            // it read a clock that matches the fills. The size is the sound's
+            // own, which no frame carries.
+            let mut frame = Frame {
+                delta_time: delta_seconds,
+                index: frame_index,
+                size: (0, 0),
+            };
+            dispatch_frame(world, &mut frame);
+            frame_index = frame.index.wrapping_add(1);
             true
         },
     )

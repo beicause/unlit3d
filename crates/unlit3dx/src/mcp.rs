@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(started["duration_seconds"], 1.0);
 
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         let status = status(&mut world).expect("a recording reports");
         assert_eq!(status["recording"], true);
         assert_eq!(status["frames"], 4);
@@ -414,7 +414,7 @@ mod tests {
         let (mut world, format) = audio_world(0.5);
         start(&mut world, Some(1.0)).expect("the recording starts");
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
 
         let directory =
             std::env::temp_dir().join(format!("unlit3dx-mcp-{}-flac", std::process::id()));
@@ -435,7 +435,7 @@ mod tests {
         let (mut world, format) = audio_world(0.5);
         start(&mut world, Some(1.0)).expect("the recording starts");
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
 
         let directory =
             std::env::temp_dir().join(format!("unlit3dx-mcp-{}-refused", std::process::id()));
@@ -462,7 +462,7 @@ mod tests {
         let (mut world, format) = audio_world(0.5);
         start(&mut world, Some(1.0)).expect("the recording starts");
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
 
         let Output::Audio(sound) = read(&mut world, None).expect("the recording is read") else {
             panic!("the answer carries a sound");
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(&flac[0..4], b"fLaC");
 
         start(&mut world, Some(1.0)).expect("the recording starts");
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         let Output::Audio(sound) = read(&mut world, Some("wav")).expect("the recording is read")
         else {
             panic!("the answer carries a sound");

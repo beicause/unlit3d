@@ -5,10 +5,10 @@
 //! world carries the same data either way. What differs is who drives the
 //! world: a thread of its own, or the host's own frames.
 //!
-//! Whoever drives a world publishes its subscriptions: a turn of the loop
-//! drains the queue, runs the tick, and then publishes what the world's
-//! collectors returned. A tick body therefore collects nothing by hand and
-//! cannot publish twice.
+//! Whoever drives a world commits and publishes its turn: a turn of the loop
+//! drains the queue, runs the tick, applies the commands the tick queued, and
+//! then publishes what the world's collectors returned. A tick body therefore
+//! collects nothing by hand and cannot publish twice.
 
 use async_channel::{Receiver, bounded};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, World, bundle};
@@ -247,9 +247,7 @@ where
             job(world);
         }
         let running = tick(world, control, state, control.elapsed_seconds());
-        // The turn is over: the driver publishes what the world's collectors
-        // returned, so a tick body collects nothing by hand.
-        publish_collected(world);
+        finish_turn(world);
         running
     });
     let status: ThreadStatus = thread.status();
@@ -381,8 +379,9 @@ pub enum StepOutcome {
 /// world too. Both are reported through [StepOutcome] rather than left for the
 /// caller to guess.
 ///
-/// The step publishes what the world's subscriptions collected, the same as
-/// a threaded world's loop does, so a tick body never publishes by hand.
+/// The step applies the commands the tick queued and publishes what the
+/// world's subscriptions collected, the same as a threaded world's loop does,
+/// so a tick body never does either by hand.
 ///
 /// # Errors
 ///
@@ -427,9 +426,9 @@ pub fn step_stepped_world(
     match outcome {
         Ok(true) => {}
         Ok(false) => {
-            // A tick that ends the world still publishes: the state it leaves
-            // is the last one its readers ever get.
-            publish_collected(world);
+            // A tick that ends the world still commits and publishes: the state
+            // it leaves is the last one its readers ever get.
+            finish_turn(world);
             status.finish();
             inbox.close();
             return Ok(StepOutcome::Finished);
@@ -444,8 +443,23 @@ pub fn step_stepped_world(
             return Ok(StepOutcome::Panicked);
         }
     }
-    publish_collected(world);
+    finish_turn(world);
     Ok(StepOutcome::Ran)
+}
+
+/// Commit and publish one turn of a world.
+///
+/// A tick body runs against a shared world, so every structural change it
+/// makes goes through the scope's queue. Nobody else applies that queue for a
+/// world the host steps or one on a thread of its own, so the driver does it
+/// here rather than leaving the change to a host that may never apply it.
+/// Applying before publishing matters: a reader must see the state the tick
+/// left, not the one before its last spawn.
+fn finish_turn(world: &mut World) {
+    if let Err(error) = world.apply() {
+        log::error!("a command queued by a world's tick failed: {error}");
+    }
+    publish_collected(world);
 }
 
 /// Drain the queued jobs of every world the host steps.
@@ -786,6 +800,78 @@ mod tests {
             Err(StepError::NotStepped)
         );
         handle.stop();
+    }
+
+    /// A command a tick queues through the scope is committed by the driver:
+    /// the tick only holds a shared world, so spawning through the queue is
+    /// the way it builds anything, and what it built must be there after.
+    #[test]
+    fn a_stepped_tick_commits_its_queued_commands() {
+        let mut host = World::new();
+        let handle = spawn_stepped_world_with_init(
+            &mut host,
+            "stepped",
+            8,
+            |_| (),
+            |world: &mut World, _control: &ThreadControl, (), _: f32| {
+                world.root_scope().queue().spawn(bundle![Count(7)]);
+                true
+            },
+        );
+        assert_eq!(
+            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
+            Ok(StepOutcome::Ran)
+        );
+        let count = with_stepped_world(&host, handle.entity, |world| {
+            world
+                .root_scope()
+                .query::<&Count>()
+                .iter()
+                .next()
+                .map(|count| count.0)
+        });
+        assert_eq!(count, Ok(Some(7)), "the tick's queued entity was committed");
+    }
+
+    /// A threaded world commits what its tick queued as well: both drivers
+    /// run the same turn, so neither leaves the queue for someone else.
+    #[test]
+    fn a_threaded_tick_commits_its_queued_commands() {
+        let mut host = World::new();
+        let mut first = true;
+        let handle = spawn_threaded_world(&mut host, "threaded", 8, move |world, control, _| {
+            if first {
+                first = false;
+                world.root_scope().queue().spawn(bundle![Count(3)]);
+            }
+            control.wait_timeout(Duration::from_millis(1));
+            true
+        });
+        let counted = crate::channel::Snapshot::new();
+        let reader = counted.reader();
+        let mut answer = None;
+        for _ in 0..2_000 {
+            let publish = counted.clone();
+            handle
+                .sender
+                .send(Box::new(move |world: &mut World| {
+                    let count = world
+                        .root_scope()
+                        .query::<&Count>()
+                        .iter()
+                        .next()
+                        .map(|count| count.0);
+                    publish.publish(count);
+                }))
+                .expect("the world accepts jobs");
+            std::thread::sleep(Duration::from_millis(1));
+            if let Some(Some(count)) = reader.latest().map(|count| *count) {
+                answer = Some(count);
+                break;
+            }
+        }
+        handle.stop();
+        assert_eq!(answer, Some(3), "the tick's queued entity was committed");
     }
 
     /// The counter the tests share with their worlds.

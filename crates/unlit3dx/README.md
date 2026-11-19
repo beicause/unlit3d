@@ -93,6 +93,15 @@ that receives the target world's `&mut World` — and receives through a
 **subscription**: a snapshot for state, a stream for events. That is the
 whole protocol.
 
+Whoever drives a world runs one turn at a time: it drains the job queue, runs
+the tick, applies the commands the tick queued through the scope, and then
+publishes what the subscriptions collected. A tick body holds a shared
+`&World`, so structural work it does — spawning an entity, despawning one —
+goes through the queue and is committed by the driver after that tick, never
+by the tick itself. A world whose host only steps it gets the same deal:
+`step_stepped_world` applies as well as publishes, so a change a tick queues
+lands by the time the step returns.
+
 ## Jobs
 
 `Job` is a boxed `FnOnce(&mut World)`. `WorldHandle::sender` queues one and
@@ -263,7 +272,9 @@ The bridges:
   `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
   `AudioConfig`, in that order, mixing their samples and scaling the sum by the
   world's `GlobalAudioGain`; the device callback drains the ring and underruns to
-  silence. The gain is one per world: the dispatcher reads the first
+  silence. A fill commits the commands its sources queued, the way a frame
+  does, so a caller that fills a world the host does not otherwise drive still
+  gets what a source built. The gain is one per world: the dispatcher reads the first
   `GlobalAudioGain` a query hands back, and a world that holds more than one
   picks by no stated rule, so a scene spawns one and shapes a source's loudness
   in its own fill.

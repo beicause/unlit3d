@@ -22,7 +22,7 @@ use super::scene::{Mode, RenderPorts, ScenePorts, SceneWorlds, Stepping};
 use crate::audio::{AudioFormat, dispatch_audio_fill};
 use crate::host::{drain_sub_world, spawn_sub_world, tick_sub_world};
 use crate::record::{RecordedAudio, RecordingHandle, start_recording};
-use crate::world::{Stepped, with_stepped_world, with_stepped_world_mut};
+use crate::world::{Stepped, with_stepped_world_mut};
 
 /// An interactive scene stepping inline: one frame per call, no pacing of
 /// its own.
@@ -53,6 +53,11 @@ impl Interactive {
     /// would have drawn: a draw does not advance the scene, and what it does
     /// write is only what a frame publishes for its readers, which the next
     /// frame replaces anyway.
+    ///
+    /// The render sub-world dispatches the frame here; the worlds the stepper
+    /// drives dispatch theirs in their own ticks. The host world carries no
+    /// scene of its own, so it takes no frame: what it would clock is the
+    /// stepper's fixed rate, which a reader already knows.
     pub fn step(&mut self, host: &World, frames: u32) {
         for _ in 0..frames {
             // The host has no behaviour of its own to route input to, but it
@@ -65,7 +70,7 @@ impl Interactive {
             if frames > 0 {
                 self.samples.clear();
                 self.samples.resize(frames * AUDIO_CHANNELS, 0.0);
-                let filled = with_stepped_world(host, self.worlds.audio.entity, |audio| {
+                let filled = with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
                     dispatch_audio_fill(
                         audio,
                         &mut self.samples,

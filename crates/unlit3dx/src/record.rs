@@ -476,7 +476,7 @@ mod tests {
         let handle = start_recording(&mut world, 1.0);
         assert_eq!(handle.format(), None, "nothing fills it yet");
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         assert_eq!(
             out, [1.0f32; 4],
             "the dispatcher scales the mix once, after every source ran"
@@ -506,7 +506,7 @@ mod tests {
         };
         let handle = start_recording(&mut world, 1.0);
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         assert_eq!(out, [0.6f32; 4], "0.2 scaled by 3, below the clamp");
         let recorded = handle.stop(&mut world).expect("the recording saw a fill");
         assert_eq!(recorded.samples, out);
@@ -522,7 +522,7 @@ mod tests {
         };
         let handle = start_recording(&mut world, 0.5);
         let mut out = [0.0f32; 8];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         assert_eq!(handle.frame_count(), 2);
         assert!(handle.is_full());
         handle.cancel(&mut world);
@@ -539,12 +539,12 @@ mod tests {
         };
         let handle = start_recording(&mut world, 0.5);
         let mut out = [0.0f32; 8];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         // The limit is 0.5s at 4 Hz over 2 channels: four samples, not eight.
         assert_eq!(handle.frame_count(), 2);
         assert!(handle.is_full());
         out.fill(1.0);
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         let recorded = handle.stop(&mut world).expect("the recording saw a fill");
         assert_eq!(recorded.samples, vec![1.0; 4]);
     }

@@ -240,7 +240,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "frame_clock",
-        "Report a world's frame ordinal, last frame duration, elapsed time, instantaneous fps, and the average fps over the last 120 frames. Pass the world whose frame pacing to inspect; worlds without a frame clock report the frames the monitor behavior observed.",
+        "Report a world's frame ordinal, last frame duration, elapsed time, instantaneous fps, and the average fps over the last 120 frames. Pass the world whose frame pacing to inspect: every world paces its own frames, so a scene, a physics world and an audio world each answer for themselves. The average is measured by a monitor spawned on the first call, and covers only the frames since.",
         frame_clock,
     ));
     router.add_route(tool(

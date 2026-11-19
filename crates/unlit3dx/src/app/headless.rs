@@ -17,7 +17,7 @@ use super::App;
 use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
 use crate::audio::dispatch_audio_fill;
 use crate::host::{spawn_sub_world, tick_sub_world};
-use crate::world::{Stepped, with_stepped_world};
+use crate::world::{Stepped, with_stepped_world_mut};
 
 /// The audio sample rate a run renders at when its configuration names no
 /// other, in hertz.
@@ -186,7 +186,7 @@ pub async fn headless<A: App>(
         if frames > 0 {
             samples_out.clear();
             samples_out.resize(frames * AUDIO_CHANNELS, 0.0);
-            let filled = with_stepped_world(&host, stepper.worlds().audio.entity, |audio| {
+            let filled = with_stepped_world_mut(&host, stepper.worlds().audio.entity, |audio| {
                 dispatch_audio_fill(
                     audio,
                     &mut samples_out,
