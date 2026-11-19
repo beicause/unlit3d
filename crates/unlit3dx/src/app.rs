@@ -188,8 +188,8 @@ fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions,
 /// application's [`App::Args`] read together by one parser, whose
 /// `--help` describes both — and then:
 ///
-/// - `--headless` captures frames and a mix without a window, writing them
-///   under `--out`; with `--mcp` or `--mcp-http` it serves the interactive
+/// - naming `--headless-frames` or `--headless-out` captures frames and a mix
+///   without a window; with `--mcp` or `--mcp-http` it serves the interactive
 ///   host instead.
 /// - otherwise it opens a window, stepped inline unless the platform
 ///   drives the worlds on threads of their own; `--mcp-http` serves the
@@ -255,7 +255,7 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// The headless entry [`run`] takes when `--headless` was given.
+/// The headless entry [`run`] takes when a headless capture is named.
 ///
 /// The GPU is opened here rather than by the caller so the run owns the
 /// whole of a capture: it picks the device tier from the environment,
@@ -267,13 +267,15 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     use unlit_wgpu::capabilities::DeviceTier;
     use unlit_wgpu::context::RenderDevice;
 
-    let frames = options.frames.unwrap_or(RunOptions::DEFAULT_FRAMES);
+    let frames = options
+        .headless_frames
+        .unwrap_or(RunOptions::DEFAULT_HEADLESS_FRAMES);
     let out = options
-        .out
+        .headless_out
         .clone()
-        .unwrap_or(std::path::PathBuf::from(RunOptions::DEFAULT_OUT));
+        .unwrap_or(std::path::PathBuf::from(RunOptions::DEFAULT_HEADLESS_OUT));
     if frames == 0 {
-        log::error!("--frames must be at least 1");
+        log::error!("--headless-frames must be at least 1");
         return std::process::ExitCode::FAILURE;
     }
     let gpu = match pollster::block_on(Gpu::headless(

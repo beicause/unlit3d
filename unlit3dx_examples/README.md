@@ -61,18 +61,18 @@ between the `unlit3d` and `unlit3dx` activities.
 ## The headless mode
 
 ```sh
-cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
+cargo run -p unlit3dx_examples -- --headless-frames 300 --headless-out headless
 ```
 
-The `--headless` switch runs the very same scene without a window, threads
+Naming `--headless-frames` or `--headless-out` runs the very same scene without a window, threads
 or an audio device. It is the browser's path with the frames handed over by
 the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
 in the host's own world, and the skeleton's `Stepping` advances them one
 frame at a time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes
 due, the synth fills as its sample rate does, and gameplay ticks once per
-frame with the duration the run gives it (`HEADLESS_HZ`). After `--frames`
-frames the run's last frame and its whole audio mix land in `--out` as
-`frame_299.png` and `audio.flac` — one image per captured frame, named after
+frame with the duration the run gives it (`HEADLESS_HZ`). After
+`--headless-frames` frames the run's last frame and its whole audio mix land
+in `--headless-out` as `frame_299.png` and `audio.flac` — one image per captured frame, named after
 its frame index. Because every frame is the same length and
 the spawn rolls are seeded, a run is reproducible, which is what the
 [snapshot tests](tests/headless.rs) build on: rendered frames compare against

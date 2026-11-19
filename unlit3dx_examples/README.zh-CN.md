@@ -49,15 +49,15 @@ Android APK 加载的 `.so` 则由 `unlit3dx_examples_android` 构建——该 c
 ## 离屏模式
 
 ```sh
-cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
+cargo run -p unlit3dx_examples -- --headless-frames 300 --headless-out headless
 ```
 
-`--headless` 开关运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
+`--headless-frames` 或 `--headless-out` 运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
 宿主自己的 world，骨架的 `Stepping` 一帧一帧地推进它们：物理按它自己的频率
 （`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
-时长就是这个运行给定的 `HEADLESS_HZ`。走满 `--frames` 帧后，这一运行的最后一帧
-与整段混音写入 `--out` 下的 `frame_299.png` 与 `audio.flac`——每个被捕获的帧各出
+时长就是这个运行给定的 `HEADLESS_HZ`。走满 `--headless-frames` 帧后，这一运行的最后一帧
+与整段混音写入 `--headless-out` 下的 `frame_299.png` 与 `audio.flac`——每个被捕获的帧各出
 一张图，以帧号为名。每一帧长度都相同、
 生成骰子也是确定的，因此每次运行都可复现——[快照测试](tests/headless.rs)正建立
 在此之上：渲染帧与 webp 基准比较，混音与 FLAC 基准比较，基准都保存在
