@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use argh::FromArgs;
 
-use crate::config::{AnimationRef, Config, DocumentConfig};
+use crate::config::{AnimationRef, Config, DirectionalLightConfig, DocumentConfig, LightsConfig};
 
 /// The program name argh prints in its usage.
 const PROGRAM: &str = "unlit3d-cli";
@@ -80,6 +80,16 @@ pub struct Args {
     /// the animation time in seconds.
     #[argh(option)]
     pub time: Option<f32>,
+    /// spawn no lights at all, overriding any the configuration states.
+    #[argh(switch)]
+    pub no_lights: bool,
+    /// the ambient term, as R,G,B in linear light; 0,0,0 contributes nothing.
+    #[argh(option, from_str_fn(parse_vec3))]
+    pub ambient: Option<[f32; 3]>,
+    /// a directional light, as R,G,B,INTENSITY,YAW,PITCH with the angles in
+    /// degrees; repeatable, and the list replaces the configuration's.
+    #[argh(option, from_str_fn(parse_directional))]
+    pub directional: Vec<DirectionalLightConfig>,
 }
 
 /// What parse decided the process should do.
@@ -157,6 +167,18 @@ impl Args {
         } else if named_camera_field {
             config.camera.view = None;
             config.camera.projection = None;
+        }
+        if self.no_lights {
+            config.lights = LightsConfig {
+                ambient: [0.0; 3],
+                directional: Vec::new(),
+            };
+        }
+        if let Some(ambient) = self.ambient {
+            config.lights.ambient = ambient;
+        }
+        if !self.directional.is_empty() {
+            config.lights.directional.clone_from(&self.directional);
         }
         let animation = self.animation.as_deref().map(parse_animation);
         if self.document.is_empty() {
@@ -250,6 +272,23 @@ fn parse_vec3(text: &str) -> Result<[f32; 3], String> {
         .map_err(|_| format!("{text} needs 3 numbers, got {count}"))
 }
 
+/// Parse a directional light: six comma-separated numbers.
+fn parse_directional(text: &str) -> Result<DirectionalLightConfig, String> {
+    let values = parse_floats(text)?;
+    let count = values.len();
+    match <[f32; 6]>::try_from(values) {
+        Ok([red, green, blue, intensity, yaw, pitch]) => Ok(DirectionalLightConfig {
+            color: [red, green, blue],
+            intensity,
+            yaw,
+            pitch,
+        }),
+        Err(_) => Err(format!(
+            "{text} needs 6 numbers (colour, intensity, yaw, pitch), got {count}"
+        )),
+    }
+}
+
 /// Parse sixteen comma-separated numbers.
 fn parse_matrix(text: &str) -> Result<[f32; 16], String> {
     let values = parse_floats(text)?;
@@ -329,6 +368,53 @@ mod tests {
         assert_eq!(parse_scale("2"), Ok((2.0, 2.0)));
         assert_eq!(parse_scale("0.75,0.5"), Ok((0.75, 0.5)));
         assert!(parse_scale("1,2,3").is_err());
+    }
+
+    #[test]
+    fn lights_default_to_the_built_in_set_and_are_overridable() {
+        let plain = args(&["--output", "out.png"]);
+        let mut config = Config::default();
+        plain.apply(&mut config);
+        assert_eq!(config.lights, LightsConfig::built_in());
+
+        let replaced = args(&[
+            "--output",
+            "out.png",
+            "--ambient",
+            "0.5,0.5,0.5",
+            "--directional",
+            "1,0,0,2,90,0",
+        ]);
+        replaced.apply(&mut config);
+        assert_eq!(config.lights.ambient, [0.5, 0.5, 0.5]);
+        assert_eq!(
+            config.lights.directional,
+            vec![DirectionalLightConfig {
+                color: [1.0, 0.0, 0.0],
+                intensity: 2.0,
+                yaw: 90.0,
+                pitch: 0.0,
+            }]
+        );
+
+        let dark = args(&["--output", "out.png", "--no-lights"]);
+        dark.apply(&mut config);
+        assert_eq!(config.lights.ambient, [0.0; 3]);
+        assert!(config.lights.directional.is_empty());
+    }
+
+    #[test]
+    fn directional_lights_need_six_numbers() {
+        assert_eq!(
+            parse_directional("1,0.62,0.15,0.22,-37,-37"),
+            Ok(DirectionalLightConfig {
+                color: [1.0, 0.62, 0.15],
+                intensity: 0.22,
+                yaw: -37.0,
+                pitch: -37.0,
+            })
+        );
+        assert!(parse_directional("1,0,0,1").is_err());
     }
 
     #[test]

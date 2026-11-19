@@ -3,7 +3,8 @@
 use serde::Deserialize;
 use unlit3d::components::Transform;
 
-/// A whole render: what to draw, how to frame it, and how big the image is.
+/// A whole render: what to draw, how to frame it, how big the image is, and
+/// what lights it.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
@@ -13,6 +14,134 @@ pub struct Config {
     pub camera: CameraConfig,
     /// The glTF documents to draw, in order.
     pub documents: Vec<DocumentConfig>,
+    /// The lights the scene draws under.
+    ///
+    /// Omitting the section inherits every built-in light; stating it replaces
+    /// the fields it names, so `"directional": []` draws no directional light.
+    pub lights: LightsConfig,
+}
+
+/// The lights a scene draws under.
+///
+/// A configuration that omits the section, or omits a field of it, draws under
+/// the corresponding part of [`LightsConfig::built_in`]; the section is a set of
+/// per-field overrides, the same way the command line's options are. A field
+/// that is stated replaces the built-in value of that field alone, so
+/// `"directional": []` keeps the ambient term while dropping every directional
+/// light, and `"ambient": [0.0, 0.0, 0.0]` drops the ambient term while keeping
+/// them.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LightsConfig {
+    /// The ambient term as [red, green, blue] in linear light, added to every
+    /// lit fragment. It carries no intensity of its own: the colour is the term,
+    /// so `[0.0, 0.0, 0.0]` contributes nothing.
+    #[serde(default = "built_in_ambient")]
+    pub ambient: [f32; 3],
+    /// One entry per directional light, in the order they are spawned.
+    #[serde(default = "built_in_directional")]
+    pub directional: Vec<DirectionalLightConfig>,
+}
+
+impl LightsConfig {
+    /// The lights a configuration that says nothing about lighting draws under.
+    ///
+    /// One ambient term keeps a lit material off pure black, and a two-hue
+    /// directional pair — an amber key raking from above, a blue fill facing the
+    /// camera — gives a shape a readable form.
+    ///
+    /// These are the lights the reference glTF scene of [`unlit3d_examples`]
+    /// draws under, kept in step with it by the two sharing the
+    /// `snapshots/gltf` frames: the CLI's end-to-end test and the scene's
+    /// snapshot test compare the same images, so either set drifting from the
+    /// other fails a test. The scene states them in radians and adds them by
+    /// hand, which is why the agreement is a test rather than a shared value.
+    ///
+    /// [`unlit3d_examples`]: https://github.com/beicause/unlit3d/tree/main/unlit3d_examples
+    #[must_use]
+    pub fn built_in() -> Self {
+        Self {
+            ambient: built_in_ambient(),
+            directional: built_in_directional(),
+        }
+    }
+}
+
+impl Default for LightsConfig {
+    fn default() -> Self {
+        Self::built_in()
+    }
+}
+
+/// The ambient term of the built-in light set.
+fn built_in_ambient() -> [f32; 3] {
+    [0.045, 0.045, 0.05]
+}
+
+/// The directional lights of the built-in light set.
+fn built_in_directional() -> Vec<DirectionalLightConfig> {
+    // The key light is tilted by 0.65 radians in the reference scene, which a
+    // configuration states in degrees.
+    let key = 0.65_f32.to_degrees();
+    vec![
+        DirectionalLightConfig {
+            color: [1.0, 0.62, 0.15],
+            intensity: 0.22,
+            yaw: key,
+            pitch: -key,
+        },
+        DirectionalLightConfig {
+            color: [0.2, 0.45, 1.0],
+            intensity: 0.11,
+            yaw: 0.0,
+            pitch: 0.0,
+        },
+    ]
+}
+
+/// A directional light: a colour, an intensity and the two angles that aim it.
+///
+/// A directional light shines along its transform's `-Z`, so its aim is a yaw
+/// about the Y axis followed by a pitch about the X axis. A roll would turn the
+/// light about its own axis and change nothing about where it points, so the
+/// shape has no field for it.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DirectionalLightConfig {
+    /// The light's linear colour, as [red, green, blue].
+    pub color: [f32; 3],
+    /// The light's dimensionless intensity.
+    pub intensity: f32,
+    /// The yaw about the Y axis, in degrees, applied before the pitch.
+    pub yaw: f32,
+    /// The pitch about the X axis, in degrees.
+    pub pitch: f32,
+}
+
+impl Default for DirectionalLightConfig {
+    fn default() -> Self {
+        Self {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+}
+
+impl DirectionalLightConfig {
+    /// The rotation this light shines with: a yaw about Y, then a pitch about X.
+    #[must_use]
+    pub fn rotation(&self) -> glam::Quat {
+        glam::Quat::from_rotation_y(self.yaw.to_radians())
+            * glam::Quat::from_rotation_x(self.pitch.to_radians())
+    }
+
+    /// The colour this light carries, as the vector a light component holds.
+    #[must_use]
+    pub fn color_vector(&self) -> glam::Vec4 {
+        glam::Vec4::new(self.color[0], self.color[1], self.color[2], 0.0)
+    }
 }
 
 /// The image size, the render size and the viewport scaling.
@@ -155,4 +284,38 @@ pub enum AnimationRef {
     Index(usize),
     /// The animation's name.
     Name(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(json: &str) -> Config {
+        serde_json::from_str(json).expect("the configuration parses")
+    }
+
+    #[test]
+    fn an_absent_lights_section_is_the_built_in_set() {
+        assert_eq!(config("{}").lights, LightsConfig::built_in());
+    }
+
+    #[test]
+    fn a_stated_light_field_replaces_only_that_field() {
+        let lights = config(r#"{"lights": {"ambient": [0.5, 0.25, 0.0]}}"#).lights;
+        assert_eq!(lights.ambient, [0.5, 0.25, 0.0]);
+        assert_eq!(lights.directional, LightsConfig::built_in().directional);
+
+        let lights = config(r#"{"lights": {"directional": []}}"#).lights;
+        assert_eq!(lights.ambient, LightsConfig::built_in().ambient);
+        assert!(lights.directional.is_empty());
+    }
+
+    #[test]
+    fn unknown_light_fields_are_refused() {
+        assert!(
+            serde_json::from_str::<Config>(r#"{"lights": {"directional": [{"yaw": 1.0}]}}"#)
+                .is_ok()
+        );
+        assert!(serde_json::from_str::<Config>(r#"{"lights": {"distances": [1.0]}}"#).is_err());
+    }
 }

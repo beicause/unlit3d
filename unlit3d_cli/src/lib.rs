@@ -14,15 +14,12 @@ pub mod cli;
 mod config;
 
 pub use config::{
-    AnimationRef, CameraConfig, Config, DocumentConfig, OutputConfig, PlacementConfig,
+    AnimationRef, CameraConfig, Config, DirectionalLightConfig, DocumentConfig, LightsConfig,
+    OutputConfig, PlacementConfig,
 };
 
 /// The colour format every render target uses.
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-/// The ambient term every frame draws under: the CLI carries no light
-/// configuration, and a lit draw with no lights renders black.
-const DEFAULT_AMBIENT: glam::Vec4 = glam::Vec4::new(0.045, 0.045, 0.05, 0.0);
 
 /// Everything that can stop a render or a save.
 #[derive(Debug, thiserror::Error)]
@@ -186,7 +183,7 @@ pub fn build_world(
         .scope_mut(pass)
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
-    spawn_default_lights(&mut world, source_entity);
+    spawn_lights(&mut world, source_entity, &config.lights);
 
     for document in &config.documents {
         let gltf = LitGltf::load(&document.path)?;
@@ -245,12 +242,16 @@ pub fn build_world(
 /// and a default camera, and an offscreen colour target registered in the graph
 /// — both as a texture a screenshot can read back and as the view the renderer
 /// draws into. Returns the world and the renderer entity.
+///
+/// The world draws under `lights`; a document loaded into it later may draw lit,
+/// and such a world left without lights would render it black.
 #[must_use]
 pub fn offscreen_world(
     device: RenderDevice,
     size: (u32, u32),
     samples: u32,
     depth: bool,
+    lights: &LightsConfig,
 ) -> (World, Entity) {
     let mut world = World::new();
     let handle = device.device.clone();
@@ -275,9 +276,9 @@ pub fn offscreen_world(
     }
 
     bind_target(&world, context, pass, &handle, size, samples, depth);
-    // A document this world loads may draw lit, so it carries the same lights a
-    // configured frame does rather than leaving such materials black.
-    spawn_default_lights(&mut world, source_entity);
+    // A document this world loads may draw lit, so it carries lights rather than
+    // leaving such materials black.
+    spawn_lights(&mut world, source_entity, lights);
     // The camera sits in the source's own subtree, which is what it frames.
     world
         .scope_mut(source_entity)
@@ -285,38 +286,32 @@ pub fn offscreen_world(
     (world, renderer)
 }
 
-/// Spawn the lights a CLI world draws under.
+/// Spawn the lights a world draws under, in the source's own subtree.
 ///
-/// The CLI carries no light configuration, so a frame with no lights would draw
-/// every material that is not marked `KHR_materials_unlit` black. One ambient
-/// term keeps such materials off pure black, and a two-hue directional pair — an
-/// amber key raking from above, a blue fill facing the camera — gives the shapes
-/// a readable form. Both the configured frame and the offscreen world an MCP
-/// host serves spawn them, so a document draws the same way whichever host
-/// loaded it.
-fn spawn_default_lights(world: &mut World, source: Entity) {
-    world
-        .scope_mut(source)
-        .spawn(bundle![AmbientLight::new(DEFAULT_AMBIENT)]);
-    for (color, intensity, rotation) in [
-        (
-            glam::Vec4::new(1.0, 0.62, 0.15, 0.0),
-            0.22,
-            glam::Quat::from_rotation_y(0.65) * glam::Quat::from_rotation_x(-0.65),
-        ),
-        (
-            glam::Vec4::new(0.2, 0.45, 1.0, 0.0),
-            0.11,
-            glam::Quat::IDENTITY,
-        ),
-    ] {
+/// A light reaches only the draws of the source it hangs under, so every light
+/// goes into `source`; a world left without lights draws each material that is
+/// not marked `KHR_materials_unlit` black, which is what an empty
+/// [`LightsConfig`] asks for. A black ambient term is not spawned at all, since
+/// it would add nothing.
+fn spawn_lights(world: &mut World, source: Entity, lights: &LightsConfig) {
+    let ambient = lights.ambient;
+    if ambient != [0.0; 3] {
+        let color = glam::Vec4::new(ambient[0], ambient[1], ambient[2], 0.0);
+        world
+            .scope_mut(source)
+            .spawn(bundle![AmbientLight::new(color)]);
+    }
+    for light in &lights.directional {
         world.scope_mut(source).spawn(bundle![
             Transform {
                 translation: glam::Vec3::ZERO,
-                rotation,
+                rotation: light.rotation(),
                 scale: glam::Vec3::ONE,
             },
-            LightSource::new(DirectionalLight { color, intensity }),
+            LightSource::new(DirectionalLight {
+                color: light.color_vector(),
+                intensity: light.intensity,
+            }),
         ]);
     }
 }
@@ -371,6 +366,9 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
                     size,
                     samples,
                     depth,
+                    // Serving MCP ignores every other option, so the world draws
+                    // under the built-in lights rather than a configured set.
+                    &LightsConfig::built_in(),
                 ))
             });
             match built {

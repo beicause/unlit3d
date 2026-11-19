@@ -5,7 +5,8 @@ use unlit_wgpu_test_util::{
     Tolerance, assert_image_snapshot_with_tolerance, gpu_test_main, gpu_tests, snapshots,
 };
 use unlit3d_cli::{
-    AnimationRef, CameraConfig, Config, DocumentConfig, Frame, OutputConfig, PlacementConfig,
+    AnimationRef, CameraConfig, Config, DocumentConfig, Frame, LightsConfig, OutputConfig,
+    PlacementConfig,
 };
 
 const FOX: &str = concat!(
@@ -56,6 +57,7 @@ fn reference(fox_time: f32, morph_time: f32, size: (u32, u32), scale: (f32, f32)
             view: None,
             projection: None,
         },
+        lights: LightsConfig::built_in(),
         documents: vec![
             DocumentConfig {
                 path: FOX.to_owned(),
@@ -129,6 +131,51 @@ async fn renders_a_narrow_render_size() {
     );
 }
 
+/// The mean luminance of a frame, which tells a lit frame from an unlit one.
+fn mean_luminance(frame: &Frame) -> f32 {
+    let sum: f32 = frame
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|pixel| {
+            (0.2126 * f32::from(pixel[0])
+                + 0.7152 * f32::from(pixel[1])
+                + 0.0722 * f32::from(pixel[2]))
+                / 255.0
+        })
+        .sum();
+    sum / (frame.width * frame.height) as f32
+}
+
+async fn lights_change_the_frame() {
+    let lit = reference(0.0, 0.0, (256, 192), (1.0, 1.0));
+    let lit_frame = unlit3d_cli::render(&lit)
+        .await
+        .expect("the lit scene renders");
+
+    // Neither document carries KHR_materials_unlit, so with no light at all
+    // every surface shades to black and only the clear colour is left.
+    let mut dark = reference(0.0, 0.0, (256, 192), (1.0, 1.0));
+    dark.lights = LightsConfig {
+        ambient: [0.0; 3],
+        directional: Vec::new(),
+    };
+    let dark_frame = unlit3d_cli::render(&dark)
+        .await
+        .expect("the unlit scene renders");
+
+    let (lit, dark) = (mean_luminance(&lit_frame), mean_luminance(&dark_frame));
+    assert!(
+        dark < 1.0e-3,
+        "a scene without lights should be black, got {dark}"
+    );
+    assert!(
+        lit > 20.0 * dark.max(1.0e-6),
+        "the built-in lights should light the scene: {lit} against {dark}"
+    );
+}
+
 async fn saves_by_extension() {
     let frame = Frame {
         rgba: vec![
@@ -152,6 +199,7 @@ async fn saves_by_extension() {
 gpu_tests! {
     renders_the_reference_gltf_scene,
     renders_a_narrow_render_size,
+    lights_change_the_frame,
     saves_by_extension,
 }
 

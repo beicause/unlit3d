@@ -51,6 +51,27 @@ apart and one combined matrix cannot be split back into them; the named fields
 build a right-handed look-at view and a DirectX-style infinite-reverse
 projection, the same camera `unlit3d_examples` draws its scenes with.
 
+## Lights
+
+A glTF document states no lights of its own, and the CLI draws every material
+that is not marked `KHR_materials_unlit` lit, so a render with no lights would
+come out black. The `lights` section says what the scene draws under: an
+`ambient` colour added to every lit fragment, and one `directional` entry per
+directional light. Omit the section and the built-in set applies — a dim ambient
+term and a two-hue directional pair, the lights the reference glTF scene of
+`unlit3d_examples` draws under — so a default render matches that scene's
+pictures. A section that is present replaces the fields it names and inherits the
+rest, so `"directional": []` drops the directional lights while keeping the
+ambient term, and `--no-lights` drops everything.
+
+A directional light shines along its transform's `-Z`, so `yaw` (about the Y
+axis) and `pitch` (about the X axis), both in degrees, are the whole of its aim;
+a roll would turn it about its own axis and change nothing. `color` and
+`intensity` are linear colour and a dimensionless factor, because the library
+shades without an exposure or a tone curve. On the command line, `--ambient`
+takes `R,G,B`, and `--directional` takes `R,G,B,INTENSITY,YAW,PITCH` and is
+repeatable, replacing the configuration's list.
+
 ## Configuration file
 
 `--config` reads a JSON file before the overrides are applied. Every field is
@@ -72,6 +93,13 @@ optional and unknown fields are refused. The shape is:
     "up": [0.0, 1.0, 0.0],
     "fov_y": 60.0,
     "z_near": 0.1
+  },
+  "lights": {
+    "ambient": [0.045, 0.045, 0.05],
+    "directional": [
+      { "color": [1.0, 0.62, 0.15], "intensity": 0.22, "yaw": 37.24, "pitch": -37.24 },
+      { "color": [0.2, 0.45, 1.0], "intensity": 0.11, "yaw": 0.0, "pitch": 0.0 }
+    ]
   },
   "documents": [
     {

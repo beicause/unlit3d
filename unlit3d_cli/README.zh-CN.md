@@ -39,6 +39,12 @@ cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unli
 无法拆回它们；命名字段构建的是右手系 look-at 视图与 DirectX 风格无限远反向投影，与
 `unlit3d_examples` 绘制其场景所用的相机一致。
 
+## 灯光
+
+glTF 文档自身不带灯，而 CLI 会把每个未标记 `KHR_materials_unlit` 的材质按受光绘制，所以没有灯的渲染会是一片黑。`lights` 段说明场景在什么光下绘制：一个加在每片受光片元上的 `ambient` 颜色，以及一盏方向光一条的 `directional` 列表。省略该段就用内置的一套——一个很暗的环境项和一对双色方向光，正是 `unlit3d_examples` 的参考 glTF 场景所用的灯——所以默认渲染与那个场景的图像一致。写出该段时，写到的字段替换内置值、没写的字段沿用内置值：`"directional": []` 去掉方向光但保留环境项，`--no-lights` 则全部去掉。
+
+方向光沿自身变换的 `-Z` 照射，所以只用 `yaw`（绕 Y 轴）与 `pitch`（绕 X 轴）两个角度，单位为度，就能定出全部朝向；roll 只会让它绕自身轴旋转，不改变指向。`color` 是线性颜色，`intensity` 是无量纲强度，因为本库着色不带曝光与色调曲线。命令行上 `--ambient` 取 `R,G,B`，`--directional` 取 `R,G,B,INTENSITY,YAW,PITCH` 且可重复，重复给出会替换配置文件里的整个列表。
+
 ## 配置文件
 
 `--config` 会在应用覆盖之前读取一个 JSON 文件。所有字段都可选，未知字段会被拒绝。结构如下：
@@ -59,6 +65,13 @@ cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unli
     "up": [0.0, 1.0, 0.0],
     "fov_y": 60.0,
     "z_near": 0.1
+  },
+  "lights": {
+    "ambient": [0.045, 0.045, 0.05],
+    "directional": [
+      { "color": [1.0, 0.62, 0.15], "intensity": 0.22, "yaw": 37.24, "pitch": -37.24 },
+      { "color": [0.2, 0.45, 1.0], "intensity": 0.11, "yaw": 0.0, "pitch": 0.0 }
+    ]
   },
   "documents": [
     {

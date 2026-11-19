@@ -8,7 +8,7 @@
 | -------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | 单 world 的窗口示例        | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --scene spin_cube`（`--list-scenes` 看全部，`--mcp-stdio` 开调试宿主） |
 | 多 world 的示例            | `cargo run -p unlit3dx_examples --bin unlit3dx-examples`（另有 `--mcp-stdio` / `--stepped`；`--headless --interactive --mcp-stdio` 是无窗口、按帧驱动的 MCP 宿主） |
-| glTF 出图                  | `cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2`（`--output` 是唯一必填项，不带就是用法错误） |
+| glTF 出图                  | `cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2`（`--output` 是唯一必填项，不带就是用法错误；默认带一套内置灯光，`--no-lights` 关掉、`--ambient R,G,B` 与可重复的 `--directional R,G,B,INTENSITY,YAW,PITCH` 覆盖，见 `unlit3d_cli/README.md` 的 Lights 节） |
 | 整个工作区测试             | `cargo xtask test`（内部是 `cargo nextest run` 加 `cargo test --doc`）                                     |
 | 单 crate                   | `cargo nextest run -p unlit3d --all-features`                                                               |
 | 重存快照                   | `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples`，再审快照的 diff                                 |
