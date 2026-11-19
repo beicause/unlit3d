@@ -11,9 +11,9 @@ use super::{
 /// A `doubleSided` material draws the geometry's back faces too: a quad wound
 /// away from the camera is culled when single-sided and covered when not.
 ///
-/// Nothing in the unlit fragment shader reads a normal, so double-sidedness is
-/// the cull mode alone — the back faces are rasterized as they are rather than
-/// with a reversed normal.
+/// A back face is shaded by the geometric normal turned towards the eye, so
+/// double-sidedness is the cull mode alone: both sides draw by the same
+/// equation.
 pub(super) async fn a_double_sided_material_draws_back_faces() {
     let ctx = Ctx::headless().await;
 

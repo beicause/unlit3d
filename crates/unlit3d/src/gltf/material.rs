@@ -8,14 +8,12 @@ use unlit_wgpu::pipeline::LitOptions;
 /// The key a material bind group is built against.
 ///
 /// Only `texture_filtering` shapes the material group's layout, so any key
-/// carrying it works; this is the one a base-color-textured primitive's
-/// [`LitGltf::pipeline_key`](super::LitGltf::pipeline_key) derives to. The
+/// carrying it works, whatever shading mode the primitive's key names. The
 /// per-vertex channels a draw adds do not enter the material group, and wgpu
 /// deduplicates identical layout descriptors, so the group fits the pipeline
 /// whatever else its key reads.
 pub(super) fn textured_key(filtering: bool) -> LitPipelineKey {
     LitPipelineKey::new(LitOptions {
-        unlit: true,
         texture_filtering: filtering,
         ..LitOptions::standard()
     })

@@ -59,6 +59,7 @@
 | 描述 | `LitMeshDesc`：`positions` 必填，其余通道都是 `Option`，照抄时用 `..Default::default()` 补齐。`normals` 是 `expanded` / `inverted_hull()` 外扩壳的方向，缺了画不出壳 |
 | key | `LitPipelineKey::new(LitOptions)`，`pub options: Hashed<LitOptions>`；受光与否由 `LitOptions::unlit` 定（`false` 受光） |
 | 管线组件 | `GpuRenderPipeline::new(key)`，不带 key 类型参数 |
+| 画一份 | `LitMeshBundle`（`crates/unlit3d/src/lit/bundle.rs`）——一条受光绘制的全部组件，`transform`/`mesh`/`pipeline`/`color` 必带，`cutoff`/`hull_width`/`material`/`skin`/`morph`/`z_sorted` 按 `Option` 给；glTF 的每个 primitive 也用它 spawn |
 | 每实例覆盖 | `InstanceColor { color }` / `InstanceCutoff { cutoff }` / `InstanceHullWidth { width }` / `InstanceVisibility { visible }`。都是**具名字段**结构体，**不是元组结构体**：前三个有 `new(..)`，四个都有 `Default`（`InstanceVisibility` 没有 `new`） |
 | 实例记录 | `LitInstance`（family 的 `InstanceData`） |
 | 排序 | `ZSortedDrawing`：带它的在不带它的之后画，按视轴深度从后往前；不改 blend |
@@ -212,7 +213,7 @@
 
 ## glTF
 
-`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_default_scene`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。
+`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_default_scene`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。
 
 ## 常用常量
 

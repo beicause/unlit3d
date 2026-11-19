@@ -526,6 +526,8 @@ impl InstanceContext<'_> {
   再自行拼出 `GltfResources`。
 - 交出句柄只让其所指变得可回收：材质的绑定组与材质同寿，它采样的纹理视图也由材质
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
+- 带 `KHR_materials_unlit` 的材质按无光绘制，基础色就是文件所写；其余材质按受光绘制，
+  由帧里的光照着色——文档声明的是退出着色，而不是选择受光。
 - `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
   的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
   `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
@@ -549,8 +551,8 @@ impl InstanceContext<'_> {
   不计入也不上传，因此当网格的所有目标都不位移本加载器所读的数据时，它会以未形变的方式
   绘制，而不是走形变路径。
 - 材质为 `doubleSided` 的 primitive 从两面绘制：该管线变体去掉剔除模式，于是单面变体本会
-  丢弃的背面会被光栅化。变体的其他部分都不变，因为 lit 片元着色器不读法线——没有背面
-  法线需要反转，也没有光照方程需要求值。
+  丢弃的背面会被光栅化。变体的其他部分都不变：背面用转向眼睛的几何法线着色，与正面走
+  同一个光照方程。
 - 文档中的动画按需采样而非自动播放：`LitGltf::animation_count`、
   `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
   `document.apply_animation(&scope, clip, time, &spawned)` 在选定的时间求值其中一个。
@@ -758,12 +760,23 @@ let (mesh, material) = {
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-    let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
-    (mesh, material)
+        let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
+        (mesh, material)
 };
 world
     .scope_mut(source)
-    .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
+    .spawn(LitMeshBundle {
+        transform: Transform::default(),
+        mesh,
+        pipeline: GpuRenderPipeline::new(key),
+        color: InstanceColor::default(),
+        cutoff: None,
+        hull_width: None,
+        material: Some(material),
+        skin: None,
+        morph: None,
+        z_sorted: None,
+    });
 
 // 4. Give the pass a render target and render one frame (uses the noop
 //    device, so it produces a valid command buffer without touching a GPU).

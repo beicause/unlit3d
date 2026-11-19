@@ -23,9 +23,12 @@ use unlit_wgpu::resources::TextureExt;
 impl LitGltf {
     /// The [`LitPipelineKey`] the primitive renders with.
     ///
-    /// The key carries only what a caller picks: the texture filtering the
-    /// material's base-color texture needs, whether a `BLEND` material blends
-    /// without writing depth and whether a `MASK` one cuts. Everything geometric —
+    /// A material carrying `KHR_materials_unlit` shades nothing and draws its
+    /// base colour as the file states it; every other material is lit and
+    /// shades under the frame's lights. The rest of the key is what a caller
+    /// picks: the texture filtering the material's base-color texture needs,
+    /// whether a `BLEND` material blends without writing depth and whether a
+    /// `MASK` one cuts. Everything geometric —
     /// which vertex channels the primitive carries, whether it samples its
     /// base-color texture, whether it skins or morphs — is a property of the
     /// draw, so [`Self::insert_mesh`] uploads the streams the primitive's own
@@ -41,10 +44,12 @@ impl LitGltf {
     ) -> LitPipelineKey {
         let primitive = self.primitive(mesh.index(), primitive.index());
         let material = primitive.material();
-        // A glTF scene states no lights of its own, so its draws shade
-        // nothing: the base colour it imports is what the file says.
+        // A material carrying `KHR_materials_unlit` is drawn unlit, its base
+        // colour exactly as the file states it; every other material shades
+        // under the frame's lights, which is the glTF default a document opts
+        // out of.
         let mut options = LitOptions {
-            unlit: true,
+            unlit: material.unlit(),
             ..LitOptions::standard()
         };
         // The texture the material samples decides whether the base-color
@@ -78,9 +83,9 @@ impl LitGltf {
         }
         // A `doubleSided` material is visible from behind, so its back faces
         // are rasterized rather than culled. Nothing else about the variant
-        // changes: the unlit fragment shader reads no normal, so there is no
-        // back-face normal to reverse, and the geometry simply draws from both
-        // sides.
+        // changes: a back face takes the geometric normal turned towards the
+        // eye, which a normal channel or the screen-space fallback supplies,
+        // so both sides shade by the same equation.
         if material.double_sided() {
             options.primitive.cull_mode = None;
         }

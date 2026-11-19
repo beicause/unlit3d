@@ -369,5 +369,9 @@ impl InstanceData for LitInstance {
 
 mod allocate;
 
+mod bundle;
+
+pub use bundle::LitMeshBundle;
+
 #[cfg(test)]
 mod tests;

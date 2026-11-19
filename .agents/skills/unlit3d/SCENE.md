@@ -57,7 +57,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 建 mesh  | `source.allocate_lit_mesh(&scope, &key.options, LitMeshDesc { .. })` 返回 `GpuMesh`；顶点通道由你给的 slice 决定（positions 必填，uvs/colors/normals/indices/joints/weights/morph 可选；`expanded` 外扩壳需要 normals） |
 | 建材质   | 纹理 `register_texture_and_default_view`、采样器 `register_sampler`，再 `allocate_lit_material(&scope, &key.options, view, sampler)`                                          |
-| 画一份   | `spawn(bundle![Transform, mesh, material, GpuRenderPipeline::new(key)])`，挂在 source 子树里                                                                           |
+| 画一份   | `spawn(LitMeshBundle { transform, mesh, pipeline, color, cutoff, hull_width, material, skin, morph, z_sorted })`——前四件必带，`Option` 字段按需，挂在 source 子树里                                                                           |
 | 画多份   | 同一个 `key` / `mesh` / `material` clone 到多个实体；每份差异用 `InstanceColor` / `InstanceCutoff` / `Transform`，**不要**为每个颜色重建 mesh                          |
 | 暂时隐藏 | `InstanceVisibility { visible: false }`，不要 despawn                                                                                                                     |
 | 释放     | 直接 drop `GpuMesh`（并 despawn 绘制实体）：最后一个句柄一丢，mesh 在 source 下一次 `maintain` 时被收集，池子区间与 metadata 槽随之归还；无需手动调用释放方法 |
@@ -75,7 +75,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 
 ## 光照
 
-`standard()` 的 `unlit` 是 `false`，即**受光**；但示例的 `default_options()` 与 `LitGltf::pipeline_key` 都显式设成 `unlit: true`。所以「照抄示例骨架却永远一块纯色」不是渲染坏了——是那个骨架根本没开光。想看明暗，做三件事：
+`standard()` 的 `unlit` 是 `false`，即**受光**；示例的 `default_options()` 却把它设成 `unlit: true`（那些场景本来就没有灯）。`LitGltf::pipeline_key` 不看这个函数，它按材质给：带 `KHR_materials_unlit` 的画 unlit，其余画 lit。所以「照抄示例骨架却永远一块纯色」不是渲染坏了——是那个骨架的 key 没开光。想看明暗，做三件事：
 
 1. key 来自 `options.unlit = false` 的 `LitOptions`（在 `standard()` 上改一处即可）；
 2. 灯是 **`LightSource` 组件**（`LightSource::new(DirectionalLight { .. })` 等），spawn 在**画这个 mesh 的那个 source** 的子树里——和相机、mesh 完全同一条规则，挂错地方就是没有光；

@@ -54,8 +54,10 @@ pub(super) fn quad_document(doc: &QuadDoc) -> Vec<u8> {
     } else {
         1.0
     };
-    let mut material =
-        format!("\"pbrMetallicRoughness\":{{\"baseColorFactor\":[1.0,1.0,1.0,{alpha}]");
+    let mut material = format!(
+        "\"extensions\":{{\"KHR_materials_unlit\":{{}}}},\
+         \"pbrMetallicRoughness\":{{\"baseColorFactor\":[1.0,1.0,1.0,{alpha}]"
+    );
     let mut textures = String::new();
     if doc.textured {
         attributes.push_str(",\"TEXCOORD_0\":1");
@@ -77,7 +79,7 @@ pub(super) fn quad_document(doc: &QuadDoc) -> Vec<u8> {
         material.push_str(",\"doubleSided\":true");
     }
     let json = format!(
-        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        r#"{{"asset":{{"version":"2.0"}},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
         "scenes":[{{"nodes":[0]}}],
         "nodes":[{{"children":[1]}},{{"mesh":0,"translation":[{},{},{}]}}],
         "meshes":[{{"primitives":[{{"attributes":{{{}}},
@@ -160,7 +162,7 @@ pub(super) fn spawn_scene(
 /// flat colour and a test can count it.
 pub(super) fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
     format!(
-        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        r#"{{"asset":{{"version":"2.0"}},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
         "scenes":[{{"nodes":[0]}}],
         "nodes":[{{"mesh":0,"skin":0}},
         {{"name":"joint","translation":[{},{},{}]}}],
@@ -168,7 +170,8 @@ pub(super) fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
         "meshes":[{{"primitives":[{{"attributes":
         {{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2,"COLOR_0":5}},
         "indices":4,"material":0}}]}}],
-        "materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[1.0,1.0,1.0,1.0]}}}}],
+        "materials":[{{"extensions":{{"KHR_materials_unlit":{{}}}},
+         "pbrMetallicRoughness":{{"baseColorFactor":[1.0,1.0,1.0,1.0]}}}}],
         "accessors":[
         {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
         "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]}},
@@ -206,13 +209,13 @@ pub(super) const MORPHED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZmb
 /// The glTF JSON of a quad whose two morph targets each empty the frame when
 /// fully weighted.
 pub(super) fn morphed_document() -> Vec<u8> {
-    let json = r#"{"asset":{"version":"2.0"},"scene":0,
+    let json = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
  "scenes":[{"nodes":[0]}],
  "nodes":[{"mesh":0}],
  "meshes":[{"weights":[0.0,0.0],"primitives":[{"attributes":
  {"POSITION":0,"COLOR_0":2},"indices":1,"material":0,
  "targets":[{"POSITION":3},{"POSITION":4}]}]}],
- "materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],
+ "materials":[{"extensions":{"KHR_materials_unlit":{}},"pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],
  "accessors":[
  {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
  "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]},
@@ -250,14 +253,14 @@ pub(super) const ANIMATED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZm
 /// because `apply_animation` recomposed the joint and rebuilt the skin pose
 /// against it.
 pub(super) fn animated_skinned_document() -> Vec<u8> {
-    let json = r#"{"asset":{"version":"2.0"},"scene":0,
+    let json = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
  "scenes":[{"nodes":[0]}],
  "nodes":[{"mesh":0,"skin":0},{"name":"joint"}],
  "skins":[{"joints":[1],"inverseBindMatrices":3}],
  "meshes":[{"primitives":[{"attributes":
  {"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2,"COLOR_0":5},
  "indices":4,"material":0}]}],
- "materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],
+ "materials":[{"extensions":{"KHR_materials_unlit":{}},"pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],
  "accessors":[
  {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
  "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]},
@@ -310,12 +313,13 @@ pub(super) fn reversed_document(double_sided: bool) -> Vec<u8> {
         ""
     };
     let json = format!(
-        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        r#"{{"asset":{{"version":"2.0"}},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
         "scenes":[{{"nodes":[0]}}],
         "nodes":[{{"mesh":0}}],
         "meshes":[{{"primitives":[{{"attributes":
         {{"POSITION":0,"COLOR_0":1}},"indices":2,"material":0}}]}}],
-        "materials":[{{"pbrMetallicRoughness":
+        "materials":[{{"extensions":{{"KHR_materials_unlit":{{}}}},
+         "pbrMetallicRoughness":
         {{"baseColorFactor":[1.0,1.0,1.0,1.0]}}{sided}}}],
         "accessors":[
         {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",

@@ -784,6 +784,10 @@ the module patches into the world you already render:
   bind group lives while the material does, and the texture view it samples is
   held by the material too, so dropping the material's handle is enough to
   release both. The next `maintain` reclaims them.
+- A material carrying `KHR_materials_unlit` draws unlit, its base colour
+  exactly as the file states it; every other material draws lit, shaded by the
+  lights the frame carries — a document opts out of shading, it does not opt
+  in.
 - `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
   mesh (or every node reachable from the default scene): one entity per
   primitive, each carrying the node's world-space [`Transform`](components::Transform), the uploaded
@@ -825,8 +829,8 @@ the module patches into the world you already render:
 - A primitive whose material is `doubleSided` is drawn from either side: the
   pipeline variant drops its cull mode, so the back faces the single-sided
   variant would discard are rasterized instead. Nothing else about the variant
-  changes, because the lit fragment shader reads no normal — there is no
-  back-face normal to reverse and no lighting equation to evaluate.
+  changes: a back face takes the geometric normal turned towards the eye, the
+  same equation the front draws by.
 - A document's animations are sampled rather than played:
   `LitGltf::animation_count`, `LitGltf::animation_name` and
   `LitGltf::animation_duration` describe the clips it carries, and
@@ -1103,12 +1107,23 @@ let (mesh, material) = {
         // which the graph keeps for it: only ids cross the boundary.
         let texture_view = source.register_texture_and_default_view(&scope, texture).1;
         let sampler = source.register_sampler(&scope, None);
-    let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
-    (mesh, material)
+        let material = source.allocate_lit_material(&scope, &key.options, texture_view, sampler);
+        (mesh, material)
 };
 world
     .scope_mut(source)
-    .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
+    .spawn(LitMeshBundle {
+        transform: Transform::default(),
+        mesh,
+        pipeline: GpuRenderPipeline::new(key),
+        color: InstanceColor::default(),
+        cutoff: None,
+        hull_width: None,
+        material: Some(material),
+        skin: None,
+        morph: None,
+        z_sorted: None,
+    });
 
 // 4. Give the pass a render target and render one frame (uses the noop
 //    device, so it produces a valid command buffer without touching a GPU).

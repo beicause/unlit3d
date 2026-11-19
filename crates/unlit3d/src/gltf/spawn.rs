@@ -1,24 +1,27 @@
 //! Spawning entities that draw a document's nodes.
 //!
-//! Every entity a spawn produces is a bundle assembled from the uploaded
-//! handles: the mesh, the pipeline its key names, the material's bind group and
-//! the per-node pose or weights it binds to. The returned [`GltfNode`] names
-//! them, so an animation can write into exactly the entities a node draws.
+//! Every entity a spawn produces is one
+//! [`LitMeshBundle`](crate::lit::LitMeshBundle) — the lit family's spawn
+//! shape — assembled from the uploaded handles: the mesh, the pipeline its key
+//! names, the material's bind group and the per-node pose or weights it binds
+//! to. The returned [`GltfNode`] names them, so an animation can write into
+//! exactly the entities a node draws.
 
 use super::material::{alpha_cutoff, samples_base_color_texture};
 use super::{GltfMaterial, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId};
 use crate::components::{
     GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, ZSortedDrawing,
 };
-use crate::lit::{InstanceColor, InstanceCutoff};
+use crate::lit::{InstanceColor, InstanceCutoff, LitMeshBundle};
 use unlit_ecs::bundle;
-use unlit_ecs::{DynamicBundle, ScopeMut, prelude::Entity};
+use unlit_ecs::{ScopeMut, prelude::Entity};
 
 impl LitGltf {
     /// Spawn the entities that draw `node`'s mesh into `world`.
     ///
     /// Returns a [`GltfNode`] naming one entity per primitive of the node's
-    /// mesh — each carrying the
+    /// mesh — each spawned as a
+    /// [`LitMeshBundle`](crate::lit::LitMeshBundle) carrying the
     /// node's world-space [`Transform`](crate::components::Transform), the
     /// uploaded [`GpuMesh`](crate::components::GpuMesh), the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
@@ -111,33 +114,25 @@ impl LitGltf {
                     });
                     MorphBinding { weights }
                 });
-                // The components a primitive carries vary by material,
-                // skin and blend mode, so the bundle is assembled rather than
-                // written as a tuple: an absent material is a component left
-                // out, not a `None` the renderer would have to look through.
-                let mut bundle = DynamicBundle::new().named("gltf primitive");
-                bundle.push_component(transform.clone());
-                bundle.push_component(mesh_handle.mesh.clone());
-                bundle.push_component(GpuRenderPipeline::new(mesh_handle.key.clone()));
-                bundle.push_component(InstanceColor::new(tint));
-                // The cutoff is per-instance state, so the entity carries it
-                // and the shader reads it out of the instance stream.
-                if let Some(cutoff) = cutoff {
-                    bundle.push_component(InstanceCutoff::new(cutoff));
-                }
-                if let Some(material) = material {
-                    bundle.push_component(material.bind_group.clone());
-                }
-                if let Some(binding) = binding {
-                    bundle.push_component(binding);
-                }
-                if let Some(binding) = morph_binding {
-                    bundle.push_component(binding);
-                }
-                if z_sorted {
-                    bundle.push_component(ZSortedDrawing);
-                }
-                entities.push(world.spawn(bundle));
+                // The components a primitive carries vary by material, skin
+                // and blend mode; the bundle leaves the ones this primitive
+                // does not need out of the spawn rather than handing the
+                // renderer `None`s to look through.
+                let drawn = LitMeshBundle {
+                    transform: transform.clone(),
+                    mesh: mesh_handle.mesh.clone(),
+                    pipeline: GpuRenderPipeline::new(mesh_handle.key.clone()),
+                    color: InstanceColor::new(tint),
+                    // The cutoff is per-instance state, so the entity carries
+                    // it and the shader reads it out of the instance stream.
+                    cutoff: cutoff.map(InstanceCutoff::new),
+                    hull_width: None,
+                    material: material.map(|material| material.bind_group.clone()),
+                    skin: binding,
+                    morph: morph_binding,
+                    z_sorted: z_sorted.then_some(ZSortedDrawing),
+                };
+                entities.push(world.spawn_named("gltf primitive", drawn));
             }
         }
         Ok(GltfNode {

@@ -99,10 +99,11 @@
 //!
 //! # Supported subset
 //!
-//! Every draw this module produces is unlit, since a glTF document carries no
-//! lights: a mesh draws with its base-color texture and its instance tint, and a
-//! material whose `alphaMode` is `BLEND` composites with straight alpha, drawn
-//! z-sorted so overlapping surfaces layer correctly.
+//! A material carrying `KHR_materials_unlit` draws unlit, its base colour
+//! exactly as the file states it; every other material draws lit, shaded by
+//! the lights the frame carries. A mesh draws with its base-color texture and
+//! its instance tint, and a material whose `alphaMode` is `BLEND` composites
+//! with straight alpha, drawn z-sorted so overlapping surfaces layer correctly.
 //! A `MASK` material cuts its fragments off below its `alphaCutoff` instead,
 //! so it draws binary coverage: opaque where the texel is opaque enough and
 //! absent everywhere else, blending with nothing. A primitive carrying both

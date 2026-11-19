@@ -8,8 +8,7 @@
 //! everywhere.
 
 use super::{
-    LitSurface, PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface,
-    camera_looking_at, grid,
+    PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface, camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::Shader;
@@ -145,9 +144,18 @@ fn build_clusters(
         .spawn(bundle![AmbientLight::new(glam::Vec4::new(
             0.08, 0.08, 0.08, 0.0
         ))]);
-    world
-        .scope_mut(source_entity)
-        .spawn(LitSurface { mesh, pipeline });
+    world.scope_mut(source_entity).spawn(LitMeshBundle {
+        transform: Transform::default(),
+        mesh,
+        pipeline,
+        color: InstanceColor::default(),
+        cutoff: None,
+        hull_width: None,
+        material: None,
+        skin: None,
+        morph: None,
+        z_sorted: None,
+    });
 
     // One row per light kind, each light aimed straight down at the floor. The
     // color follows the row, so a lit frame of this scene still tells the rows

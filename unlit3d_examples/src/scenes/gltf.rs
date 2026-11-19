@@ -10,7 +10,7 @@
 //! step as its own snapshot, so a wrong joint matrix, a mispacked morph delta
 //! or a stale binding shows up as a frame that does not move the way it should.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use super::{PlacedLight, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit_ecs::bundle;
 use unlit3d::gltf::LitGltf;
 use unlit3d::prelude::*;
@@ -62,6 +62,11 @@ const MORPH_PLACEMENT: Transform = Transform {
 /// the frame without either leaving it.
 const CAMERA_EYE: glam::Vec3 = glam::Vec3::new(160.5, 109.0, 49.5);
 const CAMERA_TARGET: glam::Vec3 = glam::Vec3::new(4.5, 38.0, 26.5);
+
+/// The ambient term the scene draws under: neither document carries
+/// `KHR_materials_unlit`, so both draw lit and a frame without lights draws
+/// them black.
+const AMBIENT: glam::Vec4 = glam::Vec4::new(0.045, 0.045, 0.05, 0.0);
 
 /// The scene: two glTF documents whose clips play in real time, with six frames
 /// stored as snapshots.
@@ -150,6 +155,33 @@ fn build(
                     .map(|mut current| *current.get() = MORPH_PLACEMENT);
             }
         }
+    }
+
+    // Neither document carries `KHR_materials_unlit`, so both draw lit: a
+    // frame without lights would draw them black. One ambient term keeps
+    // every surface off pure black, and a two-hue
+    // directional pair — an amber key raking from above, a blue fill facing the camera —
+    // gives the fur and the cube's faces a readable shape.
+    world
+        .scope_mut(source_entity)
+        .spawn(bundle![AmbientLight::new(AMBIENT)]);
+    for (color, intensity, rotation) in [
+        (
+            glam::Vec4::new(1.0, 0.62, 0.15, 0.0),
+            0.22,
+            glam::Quat::from_rotation_y(0.65) * glam::Quat::from_rotation_x(-0.65),
+        ),
+        (
+            glam::Vec4::new(0.2, 0.45, 1.0, 0.0),
+            0.11,
+            glam::Quat::IDENTITY,
+        ),
+    ] {
+        world.scope_mut(source_entity).spawn(PlacedLight {
+            light: LightSource::new(DirectionalLight { color, intensity }),
+            translation: glam::Vec3::ZERO,
+            rotation,
+        });
     }
 
     let camera_entity = world

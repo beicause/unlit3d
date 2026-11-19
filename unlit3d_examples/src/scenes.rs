@@ -400,20 +400,6 @@ pub fn allocate_surface(
     })
 }
 
-/// One surface of the scene: the mesh and the pipeline it is drawn with.
-pub struct LitSurface {
-    /// The mesh this surface draws.
-    pub mesh: GpuMesh,
-    /// The pipeline its instances are drawn with.
-    pub pipeline: GpuRenderPipeline,
-}
-
-impl Bundle for LitSurface {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![Transform::default(), self.mesh, self.pipeline]
-    }
-}
-
 /// A light and the transform it shines from.
 ///
 /// The light reads nothing of the transform but its own packing, so the two are

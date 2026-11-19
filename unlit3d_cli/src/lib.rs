@@ -20,6 +20,10 @@ pub use config::{
 /// The colour format every render target uses.
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// The ambient term every frame draws under: the CLI carries no light
+/// configuration, and a lit draw with no lights renders black.
+const DEFAULT_AMBIENT: glam::Vec4 = glam::Vec4::new(0.045, 0.045, 0.05, 0.0);
+
 /// Everything that can stop a render or a save.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -182,6 +186,8 @@ pub fn build_world(
         .scope_mut(pass)
         .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
 
+    spawn_default_lights(&mut world, source_entity);
+
     for document in &config.documents {
         let gltf = LitGltf::load(&document.path)?;
         let resources = with_mesh_source(&world, source_entity, |source, world| {
@@ -269,11 +275,50 @@ pub fn offscreen_world(
     }
 
     bind_target(&world, context, pass, &handle, size, samples, depth);
+    // A document this world loads may draw lit, so it carries the same lights a
+    // configured frame does rather than leaving such materials black.
+    spawn_default_lights(&mut world, source_entity);
     // The camera sits in the source's own subtree, which is what it frames.
     world
         .scope_mut(source_entity)
         .spawn(bundle![default_camera(size)]);
     (world, renderer)
+}
+
+/// Spawn the lights a CLI world draws under.
+///
+/// The CLI carries no light configuration, so a frame with no lights would draw
+/// every material that is not marked `KHR_materials_unlit` black. One ambient
+/// term keeps such materials off pure black, and a two-hue directional pair — an
+/// amber key raking from above, a blue fill facing the camera — gives the shapes
+/// a readable form. Both the configured frame and the offscreen world an MCP
+/// host serves spawn them, so a document draws the same way whichever host
+/// loaded it.
+fn spawn_default_lights(world: &mut World, source: Entity) {
+    world
+        .scope_mut(source)
+        .spawn(bundle![AmbientLight::new(DEFAULT_AMBIENT)]);
+    for (color, intensity, rotation) in [
+        (
+            glam::Vec4::new(1.0, 0.62, 0.15, 0.0),
+            0.22,
+            glam::Quat::from_rotation_y(0.65) * glam::Quat::from_rotation_x(-0.65),
+        ),
+        (
+            glam::Vec4::new(0.2, 0.45, 1.0, 0.0),
+            0.11,
+            glam::Quat::IDENTITY,
+        ),
+    ] {
+        world.scope_mut(source).spawn(bundle![
+            Transform {
+                translation: glam::Vec3::ZERO,
+                rotation,
+                scale: glam::Vec3::ONE,
+            },
+            LightSource::new(DirectionalLight { color, intensity }),
+        ]);
+    }
 }
 
 /// The camera an offscreen world starts with.

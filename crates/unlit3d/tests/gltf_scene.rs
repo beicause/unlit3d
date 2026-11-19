@@ -17,6 +17,7 @@ use unlit3d::prelude::*;
 
 mod deform;
 mod documents;
+mod lighting;
 mod materials;
 mod scene;
 
@@ -25,6 +26,7 @@ use self::{
         a_morphed_quad_follows_its_weights, a_skinned_quad_follows_its_joint,
         an_animation_moves_the_drawn_mesh,
     },
+    lighting::{a_plain_material_shades_by_the_lights, an_unlit_material_ignores_the_lights},
     materials::{
         a_blended_material_composites_over_the_frame, a_blended_material_writes_no_depth,
         a_double_sided_material_draws_back_faces,
@@ -47,5 +49,7 @@ gpu_tests! {
     an_animation_moves_the_drawn_mesh,
     a_morphed_quad_follows_its_weights,
     a_double_sided_material_draws_back_faces,
+    an_unlit_material_ignores_the_lights,
+    a_plain_material_shades_by_the_lights,
     unload_empties_the_frame,
 }

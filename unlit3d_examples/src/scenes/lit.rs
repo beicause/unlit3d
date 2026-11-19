@@ -40,8 +40,7 @@
 //! keeps its own flat normals, so one frame draws both normal sources.
 
 use super::{
-    LitSurface, PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface,
-    camera_looking_at, grid,
+    PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface, camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::Shader;
@@ -228,14 +227,20 @@ fn build(
         .scope_mut(source_entity)
         .spawn(bundle![AmbientLight::new(AMBIENT)]);
 
-    world.scope_mut(source_entity).spawn(LitSurface {
-        mesh: floor_mesh,
-        pipeline,
-    });
-    world.scope_mut(source_entity).spawn(LitSurface {
-        mesh: wall_mesh,
-        pipeline: relief_pipeline,
-    });
+    for (mesh, pipeline) in [(floor_mesh, pipeline), (wall_mesh, relief_pipeline)] {
+        world.scope_mut(source_entity).spawn(LitMeshBundle {
+            transform: Transform::default(),
+            mesh,
+            pipeline,
+            color: InstanceColor::default(),
+            cutoff: None,
+            hull_width: None,
+            material: None,
+            skin: None,
+            morph: None,
+            z_sorted: None,
+        });
+    }
 
     // Two directional lights, told apart by hue as well as by direction: the
     // amber key rakes across the floor from above and the blue fill faces the

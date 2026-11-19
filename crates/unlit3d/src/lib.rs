@@ -86,7 +86,8 @@ pub mod prelude {
         PointLight, QuadLight, SpotLight,
     };
     pub use crate::lit::{
-        InstanceColor, InstanceCutoff, InstanceHullWidth, LitInstance, LitMeshDesc, LitPipelineKey,
+        InstanceColor, InstanceCutoff, InstanceHullWidth, LitInstance, LitMeshBundle, LitMeshDesc,
+        LitPipelineKey,
     };
     #[cfg(feature = "winit")]
     pub use crate::winit::SurfaceOptions;
