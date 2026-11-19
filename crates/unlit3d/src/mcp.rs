@@ -14,8 +14,8 @@ use unlit_ecs::mcp::serde_json::Value;
 use unlit_ecs::mcp::{
     CallToolResult, CommandSender, ContextArg, ErrorData, HandleArg, InputArg, McpCommand,
     McpServer, NoArgs, Output, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot,
-    SendInput, SpawnGltf, SpawnMesh, ToolResult, ToolRouter, ToolSource, WorldArg, WorldRef,
-    command, entity, from_value, run, to_value, tool,
+    SendInput, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, WorldRef, command, entity,
+    from_value, run, to_value, tool,
 };
 use unlit_wgpu::resources::ResId;
 
@@ -125,15 +125,6 @@ async fn input_state(commands: CommandSender, args: InputArg) -> ToolResult {
 async fn send_input(commands: CommandSender, args: SendInput) -> ToolResult {
     command(&commands, args.world, move |world| {
         host::send_input(world, args.entity.map(entity), &Value::Array(args.events))
-    })
-    .await
-}
-
-/// Allocate a mesh and spawn an entity that draws it.
-async fn spawn_mesh(commands: CommandSender, args: SpawnMesh) -> ToolResult {
-    let source = args.source.map(entity);
-    command(&commands, args.world, move |world| {
-        host::spawn_mesh(world, source, args)
     })
     .await
 }
@@ -264,12 +255,17 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
     .await
 }
 
-/// Load a glTF file and spawn its default scene.
+/// Spawn a glTF document's default scene from a path or inline bytes.
 async fn spawn_gltf(commands: CommandSender, args: SpawnGltf) -> ToolResult {
-    let path = args.path;
     let scope = args.scope.map(entity);
     command(&commands, args.world, move |world| {
-        host::spawn_gltf(world, args.source.map(entity), scope, &path)
+        host::spawn_gltf(
+            world,
+            args.source.map(entity),
+            scope,
+            args.path.as_deref(),
+            args.document.as_deref(),
+        )
     })
     .await
 }
@@ -331,11 +327,6 @@ fn register(router: &mut ToolRouter<McpServer>) {
         send_input,
     ));
     router.add_route(tool(
-        "spawn_mesh",
-        "Allocate a mesh in a world's mesh source and spawn an entity that draws it. Pass hull_width together with the normals to spawn the inverted-hull variant, which draws the back faces spread along the normals. Free a spawned mesh by despawning its entity with despawn_entity.",
-        spawn_mesh,
-    ));
-    router.add_route(tool(
         "frame_clock",
         "Report a world's frame ordinal, last frame duration, elapsed time, instantaneous fps, and the average fps over the last 120 frames. Pass the world whose frame pacing to inspect: every world paces its own frames, so a scene, a physics world and an audio world each answer for themselves. Fields that come from the world's own clock are null for a world that never dispatched a frame. The average is measured by a monitor spawned on the first call, and covers only the frames since.",
         frame_clock,
@@ -357,7 +348,8 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "spawn_gltf",
-        "Load a glTF file from disk into a world's mesh source and spawn its default scene, returning the spawned entity ids.",
+
+        "Load a glTF or GLB document into a world's mesh source and spawn its default scene, returning the spawned entity ids. Pass either `path`, a file to read, or `document`, the document itself: glTF JSON text, or a GLB's bytes encoded as base64. A document given inline must embed its buffers and images, since there is no base URI for external ones to resolve against.",
         spawn_gltf,
     ));
 }

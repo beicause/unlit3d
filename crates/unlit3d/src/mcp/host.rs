@@ -11,15 +11,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use glam::Vec3;
 use image::ImageEncoder as _;
-use unlit_ecs::mcp::host::{
-    SavedFile, SpawnedEntity, extension_of, saved_name, to_value, write_file,
-};
+
+use unlit_ecs::mcp::host::{SavedFile, extension_of, saved_name, to_value, write_file};
 use unlit_ecs::mcp::serde_json::{self, Value};
-use unlit_ecs::mcp::{EncodedImage, Output, SpawnMesh};
-use unlit_ecs::{DynamicBundle, Entity, Scope, World, bundle};
-use unlit_wgpu::pipeline::LitOptions;
+use unlit_ecs::mcp::{EncodedImage, Output};
+use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::readback::{try_readback_buffer, try_readback_texture};
 use unlit_wgpu::resources::{
     ResId, Resource, ResourceGraph, ResourceGraphInfo, ResourceGraphMaintain,
@@ -526,132 +523,6 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
     to_value(&Delivered { delivered })
 }
 
-/// Allocate a mesh and spawn an entity that draws it.
-pub fn spawn_mesh(
-    world: &mut World,
-    source: Option<Entity>,
-    args: SpawnMesh,
-) -> Result<Value, String> {
-    if args.positions.is_empty() {
-        return Err("positions must not be empty".to_string());
-    }
-    // Every channel describes the same vertices, and the mesh allocator asserts
-    // it: a bridge that passed a short slice would panic the world rather than
-    // report a bad request, so the lengths are checked here.
-    let vertices = args.positions.len();
-    let channels: [(&str, Option<usize>); 3] = [
-        ("uvs", args.uvs.as_ref().map(Vec::len)),
-        ("colors", args.colors.as_ref().map(Vec::len)),
-        ("normals", args.normals.as_ref().map(Vec::len)),
-    ];
-    for (channel, length) in channels {
-        if let Some(length) = length.filter(|length| *length != vertices) {
-            return Err(format!(
-                "{channel} describes {length} vertices but positions describes {vertices}"
-            ));
-        }
-    }
-    // An index past the last vertex reads whatever follows the vertex buffer,
-    // which the mesh allocator does not check either, so a request naming one is
-    // refused here rather than drawn.
-    if let Some(indices) = args.indices.as_deref() {
-        if indices.len() % 3 != 0 {
-            return Err("indices must be triangles, three per primitive".to_string());
-        }
-        if let Some(&index) = indices.iter().find(|&&index| index as usize >= vertices) {
-            return Err(format!(
-                "indices name vertex {index}, but positions describes {vertices} vertices"
-            ));
-        }
-    }
-    let desc = LitMeshDesc {
-        positions: &args.positions,
-        uvs: args.uvs.as_deref(),
-        colors: args.colors.as_deref(),
-        normals: args.normals.as_deref(),
-        indices: args.indices.as_deref(),
-        joints: None,
-        weights: None,
-        morph_deltas: None,
-    };
-    // A hull is a second draw of the same mesh: this request asks for the
-    // variant that spreads its vertices along the normals and culls the faces
-    // the body draws, rather than for the body's own variant. Spawning it
-    // beside a plain request for the same mesh is what puts a band around the
-    // body.
-    let hull = args.hull_width.is_some();
-    if hull && args.normals.is_none() {
-        return Err("a hull needs `normals` to spread along".to_string());
-    }
-    // The cutoff is an instance attribute only a variant compiled for it reads,
-    // so asking for one is what selects that variant: a source that spawned the
-    // component without the flag would draw every fragment and leave the
-    // request unread.
-    let cutoff = args.cutoff.is_some();
-    let (key, mesh) = with_mesh_source(world, source, |source, scope| {
-        let mut options = if hull {
-            LitOptions::inverted_hull()
-        } else {
-            LitOptions {
-                unlit: true,
-                ..LitOptions::standard()
-            }
-        };
-        options.alpha_cutoff = cutoff;
-        let key = LitPipelineKey::new(options);
-        let mesh = source.allocate_lit_mesh(scope, &key.options, desc);
-        (key, mesh)
-    })?;
-    let transform = match args.transform {
-        Some(transform) => Transform {
-            translation: Vec3::from_array(transform.translation),
-            rotation: glam::Quat::from_xyzw(
-                transform.rotation[0],
-                transform.rotation[1],
-                transform.rotation[2],
-                transform.rotation[3],
-            ),
-            scale: Vec3::from_array(transform.scale),
-        },
-        None => Transform::default(),
-    };
-    let color = args.color.map_or(glam::Vec4::ONE, glam::Vec4::from_array);
-    let mut builder = DynamicBundle::new();
-    builder.push_component(transform);
-    builder.push_component(mesh);
-    builder.push_component(GpuRenderPipeline::new(key));
-    builder.push_component(InstanceColor::new(color));
-    if let Some(cutoff) = args.cutoff {
-        builder.push_component(InstanceCutoff::new(cutoff));
-    }
-    if let Some(hull_width) = args.hull_width {
-        builder.push_component(InstanceHullWidth::new(hull_width));
-    }
-    // The mesh lands in the requested scope, which defaults to the source
-    // entity itself: a frame draws a source's own subtree, so a mesh spawned
-    // beside the source would never be drawn.
-    let scope = match args.scope {
-        Some(bits) => {
-            let scope = Entity::from_bits(bits);
-            if world.try_scope(scope).is_err() {
-                return Err(format!("no scope {scope:?}"));
-            }
-            scope
-        }
-        None => mesh_source_entity(world, source)?,
-    };
-    let name = "mcp mesh";
-    let entity = world
-        .try_scope_mut(scope)
-        .map_err(|_| format!("no scope {scope:?}"))?
-        .spawn_named(name, builder);
-    to_value(&SpawnedEntity {
-        entity,
-        name,
-        scope,
-    })
-}
-
 /// Render one frame from the world.
 pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
     let entity = renderer_entity(world, renderer)?;
@@ -759,14 +630,27 @@ pub fn save_screenshot(
     to_value(&save_image(directory, &file_name, &frame)?)
 }
 
-/// Load a glTF file and spawn its default scene.
+/// Spawn the default scene of a glTF document read from a file or inline.
+///
+/// Exactly one of `path` and `document` must be given. A document is either
+/// glTF JSON text or a GLB whose bytes are base64-encoded, since a JSON tool
+/// argument cannot carry raw binary.
 pub fn spawn_gltf(
     world: &mut World,
     source: Option<Entity>,
     scope: Option<Entity>,
-    path: &str,
+    path: Option<&str>,
+    document: Option<&str>,
 ) -> Result<Value, String> {
-    let gltf = LitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
+    let gltf = match (path, document) {
+        (Some(path), None) => LitGltf::load(Path::new(path)),
+        (None, Some(document)) => LitGltf::from_bytes(&gltf_document_bytes(document)?),
+        (Some(_), Some(_)) => {
+            return Err("pass either `path` or `document`, not both".to_string());
+        }
+        (None, None) => return Err("pass one of `path` and `document`".to_string()),
+    }
+    .map_err(|error| error.to_string())?;
     let resources = with_mesh_source(world, source, |source, scope| {
         gltf.insert_resources(source, scope)
     })?;
@@ -789,6 +673,20 @@ pub fn spawn_gltf(
         .collect();
     let names = entities.iter().map(|entity| entity.name()).collect();
     to_value(&SpawnedEntities { entities, names })
+}
+
+/// The bytes of an inline glTF document: JSON text as written, or a GLB's
+/// bytes decoded from base64.
+fn gltf_document_bytes(document: &str) -> Result<Vec<u8>, String> {
+    // A JSON document is the one form a caller can paste; anything else is
+    // taken as base64, so the leading brace decides without guessing at the
+    // alphabet.
+    if document.trim_start().starts_with('{') {
+        return Ok(document.as_bytes().to_vec());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(document.trim())
+        .map_err(|error| format!("the document is not base64: {error}"))
 }
 
 /// An image's size, as structured output.

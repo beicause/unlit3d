@@ -513,19 +513,6 @@ pub struct SendInput {
     pub events: Vec<Value>,
 }
 
-/// Arguments for rendering a frame.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RendererArg {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// The entity carrying the renderer, as its `u64` bits. Omit for the
-    /// world's only one.
-    #[serde(default)]
-    pub renderer: Option<u64>,
-}
-
 /// Arguments for taking a screenshot.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Screenshot {
@@ -547,78 +534,6 @@ pub struct Screenshot {
     pub format: Option<String>,
 }
 
-/// Arguments for spawning a mesh.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct SpawnMesh {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// The scope to spawn into, as its `u64` bits. Omit for the entity
-    /// carrying the mesh source.
-    #[serde(default)]
-    pub scope: Option<u64>,
-    /// The entity carrying the world's mesh source, as its `u64` bits. Omit
-    /// for the world's only one.
-    #[serde(default)]
-    pub source: Option<u64>,
-    /// Vertex positions, three floats each.
-    pub positions: Vec<[f32; 3]>,
-    /// Vertex UVs, two floats each.
-    #[serde(default)]
-    pub uvs: Option<Vec<[f32; 2]>>,
-    /// Vertex colours, RGBA bytes each.
-    #[serde(default)]
-    pub colors: Option<Vec<[u8; 4]>>,
-    /// Vertex normals, three floats each. Omit to shade the surface by the
-    /// normals its positions give it.
-    #[serde(default)]
-    pub normals: Option<Vec<[f32; 3]>>,
-    /// Triangle indices.
-    #[serde(default)]
-    pub indices: Option<Vec<u32>>,
-    /// The entity's transform.
-    #[serde(default)]
-    pub transform: Option<MeshTransform>,
-    /// The instance colour; opaque white by default.
-    #[serde(default)]
-    pub color: Option<[f32; 4]>,
-    /// The alpha cutoff, when the mesh should be cut out.
-    #[serde(default)]
-    pub cutoff: Option<f32>,
-    /// How far the mesh's inverted hull is pushed along its normals, in world
-    /// units. Spawning one entity with this width beside a plain draw of the
-    /// same mesh is what outlines it; an entity without it draws no hull.
-    #[serde(default)]
-    pub hull_width: Option<f32>,
-}
-
-/// A transform as JSON.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct MeshTransform {
-    /// The translation.
-    #[serde(default = "zero3")]
-    pub translation: [f32; 3],
-    /// The rotation quaternion, xyzw.
-    #[serde(default = "identity4")]
-    pub rotation: [f32; 4],
-    /// The scale.
-    #[serde(default = "one3")]
-    pub scale: [f32; 3],
-}
-
-fn zero3() -> [f32; 3] {
-    [0.0; 3]
-}
-
-fn one3() -> [f32; 3] {
-    [1.0; 3]
-}
-
-fn identity4() -> [f32; 4] {
-    [0.0, 0.0, 0.0, 1.0]
-}
-
 /// Arguments for spawn_gltf.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SpawnGltf {
@@ -634,6 +549,11 @@ pub struct SpawnGltf {
     /// for the world's only one.
     #[serde(default)]
     pub source: Option<u64>,
-    /// The path to the glTF or GLB file.
-    pub path: String,
+    /// The path of a glTF or GLB file to read.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The document itself, instead of a path: glTF JSON text, or a GLB's
+    /// bytes encoded as base64. Pass exactly one of this field and `path`.
+    #[serde(default)]
+    pub document: Option<String>,
 }

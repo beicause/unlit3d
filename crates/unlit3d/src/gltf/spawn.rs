@@ -1,7 +1,7 @@
 //! Spawning entities that draw a document's nodes.
 //!
 //! Every entity a spawn produces is one
-//! [`LitMeshBundle`](crate::lit::LitMeshBundle) — the lit family's spawn
+//! [`LitMeshBundle`] — the lit family's spawn
 //! shape — assembled from the uploaded handles: the mesh, the pipeline its key
 //! names, the material's bind group and the per-node pose or weights it binds
 //! to. The returned [`GltfNode`] names them, so an animation can write into
@@ -21,7 +21,7 @@ impl LitGltf {
     ///
     /// Returns a [`GltfNode`] naming one entity per primitive of the node's
     /// mesh — each spawned as a
-    /// [`LitMeshBundle`](crate::lit::LitMeshBundle) carrying the
+    /// [`LitMeshBundle`] carrying the
     /// node's world-space [`Transform`](crate::components::Transform), the
     /// uploaded [`GpuMesh`](crate::components::GpuMesh), the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
