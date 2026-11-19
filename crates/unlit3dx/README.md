@@ -365,7 +365,10 @@ The bridges:
   `stop_audio_recording`, `read_audio_recording`, `cancel_audio_recording`
   and `audio_recording_status` — which drive a recording in the named world
   and either write the mix out to a file or hand it back in memory, so a test
-  can assert on the samples without touching the disk. Both answers carry the
+  can assert on the samples without touching the disk. `frame_clock` reports a
+  world's frame index, delta time, and the instantaneous and window-averaged
+  frame rate, so a client reads the pacing off one call instead of sampling.
+  Both answers carry the
   same samples in the format the caller names, the way the image tools do: a
   file name's extension picks it, and a tool that answers inline takes a
   `format` argument, so `.flac` — lossless, and the smaller of the two — is

@@ -6,17 +6,19 @@
 //! name what the tool asked for. The tools themselves live one level up, in
 //! [crate::mcp].
 
+use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use glam::Vec3;
 use image::ImageEncoder as _;
 use unlit_ecs::mcp::host::{
-    Despawned, SavedFile, SpawnedEntity, extension_of, saved_name, to_value, write_file,
+    SavedFile, SpawnedEntity, extension_of, saved_name, to_value, write_file,
 };
-use unlit_ecs::mcp::serde_json::{self, Value};
-use unlit_ecs::mcp::{CreateMesh, EncodedImage, Output};
-use unlit_ecs::{DynamicBundle, Entity, Scope, World};
+use unlit_ecs::mcp::serde_json::{self, Value, json};
+use unlit_ecs::mcp::{EncodedImage, Output, SpawnMesh};
+use unlit_ecs::{DynamicBundle, Entity, Scope, World, bundle};
 use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::readback::{try_readback_buffer, try_readback_texture};
 use unlit_wgpu::resources::{
@@ -525,10 +527,10 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
 }
 
 /// Allocate a mesh and spawn an entity that draws it.
-pub fn create_mesh(
+pub fn spawn_mesh(
     world: &mut World,
     source: Option<Entity>,
-    args: CreateMesh,
+    args: SpawnMesh,
 ) -> Result<Value, String> {
     if args.positions.is_empty() {
         return Err("positions must not be empty".to_string());
@@ -650,23 +652,6 @@ pub fn create_mesh(
     })
 }
 
-/// Free the mesh an entity draws and despawn the entity. Dropping the last
-/// handle posts the mesh's pooled ranges and metadata slot to the source's
-/// inbox, and the source's next maintain hands them back.
-pub fn remove_mesh(world: &mut World, entity: Entity) -> Result<Value, String> {
-    // A row without a mesh is a caller error: the tool frees meshes.
-    world
-        .root_scope()
-        .try_query_one::<&GpuMesh>(entity)
-        .map_err(|_| format!("entity {entity:?} has no GpuMesh"))?;
-    let name = world.entity_name(entity).unwrap_or("");
-    let removed = world
-        .root_scope_mut()
-        .despawn(entity)
-        .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
-    to_value(&Despawned { removed, name })
-}
-
 /// Render one frame from the world.
 pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
     let entity = renderer_entity(world, renderer)?;
@@ -775,7 +760,7 @@ pub fn save_screenshot(
 }
 
 /// Load a glTF file and spawn its default scene.
-pub fn load_gltf(
+pub fn spawn_gltf(
     world: &mut World,
     source: Option<Entity>,
     scope: Option<Entity>,
@@ -829,6 +814,113 @@ fn image_value(
     }))
 }
 
+/// Shared frame statistics a monitor behavior feeds and the frame-clock tool
+/// reads.
+#[derive(Default)]
+struct FrameMonitor {
+    /// Frames the monitor itself observed, used for worlds without a
+    /// `FrameClock`.
+    frames: u64,
+    /// Durations of the most recent frames, front = oldest.
+    window: VecDeque<f32>,
+}
+
+/// How many recent frame durations the rolling average covers.
+const FRAME_WINDOW: usize = 120;
+
+impl FrameMonitor {
+    /// Fold one frame's duration into the statistics.
+    fn record(&mut self, delta_time: f32) {
+        self.frames += 1;
+        self.window.push_back(delta_time);
+        if self.window.len() > FRAME_WINDOW {
+            self.window.pop_front();
+        }
+    }
+
+    /// Mean duration over the rolling window, if any frame was recorded.
+    fn average_delta(&self) -> Option<f32> {
+        let total: f32 = self.window.iter().sum();
+        (!self.window.is_empty()).then(|| total / self.window.len() as f32)
+    }
+}
+
+/// The statistics the monitor behavior shares with the frame-clock tool.
+struct FrameMonitorState {
+    monitor: Arc<Mutex<FrameMonitor>>,
+}
+
+/// The monitor behavior spawned on the first frame-clock query: it feeds the
+/// shared statistics with each frame the world's driver dispatches.
+fn frame_monitor(monitor: Arc<Mutex<FrameMonitor>>) -> OnFrame {
+    OnFrame::new(move |_world, _entity, frame| {
+        if let Ok(mut monitor) = monitor.lock() {
+            // A frame dispatched with a zero duration would drive the
+            // average to an infinite fps; count the frame without folding
+            // it into the window.
+            if frame.delta_time > 0.0 {
+                monitor.record(frame.delta_time);
+            } else {
+                monitor.frames += 1;
+            }
+        }
+    })
+}
+
+/// Report a world's frame ordinal, last frame duration, elapsed time and
+/// frame rate, sampling a monitor behavior spawned on first call.
+pub fn frame_clock(world: &mut World) -> Result<Value, String> {
+    let existing = world
+        .root_scope()
+        .query::<&FrameMonitorState>()
+        .iter()
+        .next()
+        .map(|state| state.monitor.clone());
+    let monitor = match existing {
+        Some(monitor) => monitor,
+        None => {
+            let monitor = Arc::new(Mutex::new(FrameMonitor::default()));
+            let state = FrameMonitorState {
+                monitor: monitor.clone(),
+            };
+            let behavior = frame_monitor(monitor.clone());
+            world.root_scope_mut().spawn(bundle![behavior, state]);
+            monitor
+        }
+    };
+    let monitor = monitor
+        .lock()
+        .map_err(|_| "the frame monitor is poisoned".to_string())?;
+    let clock = world
+        .root_scope()
+        .query::<&FrameClock>()
+        .iter()
+        .next()
+        .copied();
+    let (index, delta_time, time) = clock.map_or_else(
+        // The world's frame loop never spawned a clock; report the
+        // monitor's own frame count.
+        || (monitor.frames as u32, 0.0, 0.0),
+        |clock| (clock.index, clock.delta_time, clock.time),
+    );
+    // A zero-duration frame would report an infinite rate; leave the
+    // instantaneous fps out instead.
+    let fps = (delta_time > 0.0).then(|| 1.0 / delta_time);
+    let average_fps = monitor
+        .average_delta()
+        .filter(|delta| *delta > 0.0)
+        .map(|delta| 1.0 / delta);
+    let window_frames = monitor.window.len();
+    Ok(json!({
+        "index": index,
+        "delta_time": delta_time,
+        "time": time,
+        "fps": fps,
+        "average_fps": average_fps,
+        "average_window_frames": average_fps.map(|_| window_frames),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,5 +936,47 @@ mod tests {
         assert_eq!(ImageFormat::from_name("jpeg"), Ok(ImageFormat::Jpeg));
         assert!(ImageFormat::of("a").is_err());
         assert!(ImageFormat::of("a.gif").is_err());
+    }
+
+    #[test]
+    fn the_frame_clock_averages_the_frames_after_its_first_call() {
+        let mut world = World::new();
+        world.root_scope_mut().spawn(bundle![FrameClock::default()]);
+        for index in 0..3u32 {
+            let mut frame = crate::frame::Frame {
+                delta_time: 1.0 / 60.0,
+                index,
+                size: (64, 64),
+            };
+            dispatch_frame(&mut world, &mut frame);
+        }
+
+        // The first call spawns the monitor, which has seen no frame yet.
+        let clock = frame_clock(&mut world).expect("the clock reports");
+        assert_eq!(clock["index"], json!(2));
+        assert_eq!(clock["average_fps"], Value::Null);
+
+        // The frames after it fold into the rolling window.
+        for index in 3..5u32 {
+            let mut frame = crate::frame::Frame {
+                delta_time: 1.0 / 30.0,
+                index,
+                size: (64, 64),
+            };
+            dispatch_frame(&mut world, &mut frame);
+        }
+        let clock = frame_clock(&mut world).expect("the clock reports");
+        assert_eq!(clock["index"], json!(4));
+        assert_eq!(clock["average_window_frames"], json!(2));
+        let fps = clock["fps"].as_f64().expect("the last frame states a rate");
+        assert!(
+            (fps - 30.0).abs() < 0.1,
+            "the instantaneous rate is the last frame's: {clock}"
+        );
+        let average = clock["average_fps"].as_f64().expect("an average exists");
+        assert!(
+            (average - 30.0).abs() < 0.1,
+            "the window is the two 30 Hz frames: {clock}"
+        );
     }
 }

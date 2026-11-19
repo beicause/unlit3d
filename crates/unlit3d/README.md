@@ -1409,7 +1409,8 @@ The GPU integration tests render scenes into offscreen targets and inspect the
 pixels that come back. With the `mcp` feature on, an end-to-end test builds a
 real GPU world on a thread, serves it over a pair of streams and speaks
 JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks
-the screenshot pixel by pixel. The multi-frame snapshot coverage of those scenes lives
+the screenshot pixel by pixel, and asserts the frame clock's rate against the
+frames it states. The multi-frame snapshot coverage of those scenes lives
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
 whose `tests/gpu_suite.rs` compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md).

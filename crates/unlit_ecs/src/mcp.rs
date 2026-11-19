@@ -32,11 +32,11 @@ pub use host::{
 pub use http::{McpHttpServer, serve_http_with};
 pub use inventory;
 pub use server::{
-    CommandSender, ContextArg, CreateMesh, EntityArg, GetComponent, HandleArg, InputArg,
-    ListEntities, LoadGltf, McpServer, MeshTransform, NoArgs, ReadBuffer, RendererArg, SaveBuffer,
-    SaveScreenshot, SaveTexture, Screenshot, SendInput, SetComponent, SpawnEntity, ToolResult,
-    ToolRouter, ToolSource, WorldArg, command, entity, run, send, serve_stdio_with, serve_with,
-    tool,
+    CommandSender, ContextArg, EntityArg, GetComponent, HandleArg, InputArg, ListEntities,
+    McpServer, MeshTransform, NoArgs, ReadBuffer, RendererArg, SaveBuffer, SaveScreenshot,
+    SaveTexture, Screenshot, SendInput, SetComponent, SpawnEntity, SpawnGltf, SpawnMesh,
+    ToolResult, ToolRouter, ToolSource, WorldArg, command, entity, run, send, serve_stdio_with,
+    serve_with, tool,
 };
 
 /// The JSON crate a tool uses to build structured output.

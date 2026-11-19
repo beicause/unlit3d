@@ -15,6 +15,7 @@ use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldRef, serve_with};
 use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit_wgpu_test_util::{Ctx, block_on};
+use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
 
 /// The format of the offscreen target the test world renders into.
@@ -161,6 +162,17 @@ impl Server {
             .name("unlit3d-mcp-test-render".to_owned())
             .spawn(move || {
                 let mut world = offscreen_world(&ctx);
+                // The test host owns no window and no frame loop: it renders
+                // only when a tool asks. State a few frames by hand, so the
+                // frame clock has a loop to report.
+                for index in 0..3u32 {
+                    let mut frame = Frame {
+                        delta_time: 1.0 / 60.0,
+                        index,
+                        size: SIZE,
+                    };
+                    dispatch_frame(&mut world, &mut frame);
+                }
                 ready_tx.send(()).expect("the test waits for the world");
                 while let Ok(command) = incoming.recv_blocking() {
                     if command.wants_worlds() {
@@ -427,14 +439,16 @@ pub fn run() {
             "world_summary",
             "get_component",
             "set_component",
-            "create_mesh",
+            "spawn_mesh",
+            "spawn_gltf",
+            "frame_clock",
             "send_input",
             "read_buffer",
             "save_buffer",
             "read_screenshot",
             "save_texture_as_image",
             "save_screenshot",
-            "render_frame",
+            "despawn_entity",
         ] {
             assert!(
                 names.contains(&expected),
@@ -490,7 +504,7 @@ pub fn run() {
         assert!(
             server
                 .try_tool(
-                    "create_mesh",
+                    "spawn_mesh",
                     json!({
                         "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                         "normals": [[0.0, 0.0, 1.0]],
@@ -505,7 +519,7 @@ pub fn run() {
         assert!(
             server
                 .try_tool(
-                    "create_mesh",
+                    "spawn_mesh",
                     json!({
                         "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                         "hull_width": 0.05,
@@ -518,7 +532,7 @@ pub fn run() {
         assert!(
             server
                 .try_tool(
-                    "create_mesh",
+                    "spawn_mesh",
                     json!({
                         "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                         "indices": [0, 1],
@@ -533,7 +547,7 @@ pub fn run() {
         assert!(
             server
                 .try_tool(
-                    "create_mesh",
+                    "spawn_mesh",
                     json!({
                         "positions": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                         "indices": [0, 1, 3],
@@ -548,7 +562,7 @@ pub fn run() {
         // is the clear colour.
         let triangle = server
             .tool(
-                "create_mesh",
+                "spawn_mesh",
                 json!({
                     "positions": [
                         [0.0, 0.5, 0.0],
@@ -564,6 +578,26 @@ pub fn run() {
         assert!(
             centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
             "the centre should be the red mesh, got {centre:?}"
+        );
+        let clock = server.tool("frame_clock", json!({})).await;
+        assert_eq!(
+            clock["index"].as_u64(),
+            Some(2),
+            "the clock follows the frames the host stated: {clock}"
+        );
+        assert!(
+            (clock["fps"].as_f64().unwrap_or(0.0) - 60.0).abs() < 1.0,
+            "the instantaneous rate is the last frame's: {clock}"
+        );
+        assert_eq!(
+            clock["average_fps"],
+            serde_json::Value::Null,
+            "the monitor a first call spawns has seen no frame yet: {clock}"
+        );
+        assert_eq!(
+            clock["average_window_frames"],
+            serde_json::Value::Null,
+            "so the window it averages over is empty: {clock}"
         );
 
         // `target` names the texture or any view of it: the pass that draws
@@ -608,7 +642,7 @@ pub fn run() {
         assert_eq!(by_view, image, "a view names the texture it views");
 
         server
-            .tool("remove_mesh", json!({ "entity": triangle["entity"] }))
+            .tool("despawn_entity", json!({ "entity": triangle["entity"] }))
             .await;
 
         // The hull width selects the inverted-hull variant: the same mesh asked
@@ -619,7 +653,7 @@ pub fn run() {
         let (positions, normals, indices) = sphere(BODY_RADIUS, SLICES, STACKS);
         server
             .tool(
-                "create_mesh",
+                "spawn_mesh",
                 json!({
                     "positions": positions,
                     "normals": normals,
@@ -631,7 +665,7 @@ pub fn run() {
             .await;
         server
             .tool(
-                "create_mesh",
+                "spawn_mesh",
                 json!({
                     "positions": positions,
                     "normals": normals,
@@ -676,7 +710,7 @@ pub fn run() {
         let (positions, normals, indices) = sphere(CUT_RADIUS, SLICES, STACKS);
         server
             .tool(
-                "create_mesh",
+                "spawn_mesh",
                 json!({
                     "positions": positions,
                     "normals": normals,

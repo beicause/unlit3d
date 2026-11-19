@@ -319,10 +319,6 @@ pub struct EntityArg {
     pub scope: Option<u64>,
     /// The entity's bits.
     pub entity: u64,
-    /// The entity carrying the world's mesh source, as its `u64` bits, for the tools
-    /// that need one. Omit for the world's only mesh source.
-    #[serde(default)]
-    pub source: Option<u64>,
 }
 
 /// Arguments for listing entities.
@@ -551,9 +547,9 @@ pub struct Screenshot {
     pub format: Option<String>,
 }
 
-/// Arguments for creating a mesh.
+/// Arguments for spawning a mesh.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct CreateMesh {
+pub struct SpawnMesh {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
@@ -623,9 +619,9 @@ fn identity4() -> [f32; 4] {
     [0.0, 0.0, 0.0, 1.0]
 }
 
-/// Arguments for load_gltf.
+/// Arguments for spawn_gltf.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct LoadGltf {
+pub struct SpawnGltf {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]

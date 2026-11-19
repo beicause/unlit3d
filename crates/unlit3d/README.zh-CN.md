@@ -988,7 +988,8 @@ cargo nextest run -p unlit3d --all-features  # 只跑本 crate
 
 GPU 集成测试把场景渲染到离屏目标并检查回读的像素。打开 `mcp` feature 后，一个端到端
 测试会在一条线程上建起真实的 GPU world，用一对流把它服务出去，并与之说 JSON-RPC：
-它会列出工具、读取 world、生成网格，再逐像素检查截图。这些场景的多帧快照覆盖现在位于
+它会列出工具、读取 world、生成网格，再逐像素检查截图，并按宿主自己推过的帧断言
+`frame_clock` 的帧率。这些场景的多帧快照覆盖现在位于
 [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)：
 它的 `tests/gpu_suite.rs` 把这些场景与
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d_asset_files/blob/main/README.md)

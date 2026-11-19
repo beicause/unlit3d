@@ -141,7 +141,7 @@ egui = ["dep:egui", "dep:web-time", "unlit_wgpu/egui"]
 gltf = ["dep:draco-core", "dep:fast_image_resize", "dep:gltf", "dep:half"]
 ## The [mcp](crate::mcp) module: the rendering tools a world answers through the
 ## Model Context Protocol server defined by [unlit_ecs]. Implies `reflect`,
-## whose registry is the codec those tools use, and `gltf`, so the load_gltf tool
+## whose registry is the codec those tools use, and `gltf`, so the spawn_gltf tool
 ## has a loader. Not built on wasm, where a browser drives the world directly.
 mcp = [
   "dep:base64",

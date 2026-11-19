@@ -10,9 +10,9 @@ mod host;
 
 use unlit_ecs::mcp::serde_json::Value;
 use unlit_ecs::mcp::{
-    CommandSender, ContextArg, CreateMesh, EntityArg, HandleArg, InputArg, LoadGltf, McpServer,
-    ReadBuffer, RendererArg, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot, SendInput,
-    ToolResult, ToolRouter, ToolSource, command, entity, run, tool,
+    CommandSender, ContextArg, HandleArg, InputArg, McpServer, ReadBuffer, SaveBuffer,
+    SaveScreenshot, SaveTexture, Screenshot, SendInput, SpawnGltf, SpawnMesh, ToolResult,
+    ToolRouter, ToolSource, WorldArg, command, entity, run, tool,
 };
 use unlit_wgpu::resources::ResId;
 
@@ -127,28 +127,17 @@ async fn send_input(commands: CommandSender, args: SendInput) -> ToolResult {
 }
 
 /// Allocate a mesh and spawn an entity that draws it.
-async fn create_mesh(commands: CommandSender, args: CreateMesh) -> ToolResult {
+async fn spawn_mesh(commands: CommandSender, args: SpawnMesh) -> ToolResult {
     let source = args.source.map(entity);
     command(&commands, args.world, move |world| {
-        host::create_mesh(world, source, args)
+        host::spawn_mesh(world, source, args)
     })
     .await
 }
 
-/// Free a mesh and despawn the entity that drew it.
-async fn remove_mesh(commands: CommandSender, args: EntityArg) -> ToolResult {
-    command(&commands, args.world, move |world| {
-        host::remove_mesh(world, entity(args.entity))
-    })
-    .await
-}
-
-/// Render one frame from the world.
-async fn render_frame(commands: CommandSender, args: RendererArg) -> ToolResult {
-    command(&commands, args.world, move |world| {
-        host::render_frame(world, args.renderer.map(entity))
-    })
-    .await
+/// Report a world's frame ordinal, frame duration and frame rate.
+async fn frame_clock(commands: CommandSender, args: WorldArg) -> ToolResult {
+    command(&commands, args.world, host::frame_clock).await
 }
 
 /// Render a frame and read it back as an inline image.
@@ -179,11 +168,11 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
 }
 
 /// Load a glTF file and spawn its default scene.
-async fn load_gltf(commands: CommandSender, args: LoadGltf) -> ToolResult {
+async fn spawn_gltf(commands: CommandSender, args: SpawnGltf) -> ToolResult {
     let path = args.path;
     let scope = args.scope.map(entity);
     command(&commands, args.world, move |world| {
-        host::load_gltf(world, args.source.map(entity), scope, &path)
+        host::spawn_gltf(world, args.source.map(entity), scope, &path)
     })
     .await
 }
@@ -245,19 +234,14 @@ fn register(router: &mut ToolRouter<McpServer>) {
         send_input,
     ));
     router.add_route(tool(
-        "create_mesh",
-        "Allocate a mesh in a world's mesh source and spawn an entity that draws it. Pass hull_width together with the normals to spawn the inverted-hull variant, which draws the back faces spread along the normals.",
-        create_mesh,
+        "spawn_mesh",
+        "Allocate a mesh in a world's mesh source and spawn an entity that draws it. Pass hull_width together with the normals to spawn the inverted-hull variant, which draws the back faces spread along the normals. Free a spawned mesh by despawning its entity with despawn_entity.",
+        spawn_mesh,
     ));
     router.add_route(tool(
-        "remove_mesh",
-        "Free the mesh an entity draws and despawn the entity. The mesh's pooled storage is reclaimed at the source's next maintain.",
-        remove_mesh,
-    ));
-    router.add_route(tool(
-        "render_frame",
-        "Render one frame of a world through its renderer. Pass the renderer entity, or omit for the world's only one.",
-        render_frame,
+        "frame_clock",
+        "Report a world's frame ordinal, last frame duration, elapsed time, instantaneous fps, and the average fps over the last 120 frames. Pass the world whose frame pacing to inspect; worlds without a frame clock report the frames the monitor behavior observed.",
+        frame_clock,
     ));
     router.add_route(tool(
         "read_screenshot",
@@ -270,8 +254,8 @@ fn register(router: &mut ToolRouter<McpServer>) {
         save_screenshot,
     ));
     router.add_route(tool(
-        "load_gltf",
+        "spawn_gltf",
         "Load a glTF file from disk into a world's mesh source and spawn its default scene, returning the spawned entity ids.",
-        load_gltf,
+        spawn_gltf,
     ));
 }

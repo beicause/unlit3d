@@ -112,14 +112,20 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 | 工具              | 作用                                 | 关键参数                                                                                              |
 | ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `create_mesh`      | 用顶点数据建 mesh 并 spawn 绘制实体  | `positions`（必填）、`uvs`、`colors`、`normals`、`indices`、`transform`、`color`、`cutoff`、`hull_width`、`source` |
-| `remove_mesh`      | 删除绘制实体；mesh 由 source 下一次 `maintain` 回收   | `entity`                                                                                              |
-| `render_frame`     | 渲染一帧                             | `renderer`                                                                                            |
+| `spawn_mesh`      | 用顶点数据建 mesh 并 spawn 绘制实体  | `positions`（必填）、`uvs`、`colors`、`normals`、`indices`、`transform`、`color`、`cutoff`、`hull_width`、`source` |
+| `spawn_gltf`        | 从磁盘加载 glTF 并 spawn 默认场景    | `path`、`source`                                                                                      |
 | `read_screenshot`  | 渲染一帧并内联返回图像（不推荐）     | `renderer`、`target`、`format`                                                                       |
 | `save_screenshot`  | 渲染一帧并保存图像为文件（推荐）     | `directory`（必填）、`file_name`、`renderer`、`target`                                             |
-| `load_gltf`        | 从磁盘加载 glTF 并 spawn 默认场景    | `path`、`source`                                                                                      |
 
-`renderer` / `source` / `context` 分别是携带 `Renderer` / `MeshSource` / 渲染上下文的实体 bits，`target` 是纹理资源 id——都省略时服务器取「该 world 唯一的一个」。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。
+`renderer` / `source` / `context` 分别是携带 `Renderer` / `MeshSource` / 渲染上下文的实体 bits，`target` 是纹理资源 id——都省略时服务器取「该 world 唯一的一个」。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体用 `despawn_entity`，mesh 由 source 下一次 `maintain` 回收。
+
+### 帧与时序
+
+| 工具           | 作用                                       | 关键参数 |
+| -------------- | ------------------------------------------ | -------- |
+| `frame_clock`   | 报告帧序数、帧时长、瞬时与窗口平均帧率     | 无       |
+
+`frame_clock` 报告该 world 帧循环的 `index`（帧序数，从零起）、`delta_time` 与 `time`（上次与前次的帧时长与累计秒数）、`fps`（`1.0 / delta_time`，帧时长为零时省略）与 `average_fps`（最近 120 帧的滑动平均，窗口帧数见 `average_window_frames`）。第一次调用才往该 world 派生监控行为，它只从那之后的帧开始计数——所以在首次调用前 `average_fps` 是空的，多 world 宿主里每个 world 各有自己的窗口。
 
 ### 音频录音
 
@@ -175,6 +181,6 @@ mcpdo disconnect "$C"
 
 - **`world` 必须指名**：渲染是子 world、录音是音频 world、输入走玩法 world——每次启动的 bits 会变，照 `scene_status` 报的用。
 - **点击要打给玩法 world 的 `send_input`**，坐标用 `scene_status` 里 `buttons` 给的中心（物理像素，`WINDOW_SIZE` 是 1024×720）。egui 一帧最多结算一次点击，所以连点两个按钮必须在两次点击之间 `step_frames`。
-- **读图用 `read_texture_as_image` 而不是 `save_screenshot`**：两者都会先 `render_frame`（各多画一帧，与 `step_frames` 的绘制重复），但前者只把图内联进回复、不落盘。要落盘才用 `save_screenshot`。`id` 用 `scene_status` 的 `target`。
+- **读图用 `read_texture_as_image` 而不是 `save_screenshot`**：两者都会先渲染一帧再读回（各多画一帧，与 `step_frames` 的绘制重复），但前者只把图内联进回复、不落盘。要落盘才用 `save_screenshot`。`id` 用 `scene_status` 的 `target`。
 - **录音在内存里取**：`start_audio_recording`（给音频 world）→ `step_frames` → `read_audio_recording`，回复里是 `type` 为 `audio` 的内容块，解出来就是样本；结构化内容里另有帧数、秒数、采样率与声道数。暂停一个 MIDI 序列后，被按下的音符还要走完 patch 的 release，所以要再推进一段（几十到几百帧）才真正静音。
 - **收尾用 `request_exit`**，然后断言进程退出码与 stderr 没有错误。

@@ -276,7 +276,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
   world，后者就是 `list_worlds` 报告的名字。录音工具——
   `start_audio_recording`、`stop_audio_recording`、`read_audio_recording`、
   `cancel_audio_recording` 与 `audio_recording_status`——在指名的 world 上驱动一次录音，
-  并把混音写成文件或直接在内存中返回，测试因此无需落盘就能断言样本。两种回答携带的是
+  并把混音写成文件或直接在内存中返回，测试因此无需落盘就能断言样本。`frame_clock`
+  报告一个 world 的帧序数、帧时长与瞬时、窗口平均帧率，客户端一次调用即可读出节奏，
+  而不必自行多次采样。两种回答携带的是
   同一批样本，格式由调用方指定，与图片工具一致：落盘时由文件名的扩展名决定，在回复里
   直接返回的工具则接受一个 `format` 参数；调用方什么都不指名时拿到的是 `.flac`——无损
   且体积更小——另有 `.wav` 可选。`request_exit`
