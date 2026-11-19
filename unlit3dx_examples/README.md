@@ -80,9 +80,9 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 [`unlit3d_asset_files`](../unlit3d_asset_files) submodule;
 `SNAPSHOT_UPDATE=1` re-stores them.
 
-`--headless --mcp-stdio` goes one step further: instead of running a
-fixed number of frames it waits for MCP commands, and only the `step_frames`
-tool advances time. The scene renders into an offscreen texture the client
+`--headless --interactive --mcp-stdio` goes one step further: instead of
+running a fixed number of frames it waits for MCP commands, and only the
+`step_frames` tool advances time. The scene renders into an offscreen texture the client
 reads with
 `read_texture_as_image`, `scene_status` reports the run — the frame, the
 world handles, the offscreen target — while the demo's own
@@ -94,7 +94,11 @@ client. The [`mcp_input` test](tests/mcp_input.rs) starts that binary and
 never touches its internals: it clicks the panel through `send_input`, captures
 three image snapshots, compares the mix it recorded while the sequence played
 against a fourth baseline, asserts that the mix recorded after the pause is
-silent without storing it, and asks the process to exit.
+silent without storing it, and asks the process to exit. Without `--interactive` the run paces
+itself: `--headless --mcp-stdio` steps the frames `--headless-frames` names
+and serves MCP between them, so a client watches and injects while the run
+drives. That run is paced in wall-clock time and defaults to a single frame,
+so name `--headless-frames` for anything a client is meant to watch.
 
 The same story runs twice from the description in
 `tests/mcp_input/shared.rs`. The [native driver](tests/mcp_input/native.rs)

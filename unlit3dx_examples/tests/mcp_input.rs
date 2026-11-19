@@ -26,6 +26,13 @@ async fn the_mcp_input_and_audio_match_the_snapshots() {
     native::run().await;
 }
 
+/// A self-paced run answers a client that only connects, then ends by
+/// itself and leaves its capture behind.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+async fn the_self_paced_run_serves_mcp() {
+    native::a_self_paced_run_serves_mcp_and_ends_on_its_own().await;
+}
+
 /// The body a browser drives: the same story, in-process. Compiled on the
 /// host as well — with nothing wasm-specific inside, the proxy needs it
 /// registered there to list the browser trial.
@@ -36,5 +43,6 @@ async fn the_interactive_scene_matches_the_snapshots() {
 gpu_tests! {
     #[host_only]
     the_mcp_input_and_audio_match_the_snapshots,
+    the_self_paced_run_serves_mcp,
     the_interactive_scene_matches_the_snapshots,
 }

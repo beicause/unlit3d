@@ -4,7 +4,7 @@
 
 ## 服务器与驱动
 
-MCP 服务器住在 `unlit_ecs`（`crates/unlit_ecs/src/mcp/`）里，让 agent 读写一个**正在运行**的 world。它没有特权通道：每个工具都写在公开 API（`World`、`Renderer`、`MeshSource`、`ResourceGraph`）之上，且服务器本身不认识引擎——工具由定义其作用对象的 crate 各自用 `inventory::submit!` 注册（`unlit_ecs` 注册 world 与实体工具、`unlit3d` 注册渲染工具、`unlit3dx` 注册音频录音与宿主控制工具）。传输有两种：stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有 `.mcp.json`；以及 `mcp-http` feature 的 streamable HTTP——`--mcp-http` 让宿主在 TCP 端口（默认 `127.0.0.1:0`，OS 选）上服务同一组工具，适合窗口宿主或跨机调试，连接地址以启动日志里形如 `http://127.0.0.1:…` 的地址行为准（窗口宿主打「listening on」，无头宿主打「is ready on」）。示例程序还能注册自己的工具：`unlit3dx_examples --headless-frames 1 --mcp-stdio` 就多两个按帧驱动的工具。
+MCP 服务器住在 `unlit_ecs`（`crates/unlit_ecs/src/mcp/`）里，让 agent 读写一个**正在运行**的 world。它没有特权通道：每个工具都写在公开 API（`World`、`Renderer`、`MeshSource`、`ResourceGraph`）之上，且服务器本身不认识引擎——工具由定义其作用对象的 crate 各自用 `inventory::submit!` 注册（`unlit_ecs` 注册 world 与实体工具、`unlit3d` 注册渲染工具、`unlit3dx` 注册音频录音与宿主控制工具）。传输有两种：stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有 `.mcp.json`；以及 `mcp-http` feature 的 streamable HTTP——`--mcp-http` 让宿主在 TCP 端口（默认 `127.0.0.1:0`，OS 选）上服务同一组工具，适合窗口宿主或跨机调试，连接地址以启动日志里形如 `http://127.0.0.1:…` 的地址行为准（窗口宿主打「listening on」，无头宿主打「is ready on」）。示例程序还能注册自己的工具：`unlit3dx_examples --headless --interactive --mcp-stdio` 就多两个按帧驱动的工具。
 
 客户端用 **mcpdo**（MCP Inspector 的连接 CLI，随 `@modelcontextprotocol/inspector` 一起装）：它起一个常驻 daemon，`connect` 一次之后，后续每条命令都打到**同一个宿主进程**——world 的状态跨命令持续，这是它比「每次调用都重新启动宿主」的一次性客户端（`mcp-inspector --cli`）更合适的根本原因。`@modelcontextprotocol/inspector` 已全局安装就直接调 `mcpdo`（下文命令都这么写）；没装就在每条命令前加免安装前缀（首次要下载，慢）：
 
@@ -14,7 +14,7 @@ pnpm dlx --package @modelcontextprotocol/inspector mcpdo <子命令…>
 
 ```sh
 # 连接：stdio 宿主以 -- 分隔写在后面；连接名就是 target 本身
-mcpdo connect -- ./target/debug/unlit3dx-examples --headless-frames 1 --mcp-stdio
+mcpdo connect -- ./target/debug/unlit3dx-examples --headless --interactive --mcp-stdio
 
 # HTTP 宿主直接给 URL：地址取宿主日志里的 listening on http://… 行
 mcpdo connect http://127.0.0.1:7860/mcp
@@ -42,14 +42,15 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | 宿主             | 命令                                                                                        | 说明                                       |
 | ---------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | 多 world 示例    | `cargo run -p unlit3dx_examples --bin unlit3dx-examples -- --mcp-stdio`                     | 渲染/物理/音频/玩法各自成 world            |
-| 多 world 无窗口  | `cargo run -p unlit3dx_examples --bin unlit3dx-examples -- --headless-frames 1 --mcp-stdio` | 无 winit，按帧驱动，多两个工具，见下节     |
+| 多 world 无窗口  | `cargo run -p unlit3dx_examples --bin unlit3dx-examples -- --headless --interactive --mcp-stdio` | 无 winit，按帧驱动，多两个工具，见下节     |
 | 单 world 示例    | `cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp-stdio --scene spin_cube`     | glTF 场景与内建 egui                       |
 | CLI              | `cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp-stdio`                                 | 一个空的离屏 world：固定 960×720、4 采样、带深度，其余选项一律忽略 |
 
 ## 必须知道的行为
 
-- **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless-frames 1 --mcp-stdio`，它不建 winit 事件循环。
+- **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless --interactive --mcp-stdio`，它不建 winit 事件循环。
 - **`--mcp-stdio` 与 `--mcp-http` 会改变渲染路径**：带任一开关时场景自己的 pass 画进常驻纹理（`PresentationPath::Intermediate`），同一个 world 里再加一个 blit pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。不改这条路径的话，MCP 截图拿不到画面——交换链图像不是资源图节点。
+- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过停靠在 host world 里的 `Stepping` 组件推进场景，返回 `{"stepped": n}` 而没有帧号，且 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主没有帧号可报，帧率要问 `frame_clock`。`--interactive` 必须搭配一个传输，否则运行拒绝启动。
 - **截图只能读到常驻纹理**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，此时工具会报 `the world has no readable texture to screenshot; pass \`target\``。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
@@ -61,11 +62,11 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 宿主暴露它携带的每一个可调度的 world：带 `&World` 组件的子 world（`spawn_sub_world`），以及由线程或步进驱动的 world（`spawn_threaded_world*` / `spawn_stepped_world*`，它们把命令通道留在代理实体上的 `WorldSender` 里）。子 world 的命令在宿主线程上同步执行；其余 world 的命令作为 job 投进它的执行者——它自己的线程，或 `step_stepped_world`。
 
-`list_worlds` 返回的是 `{"world": <WorldRef>, "name": "..."}` 对象数组，名字是 spawn 时给的 `&'static str`（留在实体上的 `WorldName`）。**每个被报告的 world 都一定有名字**：宿主携带但不带 `WorldName` 的 world 不会出现在结果里。例如 `unlit3dx_examples --mcp` 会依次报出 host、render、physics、audio、gameplay 这些名字——具体句柄值每次启动都变，以返回值为准。
+`list_worlds` 返回的是 `{"world": <WorldRef>, "name": "..."}` 对象数组，名字是 spawn 时给的 `&'static str`（留在实体上的 `WorldName`）。**每个被报告的 world 都一定有名字**：宿主携带但不带 `WorldName` 的 world 不会出现在结果里。例如 `unlit3dx_examples --mcp-stdio` 会依次报出 host、render、physics、audio、gameplay 这些名字——具体句柄值每次启动都变，以返回值为准。
 
 ## 工具清单
 
-工具按注册 crate 分六组，**名称、参数与数量以 `tools/list` 返回为准**；`unlit3dx_examples --headless-frames 1 --mcp-stdio` 另外注册 2 个自有工具（见下节）。所有工具的 `world` 都可省略（默认 `"Host"`）。
+工具按注册 crate 分六组，**名称、参数与数量以 `tools/list` 返回为准**；`unlit3dx_examples --headless --interactive --mcp-stdio` 另外注册 2 个自有工具（见下节）。所有工具的 `world` 都可省略（默认 `"Host"`）。
 
 ### world 与实体
 
@@ -145,11 +146,13 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | --------------- | ---------------- | -------- |
 | `request_exit`   | 让宿主正常退出   | 无       |
 
-`request_exit` 把宿主 root scope 上每个 `ExitRequest` 置为 `true`。它只对**会检查这个组件**的宿主有意义：`unlit3dx_examples` 的 `--headless-frames 1 --mcp-stdio` 循环每轮读它、winit 宿主在 `about_to_wait` 里读它；没有这个组件的宿主会回 `the host has no exit request`。用它收尾能让自动化跑到进程自己退出，而不是靠 kill 看退出码。
+`request_exit` 把宿主 root scope 上每个 `ExitRequest` 置为 `true`。它只对**会检查这个组件**的宿主有意义：`unlit3dx_examples` 的 `--headless --interactive --mcp-stdio` 循环每轮读它、winit 宿主在 `about_to_wait` 里读它；没有这个组件的宿主会回 `the host has no exit request`。用它收尾能让自动化跑到进程自己退出，而不是靠 kill 看退出码。
 
-## 按帧驱动（`--headless-frames 1 --mcp-stdio`）
+## 按帧驱动（`--headless --interactive --mcp-stdio`）
 
-`unlit3dx_examples --headless-frames 1 --mcp-stdio` 是不建 winit、只渲染到离屏纹理的宿主：它**不自己推进时间**，只有 `step_frames` 让场景往前走。这样一次完整的「输入 → 渲染 → 录音」流程不需要 sleep，帧号、模拟步长和截图内容都确定。它也关掉了自动掉球与背景自动播放，初始状态严格静止。
+`unlit3dx_examples --headless --interactive --mcp-stdio` 是不建 winit、只渲染到离屏纹理的宿主：它**不自己推进时间**，只有 `step_frames` 让场景往前走。这样一次完整的「输入 → 渲染 → 录音」流程不需要 sleep，帧号、模拟步长和截图内容都确定。它也关掉了自动掉球与背景自动播放，初始状态严格静止。
+
+去掉 `--interactive` 就是自驱形态（`--headless --headless-frames N --mcp-stdio`）：宿主按真实时钟走完 N 帧、帧间泵命令，客户端只观察与注入，帧数走完进程自己退出——适合「让 agent 看着一个正在跑的场景」而不是「由 agent 一帧帧推」。它默认只走一帧，所以要点名 `--headless-frames`；客户端连上要花一点时间，帧数太小会在握手完成前就结束。
 
 | 工具            | 作用                                                             | 关键参数        |
 | --------------- | ---------------------------------------------------------------- | --------------- |
@@ -161,7 +164,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 一个典型回合（所有 `Handle` 与 `id` 都是示意值，照 `scene_status` 报的填；`C` 是这条连接的名字）：
 
 ```sh
-mcpdo connect -- ./target/debug/unlit3dx-examples --headless-frames 1 --mcp-stdio
+mcpdo connect -- ./target/debug/unlit3dx-examples --headless --interactive --mcp-stdio
 C='./target/debug/unlit3dx-examples'
 
 mcpdo --connection "$C" tools/call scene_status --format json

@@ -1,8 +1,8 @@
 //! What a run hands its scene, and the pacing that drives the worlds the
 //! scene hands back.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::{Arc, Mutex};
 
 use unlit_ecs::{Entity, RemoteEntity, World};
 use unlit_wgpu::context::RenderDevice;
@@ -189,3 +189,13 @@ impl Stepping {
         frames
     }
 }
+
+/// The stepper a windowed run parks in its host world, so more than the
+/// frame behaviour can reach it.
+///
+/// A self-paced windowed run steps from its frame behaviour and holds the
+/// lock only while stepping; a client-paced run spawns no frame behaviour
+/// and its MCP tools step through the same state instead. The worlds are
+/// stepped worlds either way: threads of their own would step behind the
+/// client's back.
+pub(crate) struct SteppingState(pub(crate) Arc<Mutex<Stepping>>);

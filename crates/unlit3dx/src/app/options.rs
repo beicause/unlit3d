@@ -14,7 +14,8 @@ use clap::Parser;
 pub struct RunOptions {
     /// Serve the scene over MCP on standard input and output: in a windowed
     /// run the presenter draws into an offscreen target, and a headless run
-    /// serves the interactive host instead of capturing.
+    /// serves the interactive host, writing its capture too when
+    /// `--headless-out` names a directory.
     #[arg(long)]
     pub mcp_stdio: bool,
     /// Serve the scene over MCP on a TCP port as well, so network clients
@@ -36,8 +37,16 @@ pub struct RunOptions {
     /// window.
     #[arg(long)]
     pub headless: bool,
-    /// How many frames a headless run steps before it ends. A served run
-    /// ignores the count: its client paces the frames.
+    /// Leave the frames to the client: the run advances only when the
+    /// client's tools advance them, so a client that never steps never sees
+    /// a frame advance. Without the switch the run paces itself, and MCP
+    /// rides along as an observer and an injector. Needs `--mcp-stdio` or
+    /// `--mcp-http` to reach the client.
+    #[arg(long, conflicts_with = "headless_frames")]
+    pub interactive: bool,
+    /// How many frames a self-paced headless run steps before it ends. A
+    /// run paced by its client does not read the count: naming it asks for
+    /// the self-paced run.
     #[arg(long, value_name = "FRAMES", requires = "headless")]
     pub headless_frames: Option<u32>,
     /// The directory a headless run writes its capture under: the frames
@@ -152,6 +161,29 @@ mod tests {
     fn a_capture_switch_without_headless_is_refused() {
         assert!(RunOptions::try_parse_from(["unlit3dx", "--headless-frames", "12"]).is_err());
         assert!(RunOptions::try_parse_from(["unlit3dx", "--headless-out=/tmp/capture"]).is_err());
+    }
+
+    #[test]
+    fn the_interactive_switch_parses() {
+        let options =
+            RunOptions::try_parse_from(["unlit3dx", "--headless", "--interactive", "--mcp-stdio"])
+                .expect("the switch parses");
+        assert!(options.interactive);
+        assert_eq!(options.headless_frames, None);
+    }
+
+    #[test]
+    fn interactive_conflicts_with_a_frame_count() {
+        assert!(
+            RunOptions::try_parse_from([
+                "unlit3dx",
+                "--headless",
+                "--interactive",
+                "--headless-frames",
+                "12",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

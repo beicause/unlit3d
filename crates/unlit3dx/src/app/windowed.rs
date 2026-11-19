@@ -8,8 +8,8 @@
 //! and how it is paced; the scene is the same either way.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use unlit_ecs::bundle;
 use unlit_wgpu::context::RenderDevice;
@@ -29,7 +29,7 @@ use winit::window::Window;
 
 use super::App;
 use super::headless::RENDER_COMMAND_CAPACITY;
-use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
+use super::scene::{Mode, RenderPorts, ScenePorts, Stepping, SteppingState};
 use crate::gpu::request_gpu;
 use crate::host::spawn_sub_world;
 use crate::present::{draw_presented, pump_presented, setup_presenter};
@@ -46,7 +46,13 @@ pub struct WindowOptions {
     pub render_capacity: usize,
     /// Drive the worlds from the frame loop rather than threads of their
     /// own. A browser always takes this path, whatever the option says.
+    /// A client-paced run always takes it too: threads of their own would
+    /// step behind the client's back.
     pub stepped: bool,
+    /// Leave the frames to the client: no frame behaviour steps the
+    /// worlds, and the MCP tools step them through the parked stepper
+    /// instead.
+    pub interactive: bool,
     /// Serve the scene over MCP on standard input and output, drawing into
     /// an offscreen target so a client can read frames back.
     pub mcp_stdio: bool,
@@ -78,6 +84,7 @@ impl Default for WindowOptions {
             size: (1024, 720),
             render_capacity: RENDER_COMMAND_CAPACITY,
             stepped: cfg!(target_arch = "wasm32"),
+            interactive: false,
             mcp_stdio: false,
             mcp_http_addr: None,
             surface: SurfaceOptions::default(),
@@ -134,7 +141,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     let panel = Snapshot::<EguiTarget>::new();
     let refresh_millihertz = Arc::new(AtomicU32::new(0));
 
-    let stepped = options.stepped || cfg!(target_arch = "wasm32");
+    let stepped = options.stepped || options.interactive || cfg!(target_arch = "wasm32");
     let ports = ScenePorts {
         render: &render,
         input: &input,
@@ -148,14 +155,27 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
         app.spawn_scene::<Threaded>(world, ports)
     };
     // The stepped worlds run before the draw, so the transforms they publish
-    // are the ones this frame shows.
+    // are the ones this frame shows. The two pacing paths are exclusive: a
+    // client-paced run parks its stepper in the host world, where the MCP
+    // tools reach it and no frame behaviour steps behind their back; a
+    // self-paced run keeps the stepper in its frame behaviour, and no tool
+    // can reach it to advance the scene a second way.
     if stepped {
-        let mut stepper = Stepping::new(worlds, A::PHYSICS_HZ, None);
-        world
-            .root_scope_mut()
-            .spawn(bundle![OnFrame::new(move |world, _entity, frame| {
-                stepper.step(world, f64::from(frame.delta_time));
-            },)]);
+        let stepper = Stepping::new(worlds, A::PHYSICS_HZ, None);
+        let stepper = Arc::new(Mutex::new(stepper));
+        if options.interactive {
+            world
+                .root_scope_mut()
+                .spawn(bundle![SteppingState(Arc::clone(&stepper))]);
+        } else {
+            world
+                .root_scope_mut()
+                .spawn(bundle![OnFrame::new(move |world, _entity, frame| {
+                    if let Ok(mut stepper) = stepper.lock() {
+                        stepper.step(world, f64::from(frame.delta_time));
+                    }
+                },)]);
+        }
     }
     world
         .root_scope_mut()

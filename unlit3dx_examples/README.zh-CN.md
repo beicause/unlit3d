@@ -64,13 +64,14 @@ cargo run -p unlit3dx_examples -- --headless --headless-frames 300 --headless-ou
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
 `SNAPSHOT_UPDATE=1` 重新保存基准。
 
-`--headless --mcp-stdio` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
+`--headless --interactive --mcp-stdio` 则等待 MCP 命令，只在 `step_frames` 工具被调用时推进。场景渲染到
 离屏纹理，客户端用 `read_texture_as_image` 取图；`scene_status` 报告运行本身——帧号、
 各 world 的句柄、离屏目标——而示例自己的 `scene_extra_status` 补充场景：球数、MIDI
 序列状态与每个面板按钮的中心。`request_exit` 让进程退出。该模式下自动掉球与背景自动播放
 均关闭，因此每个可见与可听的变化都来自客户端。[`mcp_input` 集成测试](tests/mcp_input.rs)
 启动这个二进制，只通过 MCP 的 `send_input` 点击面板、捕获三张图片快照、把序列播放期间
-录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，并请求进程正常退出。
+录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，并请求进程正常退出。不带 `--interactive` 时由运行自己推进：`--headless --mcp-stdio` 走完
+`--headless-frames` 点名的帧数，并在帧与帧之间服务 MCP，客户端可以观察与注入，但节奏归运行。这种运行按真实时钟配速，帧数默认只有 1 帧，要让客户端看下去就得用 `--headless-frames` 点名帧数。
 
 同一段剧情由 `tests/mcp_input/shared.rs` 的一份描述跑两遍：
 [原生驱动](tests/mcp_input/native.rs) 通过 MCP 与那个子进程对话，

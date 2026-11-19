@@ -7,7 +7,8 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use unlit_ecs::mcp::serde_json::{Value, json};
 use unlit_ecs::mcp::{
@@ -19,8 +20,9 @@ use unlit3d::input::InputWriter;
 use unlit3d::winit::builtin::ExitRequest;
 
 use super::App;
-use super::headless::{AUDIO_SAMPLE_RATE, HeadlessConfig, HeadlessOutput};
+use super::headless::{AUDIO_SAMPLE_RATE, HEADLESS_HZ, HeadlessConfig, HeadlessOutput};
 use super::interactive::{Interactive, interactive};
+use super::scene::SteppingState;
 use super::write;
 use crate::mcp::{pump_mcp, serve_mcp};
 
@@ -46,18 +48,23 @@ pub struct Transports {
     pub http: Option<SocketAddr>,
 }
 
-/// Serve an application's scene over MCP until a client asks it to exit.
+/// Serve an application's scene over MCP.
 ///
 /// The host is the interactive one, so a client drives exactly the scene a
 /// test drives in process. What the scene holds is the application's: the
 /// tools here advance frames and report the run's state, and an
 /// application registers tools of its own for the objects it owns.
 ///
-/// The transports named in [Transports] serve in combination. The run ends
-/// once a client asks it to exit; [serve] then returns the address the HTTP
-/// transport bound, when one was named. When [out] names a directory, the
-/// run also writes what it drove: the frame it stopped on and the mix it
-/// played.
+/// The frames parameter picks who paces the run. Passing none leaves the
+/// frames to the client: the run advances when the client's tools advance
+/// them and ends once a client asks it to exit. Naming a count asks for a
+/// run that paces itself: it steps the count at the headless rate,
+/// serving MCP between the frames, and the client rides along as an
+/// observer and an injector. When the output directory is named, the run also
+/// writes what it drove: the frame it stopped on and the mix it played.
+///
+/// The transports named in [Transports] serve in combination; [serve]
+/// returns the address the HTTP transport bound, when one was named.
 ///
 /// The tools reach the server through an [`unlit_ecs::mcp::ToolSource`]
 /// submitted inside this module. A linker drops the submissions of an
@@ -68,21 +75,23 @@ pub struct Transports {
 ///
 /// # Errors
 ///
-/// Fails without serving anything when [Transports] names no transport at
-/// all: the host is paced by its client, and without a transport no client
-/// reaches it. Fails when the HTTP transport cannot bind its port, carrying
-/// the underlying message. Naming an HTTP address on a build without the
-/// mcp-http feature fails the same way, and so does a capture that cannot
-/// be written, after the run has ended.
+/// Fails without serving anything when `Transports` names no transport
+/// while no frame count is named: a client-paced host has no driver without a
+/// transport. A run that names a count paces itself and serves fine
+/// without one. Fails when the HTTP transport cannot bind its port,
+/// carrying the underlying message. Naming an HTTP address on a build
+/// without the mcp-http feature fails the same way, and so does a capture
+/// that cannot be written, after the run has ended.
 pub fn serve<A: App>(
     app: A,
     device: RenderDevice,
     transports: Transports,
+    frames: Option<u32>,
     out: Option<PathBuf>,
 ) -> Result<Option<SocketAddr>, String> {
-    if !transports.stdio && transports.http.is_none() {
+    if frames.is_none() && !transports.stdio && transports.http.is_none() {
         return Err(
-            "the interactive host is paced by its client, and without a transport nothing paces it; name a transport with Transports or drive the frames in process with [interactive]".to_owned(),
+            "a client-paced host has no driver without a transport; name one with Transports, or name a frame count to pace the host itself".to_owned(),
         );
     }
     let (mut host, _input) = interactive_host(app, device);
@@ -104,16 +113,23 @@ pub fn serve<A: App>(
         (false, None) => {}
     }
     // The mix is observed from the run's first fill, so the recording opens
-    // before any command runs. A client paces the frames, so the window is
-    // the wall-clock bound that keeps a client that never stops stepping
-    // from growing the mix without end.
+    // before any command runs. A client-paced run's window is the wall-clock
+    // bound that keeps a client that never stops stepping from growing the
+    // mix without end; a self-paced run knows its length exactly.
     if out.is_some() {
         let mut interactive = host.root_scope().query::<&mut Interactive>();
         if let Some(interactive) = interactive.iter().next() {
-            interactive.start_recording(&host, BUDGET_SECONDS);
+            let seconds = match frames {
+                Some(count) => count as f32 / HEADLESS_HZ as f32,
+                None => BUDGET_SECONDS,
+            };
+            interactive.start_recording(&host, seconds);
         }
     }
-    pump_until_done(&mut host);
+    match frames {
+        Some(count) => pump_self_paced(&mut host, count),
+        None => pump_until_done(&mut host),
+    }
     if let Some(out) = out {
         write_capture::<A>(&mut host, &out)?;
     }
@@ -163,6 +179,47 @@ fn pump_until_done(host: &mut World) {
             break;
         }
         std::thread::park_timeout(Duration::from_millis(1));
+    }
+}
+
+/// Pump the host's MCP commands while the run steps its own frames.
+///
+/// The run advances one frame at a time at the headless rate and serves MCP
+/// between the frames, so a client observes and injects but does not pace.
+/// The count ends the run, and so does a client's exit request.
+fn pump_self_paced(host: &mut World, frames: u32) {
+    let step = Duration::from_secs_f64(1.0 / HEADLESS_HZ);
+    let mut next = Instant::now() + step;
+    for _ in 0..frames {
+        {
+            let mut interactive = host.root_scope().query::<&mut Interactive>();
+            if let Some(interactive) = interactive.iter().next() {
+                interactive.step(host, 1);
+            }
+        }
+        pump_mcp(host).expect("the MCP command queue applies");
+        let exit = host
+            .root_scope()
+            .query::<&ExitRequest>()
+            .iter()
+            .any(|request| request.0);
+        if exit {
+            break;
+        }
+        // The frames are paced in wall-clock time, the way a windowed run
+        // is: a transport takes a moment to come up, and a run that raced
+        // through its count would end before its client ever connected.
+        // The scene steps at the fixed rate either way, so what a client
+        // sees is the same run, later.
+        let now = Instant::now();
+        if now < next {
+            std::thread::sleep(next - now);
+        }
+        next += step;
+        let now = Instant::now();
+        if next <= now {
+            next = now + step;
+        }
     }
 }
 
@@ -241,17 +298,35 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         if args.frames == 0 {
             return Err("frames must be at least 1".to_owned());
         }
+        // The headless host carries the interactive scene; a client-paced
+        // windowed run carries the parked stepper instead. Either way the
+        // tool advances the scene and reports where it stands.
         let mut interactive = host.root_scope().query::<&mut Interactive>();
-        let Some(interactive) = interactive.iter().next() else {
-            return Err("the host is not an interactive headless scene".to_owned());
+        if let Some(interactive) = interactive.iter().next() {
+            interactive.step(host, args.frames);
+            // The frame is drawn as the steps leave it, so the frame a client
+            // reads back afterwards is the one the steps produced. Drawing is
+            // cheap here and readback does not draw, so the picture has to be
+            // brought up to date before a client asks for it.
+            interactive.draw(host);
+            return Ok(json!({ "frame": interactive.frame() }));
+        }
+        drop(interactive);
+        let mut parked = host.root_scope().query::<&SteppingState>();
+        let Some(state) = parked.iter().next() else {
+            return Err("the host paces its own frames and takes no stepping".to_owned());
         };
-        interactive.step(host, args.frames);
-        // The frame is drawn as the steps leave it, so the frame a client
-        // reads back afterwards is the one the steps produced. Drawing is
-        // cheap here and readback does not draw, so the picture has to be
-        // brought up to date before a client asks for it.
-        interactive.draw(host);
-        Ok(json!({ "frame": interactive.frame() }))
+        let stepper = Arc::clone(&state.0);
+        drop(parked);
+        let mut stepper = stepper
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for _ in 0..args.frames {
+            stepper.step(host, 1.0 / HEADLESS_HZ);
+        }
+        // The window redraws on its own and shows the scene as the steps
+        // left it; there is no frame index to read here.
+        Ok(json!({ "stepped": args.frames }))
     })
     .await
 }
@@ -260,7 +335,10 @@ async fn scene_status(commands: CommandSender, args: WorldArg) -> ToolResult {
     command(&commands, args.world, |host: &mut World| {
         let mut interactive = host.root_scope().query::<&Interactive>();
         let Some(interactive) = interactive.iter().next() else {
-            return Err("the host is not an interactive headless scene".to_owned());
+            return Err(
+                "the host is not an interactive headless scene; a windowed host has no frame index to report, and frame_clock answers its pacing"
+                    .to_owned(),
+            );
         };
         Ok(status(interactive))
     })

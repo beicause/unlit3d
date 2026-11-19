@@ -67,6 +67,6 @@
 | 无响应                                                   | 宿主没起来（缺 DISPLAY 会 panic），或宿主没带 `--mcp-stdio`，或宿主没泵命令（无窗口宿主必须每轮调 `pump_mcp`）                 |
 | 发给 stepped world 的命令一直不回                        | 宿主没在泵，或没跑 `pump_mcp` 的 job 阶段；stepped world 的队列只在推进帧时被 drain                                        |
 | `the host has no exit request`                           | 该宿主没挂 `ExitRequest` 组件，`request_exit` 对它无效                                                                      |
-| `the host is not an interactive headless scene`          | `step_frames` / `scene_status` 只存在于 `unlit3dx_examples --headless-frames 1 --mcp-stdio`                                              |
+| `the host is not an interactive headless scene`          | `step_frames` / `scene_status` 只存在于 `unlit3dx_examples --headless --interactive --mcp-stdio`                                              |
 | `the world has no input writer`                          | 指名的 world 没挂 `InputWriter`；给玩法 world 发输入，不是 `Host`                                                          |
 | `the world has more than one readable texture` / `the world has no readable texture to screenshot` | 不传 `id` / `target` 时服务器会猜，离屏宿主里猜不出来；用 `scene_status` 的 `target`                                    |

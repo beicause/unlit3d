@@ -189,13 +189,15 @@ fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions,
 /// `--help` describes both — and then:
 ///
 /// - `--headless` runs without a window: with `--mcp-stdio` or `--mcp-http`
-///   it serves the interactive host to a client, and otherwise it steps the
-///   frames `--headless-frames` names and captures when `--headless-out`
-///   names a directory.
+///   it serves the interactive host, paced by the client under
+///   `--interactive` and by its own frame count otherwise; without MCP it
+///   steps the frames `--headless-frames` names and captures when
+///   `--headless-out` names a directory.
 /// - otherwise it opens a window, stepped inline unless the platform
 ///   drives the worlds on threads of their own; `--mcp-stdio` serves the
 ///   scene to a client over standard input and output and `--mcp-http`
-///   serves it to network clients while the window stays up.
+///   serves it to network clients while the window stays up. Under
+///   `--interactive` the client paces the frames the window shows.
 ///
 /// The windowed path is the one a browser and an Android activity take:
 /// neither has a headless run.
@@ -224,6 +226,15 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         log::error!("the command line could not be applied: {message}");
         return std::process::ExitCode::FAILURE;
     }
+    // A client-paced run has no driver without a transport: refuse it
+    // before either entry starts, where the message names the switches
+    // that reach the client.
+    if options.interactive && !options.mcp_stdio && !options.mcp_http_run() {
+        log::error!(
+            "--interactive needs --mcp-stdio or --mcp-http: the client paces the run, and without a transport nothing reaches it"
+        );
+        return std::process::ExitCode::FAILURE;
+    }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     if options.headless_run() {
         return headless_main(app, &options);
@@ -249,6 +260,7 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         .expect("the platform builds an event loop");
     let window = WindowOptions {
         stepped: options.stepped || cfg!(target_arch = "wasm32"),
+        interactive: options.interactive,
         mcp_stdio: options.mcp_stdio,
         mcp_http_addr,
         ..WindowOptions::for_app::<A>()
@@ -261,9 +273,9 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
 ///
 /// The GPU is opened here rather than by the caller so the run owns the
 /// whole of a capture: it picks the device tier from the environment, and
-/// steps the frames the command line named. A served run hands those
-/// frames to its client instead; a capture writes the pictures and the
-/// mix only when `--headless-out` names a directory.
+/// steps the frames the command line named. A client-paced run hands
+/// those frames to its client instead; a capture writes the pictures and
+/// the mix only when `--headless-out` names a directory.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode {
     use crate::gpu::Gpu;
@@ -304,11 +316,15 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
             http,
         };
         // A served run shares the headless switches: an output directory has
-        // it write what it drove when the client ends the run, and a frame
-        // budget keeps meaning what it means without MCP — how long a
-        // capture-only run drives.
+        // it write what it drove, and the frame count paces the run unless
+        // --interactive left the frames to the client.
+        let pacing = if options.interactive {
+            None
+        } else {
+            Some(frames)
+        };
         let out = options.headless_out.clone();
-        match serve(app, device, transports, out) {
+        match serve(app, device, transports, pacing, out) {
             Ok(_) => return std::process::ExitCode::SUCCESS,
             Err(message) => {
                 log::error!("the MCP server did not start: {message}");

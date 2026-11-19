@@ -178,6 +178,69 @@ pub async fn run() {
     );
 }
 
+/// A self-paced run serves MCP while it drives its own frames: a client that
+/// only connects must still reach the server, and the run must end by itself
+/// once the frames it was given are spent, leaving its capture behind.
+///
+/// The count is long enough to outlast a transport coming up: a run that
+/// raced to its last frame would close the pipe the client is still
+/// initializing on.
+pub async fn a_self_paced_run_serves_mcp_and_ends_on_its_own() {
+    const FRAMES: u32 = 120;
+    let out = std::env::temp_dir().join(format!("unlit3dx-self-paced-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let frames = FRAMES.to_string();
+    let args = [
+        "--headless",
+        "--headless-frames",
+        frames.as_str(),
+        "--headless-out",
+        out.to_str().expect("a UTF-8 output path"),
+        "--mcp-stdio",
+    ];
+    // Connecting is the assertion that matters: the run paces itself, so the
+    // client never asks for a frame, and the process must still answer the
+    // handshake and then finish on its own.
+    let mut mcp = Mcp::start_with(&args);
+    // One cheap read proves the server is answering while the run drives.
+    let tools = mcp.request("tools/list", json!({}));
+    let names: Vec<&str> = tools["tools"]
+        .as_array()
+        .expect("a tool list")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"frame_clock"),
+        "a self-paced run lists its tools: {names:?}"
+    );
+    let status = mcp.child.wait().expect("the example process exits");
+    assert!(status.success(), "the self-paced run failed: {status}");
+    let log = mcp
+        .log
+        .take()
+        .unwrap()
+        .join()
+        .expect("the stderr reader finishes");
+    assert!(!log.contains("panicked"), "the example panicked:\n{log}");
+    // The run wrote what it drove: one frame and its mix, named by the frame
+    // it stopped on. Nothing asked it to stop; the count did.
+    let frames: Vec<_> = std::fs::read_dir(&out)
+        .expect("the capture directory exists")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        frames.iter().any(|name| name == "audio.flac"),
+        "the self-paced run wrote its mix: {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|name| name.starts_with("frame_")),
+        "the self-paced run wrote its frame: {frames:?}"
+    );
+    std::fs::remove_dir_all(&out).expect("the capture directory is removed");
+}
+
 struct Mcp {
     child: Child,
     input: ChildStdin,
@@ -188,8 +251,14 @@ struct Mcp {
 
 impl Mcp {
     fn start() -> Self {
+        Self::start_with(&["--headless", "--interactive", "--mcp-stdio"])
+    }
+
+    /// Start the example with the given arguments. The client-paced run is
+    /// the default; a test that reads a self-paced run names its own.
+    fn start_with(args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_unlit3dx-examples"))
-            .args(["--headless", "--mcp-stdio"])
+            .args(args)
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
