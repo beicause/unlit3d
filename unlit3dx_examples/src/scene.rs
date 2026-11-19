@@ -231,9 +231,9 @@ pub fn setup_render_world(
 /// sends when it is built. The render world runs no job until it is drained,
 /// and it is drained only where its frame is driven — after its own setup has
 /// run — so the mesh source the camera hangs under exists by the time the job
-/// executes. The behaviour keeps the projection matched to the frame's own
-/// aspect, and advances the orbit by each frame's delta, so the speed does not
-/// follow the redraw rate.
+/// executes. The behaviour keeps the projection matched to the target the pass
+/// binds each frame, and advances the orbit by each frame's delta, so the speed
+/// does not follow the redraw rate.
 fn camera_job() -> Job {
     let mut azimuth = ORBIT_START;
     Box::new(move |world: &mut World| {
@@ -242,21 +242,23 @@ fn camera_job() -> Job {
         let Some((source, _)) = mesh_source(world) else {
             panic!("the render world carries no MeshSource");
         };
+        let size = frame_size(world).unwrap_or(WINDOW_SIZE);
         let camera_entity = world
             .scope_mut(source.entity)
             .spawn(bundle![camera_looking_at(
-                WINDOW_SIZE,
+                size,
                 orbit_eye(azimuth),
                 ORBIT_TARGET,
                 60f32.to_radians(),
-                0.1,
+                0.1
             ),]);
         world
             .root_scope_mut()
             .spawn(bundle![OnFrame::new(move |world, _entity, frame| {
                 azimuth += ORBIT_SPEED * frame.delta_time;
+                let size = frame_size(world).unwrap_or(WINDOW_SIZE);
                 let camera = camera_looking_at(
-                    frame.size,
+                    size,
                     orbit_eye(azimuth),
                     ORBIT_TARGET,
                     60f32.to_radians(),
@@ -270,6 +272,22 @@ fn camera_job() -> Job {
                     });
             }),]);
     })
+}
+
+/// The pixel size the scene's camera builds its projection for: the target the
+/// scene's pass drew into on the last frame it was bound, or `None` before it
+/// has been bound once.
+///
+/// A frame carries no size, so the pass states the target's size where it binds
+/// attachments — the one place both a windowed swap chain and an offscreen
+/// target pass through. The demo's pass letterboxes nothing, so the region the
+/// camera frames is the target itself.
+fn frame_size(world: &World) -> Option<(u32, u32)> {
+    let mut passes = world.root_scope().query::<&FramePass>();
+    passes
+        .iter()
+        .find(|pass| pass.order == SCENE_PASS_ORDER)
+        .and_then(|pass| pass.target_size)
 }
 
 /// The point on the orbit the camera sits at for one azimuth.
@@ -549,7 +567,6 @@ pub fn spawn_scene<R: WorldRunner>(
                 let mut frame = Frame {
                     delta_time: delta_seconds,
                     index,
-                    size: WINDOW_SIZE,
                 };
                 index = index.wrapping_add(1);
                 dispatch_frame(world, &mut frame);

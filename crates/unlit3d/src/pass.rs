@@ -106,6 +106,15 @@ pub struct FramePass {
     /// an unrelated entity is despawned, which is why a split screen states a
     /// camera per pass instead.
     pub camera: Option<Entity>,
+    /// The pixel size of the target the pass draws into, as of the last
+    /// [`Self::set_attachments`]; `None` while the pass draws nowhere.
+    ///
+    /// This is the resolution of the pass's attachments, not the region its
+    /// content occupies: a letterboxed pass states the whole target here and
+    /// the content's rectangle in [`Self::viewport`]. A behaviour that sizes
+    /// something to the target — a camera's aspect, most of all — reads it from
+    /// here, since no frame carries a target.
+    pub target_size: Option<(u32, u32)>,
     color: Option<ResHandle<TextureView>>,
     depth: Option<ResHandle<TextureView>>,
     msaa: Option<ResHandle<TextureView>>,
@@ -121,6 +130,7 @@ impl FramePass {
             order,
             viewport: None,
             camera: None,
+            target_size: None,
             color: None,
             depth: None,
             msaa: None,
@@ -155,6 +165,7 @@ impl FramePass {
         attachments: &FrameAttachments,
         color_view: ResHandle<TextureView>,
     ) {
+        self.target_size = Some(attachments.size());
         self.color = Some(color_view);
         self.depth = attachments.depth_view.clone();
         self.msaa = attachments.msaa_view.clone();
@@ -166,6 +177,7 @@ impl FramePass {
     /// its target is gone — a minimized window, say — without disturbing the
     /// sources under it.
     pub fn park(&mut self) {
+        self.target_size = None;
         self.color = None;
         self.depth = None;
         self.msaa = None;

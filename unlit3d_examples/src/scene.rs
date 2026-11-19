@@ -2,8 +2,8 @@ use super::{
     EguiSource, Entity, EntityAccessError, Frame, FramePass, FrameRate, FrameSkip,
     FrameSourceOrder, FullscreenActive, FullscreenRequest, GPU_INFO_AREA, PanelRects, Pass,
     RenderDevice, RenderLoadOps, Renderer, ResourceGraph, SCENE_PASS_ORDER, SELECTOR_WINDOW,
-    SceneControl, SceneFrame, SceneSwitch, Source, ViewportRect, World, bundle, color_clear,
-    dispatch_frame, dispatch_input_on_frame, egui, mount_api_docs, mount_frame_rate,
+    SceneControl, SceneFrame, SceneSize, SceneSwitch, Source, ViewportRect, World, bundle,
+    color_clear, dispatch_frame, dispatch_input_on_frame, egui, mount_api_docs, mount_frame_rate,
     mount_fullscreen, mount_gpu_info, mount_selector, run_scene_advance, scenes, spawn_context,
     step_sequence,
 };
@@ -65,6 +65,9 @@ pub struct Scene {
     /// behaviours through the frame's context, and a fixed sequence may skip a
     /// frame without advancing it.
     frame: u32,
+    /// The entity carrying the frame's own state and the advance that runs it,
+    /// which is where the size a frame draws at is stated.
+    frame_entity: Entity,
     /// The scene-selector's switch component, read once per frame.
     switch: Entity,
     /// The fullscreen button's request component, read once per frame.
@@ -167,10 +170,19 @@ impl Scene {
         // frame's behaviours advance them without `&mut Scene`. One entity
         // carries them so the behaviour that advances the scene and the state
         // it reads are reached together.
-        let frame_entity = world.root_scope_mut().spawn(SceneFrame {
-            advance,
-            step: options.sequence_step,
-        });
+        let frame_entity = world.root_scope_mut().spawn(bundle![
+            // Spread rather than pushed as one component: `SceneFrame` is a
+            // bundle of the advance and the state it reads, and the entity has
+            // to carry those components for the frame behaviours to reach them.
+            ..SceneFrame {
+                advance,
+                step: options.sequence_step,
+            },
+            // The size the scene states for each frame it advances. It is the
+            // behaviour's to read and no frame carries it, so it lives beside
+            // the advance that dispatches the frame.
+            SceneSize(content),
+        ]);
         // The frame's own dispatch: the input runs first and states no order,
         // since nothing else here reads what it dispatched. Stepping the index
         // and advancing by the frame it names are the one dependency: the
@@ -218,6 +230,7 @@ impl Scene {
                 snapshot,
                 frame_rate,
                 frame: 0,
+                frame_entity,
                 switch,
                 fullscreen,
                 fullscreen_active,
@@ -245,8 +258,9 @@ impl Scene {
     /// A frame is the dispatch of the scene world's `OnFrame` behaviours. The
     /// input and the index state no order; the scene's own behaviour states one
     /// after the index, since it advances by the frame the index names. The
-    /// index and the content size travel in the frame's context, so a behaviour
-    /// reads them without a component of its own.
+    /// index travels in the frame's context; the content size does not, so the
+    /// scene states it beside the advance before dispatching, and a behaviour
+    /// that sizes itself reads that component.
     pub fn advance(&mut self, world: &mut World, delta_time: f32) {
         // Measured before anything else, so the reading covers the whole frame
         // — input, behaviour, render and present — and not just the part
@@ -258,10 +272,19 @@ impl Scene {
             rate.get().push(delta_time);
         }
 
+        // Stated before the dispatch, so every behaviour of this frame reads the
+        // size the scene letterboxed for it — the resize that changed it may
+        // have landed since the last frame.
+        {
+            let mut size = world
+                .root_scope()
+                .query_one::<&mut SceneSize>(self.frame_entity);
+            size.get().0 = self.size;
+        }
+
         let mut frame = Frame {
             delta_time,
             index: self.frame,
-            size: self.size,
         };
         dispatch_frame(world, &mut frame);
         self.frame = frame.index;

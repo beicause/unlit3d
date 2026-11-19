@@ -593,12 +593,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                 control.wait_timeout(Duration::from_secs(1));
             }
             // The tick is this world's frame: sources that pace themselves by
-            // it read a clock that matches the fills. The size is the sound's
-            // own, which no frame carries.
+            // it read a clock that matches the fills.
             let mut frame = Frame {
                 delta_time: delta_seconds,
                 index: frame_index,
-                size: (0, 0),
             };
             dispatch_frame(world, &mut frame);
             frame_index = frame.index.wrapping_add(1);

@@ -22,11 +22,20 @@ pub(crate) struct RunSceneAdvance {
     pub(crate) entity: Entity,
     /// The frame the behaviour is advanced by.
     pub(crate) frame: Frame,
+    /// The pixel size of the region the frame draws the scene into.
+    ///
+    /// Read from the scene's pass when the frame is dispatched, since no frame
+    /// carries a size and the pass is what knows the target it bound to.
+    pub(crate) size: (u32, u32),
 }
 
 impl Command for RunSceneAdvance {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        let Self { entity, frame } = *self;
+        let Self {
+            entity,
+            frame,
+            size,
+        } = *self;
         let advance = world
             .root_scope()
             .try_query_one::<&mut SceneAdvance>(entity)
@@ -35,7 +44,7 @@ impl Command for RunSceneAdvance {
         let Some(mut advance) = advance else {
             return Ok(());
         };
-        advance(world, frame.index, frame.delta_time, frame.size);
+        advance(world, frame.index, frame.delta_time, size);
         let _ = world
             .root_scope()
             .try_query_one::<&mut SceneAdvance>(entity)

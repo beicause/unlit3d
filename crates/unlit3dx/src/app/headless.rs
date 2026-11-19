@@ -162,7 +162,6 @@ pub async fn headless<A: App>(
     let mut frame = Frame {
         delta_time: (1.0 / HEADLESS_HZ) as f32,
         index: 0,
-        size: config.size,
     };
     // The stepper carries the step remainders: physics runs at its own rate
     // and the synthesizer at the sample rate, neither necessarily an integer

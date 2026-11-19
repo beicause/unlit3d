@@ -1,13 +1,15 @@
 //! Frame behaviours: what a frame is made of, as components.
 //!
 //! The other behaviour families react to an event. A frame behaviour *is* the
-//! frame: it runs once per dispatch, so a windowed application's frame loop is
-//! one dispatch plus whatever the behaviours queued. Extending the frame is
-//! spawning another behaviour, not editing a function.
+//! frame: it runs once per dispatch, so a world's frame loop is one dispatch
+//! plus whatever the behaviours queued. Extending the frame is spawning
+//! another behaviour, not editing a function.
 //!
-//! One family: [`OnFrame`] is the frame itself, dispatched by whatever owns
-//! the world — a windowed application's host world, or a `Scene` advancing the
-//! world it drives. A behaviour spawned with [`OnFrame::new`] states no order;
+//! One family: [`OnFrame`] is the frame itself, dispatched by whatever drives
+//! the world — a window's host world, a world thread's own loop, or a `Scene`
+//! stepping the worlds it drives. Each world states its own pacing: its frames
+//! are the turns its driver takes it through, not the turns of a world beside
+//! it. A behaviour spawned with [`OnFrame::new`] states no order;
 //! one whose reads or writes another depends on states the order at both ends
 //! with [`OnFrame::with_order`]. The library states the orders of the frames
 //! it assembles itself, and every caller states the orders of its own: a
@@ -27,15 +29,13 @@ pub(crate) use unlit_ecs::{Entity, World};
 /// state.
 ///
 /// A frame behaviour receives it as its event, so it can tell how long the
-/// frame was, which one it is, and what size the content is drawn at.
+/// frame was and which one it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     /// The seconds since the previous frame.
     pub delta_time: f32,
     /// The frame's index, counting from zero.
     pub index: u32,
-    /// The size the content is drawn at, in pixels.
-    pub size: (u32, u32),
 }
 
 /// How much time has passed, as the frame loop counts it.
@@ -239,7 +239,7 @@ macro_rules! frame_behaviour {
 
 frame_behaviour!(
     OnFrame,
-    "Runs once per frame of a windowed application.\n\nDispatch it with [`dispatch_frame`]."
+    "Runs once per frame of the world it is spawned in, in the order the world's driver dispatches frames.\n\nDispatch it with [`dispatch_frame`]."
 );
 
 /// Run every [`OnFrame`] in `world`, in resolved order, then apply what they
@@ -362,7 +362,6 @@ mod tests {
         Frame {
             delta_time: 0.0,
             index: 0,
-            size: (0, 0),
         }
     }
 
@@ -430,7 +429,6 @@ mod tests {
         let mut frame = Frame {
             delta_time: 0.5,
             index: 7,
-            size: (320, 240),
         };
         dispatch_frame(&mut world, &mut frame);
         assert_eq!(
@@ -438,7 +436,6 @@ mod tests {
             Some(Frame {
                 delta_time: 0.5,
                 index: 7,
-                size: (320, 240)
             })
         );
     }
@@ -560,7 +557,6 @@ mod tests {
         let mut frame = Frame {
             delta_time: 0.25,
             index: 3,
-            size: (0, 0),
         };
         dispatch_frame(&mut world, &mut frame);
         frame.delta_time = 0.5;

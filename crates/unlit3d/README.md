@@ -1281,7 +1281,7 @@ What happens *within* one frame is a behaviour too. The [`frame`](frame) module
 has one family, [`OnFrame`](frame::OnFrame), dispatched by
 [`dispatch_frame`](frame::dispatch_frame); a frame behaviour receives `&World`,
 the entity it sits on, and a `&mut` [`Frame`](frame::Frame) carrying the frame's
-delta time, index and size. That is the same shape as the event families, with
+delta time and index. That is the same shape as the event families, with
 the frame context in place of an event. A behaviour spawned with
 [`OnFrame::new`](frame::OnFrame::new) states no order: the behaviours that state
 none form a band, and the dispatch promises nothing about the order within it.

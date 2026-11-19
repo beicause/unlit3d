@@ -1,7 +1,7 @@
 use super::{
     ADVANCE_ORDER, CONTROLS_ORDER, Entity, FLUSH_ORDER, FramePass, FrameSkip, GpuInfoPos, OnFrame,
     OpenUrl, READY_ORDER, Resumed, RunSceneAdvance, SCENE_ADVANCE_ORDER, Scene, SceneEntity,
-    SelectorPos, SequenceClock, SequenceStep, SequenceStepped, VIEWPORT_ORDER, World,
+    SceneSize, SelectorPos, SequenceClock, SequenceStep, SequenceStepped, VIEWPORT_ORDER, World,
     dispatch_input, drain_open_urls, fullscreen, present, presenter_entity, switch_scene, tick,
     window,
 };
@@ -54,9 +54,15 @@ pub(crate) fn run_scene_advance(entity: Entity) -> OnFrame {
         if !stepped {
             return;
         }
+        // The size the scene states for this frame: a frame carries none, so
+        // the scene writes it beside the advance before dispatching.
+        let Ok(mut size) = world.root_scope().try_query_one::<&SceneSize>(entity) else {
+            return;
+        };
         world.root_scope().queue().push(RunSceneAdvance {
             entity,
             frame: *frame,
+            size: size.get().0,
         });
         frame.index = frame.index.wrapping_add(1);
     })

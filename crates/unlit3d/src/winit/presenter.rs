@@ -565,24 +565,9 @@ impl Command for DrawFrame {
         let delta_time = sync::lock(&self.last)
             .replace(now)
             .map_or(0.0, |last| (now - last).as_secs_f32().min(0.1));
-        let size = window(world)
-            .map(|window| {
-                let size = window.inner_size();
-                (size.width, size.height)
-            })
-            .or_else(|| {
-                world
-                    .root_scope()
-                    .query::<(Entity, &Presenter)>()
-                    .iter()
-                    .next()
-                    .map(|(_, presenter)| presenter.fallback_size)
-            })
-            .unwrap_or((1, 1));
         let mut frame = Frame {
             delta_time,
             index: self.index.fetch_add(1, Ordering::Relaxed),
-            size,
         };
         if let Some(pre_dispatch) = &self.pre_dispatch {
             (pre_dispatch.borrow_mut())(world);

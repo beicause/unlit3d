@@ -231,6 +231,15 @@ pub(crate) struct SequenceStepped(pub(crate) bool);
 /// same time, so it is taken out, called, and put back.
 pub(crate) struct SceneAdvance(pub(crate) Option<Advance>);
 
+/// The pixel size the scene's content is drawn at.
+///
+/// A frame carries no target size, so the size a scene's behaviour is handed
+/// is world state: [`Scene::advance`](crate::scene::Scene::advance) states it
+/// before it dispatches the frame, and the behaviour reads it from the entity
+/// its advance lives on. It is the letterboxed region when the scene's pass
+/// states one, the target's own size otherwise.
+pub(crate) struct SceneSize(pub(crate) (u32, u32));
+
 /// The scene's per-frame state, spawned with its own advance.
 ///
 /// The state and the behaviour that moves it live on one entity so a frame

@@ -293,8 +293,8 @@ use self::scene::tick;
 use self::state::WorldName;
 use self::state::{
     App, FullscreenActive, FullscreenRequest, GpuInfoPos, GpuState, InitialScene, McpEnabled,
-    PresenterEntity, RenderWorld, SceneAdvance, SceneEntity, SceneFrame, SceneSwitch, SelectorPos,
-    SequenceClock, SequenceStep, SequenceStepped, UserEvent,
+    PresenterEntity, RenderWorld, SceneAdvance, SceneEntity, SceneFrame, SceneSize, SceneSwitch,
+    SelectorPos, SequenceClock, SequenceStep, SequenceStepped, UserEvent,
 };
 
 pub use self::scene::Scene;

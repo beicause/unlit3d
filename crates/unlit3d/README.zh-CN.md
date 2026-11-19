@@ -894,7 +894,7 @@ egui 是否想独占指针/键盘是**egui 自己的答案**，不由源再写�
 一帧之内的推进同样是行为。[`frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/index.html) 模块只有一个族
 [`OnFrame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html)，由 [`dispatch_frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/fn.dispatch_frame.html) 驱动；
 帧行为拿到 `&World`、它所在实体，以及一个 `&mut`
-[`Frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.Frame.html)——里面是这一帧的 delta、序号与尺寸。形状与事件族完全一致，
+[`Frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.Frame.html)——里面是这一帧的 delta 与序号。形状与事件族完全一致，
 只是把「事件」换成了「这一帧的上下文」。用
 [`OnFrame::new`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html#method.new) 生成的行为不声明顺序，这些不声明顺序的行为构成一个
 顺序带，带内的先后不做任何保证。若某个行为的读写被另一个行为依赖，就用

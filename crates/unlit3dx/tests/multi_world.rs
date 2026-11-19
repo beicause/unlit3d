@@ -418,7 +418,6 @@ fn tick_sub_world_runs_jobs_folds_input_and_dispatches_the_frame() {
     let mut frame = Frame {
         delta_time: 1.0 / 60.0,
         index: 0,
-        size: (16, 16),
     };
     // The job's own tick comes first: the buffer it spawns subscribes to the
     // writer as it is spawned, and an event fed before that has no

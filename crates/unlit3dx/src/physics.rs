@@ -363,12 +363,10 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
                 }
             }
             // The tick is this world's frame: a behaviour pacing itself by the
-            // simulation reads a clock that matches the steps. The size is the
-            // simulation's own, which no frame carries.
+            // simulation reads a clock that matches the steps.
             let mut frame = Frame {
                 delta_time: delta_seconds,
                 index: frame_index,
-                size: (0, 0),
             };
             dispatch_frame(world, &mut frame);
             frame_index = frame.index.wrapping_add(1);

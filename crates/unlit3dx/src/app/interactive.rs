@@ -270,7 +270,6 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, InputWri
         frame: Frame {
             delta_time: (1.0 / HEADLESS_HZ) as f32,
             index: 0,
-            size: A::SIZE,
         },
         samples: Vec::new(),
         recording: None,

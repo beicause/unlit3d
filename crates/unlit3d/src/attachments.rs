@@ -107,6 +107,16 @@ impl FrameAttachments {
         }
     }
 
+    /// The size the attachments are allocated at, in physical pixels.
+    ///
+    /// It is the target's own size, which the depth and multisample views
+    /// span. A pass that letterboxes states the region its content occupies
+    /// on the pass, not here.
+    #[must_use]
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
     /// Rebuild the attachments for a new target size.
     ///
     /// A no-op when the size is unchanged. The views keep their ids, so

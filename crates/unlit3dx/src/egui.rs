@@ -375,7 +375,6 @@ mod tests {
         Frame {
             delta_time,
             index: 0,
-            size: (128, 96),
         }
     }
 
