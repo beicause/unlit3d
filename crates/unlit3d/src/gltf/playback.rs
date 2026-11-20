@@ -7,8 +7,7 @@
 use std::cell::RefCell;
 
 use super::animation::{
-    Channel, ChannelValues, channels, interpolation_stride, sample_rotation, sample_vec3,
-    sample_weights,
+    Channel, ChannelValues, channels, sample_rotation, sample_vec3, sample_weights,
 };
 use super::{AnimationId, GltfNode, LitGltf};
 use crate::components::{MorphWeights, SkinPose, Transform};
@@ -174,18 +173,15 @@ impl LitGltf {
                         sample_rotation(channel.interpolation, &channel.times, values, time);
                     scratch.animated[node] = true;
                 }
-                ChannelValues::Weights(values) => {
-                    let targets = self.morph_targets[node];
-                    let needed =
-                        channel.times.len() * targets * interpolation_stride(channel.interpolation);
-                    if targets == 0 || values.len() < needed {
-                        continue;
-                    }
+                // Decoding drops a weights channel that states fewer values
+                // than its times and target count need, so whatever reaches
+                // here is sampleable.
+                ChannelValues::Weights { targets, values } => {
                     sample_weights(
                         channel.interpolation,
                         &channel.times,
                         values,
-                        targets,
+                        *targets,
                         time,
                         &mut scratch.weights[node],
                     );
@@ -270,7 +266,14 @@ impl LitGltf {
         // Resolved first, so an out-of-bounds index panics with the same
         // message as every other accessor of an animation.
         let animation = self.animation(index);
-        self.clips[index].get_or_init(|| channels(animation, &self.buffers, &self.matrix_nodes))
+        self.clips[index].get_or_init(|| {
+            channels(
+                animation,
+                &self.buffers,
+                &self.matrix_nodes,
+                &self.morph_targets,
+            )
+        })
     }
 
     fn animation(&self, animation: usize) -> gltf::animation::Animation<'_> {

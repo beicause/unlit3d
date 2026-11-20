@@ -30,8 +30,9 @@ pub(super) enum ChannelValues {
     Scales(Vec<[f32; 3]>),
     /// A rotation, one value per keyframe (times the interpolation stride).
     Rotations(Vec<[f32; 4]>),
-    /// Morph target weights, `targets` values per keyframe (times the stride).
-    Weights(Vec<f32>),
+    /// Morph target weights: `targets` values per keyframe (times the
+    /// stride), with the target count they were checked against.
+    Weights { targets: usize, values: Vec<f32> },
 }
 
 /// Every channel of `animation` that can be sampled, with its keyframes decoded.
@@ -39,9 +40,9 @@ pub(super) enum ChannelValues {
 /// A channel the document states incompletely is dropped here rather than on
 /// every frame that plays the animation: one whose inputs are missing or name a
 /// single keyframe has no interval to interpolate over, and the spec requires
-/// two anyway. A weights channel is kept unvalidated against its target count,
-/// which depends on the mesh the node carries and is checked where that is
-/// known.
+/// two anyway, and one whose outputs cover fewer keyframes than its inputs
+/// name cannot be sampled at all. A weights channel is checked against the
+/// target count of the mesh its node carries, which `morph_targets` states.
 ///
 /// `matrix_nodes` marks the nodes whose transform the document states as a
 /// matrix. Such a node has no animatable translation, rotation or scale — the
@@ -52,6 +53,7 @@ pub(super) fn channels(
     animation: gltf::animation::Animation<'_>,
     buffers: &[gltf::buffer::Data],
     matrix_nodes: &[bool],
+    morph_targets: &[usize],
 ) -> Vec<Channel> {
     let mut channels = Vec::new();
     for channel in animation.channels() {
@@ -86,7 +88,15 @@ pub(super) fn channels(
                 ChannelValues::Rotations(complete(values.into_f32(), required))
             }
             (Property::MorphTargetWeights, ReadOutputs::MorphTargetWeights(values)) => {
-                ChannelValues::Weights(values.into_f32().collect())
+                let targets = morph_targets[node];
+                let values: Vec<f32> = values.into_f32().collect();
+                // A weights channel states one weight per target per
+                // keyframe, so it needs the target count as a multiplier on
+                // top of what a transform channel needs.
+                if targets == 0 || values.len() < required * targets {
+                    continue;
+                }
+                ChannelValues::Weights { targets, values }
             }
             _ => continue,
         };

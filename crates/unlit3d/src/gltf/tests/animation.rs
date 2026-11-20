@@ -236,6 +236,29 @@ fn apply_animation_writes_morph_weights() {
 }
 
 #[test]
+fn a_weights_channel_short_of_its_keyframes_is_dropped() {
+    // One weight where two keyframes and one target ask for two: the channel
+    // cannot be sampled, so decoding drops it and the mesh keeps the weights
+    // it was spawned with instead of reading past the values it states.
+    let gltf = LitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.5]))
+        .expect("the animated morphed document parses");
+    let mut world = World::new();
+    let mesh = world.root_scope_mut().spawn(bundle![Transform::default()]);
+    let weights = world.root_scope_mut().spawn(bundle![MorphWeights {
+        weights: vec![0.25]
+    }]);
+    let nodes = [GltfNode {
+        node: NodeId::new(0),
+        entities: vec![mesh],
+        pose: None,
+        weights: Some(weights),
+    }];
+    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    let mut row = world.root_scope().query_one::<&MorphWeights>(weights);
+    assert_eq!(row.get().weights, vec![0.25]);
+}
+
+#[test]
 fn a_matrix_node_ignores_the_channels_it_cannot_animate() {
     // The node states its transform as a matrix, which the specification
     // declares to have no animatable properties: sampling the translation
