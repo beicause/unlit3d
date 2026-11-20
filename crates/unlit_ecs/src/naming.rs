@@ -16,12 +16,17 @@ pub fn extension_of(file_name: &str) -> Option<&str> {
 
 /// `file_name` with `extension` appended when it carries none, or `None`
 /// when there is no file name to extend.
+///
+/// A trailing dot is not an extension — [`extension_of`] reports none for it —
+/// so it is dropped before the new one is appended, rather than kept as an
+/// empty second extension.
 pub fn with_extension(file_name: Option<&str>, extension: &str) -> Option<String> {
     let file_name = file_name?;
-    Some(match extension_of(file_name) {
-        Some(_) => file_name.to_string(),
-        None => format!("{file_name}.{extension}"),
-    })
+    if extension_of(file_name).is_some() {
+        return Some(file_name.to_string());
+    }
+    let stem = file_name.trim_end_matches('.');
+    (!stem.is_empty()).then(|| format!("{stem}.{extension}"))
 }
 
 #[cfg(test)]
@@ -44,5 +49,18 @@ mod tests {
             with_extension(Some("a.png"), "webp").as_deref(),
             Some("a.png")
         );
+    }
+
+    #[test]
+    fn a_trailing_dot_is_not_an_extension_to_append_after() {
+        assert_eq!(
+            with_extension(Some("a."), "webp").as_deref(),
+            Some("a.webp")
+        );
+        assert_eq!(
+            with_extension(Some("a.."), "webp").as_deref(),
+            Some("a.webp")
+        );
+        assert_eq!(with_extension(Some("."), "webp"), None);
     }
 }

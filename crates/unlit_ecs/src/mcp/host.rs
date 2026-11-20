@@ -14,7 +14,7 @@
 //! types they read; this module carries only the contract every tool shares.
 
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -71,7 +71,7 @@ pub struct EncodedAudio {
 /// The closure captures plain data (tool arguments) and runs with exclusive
 /// access to one world. It must be [Send] because it travels across the
 /// channel; the world it touches never does.
-pub type Job = Box<dyn FnOnce(&mut World) -> Result<Output, String> + Send + 'static>;
+pub(crate) type Job = Box<dyn FnOnce(&mut World) -> Result<Output, String> + Send + 'static>;
 
 /// Which world a tool or a command runs against, as the wire names it.
 ///
@@ -326,9 +326,25 @@ pub fn saved_name(file_name: Option<&str>, stem: &str, extension: &str) -> Strin
     with_extension(file_name, extension).unwrap_or_else(|| generated_name(stem, extension))
 }
 
+/// The one path segment a save may write into `directory`.
+///
+/// A tool argument is not a shell command, so a name that names a path rather
+/// than a file — one carrying a separator, a parent step or a root — would let
+/// a call write wherever it liked, outside the directory it was handed. Such a
+/// name is refused instead of being joined.
+fn checked_file_name(file_name: &str) -> Result<&Path, String> {
+    let mut components = Path::new(file_name).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) => Ok(Path::new(name)),
+        _ => Err(format!(
+            "{file_name:?} is not a file name: it must be one path segment, with no directory in it"
+        )),
+    }
+}
+
 /// Write `bytes` to `directory/file_name`, creating the directory.
 pub fn write_file(directory: &str, file_name: &str, bytes: &[u8]) -> Result<SavedFile, String> {
-    let path = Path::new(directory).join(file_name);
+    let path = Path::new(directory).join(checked_file_name(file_name)?);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -453,6 +469,16 @@ mod tests {
         assert!(name.starts_with("texture-"), "{name}");
         assert!(name.ends_with(".webp"), "{name}");
         assert_ne!(name, generated_name("texture", "webp"));
+    }
+
+    #[test]
+    fn a_save_refuses_a_name_that_names_a_path() {
+        assert_eq!(checked_file_name("a.png"), Ok(Path::new("a.png")));
+        assert!(checked_file_name("").is_err());
+        assert!(checked_file_name("..").is_err());
+        assert!(checked_file_name("../a.png").is_err());
+        assert!(checked_file_name("sub/a.png").is_err());
+        assert!(checked_file_name("/tmp/a.png").is_err());
     }
 
     #[test]

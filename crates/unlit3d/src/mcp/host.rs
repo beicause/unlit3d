@@ -157,7 +157,9 @@ fn graph_of_mut<'w>(
 /// Whether input events were delivered.
 #[derive(facet::Facet)]
 struct Delivered {
-    /// Whether a handler consumed anything.
+    /// Whether the world had events to dispatch. This is the batch's own size,
+    /// not a count of the handlers that ran: an event nothing watches still
+    /// counts, because the world did receive it.
     delivered: bool,
 }
 
@@ -182,7 +184,7 @@ struct BufferRead {
     data: String,
 }
 
-pub fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, String> {
     let context = render_context(world, context)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
@@ -191,7 +193,7 @@ pub fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, St
 }
 
 /// Every resource slot in the graph.
-pub fn list_resources(world: &World, context: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn list_resources(world: &World, context: Option<Entity>) -> Result<Value, String> {
     let context = render_context(world, context)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
@@ -199,7 +201,7 @@ pub fn list_resources(world: &World, context: Option<Entity>) -> Result<Value, S
 }
 
 /// The resources a resource depends on, as handles.
-pub fn resource_dependencies(
+pub(crate) fn resource_dependencies(
     world: &World,
     context: Option<Entity>,
     id: ResId,
@@ -218,7 +220,7 @@ pub fn resource_dependencies(
 }
 
 /// Drop unreferenced resources and rebuild dirty ones.
-pub fn graph_maintain(world: &World, context: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn graph_maintain(world: &World, context: Option<Entity>) -> Result<Value, String> {
     let context = render_context(world, context)?;
     let mut graph_row = graph_of_mut(world, context)?;
     let graph = graph_row.get();
@@ -261,7 +263,26 @@ fn read_buffer_bytes(
             "offset {offset} is past the buffer's {total} bytes"
         ));
     }
+    // A copy reads whole aligned runs: wgpu rejects anything else outright, and
+    // a caller that named the edges of a field cannot know the alignment, so
+    // the misalignment is reported here instead of as a copy wgpu refused.
+    let alignment = wgpu::COPY_BUFFER_ALIGNMENT;
+    if !offset.is_multiple_of(alignment) {
+        return Err(format!(
+            "offset {offset} is not a multiple of the {alignment} bytes a buffer copy reads in"
+        ));
+    }
     let size = size.unwrap_or(total - offset).min(total - offset);
+    if !size.is_multiple_of(alignment) {
+        return Err(format!(
+            "size {size} is not a multiple of the {alignment} bytes a buffer copy reads in"
+        ));
+    }
+    if size == 0 {
+        // Nothing to copy, and a staging buffer of no bytes is not a buffer
+        // wgpu will create.
+        return Ok((offset, Vec::new()));
+    }
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     // The tool runs inside a synchronous closure on the world's thread, so the
@@ -272,7 +293,7 @@ fn read_buffer_bytes(
 }
 
 /// Read bytes out of a buffer resource.
-pub fn read_buffer(
+pub(crate) fn read_buffer(
     world: &World,
     context: Option<Entity>,
     id: ResId,
@@ -288,7 +309,7 @@ pub fn read_buffer(
 }
 
 /// Read bytes out of a buffer resource and write them to a file.
-pub fn save_buffer(
+pub(crate) fn save_buffer(
     world: &World,
     context: Option<Entity>,
     id: ResId,
@@ -432,6 +453,12 @@ fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Resu
             _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
         }
     };
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+        return Err(format!(
+            "the texture behind id {} was not created with COPY_SRC, so it cannot be read back",
+            id.to_bits()
+        ));
+    }
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     let bytes = pollster::block_on(try_readback_texture(&device, &queue, &texture))
@@ -445,7 +472,7 @@ fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Resu
 }
 
 /// Read a texture resource and encode it as an inline image.
-pub fn read_texture_as_image(
+pub(crate) fn read_texture_as_image(
     world: &World,
     context: Option<Entity>,
     id: ResId,
@@ -460,7 +487,7 @@ pub fn read_texture_as_image(
 }
 
 /// Read a texture resource and write it to a file as an image.
-pub fn save_texture_as_image(
+pub(crate) fn save_texture_as_image(
     world: &World,
     context: Option<Entity>,
     id: ResId,
@@ -497,7 +524,7 @@ fn single_entity<T: 'static>(
 }
 
 /// A world's input state, encoded: how its devices are.
-pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
     let entity = single_entity::<InputState>(world, entity, "input state")?;
     let text = reflect::encode_json(&world.root_scope(), entity, "InputState")
         .map_err(|error| error.to_string())?;
@@ -508,23 +535,28 @@ pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, Strin
 ///
 /// The events go to the world's [`InputWriter`], which reaches every world
 /// subscribed to it; the dispatch that follows is this world's own tick.
-pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Result<Value, String> {
+pub(crate) fn send_input(
+    world: &World,
+    entity: Option<Entity>,
+    events: &Value,
+) -> Result<Value, String> {
     let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
     let decoded = reflect::decode_events(&text).map_err(|error| error.to_string())?;
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
-    let _ = world
+    world
         .root_scope()
         .try_query_one::<&mut InputWriter>(entity)
         .map(|mut writer| {
             let writer = writer.get();
             writer.push_all(decoded)
-        });
+        })
+        .map_err(|error| format!("entity {entity:?} carries no input writer: {error}"))?;
     let delivered = dispatch_input(world);
     to_value(&Delivered { delivered })
 }
 
 /// Render one frame from the world.
-pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
     let entity = renderer_entity(world, renderer)?;
     let world_ref: &World = &*world;
     world_ref
@@ -584,10 +616,11 @@ fn screenshot_target(
 /// Render one frame and read the offscreen target back.
 fn screenshot_frame(
     world: &mut World,
+    context: Option<Entity>,
     renderer: Option<Entity>,
     target: Option<ResId>,
 ) -> Result<Frame, String> {
-    let context = render_context(world, None)?;
+    let context = render_context(world, context)?;
     let texture = screenshot_target(world, context, target)?;
     render_frame(world, renderer)?;
     let device = device_of(world, context)?;
@@ -603,8 +636,9 @@ fn screenshot_frame(
 }
 
 /// Render one frame and read the offscreen target back as an inline image.
-pub fn read_screenshot(
+pub(crate) fn read_screenshot(
     world: &mut World,
+    context: Option<Entity>,
     renderer: Option<Entity>,
     target: Option<ResId>,
     format: Option<&str>,
@@ -613,19 +647,20 @@ pub fn read_screenshot(
         Some(name) => ImageFormat::from_name(name)?,
         None => ImageFormat::DEFAULT,
     };
-    let frame = screenshot_frame(world, renderer, target)?;
+    let frame = screenshot_frame(world, context, renderer, target)?;
     image_value(&format.encode(&frame)?, frame.width, frame.height, format)
 }
 
 /// Render one frame and write the offscreen target to a file as an image.
-pub fn save_screenshot(
+pub(crate) fn save_screenshot(
     world: &mut World,
+    context: Option<Entity>,
     renderer: Option<Entity>,
     target: Option<ResId>,
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {
-    let frame = screenshot_frame(world, renderer, target)?;
+    let frame = screenshot_frame(world, context, renderer, target)?;
     let file_name = saved_name(file_name, "screenshot", "webp");
     to_value(&save_image(directory, &file_name, &frame)?)
 }
@@ -635,7 +670,7 @@ pub fn save_screenshot(
 /// Exactly one of `path` and `document` must be given. A document is either
 /// glTF JSON text or a GLB whose bytes are base64-encoded, since a JSON tool
 /// argument cannot carry raw binary.
-pub fn spawn_gltf(
+pub(crate) fn spawn_gltf(
     world: &mut World,
     source: Option<Entity>,
     scope: Option<Entity>,
@@ -651,15 +686,21 @@ pub fn spawn_gltf(
         (None, None) => return Err("pass one of `path` and `document`".to_string()),
     }
     .map_err(|error| error.to_string())?;
-    let resources = with_mesh_source(world, source, |source, scope| {
-        gltf.insert_resources(source, scope)
-    })?;
     // Content goes into the requested scope, which defaults to the source
     // entity itself, so the frame that draws the source also draws the scene.
     let scope = match scope {
         Some(scope) => scope,
         None => mesh_source_entity(world, source)?,
     };
+    // Asked before anything uploads: a scope that names nothing is answered
+    // with its own error rather than with a document's worth of resources the
+    // caller never gets a handle to.
+    world
+        .try_scope(scope)
+        .map_err(|_| format!("no scope {scope:?}"))?;
+    let resources = with_mesh_source(world, source, |source, scope| {
+        gltf.insert_resources(source, scope)
+    })?;
     let mut scope = world
         .try_scope_mut(scope)
         .map_err(|_| format!("no scope {scope:?}"))?;
@@ -668,7 +709,11 @@ pub fn spawn_gltf(
         .map_err(|error| error.to_string())?;
     let entities: Vec<Entity> = nodes
         .iter()
-        .flat_map(|node| node.entities.iter())
+        .flat_map(|node| {
+            let pose = node.pose.iter();
+            let weights = node.weights.iter();
+            node.entities.iter().chain(pose).chain(weights)
+        })
         .copied()
         .collect();
     let names = entities.iter().map(|entity| entity.name()).collect();
@@ -751,10 +796,14 @@ fn frame_monitor(monitor: Arc<Mutex<FrameMonitor>>) -> OnFrame {
         // A frame dispatched with a zero duration would drive the average to
         // an infinite fps, so it is left out of the window rather than
         // folded in. The clock still counts it, being what the driver states.
-        if frame.delta_time > 0.0
-            && let Ok(mut monitor) = monitor.lock()
-        {
-            monitor.record(frame.delta_time);
+        // A panic elsewhere poisons the lock but not the window it guards: a
+        // queue of durations has no invariant a half-finished update breaks, so
+        // the monitor keeps the mean rather than losing the whole statistic.
+        if frame.delta_time > 0.0 {
+            monitor
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .record(frame.delta_time);
         }
     })
 }
@@ -765,20 +814,20 @@ fn frame_monitor(monitor: Arc<Mutex<FrameMonitor>>) -> OnFrame {
 /// that never dispatched a frame reports none of them: a client can tell a
 /// world with no pacing of its own from one standing at its first frame.
 #[derive(Debug, Clone, Copy, PartialEq, facet::Facet)]
-pub struct FrameClockReport {
+pub(crate) struct FrameClockReport {
     /// The world's frame ordinal, or none when it never dispatched a frame.
-    pub index: Option<u32>,
+    index: Option<u32>,
     /// How long the world's last frame took, in seconds.
-    pub delta_time: Option<f32>,
+    delta_time: Option<f32>,
     /// The time the world's frames have covered, in seconds.
-    pub time: Option<f32>,
+    time: Option<f32>,
     /// The rate the last frame ran at, in frames per second.
-    pub fps: Option<f32>,
+    fps: Option<f32>,
     /// The average rate over the measured window, or none before the monitor
     /// has seen a frame.
-    pub average_fps: Option<f32>,
+    average_fps: Option<f32>,
     /// How many frames the average covers.
-    pub average_window_frames: Option<usize>,
+    average_window_frames: Option<usize>,
 }
 
 /// Report a world's frame ordinal, last frame duration, elapsed time and
@@ -790,7 +839,7 @@ pub struct FrameClockReport {
 /// no frame rather than a made-up zero, so a client can tell the two apart.
 /// The average covers the last [`FRAME_WINDOW`] frames, which is finer than a
 /// client can sample for itself and survives the frames between two calls.
-pub fn frame_clock(world: &mut World) -> Result<FrameClockReport, String> {
+pub(crate) fn frame_clock(world: &mut World) -> Result<FrameClockReport, String> {
     let existing = world
         .root_scope()
         .query::<&FrameMonitorState>()
@@ -811,7 +860,7 @@ pub fn frame_clock(world: &mut World) -> Result<FrameClockReport, String> {
     };
     let monitor = monitor
         .lock()
-        .map_err(|_| "the frame monitor is poisoned".to_string())?;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let clock = world
         .root_scope()
         .query::<&FrameClock>()

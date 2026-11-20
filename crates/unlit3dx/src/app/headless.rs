@@ -10,6 +10,7 @@ use unlit_ecs::World;
 use unlit_wgpu::context::RenderDevice;
 use unlit_wgpu::readback::readback_texture;
 use unlit3d::frame::Frame;
+use unlit3d::input::{InputFeed, InputWriter, refresh_input};
 use unlit3d::offscreen::{PersistentTarget, TargetConfig};
 use unlit3d::renderer::Renderer;
 
@@ -110,10 +111,11 @@ pub async fn headless<A: App>(
 ) -> HeadlessOutput {
     let mut host = World::new();
     let render = spawn_sub_world(&mut host, "render", config.render_capacity);
-    // Nothing feeds input to a run with no window, but the scene still takes
-    // a buffer: a panel lays its frames out from it, and a run that never
-    // pushes an event simply never sees one.
-    let input = unlit3d::input::InputWriter::new();
+    // A run with no window draws no pointer of its own, but its client injects
+    // events through `send_input`, so the host holds the writer the scene reads
+    // and every sub-world subscribing to it keeps its own buffer.
+    let input = InputWriter::new();
+    host.root_scope_mut().spawn(InputFeed(input.clone()));
     let panel = unlit3d::relay::Snapshot::new();
     let worlds = app.spawn_scene::<Stepped>(
         &mut host,
@@ -182,6 +184,13 @@ pub async fn headless<A: App>(
     let mut index = 0u32;
     while !config.pacing.is_spent(index) {
         frame.index = index;
+
+        // The host's own buffer is folded every frame so the events a client
+        // injected are consumed rather than piling up: the scene's worlds
+        // subscribed to the same writer, and each folds its own copy on its
+        // own tick. The host has no behaviour reading it, so the result is
+        // dropped.
+        refresh_input(&host);
 
         // The worlds step once for this frame: gameplay first, so the notes
         // its sequences play reach the audio world before it steps, then

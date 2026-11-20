@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::mcp::host::{Despawned, McpCommand, Output, SpawnedEntity, to_value};
 use crate::mcp::server::{
     CommandSender, EntityArg, GetComponent, ListEntities, McpServer, NoArgs, SetComponent,
-    SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, entity, tool,
+    SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
 };
 use crate::reflect;
 use crate::{DynamicBundle, Entity, Scope, ScopeMut, World};
@@ -156,7 +156,7 @@ async fn list_entities(commands: CommandSender, args: ListEntities) -> ToolResul
 /// One entity's component names and location.
 async fn get_entity(commands: CommandSender, args: EntityArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        summarize_entity(&scoped(world, args.scope)?, entity(args.entity))
+        summarize_entity(&scoped(world, args.scope)?, Entity::from_bits(args.entity))
     })
     .await
 }
@@ -166,7 +166,7 @@ async fn get_component(commands: CommandSender, args: GetComponent) -> ToolResul
     command(&commands, args.world, move |world| {
         read_component(
             &scoped(world, args.scope)?,
-            entity(args.entity),
+            Entity::from_bits(args.entity),
             &args.component,
         )
     })
@@ -178,7 +178,7 @@ async fn set_component(commands: CommandSender, args: SetComponent) -> ToolResul
     command(&commands, args.world, move |world| {
         write_component(
             &scoped(world, args.scope)?,
-            entity(args.entity),
+            Entity::from_bits(args.entity),
             &args.component,
             &args.value,
         )
@@ -199,7 +199,7 @@ async fn spawn_entity(commands: CommandSender, args: SpawnEntity) -> ToolResult 
 async fn despawn_entity(commands: CommandSender, args: EntityArg) -> ToolResult {
     command(&commands, args.world, move |world| {
         let mut scope = scoped_mut(world, args.scope)?;
-        despawn_one(&mut scope, entity(args.entity))
+        despawn_one(&mut scope, Entity::from_bits(args.entity))
     })
     .await
 }

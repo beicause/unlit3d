@@ -51,7 +51,7 @@ pub fn serve_http_with(
     let (stop, stop_rx) = tokio::sync::watch::channel(false);
     let (bound, bound_rx) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
-        .name("unlit3dx-mcp-http".to_owned())
+        .name("unlit_ecs-mcp-http".to_owned())
         .spawn(move || {
             runtime.block_on(async move {
                 let listener = match tokio::net::TcpListener::bind(addr).await {

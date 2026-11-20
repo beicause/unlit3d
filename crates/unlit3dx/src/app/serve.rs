@@ -286,6 +286,7 @@ fn status(interactive: &Interactive) -> Value {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct StepFrames {
     #[serde(default)]
     world: unlit_ecs::mcp::WorldRef,

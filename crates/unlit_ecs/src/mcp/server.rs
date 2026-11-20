@@ -29,8 +29,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::World;
 use crate::mcp::host::{McpCommand, Output, WorldRef};
-use crate::{Entity, World};
 
 pub use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
 
@@ -50,11 +50,6 @@ pub struct ToolSource {
 }
 
 inventory::collect!(ToolSource);
-
-/// An entity handle from the `u64` bits a JSON argument carries.
-pub fn entity(bits: u64) -> Entity {
-    Entity::from_bits(bits)
-}
 
 /// A tool route from a name, a description and an asynchronous handler.
 ///
@@ -261,6 +256,7 @@ where
 
 /// Which world a tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorldArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -274,6 +270,7 @@ pub struct WorldArg {
 
 /// Which world and render context a GPU tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ContextArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -288,6 +285,7 @@ pub struct ContextArg {
 
 /// Which world and resource a handle tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HandleArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -308,6 +306,7 @@ pub struct HandleArg {
 
 /// Arguments for one entity in a world.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EntityArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -323,6 +322,7 @@ pub struct EntityArg {
 
 /// Arguments for listing entities.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListEntities {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -343,6 +343,7 @@ fn default_limit() -> usize {
 
 /// Arguments for reading one component.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetComponent {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -360,6 +361,7 @@ pub struct GetComponent {
 
 /// Arguments for writing one component.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetComponent {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -379,6 +381,7 @@ pub struct SetComponent {
 
 /// Arguments for spawning an entity.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnEntity {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -394,6 +397,7 @@ pub struct SpawnEntity {
 
 /// Arguments for reading a buffer.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadBuffer {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -415,6 +419,7 @@ pub struct ReadBuffer {
 
 /// Arguments for saving a buffer to a file.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SaveBuffer {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -442,6 +447,7 @@ pub struct SaveBuffer {
 
 /// Arguments for saving a texture as an image.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SaveTexture {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -464,11 +470,16 @@ pub struct SaveTexture {
 
 /// Arguments for saving a screenshot as an image.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SaveScreenshot {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldRef,
+    /// Any entity carrying the world's render context, as its `u64` bits.
+    /// Omit when the world holds exactly one.
+    #[serde(default)]
+    pub context: Option<u64>,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -487,6 +498,7 @@ pub struct SaveScreenshot {
 
 /// Arguments for reading or sending input.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct InputArg {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -500,6 +512,7 @@ pub struct InputArg {
 
 /// Arguments for sending input events.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SendInput {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -515,11 +528,16 @@ pub struct SendInput {
 
 /// Arguments for taking a screenshot.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Screenshot {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldRef,
+    /// Any entity carrying the world's render context, as its `u64` bits.
+    /// Omit when the world holds exactly one.
+    #[serde(default)]
+    pub context: Option<u64>,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -536,6 +554,7 @@ pub struct Screenshot {
 
 /// Arguments for spawn_gltf.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnGltf {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.

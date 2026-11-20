@@ -10,24 +10,20 @@ mod host;
 
 use host::FrameClockReport;
 
+use unlit_ecs::Entity;
 use unlit_ecs::mcp::serde_json::Value;
 use unlit_ecs::mcp::{
     CallToolResult, CommandSender, ContextArg, ErrorData, HandleArg, InputArg, McpCommand,
     McpServer, NoArgs, Output, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot,
-    SendInput, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, WorldRef, command, entity,
+    SendInput, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, WorldRef, command,
     from_value, run, to_value, tool,
 };
 use unlit_wgpu::resources::ResId;
 
-/// A resource id from the u64 bits a JSON argument carries.
-fn resource_id(bits: u64) -> ResId {
-    ResId::from_bits(bits)
-}
-
 /// A summary of the resource graph.
 async fn graph_summary(commands: CommandSender, args: ContextArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::graph_summary(world, args.context.map(entity))
+        host::graph_summary(world, args.context.map(Entity::from_bits))
     })
     .await
 }
@@ -35,7 +31,7 @@ async fn graph_summary(commands: CommandSender, args: ContextArg) -> ToolResult 
 /// Every resource slot in the graph.
 async fn list_resources(commands: CommandSender, args: ContextArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::list_resources(world, args.context.map(entity))
+        host::list_resources(world, args.context.map(Entity::from_bits))
     })
     .await
 }
@@ -43,7 +39,11 @@ async fn list_resources(commands: CommandSender, args: ContextArg) -> ToolResult
 /// The resources a resource depends on.
 async fn resource_dependencies(commands: CommandSender, args: HandleArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::resource_dependencies(world, args.context.map(entity), resource_id(args.id))
+        host::resource_dependencies(
+            world,
+            args.context.map(Entity::from_bits),
+            ResId::from_bits(args.id),
+        )
     })
     .await
 }
@@ -51,7 +51,7 @@ async fn resource_dependencies(commands: CommandSender, args: HandleArg) -> Tool
 /// Drop unreferenced resources and rebuild dirty ones.
 async fn graph_maintain(commands: CommandSender, args: ContextArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::graph_maintain(world, args.context.map(entity))
+        host::graph_maintain(world, args.context.map(Entity::from_bits))
     })
     .await
 }
@@ -61,8 +61,8 @@ async fn read_buffer(commands: CommandSender, args: ReadBuffer) -> ToolResult {
     command(&commands, args.world, move |world| {
         host::read_buffer(
             world,
-            args.context.map(entity),
-            resource_id(args.id),
+            args.context.map(Entity::from_bits),
+            ResId::from_bits(args.id),
             args.offset,
             args.size,
         )
@@ -75,8 +75,8 @@ async fn save_buffer(commands: CommandSender, args: SaveBuffer) -> ToolResult {
     command(&commands, args.world, move |world| {
         host::save_buffer(
             world,
-            args.context.map(entity),
-            resource_id(args.id),
+            args.context.map(Entity::from_bits),
+            ResId::from_bits(args.id),
             args.offset,
             args.size,
             &args.directory,
@@ -91,8 +91,8 @@ async fn read_texture_as_image(commands: CommandSender, args: HandleArg) -> Tool
     run(&commands, args.world, move |world| {
         host::read_texture_as_image(
             world,
-            args.context.map(entity),
-            resource_id(args.id),
+            args.context.map(Entity::from_bits),
+            ResId::from_bits(args.id),
             args.format.as_deref(),
         )
     })
@@ -104,8 +104,8 @@ async fn save_texture_as_image(commands: CommandSender, args: SaveTexture) -> To
     command(&commands, args.world, move |world| {
         host::save_texture_as_image(
             world,
-            args.context.map(entity),
-            resource_id(args.id),
+            args.context.map(Entity::from_bits),
+            ResId::from_bits(args.id),
             &args.directory,
             args.file_name.as_deref(),
         )
@@ -116,7 +116,7 @@ async fn save_texture_as_image(commands: CommandSender, args: SaveTexture) -> To
 /// The input state, encoded.
 async fn input_state(commands: CommandSender, args: InputArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::input_state(world, args.entity.map(entity))
+        host::input_state(world, args.entity.map(Entity::from_bits))
     })
     .await
 }
@@ -124,7 +124,11 @@ async fn input_state(commands: CommandSender, args: InputArg) -> ToolResult {
 /// Push input events into the world.
 async fn send_input(commands: CommandSender, args: SendInput) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::send_input(world, args.entity.map(entity), &Value::Array(args.events))
+        host::send_input(
+            world,
+            args.entity.map(Entity::from_bits),
+            &Value::Array(args.events),
+        )
     })
     .await
 }
@@ -233,8 +237,9 @@ async fn read_screenshot(commands: CommandSender, args: Screenshot) -> ToolResul
     run(&commands, args.world, move |world| {
         host::read_screenshot(
             world,
-            args.renderer.map(entity),
-            args.target.map(resource_id),
+            args.context.map(Entity::from_bits),
+            args.renderer.map(Entity::from_bits),
+            args.target.map(ResId::from_bits),
             args.format.as_deref(),
         )
     })
@@ -246,8 +251,9 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
     command(&commands, args.world, move |world| {
         host::save_screenshot(
             world,
-            args.renderer.map(entity),
-            args.target.map(resource_id),
+            args.context.map(Entity::from_bits),
+            args.renderer.map(Entity::from_bits),
+            args.target.map(ResId::from_bits),
             &args.directory,
             args.file_name.as_deref(),
         )
@@ -257,11 +263,11 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
 
 /// Spawn a glTF document's default scene from a path or inline bytes.
 async fn spawn_gltf(commands: CommandSender, args: SpawnGltf) -> ToolResult {
-    let scope = args.scope.map(entity);
+    let scope = args.scope.map(Entity::from_bits);
     command(&commands, args.world, move |world| {
         host::spawn_gltf(
             world,
-            args.source.map(entity),
+            args.source.map(Entity::from_bits),
             scope,
             args.path.as_deref(),
             args.document.as_deref(),

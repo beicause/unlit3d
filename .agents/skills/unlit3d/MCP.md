@@ -100,6 +100,8 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 资源用 `list_resources` 报的 `u64` id 指名——它是 `ResId` 的 bits：低 32 位是槽号，高 32 位是槽的 generation；已被移除的 id 不会再解析到复用了该槽的新资源。`format` 取 `webp`（默认，无损）、`png`、`jpeg`；文件名扩展名决定格式，`save_buffer` 默认 `.bin`，其他不认识的扩展名会被拒绝。
 
+`read_buffer` / `save_buffer` 的 `offset` 与 `size` 必须是 `COPY_BUFFER_ALIGNMENT`（4 字节）的整数倍，工具按原样报错而不是替你向下对齐——读一个结构体中间的字段时，把范围取到对齐的边界上，再把多读的字节丢掉。读纹理要求该纹理带 `COPY_SRC`、不是多重采样、格式有 block copy size（深度/模板纹理没有），否则工具直接报出是哪一条不满足。
+
 ### 输入
 
 | 工具           | 作用                           | 关键参数             |
@@ -114,12 +116,12 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | 工具              | 作用                                   | 关键参数                                               |
 | ----------------- | -------------------------------------- | ------------------------------------------------------ |
 | `spawn_gltf`      | 从路径或内联文档 spawn glTF 的默认场景 | `path` 与 `document` 二选一、`source`                  |
-| `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `renderer`、`target`、`format`                         |
-| `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `directory`（必填）、`file_name`、`renderer`、`target` |
+| `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `context`、`renderer`、`target`、`format`              |
+| `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `directory`（必填）、`file_name`、`context`、`renderer`、`target` |
 
 `spawn_gltf` 的 `document` 可以是 glTF JSON 文本，也可以是把 GLB 的字节 base64 编码后的字符串——JSON 参数装不下裸二进制；与 `path` 只能给其中一个。场景画出的实体逐个 `despawn_entity` 删除即可，它们画的 mesh 由 source 下一次 `maintain` 回收。
 
-`renderer` / `source` / `context` 分别是携带 `Renderer` / `MeshSource` / 渲染上下文的实体 bits，`target` 是纹理资源 id——都省略时服务器取「该 world 唯一的一个」。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体用 `despawn_entity`，mesh 由 source 下一次 `maintain` 回收。
+`context` / `renderer` / `source` 分别是携带渲染上下文 / `Renderer` / `MeshSource` 的实体 bits，`target` 是纹理资源 id——都省略时服务器取「该 world 唯一的一个」。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体用 `despawn_entity`，mesh 由 source 下一次 `maintain` 回收。
 
 ### 帧与时序
 
@@ -144,7 +146,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | `cancel_audio_recording`   | 停止录音并丢弃已捕获的内容                                   | 无                                          |
 | `audio_recording_status`   | 报告当前录到的帧数与秒数                                     | 无                                          |
 
-录音器是一段 `OnAudioPostFill` 后处理，录到的是所有音源与 world 的 `GlobalAudioGain` 之后、输出流会收到的混音；格式（采样率与声道数）在第一次填充时学到，所以 `--stepped` 或设备尚未打开时也能录。同一个 world 同时只允许一段录音，第二段会被拒绝。两种格式装的是同一批 16-bit 样本，选法与图片工具一致：落盘时看 `file_name` 的扩展名（`.flac` 无损且更小，是无扩展名时的默认，另有 `.wav`），内联返回时看 `format` 参数。`read_audio_recording` 是给自动化断言用的：要在内存里判断「这段混音是不是静音」时，别先落盘再读回来。
+录音器是一段 `OnAudioPostFill` 后处理，录到的是所有音源与 world 的 `GlobalAudioGain` 之后、输出流会收到的混音；格式（采样率与声道数）在第一次填充时学到，所以设备尚未打开时也能录。录到的内容取决于该 world 有没有音源：无头与交互式运行装的是 `AudioOutputMode::Pulled` 加 soundfont，录得到真实混音；桌面端 `--stepped` 的窗口运行是 `AudioSetup::Silent`，既不装合成器也不开设备，录到的是静音。同一个 world 同时只允许一段录音，第二段会被拒绝。两种格式装的是同一批 16-bit 样本，选法与图片工具一致：落盘时看 `file_name` 的扩展名（`.flac` 无损且更小，是无扩展名时的默认，另有 `.wav`），内联返回时看 `format` 参数。`read_audio_recording` 是给自动化断言用的：要在内存里判断「这段混音是不是静音」时，别先落盘再读回来。
 
 ### 宿主控制
 

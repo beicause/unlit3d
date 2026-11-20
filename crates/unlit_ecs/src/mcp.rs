@@ -25,7 +25,7 @@ pub use crate::reflect::{
     entries, entry, names, push, push_json, set, set_json,
 };
 pub use host::{
-    Despawned, EncodedAudio, EncodedImage, Job, McpCommand, Output, SavedFile, SpawnedEntity,
+    Despawned, EncodedAudio, EncodedImage, McpCommand, Output, SavedFile, SpawnedEntity,
     WorldEntry, WorldRef, extension_of, from_value, saved_name, to_value, with_extension,
     write_file,
 };
@@ -41,7 +41,7 @@ pub use server::{
     CommandSender, ContextArg, EntityArg, GetComponent, HandleArg, InputArg, ListEntities,
     McpServer, NoArgs, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot, SendInput,
     SetComponent, SpawnEntity, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, command,
-    entity, run, send, serve_stdio_with, serve_with, tool,
+    run, send, serve_stdio_with, serve_with, tool,
 };
 
 /// The JSON crate a tool uses to build structured output.

@@ -577,11 +577,23 @@ pub fn run() {
                 .is_some_and(|entities| !entities.is_empty()),
             "spawning a file spawns its scene: {fox}"
         );
+        // The answer names every entity the spawn made: one per primitive, plus
+        // the ones carrying the node's skin pose and morph weights, since a
+        // caller animating the node addresses those too.
         assert!(
             fox["names"]
                 .as_array()
-                .is_some_and(|names| names.iter().all(|name| name == "gltf primitive")),
-            "every primitive is named for what it draws: {fox}"
+                .is_some_and(|names| names.iter().all(|name| matches!(
+                    name.as_str(),
+                    Some("gltf primitive" | "gltf skin pose" | "gltf morph weights")
+                ))),
+            "every spawned entity is named for what it carries: {fox}"
+        );
+        assert!(
+            fox["names"]
+                .as_array()
+                .is_some_and(|names| names.iter().any(|name| name == "gltf primitive")),
+            "the spawned scene draws at least one primitive: {fox}"
         );
 
         // A spawned scene is despawned entity by entity; the mesh its entities

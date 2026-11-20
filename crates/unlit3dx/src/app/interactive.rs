@@ -5,13 +5,13 @@
 //! reads frames back, or an MCP host that does the same over a process
 //! boundary. The GPU is injected, the way the headless run takes one.
 
-use unlit_ecs::{Entity, World, bundle};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::context::RenderDevice;
 use unlit_wgpu::readback::readback_texture;
 use unlit_wgpu::resources::ResHandle;
 use unlit3d::egui::EguiTarget;
 use unlit3d::frame::Frame;
-use unlit3d::input::{InputEvent, InputPair, InputWriter, MouseButton, MouseEvent, refresh_input};
+use unlit3d::input::{InputEvent, InputFeed, InputWriter, MouseButton, MouseEvent, refresh_input};
 use unlit3d::offscreen::{PersistentTarget, TargetConfig};
 use unlit3d::relay::Snapshot;
 use unlit3d::renderer::Renderer;
@@ -273,8 +273,7 @@ impl From<RecordedAudio> for Recording {
 pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interactive) {
     let mut host = World::new();
     let input = InputWriter::new();
-    host.root_scope_mut()
-        .spawn(bundle![input.clone(), ..InputPair(input.subscribe())]);
+    host.root_scope_mut().spawn(InputFeed(input.clone()));
     let render = spawn_sub_world(&mut host, "render", RENDER_COMMAND_CAPACITY);
     let panel = Snapshot::<EguiTarget>::new();
     let worlds = app.spawn_scene::<Stepped>(

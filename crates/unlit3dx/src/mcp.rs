@@ -277,6 +277,7 @@ fn take(world: &mut World) -> Result<RecordingHandle, ToolError> {
 
 /// Arguments for starting a recording.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct StartRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -290,6 +291,7 @@ pub(crate) struct StartRecording {
 
 /// Arguments for finishing a recording.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct StopRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
@@ -305,6 +307,7 @@ pub(crate) struct StopRecording {
 
 /// Arguments for finishing a recording in memory.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ReadRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.

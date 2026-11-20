@@ -57,6 +57,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub const READBACK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Why a readback produced no bytes.
+///
+/// A buffer copy only fails at run time; a texture copy can also be one the
+/// call cannot express at all, which is reported before anything is encoded.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReadbackError {
@@ -69,6 +72,16 @@ pub enum ReadbackError {
     /// The device reported the wait itself as failed.
     #[error("polling the device for a readback failed: {0}")]
     Poll(#[from] wgpu::PollError),
+    /// The texture's format has no block copy size, so it cannot be read back
+    /// as one image: a depth-stencil format needs an aspect chosen, and this
+    /// copy reads the texture as a whole.
+    #[error(
+        "the texture's format {0:?} has no block copy size, so it cannot be read back as one image"
+    )]
+    Format(wgpu::TextureFormat),
+    /// The texture is multisampled, and a copy reads one sample per pixel.
+    #[error("the texture is {0}× multisampled, so it cannot be read back as one image")]
+    Samples(u32),
 }
 
 /// Copy `size` bytes of `source`, starting at `offset`, back to the host.
@@ -143,9 +156,10 @@ pub async fn try_readback_buffer(
 ///
 /// # Panics
 ///
-/// If the texture's format has no block copy size (a depth-stencil format read
-/// without choosing an aspect, say), or if the copy cannot run.
-/// [`try_readback_texture`] is the same call without the panic.
+/// If the texture cannot be copied into one image — a multisampled one, or a
+/// format with no block copy size, such as a depth-stencil format read without
+/// choosing an aspect — or if the copy cannot run. [`try_readback_texture`] is
+/// the same call without the panic.
 pub async fn readback_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -160,19 +174,23 @@ pub async fn readback_texture(
 ///
 /// # Errors
 ///
-/// If the device poll fails or times out, or if the staging buffer cannot be
-/// mapped. A texture whose format has no block copy size panics: the call
-/// cannot be spelled for it at all.
+/// If the device poll fails or times out, if the staging buffer cannot be
+/// mapped, or if the texture cannot be copied into one image at all — see
+/// [`ReadbackError::Format`] and [`ReadbackError::Samples`].
 pub async fn try_readback_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
 ) -> Result<Vec<u8>, ReadbackError> {
     let format = texture.format();
+    let samples = texture.sample_count();
+    if samples != 1 {
+        return Err(ReadbackError::Samples(samples));
+    }
     let (block_width, block_height) = format.block_dimensions();
-    let block_bytes = format
-        .block_copy_size(None)
-        .expect("the texture's format has a block copy size to read it back in");
+    let Some(block_bytes) = format.block_copy_size(None) else {
+        return Err(ReadbackError::Format(format));
+    };
     // wgpu copies whole blocks: a row is the texture's width rounded up to a
     // block, and the copy runs for as many whole rows as the height needs.
     let rows = texture.height().div_ceil(block_height);
