@@ -11,6 +11,20 @@ use super::documents::{PNG, TRIANGLE_INDICES, TRIANGLE_POSITIONS, add_view, byte
 /// The JSON is written out by hand rather than through a serializer,
 /// because the crate carries no JSON dependency beyond the loader's own.
 pub(super) fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
+    skinned_document_with(translation, 1, 1)
+}
+
+/// [`skinned_document`] with an explicit joint count and inverse bind matrix
+/// count.
+///
+/// The specification asks for one inverse bind matrix per joint; a `binds`
+/// smaller than `joints` writes a skin whose list falls short of the joints
+/// it names, which the document JSON cannot express as invalid.
+pub(super) fn skinned_document_with(
+    translation: [f32; 3],
+    joints: usize,
+    inverse_binds: usize,
+) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
 
@@ -20,37 +34,48 @@ pub(super) fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
         &bytes(&TRIANGLE_POSITIONS),
         Some(34962),
     );
-    let joints = bytes(&[[0u16, 0, 0, 0]; 3]);
-    let joint_view = add_view(&mut bin, &mut views, &joints, Some(34962));
+    let joint_stream = bytes(&[[0u16, 0, 0, 0]; 3]);
+    let joint_view = add_view(&mut bin, &mut views, &joint_stream, Some(34962));
     let weights = bytes(&[[1.0f32, 0.0, 0.0, 0.0]; 3]);
     let weight_view = add_view(&mut bin, &mut views, &weights, Some(34962));
-    let identity = bytes(&[glam::Mat4::IDENTITY.to_cols_array()]);
+    let identity = bytes(&vec![
+        glam::Mat4::IDENTITY.to_cols_array();
+        inverse_binds.max(1)
+    ]);
     let bind_view = add_view(&mut bin, &mut views, &identity, None);
     let index_view = add_view(&mut bin, &mut views, &bytes(&TRIANGLE_INDICES), Some(34963));
     pad(&mut bin);
 
+    // Joint `i` sits `i` units further along x, so the pose of each is
+    // distinguishable from its neighbour.
+    let (y, z) = (translation[1], translation[2]);
+    let joint_nodes: Vec<String> = (0..joints)
+        .map(|joint| {
+            let x = translation[0] + joint as f32;
+            format!(r#"{{"name":"joint","translation":[{x},{y},{z}]}}"#)
+        })
+        .collect();
+    let joint_indices: Vec<String> = (1..=joints).map(|joint| joint.to_string()).collect();
     let json = format!(
         r#"{{"asset":{{"version":"2.0"}},
             "scene":0,
             "scenes":[{{"nodes":[0]}}],
-            "nodes":[{{"mesh":0,"skin":0}},
-                     {{"name":"joint","translation":[{x},{y},{z}]}}],
-            "skins":[{{"joints":[1],"inverseBindMatrices":3}}],
+            "nodes":[{{"mesh":0,"skin":0}},{}],
+            "skins":[{{"joints":[{}],"inverseBindMatrices":3}}],
             "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},
                                         "indices":4}}]}}],
             "accessors":[{{"bufferView":{position_view},"componentType":5126,"count":3,
                            "type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}},
                          {{"bufferView":{joint_view},"componentType":5123,"count":3,"type":"VEC4"}},
                          {{"bufferView":{weight_view},"componentType":5126,"count":3,"type":"VEC4"}},
-                         {{"bufferView":{bind_view},"componentType":5126,"count":1,"type":"MAT4"}},
+                         {{"bufferView":{bind_view},"componentType":5126,"count":{inverse_binds},"type":"MAT4"}},
                          {{"bufferView":{index_view},"componentType":5123,"count":3,"type":"SCALAR"}}],
             "bufferViews":[{}],
             "buffers":[{{"byteLength":{}}}]}}"#,
+        joint_nodes.join(", "),
+        joint_indices.join(","),
         views.join(", "),
         bin.len(),
-        x = translation[0],
-        y = translation[1],
-        z = translation[2],
     );
     glb(json, &bin)
 }

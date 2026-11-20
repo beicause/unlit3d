@@ -27,8 +27,10 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
         "the mesh's own weights are the starting pose"
     );
 
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     assert!(
         resources.meshes[0].mesh.morph_targets > 0,
         "the primitive declares targets, so the uploaded mesh reads displacements"
@@ -120,8 +122,10 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
         "the clip ends at its last keyframe"
     );
 
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let nodes = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
@@ -170,8 +174,10 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
         "the skin has one joint"
     );
 
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     assert!(
         resources.meshes[0].mesh.skinned,
         "the primitive declares JOINTS_0, so the uploaded mesh reads joints"

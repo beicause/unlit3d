@@ -781,7 +781,10 @@ world you already render:
   can instead call `insert_image` / `insert_material` / `insert_mesh` for a
   single image, material or mesh, or the batch versions (`insert_images`,
   `insert_materials`, `insert_meshes`) for everything of one kind, in document
-  order, and assemble a `GltfResources` of its own.
+  order, and assemble a `GltfResources` of its own. Inserting piecewise means
+  inserting the images before the materials that sample them: a material whose
+  base-color image is not in the slice it was handed returns
+  `Error::ImageNotInserted` naming both, rather than binding no texture.
 - Giving up a handle makes exactly what it names collectable: the material's
   bind group lives while the material does, and the texture view it samples is
   held by the material too, so dropping the material's handle is enough to

@@ -181,17 +181,18 @@ impl LitGltf {
     /// Returns `None` when the material declares no base-color texture: such a
     /// material has nothing to bind and spawns with no `GpuMaterial`.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// If the material's base-color texture names an image that is not in
-    /// `images`.
+    /// `images`. Inserting a document piecewise means inserting its images
+    /// before the materials that sample them.
     pub fn insert_material(
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
         material: MaterialId,
         images: &[GltfImage],
-    ) -> Option<GltfMaterial> {
+    ) -> Result<Option<GltfMaterial>, super::Error> {
         self.build_material(source, world, material, images, &mut Vec::new())
     }
 
@@ -209,13 +210,25 @@ impl LitGltf {
         material: MaterialId,
         images: &[GltfImage],
         samplers: &mut Vec<(wgpu::SamplerDescriptor<'static>, ResHandle<wgpu::Sampler>)>,
-    ) -> Option<GltfMaterial> {
+    ) -> Result<Option<GltfMaterial>, super::Error> {
         let data = self.material(material.index());
-        let info = data.pbr_metallic_roughness().base_color_texture()?;
-        let image = images
+        let Some(info) = data.pbr_metallic_roughness().base_color_texture() else {
+            return Ok(None);
+        };
+        // The image a texture names is the caller's to insert: a document
+        // inserted piecewise inserts its images first, so one that is missing
+        // here is a call made in the wrong order rather than a document that
+        // says something it cannot mean.
+        let source_index = info.texture().source().index();
+        let Some(image) = images
             .iter()
-            .find(|image| image.image == ImageId::new(info.texture().source().index()))
-            .expect("the base-color texture's image must be inserted before the material");
+            .find(|image| image.image == ImageId::new(source_index))
+        else {
+            return Err(super::Error::ImageNotInserted {
+                material: material.index(),
+                image: source_index,
+            });
+        };
 
         // A material group exists only for a variant that samples a base-color
         // texture; build the bind group against exactly that variant. Its
@@ -245,12 +258,12 @@ impl LitGltf {
 
         let bind_group =
             source.allocate_lit_material(world, &key.options, view.clone(), sampler.clone());
-        Some(GltfMaterial {
+        Ok(Some(GltfMaterial {
             material,
             bind_group,
             view,
             sampler,
-        })
+        }))
     }
 
     /// Build the bind group for every material of the document.
@@ -259,7 +272,7 @@ impl LitGltf {
     /// the entry for material `i` sits at index `i`, and is `None` for a
     /// material with no base-color texture.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// If a material's base-color texture names an image that is not in
     /// `images`.
@@ -268,7 +281,7 @@ impl LitGltf {
         source: &mut MeshSource,
         world: &Scope<'_>,
         images: &[GltfImage],
-    ) -> Vec<Option<GltfMaterial>> {
+    ) -> Result<Vec<Option<GltfMaterial>>, super::Error> {
         let mut samplers = Vec::new();
         self.materials()
             .map(|material| self.build_material(source, world, material, images, &mut samplers))
@@ -346,15 +359,24 @@ impl LitGltf {
     /// documents, say — can call [`Self::insert_images`],
     /// [`Self::insert_materials`] and [`Self::insert_meshes`] instead and
     /// build a [`GltfResources`] of its own.
-    pub fn insert_resources(&self, source: &mut MeshSource, world: &Scope<'_>) -> GltfResources {
+    ///
+    /// # Errors
+    ///
+    /// If a material's base-color texture names an image the document does
+    /// not declare, which the images just inserted cannot contain.
+    pub fn insert_resources(
+        &self,
+        source: &mut MeshSource,
+        world: &Scope<'_>,
+    ) -> Result<GltfResources, super::Error> {
         let images = self.insert_images(source, world);
-        let materials = self.insert_materials(source, world, &images);
+        let materials = self.insert_materials(source, world, &images)?;
         let meshes = self.insert_meshes(source, world);
-        GltfResources {
+        Ok(GltfResources {
             images,
             materials,
             meshes,
-        }
+        })
     }
 
     /// Whether image `image` uploads as a texture a filtering sampler can

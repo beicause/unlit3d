@@ -31,7 +31,9 @@ impl LitGltf {
     /// skin bound at rest means.
     ///
     /// The returned pose has one matrix per joint of the skin, in the order the
-    /// mesh's joint indices address them.
+    /// mesh's joint indices address them. A skin that states fewer
+    /// `inverseBindMatrices` than it has joints binds the joints beyond them
+    /// at the identity, so each of those poses by its own world matrix.
     pub fn skin_pose(&self, node: NodeId) -> SkinPose {
         self.skin_pose_with_matrices(node.index(), &self.node_matrices)
     }
@@ -61,9 +63,15 @@ impl LitGltf {
             .enumerate()
             .map(|(joint, joint_node)| {
                 let joint_world = matrices[joint_node.index()];
-                let bind = inverse_bind.as_ref().map_or(glam::Mat4::IDENTITY, |ibm| {
-                    *ibm.get(joint).expect("one inverse bind matrix per joint")
-                });
+                // The specification asks for one inverse bind matrix per
+                // joint, but nothing in the document JSON says so: a list
+                // shorter than the joint array is a document whose skin says
+                // less than it means, and the joints it leaves out bind at
+                // rest rather than failing every draw of the mesh.
+                let bind = inverse_bind
+                    .as_ref()
+                    .and_then(|matrices| matrices.get(joint).copied())
+                    .unwrap_or(glam::Mat4::IDENTITY);
                 world_to_mesh * joint_world * bind
             })
             .collect();

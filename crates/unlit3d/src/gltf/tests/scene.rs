@@ -241,3 +241,26 @@ fn a_mirror_survives_the_decomposition() {
         glam::Mat4::from(transform.compute_matrix())
     );
 }
+
+#[test]
+fn a_skin_short_of_inverse_bind_matrices_binds_the_rest_at_rest() {
+    // The specification asks for one inverse bind matrix per joint, and
+    // nothing in the document's JSON states the count, so a skin can list
+    // fewer than it has joints. The joints it leaves out bind at the
+    // identity, so their own world matrix poses them, rather than the query
+    // failing the draw.
+    let gltf = LitGltf::from_bytes(&skinned_document_with([1.0, 0.0, 0.0], 2, 1))
+        .expect("a skin whose list is short is still a valid document");
+    let pose = gltf.skin_pose(NodeId::new(0));
+    assert_eq!(pose.matrices.len(), 2, "the skin names two joints");
+    assert!(
+        pose.matrices[0].abs_diff_eq(glam::Mat4::from_translation(glam::Vec3::X), 1e-6),
+        "the joint its one matrix covers is posed by it: {}",
+        pose.matrices[0]
+    );
+    assert!(
+        pose.matrices[1].abs_diff_eq(glam::Mat4::from_translation(glam::Vec3::X * 2.0), 1e-6),
+        "the joint the list leaves out poses by its own world matrix: {}",
+        pose.matrices[1]
+    );
+}

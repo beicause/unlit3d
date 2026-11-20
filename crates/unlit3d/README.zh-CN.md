@@ -524,7 +524,9 @@ impl InstanceContext<'_> {
   ——比如让两份文档共用一个纹理——也可以改用 `insert_image` / `insert_material` /
   `insert_mesh` 上传单个图像、材质或网格，或用批量版本（`insert_images`、
   `insert_materials`、`insert_meshes`）一次上传某一类全部资源（按文档顺序），
-  再自行拼出 `GltfResources`。
+  再自行拼出 `GltfResources`。分件插入意味着先把图像插好、再插采样它们的材质：
+  基础色图像不在传入的那一片里时，材质插入返回指明两者的
+  `Error::ImageNotInserted`，而不是绑一个空纹理。
 - 交出句柄只让其所指变得可回收：材质的绑定组与材质同寿，它采样的纹理视图也由材质
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - 带 `KHR_materials_unlit` 的材质按无光绘制，基础色就是文件所写；其余材质按受光绘制，

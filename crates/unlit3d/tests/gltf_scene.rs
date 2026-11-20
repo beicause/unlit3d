@@ -31,7 +31,7 @@ use self::{
         a_blended_material_composites_over_the_frame, a_blended_material_writes_no_depth,
         a_double_sided_material_draws_back_faces,
         a_masked_material_discards_fragments_below_its_cutoff,
-        a_mirrored_instance_draws_its_front_faces,
+        a_material_without_its_image_reports_it, a_mirrored_instance_draws_its_front_faces,
     },
     scene::{
         a_placement_moves_the_whole_document, node_hierarchy_translates_the_quad,
@@ -48,6 +48,7 @@ gpu_tests! {
     a_blended_material_composites_over_the_frame,
     a_blended_material_writes_no_depth,
     a_masked_material_discards_fragments_below_its_cutoff,
+    a_material_without_its_image_reports_it,
     a_skinned_quad_follows_its_joint,
     an_animation_moves_the_drawn_mesh,
     a_morphed_quad_follows_its_weights,

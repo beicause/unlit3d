@@ -48,8 +48,10 @@ pub(super) async fn an_unlit_material_ignores_the_lights() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let gltf = LitGltf::from_bytes(&reversed_document(true)).expect("the embedded document parses");
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let _entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
 
@@ -90,8 +92,10 @@ pub(super) async fn a_plain_material_shades_by_the_lights() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let gltf = LitGltf::from_bytes(&lit_document()).expect("the embedded document parses");
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let _entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
 

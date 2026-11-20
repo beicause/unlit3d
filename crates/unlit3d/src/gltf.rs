@@ -38,7 +38,7 @@
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
-//! let resources = gltf.insert_resources(source, &world.as_scope());
+//! let resources = gltf.insert_resources(source, &world.as_scope())?;
 //! // The entities land where the document authored its nodes.
 //! let entities = gltf.spawn_default_scene(world, &resources);
 //! // ... render ...
@@ -230,6 +230,22 @@ pub enum Error {
     /// [`LitGltf::spawn_default_scene`] has nothing to spawn.
     #[error("the glTF document declares no default scene")]
     NoDefaultScene,
+    /// A material samples its base-color texture, but the image the texture
+    /// names was not among the images the caller inserted.
+    ///
+    /// A caller that inserts a document piecewise has to insert the images
+    /// before the materials that name them; one that hands
+    /// [`LitGltf::insert_material`] a slice without them lands here.
+    #[error(
+        "material {material} samples the image {image}, \
+         which was not among the images it was inserted with"
+    )]
+    ImageNotInserted {
+        /// The document material that samples the missing image.
+        material: usize,
+        /// The document image the material names.
+        image: usize,
+    },
 }
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`

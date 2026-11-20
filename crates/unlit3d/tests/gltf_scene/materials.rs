@@ -39,8 +39,10 @@ pub(super) async fn a_double_sided_material_draws_back_faces() {
                 );
             }
 
-            let resources =
-                gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+            let resources = gpu.with_mesh_source(&world, |source, world| {
+                gltf.insert_resources(source, world)
+                    .expect("the embedded document uploads")
+            });
             spawn_scene(&gpu, &mut world, &gltf, &resources);
             gpu.spawn(&mut world, bundle![camera()]);
 
@@ -92,8 +94,10 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
         "an alphaMode BLEND material blends"
     );
 
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
 
     // ...and the spawned entity is marked for back-to-front compositing.
@@ -164,8 +168,10 @@ pub(super) async fn a_blended_material_writes_no_depth() {
         "a blended material writes no depth"
     );
 
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
     let single = gpu.bind_offscreen_target(&world, "test::gltf_blend_single");
@@ -223,8 +229,10 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
             "a cut-off material does not blend"
         );
 
-        let resources =
-            gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+        let resources = gpu.with_mesh_source(&world, |source, world| {
+            gltf.insert_resources(source, world)
+                .expect("the embedded document uploads")
+        });
         let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
         assert!(
             world
@@ -294,8 +302,10 @@ pub(super) async fn a_mirrored_instance_draws_its_front_faces() {
                 double_sided: false,
             }))
             .expect("the embedded document parses");
-            let resources =
-                gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+            let resources = gpu.with_mesh_source(&world, |source, world| {
+                gltf.insert_resources(source, world)
+                    .expect("the embedded document uploads")
+            });
             let placement = Transform {
                 scale: glam::Vec3::new(if mirrored { -1.0 } else { 1.0 }, 1.0, 1.0),
                 ..Transform::default()
@@ -324,5 +334,44 @@ pub(super) async fn a_mirrored_instance_draws_its_front_faces() {
     assert!(
         mirrored_white > (WIDTH * HEIGHT * 85 / 100) as usize,
         "the mirrored quad still draws its front faces: {mirrored_white} white texels"
+    );
+}
+
+/// A material whose base-color image was not inserted reports the image it
+/// is missing instead of panicking: inserting a document piecewise means
+/// inserting its images before its materials, and a caller that gets the
+/// order wrong is told which image it owes.
+pub(super) async fn a_material_without_its_image_reports_it() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let gltf = LitGltf::from_bytes(&quad_document(&QuadDoc {
+        translation: [0.0, 0.0, 0.0],
+        textured: true,
+        blend: false,
+        mask: None,
+        double_sided: false,
+    }))
+    .expect("the embedded document parses");
+
+    let material = unlit3d::gltf::MaterialId::new(0);
+    let (error, inserted) = gpu.with_mesh_source(&world, |source, world| {
+        let error = gltf
+            .insert_material(source, world, material, &[])
+            .expect_err("the image the material samples was never inserted");
+        let images = gltf.insert_images(source, world);
+        let inserted = gltf
+            .insert_material(source, world, material, &images)
+            .expect("the images are in place");
+        (error.to_string(), inserted.is_some())
+    });
+
+    assert_eq!(
+        error,
+        "material 0 samples the image 0, which was not among the images it was inserted with"
+    );
+    assert!(
+        inserted,
+        "the material binds its texture once the image is there"
     );
 }

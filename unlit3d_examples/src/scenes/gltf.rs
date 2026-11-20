@@ -115,8 +115,12 @@ fn build(
     // different streams.
     let (fox_resources, morph_resources) =
         super::with_mesh_source(world, source_entity, |source, world| {
-            let fox_resources = fox.insert_resources(source, world);
-            let morph_resources = morph.insert_resources(source, world);
+            let fox_resources = fox
+                .insert_resources(source, world)
+                .expect("the embedded document uploads");
+            let morph_resources = morph
+                .insert_resources(source, world)
+                .expect("the embedded document uploads");
             (fox_resources, morph_resources)
         });
 

@@ -56,7 +56,7 @@ pub(super) fn from_reader(
 
     let positions: Vec<[f32; 3]> = reader
         .read_positions()
-        .expect("a glTF primitive carries its POSITION attribute")
+        .expect("validation rejects a primitive with no POSITION attribute")
         .collect();
     // Read only the streams the primitive declares: an attribute it does
     // not carry is not uploaded, so decoding it would be wasted work.
@@ -66,7 +66,7 @@ pub(super) fn from_reader(
     let uvs: Option<Vec<[f32; 2]>> = base_color_uv_set(primitive).map(|set| {
         reader
             .read_tex_coords(set)
-            .expect("the primitive carries the UV set its material names")
+            .expect("base_color_uv_set found the set, so the reader yields it")
             .into_f32()
             .collect()
     });
@@ -77,7 +77,7 @@ pub(super) fn from_reader(
             .then(|| {
                 reader
                     .read_colors(0)
-                    .expect("the primitive has COLOR_0")
+                    .expect("the primitive declares COLOR_0")
                     .into_rgba_u8()
                     .collect()
             });
@@ -103,14 +103,14 @@ pub(super) fn from_reader(
     let joints: Option<Vec<[u16; 4]>> = skinned.then(|| {
         reader
             .read_joints(0)
-            .expect("the primitive has JOINTS_0")
+            .expect("the primitive declares JOINTS_0")
             .into_u16()
             .collect()
     });
     let weights: Option<Vec<[f32; 4]>> = skinned.then(|| {
         reader
             .read_weights(0)
-            .expect("the primitive has WEIGHTS_0")
+            .expect("the primitive declares WEIGHTS_0")
             .into_f32()
             .collect()
     });

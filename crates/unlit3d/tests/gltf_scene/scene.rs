@@ -24,8 +24,10 @@ pub(super) async fn textured_quad_renders_four_colours() {
     }))
     .expect("the embedded document parses");
 
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let _entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
 
@@ -73,8 +75,10 @@ pub(super) async fn node_hierarchy_translates_the_quad() {
             double_sided: false,
         }))
         .expect("the embedded document parses");
-        let resources =
-            gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+        let resources = gpu.with_mesh_source(&world, |source, world| {
+            gltf.insert_resources(source, world)
+                .expect("the embedded document uploads")
+        });
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_translated_quad");
         let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
         gpu.spawn(&mut world, bundle![camera()]);
@@ -122,8 +126,10 @@ pub(super) async fn untextured_material_draws_flat() {
         double_sided: false,
     }))
     .expect("the embedded document parses");
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     assert!(
         resources.materials.iter().all(Option::is_none),
         "a textureless material binds nothing"
@@ -162,8 +168,10 @@ pub(super) async fn unload_empties_the_frame() {
         double_sided: false,
     }))
     .expect("the embedded document parses");
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
 
@@ -215,8 +223,10 @@ pub(super) async fn a_placement_moves_the_whole_document() {
     const OFFSET: f32 = 1.2;
     let gltf = LitGltf::from_bytes(&two_quad_document([[0.0, 0.0, 0.0], [OFFSET, 0.0, 0.0]]))
         .expect("the embedded document parses");
-    let resources =
-        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
     let placement = Transform {
         translation: glam::Vec3::new(0.5, 0.0, 0.0),
         ..Transform::default()

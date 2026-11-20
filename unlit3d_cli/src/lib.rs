@@ -189,7 +189,7 @@ pub fn build_world(
         let gltf = LitGltf::load(&document.path)?;
         let resources = with_mesh_source(&world, source_entity, |source, world| {
             gltf.insert_resources(source, world)
-        });
+        })?;
         let nodes = {
             let mut scope = world.scope_mut(source_entity);
             gltf.spawn_default_scene(&mut scope, &resources)?

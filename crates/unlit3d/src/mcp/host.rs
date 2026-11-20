@@ -682,7 +682,8 @@ pub(crate) fn spawn_gltf(
         .map_err(|_| format!("no scope {scope:?}"))?;
     let resources = with_mesh_source(world, source, |source, scope| {
         gltf.insert_resources(source, scope)
-    })?;
+    })?
+    .map_err(|error| error.to_string())?;
     let mut scope = world
         .try_scope_mut(scope)
         .map_err(|_| format!("no scope {scope:?}"))?;
