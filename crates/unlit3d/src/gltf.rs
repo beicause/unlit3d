@@ -128,7 +128,9 @@
 //! [`LitGltf::apply_animation`] samples one at a time into the entities a
 //! spawn produced — moving each animated node's children with it, rebuilding
 //! the skin poses and writing the morph weights the clip targets. Nothing
-//! plays by itself; the caller picks the time.
+//! plays by itself; the caller picks the time, and passes the
+//! [`AnimationPlayer`] that holds the buffers the samples land in, so a frame
+//! that animates reuses them instead of allocating them again.
 //! A primitive that carries normals uploads them, so a lit surface is shaded by
 //! the normals the document gives it rather than by the ones screen-space
 //! derivatives infer from its positions. A primitive compressed with
@@ -186,6 +188,7 @@ mod image;
 pub use self::image::MipChain;
 mod material;
 mod playback;
+pub use self::playback::AnimationPlayer;
 mod scene;
 mod skin;
 mod spawn;

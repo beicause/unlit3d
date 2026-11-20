@@ -5,8 +5,8 @@ use super::documents::{
     spawn_scene,
 };
 use super::{
-    AnimationId, Ctx, HEIGHT, LitGltf, MorphBinding, MorphWeights, NodeId, SkinBinding, SkinPose,
-    TestGpu, WIDTH, World, bundle,
+    AnimationId, AnimationPlayer, Ctx, HEIGHT, LitGltf, MorphBinding, MorphWeights, NodeId,
+    SkinBinding, SkinPose, TestGpu, WIDTH, World, bundle,
 };
 
 /// A morphed quad follows its weights: spawning binds the mesh to a weight
@@ -130,8 +130,17 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
-    let read = async |gpu: &TestGpu, time: f32| {
-        gltf.apply_animation(&world.root_scope(), AnimationId::new(0), time, &nodes);
+    // One player serves both frames: it holds the buffers the samples land in
+    // and nothing that would carry from one call to the next.
+    let mut player = AnimationPlayer::default();
+    let mut read = async |gpu: &TestGpu, time: f32| {
+        gltf.apply_animation(
+            &world.root_scope(),
+            AnimationId::new(0),
+            time,
+            &nodes,
+            &mut player,
+        );
         gpu.render(&world);
         unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };

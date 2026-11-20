@@ -863,8 +863,8 @@ world you already render:
 - A document's animations are sampled rather than played:
   `LitGltf::animation_count`, `LitGltf::animation_name` and
   `LitGltf::animation_duration` describe the clips it carries, and
-  `document.apply_animation(&scope, clip, time, &spawned)` evaluates one at a
-  chosen time. It samples each channel — `STEP`, `LINEAR` or `CUBICSPLINE`, with
+  `document.apply_animation(&scope, clip, time, &spawned, &mut player)`
+  evaluates one at a chosen time. It samples each channel — `STEP`, `LINEAR` or `CUBICSPLINE`, with
   rotations slerped — into the animated nodes' local transforms, recomposes the
   world matrices down the node hierarchy, and writes the result where the
   spawned entities read it: each animated node's [`Transform`](components::Transform) (and
@@ -880,9 +880,12 @@ world you already render:
 - A clip is decoded once and kept: the keyframes a channel addresses are
   collected on the first frame that plays the clip rather than re-read from the
   document's buffers on every frame. The working set — the locals it overwrites,
-  the recomposed world matrices, and the per-node flags and weight buffers — is
-  likewise reused across frames, growing to its high-water mark once. A frame
-  therefore allocates only where it writes something new into the world.
+  the recomposed world matrices, and the per-node flags and weight buffers —
+  lives in a `gltf::AnimationPlayer` the caller keeps, so it too is reused
+  across frames and grows to its high-water mark once. Holding it caller-side is
+  what lets `apply_animation` take `&self`: two documents, or two threads,
+  animate through players of their own. A frame therefore allocates only where
+  it writes something new into the world.
 
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `LitGltf::pipeline_key`), so the variant it draws with never

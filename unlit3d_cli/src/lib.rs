@@ -216,6 +216,7 @@ pub fn build_world(
                 unlit3d::gltf::AnimationId::new(index),
                 document.time,
                 &nodes,
+                &mut unlit3d::gltf::AnimationPlayer::default(),
             );
         }
     }

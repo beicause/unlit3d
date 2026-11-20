@@ -570,7 +570,8 @@ impl InstanceContext<'_> {
   就用它贴图。材质所指的集而 primitive 并未携带时，该 primitive 按无贴图绘制，而不是加载失败。
 - 文档中的动画按需采样而非自动播放：`LitGltf::animation_count`、
   `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
-  `document.apply_animation(&scope, clip, time, &spawned)` 在选定的时间求值其中一个。
+  `document.apply_animation(&scope, clip, time, &spawned, &mut player)`
+  在选定的时间求值其中一个。
   它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，旋转走球面插值）采样进被动画节点的局部
   变换，沿节点层级重新组合出世界矩阵，再把结果写到生成实体读取它的地方：每个被动画节点的
   `Transform`（以及继承其变化的子孙节点）、每个因关节移动而跟随的网格的 `SkinPose`、以及
@@ -581,7 +582,9 @@ impl InstanceContext<'_> {
   在片段写入后再把放置复合一遍。
 - 片段只解码一次并保留：通道指向的关键帧在第一次播放该片段的帧里收集，之后不再从文档的
   缓冲区逐帧重读。工作集——它覆写的局部变换、重新组合的世界矩阵，以及每节点的标志与权重
-  缓冲——同样跨帧复用，只增长到其高水位一次。因此一帧只在向 world 写入新内容的地方分配。
+  缓冲——存放在调用方持有的 `gltf::AnimationPlayer` 里，跨帧复用，只增长到其高水位一次。
+  把工作集放在调用方这一侧，`apply_animation` 才能只借 `&self`：两份文档、两个线程各用
+  自己的播放器，谁也不挡谁。因此一帧只在向 world 写入新内容的地方分配。
 
 网格上传所用的管线 key 总是由 primitive 自身的属性推导（见 `LitGltf::pipeline_key`），
 所以它绘制所用的变体绝不会要求网格不存在的流。加载器读取什么、忽略什么，完整清单见

@@ -186,6 +186,10 @@ fn build(
     // not depend on when it was drawn.
     let reproducible = options.reproducible;
     let mut clock = 0.0f32;
+    // One player per document: each holds the buffers its clip samples into,
+    // so the two never share a working set.
+    let mut fox_player = unlit3d::gltf::AnimationPlayer::default();
+    let mut morph_player = unlit3d::gltf::AnimationPlayer::default();
 
     SceneControl {
         advance: Box::new(move |world, frame, delta, frame_size| {
@@ -215,12 +219,14 @@ fn build(
                 unlit3d::gltf::AnimationId::new(fox_animation),
                 fox_time,
                 &fox_nodes,
+                &mut fox_player,
             );
             morph.apply_animation(
                 &scope,
                 unlit3d::gltf::AnimationId::new(morph_animation),
                 morph_time,
                 &morph_nodes,
+                &mut morph_player,
             );
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.

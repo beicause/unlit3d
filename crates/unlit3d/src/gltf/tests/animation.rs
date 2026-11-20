@@ -50,7 +50,13 @@ fn apply_animation_moves_a_node_and_carries_its_child() {
             weights: None,
         },
     ];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &nodes,
+        &mut AnimationPlayer::default(),
+    );
     // The parent's own channel moves it...
     assert_eq!(
         world
@@ -87,7 +93,13 @@ fn apply_animation_holds_a_step_keyframe() {
         pose: None,
         weights: None,
     }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.999, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.999,
+        &nodes,
+        &mut AnimationPlayer::default(),
+    );
     assert_eq!(
         world
             .root_scope()
@@ -124,16 +136,30 @@ fn apply_animation_resamples_a_clip_it_has_already_played() {
             .get()
             .translation
     };
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 0.5, &nodes);
+    let mut player = AnimationPlayer::default();
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        0.5,
+        &nodes,
+        &mut player,
+    );
     assert_eq!(translation(&mut world), glam::Vec3::new(1.0, 0.0, 0.0));
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.5, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.5,
+        &nodes,
+        &mut player,
+    );
     assert_eq!(translation(&mut world), glam::Vec3::new(3.0, 0.0, 0.0));
 }
 
 #[test]
 fn two_documents_animate_in_the_same_frame() {
-    // One document's working set is handed back before the next takes it, so a
-    // frame that animates two of them gets each one's own result.
+    // One player serves both documents in the same frame: nothing it holds
+    // survives a call, so the second document gets its own result rather than
+    // reading the first one's leftovers.
     let left = LitGltf::from_bytes(&parented_animated_document(
         "LINEAR",
         &[0.0, 2.0],
@@ -163,8 +189,21 @@ fn two_documents_animate_in_the_same_frame() {
         pose: None,
         weights: None,
     }];
-    left.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &left_nodes);
-    right.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &right_nodes);
+    let mut player = AnimationPlayer::default();
+    left.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &left_nodes,
+        &mut player,
+    );
+    right.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &right_nodes,
+        &mut player,
+    );
     assert_eq!(
         world
             .root_scope()
@@ -199,7 +238,13 @@ fn apply_animation_rebuilds_a_skin_pose() {
         pose: Some(pose),
         weights: None,
     }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &nodes,
+        &mut AnimationPlayer::default(),
+    );
     let mut skin_pose_row = world.root_scope().query_one::<&SkinPose>(pose);
 
     let pose = skin_pose_row.get();
@@ -228,7 +273,13 @@ fn apply_animation_writes_morph_weights() {
         pose: None,
         weights: Some(weights),
     }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &nodes,
+        &mut AnimationPlayer::default(),
+    );
     let mut morph_weights_row = world.root_scope().query_one::<&MorphWeights>(weights);
 
     let weights = morph_weights_row.get();
@@ -253,7 +304,13 @@ fn a_weights_channel_short_of_its_keyframes_is_dropped() {
         pose: None,
         weights: Some(weights),
     }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &nodes,
+        &mut AnimationPlayer::default(),
+    );
     let mut row = world.root_scope().query_one::<&MorphWeights>(weights);
     assert_eq!(row.get().weights, vec![0.25]);
 }
@@ -282,7 +339,13 @@ fn a_matrix_node_ignores_the_channels_it_cannot_animate() {
         pose: None,
         weights: Some(weights),
     }];
-    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    gltf.apply_animation(
+        &world.root_scope(),
+        AnimationId::new(0),
+        1.0,
+        &nodes,
+        &mut AnimationPlayer::default(),
+    );
     assert_eq!(
         world
             .root_scope()
