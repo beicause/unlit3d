@@ -8,7 +8,7 @@
 //! between documents.
 
 use super::image::{encode_mip_chain, image_format};
-use super::material::{alpha_cutoff, sampler_descriptor, samples_base_color_texture, textured_key};
+use super::material::{alpha_cutoff, base_color_uv_set, sampler_descriptor, textured_key};
 use super::streams::from_reader;
 use super::{
     GltfImage, GltfMaterial, GltfMesh, GltfResources, ImageId, LitGltf, MaterialId, MeshId,
@@ -56,7 +56,7 @@ impl LitGltf {
         // binding is a filtering one: the pipeline and the material bind group
         // have to agree, or the group does not fit the pipeline.
         let texture = material.pbr_metallic_roughness().base_color_texture();
-        if samples_base_color_texture(&primitive)
+        if base_color_uv_set(&primitive).is_some()
             && let Some(info) = &texture
         {
             let image = info.texture().source().index();
@@ -89,6 +89,13 @@ impl LitGltf {
         if material.double_sided() {
             options.primitive.cull_mode = None;
         }
+        // The mode the primitive states decides how the rasterizer assembles
+        // its vertices; a mode the device has no topology for is drawn as the
+        // list its indices were expanded into, which `from_reader` did at
+        // upload. Two modes that expand to the same list therefore share a
+        // pipeline, which is the point of expanding rather than of drawing
+        // them as something else.
+        options.primitive.topology = super::topology::topology(primitive.mode());
         LitPipelineKey::new(options)
     }
 
@@ -272,13 +279,17 @@ impl LitGltf {
     /// handle.
     ///
     /// Which streams are uploaded follows the primitive's own attributes:
-    /// `TEXCOORD_0` with a base-color-textured material enables the UV stream,
-    /// `COLOR_0` the vertex-color stream, `JOINTS_0` and `WEIGHTS_0` the joint
-    /// stream, and a `targets` array the displacement stream — one slot per
-    /// declared target, with a target that states no positions contributing
-    /// zeros rather than no slot. A primitive read with streams its attributes
-    /// do not declare would panic, so the derivation is the only safe choice
-    /// here. Normals are uploaded; tangents are ignored (see the module docs).
+    /// the UV set its material samples a base-color texture through enables the
+    /// UV stream, `COLOR_0` the vertex-color stream, `JOINTS_0` and
+    /// `WEIGHTS_0` the joint stream, and a `targets` array the displacement
+    /// stream — one slot per declared target, with a target that states no
+    /// positions contributing zeros rather than no slot. A primitive read with
+    /// streams its attributes do not declare would panic, so the derivation is
+    /// the only safe choice here. Normals are uploaded; tangents are ignored
+    /// (see the module docs).
+    ///
+    /// A mode the device has no topology for is expanded into the list that
+    /// draws the same primitives, so its index stream is not the document's.
     ///
     /// # Panics
     ///

@@ -4,7 +4,7 @@ use super::documents::{
     QuadDoc, camera, count_colour, quad_document, reversed_document, spawn_scene,
 };
 use super::{
-    CLEAR, Ctx, Entity, HEIGHT, LitGltf, MeshId, PrimitiveId, TestGpu, WIDTH, World,
+    CLEAR, Ctx, Entity, HEIGHT, LitGltf, MeshId, PrimitiveId, TestGpu, Transform, WIDTH, World,
     ZSortedDrawing, bundle, count_pixels_off_background,
 };
 
@@ -268,5 +268,61 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
         count_pixels_off_background(&discarded, [0.0, 0.0, 0.0], 2),
         0,
         "a cutoff above the quad's alpha discards every fragment"
+    );
+}
+
+/// A negative scale mirrors the geometry, and the mirrored instance draws its
+/// front faces: the specification makes the winding follow the determinant of
+/// the composed transform, so the reflected quad covers the frame instead of
+/// turning inside out and vanishing.
+pub(super) async fn a_mirrored_instance_draws_its_front_faces() {
+    let ctx = Ctx::headless().await;
+
+    let render = |mirrored: bool| {
+        let ctx = &ctx;
+        async move {
+            let mut world = World::new();
+            let gpu = TestGpu::new(&mut world, ctx);
+            // The quad is wound towards the camera, so it draws when it stands
+            // as authored; mirroring it turns every triangle round, and the
+            // winding the mirrored instance draws with is what keeps it there.
+            let gltf = LitGltf::from_bytes(&quad_document(&QuadDoc {
+                translation: [0.0, 0.0, 0.0],
+                textured: false,
+                blend: false,
+                mask: None,
+                double_sided: false,
+            }))
+            .expect("the embedded document parses");
+            let resources =
+                gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+            let placement = Transform {
+                scale: glam::Vec3::new(if mirrored { -1.0 } else { 1.0 }, 1.0, 1.0),
+                ..Transform::default()
+            };
+            super::documents::spawn_placed_scene(&gpu, &mut world, &gltf, &resources, &placement);
+            gpu.spawn(&mut world, bundle![camera()]);
+
+            let target = gpu.bind_offscreen_target(&world, "test::gltf_mirrored");
+            gpu.render(&world);
+            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
+        }
+    };
+
+    let plain = render(false).await;
+    let mirrored = render(true).await;
+
+    let plain_white = count_colour(&plain, [255, 255, 255], 1);
+    assert!(
+        plain_white > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the quad covers the frame as authored: {plain_white} white texels"
+    );
+    // A mirrored quad draws with the reversed winding, so it still covers the
+    // same texels: an instance that kept the document's winding would have
+    // every triangle culled and leave the frame empty.
+    let mirrored_white = count_colour(&mirrored, [255, 255, 255], 1);
+    assert!(
+        mirrored_white > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the mirrored quad still draws its front faces: {mirrored_white} white texels"
     );
 }

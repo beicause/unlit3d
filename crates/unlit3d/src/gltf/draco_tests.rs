@@ -11,6 +11,7 @@
 
 use super::draco;
 use super::streams::MeshStreams;
+use super::tests::documents::PNG;
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
@@ -60,15 +61,6 @@ const MORPH_DISPLACEMENTS: [[f32; 3]; 4] = [
     [0.0, 0.5, 0.0],
     [0.0, 0.0, 0.5],
     [0.25, 0.25, 0.25],
-];
-
-/// A 1x1 RGBA PNG, embedded so the textured variant has a real image to import.
-const PNG: [u8; 70] = [
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xdf, 0xe0, 0xf0,
-    0x1f, 0x00, 0x07, 0x00, 0x02, 0xbf, 0x2b, 0xd7, 0xc7, 0xe2, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
-    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
 fn make_attribute<const N: usize>(ty: GeometryAttributeType, rows: &[[f32; N]]) -> PointAttribute {
@@ -854,5 +846,69 @@ fn the_file_loader_accepts_a_draco_glb() {
     assert!(
         primitive.extension_value(draco::EXTENSION).is_none(),
         "the file path repairs the document too"
+    );
+}
+#[test]
+fn two_primitives_sharing_one_stream_both_decode() {
+    // A document may state its geometry once and let two primitives name the
+    // same bitstream. The extension says nothing about a per-primitive stream,
+    // only about a buffer view that holds one, so the decoded mesh serves
+    // every primitive that names it — the reference implementations cache on
+    // the buffer view for the same reason.
+    let (mut root, bin) = build_parts(true, 4, 0, false);
+
+    // The second primitive declares its own accessors over the same stream:
+    // each primitive addresses its attributes by Draco's own ids, so the two
+    // only have to agree on the attribute set the stream carries.
+    let declared = root["accessors"].as_array().unwrap().clone();
+    let first = root["meshes"][0]["primitives"][0].clone();
+    for accessor in &declared {
+        root["accessors"]
+            .as_array_mut()
+            .unwrap()
+            .push(accessor.clone());
+    }
+    let base = declared.len() as u64;
+    let mut second = first.clone();
+    for attribute in second["attributes"].as_object_mut().unwrap().values_mut() {
+        let index = attribute.as_u64().unwrap();
+        *attribute = json!(index + base);
+    }
+    second["indices"] = json!(second["indices"].as_u64().unwrap() + base);
+    root["meshes"][0]["primitives"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+
+    let gltf = super::LitGltf::from_bytes(&glb(root.to_string(), &bin))
+        .expect("a document whose primitives share a stream imports");
+
+    let primitives: Vec<_> = gltf
+        .document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .take(2)
+        .collect();
+    assert_eq!(primitives.len(), 2, "both primitives survive the repair");
+    assert!(
+        primitives
+            .iter()
+            .all(|primitive| primitive.extension_value(draco::EXTENSION).is_none()),
+        "both primitives consume the extension"
+    );
+    let streams: Vec<MeshStreams> = primitives
+        .iter()
+        .map(|primitive| super::streams::from_reader(&gltf.buffers, primitive))
+        .collect();
+    assert_eq!(
+        streams[0].positions, streams[1].positions,
+        "the same bitstream decodes to the same geometry for both primitives"
+    );
+    assert_eq!(streams[1].positions.len(), POSITIONS.len());
+    assert_eq!(
+        streams[0].indices, streams[1].indices,
+        "the shared stream's faces serve both primitives"
     );
 }

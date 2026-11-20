@@ -7,7 +7,7 @@
 //! to. The returned [`GltfNode`] names them, so an animation can write into
 //! exactly the entities a node draws.
 
-use super::material::{alpha_cutoff, samples_base_color_texture};
+use super::material::{alpha_cutoff, base_color_uv_set};
 use super::scene::decompose;
 use super::{
     GltfMaterial, GltfMesh, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId,
@@ -72,7 +72,14 @@ impl LitGltf {
     ) -> Result<GltfNode, super::Error> {
         let index = node.index();
         let placement = glam::Mat4::from(placement.compute_matrix());
-        let transform = decompose(placement * self.node_matrices[index]);
+        let matrix = placement * self.node_matrices[index];
+        // A mirrored instance — a negative determinant, which a negative scale
+        // is the ordinary way to state — has its front faces wound the other
+        // way round, so the side the document calls front keeps drawing rather
+        // than the geometry turning inside out. `decompose` states the sign as
+        // a negative x scale, and the winding takes it from the same matrix.
+        let mirrored = matrix.determinant() < 0.0;
+        let transform = decompose(matrix);
         let node = self.node(index);
         let mut entities = Vec::new();
         // One pose entity per skinned node, shared by every primitive it
@@ -102,7 +109,7 @@ impl LitGltf {
                 // read before the primitive is handed to the material lookup,
                 // which takes it by value.
                 let cutoff = alpha_cutoff(&primitive.material());
-                let material = match samples_base_color_texture(&primitive) {
+                let material = match base_color_uv_set(&primitive).is_some() {
                     true => {
                         Some(self.primitive_material(&mesh, primitive, &resources.materials)?)
                     }
@@ -135,10 +142,19 @@ impl LitGltf {
                 // and blend mode; the bundle leaves the ones this primitive
                 // does not need out of the spawn rather than handing the
                 // renderer `None`s to look through.
+                let mut key = mesh_handle.key.clone();
+                // A material drawn from both sides has no front face to wind,
+                // so only a culled one needs the reversed order — the two
+                // would otherwise specialize into variants that draw the same
+                // frame.
+                if mirrored && key.options.primitive.cull_mode.is_some() {
+                    key.options
+                        .update(|options| options.primitive.front_face = wgpu::FrontFace::Cw);
+                }
                 let drawn = LitMeshBundle {
                     transform: transform.clone(),
                     mesh: mesh_handle.mesh.clone(),
-                    pipeline: GpuRenderPipeline::new(mesh_handle.key.clone()),
+                    pipeline: GpuRenderPipeline::new(key),
                     color: InstanceColor::new(tint),
                     // The cutoff is per-instance state, so the entity carries
                     // it and the shader reads it out of the instance stream.

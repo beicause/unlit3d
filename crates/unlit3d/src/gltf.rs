@@ -136,20 +136,26 @@
 //! `KHR_draco_mesh_compression` is decoded on import into the same accessors,
 //! so morph target displacements, skins and animations apply to it exactly as
 //! to an uncompressed one; its `TRIANGLE_STRIP` mode, which the extension
-//! permits, is normalized to a triangle list as the stream is decoded. An
-//! ordinary primitive is drawn as a triangle list whatever its mode states:
-//! the indices are uploaded as the document writes them, so `LINES`, `POINTS`,
-//! `TRIANGLE_STRIP` and `TRIANGLE_FAN` primitives draw as whatever triangles
-//! their index stream happens to form rather than as the document intends.
+//! permits, is normalized to a triangle list as the stream is decoded, and
+//! primitives naming one buffer view — the extension has no per-primitive
+//! stream — share a single decoding of it.
+//! Every other primitive draws with the topology its own mode names, with one
+//! exception: `LINE_LOOP` and `TRIANGLE_FAN` have no wgpu topology, so their
+//! index stream is rewritten at upload into the `LINE_LIST` and
+//! `TRIANGLE_LIST` of the same primitives — the only place this loader rewrites
+//! geometry. A `LINE_STRIP` or `TRIANGLE_STRIP` reaches the rasterizer
+//! untouched. An instance whose composed transform has a negative determinant
+//! draws with the reversed winding the specification gives it, so a negative
+//! scale mirrors the geometry instead of turning it inside out.
 //! Every primitive uploads its positions; its indices, `COLOR_0` and normals
 //! when the document declares them; UVs only when it samples a base-color
 //! texture, so a mesh that samples nothing carries no unused channel; and its
 //! joints and weights when it declares `JOINTS_0` and `WEIGHTS_0` both. Morph
-//! targets contribute positional displacements only. A primitive samples its
-//! base-color texture through `TEXCOORD_0`: one whose material names another
-//! `texCoord` set draws untextured, since the loader uploads a single UV
-//! channel. Tangents are the one attribute a primitive can declare that the
-//! loader drops.
+//! targets contribute positional displacements only. The UV stream is the set
+//! the material's base-color texture names, so a primitive that samples through
+//! `TEXCOORD_1` is textured by it; one whose material names a set it does not
+//! carry draws untextured rather than failing the load. Tangents are the one
+//! attribute a primitive can declare that the loader drops.
 //! Everything else a glTF document can carry is ignored. A mesh whose
 //! primitive uses techniques outside this subset still uploads and spawns — it
 //! just renders without them.
@@ -187,6 +193,7 @@ mod spawn;
 mod streams;
 #[cfg(test)]
 mod tests;
+mod topology;
 mod upload;
 
 use self::scene::{

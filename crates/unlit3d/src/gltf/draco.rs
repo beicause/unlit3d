@@ -17,6 +17,8 @@ use draco_core::mesh::Mesh as DracoMesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use gltf::json::validation::{Checked, USize64};
 use gltf::json::{self, Index, Path, Value, accessor, buffer, mesh};
+use hashbrown::HashMap;
+use hashbrown::hash_map::Entry;
 use std::mem::size_of;
 use zerocopy::IntoBytes;
 use zerocopy::byteorder::little_endian::{F32, U16};
@@ -38,6 +40,12 @@ struct Compressed {
 /// Returns `false` when the document carries no compressed primitive, so the
 /// caller can keep the original validation error. Decoded values live in a new
 /// buffer appended to `buffers`; the original buffers and images stay valid.
+///
+/// Several primitives may name one bitstream: a mesh that states its geometry
+/// once and instances it, or two meshes sharing a buffer view. The bitstream is
+/// then decoded once and every primitive reads its attributes out of the same
+/// decoded mesh, which is what the reference implementations do — the extension
+/// has no notion of a per-primitive stream, only of a buffer view that holds one.
 pub(super) fn fill_accessors(
     root: &mut json::Root,
     buffers: &mut Vec<gltf::buffer::Data>,
@@ -49,8 +57,14 @@ pub(super) fn fill_accessors(
 
     let buffer_index = Index::new(root.buffers.len() as u32);
     let mut blob = Vec::new();
+    let mut decoded: HashMap<usize, DracoMesh> = HashMap::new();
     for compressed in &compressed {
-        let geometry = decode_stream(root, buffers, compressed.stream_view)?;
+        let geometry = match decoded.entry(compressed.stream_view) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                entry.insert(decode_stream(root, buffers, compressed.stream_view)?)
+            }
+        };
         let points = geometry.num_points();
 
         for (semantic, unique_id, accessor_index) in &compressed.attributes {

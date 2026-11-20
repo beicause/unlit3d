@@ -5,7 +5,8 @@
 //! from glTF's accessor reader, and [`MeshStreams::desc`] hands its streams to
 //! the allocator as a [`LitMeshDesc`].
 
-use super::material::{morph_target_count, samples_base_color_texture};
+use super::material::{base_color_uv_set, morph_target_count};
+use super::topology;
 use crate::lit::LitMeshDesc;
 use crate::mesh::MorphDeltas;
 
@@ -59,10 +60,13 @@ pub(super) fn from_reader(
         .collect();
     // Read only the streams the primitive declares: an attribute it does
     // not carry is not uploaded, so decoding it would be wasted work.
-    let uvs: Option<Vec<[f32; 2]>> = samples_base_color_texture(primitive).then(|| {
+    // A texture is sampled through the UV set its material names, which is not
+    // always the first; a primitive that carries no such set has no UV to
+    // interpolate and draws untextured.
+    let uvs: Option<Vec<[f32; 2]>> = base_color_uv_set(primitive).map(|set| {
         reader
-            .read_tex_coords(0)
-            .expect("the primitive samples a texture, so it has TEXCOORD_0")
+            .read_tex_coords(set)
+            .expect("the primitive carries the UV set its material names")
             .into_f32()
             .collect()
     });
@@ -82,6 +86,18 @@ pub(super) fn from_reader(
     // positions; one without them falls back to those derivatives.
     let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|normals| normals.collect());
     let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
+    // A mode the device cannot assemble is expanded into a list of the same
+    // topology, which needs an index stream even when the document carries
+    // none: a non-indexed primitive states its vertices implicitly as
+    // `0..count`, and that sequence is what gets expanded.
+    let mode = primitive.mode();
+    let indices = match topology::needs_expansion(mode) {
+        true => Some(topology::expand(
+            mode,
+            &indices.unwrap_or_else(|| (0..positions.len() as u32).collect()),
+        )),
+        false => indices,
+    };
     let skinned = primitive.get(&gltf::Semantic::Joints(0)).is_some()
         && primitive.get(&gltf::Semantic::Weights(0)).is_some();
     let joints: Option<Vec<[u16; 4]>> = skinned.then(|| {

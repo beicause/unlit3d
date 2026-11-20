@@ -762,9 +762,11 @@ model, not a GPU resource: it owns no `World` and no
 
 Compressed primitives are decoded at import with `draco-core`, a pure-Rust
 decoder, so a document carrying `KHR_draco_mesh_compression` loads on every
-target the engine runs on, wasm32 included. The import and the GPU format each
-image is uploaded in are the `gltf` module's own subject; what follows is what
-the module patches into the world you already render:
+target the engine runs on, wasm32 included. Primitives that name the same
+buffer view — the extension has no notion of a per-primitive stream — share one
+decoding of it. The import and the GPU format each image is uploaded in are the
+`gltf` module's own subject; what follows is what the module patches into the
+world you already render:
 
 - A document's collections are addressed by typed ids — `ImageId`,
   `MaterialId`, `MeshId`, `PrimitiveId`, `NodeId` and `AnimationId` —
@@ -834,6 +836,25 @@ the module patches into the world you already render:
   variant would discard are rasterized instead. Nothing else about the variant
   changes: a back face takes the geometric normal turned towards the eye, the
   same equation the front draws by.
+- Every primitive draws with the topology its own `mode` names, so a
+  `LINE_STRIP`, a `TRIANGLE_STRIP`, a `POINTS` or a `LINES` primitive reaches
+  the rasterizer untouched. The two modes `wgpu` has no topology for are
+  expanded at upload into the list that draws the same primitives —
+  `LINE_LOOP` into a line list that closes back to its first vertex, and
+  `TRIANGLE_FAN` into a triangle list whose every triangle keeps the document's
+  winding — which is the only place this loader rewrites geometry.
+- An instance whose composed transform has a negative determinant — a negative
+  scale being the ordinary way to state one — draws with the reversed winding
+  the specification gives it, so a negative scale mirrors the geometry rather
+  than turning it inside out and culling it. The sign is read from the composed
+  matrix, not from the entity's `Transform`, and a `doubleSided` material needs
+  no rewrite because it culls nothing. The winding is fixed when the node is
+  spawned, so a clip that animates a scale through zero into the other sign
+  moves the geometry without flipping it.
+- The UV stream is the `TEXCOORD_n` set the material's base-color texture
+  names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
+  primitive whose material names a set it does not carry draws untextured
+  rather than failing the load.
 - A document's animations are sampled rather than played:
   `LitGltf::animation_count`, `LitGltf::animation_name` and
   `LitGltf::animation_duration` describe the clips it carries, and

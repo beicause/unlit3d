@@ -510,6 +510,7 @@ impl InstanceContext<'_> {
 
 压缩 primitive 在导入时用 `draco-core` 解码——一个纯 Rust 解码器——因此带
 `KHR_draco_mesh_compression` 的文档在本引擎运行的每个目标上都能加载，包括 wasm32。
+指向同一 bufferView 的多个 primitive——扩展里没有「逐 primitive 流」这个概念——共用一次解码。
 这条导入路径与「每张图像上传成什么 GPU 格式」都归 `gltf` 模块自身的文档管；
 本节的职责是它往你已经在渲染的那个世界里修补了什么：
 
@@ -554,6 +555,16 @@ impl InstanceContext<'_> {
 - 材质为 `doubleSided` 的 primitive 从两面绘制：该管线变体去掉剔除模式，于是单面变体本会
   丢弃的背面会被光栅化。变体的其他部分都不变：背面用转向眼睛的几何法线着色，与正面走
   同一个光照方程。
+- 每个 primitive 都用它自身 `mode` 所指的拓扑绘制，因此 `LINE_STRIP`、`TRIANGLE_STRIP`、
+  `POINTS` 与 `LINES` 都原样到达光栅器。`wgpu` 没有对应拓扑的两种模式在上传时展开成绘制
+  同样图元的列表——`LINE_LOOP` 展开为末端回到首顶点的线段列表，`TRIANGLE_FAN` 展开为每个
+  三角形都保持文档绕序的三角形列表——这是加载器唯一改写几何的地方。
+- 复合变换行列式为负的实例（负缩放是声明镜像的常用方式）按规范给出的反向绕序绘制，因此
+  负缩放是镜像几何，而不是让几何里外翻转后被剔除。符号取自复合后的矩阵，不取自实体上的
+  `Transform`；`doubleSided` 材质本就什么都不剔除，无需改写。绕序在生成节点时就已定下，
+  因此把缩放插值穿过零点落到另一符号的动画只移动几何，不会翻转它。
+- UV 流是材质基础色纹理所指的那个 `TEXCOORD_n` 集，因此通过 `TEXCOORD_1` 采样的 primitive
+  就用它贴图。材质所指的集而 primitive 并未携带时，该 primitive 按无贴图绘制，而不是加载失败。
 - 文档中的动画按需采样而非自动播放：`LitGltf::animation_count`、
   `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
   `document.apply_animation(&scope, clip, time, &spawned)` 在选定的时间求值其中一个。

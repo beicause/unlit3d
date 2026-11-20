@@ -19,20 +19,25 @@ pub(super) fn textured_key(filtering: bool) -> LitPipelineKey {
     })
 }
 
-/// Whether a primitive samples its material's base-color texture.
+/// The `TEXCOORD_n` set a primitive samples its base-color texture through, or
+/// `None` when it samples no texture at all.
 ///
-/// A texture is sampled with the per-vertex UV, so a primitive that carries no
-/// `TEXCOORD_0` cannot sample one and is drawn untextured even when its
-/// material declares a texture. The answer is a property of the draw — the
-/// material it names and the attributes it carries — rather than of anything a
-/// caller picks, which is why it is derived here rather than stored in the key.
-pub(super) fn samples_base_color_texture(primitive: &gltf::Primitive<'_>) -> bool {
-    primitive.get(&gltf::Semantic::TexCoords(0)).is_some()
-        && primitive
-            .material()
-            .pbr_metallic_roughness()
-            .base_color_texture()
-            .is_some()
+/// A texture carries its texels in a UV set the material names with
+/// `texCoord`, defaulting to the first. A primitive that does not carry that
+/// set cannot sample the texture — the UV the draw would interpolate does not
+/// exist — so it is drawn untextured rather than bound to a channel it does not
+/// have. The set the primitive does name is the one uploaded as its UV stream.
+///
+/// The answer is a property of the draw — the material it names and the
+/// attributes it carries — rather than of anything a caller picks, which is why
+/// it is derived here rather than stored in the key.
+pub(super) fn base_color_uv_set(primitive: &gltf::Primitive<'_>) -> Option<u32> {
+    let set = primitive
+        .material()
+        .pbr_metallic_roughness()
+        .base_color_texture()?
+        .tex_coord();
+    primitive.get(&gltf::Semantic::TexCoords(set)).map(|_| set)
 }
 
 /// How many morph targets a primitive declares.

@@ -1,6 +1,6 @@
 //! The GLB documents the loader tests load, built byte by byte.
 
-use super::documents::{TRIANGLE_INDICES, TRIANGLE_POSITIONS, add_view, bytes, glb, pad};
+use super::documents::{PNG, TRIANGLE_INDICES, TRIANGLE_POSITIONS, add_view, bytes, glb, pad};
 
 /// A GLB holding one skinned triangle: node 0 draws mesh 0 under skin 0,
 /// whose single joint is node 1 at `translation`.
@@ -170,6 +170,128 @@ pub(super) fn sided_document(double_sided: bool) -> Vec<u8> {
                 {{"bufferView":{index_view},"componentType":5123,"count":3,"type":"SCALAR"}}],
             "bufferViews":[{}],
             "buffers":[{{"byteLength":{}}}]}}"#,
+        views.join(", "),
+        bin.len(),
+    );
+    glb(json, &bin)
+}
+
+/// A GLB holding one primitive that draws `positions` in the `mode` it
+/// states, indexing them through `indices` when the document carries an index
+/// stream.
+///
+/// The mode reaches the loader exactly as written, so one set of vertices can
+/// be drawn as a list, a strip, a loop or a fan, indexed or not.
+pub(super) fn mode_document(
+    mode: gltf::mesh::Mode,
+    positions: &[[f32; 3]],
+    indices: Option<&[u16]>,
+) -> Vec<u8> {
+    let mut bin = Vec::new();
+    let mut views: Vec<String> = Vec::new();
+
+    let (min, max) = positions.iter().fold(
+        ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+        |(mut min, mut max), position| {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(position[axis]);
+                max[axis] = max[axis].max(position[axis]);
+            }
+            (min, max)
+        },
+    );
+    let bounds = |values: [f32; 3]| format!("[{},{},{}]", values[0], values[1], values[2]);
+    let position_view = add_view(&mut bin, &mut views, &bytes(positions), Some(34962));
+    let mut accessors = vec![format!(
+        r#"{{ "bufferView": {position_view}, "componentType": 5126, "count": {}, "type": "VEC3", "min": {}, "max": {} }}"#,
+        positions.len(),
+        bounds(min),
+        bounds(max),
+    )];
+    let indices = match indices {
+        Some(indices) => {
+            let view = add_view(&mut bin, &mut views, &bytes(indices), Some(34963));
+            accessors.push(format!(
+                r#"{{ "bufferView": {view}, "componentType": 5123, "count": {}, "type": "SCALAR" }}"#,
+                indices.len()
+            ));
+            format!(r#","indices":{}"#, accessors.len() - 1)
+        }
+        None => String::new(),
+    };
+    pad(&mut bin);
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},
+            "scene":0,
+            "scenes":[{{"nodes":[0]}}],
+            "nodes":[{{"mesh":0}}],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}{indices},
+                                        "mode":{mode}}}]}}],
+            "accessors":[{}],
+            "bufferViews":[{}],
+            "buffers":[{{"byteLength":{}}}]}}"#,
+        accessors.join(", "),
+        views.join(", "),
+        bin.len(),
+        mode = mode.as_gl_enum(),
+    );
+    glb(json, &bin)
+}
+
+/// A GLB holding one triangle whose material samples the embedded PNG through
+/// the `texCoord` its base-color texture names, carrying the `TEXCOORD_n`
+/// sets listed in `carried`.
+///
+/// Every carried set holds one constant UV naming the set it came from, so a
+/// stream that was read from the wrong set is a wrong value rather than an
+/// ambiguous one.
+pub(super) fn uv_document(texture_set: u32, carried: &[u32]) -> Vec<u8> {
+    let mut bin = Vec::new();
+    let mut views: Vec<String> = Vec::new();
+    let mut accessors: Vec<String> = Vec::new();
+
+    let position_view = add_view(
+        &mut bin,
+        &mut views,
+        &bytes(&TRIANGLE_POSITIONS),
+        Some(34962),
+    );
+    accessors.push(format!(
+        r#"{{ "bufferView": {position_view}, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }}"#
+    ));
+    let mut attributes = vec!["\"POSITION\":0".to_string()];
+    for &set in carried {
+        let uv = [set as f32 + 0.25, 0.5];
+        let view = add_view(&mut bin, &mut views, &bytes(&[uv; 3]), Some(34962));
+        attributes.push(format!(r#""TEXCOORD_{set}":{}"#, accessors.len()));
+        accessors.push(format!(
+            r#"{{ "bufferView": {view}, "componentType": 5126, "count": 3, "type": "VEC2" }}"#
+        ));
+    }
+    let index_view = add_view(&mut bin, &mut views, &bytes(&TRIANGLE_INDICES), Some(34963));
+    let index_accessor = accessors.len();
+    accessors.push(format!(
+        r#"{{ "bufferView": {index_view}, "componentType": 5123, "count": 3, "type": "SCALAR" }}"#
+    ));
+    let image_view = add_view(&mut bin, &mut views, &PNG, None);
+    pad(&mut bin);
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},
+            "scene":0,
+            "scenes":[{{"nodes":[0]}}],
+            "nodes":[{{"mesh":0}}],
+            "meshes":[{{"primitives":[{{"attributes":{{{}}},
+                                        "indices":{index_accessor},
+                                        "material":0}}]}}],
+            "materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[1.0,1.0,1.0,1.0],
+                          "baseColorTexture":{{"index":0,"texCoord":{texture_set}}}}}}}],
+            "textures":[{{"source":0}}],
+            "images":[{{"bufferView":{image_view},"mimeType":"image/png"}}],
+            "accessors":[{}],
+            "bufferViews":[{}],
+            "buffers":[{{"byteLength":{}}}]}}"#,
+        attributes.join(","),
+        accessors.join(", "),
         views.join(", "),
         bin.len(),
     );

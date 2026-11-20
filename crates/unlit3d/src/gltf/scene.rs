@@ -110,33 +110,44 @@ pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
 /// Split a world-space matrix into the parts an entity's
 /// [`Transform`] stores: translation, rotation and scale.
 ///
-/// The decomposition is lossy in three ways, none of them recoverable from a
+/// The decomposition is lossy in two ways, neither recoverable from a
 /// [`Transform`], which stores the three parts and nothing else: a sheared
-/// matrix loses the shear, an axis scaled to zero keeps an arbitrary rotation
-/// (there is no rotation to preserve along a collapsed axis), and a mirror —
-/// a negative scale, or any matrix of negative determinant — is read back as
-/// the positive lengths of its axes, so the reflection is gone.
+/// matrix loses the shear, and an axis scaled to zero keeps an arbitrary
+/// rotation (there is no rotation to preserve along a collapsed axis). A
+/// mirror survives: a reflection is not a rotation, so a matrix of negative
+/// determinant states its sign as a negative scale on the x axis — the axis
+/// `to_scale_rotation_translation` also picks — and the three normalized axes
+/// then form a proper rotation. Reading the sign as a positive length instead
+/// would hand out a transform that draws the geometry turned inside out.
 pub(super) fn decompose(matrix: glam::Mat4) -> Transform {
     let translation = matrix.w_axis.truncate();
     let x = matrix.x_axis.truncate();
     let y = matrix.y_axis.truncate();
     let z = matrix.z_axis.truncate();
     let (sx, sy, sz) = (x.length(), y.length(), z.length());
+    let m3 = glam::Mat3::from_cols(x, y, z);
+    let sign = match m3.determinant() < 0.0 {
+        true => -1.0,
+        false => 1.0,
+    };
     let rotation = glam::Quat::from_mat3(&glam::Mat3::from_cols(
-        axis_or_identity(x, sx),
+        axis_or_identity(x, sx * sign),
         axis_or_identity(y, sy),
         axis_or_identity(z, sz),
     ));
     Transform {
         translation,
         rotation,
-        scale: glam::Vec3::new(sx, sy, sz),
+        scale: glam::Vec3::new(sx * sign, sy, sz),
     }
 }
 
 /// A unit-length axis, keeping its direction; identity when collapsed.
+///
+/// The signed length is what the caller passes, so an axis that a reflection
+/// turned round divides back to the direction the rotation holds.
 fn axis_or_identity(axis: glam::Vec3, length: f32) -> glam::Vec3 {
-    if length > f32::EPSILON {
+    if length.abs() > f32::EPSILON {
         axis / length
     } else {
         glam::Vec3::X // direction is meaningless along a zero-length axis

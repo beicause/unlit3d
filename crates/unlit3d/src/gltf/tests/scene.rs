@@ -1,6 +1,7 @@
 //! What a loaded document puts in the world: culling, morph targets and skins.
 
 use super::*;
+use crate::gltf::scene::decompose;
 
 #[test]
 fn a_double_sided_material_culls_nothing() {
@@ -204,7 +205,7 @@ fn a_skinned_primitive_declares_its_joint_stream() {
     let primitive = gltf.primitive(0, 0);
     assert!(primitive.get(&gltf::Semantic::Joints(0)).is_some());
     assert!(primitive.get(&gltf::Semantic::Weights(0)).is_some());
-    assert!(!samples_base_color_texture(&primitive));
+    assert_eq!(base_color_uv_set(&primitive), None);
 }
 
 #[test]
@@ -214,4 +215,28 @@ fn a_node_without_a_skin_has_no_pose() {
     assert_eq!(gltf.skin_joint_count(NodeId::new(0)), Some(1));
     assert_eq!(gltf.skin_joint_count(NodeId::new(1)), None);
     assert!(gltf.skin_pose(NodeId::new(1)).matrices.is_empty());
+}
+
+#[test]
+fn a_mirror_survives_the_decomposition() {
+    // A reflection is not a rotation, so the sign has to land in the scale: a
+    // transform that read the axes' positive lengths would recompose to a
+    // rotation of the mirrored geometry, which is a different shape.
+    let matrix = glam::Mat4::from_scale(glam::Vec3::new(-2.0, 3.0, 4.0));
+    let transform = decompose(matrix);
+    assert!(
+        (transform.scale.x + 2.0).abs() < 1e-6,
+        "{:?}",
+        transform.scale
+    );
+    assert!(
+        (transform.scale.y - 3.0).abs() < 1e-6,
+        "{:?}",
+        transform.scale
+    );
+    assert!(
+        glam::Mat4::from(transform.compute_matrix()).abs_diff_eq(matrix, 1e-6),
+        "{:?}",
+        glam::Mat4::from(transform.compute_matrix())
+    );
 }
