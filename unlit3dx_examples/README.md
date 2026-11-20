@@ -76,7 +76,10 @@ names the frames to keep: each one lands in `--capture-out` as
 `frame_<index>.png`, and the run's whole audio mix as `audio.flac` when it
 played anything. Both switches work on a windowed run too, where a capture
 also switches the presentation to its offscreen path, since a swap chain
-image cannot be read back. Because every frame is the same length and
+image cannot be read back — but a window only writes frames. Its mix is
+filled by the audio device on the device's clock, which shares no time base
+with the frames a client may step one at a time, so those samples cannot be
+tied to the frames the capture names. Because every frame is the same length and
 the spawn rolls are seeded, a run is reproducible, which is what the
 [snapshot tests](tests/headless.rs) build on: rendered frames compare against
 webp baselines and the mix against a FLAC baseline, both kept in the

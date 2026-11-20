@@ -30,7 +30,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::World;
-use crate::mcp::host::{McpCommand, Output, WorldRef};
+use crate::mcp::host::{McpCommand, Output, WorldRef, panic_message};
 
 pub use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
 
@@ -95,14 +95,39 @@ impl McpServer {
     ///
     /// Every submitted [ToolSource] registers its tools as the server is built.
     pub fn new(commands: CommandSender) -> Self {
-        let mut tool_router = ToolRouter::new();
+        let mut tool_router = ToolRouter::default();
         for source in inventory::iter::<ToolSource> {
-            (source.extend)(&mut tool_router);
+            // Each source registers into a router of its own first, so a name
+            // two crates both claim is caught here rather than letting the
+            // later one quietly displace the earlier one's tool.
+            let mut from_source = ToolRouter::default();
+            (source.extend)(&mut from_source);
+            add_routes(&mut tool_router, from_source);
         }
         Self {
             commands,
             tool_router,
         }
+    }
+}
+
+/// Move the routes of one tool source into the server's router.
+///
+/// A name already in use is kept rather than overwritten: the client reaches
+/// the tool registered first, and the collision is reported so the crate that
+/// registered it can rename its tool. Two crates claiming one name is a
+/// registration error no client can recover from on its own - the second tool
+/// disappears without a word - so it is never resolved silently.
+fn add_routes(into: &mut ToolRouter<McpServer>, from: ToolRouter<McpServer>) {
+    for (name, route) in from.map {
+        if into.map.contains_key(&name) {
+            log::error!(
+                "two tool sources both registered a tool named {name:?}; the one registered \
+                 first is the one a client reaches"
+            );
+            continue;
+        }
+        into.add_route(route);
     }
 }
 
@@ -117,7 +142,31 @@ pub async fn send(
     job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
 ) -> Result<Result<Output, String>, ErrorData> {
     let (command, receiver) = McpCommand::new(job);
-    let command = command.with_world(world);
+    exchange(commands, command.with_world(world), receiver).await
+}
+
+/// Send one command and await the answer the host gave it.
+///
+/// The outer error is the transport's: no world thread took the command, or
+/// the thread that took it dropped it. The inner error is the tool's own: the
+/// job ran against the world and failed, and its message is what the client
+/// reads.
+///
+/// Every request this crate sends goes through here, so a channel that closes
+/// is reported the same way no matter which tool noticed.
+///
+/// The wait itself has no timeout of its own, and none is needed: a client that
+/// leaves drops the tool call, which drops this future and with it the
+/// receiver, so a host that answers late finds nobody waiting and drops the
+/// answer. What a timeout would add is a bound on work this crate cannot see —
+/// a world thread may be running a job that legitimately takes as long as it
+/// takes — so the deadline belongs to the client, which knows what it asked
+/// for and can ask again.
+async fn exchange(
+    commands: &CommandSender,
+    command: McpCommand,
+    receiver: async_channel::Receiver<Result<Output, String>>,
+) -> Result<Result<Output, String>, ErrorData> {
     commands
         .send(command)
         .await
@@ -128,13 +177,47 @@ pub async fn send(
         .map_err(|_| ErrorData::internal_error("the world thread dropped the command", None))
 }
 
+/// Ask the host which worlds it carries, as the JSON listing it answered with.
+///
+/// Only the host knows: a world on another thread is not a component this
+/// crate can recognise, so the question is asked rather than answered from a
+/// list the crate keeps.
+///
+/// The answer stays JSON because a world entry names its world with a static
+/// string, which is what the host holds and what the wire carries; a reader
+/// that wants the entries typed reads them out of the value itself.
+///
+/// A host that answers with anything else is a protocol error, not a tool
+/// failure: the request has no job whose failure a client could act on, and
+/// only a host that failed to answer at all can produce one.
+pub async fn worlds(commands: &CommandSender) -> Result<Value, ErrorData> {
+    let (request, receiver) = McpCommand::list_worlds();
+    match exchange(commands, request, receiver).await? {
+        Ok(Output::Json(value)) => Ok(value),
+        Ok(_) => Err(ErrorData::internal_error(
+            "list_worlds was answered with something other than JSON",
+            None,
+        )),
+        Err(message) => Err(ErrorData::internal_error(message, None)),
+    }
+}
+
 /// Send a job to the world `world` names and await its output.
 pub async fn run(
     commands: &CommandSender,
     world: WorldRef,
     job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
 ) -> ToolResult {
-    match send(commands, world, job).await? {
+    reply(send(commands, world, job).await?)
+}
+
+/// Turn the answer a host gave into the result the protocol carries.
+///
+/// Every output shape becomes the block a client renders it in, and a failed
+/// job becomes a tool-level error rather than a transport one, so a model
+/// reads the message instead of seeing the call fail.
+fn reply(answer: Result<Output, String>) -> ToolResult {
+    match answer {
         Ok(Output::Json(value)) => Ok(CallToolResult::structured(value)),
         // An image answers with an MCP image content block so the client
         // renders the pixels, and carries its size as structured content so a
@@ -243,9 +326,38 @@ where
     // A pump rather than a task per command: the sink is synchronous, and the
     // service would otherwise be blocked on it.
     tokio::task::spawn_blocking(move || {
+        // A sink that panics unwinds the pump, which would end the one thread
+        // every tool call goes through. The panic is caught so the calls still
+        // queued are answered with what happened instead of being dropped as
+        // if the world thread had gone missing: they never reached a world.
+        //
+        // The call the sink was delivering when it panicked has no answer:
+        // the sink unwound mid-way, so what it guards is not promised to be
+        // usable again, and the pump stops rather than handing it more work.
+        let mut stopped = None;
         while let Ok(command) = receiver.recv_blocking() {
-            if !sink(command) {
-                break;
+            let delivered =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(command)));
+            match delivered {
+                Ok(true) => {}
+                Ok(false) => {
+                    stopped = Some("the transport that delivers commands stopped".to_owned());
+                    break;
+                }
+                Err(payload) => {
+                    let message = format!(
+                        "the transport that delivers commands panicked: {}",
+                        panic_message(payload.as_ref())
+                    );
+                    log::error!("{message}");
+                    stopped = Some(message);
+                    break;
+                }
+            }
+        }
+        if let Some(message) = stopped {
+            while let Ok(command) = receiver.try_recv() {
+                command.fail(message.clone());
             }
         }
     });
@@ -258,8 +370,7 @@ where
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorldArg {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
@@ -268,48 +379,11 @@ pub struct WorldArg {
     pub scope: Option<u64>,
 }
 
-/// Which world and render context a GPU tool runs against.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ContextArg {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits —
-    /// its device, queue, graph or capabilities. Omit when the world holds
-    /// exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-}
-
-/// Which world and resource a handle tool runs against.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HandleArg {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-    /// The resource's id, as `list_resources` reports it. A texture view is
-    /// read through the texture it views.
-    pub id: u64,
-    /// The image format to answer with: `"webp"` (lossless, the default),
-    /// `"png"`, or `"jpeg"`.
-    #[serde(default)]
-    pub format: Option<String>,
-}
-
 /// Arguments for one entity in a world.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EntityArg {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
@@ -324,8 +398,7 @@ pub struct EntityArg {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListEntities {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
@@ -345,8 +418,7 @@ fn default_limit() -> usize {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetComponent {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
@@ -363,8 +435,7 @@ pub struct GetComponent {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetComponent {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
@@ -383,8 +454,7 @@ pub struct SetComponent {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnEntity {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
     /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
@@ -395,184 +465,39 @@ pub struct SpawnEntity {
     pub components: Value,
 }
 
-/// Arguments for reading a buffer.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadBuffer {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-    /// The buffer's id, as `list_resources` reports it.
-    pub id: u64,
-    /// The byte offset to read from.
-    #[serde(default)]
-    pub offset: u64,
-    /// How many bytes to read; the rest of the buffer when omitted.
-    #[serde(default)]
-    pub size: Option<u64>,
-}
+#[cfg(test)]
+mod tests {
+    use rmcp::model::Tool;
 
-/// Arguments for saving a buffer to a file.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SaveBuffer {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-    /// The buffer's id, as `list_resources` reports it.
-    pub id: u64,
-    /// The byte offset to read from.
-    #[serde(default)]
-    pub offset: u64,
-    /// How many bytes to read; the rest of the buffer when omitted.
-    #[serde(default)]
-    pub size: Option<u64>,
-    /// The directory to write the file into; created when it does not exist.
-    pub directory: String,
-    /// The file name to write; it is given a `.bin` extension when it carries
-    /// none.
-    #[serde(default)]
-    pub file_name: Option<String>,
-}
+    use super::{McpServer, ToolRouter, add_routes};
 
-/// Arguments for saving a texture as an image.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SaveTexture {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-    /// The resource's id, as `list_resources` reports it. A texture view is
-    /// read through the texture it views.
-    pub id: u64,
-    /// The directory to write the file into; created when it does not exist.
-    pub directory: String,
-    /// The file name to write; its extension picks the image format, and it is
-    /// given a `.webp` one when it carries none.
-    #[serde(default)]
-    pub file_name: Option<String>,
-}
+    /// A router carrying one tool with the given name.
+    fn with_tool(name: &'static str) -> ToolRouter<McpServer> {
+        let mut router = ToolRouter::default();
+        let route = super::tool(name, "a tool", |_commands, _args: super::NoArgs| async {
+            unreachable!("the test never calls the tool")
+        });
+        router.add_route(route);
+        router
+    }
 
-/// Arguments for saving a screenshot as an image.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SaveScreenshot {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-    /// The entity carrying the renderer, as its `u64` bits. Omit for the
-    /// world's only one.
-    #[serde(default)]
-    pub renderer: Option<u64>,
-    /// The id of the texture to read, as `list_resources` reports it, or the
-    /// id of any view of it. Omit for the world's only readable texture.
-    #[serde(default)]
-    pub target: Option<u64>,
-    /// The directory to write the file into; created when it does not exist.
-    pub directory: String,
-    /// The file name to write; its extension picks the image format, and it is
-    /// given a `.webp` one when it carries none.
-    #[serde(default)]
-    pub file_name: Option<String>,
-}
+    #[test]
+    fn a_name_two_sources_claim_reaches_the_one_registered_first() {
+        // The name a client sends has to reach exactly one tool. Letting the
+        // later registration displace the earlier one would make a crate's
+        // tools vanish without a word depending on link order, so the first
+        // one wins and the collision is reported.
+        let mut into = with_tool("read_texture");
+        add_routes(&mut into, with_tool("read_texture"));
+        assert_eq!(into.map.len(), 1, "the second registration was dropped");
+        let routed: &Tool = &into.map["read_texture"].attr;
+        assert_eq!(routed.description.as_deref(), Some("a tool"));
+    }
 
-/// Arguments for reading or sending input.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InputArg {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// The entity carrying the input state, as its `u64` bits. Omit for the
-    /// world's only one.
-    #[serde(default)]
-    pub entity: Option<u64>,
-}
-
-/// Arguments for sending input events.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SendInput {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// The entity carrying the input state, as its `u64` bits. Omit for the
-    /// world's only one.
-    #[serde(default)]
-    pub entity: Option<u64>,
-    /// The events to deliver.
-    pub events: Vec<Value>,
-}
-
-/// Arguments for taking a screenshot.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Screenshot {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
-    /// The entity carrying the renderer, as its `u64` bits. Omit for the
-    /// world's only one.
-    #[serde(default)]
-    pub renderer: Option<u64>,
-    /// The id of the texture to read, as `list_resources` reports it, or the
-    /// id of any view of it. Omit for the world's only readable texture.
-    #[serde(default)]
-    pub target: Option<u64>,
-    /// The image format to answer with: `"webp"` (lossless, the default),
-    /// `"png"`, or `"jpeg"`.
-    #[serde(default)]
-    pub format: Option<String>,
-}
-
-/// Arguments for spawn_gltf.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SpawnGltf {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
-    #[serde(default)]
-    pub world: WorldRef,
-    /// The scope to load into, as its `u64` bits. Omit for the entity
-    /// carrying the mesh source.
-    #[serde(default)]
-    pub scope: Option<u64>,
-    /// The entity carrying the world's mesh source, as its `u64` bits. Omit
-    /// for the world's only one.
-    #[serde(default)]
-    pub source: Option<u64>,
-    /// The path of a glTF or GLB file to read.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// The document itself, instead of a path: glTF JSON text, or a GLB's
-    /// bytes encoded as base64. Pass exactly one of this field and `path`.
-    #[serde(default)]
-    pub document: Option<String>,
+    #[test]
+    fn a_name_no_one_else_claims_is_added() {
+        let mut into = with_tool("read_texture");
+        add_routes(&mut into, with_tool("save_texture"));
+        assert_eq!(into.map.len(), 2);
+    }
 }

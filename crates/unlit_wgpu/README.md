@@ -578,7 +578,10 @@ graph:
   [`ResourceGraph::resource_infos`](resources::ResourceGraph::resource_infos) are
   the same picture as plain data, for a reader that only reports it. That is what
   lets an outside reader — a debug overlay, an MCP server — report the graph
-  without a private view into it.
+  without a private view into it. A node also carries the
+  [label](resources::ResourceGraph::insert_labelled) whoever inserted it gave, which
+  is the one thing in the listing that says what a resource is *for*: two textures
+  of the same kind are told apart by their labels, not by their order.
 - **An id names the resource; a handle keeps it alive.** A [`ResId`](resources::ResId) is the
   plain, [`Copy`] form a resource travels as: it carries the generation of its
   slot, so an id to a removed resource stops resolving instead of quietly naming

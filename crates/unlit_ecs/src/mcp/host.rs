@@ -246,13 +246,13 @@ fn catch_job(world: &mut World, job: Job) -> Result<Output, String> {
         Ok(result) => result,
         Err(payload) => Err(format!(
             "the tool panicked and the world it ran in may be inconsistent: {}",
-            panic_message(payload)
+            panic_message(payload.as_ref())
         )),
     }
 }
 
 /// The message a panic payload carries, with a fallback for foreign payloads.
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&'static str>()
         .map(|message| (*message).to_owned())

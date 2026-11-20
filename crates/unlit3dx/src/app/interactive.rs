@@ -7,7 +7,7 @@
 
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::context::RenderDevice;
-use unlit_wgpu::readback::readback_texture;
+use unlit_wgpu::readback::try_readback_texture;
 use unlit_wgpu::resources::ResHandle;
 use unlit3d::egui::EguiTarget;
 use unlit3d::frame::Frame;
@@ -19,7 +19,7 @@ use unlit3d::renderer::Renderer;
 use super::App;
 use super::capture::Capture;
 use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, RENDER_COMMAND_CAPACITY};
-use super::scene::{Mode, RenderPorts, ScenePorts, SceneWorlds, Stepping};
+use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds, Stepping};
 use crate::audio::{AudioFormat, dispatch_audio_fill};
 use crate::host::{drain_sub_world, spawn_sub_world, tick_sub_world};
 use crate::record::{RecordedAudio, RecordingHandle, start_recording};
@@ -70,6 +70,11 @@ impl Interactive {
             // whole of what this world needs on a tick.
             refresh_input(host);
             self.stepper.step(host, 1.0 / HEADLESS_HZ);
+            // The stepper advanced the run's frame count as it stepped, so
+            // the frame it just produced is the one that count names: the
+            // tick, the capture and the frame a reader asks for all agree on
+            // which frame this is.
+            self.frame.index = self.stepper.frames().current().unwrap_or_default();
             let frames = self.stepper.audio_frames(1.0 / HEADLESS_HZ);
             if frames > 0 {
                 self.samples.clear();
@@ -94,7 +99,6 @@ impl Interactive {
             // The sub-world's borrow is released first, since drawing takes
             // it again.
             self.capture_frame(host, self.frame.index);
-            self.frame.index = self.frame.index.wrapping_add(1);
         }
     }
 
@@ -110,9 +114,16 @@ impl Interactive {
             return;
         }
         self.draw(host);
-        let pixels = pollster::block_on(self.read_frame(host));
-        let size = (pixels.0, pixels.1);
-        match self.capture.write_frame(index, &pixels.2, size) {
+        // A frame that cannot be read back is one the capture has to name as
+        // missing: taking the run down would lose the frames after it too.
+        let (size, pixels) = match pollster::block_on(self.try_read_frame(host)) {
+            Ok(frame) => ((frame.0, frame.1), frame.2),
+            Err(reason) => {
+                log::warn!("the run could not capture frame {index}: {reason}");
+                return;
+            }
+        };
+        match self.capture.write_frame(index, &pixels, size) {
             Ok(Some(path)) => log::info!("the run wrote {}", path.display()),
             Ok(None) => {}
             Err(message) => log::error!("{message}"),
@@ -125,10 +136,11 @@ impl Interactive {
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     fn capture_frame(&self, _host: &World, _index: u32) {}
 
-    /// The frame the next step draws.
+    /// How many frames the run has advanced, which is also the number the
+    /// next step draws as.
     #[must_use]
     pub fn frame(&self) -> u32 {
-        self.frame.index
+        self.stepper.frames().advanced()
     }
 
     /// The handles the scene's worlds were spawned under.
@@ -151,6 +163,13 @@ impl Interactive {
     /// The await is the readback: the pixels cannot exist before the copy
     /// lands. Drawing is what publishes the target the panels lay out
     /// against, so nothing is laid out until one frame has been drawn.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the target cannot be read back. A caller that drives the
+    /// run itself is holding the device and the format it bound the target
+    /// with, so an unreadable target is a mistake in its own setup rather
+    /// than a device that went away mid-run.
     pub async fn render_frame(&self, host: &World) -> Vec<u8> {
         self.draw(host);
         let (_, _, pixels) = self.read_frame(host).await;
@@ -162,6 +181,16 @@ impl Interactive {
     /// The size comes from the texture, which is the size the target was
     /// bound at.
     async fn read_frame(&self, host: &World) -> (u32, u32, Vec<u8>) {
+        self.try_read_frame(host)
+            .await
+            .unwrap_or_else(|error| panic!("the frame's target could not be read back: {error}"))
+    }
+
+    /// Read the target's pixels back, reporting why when it cannot.
+    async fn try_read_frame(
+        &self,
+        host: &World,
+    ) -> Result<(u32, u32, Vec<u8>), unlit_wgpu::readback::ReadbackError> {
         let texture = {
             let mut nested = host.root_scope().query_one::<&World>(self.render);
             let world = nested.get();
@@ -180,8 +209,8 @@ impl Interactive {
                 .expect("the target texture is a resource node")
         };
         let size = (texture.width(), texture.height());
-        let pixels = readback_texture(&self.device, &self.queue, &texture).await;
-        (size.0, size.1, pixels)
+        let pixels = try_readback_texture(&self.device, &self.queue, &texture).await?;
+        Ok((size.0, size.1, pixels))
     }
 
     /// Draw the frame where the scene stands, into the offscreen texture.
@@ -312,8 +341,16 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interact
         )
         .expect("the offscreen target binds")
     };
+    // The count the run's length is read from. Nothing else advances it
+    // here: the stepper is this run's only driver.
+    let frames = RunFrames::default();
     let interactive = Interactive {
-        stepper: Stepping::new(worlds.clone(), A::PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
+        stepper: Stepping::new(
+            worlds.clone(),
+            A::PHYSICS_HZ,
+            Some(AUDIO_SAMPLE_RATE),
+            frames,
+        ),
         worlds,
         render: render.entity,
         renderer: setup.renderer.entity,
@@ -330,7 +367,10 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interact
     };
     // One frame is drawn before the caller takes over: a drawn frame is what
     // publishes the target the panels lay out against, so a run that never
-    // draws lays out no panels and has no buttons to click.
+    // draws lays out no panels and has no buttons to click. That draw is a
+    // layout pass, not a frame the run advanced: nothing was stepped for it,
+    // so the run still stands on no frame and a capture of frame 0 is the
+    // first step's.
     interactive.draw(&host);
     (host, interactive)
 }

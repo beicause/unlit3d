@@ -6,17 +6,20 @@
 //! through the [`ToolSource` struct](unlit_ecs::mcp::ToolSource), so a server built
 //! from [unlit_ecs] carries them without depending on this crate.
 
+mod args;
 mod host;
 
+use args::{
+    ContextArg, HandleArg, InputArg, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture,
+    Screenshot, SendInput, SpawnGltf,
+};
 use host::FrameClockReport;
 
 use unlit_ecs::Entity;
 use unlit_ecs::mcp::serde_json::Value;
 use unlit_ecs::mcp::{
-    CallToolResult, CommandSender, ContextArg, ErrorData, HandleArg, InputArg, McpCommand,
-    McpServer, NoArgs, Output, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot,
-    SendInput, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, WorldRef, command,
-    from_value, run, to_value, tool,
+    CallToolResult, CommandSender, ErrorData, McpServer, NoArgs, Output, ToolResult, ToolRouter,
+    ToolSource, WorldArg, WorldRef, command, from_value, run, send, to_value, tool, worlds,
 };
 use unlit_wgpu::resources::ResId;
 
@@ -143,9 +146,9 @@ async fn frame_clock(commands: CommandSender, args: WorldArg) -> ToolResult {
 
 /// Report a frame clock for every world the host carries.
 async fn frame_clocks(commands: CommandSender, _args: NoArgs) -> ToolResult {
-    let worlds = request_worlds(&commands).await?;
-    let mut reports = Vec::with_capacity(worlds.len());
-    for entry in worlds {
+    let listing = read_worlds(&commands).await?;
+    let mut reports = Vec::with_capacity(listing.len());
+    for entry in listing {
         reports.push(FrameClockEntry {
             world: entry.world,
             name: entry.name,
@@ -159,65 +162,47 @@ async fn frame_clocks(commands: CommandSender, _args: NoArgs) -> ToolResult {
 
 /// One world as this crate reads it back from a listing.
 ///
-/// The listing's `WorldEntry` names its world with a `&'static str`, which is
-/// what the host has rather than what a reply can carry, so the reply is read
-/// into an owned name here.
+/// The listing names each world with the static string the host holds, which
+/// a reply cannot carry as it stands, so the name is read into an owned one
+/// here.
 #[derive(facet::Facet)]
 struct ListedWorld {
     world: WorldRef,
     name: String,
 }
 
-/// Ask the host which worlds it carries.
-async fn request_worlds(commands: &CommandSender) -> Result<Vec<ListedWorld>, ErrorData> {
-    let (request, receiver) = McpCommand::list_worlds();
-    commands
-        .send(request)
-        .await
-        .map_err(|_| ErrorData::internal_error("the world thread is gone", None))?;
-    match receiver.recv().await {
-        Ok(Ok(Output::Json(value))) => from_value(&value).map_err(|error| {
-            ErrorData::internal_error(format!("list_worlds answered unreadably: {error}"), None)
-        }),
-        Ok(Ok(_)) => Err(ErrorData::internal_error(
-            "list_worlds was answered with something other than JSON",
-            None,
-        )),
-        Ok(Err(message)) => Err(ErrorData::internal_error(message, None)),
-        Err(_) => Err(ErrorData::internal_error(
-            "the world thread dropped the command",
-            None,
-        )),
-    }
+/// The host's world listing, read into the names and references it means.
+async fn read_worlds(commands: &CommandSender) -> Result<Vec<ListedWorld>, ErrorData> {
+    let listing = worlds(commands).await?;
+    from_value(&listing).map_err(|error| {
+        ErrorData::internal_error(format!("list_worlds answered unreadably: {error}"), None)
+    })
 }
 
 /// Ask one world for its frame clock.
+///
+/// The report comes back as JSON rather than as the reply block the other
+/// tools answer with: every entry of the listing carries one, so the value is
+/// read rather than sent straight out.
 async fn world_frame_clock(
     commands: &CommandSender,
     world: WorldRef,
 ) -> Result<FrameClockReport, ErrorData> {
-    let (command, receiver) = McpCommand::new(move |world| {
+    let report = send(commands, world, move |world| {
         host::frame_clock(world)
             .and_then(|report| to_value(&report))
             .map(Output::from)
-    });
-    commands
-        .send(command.with_world(world))
-        .await
-        .map_err(|_| ErrorData::internal_error("the world thread is gone", None))?;
-    match receiver.recv().await {
-        Ok(Ok(Output::Json(value))) => from_value(&value).map_err(|error| {
+    })
+    .await?;
+    match report {
+        Ok(Output::Json(value)) => from_value(&value).map_err(|error| {
             ErrorData::internal_error(format!("a frame clock answered unreadably: {error}"), None)
         }),
-        Ok(Ok(_)) => Err(ErrorData::internal_error(
-            "a frame clock was answered with something other than JSON",
+        Ok(_) => Err(ErrorData::internal_error(
+            "a frame clock answered with something other than JSON",
             None,
         )),
-        Ok(Err(message)) => Err(ErrorData::internal_error(message, None)),
-        Err(_) => Err(ErrorData::internal_error(
-            "the world thread dropped the command",
-            None,
-        )),
+        Err(message) => Err(ErrorData::internal_error(message, None)),
     }
 }
 
@@ -239,7 +224,7 @@ async fn read_screenshot(commands: CommandSender, args: Screenshot) -> ToolResul
             world,
             args.context.map(Entity::from_bits),
             args.renderer.map(Entity::from_bits),
-            args.target.map(ResId::from_bits),
+            ResId::from_bits(args.target),
             args.format.as_deref(),
         )
     })
@@ -253,7 +238,7 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
             world,
             args.context.map(Entity::from_bits),
             args.renderer.map(Entity::from_bits),
-            args.target.map(ResId::from_bits),
+            ResId::from_bits(args.target),
             &args.directory,
             args.file_name.as_deref(),
         )
@@ -344,12 +329,12 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "read_screenshot",
-        "Render one frame of a world and read its offscreen target back as an image content block. Pass the target's resource handle, or the handle of any view of it, to choose it, or omit for the world's only readable texture; the format argument picks lossless webp, the default, png, or jpeg. Prefer save_screenshot to write the image to a file instead of returning it inline.",
+        "Render one frame of a world and read an offscreen target back as an image content block. Pass the target's resource handle, or the handle of any view of it; the format argument picks lossless webp, the default, png, or jpeg. A target a presenter or an offscreen scene built carries the label `scene color` in list_resources. Prefer save_screenshot to write the image to a file instead of returning it inline.",
         read_screenshot,
     ));
     router.add_route(tool(
         "save_screenshot",
-        "Render one frame of a world, read its offscreen target back, and write it to a file in a directory, returning the written path and size. The file name's extension picks the format: .webp (lossless, the default when it has none), .png, or .jpg/.jpeg. Prefer this over read_screenshot, which returns the image inline.",
+        "Render one frame of a world, read an offscreen target back, and write it to a file in a directory, returning the written path and size. The target is named as read_screenshot names it, and one a presenter or an offscreen scene built carries the label `scene color`. The file name's extension picks the format: .webp (lossless, the default when it has none), .png, or .jpg/.jpeg. Prefer this over read_screenshot, which returns the image inline.",
         save_screenshot,
     ));
     router.add_route(tool(

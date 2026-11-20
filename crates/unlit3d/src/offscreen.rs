@@ -29,6 +29,15 @@ pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unor
 /// attachment; matching the windowed path's keeps one variant across both.
 pub const OFFSCREEN_SAMPLES: u32 = 4;
 
+/// The label an offscreen target's colour texture carries, as the resource
+/// graph records it.
+///
+/// The frame a scene draws lands here, so this is the name a caller that did
+/// not build the target reaches for: a screenshot tool resolves it to the
+/// texture instead of picking among the graph's textures, and a capture reads
+/// the same node the presenter draws into.
+pub const SCENE_COLOR_LABEL: &str = "scene color";
+
 /// What kind of target to build: the format and the attachments around it.
 #[derive(Clone, Copy, Debug)]
 pub struct TargetConfig {
@@ -46,6 +55,16 @@ pub struct TargetConfig {
     /// How an intermediate target presented to a window follows its size.
     /// Purely offscreen rendering states an explicit pixel size instead.
     pub size: IntermediateSize,
+    /// What the target's texture is for, as the resource graph records it.
+    ///
+    /// This is how a caller that did not build the target finds it again: a
+    /// screenshot tool held only a resource id from a listing, and the listing
+    /// says `label: "scene color"` for the texture the frame landed in rather
+    /// than leaving it to pick among `Texture` nodes by order. The default is
+    /// [`SCENE_COLOR_LABEL`], the role every target built here has — the
+    /// scene's colour — so a post-processing chain that builds several states
+    /// its own for each stage.
+    pub label: Option<&'static str>,
 }
 
 impl Default for TargetConfig {
@@ -56,6 +75,7 @@ impl Default for TargetConfig {
             with_depth: true,
             persistent_depth: false,
             size: IntermediateSize::Scale(1.0),
+            label: Some(SCENE_COLOR_LABEL),
         }
     }
 }
@@ -108,9 +128,15 @@ impl PersistentTarget {
         // view depends on it, so whoever holds the view keeps the texture
         // alive — and a screenshot can resolve the texture by handle and read
         // it back.
+        //
+        // Only the texture carries the label: the view is the same target seen
+        // the way a pass binds it, so a caller looking the target up by label
+        // finds one node rather than having to tell the pair apart.
         let (texture, view) = {
             let mut graph = context.try_graph(&world.root_scope())?;
-            let texture = graph.get().insert(color.clone(), None);
+            let texture = graph
+                .get()
+                .insert_labelled(color.clone(), None, config.label);
             let view = graph.get().insert(
                 TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
                 None,

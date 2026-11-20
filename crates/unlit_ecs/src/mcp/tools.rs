@@ -3,14 +3,13 @@
 //! These tools need nothing but the world itself, so they live next to it and
 //! register themselves with the MCP server through [ToolSource].
 
-use rmcp::ErrorData;
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::CallToolResult;
 use serde_json::Value;
 
-use crate::mcp::host::{Despawned, McpCommand, Output, SpawnedEntity, to_value};
+use crate::mcp::host::{Despawned, SpawnedEntity, to_value};
 use crate::mcp::server::{
     CommandSender, EntityArg, GetComponent, ListEntities, McpServer, NoArgs, SetComponent,
-    SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
+    SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool, worlds,
 };
 use crate::reflect;
 use crate::{DynamicBundle, Entity, Scope, ScopeMut, World};
@@ -101,27 +100,8 @@ fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String
 
 /// Every world the host carries.
 async fn list_worlds(commands: CommandSender, _args: NoArgs) -> ToolResult {
-    let (request, receiver) = McpCommand::list_worlds();
-    commands
-        .send(request)
-        .await
-        .map_err(|_| ErrorData::internal_error("the world thread is gone", None))?;
-    match receiver.recv().await {
-        Ok(Ok(Output::Json(value))) => Ok(CallToolResult::structured(value)),
-        Ok(Ok(Output::Image(_))) => Err(ErrorData::internal_error(
-            "list_worlds was answered with an image",
-            None,
-        )),
-        Ok(Ok(Output::Audio(_))) => Err(ErrorData::internal_error(
-            "list_worlds was answered with a sound",
-            None,
-        )),
-        Ok(Err(message)) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
-        Err(_) => Err(ErrorData::internal_error(
-            "the world thread dropped the command",
-            None,
-        )),
-    }
+    let listing = worlds(&commands).await?;
+    Ok(CallToolResult::structured(listing))
 }
 
 /// A high-level description of the world.

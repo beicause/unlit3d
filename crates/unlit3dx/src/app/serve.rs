@@ -87,7 +87,7 @@ pub fn serve<A: App>(
             "a client-paced host has no driver without a transport; name one with Transports, or let the host pace its own frames".to_owned(),
         );
     }
-    let mut host = interactive_host(app, device);
+    let mut host = interactive_host(app, device, pacing);
     // The mix is observed from the run's first fill, so the recording opens
     // before any command runs. A client-paced run records a fixed span: the
     // run ends when its client says so, so the length is not the run's to
@@ -123,7 +123,7 @@ pub fn serve<A: App>(
         (false, None) => {}
     }
     if pacing.client {
-        pump_until_done(&mut host);
+        pump_until_done(&mut host, pacing);
     } else {
         pump_self_paced(&mut host, pacing);
     }
@@ -133,9 +133,13 @@ pub fn serve<A: App>(
 
 /// Build the interactive host the headless MCP runs serve, carrying the
 /// exit request and the interactive state.
-fn interactive_host<A: App>(app: A, device: RenderDevice) -> World {
+fn interactive_host<A: App>(app: A, device: RenderDevice, pacing: Pacing) -> World {
     let (mut host, interactive) = interactive(app, device);
     host.root_scope_mut().spawn(bundle![ExitRequest(false)]);
+    // The pacing is part of the host rather than of the loop that reads it:
+    // the stepping tool answers how far the run may still go, and it reaches
+    // the host through the same world the client does.
+    host.root_scope_mut().spawn(bundle![pacing]);
     host.root_scope_mut().spawn(bundle![interactive]);
     host
 }
@@ -164,12 +168,15 @@ fn bind_http(_host: &mut World, _addr: SocketAddr) -> Result<Option<SocketAddr>,
 /// the run ends when told to, and long enough that waiting costs nothing.
 const POLL_SECONDS: f64 = 1.0;
 
-/// Serve the host's MCP commands until a client asks the run to exit.
+/// Serve the host's MCP commands until a client asks the run to exit, or
+/// until the client has advanced the run as far as its budget allows.
 ///
 /// A client-paced run advances when the client's tools advance it, so
-/// nothing here steps the scene: the turn exists to answer the commands and
-/// to notice the exit request.
-fn pump_until_done(host: &mut World) {
+/// nothing here steps the scene: the turn exists to answer the commands, to
+/// notice the exit request, and to notice that the budget is spent. The
+/// budget is checked here rather than in [step_frames] alone so that a run
+/// whose steps came from anywhere reaches its last frame the same way.
+fn pump_until_done(host: &mut World, pacing: Pacing) {
     // The transports ring this handle when they post, so the turn sleeps
     // until there is something to do instead of spinning a core while the
     // client thinks. The timeout is the exit request's own alarm: a client
@@ -180,7 +187,7 @@ fn pump_until_done(host: &mut World) {
     let poll = Duration::from_secs_f64(POLL_SECONDS);
     loop {
         pump_mcp(host).expect("the MCP command queue applies");
-        if exit_requested(host) {
+        if exit_requested(host) || pacing.is_spent(advanced(host)) {
             break;
         }
         match &wake {
@@ -234,6 +241,25 @@ fn advanced(host: &World) -> u32 {
         .iter()
         .next()
         .map_or(0, |interactive| interactive.frame())
+}
+
+/// How many of the `asked` frames the run may still advance before its
+/// budget is spent.
+///
+/// Clamping the step rather than refusing it is what makes a budget a length
+/// of the run instead of a condition on its client: stepping past the last
+/// frame advances to exactly it and reports that, and the run ends there the
+/// way a self-paced one does. A run that named no budget takes every frame
+/// asked of it.
+fn allowed(host: &World, asked: u32) -> u32 {
+    let mut pacing = host.root_scope().query::<&Pacing>();
+    let Some(pacing) = pacing.iter().next() else {
+        return asked;
+    };
+    match pacing.frames {
+        Some(budget) => asked.min(budget.saturating_sub(advanced(host))),
+        None => asked,
+    }
 }
 
 /// Whether the host was asked to exit.
@@ -319,9 +345,10 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         // The headless host carries the interactive scene; a client-paced
         // windowed run carries the parked stepper instead. Either way the
         // tool advances the scene and reports where it stands.
+        let frames = allowed(host, args.frames);
         let mut interactive = host.root_scope().query::<&mut Interactive>();
         if let Some(interactive) = interactive.iter().next() {
-            interactive.step(host, args.frames);
+            interactive.step(host, frames);
             // The frame is drawn as the steps leave it, so the frame a client
             // reads back afterwards is the one the steps produced. Drawing is
             // cheap here and readback does not draw, so the picture has to be
@@ -339,12 +366,13 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         let mut stepper = stepper
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for _ in 0..args.frames {
+        for _ in 0..frames {
             stepper.step(host, 1.0 / HEADLESS_HZ);
         }
-        // The window redraws on its own and shows the scene as the steps
-        // left it; there is no frame index to read here.
-        Ok(json!({ "stepped": args.frames }))
+        // The stepper shares the run's frame count with the window's budget
+        // and capture, so the answer names the frame the client reached even
+        // though the window redraws on its own.
+        Ok(json!({ "frame": stepper.frames().advanced() }))
     })
     .await
 }
@@ -354,7 +382,7 @@ async fn scene_status(commands: CommandSender, args: WorldArg) -> ToolResult {
         let mut interactive = host.root_scope().query::<&Interactive>();
         let Some(interactive) = interactive.iter().next() else {
             return Err(
-                "the host is not an interactive headless scene; a windowed host has no frame index to report, and frame_clock answers its pacing"
+                "the host is not an interactive headless scene; a windowed host reports the frames it advanced through step_frames, and its pacing through frame_clock"
                     .to_owned(),
             );
         };

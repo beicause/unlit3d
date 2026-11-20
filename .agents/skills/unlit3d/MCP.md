@@ -50,8 +50,8 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 - **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless --interactive --mcp-stdio`，它不建 winit 事件循环。
 - **`--mcp-stdio` 与 `--mcp-http` 会改变渲染路径**：带任一开关时场景自己的 pass 画进常驻纹理（`PresentationPath::Intermediate`），同一个 world 里再加一个 blit pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。不改这条路径的话，MCP 截图拿不到画面——交换链图像不是资源图节点。
-- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"stepped": n}` 而没有帧号，且 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主没有帧号可报，帧率要问 `frame_clock`。`--interactive` 要生效必须搭配一个传输：没有传输时客户端到不了，运行会打一条 warn 说明该开关不生效、然后自己配速，而不是拒绝启动。
-- **截图只能读到常驻纹理**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，此时工具会报 `the world has no readable texture to screenshot; pass \`target\``。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。
+- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"frame": n}`（跑过这些步之后 run 走到的帧数，与无头那条路径同一个计数），而 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主的帧与音频世界要问 `frame_clock` 与 `list_resources`。`--interactive` 要生效必须搭配一个传输：没有传输时客户端到不了，运行会打一条 warn 说明该开关不生效、然后自己配速，而不是拒绝启动。
+- **截图只能读到常驻纹理，且 `target` 必填**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，只能改造场景或换 `Intermediate`。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。服务器不再替你挑：一个 world 里有几张可读纹理时，「哪张是本帧」只有建它的人知道，猜出来的图可能不是你要的那一帧。`PersistentTarget` 建的纹理带 `label`（缺省是 `scene color`），在 `list_resources` 里按它找就是本帧落点；`scene_status` 的 `target` 也是同一个 id。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
 - **命令要有人泵**。`unlit3dx` 的桥接把命令投进各 world 的队列，桌面端由 winit 的 `about_to_wait` 行为泵，无窗口的宿主必须自己循环调 `unlit3dx::mcp::pump_mcp(&mut host)`。它除了 drain 命令还会把排队到 stepped world 的 job 跑掉——stepped world 的队列本来只在 `step_stepped_world` 里推进，只等回复而不推进帧的客户端会一直等不到答复。
@@ -116,12 +116,12 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | 工具              | 作用                                   | 关键参数                                               |
 | ----------------- | -------------------------------------- | ------------------------------------------------------ |
 | `spawn_gltf`      | 从路径或内联文档 spawn glTF 的默认场景 | `path` 与 `document` 二选一、`source`                  |
-| `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `context`、`renderer`、`target`、`format`              |
-| `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `directory`（必填）、`file_name`、`context`、`renderer`、`target` |
+| `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `target`（必填）、`context`、`renderer`、`format`     |
+| `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `target`（必填）、`directory`（必填）、`file_name`、`context`、`renderer` |
 
 `spawn_gltf` 的 `document` 可以是 glTF JSON 文本，也可以是把 GLB 的字节 base64 编码后的字符串——JSON 参数装不下裸二进制；与 `path` 只能给其中一个。场景画出的实体逐个 `despawn_entity` 删除即可，它们画的 mesh 由 source 下一次 `maintain` 回收。
 
-`context` / `renderer` / `source` 分别是携带渲染上下文 / `Renderer` / `MeshSource` 的实体 bits，`target` 是纹理资源 id——都省略时服务器取「该 world 唯一的一个」。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体用 `despawn_entity`，mesh 由 source 下一次 `maintain` 回收。
+`context` / `renderer` / `source` 分别是携带渲染上下文 / `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体用 `despawn_entity`，mesh 由 source 下一次 `maintain` 回收。
 
 ### 帧与时序
 
@@ -162,14 +162,16 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 去掉 `--interactive` 就是自驱形态（`--headless --mcp-stdio`，可加 `--max-frames N`）：宿主按真实时钟推进、帧间泵命令，客户端只观察与注入。给了 `--max-frames` 就在走满 N 帧后自己退出；不给则一直跑下去，直到客户端 `request_exit` 或进程被 kill——适合「让 agent 看着一个正在跑的场景」。要让客户端看得下去，帧数别太小：客户端连上要花一点时间。
 
-自驱与客户端配速这两条路上，捕获都可以直接由命令行点名：`--capture-frames 0,10,20 --capture-out DIR` 让运行在走到这些帧号时各写一个 `frame_<index>.png`，末尾再把它播放过的混音写成 `audio.flac`（没播过东西就不写）。两个开关必须成对；只给 `--capture-frames` 不给 `--max-frames` 时，最后一帧的下一帧就是运行的终点。
+自驱与客户端配速这两条路上，捕获都可以直接由命令行点名：`--capture-frames 0,10,20 --capture-out DIR` 让运行在走到这些帧号时各写一个 `frame_<index>.png`，无头或交互式运行末尾再把它播放过的混音写成 `audio.flac`（没播过东西就不写）。两个开关必须成对；只给 `--capture-frames` 不给 `--max-frames` 时，最后一帧的下一帧就是运行的终点。
+
+窗口运行上的捕获**只写帧**，不写 `audio.flac`：窗口的混音由音频设备按设备自己的时钟填充，与客户端可能一次一步推进的帧号没有共同时间基，样本对应不到捕获点名的帧上。要连混音一起留，用 `--headless`（自驱）或 `--headless --interactive`（客户端配速），那里由帧循环自己拉样本。
 
 | 工具            | 作用                                                             | 关键参数        |
 | --------------- | ---------------------------------------------------------------- | --------------- |
 | `step_frames`    | 按固定 60 Hz 帧推进场景                                          | `frames`（≥1）  |
 | `scene_status`   | 报告帧号、world 与纹理 id（库提供的那一半）                      | 无              |
 
-`scene_status` 由库提供，字段只有 `frame`、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits，可直接当 `read_texture_as_image` 的 `id` 与 `save_screenshot` 的 `target`）。场景自己的状态——球数、MIDI 序列、各按钮中心——由**示例**注册的 `scene_extra_status` 报：`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）。两个工具分开调，别指望 `scene_status` 里有按钮坐标。
+`scene_status` 由库提供，字段只有 `frame`、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits，可直接当 `read_texture_as_image` 的 `id` 与 `save_screenshot` 的 `target`；同一张纹理在 `list_resources` 里带 `label` `scene color`，两者是同一个 id）。场景自己的状态——球数、MIDI 序列、各按钮中心——由**示例**注册的 `scene_extra_status` 报：`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）。两个工具分开调，别指望 `scene_status` 里有按钮坐标。
 
 一个典型回合（所有 `Handle` 与 `id` 都是示意值，照 `scene_status` 报的填；`C` 是这条连接的名字）：
 

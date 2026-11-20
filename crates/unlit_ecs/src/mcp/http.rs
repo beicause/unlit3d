@@ -69,6 +69,10 @@ pub fn serve_http_with(
                     }
                 };
                 let _ = bound.send(Ok(local_addr));
+                let config = match allowed_hosts(local_addr) {
+                    Some(hosts) => StreamableHttpServerConfig::default().with_allowed_hosts(hosts),
+                    None => StreamableHttpServerConfig::default().disable_allowed_hosts(),
+                };
                 // The same pump the stdio server runs: a bounded inbox keeps a
                 // slow host from collecting an unbounded backlog, and the pump
                 // ends once the service is gone and the last sender with it.
@@ -86,7 +90,7 @@ pub fn serve_http_with(
                 let service = StreamableHttpService::new(
                     move || Ok(McpServer::new(sender.clone())),
                     Arc::new(LocalSessionManager::default()),
-                    StreamableHttpServerConfig::default(),
+                    config,
                 );
                 let mut stop_rx = stop_rx;
                 loop {
@@ -129,6 +133,40 @@ pub fn serve_http_with(
         stop,
         thread: Some(thread),
     })
+}
+
+/// The `Host` headers a client may reach a server bound to `addr` through, or
+/// `None` when the bound address cannot be named.
+///
+/// The transport rejects a request whose `Host` names anything else, which is
+/// its DNS-rebinding guard: a page that resolves its own domain to this port
+/// would otherwise drive the host. Its default list is the loopback names
+/// alone, so a server bound to a routable address refuses every request —
+/// including the ones from the client that asked for that address. The list
+/// therefore holds the names this server actually answers to: the bound
+/// address itself, plus the loopback names it may also be reached under.
+///
+/// A wildcard bind (`0.0.0.0` or `[::]`) has no one name to allow — the client
+/// arrives under whichever name the machine has — so there is nothing to check
+/// the header against and the guard is switched off, with a warning. A caller
+/// that needs the guard on a routable interface binds the interface's address.
+fn allowed_hosts(addr: SocketAddr) -> Option<Vec<String>> {
+    if addr.ip().is_unspecified() {
+        log::warn!(
+            "the MCP HTTP server is bound to {addr}, which has no single name to \
+             check the Host header against, so its DNS-rebinding guard is off; \
+             bind a specific address to keep it on"
+        );
+        return None;
+    }
+    let mut hosts = vec![addr.to_string()];
+    let loopback = if addr.is_ipv6() {
+        ["localhost", "::1"]
+    } else {
+        ["localhost", "127.0.0.1"]
+    };
+    hosts.extend(loopback.iter().map(|host| (*host).to_owned()));
+    Some(hosts)
 }
 
 /// A running MCP HTTP server, kept alive by the handle itself.
@@ -175,7 +213,7 @@ mod tests {
     use rmcp::model::CallToolRequestParams;
     use rmcp::transport::StreamableHttpClientTransport;
 
-    use super::serve_http_with;
+    use super::{allowed_hosts, serve_http_with};
     use crate::mcp::host::{McpCommand, WorldEntry, WorldRef};
 
     /// The host a test answers with: every list_worlds names one world, so a
@@ -211,6 +249,49 @@ mod tests {
             .structured_content
             .expect("the world list is structured");
         assert!(value.to_string().contains("test"));
+
+        client.cancel().await.expect("the client leaves");
+        server.stop();
+    }
+
+    /// A server bound to a routable address answers to that address, which
+    /// the transport's loopback-only default would refuse.
+    #[test]
+    fn a_bound_address_is_one_of_the_names_it_answers_to() {
+        let addr = "192.168.1.5:8080".parse().expect("the address parses");
+        let hosts = allowed_hosts(addr).expect("a routable address has a name");
+        assert!(hosts.contains(&String::from("192.168.1.5:8080")));
+        assert!(hosts.contains(&String::from("127.0.0.1")));
+        assert!(hosts.contains(&String::from("localhost")));
+    }
+
+    /// A wildcard bind has no name a client would arrive under, so there is
+    /// nothing to compare the header against.
+    #[test]
+    fn a_wildcard_bind_has_no_name_to_check() {
+        assert!(allowed_hosts("0.0.0.0:8080".parse().expect("the address parses")).is_none());
+        assert!(allowed_hosts("[::]:8080".parse().expect("the address parses")).is_none());
+    }
+
+    /// Reaching a server under an address other than the loopback names it is
+    /// bound to works: the guard admits the address, not just `localhost`.
+    #[tokio::test]
+    async fn a_client_reaches_a_server_bound_to_another_loopback_address() {
+        // 127.0.0.2 is on the loopback interface but is not one of the names
+        // the transport allows by default, so this is the case a routable bind
+        // hits.
+        let server = serve_http_with(sink, "127.0.0.2:0".parse().expect("the address parses"))
+            .expect("the server starts");
+        let transport = StreamableHttpClientTransport::from_uri(format!("{}mcp", server.url()));
+        let client = ().serve(transport).await.expect("the client serves");
+
+        let tools = client.list_tools(None).await.expect("the tools list");
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "list_worlds")
+        );
 
         client.cancel().await.expect("the client leaves");
         server.stop();

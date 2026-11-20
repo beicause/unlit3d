@@ -515,6 +515,68 @@ fn the_plain_listing_mirrors_the_borrowed_one() {
     assert_eq!(graph.resource_infos()[1].kind, "Virtual");
 }
 
+/// A label says what a resource is for, so a reader can tell two resources of
+/// the same kind apart without knowing the order they were inserted in.
+#[test]
+fn a_label_says_what_a_resource_is_for() {
+    let device = device();
+    let mut graph = ResourceGraph::new();
+    let labelled = graph.insert_labelled(buffer(&device, "colour"), None, Some("scene color"));
+    graph.insert(buffer(&device, "other"), None);
+
+    let nodes: Vec<_> = graph.nodes().collect();
+    assert_eq!(nodes[0].label, Some("scene color"));
+    assert_eq!(
+        nodes[1].label, None,
+        "a resource inserted without a label has none"
+    );
+    let infos = graph.resource_infos();
+    assert_eq!(infos[0].label, Some("scene color"));
+    assert_eq!(infos[1].label, None);
+
+    // A resource rebuilt in place keeps its role: the label names what the
+    // slot is for, not which bytes currently sit in it.
+    graph.replace(&labelled, sized_buffer(&device, 128));
+    assert_eq!(
+        graph.resource_infos()[0].label,
+        Some("scene color"),
+        "replacing a resource keeps its label"
+    );
+}
+
+/// A label answers with the one node carrying it, and refuses to choose when
+/// two carry the same one.
+#[test]
+fn a_label_names_one_node_or_asks_for_an_id() {
+    let device = device();
+    let mut graph = ResourceGraph::new();
+    let colour = graph.insert_labelled(buffer(&device, "colour"), None, Some("scene color"));
+
+    assert_eq!(
+        graph
+            .id_labelled("scene color")
+            .expect("one node is labelled"),
+        colour.id(),
+        "the label answers the node it was inserted on"
+    );
+    assert!(
+        graph.id_labelled("nothing").is_err(),
+        "a label no node carries has no answer"
+    );
+
+    // Nothing enforces uniqueness, so a second node under the same label is
+    // the caller's to resolve rather than a case to pick a side on.
+    let display = graph.insert_labelled(buffer(&device, "display"), None, Some("scene color"));
+    let message = graph
+        .id_labelled("scene color")
+        .expect_err("two nodes carry the label");
+    assert!(
+        message.contains(&colour.id().to_bits().to_string())
+            && message.contains(&display.id().to_bits().to_string()),
+        "the refusal names both nodes: {message}"
+    );
+}
+
 /// A resource that is dirty is reported as such until maintain runs its
 /// recipe.
 #[test]

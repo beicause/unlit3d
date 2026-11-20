@@ -38,10 +38,9 @@ pub use inventory;
 pub use rmcp::ErrorData;
 pub use rmcp::model::{CallToolResult, ContentBlock};
 pub use server::{
-    CommandSender, ContextArg, EntityArg, GetComponent, HandleArg, InputArg, ListEntities,
-    McpServer, NoArgs, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot, SendInput,
-    SetComponent, SpawnEntity, SpawnGltf, ToolResult, ToolRouter, ToolSource, WorldArg, command,
-    run, send, serve_stdio_with, serve_with, tool,
+    CommandSender, EntityArg, GetComponent, ListEntities, McpServer, NoArgs, SetComponent,
+    SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, run, send,
+    serve_stdio_with, serve_with, tool, worlds,
 };
 
 /// The JSON crate a tool uses to build structured output.

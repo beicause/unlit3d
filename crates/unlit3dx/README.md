@@ -485,9 +485,17 @@ on a windowed run it also asks for the offscreen path, since a swap chain
 image cannot be read back — and the application's `App::Args` are read by one
 clap parser, so a single `--help` describes both; the parsed arguments reach
 `App::configure` as a structure, unknown names are refused. Logging and the
-capture's write-out (`frame_<index>.png` per captured frame, plus
-`audio.flac` when the run played anything) live in the module too, so an
-application supplies a scene and its soundfont, not a `main`.
+capture's write-out (`frame_<index>.png` per captured frame, and `audio.flac`
+for a headless or interactive run that played anything) live in the module
+too, so an application supplies a scene and its soundfont, not a `main`.
+
+A windowed capture writes its frames and nothing else. Its frames are named
+by the frame loop, whose count a client may drive one step at a time, while
+the mix a windowed run plays is filled by the audio device on the device's
+own clock; the two have no time base in common, so a `--capture-frames`
+selection of a window cannot say which samples belong to frame N. A run that
+wants its mix kept on disk is a headless or interactive one, where the frame
+loop pulls the samples itself.
 
 ## Tests
 

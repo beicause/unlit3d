@@ -613,6 +613,9 @@ struct Node {
     /// How to build the resource again after one of its inputs was replaced,
     /// or `None` when the graph cannot rebuild it on its own.
     rebuild: Option<Rebuild>,
+    /// What the resource is for, when whoever inserted it said so. See
+    /// [`ResourceGraph::insert_labelled`].
+    label: Option<&'static str>,
 }
 
 /// A recipe that builds a resource out of the graph it lives in.
@@ -679,6 +682,8 @@ pub struct NodeInfo<'a> {
     pub dirty: bool,
     /// Whether the graph can rebuild this resource from its inputs on its own.
     pub rebuildable: bool,
+    /// What the resource is for, as the inserter labelled it.
+    pub label: Option<&'static str>,
 }
 
 /// One resource slot of a [`ResourceGraph`], as plain data.
@@ -703,6 +708,14 @@ pub struct ResourceInfo {
     pub dirty: bool,
     /// Whether the graph can rebuild this resource from its inputs on its own.
     pub rebuildable: bool,
+    /// What the resource is for, as [`ResourceGraph::insert_labelled`] recorded
+    /// it, or `None` for one inserted without a label.
+    ///
+    /// A label is the only thing in the graph that says which of several
+    /// resources of one kind is the one a caller means — which texture the
+    /// scene draws into, say — so a client that has to name a resource it did
+    /// not create looks for its label rather than guessing by kind.
+    pub label: Option<&'static str>,
 }
 
 /// How many resources of one kind a [`ResourceGraph`] holds.

@@ -1401,11 +1401,14 @@ suspends resumes by presenting, with no state to track on its side.
 
 An MCP screenshot reads a texture out of the resource graph by handle, so it
 sees the frame only under `Intermediate` -- a swap chain image is not a node.
-The tools take an optional `target` resource id — either the texture's own id
-or any view of it, since the pass that draws into an offscreen target usually
-holds only the view; without one they pick the world's only readable texture
-and report the ambiguity when a chain has several, which is the hook a
-post-processing chain uses to choose which stage to capture.
+The tools take a `target` resource id — either the texture's own id or any view
+of it, since the pass that draws into an offscreen target usually holds only the
+view. It is required: a world with several readable textures has no way to say
+which one holds the frame, and a tool that guessed could hand back last frame's
+picture under this frame's name. A `PersistentTarget` labels its texture
+(`"scene color"` by default), so `list_resources` names the target a client did
+not build, and a post-processing chain labels each stage to say which one it
+means.
 
 ## Tests
 

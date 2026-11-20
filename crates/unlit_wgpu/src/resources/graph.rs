@@ -61,6 +61,7 @@ impl ResourceGraph {
                 kind: node.resource.kind_name(),
                 dirty: node.dirty,
                 rebuildable: node.rebuild.is_some(),
+                label: node.label,
             })
             .collect()
     }
@@ -80,7 +81,38 @@ impl ResourceGraph {
             resource: &node.resource,
             dirty: node.dirty,
             rebuildable: node.rebuild.is_some(),
+            label: node.label,
         })
+    }
+
+    /// The one resource labelled `label`, as its id.
+    ///
+    /// A label says what a resource is for, which is how a caller that did not
+    /// create it names it: `"scene color"` is the texture a scene's frame
+    /// lands in, and asking for it beats picking among the graph's textures by
+    /// kind and order. Nothing in the graph enforces that a label is unique, so
+    /// a label two nodes carry has no single answer here: the call reports both
+    /// rather than choosing one, and the caller names an id instead.
+    ///
+    /// # Errors
+    ///
+    /// The message to show when no node carries the label, or when several do.
+    pub fn id_labelled(&self, label: &str) -> Result<ResId, String> {
+        let mut labelled = self
+            .graph
+            .iter()
+            .filter_map(|(id, node)| (node.label == Some(label)).then_some(ResId::from_node(id)));
+        let Some(first) = labelled.next() else {
+            return Err(format!("no resource is labelled {label:?}"));
+        };
+        match labelled.next() {
+            None => Ok(first),
+            Some(second) => Err(format!(
+                "resources {} and {} are both labelled {label:?}; name the one you mean by id",
+                first.to_bits(),
+                second.to_bits()
+            )),
+        }
     }
 
     /// The handle a [`ResId`] names, or `None` when no resource is there or
@@ -128,6 +160,36 @@ impl ResourceGraph {
         resource: R,
         rebuild: Option<Rebuild>,
     ) -> ResHandle<R> {
+        self.insert_labelled(resource, rebuild, None)
+    }
+
+    /// Add `resource` under `label`, which says what it is for.
+    ///
+    /// A label is how a resource announces the role only its inserter knows —
+    /// "the texture this scene draws into", say — so a caller that has to name
+    /// a resource it did not create reads the role out of the
+    /// [listing](Self::nodes) instead of picking among candidates by kind and
+    /// order. Nothing in the graph enforces uniqueness: two nodes may carry one
+    /// label, and a caller that expects a single one has to say what happens
+    /// when it finds several.
+    ///
+    /// The label outlives [`Self::replace`], like the rest of the node: a
+    /// resource rebuilt in place keeps the role it was inserted for.
+    ///
+    /// # Panics
+    ///
+    /// If `label` is given and is empty, since a label nothing can name is a
+    /// call that meant to pass one.
+    pub fn insert_labelled<R: ResourceKind>(
+        &mut self,
+        resource: R,
+        rebuild: Option<Rebuild>,
+        label: Option<&'static str>,
+    ) -> ResHandle<R> {
+        assert!(
+            label.is_none_or(|label| !label.is_empty()),
+            "a resource label states what the resource is for"
+        );
         let strong = Arc::new(());
         let node = self.graph.insert(Node {
             resource: resource.into_resource(),
@@ -135,6 +197,7 @@ impl ResourceGraph {
             strong: Arc::downgrade(&strong),
             held: Vec::new(),
             rebuild,
+            label,
         });
         ResHandle {
             node,

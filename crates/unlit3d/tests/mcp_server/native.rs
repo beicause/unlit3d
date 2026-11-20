@@ -67,8 +67,9 @@ fn offscreen_world(ctx: &Ctx) -> World {
 
         let graph = resource_graph_row.get();
         // The texture is registered in its own right so a screenshot can name
-        // it, and the view depends on it so the graph keeps it alive.
-        let texture = graph.insert(color.clone(), None);
+        // it, and the view depends on it so the graph keeps it alive. The label
+        // is what a client reads to find the target among the graph's textures.
+        let texture = graph.insert_labelled(color.clone(), None, Some("scene color"));
         let view = graph.insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             None,
@@ -210,8 +211,9 @@ impl Server {
         server
     }
 
-    /// Send a request and read the reply with its id.
-    async fn request(&mut self, method: &str, params: Value) -> Value {
+    /// Send a request and read the whole reply, so a test can inspect a
+    /// protocol-level error as well as a tool's own result.
+    async fn try_request(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
         let id = self.next_id;
         self.send(&json!({
@@ -224,9 +226,14 @@ impl Server {
         loop {
             let message = self.receive().await;
             if message.get("id") == Some(&json!(id)) {
-                return message["result"].clone();
+                return message;
             }
         }
+    }
+
+    /// Send a request and read its result, panicking on a protocol error.
+    async fn request(&mut self, method: &str, params: Value) -> Value {
+        self.try_request(method, params).await["result"].clone()
     }
 
     /// Send a notification, which gets no reply.
@@ -323,14 +330,44 @@ fn pixel(image: &image::RgbaImage, x: u32, y: u32) -> [u8; 4] {
     image.get_pixel(x, y).0
 }
 
+/// The id of the world's scene-colour target, found the way a client finds it.
+///
+/// The listing is the only thing a client sees, so the target is named by the
+/// label the scene gave it rather than by position among the graph's textures.
+async fn scene_color(server: &mut Server) -> u64 {
+    let resources = server.tool("list_resources", json!({})).await;
+    let labelled = resources
+        .as_array()
+        .expect("list_resources returns an array")
+        .iter()
+        .filter(|resource| resource["label"] == "scene color")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labelled.len(),
+        1,
+        "the world labels one scene-colour target: {resources}"
+    );
+    assert_eq!(
+        labelled[0]["kind"], "Texture",
+        "the label is on the texture"
+    );
+    labelled[0]["id"]
+        .as_u64()
+        .expect("a resource id is a number")
+}
+
 /// Render one frame and read the offscreen target back as pixels.
 async fn screenshot(server: &mut Server) -> image::RgbaImage {
+    let target = scene_color(server).await;
     // A screenshot answers with an image content block, not structured
     // content, so read the raw result rather than the tool helper's value.
     let shot = server
         .request(
             "tools/call",
-            json!({ "name": "read_screenshot", "arguments": {} }),
+            json!({
+                "name": "read_screenshot",
+                "arguments": { "target": target },
+            }),
         )
         .await;
     let image = image::load_from_memory(&image_bytes(&shot))
@@ -511,11 +548,29 @@ pub fn run() {
             "the listed clock is the one frame_clock reports: {clocks:?}"
         );
 
-        // `target` names the texture or any view of it: the pass that draws
-        // into an offscreen target holds the view, not the texture. Only the
-        // colour view can be read back, so the views that refuse are what
-        // tells it apart from the depth and multisample ones -- the listing
-        // carries no usage to ask.
+        // The label is how a client names the target it did not build: the
+        // scene states which of the graph's textures the frame lands in, so no
+        // tool has to guess.
+        let target = scene_color(&mut server).await;
+
+        // A target is required, not inferred. Without one there is nothing to
+        // read, and a world with several textures has no way to say which. The
+        // request is rejected before the tool runs, so it comes back as a
+        // protocol error rather than a tool result.
+        let untargeted = server
+            .try_request(
+                "tools/call",
+                json!({ "name": "read_screenshot", "arguments": {} }),
+            )
+            .await;
+        assert!(
+            untargeted.get("error").is_some() && untargeted.get("result").is_none(),
+            "a screenshot without a target is refused: {untargeted}"
+        );
+
+        // A view of the target names it too: the pass that draws into an
+        // offscreen target holds the view, not the texture, so a client
+        // reading the pass's own handles can still take the shot.
         let resources = server.tool("list_resources", json!({})).await;
         let views = resources
             .as_array()
@@ -528,7 +583,7 @@ pub fn run() {
             views.len() > 1,
             "the offscreen world registers a view per attachment, got {views:?}"
         );
-        let mut readable = Vec::new();
+        let mut by_view = None;
         for view in views {
             let result = server
                 .request(
@@ -539,18 +594,30 @@ pub fn run() {
             if result["isError"] == true {
                 continue;
             }
-            let by_view = image::load_from_memory(&image_bytes(&result))
+            let decoded = image::load_from_memory(&image_bytes(&result))
                 .expect("a view-named screenshot is a WebP")
                 .to_rgba8();
-            readable.push((view, by_view));
+            by_view = Some(decoded);
         }
-        assert_eq!(
-            readable.len(),
-            1,
-            "only the colour attachment can be read back"
-        );
-        let (_, by_view) = readable.pop().expect("one view is readable");
+        let by_view = by_view.expect("the colour view is readable");
         assert_eq!(by_view, image, "a view names the texture it views");
+
+        // The label names one texture, and the view of it shows the same
+        // picture: a client that reads the listing and a client that reads the
+        // pass's own handles reach the same target.
+        let by_label = server
+            .request(
+                "tools/call",
+                json!({ "name": "read_screenshot", "arguments": { "target": target } }),
+            )
+            .await;
+        let by_label = image::load_from_memory(&image_bytes(&by_label))
+            .expect("a label-named screenshot is a WebP")
+            .to_rgba8();
+        assert_eq!(
+            by_label, by_view,
+            "the labelled texture and its view are one picture"
+        );
 
         // A document and a path are the two ways to name the same thing: asking
         // for neither is a bad request, and both leaves it ambiguous.
@@ -622,7 +689,10 @@ pub fn run() {
         let saved = server
             .tool(
                 "save_screenshot",
-                json!({ "directory": directory.to_str().unwrap() }),
+                json!({
+                    "target": target,
+                    "directory": directory.to_str().unwrap(),
+                }),
             )
             .await;
         let path = saved["path"]
@@ -662,6 +732,7 @@ pub fn run() {
             .tool(
                 "save_screenshot",
                 json!({
+                    "target": target,
                     "directory": directory.to_str().unwrap(),
                     "file_name": "explicit.png",
                 }),
@@ -686,6 +757,7 @@ pub fn run() {
             .tool(
                 "save_screenshot",
                 json!({
+                    "target": target,
                     "directory": directory.to_str().unwrap(),
                     "file_name": "explicit.jpg",
                 }),
@@ -706,6 +778,7 @@ pub fn run() {
             .tool(
                 "save_screenshot",
                 json!({
+                    "target": target,
                     "directory": directory.to_str().unwrap(),
                     "file_name": "named",
                 }),

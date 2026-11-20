@@ -59,7 +59,9 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
 时长就是这个运行给定的 `HEADLESS_HZ`。`--max-frames` 让运行在走满这么多帧后结束，
 `--capture-frames` 点名要留哪几帧：每帧在 `--capture-out` 下写成
 `frame_<index>.png`，运行真的播放过东西时再写一段 `audio.flac`。两个开关在窗口运行上
-同样生效，只是窗口上的捕获还会把呈现切到离屏路径——交换链的图读不回来。每一帧长度都相同、
+同样生效，只是窗口上的捕获还会把呈现切到离屏路径——交换链的图读不回来——而窗口只
+写帧：它的混音由音频设备按设备时钟填充，与可能由客户端一次一步推进的帧没有共同
+时间基，那些样本对应不到捕获点名的帧上。每一帧长度都相同、
 生成骰子也是确定的，因此每次运行都可复现——[快照测试](tests/headless.rs)正建立
 在此之上：渲染帧与 webp 基准比较，混音与 FLAC 基准比较，基准都保存在
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；

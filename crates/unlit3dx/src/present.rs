@@ -26,6 +26,7 @@ use unlit3d::winit::builtin::{Resumed, window};
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
 use unlit3d::winit::presenter::{PRESENT_ORDER, PresentationPath, pump_presented_with};
 
+use crate::app::RunFrames;
 use crate::executor::LocalTasks;
 use crate::gpu::Gpu;
 use crate::host::tick_sub_world;
@@ -106,9 +107,17 @@ pub fn setup_presenter(
 /// record on this one call.
 ///
 /// While the winit host reports the app suspended, the behaviour does
-/// nothing; a host with no winit loop counts as resumed. When the host carries more
-/// than one presenter, the first one the query yields presents.
-pub fn draw_presented(render: Entity) -> OnFrame {
+/// nothing; a host with no winit loop counts as resumed. A frame that draws
+/// nothing — suspended, or before the presentation path exists — is not a
+/// frame the run advanced, so it neither spends a budget nor reaches a
+/// capture. When the host carries more than one presenter, the first one the
+/// query yields presents.
+///
+/// `frames` is the run's frame count, advanced here once per frame actually
+/// drawn. A run whose scene a stepper drives passes [None] instead: its
+/// stepper advances the count as it steps the worlds, and the draw would
+/// count the same frame twice.
+pub fn draw_presented(render: Entity, frames: Option<RunFrames>) -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER),
         move |world, _entity, frame| {
@@ -134,6 +143,10 @@ pub fn draw_presented(render: Entity) -> OnFrame {
             drop(nested);
             if let Err(error) = presenter.present(world) {
                 log::error!("failed to present a frame: {error}");
+                return;
+            }
+            if let Some(frames) = &frames {
+                frames.advance();
             }
         },
     )

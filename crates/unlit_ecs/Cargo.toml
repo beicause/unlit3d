@@ -40,6 +40,7 @@ thiserror.workspace = true
 async-channel = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "server"], optional = true }
 hyper-util = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
 rmcp = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
@@ -60,6 +61,7 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 ## on wasm, where a browser drives the world directly.
 mcp = [
   "dep:async-channel",
+  "dep:log",
   "dep:rmcp",
   "dep:schemars",
   "dep:serde",

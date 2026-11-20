@@ -68,7 +68,7 @@ pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;
 pub use options::RunOptions;
 pub use pace::Pacing;
-pub use scene::{Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
+pub use scene::{Mode, RenderPorts, RenderSetup, RunFrames, ScenePorts, SceneWorlds, Stepping};
 pub use windowed::{WindowOptions, windowed};
 
 #[cfg(all(

@@ -49,10 +49,14 @@ pub struct RunOptions {
     /// The most frames a run advances before it ends, counting from the
     /// first.
     ///
+    /// It counts frames the scene advanced, which is what a capture names
+    /// and what a client's steps reach: a turn that draws nothing — a
+    /// suspended app, or one whose presentation path is not built yet —
+    /// spends none of it.
+    ///
     /// Without it a run has no length of its own: a windowed run ends when
     /// its window closes, and a headless run only when its client asks it
-    /// to exit or the process is interrupted. It bounds a client-paced run
-    /// too, as a limit on the frames the client may advance.
+    /// to exit or the process is interrupted.
     #[arg(long, value_name = "FRAMES", value_parser = clap::value_parser!(u32).range(1..))]
     pub max_frames: Option<u32>,
     /// Which frames to write out, by index, comma separated: `0,10,20`.
@@ -69,8 +73,10 @@ pub struct RunOptions {
     )]
     pub capture_frames: Vec<u32>,
     /// The directory a run writes its capture under: one PNG per frame it
-    /// named, and the mix a headless run played. Without it the run writes
-    /// nothing.
+    /// named, and the mix a headless or interactive run played. A windowed
+    /// run writes the frames alone, since the mix it plays is filled by the
+    /// audio device on the device's clock and shares no time base with the
+    /// frames a client may step. Without it the run writes nothing.
     #[arg(long, value_name = "DIR", requires = "capture_frames")]
     pub capture_out: Option<PathBuf>,
 }

@@ -567,50 +567,32 @@ pub(crate) fn render_frame(world: &mut World, renderer: Option<Entity>) -> Resul
     Ok(Value::Null)
 }
 
-/// The offscreen texture a screenshot reads, from `handle` or by query.
+/// The offscreen texture a screenshot reads.
 ///
 /// `id` may name the texture or any view of it, since a caller that draws
 /// into an offscreen target knows the view its pass binds.
 fn screenshot_target(
     world: &World,
     context: RenderContext,
-    id: Option<ResId>,
+    id: ResId,
 ) -> Result<wgpu::Texture, String> {
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
-    if let Some(id) = id {
-        let handle = graph
-            .resolve(id)
-            .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-        let texture = match graph.get::<Resource>(&handle) {
-            Some(Resource::Texture(texture)) => texture.clone(),
-            Some(Resource::TextureView(view)) => view.texture().clone(),
-            _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
-        };
-        if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-            return Err(format!(
-                "resource id {} is a texture no one can read back: it lacks COPY_SRC",
-                id.to_bits()
-            ));
-        }
-        return Ok(texture);
+    let handle = graph
+        .resolve(id)
+        .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+    let texture = match graph.get::<Resource>(&handle) {
+        Some(Resource::Texture(texture)) => texture.clone(),
+        Some(Resource::TextureView(view)) => view.texture().clone(),
+        _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
+    };
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+        return Err(format!(
+            "resource id {} is a texture no one can read back: it lacks COPY_SRC",
+            id.to_bits()
+        ));
     }
-    let mut found: Option<wgpu::Texture> = None;
-    for node in graph.nodes() {
-        if let Resource::Texture(texture) = node.resource {
-            if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-                continue;
-            }
-            if found.is_some() {
-                return Err(
-                    "the world has more than one readable texture; pass `target`".to_string(),
-                );
-            }
-            found = Some(texture.clone());
-        }
-    }
-    found
-        .ok_or_else(|| "the world has no readable texture to screenshot; pass `target`".to_string())
+    Ok(texture)
 }
 
 /// Render one frame and read the offscreen target back.
@@ -618,7 +600,7 @@ fn screenshot_frame(
     world: &mut World,
     context: Option<Entity>,
     renderer: Option<Entity>,
-    target: Option<ResId>,
+    target: ResId,
 ) -> Result<Frame, String> {
     let context = render_context(world, context)?;
     let texture = screenshot_target(world, context, target)?;
@@ -640,7 +622,7 @@ pub(crate) fn read_screenshot(
     world: &mut World,
     context: Option<Entity>,
     renderer: Option<Entity>,
-    target: Option<ResId>,
+    target: ResId,
     format: Option<&str>,
 ) -> Result<Output, String> {
     let format = match format {
@@ -656,7 +638,7 @@ pub(crate) fn save_screenshot(
     world: &mut World,
     context: Option<Entity>,
     renderer: Option<Entity>,
-    target: Option<ResId>,
+    target: ResId,
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {

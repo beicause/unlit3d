@@ -62,6 +62,8 @@ keyboard-types = { workspace = true, optional = true }
 log.workspace = true
 parley = { workspace = true, optional = true }
 profiling.workspace = true
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.3", default-features = false }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.3", default-features = false }
@@ -147,6 +149,8 @@ mcp = [
   "dep:base64",
   "dep:image",
   "dep:pollster",
+  "dep:schemars",
+  "dep:serde",
   "gltf",
   "reflect",
   "unlit_ecs/mcp",

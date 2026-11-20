@@ -8,7 +8,7 @@ use std::sync::Arc;
     not(target_os = "android")
 ))]
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use unlit_ecs::{Entity, RemoteEntity, World};
 use unlit_wgpu::context::RenderDevice;
@@ -92,6 +92,42 @@ pub struct SceneWorlds {
 /// quarter second is well past any jitter a running host shows.
 const MAX_AUDIO_CATCH_UP_SECONDS: f64 = 0.25;
 
+/// How many frames a run has advanced, shared between whoever advances them
+/// and whoever reads the count.
+///
+/// A run builds one before it starts and hands a clone to each driver: a
+/// stepped run's [`Stepping`] advances it once per step, and a threaded
+/// window's draw advances it once per frame it can show. The frame budget, the
+/// capture and the report of frames a capture never reached all read this one
+/// number, so they name the frames the run actually advanced instead of each
+/// counting its own way.
+///
+/// It is an atomic rather than a plain counter because a frame behaviour holds
+/// only a shared reference to the world it runs in, and advancing the count is
+/// what the drivers do while the readers hold their own clones.
+#[derive(Clone, Debug, Default)]
+pub struct RunFrames(Arc<AtomicU32>);
+
+impl RunFrames {
+    /// How many frames the run has advanced.
+    #[must_use]
+    pub fn advanced(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// The frame the run stood on when it last advanced one, or [None]
+    /// before its first frame.
+    #[must_use]
+    pub fn current(&self) -> Option<u32> {
+        self.advanced().checked_sub(1)
+    }
+
+    /// Count one more frame as advanced.
+    pub(crate) fn advance(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// The pacing a host uses to step a scene's worlds frame by frame.
 ///
 /// The frame's own duration is what drives the worlds, and none of their
@@ -111,6 +147,8 @@ pub struct Stepping {
     physics_period: f32,
     /// How long one audio frame lasts, or none when the host pulls no audio.
     sample_period: Option<f64>,
+    /// The run's frame count, advanced once per [`Self::step`].
+    frames: RunFrames,
 }
 
 impl Stepping {
@@ -119,6 +157,10 @@ impl Stepping {
     ///
     /// Gameplay has no rate here: its world ticks once per frame, with the
     /// frame's own duration.
+    ///
+    /// `frames` is the run's shared frame count: the stepper advances it once
+    /// per step, so a host that reads it knows how many frames the run has
+    /// advanced rather than how many turns its loop has taken.
     ///
     /// The rate is turned into a period once, so a rate that is not a positive
     /// finite number has no period to carry: it would divide the frame's
@@ -130,7 +172,12 @@ impl Stepping {
     ///
     /// Panics when `physics_hz` is not a positive finite number.
     #[must_use]
-    pub fn new(worlds: SceneWorlds, physics_hz: f64, sample_rate: Option<u32>) -> Self {
+    pub fn new(
+        worlds: SceneWorlds,
+        physics_hz: f64,
+        sample_rate: Option<u32>,
+        frames: RunFrames,
+    ) -> Self {
         assert!(
             physics_hz.is_finite() && physics_hz > 0.0,
             "a physics rate must be a positive finite number, not {physics_hz}"
@@ -141,6 +188,7 @@ impl Stepping {
             audio_debt: 0.0,
             physics_period: 1.0 / physics_hz as f32,
             sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
+            frames,
         }
     }
 
@@ -150,13 +198,23 @@ impl Stepping {
         &self.worlds
     }
 
+    /// The run's frame count, which this stepper advances.
+    #[must_use]
+    pub fn frames(&self) -> &RunFrames {
+        &self.frames
+    }
+
     /// Step the scene once for `delta_seconds`: gameplay ticks, physics steps
     /// as its rate comes due, and the audio world drains the note jobs those
     /// ticks sent.
     ///
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.
+    ///
+    /// The count the stepper shares advances here, so the frame this step
+    /// produced is the one it is named by.
     pub fn step(&mut self, host: &World, delta_seconds: f64) {
+        self.frames.advance();
         // Gameplay runs once per host frame with its measured duration: its
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
@@ -217,3 +275,30 @@ impl Stepping {
 ))]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub struct ClientPacing(pub Arc<Mutex<Stepping>>);
+
+#[cfg(test)]
+mod tests {
+    use super::RunFrames;
+
+    #[test]
+    fn a_frame_count_starts_at_none_and_names_the_frame_it_reaches() {
+        let frames = RunFrames::default();
+        assert_eq!(frames.advanced(), 0);
+        assert_eq!(frames.current(), None);
+        frames.advance();
+        assert_eq!(frames.advanced(), 1);
+        assert_eq!(frames.current(), Some(0));
+        frames.advance();
+        assert_eq!(frames.current(), Some(1));
+    }
+
+    #[test]
+    fn a_clone_reads_the_count_its_original_advanced() {
+        let frames = RunFrames::default();
+        let cloned = frames.clone();
+        frames.advance();
+        frames.advance();
+        assert_eq!(cloned.advanced(), 2);
+        assert_eq!(frames.advanced(), 2);
+    }
+}

@@ -22,8 +22,8 @@ use unlit3d::input::{InputFeed, InputWriter, refresh_input};
 use unlit3d::relay::Snapshot;
 use unlit3d::winit::SurfaceOptions;
 use unlit3d::winit::builtin::{
-    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground, window,
-    winit_input_behaviour,
+    ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, request_redraw_while_foreground,
+    window, winit_input_behaviour,
 };
 use unlit3d::winit::event::WinitHost;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -33,14 +33,14 @@ use super::App;
 use super::capture::Capture;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use super::capture::capture_presented;
-use super::headless::{AUDIO_SAMPLE_RATE, RENDER_COMMAND_CAPACITY};
+use super::headless::RENDER_COMMAND_CAPACITY;
 #[cfg(all(
     feature = "mcp",
     not(target_arch = "wasm32"),
     not(target_os = "android")
 ))]
 use super::scene::ClientPacing;
-use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
+use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
 use crate::gpu::request_gpu;
 use crate::host::spawn_sub_world;
 use crate::present::{draw_presented, pump_presented, setup_presenter};
@@ -179,6 +179,10 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     } else {
         app.spawn_scene::<Threaded>(world, ports)
     };
+    // The frames the run has advanced, built before anything reads it so the
+    // behaviours that spend a budget and keep a capture count the same frames
+    // the scene does.
+    let frames = RunFrames::default();
     // The stepped worlds run before the draw, so the transforms they publish
     // are the ones this frame shows. The two pacing paths are exclusive: a
     // client-paced run parks its stepper in the host world, where the MCP
@@ -186,10 +190,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     // self-paced run keeps the stepper in its frame behaviour, and no tool
     // can reach it to advance the scene a second way.
     if stepped {
-        // The scene's audio world is stepped here, so the stepper pulls the
-        // mix for it: without a sample rate nothing asks the world to fill,
-        // and a run that records the mix would record silence.
-        let stepper = Stepping::new(worlds, A::PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE));
+        let stepper = Stepping::new(worlds, A::PHYSICS_HZ, None, frames.clone());
         let stepper = Arc::new(Mutex::new(stepper));
         // Parking the stepper is what lets a client step the scene, and
         // only a build with the tools has a client to hand it to: without
@@ -215,6 +216,19 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
             world
                 .root_scope_mut()
                 .spawn(bundle![OnFrame::new(move |world, _entity, frame| {
+                    // A suspended host shows nothing, so the frame it would
+                    // advance is not one the run advanced: stepping through
+                    // the suspension would spend the budget on frames nobody
+                    // ever saw.
+                    let resumed = world
+                        .root_scope()
+                        .query::<&Resumed>()
+                        .iter()
+                        .next()
+                        .is_none_or(|state| state.0);
+                    if !resumed {
+                        return;
+                    }
                     if let Ok(mut stepper) = stepper.lock() {
                         stepper.step(world, f64::from(frame.delta_time));
                     }
@@ -302,9 +316,12 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                 }
             }
         }),]);
+    // A stepped run has its stepper advance the count as it steps; a
+    // threaded one has no stepper, so the draw counts its own frames.
+    let drawn = if stepped { None } else { Some(frames.clone()) };
     world
         .root_scope_mut()
-        .spawn(bundle![draw_presented(render_entity)]);
+        .spawn(bundle![draw_presented(render_entity, drawn)]);
     // A capture reads the target the presenter just drew into, so it runs
     // one order after it rather than drawing the scene a second time. Reading
     // a frame back needs a filesystem to write it to, which this target has
@@ -315,23 +332,22 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     let capturing = reported.is_some();
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     let capturing = false;
-    // The frames the run advanced, kept so the capture can report the ones
-    // it never reached once the window closes. Only a bounded run or one
-    // that captures reads it: a plain window has neither a length to spend
-    // nor a shortfall to report.
-    let advanced = Arc::new(AtomicU32::new(0));
+    // Only a bounded run or one that captures ends itself: a plain window has
+    // neither a length to spend nor a shortfall to report.
     if options.max_frames.is_some() || capturing {
         world.root_scope_mut().spawn(bundle![end_after_frames(
             app_entity,
             options.max_frames,
-            Arc::clone(&advanced)
+            frames.clone()
         )]);
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     if let Some(capture) = capture {
-        world
-            .root_scope_mut()
-            .spawn(bundle![capture_presented(render_entity, capture)]);
+        world.root_scope_mut().spawn(bundle![capture_presented(
+            render_entity,
+            capture,
+            frames.clone()
+        )]);
     }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     let _ = &capture;
@@ -348,7 +364,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     // reached the last one it named, or the window closed first.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     if let Some(capture) = reported {
-        let advanced = advanced.load(Ordering::Relaxed);
+        let advanced = frames.advanced();
         if let Some(frame) = capture.missing(advanced) {
             log::warn!(
                 "the run advanced {advanced} frames and never reached frame {frame}, so the capture is incomplete"
@@ -357,19 +373,19 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     }
 }
 
-/// Count the frames a windowed run advances, and close its window once the
-/// run has advanced as many as it was given.
+/// Close the window once the run has advanced as many frames as it was given.
 ///
-/// The frame the budget names is the one the run draws last: the request
-/// lands after the presenter and the capture have seen the frame, so what the
-/// run shows of it is what a capture of it holds.
-fn end_after_frames(app: Entity, budget: Option<u32>, advanced: Arc<AtomicU32>) -> OnFrame {
+/// It counts the frames the scene advanced, not the turns the event loop took:
+/// a turn that suspended the app or found no presentation path drew nothing
+/// and advanced nothing, and spending a budget on it would end a client-paced
+/// run while the client is still stepping it. The frame the budget names is
+/// the one the run draws last, since the request lands after the presenter and
+/// the capture have seen it.
+fn end_after_frames(app: Entity, budget: Option<u32>, frames: RunFrames) -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER + 2),
-        move |world, _entity, frame| {
-            let reached = frame.index.saturating_add(1);
-            advanced.store(reached, Ordering::Relaxed);
-            let spent = budget.is_some_and(|budget| reached >= budget);
+        move |world, _entity, _frame| {
+            let spent = budget.is_some_and(|budget| frames.advanced() >= budget);
             if !spent {
                 return;
             }

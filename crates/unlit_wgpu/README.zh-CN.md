@@ -508,7 +508,9 @@ crate 自身创建着色器模块时走 `util::shader_module`，它是对 `Devic
   id 解析回句柄。[`ResourceGraph::info`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L26) 与
   [`ResourceGraph::resource_infos`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L53) 是同一
   幅图的纯数据形式，供只做汇报的读取者使用。外部读取者——调试叠层、MCP 服务器——因此
-  无需图的私有视图即可报告它。
+  无需图的私有视图即可报告它。节点还带着插入者给的
+  [标签](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources/graph.rs#L153)，
+  这是列表里唯一说明资源**用途**的东西：同 kind 的两张纹理靠标签分辨，不靠顺序。
 - **id 命名资源，句柄维持其存活。** [`ResId`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L421) 是资源可携带的纯值、[`Copy`] 形式：
   它带槽位的代际，因此指向已移除资源的 id 不再解析，而不会悄悄指向它的替身。
   [`ResHandle`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/resources.rs#L476) 持有引用，故资源在还有任何句柄指向它时存活；

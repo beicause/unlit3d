@@ -279,8 +279,7 @@ fn take(world: &mut World) -> Result<RecordingHandle, ToolError> {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StartRecording {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: unlit_ecs::mcp::WorldRef,
     /// How many seconds of audio to record at most. The recording stops and
@@ -293,8 +292,7 @@ pub(crate) struct StartRecording {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StopRecording {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: unlit_ecs::mcp::WorldRef,
     /// The directory to write the file into; created when it does not exist.
@@ -309,8 +307,7 @@ pub(crate) struct StopRecording {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReadRecording {
-    /// The world to drive: `"Host"` for the world the transport thread itself
-    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: unlit_ecs::mcp::WorldRef,
     /// The audio format to answer with: `"flac"` (lossless, the default) or

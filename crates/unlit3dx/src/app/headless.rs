@@ -8,7 +8,7 @@
 
 use unlit_ecs::World;
 use unlit_wgpu::context::RenderDevice;
-use unlit_wgpu::readback::readback_texture;
+use unlit_wgpu::readback::try_readback_texture;
 use unlit3d::frame::Frame;
 use unlit3d::input::{InputFeed, InputWriter, refresh_input};
 use unlit3d::offscreen::{PersistentTarget, TargetConfig};
@@ -17,7 +17,7 @@ use unlit3d::renderer::Renderer;
 use super::App;
 use super::capture::Capture;
 use super::pace::Pacing;
-use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
+use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
 use crate::audio::dispatch_audio_fill;
 use crate::host::{spawn_sub_world, tick_sub_world};
 use crate::world::{Stepped, with_stepped_world_mut};
@@ -170,7 +170,17 @@ pub async fn headless<A: App>(
     // and the synthesizer at the sample rate, neither necessarily an integer
     // multiple of the frame rate, so both accumulate their fractional steps
     // across frames.
-    let mut stepper = Stepping::new(worlds, A::PHYSICS_HZ, Some(config.audio_sample_rate));
+    //
+    // The count every reader of the run's length shares: the stepper advances
+    // it once per frame, so which frame the loop is on comes from there rather
+    // than from a counter beside it.
+    let frames = RunFrames::default();
+    let mut stepper = Stepping::new(
+        worlds,
+        A::PHYSICS_HZ,
+        Some(config.audio_sample_rate),
+        frames.clone(),
+    );
     // The interleaved sample buffer, reused across frames so the audio loop
     // does not allocate one per frame.
     let mut samples_out: Vec<f32> = Vec::new();
@@ -181,8 +191,11 @@ pub async fn headless<A: App>(
     );
     let mut mix_capped = false;
 
-    let mut index = 0u32;
-    while !config.pacing.is_spent(index) {
+    loop {
+        let index = frames.advanced();
+        if config.pacing.is_spent(index) {
+            break;
+        }
         frame.index = index;
 
         // The host's own buffer is folded every frame so the events a client
@@ -198,10 +211,10 @@ pub async fn headless<A: App>(
         stepper.step(&host, 1.0 / HEADLESS_HZ);
 
         // Audio: render whatever samples the frame's duration asks for.
-        let frames = stepper.audio_frames(1.0 / HEADLESS_HZ);
-        if frames > 0 {
+        let fill = stepper.audio_frames(1.0 / HEADLESS_HZ);
+        if fill > 0 {
             samples_out.clear();
-            samples_out.resize(frames * AUDIO_CHANNELS, 0.0);
+            samples_out.resize(fill * AUDIO_CHANNELS, 0.0);
             let filled = with_stepped_world_mut(&host, stepper.worlds().audio.entity, |audio| {
                 dispatch_audio_fill(
                     audio,
@@ -256,16 +269,22 @@ pub async fn headless<A: App>(
                     .cloned()
                     .expect("the target texture is a resource node")
             };
-            let pixels = readback_texture(&device.device, &device.queue, &texture).await;
-            if let Err(message) = config.capture.write_frame(index, &pixels, config.size) {
-                log::error!("{message}");
+            // A frame that cannot be read back is reported rather than
+            // taking the run down: the frames around it are still pictures
+            // worth having, and the missing one is named below.
+            match try_readback_texture(&device.device, &device.queue, &texture).await {
+                Ok(pixels) => {
+                    if let Err(message) = config.capture.write_frame(index, &pixels, config.size) {
+                        log::error!("{message}");
+                    }
+                    output.frames.push((index, pixels));
+                }
+                Err(error) => log::warn!("the run could not capture frame {index}: {error}"),
             }
-            output.frames.push((index, pixels));
         }
         drop(nested);
-        index = index.saturating_add(1);
-        output.advanced = index;
     }
 
+    output.advanced = frames.advanced();
     output
 }

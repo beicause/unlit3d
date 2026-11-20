@@ -12,6 +12,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+use super::scene::RunFrames;
 use crate::audio::AudioFormat;
 
 /// The frames a run keeps, and the directory it writes them into.
@@ -169,14 +171,51 @@ fn make_directory(into: &Path) -> Result<(), String> {
     })
 }
 
+/// Why a frame could not be read back for a capture.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CaptureError {
+    /// The host no longer holds the render sub-world the frame was drawn in.
+    #[error("the render sub-world is gone")]
+    NoRenderWorld,
+    /// Nor a renderer to ask for the context the target lives in.
+    #[error("the render world has no renderer")]
+    NoRenderer,
+    /// Nor the device and queue a copy needs.
+    #[error("the render context has no device")]
+    NoDevice,
+    #[error("the render context has no queue")]
+    NoQueue,
+    /// Nor the graph that holds the target.
+    #[error("the render context has no resource graph")]
+    NoGraph,
+    /// No single resource carries the label the capture reads back, or the
+    /// one the graph found is not a texture.
+    #[error("{0}")]
+    Target(String),
+    /// The target was made without the usage a copy out of it needs.
+    #[error("the capture's target was not created with COPY_SRC, so it cannot be read back")]
+    NotReadable,
+    /// The copy itself failed: an unmappable format, or a device that gave up.
+    #[error("reading the frame back failed: {0}")]
+    Readback(#[from] unlit_wgpu::readback::ReadbackError),
+}
+
 /// Capture the frames a windowed run presents, reading them back after the
 /// frame has been drawn.
 ///
 /// The behaviour runs one order past the presenter's, which is what draws
 /// the frame: it reads the target the presenter left behind rather than
-/// drawing the scene a second time. A scene that presents into the swap
-/// chain has no target to read, so naming a capture also asks the windowed
-/// run for an offscreen target.
+/// drawing the scene a second time. The target is the one labelled
+/// [`SCENE_COLOR_LABEL`](unlit3d::offscreen::SCENE_COLOR_LABEL), which is how
+/// the capture names the picture without depending on the presenter that drew
+/// it: a frame can be captured as soon as the target exists, and a host that
+/// carries more than one argument about which presenter is first.
+///
+/// `frames` is how the behaviour knows which frame it is looking at: the run
+/// advances the count once per frame it actually drew, so the frame a capture
+/// keeps is numbered the way the budget counts them, and a turn that drew
+/// nothing — a suspended app — is not mistaken for the frame it named.
 ///
 /// Readback blocks the frame it captures: it is the frame the caller asked
 /// for, and nothing else in the run waits on it.
@@ -184,14 +223,39 @@ fn make_directory(into: &Path) -> Result<(), String> {
 pub(crate) fn capture_presented(
     render: unlit_ecs::Entity,
     capture: Capture,
+    frames: RunFrames,
 ) -> unlit3d::frame::OnFrame {
     use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
+    use unlit3d::winit::builtin::Resumed;
     use unlit3d::winit::presenter::PRESENT_ORDER;
 
+    // The frame the last call looked at. A client-paced run draws the same
+    // frame on every turn until the client steps again, and reading a target
+    // back blocks the turn it runs in, so a frame is read once.
+    let mut seen: Option<u32> = None;
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER + 1),
-        move |world, _entity, frame| {
-            let index = frame.index;
+        move |world, _entity, _frame| {
+            // A suspended host drew nothing this turn, so the target still
+            // holds the last frame that did: reading it back under this
+            // frame's number would write one picture twice, and a capture's
+            // whole worth is that its frame N is frame N.
+            let resumed = world
+                .root_scope()
+                .query::<&Resumed>()
+                .iter()
+                .next()
+                .is_none_or(|state| state.0);
+            if !resumed {
+                return;
+            }
+            let Some(index) = frames.current() else {
+                return;
+            };
+            if seen == Some(index) {
+                return;
+            }
+            seen = Some(index);
             if !capture.wants(index) {
                 return;
             }
@@ -214,63 +278,70 @@ pub(crate) fn capture_presented(
     )
 }
 
-/// Read back the picture the presenter left in its target this frame.
+/// Read back the picture the frame just drew, from the render sub-world's
+/// target.
 ///
-/// The presenter lives in the host world, the way the presentation path is
-/// built there; the texture it holds a handle to lives in the render
-/// sub-world's resource graph. Both are needed, so the reason a frame cannot
-/// be read is carried out rather than swallowed.
+/// The target lives in the render sub-world's resource graph and the device
+/// that drew it is the one its renderer holds, so both are needed; every way
+/// this can come up short is a distinct error, since a capture that wrote
+/// nothing has to say which of them it was.
+///
+/// The texture has to be created with `COPY_SRC`, which an offscreen target
+/// is: the swap chain's image is not, and there is no handle to it anyway.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_presented(
     world: &unlit_ecs::World,
     render: unlit_ecs::Entity,
-) -> Result<((u32, u32), Vec<u8>), &'static str> {
-    use unlit_wgpu::readback::readback_texture;
+) -> Result<((u32, u32), Vec<u8>), CaptureError> {
+    use unlit_wgpu::readback::try_readback_texture;
+    use unlit_wgpu::resources::Resource;
+    use unlit3d::offscreen::SCENE_COLOR_LABEL;
     use unlit3d::renderer::Renderer;
-    use unlit3d::winit::presenter::Presenter;
 
-    let handle = {
-        let mut presenters = world.root_scope().query::<&Presenter>();
-        let presenter = presenters
-            .iter()
-            .next()
-            .ok_or("no presentation path is built")?;
-        let target = presenter
-            .target()
-            .ok_or("the scene presents into the swap chain")?;
-        target.texture.clone()
-    };
     let mut nested = world
         .root_scope()
         .try_query_one::<&unlit_ecs::World>(render)
-        .map_err(|_| "the render sub-world is gone")?;
+        .map_err(|_| CaptureError::NoRenderWorld)?;
     let render_world = nested.get();
     let context = {
         let mut renderers = render_world.root_scope().query::<&Renderer>();
-        let renderer = renderers
-            .iter()
-            .next()
-            .ok_or("the render world has no renderer")?;
+        let renderer = renderers.iter().next().ok_or(CaptureError::NoRenderer)?;
         renderer.context()
     };
     let device = context
         .device(&render_world.root_scope())
-        .map_err(|_| "the render context has no device")?;
+        .map_err(|_| CaptureError::NoDevice)?;
     let queue = context
         .queue(&render_world.root_scope())
-        .map_err(|_| "the render context has no queue")?;
+        .map_err(|_| CaptureError::NoQueue)?;
     let texture = {
         let mut graph = context
             .try_graph(&render_world.root_scope())
-            .map_err(|_| "the render context has no resource graph")?;
-        graph
-            .get()
-            .get(&handle)
-            .cloned()
-            .ok_or("the capture's target is no longer a resource")?
+            .map_err(|_| CaptureError::NoGraph)?;
+        let graph = graph.get();
+        let id = graph.id_labelled(SCENE_COLOR_LABEL).map_err(|_| {
+            CaptureError::Target(format!(
+                "no single resource is labelled {SCENE_COLOR_LABEL:?}, so there is no frame to read back"
+            ))
+        })?;
+        let handle = graph
+            .resolve(id)
+            .ok_or_else(|| CaptureError::Target(format!("stale resource id {}", id.to_bits())))?;
+        match graph.get::<Resource>(&handle) {
+            Some(Resource::Texture(texture)) => texture.clone(),
+            Some(Resource::TextureView(view)) => view.texture().clone(),
+            _ => {
+                return Err(CaptureError::Target(format!(
+                    "the resource labelled {SCENE_COLOR_LABEL:?} is not a texture"
+                )));
+            }
+        }
     };
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+        return Err(CaptureError::NotReadable);
+    }
     let size = (texture.width(), texture.height());
-    let pixels = pollster::block_on(readback_texture(&device, &queue, &texture));
+    let pixels = pollster::block_on(try_readback_texture(&device, &queue, &texture))?;
     Ok((size, pixels))
 }
 
