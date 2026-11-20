@@ -189,8 +189,12 @@ pub(super) fn spawn_scene(
     spawn_placed_scene(gpu, world, gltf, resources, &Transform::default())
 }
 
-/// Spawn the document's default scene at `placement`, composing it with the
-/// document's own node transforms as [`LitGltf::spawn_default_scene`] does.
+/// Spawn the document's default scene, then compose `placement` onto every
+/// entity it drew.
+///
+/// The document spawns where it was authored; composing in matrix space after
+/// the fact is what a caller placing a document does, and it leaves each node
+/// in its own place in the hierarchy.
 pub(super) fn spawn_placed_scene(
     gpu: &TestGpu,
     world: &mut World,
@@ -199,9 +203,21 @@ pub(super) fn spawn_placed_scene(
     placement: &Transform,
 ) -> Vec<GltfNode> {
     let source = gpu.mesh_source();
-    let mut scope = world.scope_mut(source);
-    gltf.spawn_default_scene(&mut scope, resources, placement)
-        .expect("the test document spawns")
+    let nodes = {
+        let mut scope = world.scope_mut(source);
+        gltf.spawn_default_scene(&mut scope, resources)
+            .expect("the test document spawns")
+    };
+    let placement = placement.compute_matrix();
+    let scope = world.root_scope();
+    for node in &nodes {
+        for &entity in &node.entities {
+            let mut current = scope.query_one::<&mut Transform>(entity);
+            let placed = placement * current.get().compute_matrix();
+            *current.get() = Transform::from_matrix(placed);
+        }
+    }
+    nodes
 }
 
 /// The glTF JSON of one quad skinned to a single joint, whose node sits at

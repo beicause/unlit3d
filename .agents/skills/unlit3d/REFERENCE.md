@@ -213,7 +213,7 @@
 
 ## glTF
 
-`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**两者都要传 `placement: &Transform`**，它复合到文档自身的节点矩阵之上，`Transform::default()` 表示文档原处）、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。被动画驱动的节点在播放期间写回未放置的变换。
+`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**不收放置参数**：实体变换就是节点自身的世界变换，要放置就自己逐实体前乘 `Transform::from_matrix(placement.compute_matrix() * current.compute_matrix())`）、`apply_animation`（只写文档自身的变换，因此会覆写调用方放在被驱动节点上的放置）/ `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死。
 
 ## 常用常量
 

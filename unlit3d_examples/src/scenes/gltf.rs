@@ -122,19 +122,20 @@ fn build(
 
     // The spawned handles are what `apply_animation` writes through: the fox's
     // handle carries the pose entity its skin reads, and the cube's carries
-    // the weights entity its morph targets read. Each document is spawned with
-    // its placement, which composes with the document's own node transforms.
+    // the weights entity its morph targets read.
     let (fox_nodes, morph_nodes) = {
         let mut scope = world.scope_mut(source_entity);
         // The embedded assets are checked in, so their scenes always spawn.
         (
-            fox.spawn_default_scene(&mut scope, &fox_resources, &FOX_PLACEMENT)
+            fox.spawn_default_scene(&mut scope, &fox_resources)
                 .expect("the fox asset spawns"),
             morph
-                .spawn_default_scene(&mut scope, &morph_resources, &MORPH_PLACEMENT)
+                .spawn_default_scene(&mut scope, &morph_resources)
                 .expect("the morph asset spawns"),
         )
     };
+    place(&world.root_scope(), &fox_nodes, &FOX_PLACEMENT);
+    place(&world.root_scope(), &morph_nodes, &MORPH_PLACEMENT);
 
     // Neither document carries `KHR_materials_unlit`, so both draw lit: a
     // frame without lights would draw them black. One ambient term keeps
@@ -231,6 +232,22 @@ fn build(
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("gltf/frame_{frame:02}.webp"))
         }),
+    }
+}
+
+/// Compose `placement` onto every entity `nodes` draws.
+///
+/// The document spawns where it was authored, so each entity carries its own
+/// node's world transform; composing in matrix space keeps every node in its
+/// place in the hierarchy rather than moving them all onto one transform.
+fn place(scope: &unlit_ecs::Scope<'_>, nodes: &[unlit3d::gltf::GltfNode], placement: &Transform) {
+    let placement = placement.compute_matrix();
+    for node in nodes {
+        for &entity in &node.entities {
+            let mut current = scope.query_one::<&mut Transform>(entity);
+            let placed = placement * current.get().compute_matrix();
+            *current.get() = Transform::from_matrix(placed);
+        }
     }
 }
 

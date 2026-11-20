@@ -23,6 +23,7 @@ fn egui_variant_for_tests(srgb_to_linear_output: bool) -> LitVariant {
         base_color_texture: true,
         morph: false,
         strip_index_format: None,
+        reversed_winding: false,
     }
 }
 

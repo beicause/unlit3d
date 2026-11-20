@@ -1,7 +1,6 @@
 //! What a loaded document puts in the world: culling, morph targets and skins.
 
 use super::*;
-use crate::gltf::scene::decompose;
 
 #[test]
 fn a_double_sided_material_culls_nothing() {
@@ -221,9 +220,11 @@ fn a_node_without_a_skin_has_no_pose() {
 fn a_mirror_survives_the_decomposition() {
     // A reflection is not a rotation, so the sign has to land in the scale: a
     // transform that read the axes' positive lengths would recompose to a
-    // rotation of the mirrored geometry, which is a different shape.
+    // rotation of the mirrored geometry, which is a different shape. The
+    // winding a draw uses is derived from the same determinant, so a mirrored
+    // entity draws the side its scale names.
     let matrix = glam::Mat4::from_scale(glam::Vec3::new(-2.0, 3.0, 4.0));
-    let transform = decompose(matrix);
+    let transform = Transform::from_matrix(glam::Affine3A::from_mat4(matrix));
     assert!(
         (transform.scale.x + 2.0).abs() < 1e-6,
         "{:?}",

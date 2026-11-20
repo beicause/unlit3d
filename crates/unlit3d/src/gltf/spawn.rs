@@ -8,7 +8,6 @@
 //! exactly the entities a node draws.
 
 use super::material::{alpha_cutoff, base_color_uv_set};
-use super::scene::decompose;
 use super::{
     GltfMaterial, GltfMesh, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId,
 };
@@ -22,18 +21,16 @@ use unlit_ecs::{ScopeMut, prelude::Entity};
 impl LitGltf {
     /// Spawn the entities that draw `node`'s mesh into `world`.
     ///
-    /// `placement` says where the document sits: the node's own world transform
-    /// is composed with it, so one document can be spawned into several places.
-    /// The composition happens on matrices, before an entity's
-    /// [`Transform`] is derived, so a node under a
-    /// parent keeps the hierarchy's shape and the placement reaches the whole
-    /// document at once instead of every node on its own. Pass
-    /// [`Transform::default()`](crate::components::Transform::default) to spawn
-    /// the document where it was authored.
-    ///
-    /// An animation writes the transform of every node it reaches from the
-    /// document's own matrices, so a node a clip drives falls back to its
-    /// unplaced transform while that clip plays — see [`Self::apply_animation`].
+    /// Each entity's [`Transform`] is the node's own world transform, so the
+    /// document spawns where it was authored. Placing it is the caller's own
+    /// job, on the very component the move would be written to anyway —
+    /// `*current.get() = Transform::from_matrix(placement.compute_matrix() *
+    /// current.compute_matrix())` over every entity of every spawned node —
+    /// and it stays the caller's job afterwards: each is an ordinary world
+    /// transform, not a base an animation re-derives. A clip that drives a node
+    /// writes that node's own document transform, so it overwrites whatever the
+    /// caller placed there, exactly as it overwrites any other write to the
+    /// field — see [`Self::apply_animation`].
     ///
     /// Returns a [`GltfNode`] naming one entity per primitive of the node's
     /// mesh — each spawned as a
@@ -68,18 +65,15 @@ impl LitGltf {
         world: &mut ScopeMut<'_>,
         node: NodeId,
         resources: &GltfResources,
-        placement: &Transform,
     ) -> Result<GltfNode, super::Error> {
         let index = node.index();
-        let placement = glam::Mat4::from(placement.compute_matrix());
-        let matrix = placement * self.node_matrices[index];
-        // A mirrored instance — a negative determinant, which a negative scale
-        // is the ordinary way to state — has its front faces wound the other
-        // way round, so the side the document calls front keeps drawing rather
-        // than the geometry turning inside out. `decompose` states the sign as
-        // a negative x scale, and the winding takes it from the same matrix.
-        let mirrored = matrix.determinant() < 0.0;
-        let transform = decompose(matrix);
+        // `Transform::from_matrix` states a reflection as a negative scale, so
+        // the entity carries the sign the document gave the node and a caller
+        // that composes a placement onto it keeps that sign. The winding a draw
+        // uses is resolved from the placement the frame actually draws with, so
+        // it follows the field wherever a caller moves it.
+        let transform =
+            Transform::from_matrix(glam::Affine3A::from_mat4(self.node_matrices[index]));
         let node = self.node(index);
         let mut entities = Vec::new();
         // One pose entity per skinned node, shared by every primitive it
@@ -142,19 +136,10 @@ impl LitGltf {
                 // and blend mode; the bundle leaves the ones this primitive
                 // does not need out of the spawn rather than handing the
                 // renderer `None`s to look through.
-                let mut key = mesh_handle.key.clone();
-                // A material drawn from both sides has no front face to wind,
-                // so only a culled one needs the reversed order — the two
-                // would otherwise specialize into variants that draw the same
-                // frame.
-                if mirrored && key.options.primitive.cull_mode.is_some() {
-                    key.options
-                        .update(|options| options.primitive.front_face = wgpu::FrontFace::Cw);
-                }
                 let drawn = LitMeshBundle {
                     transform: transform.clone(),
                     mesh: mesh_handle.mesh.clone(),
-                    pipeline: GpuRenderPipeline::new(key),
+                    pipeline: GpuRenderPipeline::new(mesh_handle.key.clone()),
                     color: InstanceColor::new(tint),
                     // The cutoff is per-instance state, so the entity carries
                     // it and the shader reads it out of the instance stream.
@@ -182,8 +167,8 @@ impl LitGltf {
     /// reaches them; a node with no mesh has none of its own but is still
     /// returned, so the list maps a document node to its entities. Nodes are
     /// visited root-first and each subtree fully; every node with a mesh
-    /// contributes its primitives exactly where its world-space transform sits
-    /// in the hierarchy, composed with `placement` — see [`Self::spawn_node`].
+    /// contributes its primitives exactly where its document transform sits in
+    /// the hierarchy — see [`Self::spawn_node`].
     ///
     /// # Errors
     ///
@@ -194,7 +179,6 @@ impl LitGltf {
         &self,
         world: &mut ScopeMut<'_>,
         resources: &GltfResources,
-        placement: &Transform,
     ) -> Result<Vec<GltfNode>, super::Error> {
         let scene = self
             .document
@@ -206,7 +190,7 @@ impl LitGltf {
             .map(|node| NodeId::new(node.index()))
             .collect();
         while let Some(node) = stack.pop() {
-            nodes.push(self.spawn_node(world, node, resources, placement)?);
+            nodes.push(self.spawn_node(world, node, resources)?);
             stack.extend(
                 self.node(node.index())
                     .children()

@@ -582,6 +582,14 @@ pub struct DrawContext<'a> {
     pub mesh: &'a GpuMesh,
     /// The material the draw binds, or `None` when it binds no material group.
     pub material: Option<&'a GpuMaterial>,
+    /// The entity's world transform, as culling resolved it this frame.
+    ///
+    /// It is the same matrix the frame sorts and draws the entity through, so a
+    /// variant derived from it cannot disagree with the placement the draw
+    /// actually uses — which is what lets a winding depend on the transform a
+    /// caller writes at run time rather than on the one an entity was spawned
+    /// with.
+    pub world_from_local: Affine3A,
 }
 
 /// Where a family's per-instance vertex stream binds and how wide one record

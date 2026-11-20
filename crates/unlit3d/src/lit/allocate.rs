@@ -144,6 +144,7 @@ impl MeshSource {
             base_color_texture: false,
             morph: morph_deltas.is_some(),
             strip_index_format: None,
+            reversed_winding: false,
         };
         let position_stream = variant.position_stream();
         let secondary_stream = variant.secondary_stream();

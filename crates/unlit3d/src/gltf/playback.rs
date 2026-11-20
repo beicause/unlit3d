@@ -10,7 +10,6 @@ use super::animation::{
     Channel, ChannelValues, channels, interpolation_stride, sample_rotation, sample_vec3,
     sample_weights,
 };
-use super::scene::decompose;
 use super::{AnimationId, GltfNode, LitGltf};
 use crate::components::{MorphWeights, SkinPose, Transform};
 use unlit_ecs::Scope;
@@ -109,8 +108,12 @@ impl LitGltf {
     /// `interpolation`: `STEP` holds the previous keyframe, `LINEAR` blends
     /// (with a spherical blend for a rotation) and `CUBICSPLINE` evaluates the
     /// Hermite spline through the frame's tangents. A node no channel targets
-    /// keeps its rest transform, and a node that is neither spawned nor an
-    /// ancestor of one costs nothing.
+    /// keeps whatever transform it carries — a placement the caller composed
+    /// onto it included — while a node a channel reaches is written at the
+    /// document's own transform for it, which is what the clip animates. A
+    /// caller that placed a document whose nodes it also animates composes the
+    /// placement again onto what this wrote. A node that is neither spawned
+    /// nor an ancestor of one costs nothing.
     ///
     /// The clip's keyframes are decoded on the first frame that plays it and
     /// kept afterwards, and this call's working set is reused across frames, so
@@ -231,7 +234,8 @@ impl LitGltf {
         for handle in nodes {
             let node = handle.node.index();
             if scratch.dirty[node] {
-                let transform = decompose(scratch.matrices[node]);
+                let transform =
+                    Transform::from_matrix(glam::Affine3A::from_mat4(scratch.matrices[node]));
                 for &entity in &handle.entities {
                     if let Ok(mut current) = world.try_query_one::<&mut Transform>(entity) {
                         *current.get() = transform.clone();

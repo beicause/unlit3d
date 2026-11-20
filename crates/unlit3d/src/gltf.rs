@@ -33,15 +33,14 @@
 //! what it uploaded alive:
 //!
 //! ```rust,no_run
-//! # use unlit3d::components::Transform;
 //! # use unlit3d::gltf::LitGltf;
 //! # use unlit3d::prelude::MeshSource;
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
 //! let resources = gltf.insert_resources(source, &world.as_scope());
-//! // Where the document sits; `Transform::default()` is where it was authored.
-//! let entities = gltf.spawn_default_scene(world, &resources, &Transform::default());
+//! // The entities land where the document authored its nodes.
+//! let entities = gltf.spawn_default_scene(world, &resources);
 //! // ... render ...
 //! // Giving the handles up makes their resources collectable.
 //! drop(resources);
@@ -305,9 +304,9 @@ pub struct LitGltf {
     images: Vec<gltf::image::Data>,
     /// World-space matrix of every node, indexed by node index.
     ///
-    /// A spawn composes its placement into these and decomposes the result, and
-    /// animation recomposes them from the node's own local transform and its
-    /// parents, so a shear in that chain has to survive both.
+    /// A spawn reads one into an entity's [`Transform`],
+    /// and animation recomposes them from the node's own local transform and
+    /// its parents, so a shear in that chain has to survive both.
     node_matrices: Vec<glam::Mat4>,
     /// The parent of every node, indexed by node index; `None` at a root.
     ///

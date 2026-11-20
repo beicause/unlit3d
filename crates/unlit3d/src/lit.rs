@@ -105,6 +105,13 @@ pub(crate) fn lit_variant(options: &Hashed<LitOptions>, draw: &DrawContext<'_>) 
         base_color_texture: draw.material.is_some(),
         morph: draw.mesh.morph_targets > 0,
         strip_index_format: strip_index_format(options.primitive.topology, index_format),
+        // The placement decides which order the geometry's triangles wind in,
+        // and a mirrored one — a negative determinant, which a negative scale
+        // is the ordinary way to state — draws with the order reversed. Only a
+        // culling variant has a front to distinguish: one that culls nothing
+        // would compile a second variant drawing the same frame.
+        reversed_winding: options.primitive.cull_mode.is_some()
+            && draw.world_from_local.matrix3.determinant() < 0.0,
     }
 }
 

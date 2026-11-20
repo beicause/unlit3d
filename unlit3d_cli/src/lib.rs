@@ -190,17 +190,25 @@ pub fn build_world(
         let resources = with_mesh_source(&world, source_entity, |source, world| {
             gltf.insert_resources(source, world)
         });
-        // The placement is composed into the document's own matrices as it
-        // spawns, so every node keeps its place in the hierarchy instead of
-        // every node being moved onto the same transform.
-        let placement = document
-            .placement
-            .as_ref()
-            .map_or_else(Transform::default, PlacementConfig::transform);
         let nodes = {
             let mut scope = world.scope_mut(source_entity);
-            gltf.spawn_default_scene(&mut scope, &resources, &placement)?
+            gltf.spawn_default_scene(&mut scope, &resources)?
         };
+        // The document spawns where it was authored. A configured placement is
+        // composed onto every entity afterwards, in matrix space, so each node
+        // keeps its own place in the hierarchy rather than every node landing
+        // on one transform.
+        if let Some(placement) = &document.placement {
+            let placement = placement.transform().compute_matrix();
+            let scope = world.root_scope();
+            for node in &nodes {
+                for &entity in &node.entities {
+                    let mut current = scope.query_one::<&mut Transform>(entity);
+                    let placed = placement * current.get().compute_matrix();
+                    *current.get() = Transform::from_matrix(placed);
+                }
+            }
+        }
         if let Some(animation) = &document.animation {
             let index = animation_index(&gltf, animation)?;
             gltf.apply_animation(

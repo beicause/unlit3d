@@ -792,9 +792,11 @@ world you already render:
   in.
 - `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
   mesh (or every node reachable from the default scene): one entity per
-  primitive, each carrying the node's world-space [`Transform`](components::Transform) —
-  the node's own world transform composed with the spawn's `placement` — the uploaded
-  [`GpuMesh`](components::GpuMesh), the [`GpuRenderPipeline`](components::GpuRenderPipeline)
+  primitive, each carrying the node's world-space [`Transform`](components::Transform),
+  so the document spawns where it was authored; placing it elsewhere is the
+  caller's own move, a placement matrix composed onto every spawned entity.
+  Each entity also carries the uploaded [`GpuMesh`](components::GpuMesh), the
+  [`GpuRenderPipeline`](components::GpuRenderPipeline)
   for the mesh, an [`InstanceColor`](lit::InstanceColor) tinted with the
   material's base-color factor, and — when the mesh reads a base-color texture —
   the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
@@ -846,11 +848,11 @@ world you already render:
 - An instance whose composed transform has a negative determinant — a negative
   scale being the ordinary way to state one — draws with the reversed winding
   the specification gives it, so a negative scale mirrors the geometry rather
-  than turning it inside out and culling it. The sign is read from the composed
-  matrix, not from the entity's `Transform`, and a `doubleSided` material needs
-  no rewrite because it culls nothing. The winding is fixed when the node is
-  spawned, so a clip that animates a scale through zero into the other sign
-  moves the geometry without flipping it.
+  than turning it inside out and culling it. The sign is read from the matrix
+  the frame draws the entity with — not from the key the mesh was uploaded
+  with — so a `Transform` a caller or a clip turns negative mid-frame flips the
+  winding with it; a `doubleSided` material needs no flip because it culls
+  nothing.
 - The UV stream is the `TEXCOORD_n` set the material's base-color texture
   names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
   primitive whose material names a set it does not carry draws untextured
@@ -868,9 +870,10 @@ world you already render:
   It takes a `&Scope`, so a caller drives it alongside anything else that reads
   the world, and it touches nothing the passed `&[GltfNode]` does not name. The
   recomposition starts from the document's own node locals, so a node a clip
-  reaches is written at its unplaced transform: a placement given to
-  `spawn_default_scene` survives on every node the clip leaves alone, and is
-  dropped while the clip plays on the nodes it drives.
+  reaches is written at its document transform: a placement the caller
+  composed onto the entities survives on every node the clip leaves alone,
+  and is dropped while the clip plays on the nodes it drives — a caller that
+  wants both composes the placement again onto whatever the clip wrote.
 - A clip is decoded once and kept: the keyframes a channel addresses are
   collected on the first frame that plays the clip rather than re-read from the
   document's buffers on every frame. The working set — the locals it overwrites,

@@ -52,6 +52,63 @@ impl Transform {
     pub fn compute_matrix(&self) -> glam::Affine3A {
         glam::Affine3A::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
     }
+
+    /// The transform an affine matrix states, the inverse of
+    /// [`Self::compute_matrix`].
+    ///
+    /// Composing two transforms is a matrix product, so a caller that places an
+    /// entity relative to where it already stands multiplies the matrices and
+    /// comes back here: `Transform::from_matrix(placement.compute_matrix() *
+    /// current.compute_matrix())`.
+    ///
+    /// Two shapes a `Transform` cannot hold are lost, since it stores
+    /// translation, rotation and scale and nothing else: a sheared matrix loses
+    /// its shear, and an axis scaled to zero keeps an arbitrary rotation (there
+    /// is no direction to preserve along a collapsed axis). A mirror survives:
+    /// a reflection is not a rotation, so a matrix of negative determinant
+    /// states its sign as a negative scale on the x axis, the axis
+    /// `Affine3A::to_scale_rotation_translation` also picks, and the three
+    /// normalized axes then form a proper rotation — the result recomposes to a
+    /// matrix of the same determinant.
+    ///
+    /// Unlike `Affine3A::to_scale_rotation_translation`, a degenerate matrix is
+    /// answered rather than rejected: a zero axis keeps an arbitrary rotation
+    /// instead of failing, so no matrix an entity may carry panics here.
+    #[must_use]
+    pub fn from_matrix(matrix: glam::Affine3A) -> Self {
+        let translation: glam::Vec3 = matrix.translation.into();
+        let x: glam::Vec3 = matrix.matrix3.x_axis.into();
+        let y: glam::Vec3 = matrix.matrix3.y_axis.into();
+        let z: glam::Vec3 = matrix.matrix3.z_axis.into();
+        let (sx, sy, sz) = (x.length(), y.length(), z.length());
+        // A reflection states itself as a negative scale on one axis; naming x
+        // keeps the choice the same as glam's own decomposition.
+        let sign = match matrix.matrix3.determinant() < 0.0 {
+            true => -1.0,
+            false => 1.0,
+        };
+        Self {
+            translation,
+            rotation: glam::Quat::from_mat3(&glam::Mat3::from_cols(
+                axis_or_identity(x, sx * sign),
+                axis_or_identity(y, sy),
+                axis_or_identity(z, sz),
+            )),
+            scale: glam::Vec3::new(sx * sign, sy, sz),
+        }
+    }
+}
+
+/// A unit-length axis, keeping its direction; identity when collapsed.
+///
+/// The signed length is what the caller passes, so an axis a reflection turned
+/// round divides back to the direction the rotation holds.
+fn axis_or_identity(axis: glam::Vec3, length: f32) -> glam::Vec3 {
+    if length.abs() > f32::EPSILON {
+        axis / length
+    } else {
+        glam::Vec3::X // direction is meaningless along a zero-length axis
+    }
 }
 
 /// Camera state: the view and projection transforms it draws through.

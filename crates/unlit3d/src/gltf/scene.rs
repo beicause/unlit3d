@@ -21,11 +21,15 @@ pub(super) fn node_parents(document: &gltf::Document) -> Vec<Option<usize>> {
 ///
 /// A matrix-form node transform is composed back into translation, rotation
 /// and scale so that an animation can address a single one of them; see
-/// [`decompose`] for what that costs.
+/// [`Transform::from_matrix`] for what that costs.
 pub(super) fn node_locals(document: &gltf::Document) -> Vec<Transform> {
     document
         .nodes()
-        .map(|node| decompose(glam::Mat4::from_cols_array_2d(&node.transform().matrix())))
+        .map(|node| {
+            Transform::from_matrix(glam::Affine3A::from_mat4(glam::Mat4::from_cols_array_2d(
+                &node.transform().matrix(),
+            )))
+        })
         .collect()
 }
 
@@ -105,53 +109,6 @@ pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
             })
         })
         .collect()
-}
-
-/// Split a world-space matrix into the parts an entity's
-/// [`Transform`] stores: translation, rotation and scale.
-///
-/// The decomposition is lossy in two ways, neither recoverable from a
-/// [`Transform`], which stores the three parts and nothing else: a sheared
-/// matrix loses the shear, and an axis scaled to zero keeps an arbitrary
-/// rotation (there is no rotation to preserve along a collapsed axis). A
-/// mirror survives: a reflection is not a rotation, so a matrix of negative
-/// determinant states its sign as a negative scale on the x axis — the axis
-/// `to_scale_rotation_translation` also picks — and the three normalized axes
-/// then form a proper rotation. Reading the sign as a positive length instead
-/// would hand out a transform that draws the geometry turned inside out.
-pub(super) fn decompose(matrix: glam::Mat4) -> Transform {
-    let translation = matrix.w_axis.truncate();
-    let x = matrix.x_axis.truncate();
-    let y = matrix.y_axis.truncate();
-    let z = matrix.z_axis.truncate();
-    let (sx, sy, sz) = (x.length(), y.length(), z.length());
-    let m3 = glam::Mat3::from_cols(x, y, z);
-    let sign = match m3.determinant() < 0.0 {
-        true => -1.0,
-        false => 1.0,
-    };
-    let rotation = glam::Quat::from_mat3(&glam::Mat3::from_cols(
-        axis_or_identity(x, sx * sign),
-        axis_or_identity(y, sy),
-        axis_or_identity(z, sz),
-    ));
-    Transform {
-        translation,
-        rotation,
-        scale: glam::Vec3::new(sx * sign, sy, sz),
-    }
-}
-
-/// A unit-length axis, keeping its direction; identity when collapsed.
-///
-/// The signed length is what the caller passes, so an axis that a reflection
-/// turned round divides back to the direction the rotation holds.
-fn axis_or_identity(axis: glam::Vec3, length: f32) -> glam::Vec3 {
-    if length.abs() > f32::EPSILON {
-        axis / length
-    } else {
-        glam::Vec3::X // direction is meaningless along a zero-length axis
-    }
 }
 
 /// Where each mesh's first primitive sits in a document-mesh-major primitive

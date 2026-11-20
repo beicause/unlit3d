@@ -32,6 +32,21 @@ pub struct LitVariant {
     pub morph: bool,
     /// The strip index format the mesh's index buffer requires, if any.
     pub strip_index_format: Option<wgpu::IndexFormat>,
+    /// Whether the draw's placement mirrors its geometry, so that the winding
+    /// the pipeline treats as front has to be reversed.
+    ///
+    /// glTF states that a mesh instance's front faces wind with the sign of its
+    /// global transform's determinant, and a negative scale is the ordinary way
+    /// a document asks for a mirror. The sign is a fact of the placement a frame
+    /// resolves rather than of the key a caller spawned, so it enters the
+    /// variant here — from the world matrix the frame draws the entity with —
+    /// and an entity whose transform a caller rewrites at run time draws with
+    /// the winding that rewrite implies, without the pipeline being respawned.
+    ///
+    /// A variant that culls nothing has no front face to distinguish, so the
+    /// flag stays clear for it: reversing the order there would compile a second
+    /// variant that draws exactly the same frame.
+    pub reversed_winding: bool,
 }
 
 impl LitVariant {
@@ -427,6 +442,15 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
             primitive: {
                 let mut primitive = options.primitive;
                 primitive.strip_index_format = self.strip_index_format;
+                if self.reversed_winding {
+                    // The placement mirrors the geometry, so the order the
+                    // document called front is the one the rasterizer sees as
+                    // back: flip whichever side the policy named.
+                    primitive.front_face = match primitive.front_face {
+                        wgpu::FrontFace::Ccw => wgpu::FrontFace::Cw,
+                        wgpu::FrontFace::Cw => wgpu::FrontFace::Ccw,
+                    };
+                }
                 primitive
             },
             depth_stencil,

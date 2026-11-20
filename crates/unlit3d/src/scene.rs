@@ -260,6 +260,7 @@ where
             entity: mesh.entity,
             mesh: gpu_mesh,
             material,
+            world_from_local: mesh.world_from_local,
         };
         let variant = key.variant(&draw);
         let ordinal = self.variants.specialize(variant);

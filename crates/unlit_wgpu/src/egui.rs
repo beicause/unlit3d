@@ -219,6 +219,7 @@ pub fn egui_variant(srgb_to_linear_output: bool, surface: SurfaceKey) -> LitVari
         base_color_texture: true,
         morph: false,
         strip_index_format: None,
+        reversed_winding: false,
     }
 }
 

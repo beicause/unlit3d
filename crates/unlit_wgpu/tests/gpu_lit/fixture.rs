@@ -572,6 +572,7 @@ pub(super) fn variant(
         base_color_texture,
         morph,
         strip_index_format: None,
+        reversed_winding: false,
     }
 }
 
