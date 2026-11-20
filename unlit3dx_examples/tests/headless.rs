@@ -20,7 +20,7 @@ use std::sync::Arc;
 use unlit_wgpu_test_util::{
     Ctx, Tolerance, assert_image_snapshot_with_tolerance, gpu_tests, snapshots,
 };
-use unlit3dx::app::{AUDIO_SAMPLE_RATE, HeadlessConfig, headless as headless_run};
+use unlit3dx::app::{AUDIO_SAMPLE_RATE, Capture, HeadlessConfig, Pacing, headless as headless_run};
 use unlit3dx_asset_bytes::soundfont as embedded_soundfont;
 use unlit3dx_examples::demo::Demo;
 use unlit3dx_examples::scene::WINDOW_SIZE;
@@ -128,8 +128,11 @@ fn required_soundfont() -> Option<Arc<[u8]>> {
 fn config(frames: u32, capture: Vec<u32>) -> HeadlessConfig {
     HeadlessConfig {
         size: WINDOW_SIZE,
-        frames,
-        capture,
+        pacing: Pacing {
+            client: false,
+            frames: Some(frames),
+        },
+        capture: Capture::new(capture, None),
         audio_sample_rate: AUDIO_SAMPLE_RATE,
         ..Default::default()
     }
@@ -151,13 +154,21 @@ async fn frames_match_the_baselines() {
     )
     .await;
     assert_eq!(output.frames.len(), CAPTURE.len());
-    let frames: [&[u8]; CAPTURE.len()] = [
-        &output.frames[0],
-        &output.frames[1],
-        &output.frames[2],
-        &output.frames[3],
-    ];
-    for (frame, snapshot) in frames.into_iter().zip(snapshots![
+    assert_eq!(
+        output
+            .frames
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>(),
+        CAPTURE.to_vec(),
+        "the run hands back the frames it was asked for, in capture order"
+    );
+    let frames: Vec<&[u8]> = output
+        .frames
+        .iter()
+        .map(|(_, pixels)| pixels.as_slice())
+        .collect();
+    for (frame, snapshot) in frames.iter().copied().zip(snapshots![
         "unlit3dx/frame_0120.webp",
         "unlit3dx/frame_0180.webp",
         "unlit3dx/frame_0240.webp",
@@ -203,8 +214,8 @@ async fn an_undrawn_frame_matches_a_drawn_one() {
     .await;
     assert_eq!(alone.frames.len(), 1);
     assert_eq!(surrounded.frames.len(), captured.len());
-    let drawn_late = &alone.frames[0];
-    let drawn_on_time = &surrounded.frames[captured.len() - 1];
+    let drawn_late = &alone.frames[0].1;
+    let drawn_on_time = &surrounded.frames[captured.len() - 1].1;
     if drawn_late != drawn_on_time {
         let differing = drawn_late
             .iter()

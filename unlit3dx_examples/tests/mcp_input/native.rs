@@ -40,10 +40,7 @@ pub async fn run() {
     );
     let mut mcp = Mcp::start();
     let mut status = mcp.status();
-    assert_eq!(
-        status["ready"], true,
-        "the scene starts before it is stepped"
-    );
+    assert_eq!(status["frame"], 0, "the scene starts before it is stepped");
     // The scene loads its soundfont but starts with both tracks stopped, so a
     // recording over the first second has nothing to capture.
     mcp.tool(
@@ -190,11 +187,14 @@ pub async fn a_self_paced_run_serves_mcp_and_ends_on_its_own() {
     let out = std::env::temp_dir().join(format!("unlit3dx-self-paced-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     let frames = FRAMES.to_string();
+    let last = (FRAMES - 1).to_string();
     let args = [
         "--headless",
-        "--headless-frames",
+        "--max-frames",
         frames.as_str(),
-        "--headless-out",
+        "--capture-frames",
+        last.as_str(),
+        "--capture-out",
         out.to_str().expect("a UTF-8 output path"),
         "--mcp-stdio",
     ];

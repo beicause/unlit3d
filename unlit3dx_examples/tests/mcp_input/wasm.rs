@@ -31,7 +31,7 @@ const FRAME_TOLERANCE: Tolerance = Tolerance {
 pub async fn run() {
     let ctx = Ctx::headless().await;
     let soundfont = shared::soundfont_bytes().to_vec().into();
-    let (host, _input, mut interactive) = interactive_run(Demo { soundfont }, ctx.render_device());
+    let (host, mut interactive) = interactive_run(Demo { soundfont }, ctx.render_device());
 
     // A recording before anything plays captures silence. Its frames also
     // give the panel time to lay out and the synthesizer install to answer,

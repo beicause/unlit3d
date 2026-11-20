@@ -49,16 +49,17 @@ Android APK 加载的 `.so` 则由 `unlit3dx_examples_android` 构建——该 c
 ## 离屏模式
 
 ```sh
-cargo run -p unlit3dx_examples -- --headless --headless-frames 300 --headless-out headless
+cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 299 --capture-out headless
 ```
 
 `--headless` 运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
 宿主自己的 world，骨架的 `Stepping` 一帧一帧地推进它们：物理按它自己的频率
 （`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
-时长就是这个运行给定的 `HEADLESS_HZ`。走满 `--headless-frames` 帧后，这一运行的最后一帧
-与整段混音写入 `--headless-out` 下的 `frame_299.png` 与 `audio.flac`——每个被捕获的帧各出
-一张图，以帧号为名。每一帧长度都相同、
+时长就是这个运行给定的 `HEADLESS_HZ`。`--max-frames` 让运行在走满这么多帧后结束，
+`--capture-frames` 点名要留哪几帧：每帧在 `--capture-out` 下写成
+`frame_<index>.png`，运行真的播放过东西时再写一段 `audio.flac`。两个开关在窗口运行上
+同样生效，只是窗口上的捕获还会把呈现切到离屏路径——交换链的图读不回来。每一帧长度都相同、
 生成骰子也是确定的，因此每次运行都可复现——[快照测试](tests/headless.rs)正建立
 在此之上：渲染帧与 webp 基准比较，混音与 FLAC 基准比较，基准都保存在
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
@@ -70,8 +71,10 @@ cargo run -p unlit3dx_examples -- --headless --headless-frames 300 --headless-ou
 序列状态与每个面板按钮的中心。`request_exit` 让进程退出。该模式下自动掉球与背景自动播放
 均关闭，因此每个可见与可听的变化都来自客户端。[`mcp_input` 集成测试](tests/mcp_input.rs)
 启动这个二进制，只通过 MCP 的 `send_input` 点击面板、捕获三张图片快照、把序列播放期间
-录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，并请求进程正常退出。不带 `--interactive` 时由运行自己推进：`--headless --mcp-stdio` 走完
-`--headless-frames` 点名的帧数，并在帧与帧之间服务 MCP，客户端可以观察与注入，但节奏归运行。这种运行按真实时钟配速，帧数默认只有 1 帧，要让客户端看下去就得用 `--headless-frames` 点名帧数。
+录下的混音与第四条基准比较、断言暂停之后录下的混音为静音且不落盘，并请求进程正常退出。不带 `--interactive` 时由运行自己推进：`--headless --mcp-stdio
+--max-frames 600` 走完这些帧，并在帧与帧之间服务 MCP，客户端可以观察与注入，但节奏归运行。
+这种运行按真实时钟配速；不给 `--max-frames` 时它会一直跑下去，直到客户端请求退出
+（`request_exit`）或进程被杀掉（Ctrl-C、`kill`）。
 
 同一段剧情由 `tests/mcp_input/shared.rs` 的一份描述跑两遍：
 [原生驱动](tests/mcp_input/native.rs) 通过 MCP 与那个子进程对话，

@@ -14,6 +14,8 @@ use unlit3d::offscreen::{PersistentTarget, TargetConfig};
 use unlit3d::renderer::Renderer;
 
 use super::App;
+use super::capture::Capture;
+use super::pace::Pacing;
 use super::scene::{Mode, RenderPorts, ScenePorts, Stepping};
 use crate::audio::dispatch_audio_fill;
 use crate::host::{spawn_sub_world, tick_sub_world};
@@ -37,20 +39,30 @@ pub const HEADLESS_HZ: f64 = 60.0;
 /// no other.
 pub const RENDER_COMMAND_CAPACITY: usize = 64;
 
+/// How much of an unbounded run's mix is kept, in seconds.
+///
+/// A run with no length of its own plays until the process is killed, and a
+/// mix kept for that whole time would grow without end. This bounds what a
+/// capture writes and what a served run records; a run whose length is named
+/// is bounded by that length instead.
+pub const UNBOUNDED_MIX_SECONDS: f32 = 600.0;
+
 /// A headless run's settings.
 pub struct HeadlessConfig {
     /// The frame size, in pixels.
     pub size: (u32, u32),
-    /// How many frames to step before the run ends.
-    pub frames: u32,
-    /// Which frames to capture, by index, ascending.
+    /// Who advances the frames, and the most it advances.
     ///
-    /// An empty list makes the run audio-only: the render world still drains
-    /// its commands and dispatches its frames, but none is drawn. The frames
-    /// come back in the order they were stepped; every index must name a frame
-    /// the run steps and each must follow the one before, or [`headless`]
-    /// panics.
-    pub capture: Vec<u32>,
+    /// A headless run advances them itself, so [`Pacing::client`] is
+    /// ignored: the struct is the same one a windowed run reads, so what it
+    /// names means the same thing on either path.
+    pub pacing: Pacing,
+    /// Which frames to keep, and where to write them.
+    ///
+    /// The run draws a frame only when the capture names it. A capture that
+    /// names nothing leaves the run audio-only: the render world still
+    /// drains its commands and dispatches its frames, but none is drawn.
+    pub capture: Capture,
     /// The rate the mix is pulled at. The synthesizer takes it from the stream
     /// it renders into.
     pub audio_sample_rate: u32,
@@ -62,8 +74,8 @@ impl Default for HeadlessConfig {
     fn default() -> Self {
         Self {
             size: (1024, 720),
-            frames: 1,
-            capture: Vec::new(),
+            pacing: Pacing::default(),
+            capture: Capture::default(),
             audio_sample_rate: AUDIO_SAMPLE_RATE,
             render_capacity: RENDER_COMMAND_CAPACITY,
         }
@@ -72,10 +84,14 @@ impl Default for HeadlessConfig {
 
 /// What one headless run produced.
 pub struct HeadlessOutput {
-    /// The captured frames, each RGBA, row-major, top to bottom.
-    pub frames: Vec<Vec<u8>>,
+    /// The captured frames, each RGBA, row-major, top to bottom, with the
+    /// index the run gave it. Ascending, because the run reaches them in
+    /// that order.
+    pub frames: Vec<(u32, Vec<u8>)>,
     /// The mixed audio, interleaved stereo.
     pub audio: Vec<f32>,
+    /// How many frames the run advanced.
+    pub advanced: u32,
 }
 
 /// Run an application's scene headless and answer the captured frames and mix.
@@ -83,31 +99,15 @@ pub struct HeadlessOutput {
 /// The device is injected, so a caller picks the tier it asks for. A headless
 /// run has no way to recover a world that failed to come up, so a broken setup
 /// panics instead of returning a hole in the capture.
+///
+/// A run bounded by nothing steps frames until the process is stopped, which
+/// is why it reads as a capture the caller drives: the frames it keeps are
+/// written as it reaches them, so a run cut short keeps the ones it got to.
 pub async fn headless<A: App>(
     mut app: A,
     config: &HeadlessConfig,
     device: RenderDevice,
 ) -> HeadlessOutput {
-    // Every capture entry has to name a frame the run steps, and the entries
-    // have to ascend: a frame is drawn where the steps left it, so the frames
-    // come back in the order they were stepped. An index past the last frame
-    // matches nothing, and a list that went backwards would answer in its own
-    // order rather than the caller's.
-    for (position, index) in config.capture.iter().enumerate() {
-        assert!(
-            *index < config.frames,
-            "capture entry {position} names frame {index}, but the run steps {} frames",
-            config.frames
-        );
-        if position > 0 {
-            assert!(
-                config.capture[position - 1] < *index,
-                "capture entry {position} names frame {index} after frame {}, so the capture does not ascend",
-                config.capture[position - 1]
-            );
-        }
-    }
-
     let mut host = World::new();
     let render = spawn_sub_world(&mut host, "render", config.render_capacity);
     // Nothing feeds input to a run with no window, but the scene still takes
@@ -158,6 +158,7 @@ pub async fn headless<A: App>(
     let mut output = HeadlessOutput {
         frames: Vec::new(),
         audio: Vec::new(),
+        advanced: 0,
     };
     let mut frame = Frame {
         delta_time: (1.0 / HEADLESS_HZ) as f32,
@@ -171,8 +172,15 @@ pub async fn headless<A: App>(
     // The interleaved sample buffer, reused across frames so the audio loop
     // does not allocate one per frame.
     let mut samples_out: Vec<f32> = Vec::new();
+    // An unbounded run keeps a bounded mix: see `UNBOUNDED_MIX_SECONDS`.
+    let mix_limit = config.pacing.frames.map_or_else(
+        || (UNBOUNDED_MIX_SECONDS * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS,
+        |_| usize::MAX,
+    );
+    let mut mix_capped = false;
 
-    for index in 0..config.frames {
+    let mut index = 0u32;
+    while !config.pacing.is_spent(index) {
         frame.index = index;
 
         // The worlds step once for this frame: gameplay first, so the notes
@@ -194,7 +202,15 @@ pub async fn headless<A: App>(
                 );
             });
             assert!(filled.is_ok(), "the audio world is a stepped world");
-            output.audio.extend_from_slice(&samples_out);
+            let room = mix_limit.saturating_sub(output.audio.len());
+            if room < samples_out.len() && !mix_capped {
+                mix_capped = true;
+                log::warn!(
+                    "the run has no length, so its mix stops at {UNBOUNDED_MIX_SECONDS} seconds; name --max-frames to record a longer one"
+                );
+            }
+            let take = room.min(samples_out.len());
+            output.audio.extend_from_slice(&samples_out[..take]);
         }
 
         // Render: drain the sub-world's commands — the scene build rides on
@@ -213,7 +229,7 @@ pub async fn headless<A: App>(
         let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
         let world = nested.get();
         tick_sub_world(world, &mut frame);
-        if config.capture.contains(&index) {
+        if config.capture.wants(index) {
             let context = {
                 let mut renderer_row = world
                     .root_scope()
@@ -231,10 +247,15 @@ pub async fn headless<A: App>(
                     .cloned()
                     .expect("the target texture is a resource node")
             };
-            output
-                .frames
-                .push(readback_texture(&device.device, &device.queue, &texture).await);
+            let pixels = readback_texture(&device.device, &device.queue, &texture).await;
+            if let Err(message) = config.capture.write_frame(index, &pixels, config.size) {
+                log::error!("{message}");
+            }
+            output.frames.push((index, pixels));
         }
+        drop(nested);
+        index = index.saturating_add(1);
+        output.advanced = index;
     }
 
     output

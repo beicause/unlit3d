@@ -7,6 +7,7 @@
 
 mod bridge;
 
+pub(crate) use bridge::inbox_wake;
 #[cfg(feature = "mcp-http")]
 pub use bridge::serve_http_mcp;
 pub use bridge::{pump_mcp, serve_mcp};

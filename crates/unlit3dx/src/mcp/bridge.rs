@@ -7,6 +7,7 @@
 //! ever touched on its own thread.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[cfg(feature = "mcp-http")]
 use std::net::SocketAddr;
@@ -19,6 +20,50 @@ use unlit3d::winit::event::OnAboutToWait;
 
 use crate::world::{WorldName, WorldSender, drain_all_stepped_worlds};
 
+/// Knocks the host awake when a transport posts a command.
+///
+/// A host with a window is woken by its event loop, which runs a turn often
+/// enough that waiting on it costs nothing. A headless host has no such turn
+/// of its own: it waits here instead of polling, and a command is what ends
+/// the wait.
+#[derive(Clone)]
+pub(crate) struct InboxWake(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl InboxWake {
+    /// Wake the host waiting on this handle.
+    pub(crate) fn wake(&self) {
+        *sync::lock(&self.0.0) = true;
+        self.0.1.notify_all();
+    }
+
+    /// Wait for a command to be posted, or for `timeout` to pass.
+    ///
+    /// A spurious wake returns early rather than waiting out the timeout: the
+    /// caller re-reads the world anyway, and a turn that finds nothing is the
+    /// same turn it would have taken at the timeout.
+    pub(crate) fn wait(&self, timeout: Duration) {
+        let mut woke = sync::lock(&self.0.0);
+        if !*woke {
+            let (guard, _) = self
+                .0
+                .1
+                .wait_timeout(woke, timeout)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            woke = guard;
+        }
+        *woke = false;
+    }
+}
+
+/// The handle that wakes a host waiting for its transports, when it has one.
+///
+/// A host with no transport wired in has nothing to wait on, and its caller
+/// falls back to polling.
+pub(crate) fn inbox_wake(world: &World) -> Option<InboxWake> {
+    let mut inboxes = world.root_scope().query::<&McpInbox>();
+    inboxes.iter().next().map(|inbox| inbox.wake.clone())
+}
+
 /// The commands the transport thread has posted for the host to run.
 ///
 /// Spawned with the behaviour that drains it: an inbox nothing drains fills up
@@ -26,6 +71,8 @@ use crate::world::{WorldName, WorldSender, drain_all_stepped_worlds};
 #[derive(Clone)]
 struct McpInbox {
     receiver: Arc<Receiver<McpCommand>>,
+    /// Ring so a host waiting for a command stops waiting.
+    wake: InboxWake,
 }
 
 impl Bundle for McpInbox {
@@ -40,6 +87,8 @@ impl Bundle for McpInbox {
 /// inbox behaviour drains whatever arrives every turn of the event loop.
 pub fn serve_mcp(world: &mut World) {
     let (sender, receiver) = unbounded::<McpCommand>();
+    let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+    let ring = wake.clone();
     let started = std::thread::Builder::new()
         .name("unlit3dx-mcp-transport".to_owned())
         .spawn(move || {
@@ -48,7 +97,10 @@ pub fn serve_mcp(world: &mut World) {
             // more; the pump treats a refused command as the end of the
             // transport, so say why there is no one left to answer.
             let sink = move |command| match sender.try_send(command) {
-                Ok(()) => true,
+                Ok(()) => {
+                    ring.wake();
+                    true
+                }
                 Err(error) => {
                     log::warn!("the MCP inbox is gone: {error}");
                     false
@@ -62,6 +114,7 @@ pub fn serve_mcp(world: &mut World) {
         Ok(_) => {
             world.root_scope_mut().spawn(McpInbox {
                 receiver: Arc::new(receiver),
+                wake,
             });
         }
         Err(error) => log::error!("the MCP transport thread failed to start: {error}"),
@@ -83,8 +136,13 @@ pub fn serve_mcp(world: &mut World) {
 #[cfg(feature = "mcp-http")]
 pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr, String> {
     let (sender, receiver) = unbounded::<McpCommand>();
+    let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+    let ring = wake.clone();
     let sink = move |command| match sender.try_send(command) {
-        Ok(()) => true,
+        Ok(()) => {
+            ring.wake();
+            true
+        }
         Err(error) => {
             log::warn!("the MCP inbox is gone: {error}");
             false
@@ -94,6 +152,7 @@ pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr,
     let bound = server.local_addr();
     world.root_scope_mut().spawn(McpInbox {
         receiver: Arc::new(receiver),
+        wake,
     });
     // The handle is the component that keeps the server alive: the world
     // dropping it stops the transport.
@@ -280,12 +339,81 @@ mod tests {
     /// A host world wired like `serve_mcp` wires one, plus the channel
     /// the fake transport posts commands through.
     fn host_with_inbox() -> (World, async_channel::Sender<McpCommand>) {
+        let (host, sender, _wake) = host_with_wake();
+        (host, sender)
+    }
+
+    /// The same wiring, with the handle the host waits on.
+    fn host_with_wake() -> (World, async_channel::Sender<McpCommand>, InboxWake) {
         let mut host = World::new();
         let (sender, receiver) = unbounded::<McpCommand>();
+        let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
         host.root_scope_mut().spawn(McpInbox {
             receiver: Arc::new(receiver),
+            wake: wake.clone(),
         });
-        (host, sender)
+        (host, sender, wake)
+    }
+
+    /// A waited turn ends as soon as a transport posts, rather than at its
+    /// timeout: the wait is the headless host's whole idle loop.
+    #[test]
+    fn a_wait_ends_when_the_transport_posts() {
+        let (_host, transport, wake) = host_with_wake();
+        let waiter = {
+            let wake = wake.clone();
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                wake.wait(Duration::from_secs(30));
+                start.elapsed()
+            })
+        };
+        // The pump rings the handle once the transport has the command, so
+        // this is the same order the real turn runs in.
+        std::thread::sleep(Duration::from_millis(50));
+        let (command, _reply) = McpCommand::list_worlds();
+        transport.try_send(command).expect("the inbox takes it");
+        wake.wake();
+        let waited = waiter.join().expect("the waiter survives");
+        assert!(
+            waited < Duration::from_secs(5),
+            "the wait ended on the ring, not the timeout: {waited:?}"
+        );
+    }
+
+    /// A host waiting with nothing posted waits out its timeout instead of
+    /// spinning: the handle is a wait, not a poll.
+    #[test]
+    fn a_wait_with_nothing_posted_lasts_its_timeout() {
+        let (_host, _transport, wake) = host_with_wake();
+        let start = Instant::now();
+        wake.wait(Duration::from_millis(120));
+        let waited = start.elapsed();
+        assert!(
+            waited >= Duration::from_millis(100),
+            "the wait lasted its timeout rather than returning at once: {waited:?}"
+        );
+    }
+
+    /// A post between two turns is not slept through: the flag is what the
+    /// next wait reads first.
+    #[test]
+    fn a_wait_that_was_ringed_returns_at_once() {
+        let (_host, _transport, wake) = host_with_wake();
+        wake.wake();
+        let start = Instant::now();
+        wake.wait(Duration::from_secs(30));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "a ringed wait returns rather than sleeping"
+        );
+        // The flag is cleared by the wait, so the turn that follows sleeps.
+        let start = Instant::now();
+        wake.wait(Duration::from_millis(120));
+        assert!(
+            start.elapsed() >= Duration::from_millis(100),
+            "the ring is spent once it has woken a turn"
+        );
     }
 
     /// Run one turn of the host's event loop: the drain behaviour takes

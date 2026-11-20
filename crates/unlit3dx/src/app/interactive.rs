@@ -17,6 +17,7 @@ use unlit3d::relay::Snapshot;
 use unlit3d::renderer::Renderer;
 
 use super::App;
+use super::capture::Capture;
 use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, RENDER_COMMAND_CAPACITY};
 use super::scene::{Mode, RenderPorts, ScenePorts, SceneWorlds, Stepping};
 use crate::audio::{AudioFormat, dispatch_audio_fill};
@@ -28,13 +29,16 @@ use crate::world::{Stepped, with_stepped_world_mut};
 /// its own.
 pub struct Interactive {
     worlds: SceneWorlds,
+    /// The render sub-world the frames are drawn in.
     render: Entity,
     renderer: Entity,
-    /// The entity the render sub-world is spawned under.
-    pub render_world: Entity,
     /// The texture the offscreen pass draws into. Its resource id is what a
     /// caller reads frames back through.
     pub target: ResHandle<wgpu::Texture>,
+    /// The frames the run writes out, if any. It sits on the scene rather
+    /// than on the loop that advances it, so every way of advancing the run
+    /// — its own pacing, or a client stepping it — captures the same frames.
+    pub capture: Capture,
     stepper: Stepping,
     frame: Frame,
     samples: Vec<f32>,
@@ -80,11 +84,46 @@ impl Interactive {
                 });
                 assert!(filled.is_ok(), "the audio world is a stepped world");
             }
-            let mut nested = host.root_scope().query_one::<&mut World>(self.render);
-            tick_sub_world(nested.get(), &mut self.frame);
+            {
+                let mut nested = host.root_scope().query_one::<&mut World>(self.render);
+                tick_sub_world(nested.get(), &mut self.frame);
+            }
+            // The frame is drawn exactly when the capture names it: a frame
+            // drawn and not read is a wasted draw, and a frame the capture
+            // names and the run does not draw is a picture missing from it.
+            // The sub-world's borrow is released first, since drawing takes
+            // it again.
+            self.capture_frame(host, self.frame.index);
             self.frame.index = self.frame.index.wrapping_add(1);
         }
     }
+
+    /// Write out the frame `index` the run has just drawn, when the capture
+    /// names it.
+    ///
+    /// A run writes each frame as it reaches it rather than holding them all
+    /// to the end: a run with no length of its own keeps what it got to when
+    /// the process is killed.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn capture_frame(&self, host: &World, index: u32) {
+        if !self.capture.wants(index) {
+            return;
+        }
+        self.draw(host);
+        let pixels = pollster::block_on(self.read_frame(host));
+        let size = (pixels.0, pixels.1);
+        match self.capture.write_frame(index, &pixels.2, size) {
+            Ok(Some(path)) => log::info!("the run wrote {}", path.display()),
+            Ok(None) => {}
+            Err(message) => log::error!("{message}"),
+        }
+    }
+
+    /// Nothing is captured on a target with no filesystem: the frames a run
+    /// writes are the caller's to read back through
+    /// [`Interactive::render_frame`] instead.
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    fn capture_frame(&self, _host: &World, _index: u32) {}
 
     /// The frame the next step draws.
     #[must_use]
@@ -98,6 +137,15 @@ impl Interactive {
         &self.worlds
     }
 
+    /// The entity the render sub-world is spawned under.
+    ///
+    /// The MCP tools name it as the world a client reads the run's picture
+    /// through, so it stays part of what an interactive host offers.
+    #[must_use]
+    pub fn render_world(&self) -> Entity {
+        self.render
+    }
+
     /// Draw the frame where the scene stands and read its pixels back.
     ///
     /// The await is the readback: the pixels cannot exist before the copy
@@ -105,6 +153,15 @@ impl Interactive {
     /// against, so nothing is laid out until one frame has been drawn.
     pub async fn render_frame(&self, host: &World) -> Vec<u8> {
         self.draw(host);
+        let (_, _, pixels) = self.read_frame(host).await;
+        pixels
+    }
+
+    /// Read the target's pixels back without drawing first.
+    ///
+    /// The size comes from the texture, which is the size the target was
+    /// bound at.
+    async fn read_frame(&self, host: &World) -> (u32, u32, Vec<u8>) {
         let texture = {
             let mut nested = host.root_scope().query_one::<&World>(self.render);
             let world = nested.get();
@@ -122,7 +179,9 @@ impl Interactive {
                 .cloned()
                 .expect("the target texture is a resource node")
         };
-        readback_texture(&self.device, &self.queue, &texture).await
+        let size = (texture.width(), texture.height());
+        let pixels = readback_texture(&self.device, &self.queue, &texture).await;
+        (size.0, size.1, pixels)
     }
 
     /// Draw the frame where the scene stands, into the offscreen texture.
@@ -138,12 +197,6 @@ impl Interactive {
             .root_scope()
             .try_query_one::<&mut Renderer>(self.renderer)
             .map(|mut renderer| renderer.get().render(&*world));
-    }
-
-    /// The samples the last step pulled from the audio world.
-    #[must_use]
-    pub fn samples(&self) -> &[f32] {
-        &self.samples
     }
 
     /// Click at `position`: move the pointer there, then press and release
@@ -211,13 +264,13 @@ impl From<RecordedAudio> for Recording {
     }
 }
 
-/// Build an interactive scene: an input writer on the host, the scene's
-/// worlds, an offscreen render target and the stepping interactive.
+/// Build an interactive scene: the scene's worlds, an offscreen render
+/// target and the stepping interactive.
 ///
-/// The host owns everything; the caller steps it through the returned
-/// [`Interactive`] and draws nothing to any window. The offscreen target
-/// draws at [`App::SIZE`].
-pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, InputWriter, Interactive) {
+/// The host owns everything, the input writer included; the caller steps it
+/// through the returned [`Interactive`] and draws nothing to any window. The
+/// offscreen target draws at [`App::SIZE`].
+pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interactive) {
     let mut host = World::new();
     let input = InputWriter::new();
     host.root_scope_mut()
@@ -265,7 +318,6 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, InputWri
         worlds,
         render: render.entity,
         renderer: setup.renderer.entity,
-        render_world: render.entity,
         target: target.texture,
         frame: Frame {
             delta_time: (1.0 / HEADLESS_HZ) as f32,
@@ -273,6 +325,7 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, InputWri
         },
         samples: Vec::new(),
         recording: None,
+        capture: Capture::default(),
         device: device.device,
         queue: device.queue,
     };
@@ -280,5 +333,5 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, InputWri
     // publishes the target the panels lay out against, so a run that never
     // draws lays out no panels and has no buttons to click.
     interactive.draw(&host);
-    (host, input, interactive)
+    (host, interactive)
 }

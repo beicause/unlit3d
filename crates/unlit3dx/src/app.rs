@@ -49,8 +49,8 @@ pub mod windowed;
 mod logging;
 mod scene;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-mod write;
+pub mod capture;
+pub mod pace;
 
 #[cfg(all(
     feature = "mcp",
@@ -60,12 +60,14 @@ mod write;
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub mod serve;
 
+pub use capture::Capture;
 pub use headless::{
     AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, HeadlessConfig, HeadlessOutput, headless,
 };
 pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;
 pub use options::RunOptions;
+pub use pace::Pacing;
 pub use scene::{Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
 pub use windowed::{WindowOptions, windowed};
 
@@ -123,7 +125,7 @@ pub trait App: 'static {
     /// argument neither side declares is refused by name. Derive
     /// [`clap::Args`] on a structure of your own; an application without
     /// arguments uses [`NoArgs`].
-    type Args: clap::Args + Default;
+    type Args: clap::Args;
 
     /// Receive the parsed [`App::Args`].
     ///
@@ -172,7 +174,7 @@ pub struct NoArgs {}
 /// Parse `argv` into the run's switches and the application's
 /// parsed arguments: one parser reads both, so its errors and its `--help`
 /// cover the whole command line.
-fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions, A), clap::Error> {
+fn read_command<A: clap::Args>(argv: &[String]) -> Result<(RunOptions, A), clap::Error> {
     // One command reads both sides: the run augments a fresh command with
     // its own switches, the application flattens its arguments into it.
     let mut command = <RunOptions as ClapArgs>::augment_args(<A as ClapArgs>::augment_args(
@@ -196,15 +198,20 @@ fn read_command<A: clap::Args + Default>(argv: &[String]) -> Result<(RunOptions,
 /// `--help` describes both — and then:
 ///
 /// - `--headless` runs without a window: with `--mcp-stdio` or `--mcp-http`
-///   it serves the interactive host, paced by the client under
-///   `--interactive` and by its own frame count otherwise; without MCP it
-///   steps the frames `--headless-frames` names and captures when
-///   `--headless-out` names a directory.
+///   it serves the interactive host; without MCP it steps frames itself.
 /// - otherwise it opens a window, stepped inline unless the platform
 ///   drives the worlds on threads of their own; `--mcp-stdio` serves the
 ///   scene to a client over standard input and output and `--mcp-http`
-///   serves it to network clients while the window stays up. Under
-///   `--interactive` the client paces the frames the window shows.
+///   serves it to network clients while the window stays up.
+///
+/// Pacing and length are separate switches, and neither implies the other.
+/// `--interactive` hands the frame clock to a connected client, so it needs
+/// a transport to have any effect; every other run advances its own frames.
+/// `--max-frames` ends the run — windowed or not — once that many frames have
+/// been advanced, and a `--capture-frames` list bounds it in turn by the last
+/// frame it names. A run with neither an end nor a client is a valid one, so
+/// it is only warned about rather than refused. `--capture-out` writes the
+/// named frames as they are drawn, plus the mix when the run played one.
 ///
 /// The windowed path is the one a browser and an Android activity take:
 /// neither has a headless run.
@@ -233,14 +240,11 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         log::error!("the command line could not be applied: {message}");
         return std::process::ExitCode::FAILURE;
     }
-    // A client-paced run has no driver without a transport: refuse it
-    // before either entry starts, where the message names the switches
-    // that reach the client.
-    if options.interactive && !options.mcp_stdio && !options.mcp_http_run() {
-        log::error!(
-            "--interactive needs --mcp-stdio or --mcp-http: the client paces the run, and without a transport nothing reaches it"
-        );
-        return std::process::ExitCode::FAILURE;
+    // A client-paced run has no driver without a transport. The run still
+    // starts — the scene is a valid one to look at — but the switch changes
+    // nothing, so say so before the run blocks on a frame nothing advances.
+    if options.interactive && !options.has_transport() {
+        warn_reaching_no_client();
     }
     // A build without the server cannot serve a transport the command line
     // names, so it says which feature to turn on instead of running the
@@ -254,8 +258,15 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         log::error!("the HTTP transport needs the mcp-http feature");
         return std::process::ExitCode::FAILURE;
     }
+    // With no transport and no length, nothing outside the process can end
+    // it: no client asks it to stop and no budget runs out. That is a
+    // supported way to run a scene for as long as someone watches it, so it
+    // is announced rather than refused.
+    if !options.has_transport() && options.frame_budget().is_none() {
+        warn_reaching_no_end();
+    }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    if options.headless_run() {
+    if options.headless {
         return headless_main(app, &options);
     }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
@@ -275,33 +286,48 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         interactive: options.interactive,
         mcp_stdio: options.mcp_stdio,
         mcp_http_addr,
+        max_frames: options.frame_budget(),
+        capture: options.capture(),
         ..WindowOptions::for_app::<A>()
     };
     windowed(app, window, event_loop);
     std::process::ExitCode::SUCCESS
 }
 
+/// Warn that the switches pacing a run reach no client.
+///
+/// The two warnings name the switches and the feature that would make them
+/// take effect, so the switch is findable from the message.
+fn warn_reaching_no_client() {
+    log::warn!(
+        "--interactive needs --mcp-stdio or --mcp-http: without a transport nothing reaches the client, so the run paces its own frames instead"
+    );
+}
+
+/// Warn that a run has neither a client to end it nor a length of its own.
+///
+/// Such a run is a supported one — a scene on a display, watched from
+/// outside — so the message says how to end it rather than refusing it.
+fn warn_reaching_no_end() {
+    log::warn!(
+        "the run has no --max-frames and no transport, so nothing ends it but the window closing or the process being killed (Ctrl-C)"
+    );
+}
+
 /// The headless entry [`run`] takes when a headless run is named.
 ///
 /// The GPU is opened here rather than by the caller so the run owns the
 /// whole of a capture: it picks the device tier from the environment, and
-/// steps the frames the command line named. A client-paced run hands
-/// those frames to its client instead; a capture writes the pictures and
-/// the mix only when `--headless-out` names a directory.
+/// steps the frames the command line named. A client-paced run leaves
+/// those frames to its client instead, and a capture writes the frames it
+/// names as it reaches them.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode {
     use crate::gpu::Gpu;
     use unlit_wgpu::capabilities::DeviceTier;
     use unlit_wgpu::context::RenderDevice;
 
-    let frames = options
-        .headless_frames
-        .unwrap_or(RunOptions::DEFAULT_HEADLESS_FRAMES);
-    let out = options.headless_out.clone();
-    if frames == 0 {
-        log::error!("--headless-frames must be at least 1");
-        return std::process::ExitCode::FAILURE;
-    }
+    let pacing = options.pacing();
     let gpu = match pollster::block_on(Gpu::headless(
         DeviceTier::from_env(),
         wgpu::PowerPreference::default(),
@@ -327,16 +353,9 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
             stdio: options.mcp_stdio,
             http,
         };
-        // A served run shares the headless switches: an output directory has
-        // it write what it drove, and the frame count paces the run unless
-        // --interactive left the frames to the client.
-        let pacing = if options.interactive {
-            None
-        } else {
-            Some(frames)
-        };
-        let out = options.headless_out.clone();
-        match serve(app, device, transports, pacing, out) {
+        // A served run shares the switches a windowed one reads: the capture
+        // names the frames it keeps, and the pacing says who advances them.
+        match serve(app, device, transports, pacing, options.capture()) {
             Ok(_) => return std::process::ExitCode::SUCCESS,
             Err(message) => {
                 log::error!("the MCP server did not start: {message}");
@@ -346,16 +365,13 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     }
     let config = HeadlessConfig {
         size: A::SIZE,
-        frames,
-        capture: vec![frames - 1],
+        pacing,
+        capture: options.capture().unwrap_or_default(),
         audio_sample_rate: AUDIO_SAMPLE_RATE,
         ..HeadlessConfig::default()
     };
     let output = pollster::block_on(headless::headless(app, &config, device));
-    let Some(out) = out else {
-        return std::process::ExitCode::SUCCESS;
-    };
-    match write::capture(&output, &config, &out) {
+    match write_mix(&config, &output) {
         Ok(written) => {
             for path in written {
                 log::info!("the headless run wrote {}", path.display());
@@ -367,4 +383,33 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// Write the mix a run played, and report any frame the capture never
+/// reached.
+///
+/// The frames are written as the run reaches them, so what is left is the
+/// mix. A capture that ended short — its frames ran out, or its client asked
+/// it to exit first — names the frame it never got to, rather than passing
+/// an incomplete capture off as a finished one.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn write_mix(
+    config: &HeadlessConfig,
+    output: &HeadlessOutput,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let format = crate::audio::AudioFormat {
+        sample_rate: config.audio_sample_rate,
+        channels: AUDIO_CHANNELS as u16,
+    };
+    let mut written = Vec::new();
+    if let Some(path) = config.capture.write_audio(format, &output.audio)? {
+        written.push(path);
+    }
+    if let Some(frame) = config.capture.missing(output.advanced) {
+        log::warn!(
+            "the run advanced {} frames and never reached frame {frame}, so the capture is incomplete",
+            output.advanced
+        );
+    }
+    Ok(written)
 }

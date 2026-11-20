@@ -356,12 +356,13 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 再由 `windowed` / `headless` / `interactive` / `serve` 四个入口之一运行它：窗口、输入
 馈送、定步配速（`Stepping`）、离屏目标与 MCP 服务器的接线都在里面。运行自己的
 开关（`--headless`、`--interactive`、`--mcp-stdio`、`--mcp-http`、`--stepped`、
-`--headless-frames`、`--headless-out`）——帧数配速自驱运行，与把帧交给客户端的
-`--interactive` 互斥与应用的
-`App::Args` 由同一个 clap 解析器读入，一份 `--help` 同时描述两者；解析好的
+`--max-frames`、`--capture-frames`、`--capture-out`）——帧数决定运行在哪里结束，
+与配速无关：`--interactive` 把帧交给客户端，其余情况由运行自己配速。捕获点名要留
+哪些帧、写到哪个目录；在窗口运行上它还会要求走离屏路径，因为交换链的图读不回来——
+与应用的 `App::Args` 由同一个 clap 解析器读入，一份 `--help` 同时描述两者；解析好的
 参数以结构体交给 `App::configure`，未声明的名字会被拒绝。日志与捕获落盘
-（`frame_<index>.png` 加 `audio.flac`）也住在模块里——应用只需给出场景与它的音源，
-而不是一个 `main`。
+（每个被捕获的帧各一个 `frame_<index>.png`，运行真的播放过东西时再加一个
+`audio.flac`）也住在模块里——应用只需给出场景与它的音源，而不是一个 `main`。
 
 ## 测试
 

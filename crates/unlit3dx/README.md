@@ -477,14 +477,17 @@ pipeline inside the GPU callback — and one of `windowed`, `headless`,
 `interactive` or `serve` runs it, wiring the window, the input feed, the
 stepped pacing (`Stepping`), the offscreen target and the MCP server. The
 run's own switches (`--headless`, `--interactive`, `--mcp-stdio`, `--mcp-http`,
-`--stepped`, `--headless-frames`, `--headless-out`) — the frame count paces a
-self-paced run and conflicts with `--interactive`, which leaves the frames to
-a client
-and the application's `App::Args` are read by one clap parser, so a single
-`--help` describes both; the parsed arguments reach `App::configure` as a
-structure, unknown names are refused. Logging and the capture's
-write-out (`frame_<index>.png` plus `audio.flac`) live in the module too, so
-an application supplies a scene and its soundfont, not a `main`.
+`--stepped`, `--max-frames`, `--capture-frames`, `--capture-out`) — the frame
+count ends the run wherever it runs, and says nothing about pacing:
+`--interactive` hands the frames to a client and the run paces itself
+otherwise. A capture names the frames to keep and the directory they go to;
+on a windowed run it also asks for the offscreen path, since a swap chain
+image cannot be read back — and the application's `App::Args` are read by one
+clap parser, so a single `--help` describes both; the parsed arguments reach
+`App::configure` as a structure, unknown names are refused. Logging and the
+capture's write-out (`frame_<index>.png` per captured frame, plus
+`audio.flac` when the run played anything) live in the module too, so an
+application supplies a scene and its soundfont, not a `main`.
 
 ## Tests
 

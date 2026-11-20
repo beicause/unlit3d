@@ -154,6 +154,16 @@ struct Blit {
 }
 
 impl Presenter {
+    /// The offscreen target the scene's frames land in, when it has one.
+    ///
+    /// A scene that presents through the swap chain has none: its frames
+    /// are only ever in the swap chain image, which is not readable back.
+    /// A capture reads the target this answers, after the frame is drawn.
+    #[must_use]
+    pub fn target(&self) -> Option<&PersistentTarget> {
+        self.target.as_ref()
+    }
+
     /// The pass that draws into the swap chain.
     ///
     /// The offscreen target sits in front of it when the blit pass exists;

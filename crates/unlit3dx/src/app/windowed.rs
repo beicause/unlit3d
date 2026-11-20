@@ -11,10 +11,12 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use unlit_ecs::bundle;
+use unlit3d::winit::presenter::PRESENT_ORDER;
+
+use unlit_ecs::{Entity, bundle};
 use unlit_wgpu::context::RenderDevice;
 use unlit3d::egui::EguiTarget;
-use unlit3d::frame::OnFrame;
+use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::input::winit::WinitInput;
 use unlit3d::input::{InputFeed, InputWriter, refresh_input};
 use unlit3d::relay::Snapshot;
@@ -28,7 +30,10 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
 use super::App;
-use super::headless::RENDER_COMMAND_CAPACITY;
+use super::capture::Capture;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+use super::capture::capture_presented;
+use super::headless::{AUDIO_SAMPLE_RATE, RENDER_COMMAND_CAPACITY};
 #[cfg(all(
     feature = "mcp",
     not(target_arch = "wasm32"),
@@ -67,8 +72,20 @@ pub struct WindowOptions {
     /// the GPU request resolves; port 0 leaves the port to the OS. Only a
     /// build with the mcp-http feature serves it.
     pub mcp_http_addr: Option<SocketAddr>,
+    /// The most frames the run advances before it ends, when it is bounded.
+    ///
+    /// A run with no bound ends when its window closes; one bounded here
+    /// closes its own window at that frame, so a windowed run and a headless
+    /// one stop at the same place.
+    pub max_frames: Option<u32>,
     /// How the surface presents.
     pub surface: SurfaceOptions,
+    /// The frames the run writes out, and where.
+    ///
+    /// A capture asks the run to present offscreen — the swap chain image is
+    /// not readable — and to read each frame it names back after the
+    /// presenter has drawn it.
+    pub capture: Option<Capture>,
 }
 
 impl WindowOptions {
@@ -93,7 +110,9 @@ impl Default for WindowOptions {
             interactive: false,
             mcp_stdio: false,
             mcp_http_addr: None,
+            max_frames: None,
             surface: SurfaceOptions::default(),
+            capture: None,
         }
     }
 }
@@ -167,17 +186,22 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     // self-paced run keeps the stepper in its frame behaviour, and no tool
     // can reach it to advance the scene a second way.
     if stepped {
-        let stepper = Stepping::new(worlds, A::PHYSICS_HZ, None);
+        // The scene's audio world is stepped here, so the stepper pulls the
+        // mix for it: without a sample rate nothing asks the world to fill,
+        // and a run that records the mix would record silence.
+        let stepper = Stepping::new(worlds, A::PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE));
         let stepper = Arc::new(Mutex::new(stepper));
         // Parking the stepper is what lets a client step the scene, and
-        // only a build with the tools has a client: without them the
-        // switch changes nothing and the frame behaviour paces the run.
+        // only a build with the tools has a client to hand it to: without
+        // one the switch would park the run with nothing left to unpark it,
+        // so the frame behaviour paces the run instead.
         let parked = options.interactive
             && cfg!(all(
                 feature = "mcp",
                 not(target_arch = "wasm32"),
                 not(target_os = "android")
-            ));
+            ))
+            && (options.mcp_stdio || options.mcp_http_addr.is_some());
         if parked {
             #[cfg(all(
                 feature = "mcp",
@@ -217,6 +241,8 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     let app_entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
     let render_entity = render.entity;
     let mcp = options.mcp_stdio;
+    let capture = options.capture.clone();
+    let captured = capture.is_some();
     world
         .root_scope_mut()
         .spawn(bundle![request_gpu(app_entity, {
@@ -229,11 +255,13 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                         panel: Some(panel.clone()),
                     },
                 );
-                // Only an MCP-driven scene needs the offscreen target: it is
-                // what a screenshot reads back, whichever transport serves
-                // the tools. A plain window draws into the swap chain.
-                let offscreen =
-                    mcp || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some());
+                // Two things need the offscreen target: the MCP tools, which
+                // read the scene back whichever transport serves them, and a
+                // capture, which reads the frame the presenter drew. A plain
+                // window draws into the swap chain, which cannot be read.
+                let offscreen = mcp
+                    || captured
+                    || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some());
                 let outcome = setup_presenter(
                     world,
                     render.entity,
@@ -277,6 +305,36 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     world
         .root_scope_mut()
         .spawn(bundle![draw_presented(render_entity)]);
+    // A capture reads the target the presenter just drew into, so it runs
+    // one order after it rather than drawing the scene a second time. Reading
+    // a frame back needs a filesystem to write it to, which this target has
+    // not.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    let reported = capture.clone();
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    let capturing = reported.is_some();
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    let capturing = false;
+    // The frames the run advanced, kept so the capture can report the ones
+    // it never reached once the window closes. Only a bounded run or one
+    // that captures reads it: a plain window has neither a length to spend
+    // nor a shortfall to report.
+    let advanced = Arc::new(AtomicU32::new(0));
+    if options.max_frames.is_some() || capturing {
+        world.root_scope_mut().spawn(bundle![end_after_frames(
+            app_entity,
+            options.max_frames,
+            Arc::clone(&advanced)
+        )]);
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    if let Some(capture) = capture {
+        world
+            .root_scope_mut()
+            .spawn(bundle![capture_presented(render_entity, capture)]);
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    let _ = &capture;
     let (pump, redraw) = pump_presented();
     world.root_scope_mut().spawn(bundle![pump]);
     world.root_scope_mut().spawn(bundle![redraw]);
@@ -285,6 +343,41 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
         .spawn(bundle![unlit3d::winit::presenter::resize_presented()]);
 
     host.run(event_loop).expect("the event loop runs");
+
+    // A capture that ended short says so: its frames ran out before the run
+    // reached the last one it named, or the window closed first.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    if let Some(capture) = reported {
+        let advanced = advanced.load(Ordering::Relaxed);
+        if let Some(frame) = capture.missing(advanced) {
+            log::warn!(
+                "the run advanced {advanced} frames and never reached frame {frame}, so the capture is incomplete"
+            );
+        }
+    }
+}
+
+/// Count the frames a windowed run advances, and close its window once the
+/// run has advanced as many as it was given.
+///
+/// The frame the budget names is the one the run draws last: the request
+/// lands after the presenter and the capture have seen the frame, so what the
+/// run shows of it is what a capture of it holds.
+fn end_after_frames(app: Entity, budget: Option<u32>, advanced: Arc<AtomicU32>) -> OnFrame {
+    OnFrame::with_order(
+        FrameBehaviourOrder(PRESENT_ORDER + 2),
+        move |world, _entity, frame| {
+            let reached = frame.index.saturating_add(1);
+            advanced.store(reached, Ordering::Relaxed);
+            let spent = budget.is_some_and(|budget| reached >= budget);
+            if !spent {
+                return;
+            }
+            if let Ok(mut request) = world.root_scope().try_query_one::<&mut ExitRequest>(app) {
+                request.get().0 = true;
+            }
+        },
+    )
 }
 
 /// Watch the display the window is on and publish its refresh rate.

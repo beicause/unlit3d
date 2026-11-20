@@ -14,8 +14,7 @@ use clap::Parser;
 pub struct RunOptions {
     /// Serve the scene over MCP on standard input and output: in a windowed
     /// run the presenter draws into an offscreen target, and a headless run
-    /// serves the interactive host, writing its capture too when
-    /// `--headless-out` names a directory.
+    /// serves the interactive host.
     #[arg(long)]
     pub mcp_stdio: bool,
     /// Serve the scene over MCP on a TCP port as well, so network clients
@@ -32,7 +31,7 @@ pub struct RunOptions {
     /// own. A browser always takes this path, whatever the switch says.
     #[arg(long)]
     pub stepped: bool,
-    /// Run without a window: a capture the run steps itself, or a host a
+    /// Run without a window: a scene the run steps itself, or a host a
     /// client drives through MCP. Without the switch the run opens a
     /// window.
     #[arg(long)]
@@ -40,27 +39,43 @@ pub struct RunOptions {
     /// Leave the frames to the client: the run advances only when the
     /// client's tools advance them, so a client that never steps never sees
     /// a frame advance. Without the switch the run paces itself, and MCP
-    /// rides along as an observer and an injector. Needs `--mcp-stdio` or
-    /// `--mcp-http` to reach the client.
-    #[arg(long, conflicts_with = "headless_frames")]
+    /// rides along as an observer and an injector.
+    ///
+    /// Pacing needs a transport to reach the client. Naming this switch
+    /// without `--mcp-stdio` or `--mcp-http` leaves it inert: the run
+    /// announces that and paces its own frames.
+    #[arg(long)]
     pub interactive: bool,
-    /// How many frames a self-paced headless run steps before it ends. A
-    /// run paced by its client does not read the count: naming it asks for
-    /// the self-paced run.
-    #[arg(long, value_name = "FRAMES", requires = "headless")]
-    pub headless_frames: Option<u32>,
-    /// The directory a headless run writes its capture under: the frames
-    /// and the mix of the run. Without it the run writes nothing.
-    #[arg(long, value_name = "DIR", requires = "headless")]
-    pub headless_out: Option<PathBuf>,
+    /// The most frames a run advances before it ends, counting from the
+    /// first.
+    ///
+    /// Without it a run has no length of its own: a windowed run ends when
+    /// its window closes, and a headless run only when its client asks it
+    /// to exit or the process is interrupted. It bounds a client-paced run
+    /// too, as a limit on the frames the client may advance.
+    #[arg(long, value_name = "FRAMES", value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_frames: Option<u32>,
+    /// Which frames to write out, by index, comma separated: `0,10,20`.
+    ///
+    /// The indices are of the run's own frames, counting from the first
+    /// one it advances, and they are written as they arrive — a run cut
+    /// short keeps the frames it reached. Naming them bounds a run that
+    /// names no `--max-frames` to the frame after the last one.
+    #[arg(
+        long,
+        value_name = "FRAMES",
+        value_delimiter = ',',
+        requires = "capture_out"
+    )]
+    pub capture_frames: Vec<u32>,
+    /// The directory a run writes its capture under: one PNG per frame it
+    /// named, and the mix a headless run played. Without it the run writes
+    /// nothing.
+    #[arg(long, value_name = "DIR", requires = "capture_frames")]
+    pub capture_out: Option<PathBuf>,
 }
 
 impl RunOptions {
-    /// The frame count a headless run steps when the command line names
-    /// none: one frame, the same conservative default the headless
-    /// configuration itself keeps.
-    pub const DEFAULT_HEADLESS_FRAMES: u32 = 1;
-
     /// The address the MCP HTTP server listens on when the command line
     /// names none: the loopback, on a port the OS picks.
     pub const DEFAULT_MCP_HTTP_ADDR: &str = "127.0.0.1:0";
@@ -94,9 +109,61 @@ impl RunOptions {
         self.mcp_http || self.mcp_http_addr.is_some()
     }
 
-    /// Whether the command line asks for a headless run.
-    pub fn headless_run(&self) -> bool {
-        self.headless
+    /// Whether the command line names a transport a client can reach the
+    /// run through.
+    pub fn has_transport(&self) -> bool {
+        self.mcp_stdio || self.mcp_http_run()
+    }
+
+    /// Whether the client paces the frames.
+    ///
+    /// `--interactive` alone does not: pacing it without a transport would
+    /// park the run with nothing left to unpark it, so the switch is read
+    /// as naming the run's own pacing instead.
+    pub fn client_paced(&self) -> bool {
+        self.interactive && self.has_transport()
+    }
+
+    /// The most frames a run advances, when the command line bounds it.
+    ///
+    /// `--max-frames` names it outright. Failing that, a capture names the
+    /// frames it wants, and the run has to reach the last of them, so the
+    /// frame after it is the bound. Unbounded is [None].
+    pub fn frame_budget(&self) -> Option<u32> {
+        self.max_frames.or_else(|| {
+            self.frames_to_capture()
+                .last()
+                .map(|last| last.saturating_add(1))
+        })
+    }
+
+    /// The frames the command line asks to write out, ascending and
+    /// without repeats.
+    ///
+    /// A frame named twice is one picture, and the order the indices are
+    /// named in is not the order they arrive.
+    pub fn frames_to_capture(&self) -> Vec<u32> {
+        let mut frames = self.capture_frames.clone();
+        frames.sort_unstable();
+        frames.dedup();
+        frames
+    }
+
+    /// The capture the command line asks for, when it names one.
+    pub fn capture(&self) -> Option<super::capture::Capture> {
+        let into = self.capture_out.clone()?;
+        Some(super::capture::Capture::new(
+            self.frames_to_capture(),
+            Some(into),
+        ))
+    }
+
+    /// Who advances the run's frames, and the most it advances.
+    pub fn pacing(&self) -> super::pace::Pacing {
+        super::pace::Pacing {
+            client: self.client_paced(),
+            frames: self.frame_budget(),
+        }
     }
 }
 
@@ -111,8 +178,9 @@ mod tests {
             .expect("the switches parse");
         assert!(options.mcp_stdio);
         assert!(options.stepped);
-        assert!(!options.headless_run());
+        assert!(!options.headless);
         assert!(!options.mcp_http_run());
+        assert!(options.has_transport());
     }
 
     #[test]
@@ -142,25 +210,42 @@ mod tests {
 
     #[test]
     fn the_headless_switches_parse() {
-        let options =
-            RunOptions::try_parse_from(["unlit3dx", "--headless", "--headless-frames", "12"])
-                .expect("the values parse");
-        assert!(options.headless_run());
-        assert_eq!(options.headless_frames, Some(12));
-        let options =
-            RunOptions::try_parse_from(["unlit3dx", "--headless", "--headless-out=/tmp/capture"])
-                .expect("the values parse");
-        assert!(options.headless_run());
+        let options = RunOptions::try_parse_from(["unlit3dx", "--headless", "--max-frames", "12"])
+            .expect("the values parse");
+        assert!(options.headless);
+        assert_eq!(options.max_frames, Some(12));
+        assert_eq!(options.frame_budget(), Some(12));
+    }
+
+    #[test]
+    fn the_capture_switches_parse() {
+        let options = RunOptions::try_parse_from([
+            "unlit3dx",
+            "--headless",
+            "--capture-frames",
+            "20,0,10",
+            "--capture-out",
+            "/tmp/capture",
+        ])
+        .expect("the values parse");
+        assert_eq!(options.capture_frames, [20, 0, 10]);
+        assert_eq!(options.frames_to_capture(), [0, 10, 20]);
         assert_eq!(
-            options.headless_out.as_deref(),
+            options.capture_out.as_deref(),
             Some(std::path::Path::new("/tmp/capture"))
         );
     }
 
     #[test]
-    fn a_capture_switch_without_headless_is_refused() {
-        assert!(RunOptions::try_parse_from(["unlit3dx", "--headless-frames", "12"]).is_err());
-        assert!(RunOptions::try_parse_from(["unlit3dx", "--headless-out=/tmp/capture"]).is_err());
+    fn a_capture_switch_needs_the_other_half() {
+        assert!(RunOptions::try_parse_from(["unlit3dx", "--capture-frames", "12"]).is_err());
+        assert!(RunOptions::try_parse_from(["unlit3dx", "--capture-out=/tmp/capture"]).is_err());
+    }
+
+    #[test]
+    fn a_frame_count_of_zero_is_refused() {
+        assert!(RunOptions::try_parse_from(["unlit3dx", "--max-frames", "0"]).is_err());
+        assert!(RunOptions::try_parse_from(["unlit3dx", "--max-frames"]).is_err());
     }
 
     #[test]
@@ -169,34 +254,76 @@ mod tests {
             RunOptions::try_parse_from(["unlit3dx", "--headless", "--interactive", "--mcp-stdio"])
                 .expect("the switch parses");
         assert!(options.interactive);
-        assert_eq!(options.headless_frames, None);
+        assert!(options.client_paced());
+        assert_eq!(options.max_frames, None);
+        assert_eq!(options.frame_budget(), None);
     }
 
     #[test]
-    fn interactive_conflicts_with_a_frame_count() {
-        assert!(
-            RunOptions::try_parse_from([
-                "unlit3dx",
-                "--headless",
-                "--interactive",
-                "--headless-frames",
-                "12",
-            ])
-            .is_err()
-        );
+    fn the_frames_and_the_client_pacing_coexist() {
+        let options = RunOptions::try_parse_from([
+            "unlit3dx",
+            "--headless",
+            "--interactive",
+            "--mcp-stdio",
+            "--max-frames",
+            "12",
+        ])
+        .expect("a client-paced run may still be bounded");
+        assert!(options.client_paced());
+        assert_eq!(options.frame_budget(), Some(12));
+    }
+
+    #[test]
+    fn a_capture_bounds_the_run_it_serves() {
+        let options = RunOptions::try_parse_from([
+            "unlit3dx",
+            "--headless",
+            "--capture-frames",
+            "0,10,20",
+            "--capture-out",
+            "/tmp/capture",
+        ])
+        .expect("the values parse");
+        assert_eq!(options.frame_budget(), Some(21));
+    }
+
+    #[test]
+    fn a_named_frame_count_wins_over_the_capture() {
+        let options = RunOptions::try_parse_from([
+            "unlit3dx",
+            "--headless",
+            "--max-frames",
+            "5",
+            "--capture-frames",
+            "0,10",
+            "--capture-out",
+            "/tmp/capture",
+        ])
+        .expect("the values parse");
+        assert_eq!(options.frame_budget(), Some(5));
+    }
+
+    #[test]
+    fn the_client_pacing_needs_a_transport() {
+        let options = RunOptions::try_parse_from(["unlit3dx", "--interactive"])
+            .expect("the switch parses on its own");
+        assert!(options.interactive);
+        assert!(!options.has_transport());
+        assert!(!options.client_paced());
     }
 
     #[test]
     fn bare_options_ask_for_a_window() {
         let options = RunOptions::try_parse_from(["unlit3dx"]).expect("the empty line parses");
-        assert!(!options.headless_run());
-        assert_eq!(options.headless_frames, None);
-        assert_eq!(options.headless_out, None);
+        assert!(!options.headless);
+        assert_eq!(options.max_frames, None);
+        assert_eq!(options.frame_budget(), None);
+        assert!(options.capture().is_none());
     }
 
     #[test]
     fn what_neither_side_declares_is_refused() {
         assert!(RunOptions::try_parse_from(["unlit3dx", "--nonsense"]).is_err());
-        assert!(RunOptions::try_parse_from(["unlit3dx", "--headless-frames"]).is_err());
     }
 }

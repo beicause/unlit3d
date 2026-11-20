@@ -61,7 +61,7 @@ between the `unlit3d` and `unlit3dx` activities.
 ## The headless mode
 
 ```sh
-cargo run -p unlit3dx_examples -- --headless --headless-frames 300 --headless-out headless
+cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 299 --capture-out headless
 ```
 
 `--headless` runs the very same scene without a window, threads or an audio
@@ -70,10 +70,13 @@ the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
 in the host's own world, and the skeleton's `Stepping` advances them one
 frame at a time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes
 due, the synth fills as its sample rate does, and gameplay ticks once per
-frame with the duration the run gives it (`HEADLESS_HZ`). After
-`--headless-frames` frames the run's last frame and its whole audio mix land
-in `--headless-out` as `frame_299.png` and `audio.flac` — one image per captured frame, named after
-its frame index. Because every frame is the same length and
+frame with the duration the run gives it (`HEADLESS_HZ`). `--max-frames`
+ends the run once it has advanced that many frames, and `--capture-frames`
+names the frames to keep: each one lands in `--capture-out` as
+`frame_<index>.png`, and the run's whole audio mix as `audio.flac` when it
+played anything. Both switches work on a windowed run too, where a capture
+also switches the presentation to its offscreen path, since a swap chain
+image cannot be read back. Because every frame is the same length and
 the spawn rolls are seeded, a run is reproducible, which is what the
 [snapshot tests](tests/headless.rs) build on: rendered frames compare against
 webp baselines and the mix against a FLAC baseline, both kept in the
@@ -95,10 +98,11 @@ never touches its internals: it clicks the panel through `send_input`, captures
 three image snapshots, compares the mix it recorded while the sequence played
 against a fourth baseline, asserts that the mix recorded after the pause is
 silent without storing it, and asks the process to exit. Without `--interactive` the run paces
-itself: `--headless --mcp-stdio` steps the frames `--headless-frames` names
-and serves MCP between them, so a client watches and injects while the run
-drives. That run is paced in wall-clock time and defaults to a single frame,
-so name `--headless-frames` for anything a client is meant to watch.
+itself: `--headless --mcp-stdio --max-frames 600` steps those frames and
+serves MCP between them, so a client watches and injects while the run
+drives. That run is paced in wall-clock time, and with no `--max-frames` it
+keeps going until a client asks it to exit or the process is killed —
+`request_exit`, Ctrl-C, or `kill`.
 
 The same story runs twice from the description in
 `tests/mcp_input/shared.rs`. The [native driver](tests/mcp_input/native.rs)

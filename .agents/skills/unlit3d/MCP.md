@@ -50,7 +50,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 - **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless --interactive --mcp-stdio`，它不建 winit 事件循环。
 - **`--mcp-stdio` 与 `--mcp-http` 会改变渲染路径**：带任一开关时场景自己的 pass 画进常驻纹理（`PresentationPath::Intermediate`），同一个 world 里再加一个 blit pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。不改这条路径的话，MCP 截图拿不到画面——交换链图像不是资源图节点。
-- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"stepped": n}` 而没有帧号，且 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主没有帧号可报，帧率要问 `frame_clock`。`--interactive` 必须搭配一个传输，否则运行拒绝启动。
+- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"stepped": n}` 而没有帧号，且 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主没有帧号可报，帧率要问 `frame_clock`。`--interactive` 要生效必须搭配一个传输：没有传输时客户端到不了，运行会打一条 warn 说明该开关不生效、然后自己配速，而不是拒绝启动。
 - **截图只能读到常驻纹理**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，此时工具会报 `the world has no readable texture to screenshot; pass \`target\``。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
@@ -158,14 +158,16 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 `unlit3dx_examples --headless --interactive --mcp-stdio` 是不建 winit、只渲染到离屏纹理的宿主：它**不自己推进时间**，只有 `step_frames` 让场景往前走。这样一次完整的「输入 → 渲染 → 录音」流程不需要 sleep，帧号、模拟步长和截图内容都确定。它也关掉了自动掉球与背景自动播放，初始状态严格静止。
 
-去掉 `--interactive` 就是自驱形态（`--headless --headless-frames N --mcp-stdio`）：宿主按真实时钟走完 N 帧、帧间泵命令，客户端只观察与注入，帧数走完进程自己退出——适合「让 agent 看着一个正在跑的场景」而不是「由 agent 一帧帧推」。它默认只走一帧，所以要点名 `--headless-frames`；客户端连上要花一点时间，帧数太小会在握手完成前就结束。
+去掉 `--interactive` 就是自驱形态（`--headless --mcp-stdio`，可加 `--max-frames N`）：宿主按真实时钟推进、帧间泵命令，客户端只观察与注入。给了 `--max-frames` 就在走满 N 帧后自己退出；不给则一直跑下去，直到客户端 `request_exit` 或进程被 kill——适合「让 agent 看着一个正在跑的场景」。要让客户端看得下去，帧数别太小：客户端连上要花一点时间。
+
+自驱与客户端配速这两条路上，捕获都可以直接由命令行点名：`--capture-frames 0,10,20 --capture-out DIR` 让运行在走到这些帧号时各写一个 `frame_<index>.png`，末尾再把它播放过的混音写成 `audio.flac`（没播过东西就不写）。两个开关必须成对；只给 `--capture-frames` 不给 `--max-frames` 时，最后一帧的下一帧就是运行的终点。
 
 | 工具            | 作用                                                             | 关键参数        |
 | --------------- | ---------------------------------------------------------------- | --------------- |
 | `step_frames`    | 按固定 60 Hz 帧推进场景                                          | `frames`（≥1）  |
-| `scene_status`   | 报告帧号、球数、MIDI 序列状态、各按钮中心、world 与纹理 id       | 无              |
+| `scene_status`   | 报告帧号、world 与纹理 id（库提供的那一半）                      | 无              |
 
-`scene_status` 的字段：`ready`、`frame`、`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits，可直接当 `read_texture_as_image` 的 `id` 与 `save_screenshot` 的 `target`）。（`ready` 目前恒为 `true`，是硬编码的保留字段，不要拿它判断玩法 world 起没起来。）
+`scene_status` 由库提供，字段只有 `frame`、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits，可直接当 `read_texture_as_image` 的 `id` 与 `save_screenshot` 的 `target`）。场景自己的状态——球数、MIDI 序列、各按钮中心——由**示例**注册的 `scene_extra_status` 报：`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）。两个工具分开调，别指望 `scene_status` 里有按钮坐标。
 
 一个典型回合（所有 `Handle` 与 `id` 都是示意值，照 `scene_status` 报的填；`C` 是这条连接的名字）：
 
@@ -174,6 +176,7 @@ mcpdo connect -- ./target/debug/unlit3dx-examples --headless --interactive --mcp
 C='./target/debug/unlit3dx-examples'
 
 mcpdo --connection "$C" tools/call scene_status --format json
+mcpdo --connection "$C" tools/call scene_extra_status --format json
 mcpdo --connection "$C" tools/call step_frames frames:=60 --format json
 mcpdo --connection "$C" tools/call send_input 'world:=<gameplay_world>' 'events:=[
   {"Mouse": {"Moved": {"position": <button_center>}}},
@@ -189,7 +192,7 @@ mcpdo disconnect "$C"
 要点：
 
 - **`world` 必须指名**：渲染是子 world、录音是音频 world、输入走玩法 world——每次启动的 bits 会变，照 `scene_status` 报的用。
-- **点击要打给玩法 world 的 `send_input`**，坐标用 `scene_status` 里 `buttons` 给的中心（物理像素，`WINDOW_SIZE` 是 1024×720）。egui 一帧最多结算一次点击，所以连点两个按钮必须在两次点击之间 `step_frames`。
-- **读图用 `read_texture_as_image` 而不是 `save_screenshot`**：两者都会先渲染一帧再读回（各多画一帧，与 `step_frames` 的绘制重复），但前者只把图内联进回复、不落盘。要落盘才用 `save_screenshot`。`id` 用 `scene_status` 的 `target`。
+- **点击要打给玩法 world 的 `send_input`**，坐标用 `scene_extra_status` 里 `buttons` 给的中心（物理像素，`WINDOW_SIZE` 是 1024×720）。egui 一帧最多结算一次点击，所以连点两个按钮必须在两次点击之间 `step_frames`。
+- **读图用 `read_texture_as_image` 而不是 `save_screenshot`**：`read_texture_as_image` 只把目标纹理读回来、不渲染也不落盘；`save_screenshot` 会先渲染一帧再读回（比 `step_frames` 的绘制多画一帧）。要落盘才用它。`id` 用 `scene_status` 的 `target`。
 - **录音在内存里取**：`start_audio_recording`（给音频 world）→ `step_frames` → `read_audio_recording`，回复里是 `type` 为 `audio` 的内容块，解出来就是样本；结构化内容里另有帧数、秒数、采样率与声道数。暂停一个 MIDI 序列后，被按下的音符还要走完 patch 的 release，所以要再推进一段（几十到几百帧）才真正静音。
 - **收尾用 `request_exit`**，然后断言进程退出码与 stderr 没有错误。

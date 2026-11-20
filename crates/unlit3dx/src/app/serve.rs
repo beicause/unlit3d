@@ -1,12 +1,11 @@
 //! The interactive headless host: MCP drives a scene without a window.
 //!
-//! The host waits for commands rather than pacing itself. Only the
-//! frame-stepping tool advances simulation time, so a client reproduces a
-//! complete sequence of input, rendering and recording without sleeping
-//! between commands.
+//! The host advances frames either at its client's request or on its own
+//! clock. Only the frame-stepping tool advances simulation time on a
+//! client-paced host, so a client reproduces a complete sequence of input,
+//! rendering and recording without sleeping between commands.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,22 +15,16 @@ use unlit_ecs::mcp::{
 };
 use unlit_ecs::{World, bundle};
 use unlit_wgpu::context::RenderDevice;
-use unlit3d::input::InputWriter;
 use unlit3d::winit::builtin::ExitRequest;
 
 use super::App;
-use super::headless::{AUDIO_SAMPLE_RATE, HEADLESS_HZ, HeadlessConfig, HeadlessOutput};
+use super::capture::Capture;
+use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, UNBOUNDED_MIX_SECONDS};
 use super::interactive::{Interactive, interactive};
+use super::pace::Pacing;
 use super::scene::ClientPacing;
-use super::write;
+use crate::audio::AudioFormat;
 use crate::mcp::{pump_mcp, serve_mcp};
-
-/// The longest a served capture records.
-///
-/// A served run ends when its client asks it to, so the recording cannot
-/// know its length in advance; this bounds the memory a client that never
-/// stops stepping can spend on the mix.
-const BUDGET_SECONDS: f32 = 600.0;
 
 /// The transports a headless run serves MCP over.
 ///
@@ -55,13 +48,14 @@ pub struct Transports {
 /// tools here advance frames and report the run's state, and an
 /// application registers tools of its own for the objects it owns.
 ///
-/// The frames parameter picks who paces the run. Passing none leaves the
-/// frames to the client: the run advances when the client's tools advance
-/// them and ends once a client asks it to exit. Naming a count asks for a
-/// run that paces itself: it steps the count at the headless rate,
-/// serving MCP between the frames, and the client rides along as an
-/// observer and an injector. When the output directory is named, the run also
-/// writes what it drove: the frame it stopped on and the mix it played.
+/// [`Pacing`] picks who advances the frames: a client-paced host waits for
+/// the client's tools, and a host with a frame count steps them itself at
+/// the headless rate, serving MCP between the frames so the client rides
+/// along as an observer and an injector. A host bounded by nothing and paced
+/// by nobody runs until a client asks it to exit or the process is killed.
+///
+/// The capture writes the frames it names as the run reaches them, and the
+/// mix it played when the run ends.
 ///
 /// The transports named in [Transports] serve in combination; [serve]
 /// returns the address the HTTP transport bound, when one was named.
@@ -75,26 +69,42 @@ pub struct Transports {
 ///
 /// # Errors
 ///
-/// Fails without serving anything when `Transports` names no transport
-/// while no frame count is named: a client-paced host has no driver without a
-/// transport. A run that names a count paces itself and serves fine
-/// without one. Fails when the HTTP transport cannot bind its port,
-/// carrying the underlying message. Naming an HTTP address on a build
-/// without the mcp-http feature fails the same way, and so does a capture
-/// that cannot be written, after the run has ended.
+/// Fails without serving anything when [Transports] names no transport and
+/// the pacing leaves the frames to a client that cannot arrive: the host
+/// would have nothing to drive it. Fails when the HTTP transport cannot
+/// bind its port, carrying the underlying message. Naming an HTTP address on
+/// a build without the mcp-http feature fails the same way, and so does a
+/// capture that cannot be written.
 pub fn serve<A: App>(
     app: A,
     device: RenderDevice,
     transports: Transports,
-    frames: Option<u32>,
-    out: Option<PathBuf>,
+    pacing: Pacing,
+    capture: Option<Capture>,
 ) -> Result<Option<SocketAddr>, String> {
-    if frames.is_none() && !transports.stdio && transports.http.is_none() {
+    if pacing.client && !transports.stdio && transports.http.is_none() {
         return Err(
-            "a client-paced host has no driver without a transport; name one with Transports, or name a frame count to pace the host itself".to_owned(),
+            "a client-paced host has no driver without a transport; name one with Transports, or let the host pace its own frames".to_owned(),
         );
     }
-    let (mut host, _input) = interactive_host(app, device);
+    let mut host = interactive_host(app, device);
+    // The mix is observed from the run's first fill, so the recording opens
+    // before any command runs. A client-paced run records a fixed span: the
+    // run ends when its client says so, so the length is not the run's to
+    // know, and an unbounded recording would grow with the session.
+    if let Some(capture) = &capture {
+        let mut interactive = host.root_scope().query::<&mut Interactive>();
+        if let Some(interactive) = interactive.iter().next() {
+            let seconds = match pacing.frames {
+                Some(count) => count as f32 / HEADLESS_HZ as f32,
+                // A client-paced run has no length to read here, so what
+                // bounds the mix is the same cap an unbounded run uses.
+                None => UNBOUNDED_MIX_SECONDS,
+            };
+            interactive.capture = capture.clone();
+            interactive.start_recording(&host, seconds);
+        }
+    }
     if transports.stdio {
         serve_mcp(&mut host);
     }
@@ -112,40 +122,22 @@ pub fn serve<A: App>(
         (true, None) => log::info!("the interactive headless MCP server is ready"),
         (false, None) => {}
     }
-    // The mix is observed from the run's first fill, so the recording opens
-    // before any command runs. A client-paced run's window is the wall-clock
-    // bound that keeps a client that never stops stepping from growing the
-    // mix without end; a self-paced run knows its length exactly.
-    if out.is_some() {
-        let mut interactive = host.root_scope().query::<&mut Interactive>();
-        if let Some(interactive) = interactive.iter().next() {
-            let seconds = match frames {
-                Some(count) => count as f32 / HEADLESS_HZ as f32,
-                None => BUDGET_SECONDS,
-            };
-            interactive.start_recording(&host, seconds);
-        }
+    if pacing.client {
+        pump_until_done(&mut host);
+    } else {
+        pump_self_paced(&mut host, pacing);
     }
-    match frames {
-        Some(count) => pump_self_paced(&mut host, count),
-        None => pump_until_done(&mut host),
-    }
-    if let Some(out) = out {
-        write_capture::<A>(&mut host, &out)?;
-    }
+    write_capture(&mut host, capture.as_ref())?;
     Ok(http)
 }
 
 /// Build the interactive host the headless MCP runs serve, carrying the
 /// exit request and the interactive state.
-///
-/// The input writer comes back with the host and has to outlive it: it is
-/// the buffer the MCP tools feed.
-fn interactive_host<A: App>(app: A, device: RenderDevice) -> (World, InputWriter) {
-    let (mut host, input, interactive) = interactive(app, device);
+fn interactive_host<A: App>(app: A, device: RenderDevice) -> World {
+    let (mut host, interactive) = interactive(app, device);
     host.root_scope_mut().spawn(bundle![ExitRequest(false)]);
     host.root_scope_mut().spawn(bundle![interactive]);
-    (host, input)
+    host
 }
 
 /// Bind the HTTP transport against the host, when the build serves it.
@@ -163,34 +155,51 @@ fn bind_http(_host: &mut World, _addr: SocketAddr) -> Result<Option<SocketAddr>,
     Err("the HTTP transport needs the mcp-http feature".to_owned())
 }
 
-/// Pump the host's MCP commands until a client asks the run to exit.
+/// How long a client-paced turn waits for a command before looking at the
+/// world again.
 ///
-/// A served run is client-paced: the frames advance when the client's tools
-/// advance them, so no frame budget ends the run underneath a session.
+/// The transports ring the turn when they post, so this is not the polling
+/// rate: it is the longest a change nobody posted about — an exit request
+/// written by a behaviour — can go unnoticed. A second is short enough that
+/// the run ends when told to, and long enough that waiting costs nothing.
+const POLL_SECONDS: f64 = 1.0;
+
+/// Serve the host's MCP commands until a client asks the run to exit.
+///
+/// A client-paced run advances when the client's tools advance it, so
+/// nothing here steps the scene: the turn exists to answer the commands and
+/// to notice the exit request.
 fn pump_until_done(host: &mut World) {
+    // The transports ring this handle when they post, so the turn sleeps
+    // until there is something to do instead of spinning a core while the
+    // client thinks. The timeout is the exit request's own alarm: a client
+    // asking the run to exit posts through the same transports, so the ring
+    // covers it, and the timeout only bounds how long an exit request
+    // written from anywhere else can sit unseen.
+    let wake = crate::mcp::inbox_wake(host);
+    let poll = Duration::from_secs_f64(POLL_SECONDS);
     loop {
         pump_mcp(host).expect("the MCP command queue applies");
-        let exit = host
-            .root_scope()
-            .query::<&ExitRequest>()
-            .iter()
-            .any(|request| request.0);
-        if exit {
+        if exit_requested(host) {
             break;
         }
-        std::thread::park_timeout(Duration::from_millis(1));
+        match &wake {
+            Some(wake) => wake.wait(poll),
+            None => std::thread::sleep(poll),
+        }
     }
 }
 
-/// Pump the host's MCP commands while the run steps its own frames.
+/// Serve the host's MCP commands while the run steps its own frames.
 ///
-/// The run advances one frame at a time at the headless rate and serves MCP
-/// between the frames, so a client observes and injects but does not pace.
-/// The count ends the run, and so does a client's exit request.
-fn pump_self_paced(host: &mut World, frames: u32) {
+/// The run advances one frame at a time at the headless rate and answers
+/// MCP between the frames, so a client observes and injects but does not
+/// pace. The count ends the run, and so does a client's exit request; a
+/// host with no count runs until one of those happens.
+fn pump_self_paced(host: &mut World, pacing: Pacing) {
     let step = Duration::from_secs_f64(1.0 / HEADLESS_HZ);
     let mut next = Instant::now() + step;
-    for _ in 0..frames {
+    while !pacing.is_spent(advanced(host)) {
         {
             let mut interactive = host.root_scope().query::<&mut Interactive>();
             if let Some(interactive) = interactive.iter().next() {
@@ -198,12 +207,7 @@ fn pump_self_paced(host: &mut World, frames: u32) {
             }
         }
         pump_mcp(host).expect("the MCP command queue applies");
-        let exit = host
-            .root_scope()
-            .query::<&ExitRequest>()
-            .iter()
-            .any(|request| request.0);
-        if exit {
+        if exit_requested(host) {
             break;
         }
         // The frames are paced in wall-clock time, the way a windowed run
@@ -223,35 +227,49 @@ fn pump_self_paced(host: &mut World, frames: u32) {
     }
 }
 
-/// Write what the run drove: the frame it stopped on and the mix it played.
-///
-/// A served run captures its last frame rather than a schedule of them, so
-/// the capture is one picture named after the frame the run ended on.
-fn write_capture<A: App>(host: &mut World, out: &Path) -> Result<(), String> {
+/// How many frames the interactive host has advanced.
+fn advanced(host: &World) -> u32 {
+    let mut interactive = host.root_scope().query::<&Interactive>();
+    interactive
+        .iter()
+        .next()
+        .map_or(0, |interactive| interactive.frame())
+}
+
+/// Whether the host was asked to exit.
+fn exit_requested(host: &World) -> bool {
+    host.root_scope()
+        .query::<&ExitRequest>()
+        .iter()
+        .any(|request| request.0)
+}
+
+/// Write the mix the run played, and report a capture it never completed.
+fn write_capture(host: &mut World, capture: Option<&Capture>) -> Result<(), String> {
+    let Some(capture) = capture else {
+        return Ok(());
+    };
     let mut interactive = host.root_scope().query::<&mut Interactive>();
     let Some(interactive) = interactive.iter().next() else {
         return Err("the host is not an interactive headless scene".to_owned());
     };
-    let index = interactive.frame();
-    let pixels = pollster::block_on(interactive.render_frame(host));
+    let advanced = interactive.frame();
     let audio = interactive
         .stop_recording(host)
         .map(|recording| recording.samples)
         .unwrap_or_default();
-    let config = HeadlessConfig {
-        size: A::SIZE,
-        frames: index,
-        capture: vec![index.saturating_sub(1)],
-        audio_sample_rate: AUDIO_SAMPLE_RATE,
-        ..HeadlessConfig::default()
+    let _ = interactive;
+    let format = AudioFormat {
+        sample_rate: AUDIO_SAMPLE_RATE,
+        channels: AUDIO_CHANNELS as u16,
     };
-    let output = HeadlessOutput {
-        frames: vec![pixels],
-        audio,
-    };
-    let written = write::capture(&output, &config, out)?;
-    for path in written {
+    if let Some(path) = capture.write_audio(format, &audio)? {
         log::info!("the served run wrote {}", path.display());
+    }
+    if let Some(frame) = capture.missing(advanced) {
+        log::warn!(
+            "the run advanced {advanced} frames and never reached frame {frame}, so the capture is incomplete"
+        );
     }
     Ok(())
 }
@@ -260,9 +278,8 @@ fn write_capture<A: App>(host: &mut World, out: &Path) -> Result<(), String> {
 /// frame through.
 fn status(interactive: &Interactive) -> Value {
     json!({
-        "ready": true,
         "frame": interactive.frame(),
-        "render_world": { "Handle": interactive.render_world.to_bits() },
+        "render_world": { "Handle": interactive.render_world().to_bits() },
         "audio_world": { "Handle": interactive.worlds().audio.entity.to_bits() },
         "target": interactive.target.id().to_bits(),
     })
