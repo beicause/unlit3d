@@ -1,8 +1,12 @@
 //! What spawning a document's default scene puts in the frame: textures, hierarchy, flat colour, and unloading.
 
-use super::documents::{QuadDoc, camera, count_colour, quad_document, spawn_scene};
+use super::documents::{
+    QuadDoc, camera, count_colour, quad_document, spawn_placed_scene, spawn_scene,
+    two_quad_document,
+};
 use super::{
-    CLEAR, Ctx, HEIGHT, LitGltf, TestGpu, WIDTH, World, bundle, count_pixels_off_background,
+    CLEAR, Ctx, HEIGHT, LitGltf, TestGpu, Transform, WIDTH, World, bundle,
+    count_pixels_off_background,
 };
 
 /// A textured quad covers the frame in four colour quarters: the rows of
@@ -198,5 +202,50 @@ pub(super) async fn unload_empties_the_frame() {
         count_pixels_off_background(&after, [0.0, 0.0, 0.0], 2),
         0,
         "nothing draws after the resources are unloaded ({breakdown})",
+    );
+}
+/// A placement moves the whole document instead of every node on its own:
+/// with two meshed nodes an offset apart, the spawned entities stand that same
+/// offset apart, both shifted by the placement.
+pub(super) async fn a_placement_moves_the_whole_document() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    // Two quads, the second `OFFSET` to the right of the first.
+    const OFFSET: f32 = 1.2;
+    let gltf = LitGltf::from_bytes(&two_quad_document([[0.0, 0.0, 0.0], [OFFSET, 0.0, 0.0]]))
+        .expect("the embedded document parses");
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let placement = Transform {
+        translation: glam::Vec3::new(0.5, 0.0, 0.0),
+        ..Transform::default()
+    };
+    let nodes = spawn_placed_scene(&gpu, &mut world, &gltf, &resources, &placement);
+
+    // The document puts its second node at +OFFSET and the placement shifts
+    // both by its own translation, so the two stay OFFSET apart. A spawn that
+    // handed every node the same transform would leave both at 0.5.
+    let scope = world.root_scope();
+    let mut translations: Vec<f32> = nodes
+        .iter()
+        .filter_map(|node| {
+            node.entities
+                .first()
+                .map(|&entity| scope.query_one::<&Transform>(entity).get().translation.x)
+        })
+        .collect();
+    translations.sort_by(f32::total_cmp);
+    assert_eq!(translations.len(), 2, "both meshed nodes spawn");
+    assert!(
+        (translations[0] - 0.5).abs() < 1e-5,
+        "the first node sits at the placement: {} instead of 0.5",
+        translations[0]
+    );
+    assert!(
+        (translations[1] - (0.5 + OFFSET)).abs() < 1e-5,
+        "the second node keeps its offset from the first: {} instead of {}",
+        translations[1],
+        0.5 + OFFSET
     );
 }

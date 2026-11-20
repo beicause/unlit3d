@@ -790,7 +790,8 @@ the module patches into the world you already render:
   in.
 - `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
   mesh (or every node reachable from the default scene): one entity per
-  primitive, each carrying the node's world-space [`Transform`](components::Transform), the uploaded
+  primitive, each carrying the node's world-space [`Transform`](components::Transform) —
+  the node's own world transform composed with the spawn's `placement` — the uploaded
   [`GpuMesh`](components::GpuMesh), the [`GpuRenderPipeline`](components::GpuRenderPipeline)
   for the mesh, an [`InstanceColor`](lit::InstanceColor) tinted with the
   material's base-color factor, and — when the mesh reads a base-color texture —
@@ -815,17 +816,19 @@ the module patches into the world you already render:
   joint, from the joint nodes' world transforms and the skin's inverse bind
   matrices — as a starting point, and `LitGltf::skin_joint_count` reports how
   many joints a node's skin has.
-- A primitive whose mesh declares a morph target that displaces positions is
-  uploaded with those displacements and drawn morphed: `spawn_node` /
-  `spawn_default_scene` create a [`MorphWeights`](components::MorphWeights) entity for the node and
-  put a [`MorphBinding`](components::MorphBinding) on the mesh, so writing that entity's weights is
-  how a caller morphs the mesh. `LitGltf::morph_weights` returns the node's
-  starting weights — the node's own `weights` when it states them, the mesh's
-  otherwise, and zero for a target left unweighted — padded or truncated to the
-  number of targets that displace positions, which is the length the renderer
-  requires. A target that displaces only normals or tangents is not counted and
-  not uploaded, so a mesh whose every target displaces nothing this loader
-  reads draws undeformed rather than through the morph path.
+- A primitive whose mesh declares any morph target is uploaded with the
+  positional displacements of the targets that state them and drawn morphed:
+  `spawn_node` / `spawn_default_scene` create a
+  [`MorphWeights`](components::MorphWeights) entity for the node and put a
+  [`MorphBinding`](components::MorphBinding) on the mesh, so writing that
+  entity's weights is how a caller morphs the mesh. `LitGltf::morph_weights`
+  returns the node's starting weights — the node's own `weights` when it states
+  them, the mesh's otherwise, and zero for a target left unweighted — padded or
+  truncated to the length of the primitive's `targets` array, which is the
+  length the renderer requires. Weights are indexed by a target's slot in that
+  array, so a target that displaces only normals keeps its slot and morphs
+  nothing; counting it out would shift every later target's weight one slot
+  down and deform the mesh into a shape the document never states.
 - A primitive whose material is `doubleSided` is drawn from either side: the
   pipeline variant drops its cull mode, so the back faces the single-sided
   variant would discard are rasterized instead. Nothing else about the variant
@@ -842,7 +845,11 @@ the module patches into the world you already render:
   its descendants', which inherit the change), every [`SkinPose`](components::SkinPose) whose mesh
   follows a moved joint, and every [`MorphWeights`](components::MorphWeights) a weight channel names.
   It takes a `&Scope`, so a caller drives it alongside anything else that reads
-  the world, and it touches nothing the passed `&[GltfNode]` does not name.
+  the world, and it touches nothing the passed `&[GltfNode]` does not name. The
+  recomposition starts from the document's own node locals, so a node a clip
+  reaches is written at its unplaced transform: a placement given to
+  `spawn_default_scene` survives on every node the clip leaves alone, and is
+  dropped while the clip plays on the nodes it drives.
 - A clip is decoded once and kept: the keyframes a channel addresses are
   collected on the first frame that plays the clip rather than re-read from the
   document's buffers on every frame. The working set — the locals it overwrites,

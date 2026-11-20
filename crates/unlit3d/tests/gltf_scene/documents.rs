@@ -1,7 +1,8 @@
 //! The glTF documents the tests render, built in memory as JSON plus a data-URI buffer.
 
 use super::{
-    Camera, GltfNode, GltfResources, HEIGHT, LitGltf, TestGpu, WIDTH, World, camera_looking_at,
+    Camera, GltfNode, GltfResources, HEIGHT, LitGltf, TestGpu, Transform, WIDTH, World,
+    camera_looking_at,
 };
 
 /// The buffer: 4 positions (f32), 4 uvs (f32), 6 indices (u16), the PNG.
@@ -112,6 +113,44 @@ pub(super) fn quad_document(doc: &QuadDoc) -> Vec<u8> {
     json.into_bytes()
 }
 
+/// The glTF JSON for a document whose two nodes each draw the same quad, one
+/// per offset in `offsets`.
+///
+/// Both nodes hang off the scene root, so a spawn that moves every node onto
+/// one transform stacks the two quads on each other, while a spawn that
+/// composes the document's placement keeps them `offsets` apart.
+pub(super) fn two_quad_document(offsets: [[f32; 3]; 2]) -> Vec<u8> {
+    let (first, second) = (offsets[0], offsets[1]);
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        "scenes":[{{"nodes":[0,1]}}],
+        "nodes":[
+        {{"mesh":0,"translation":[{},{},{}]}},
+        {{"mesh":0,"translation":[{},{},{}]}}],
+        "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},
+        "indices":1}}]}}],
+        "accessors":[
+        {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
+        "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]}},
+        {{"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"}}],
+        "bufferViews":[
+        {{"buffer":0,"byteOffset":{},"byteLength":48,"target":34962}},
+        {{"buffer":0,"byteOffset":{},"byteLength":12,"target":34963}}],
+        "buffers":[{{"byteLength":{},"uri":"data:application/octet-stream;base64,{}"}}]}}"#,
+        first[0],
+        first[1],
+        first[2],
+        second[0],
+        second[1],
+        second[2],
+        POS_OFFSET,
+        IDX_OFFSET,
+        BIN_LENGTH,
+        BIN_BASE64,
+    );
+    json.into_bytes()
+}
+
 /// Count texels whose three colour channels are all within `tolerance` of
 /// `colour`.
 pub(super) fn count_colour(px: &[u8], colour: [u8; 3], tolerance: u8) -> usize {
@@ -147,9 +186,21 @@ pub(super) fn spawn_scene(
     gltf: &LitGltf,
     resources: &GltfResources,
 ) -> Vec<GltfNode> {
+    spawn_placed_scene(gpu, world, gltf, resources, &Transform::default())
+}
+
+/// Spawn the document's default scene at `placement`, composing it with the
+/// document's own node transforms as [`LitGltf::spawn_default_scene`] does.
+pub(super) fn spawn_placed_scene(
+    gpu: &TestGpu,
+    world: &mut World,
+    gltf: &LitGltf,
+    resources: &GltfResources,
+    placement: &Transform,
+) -> Vec<GltfNode> {
     let source = gpu.mesh_source();
     let mut scope = world.scope_mut(source);
-    gltf.spawn_default_scene(&mut scope, resources)
+    gltf.spawn_default_scene(&mut scope, resources, placement)
         .expect("the test document spawns")
 }
 

@@ -69,14 +69,44 @@ fn a_morph_target_makes_the_mesh_morph() {
 }
 
 #[test]
-fn a_target_without_positions_does_not_make_the_mesh_morph() {
-    // A normals-only target displaces nothing this loader reads, so the
-    // mesh stays in the rigid path rather than drawing an empty morph.
+fn a_target_without_positions_still_owns_a_weight_slot() {
+    // A target that displaces nothing this loader reads still occupies its
+    // slot in the document's target array, and the weights are indexed by
+    // that array: dropping the slot would shift every later target's weight
+    // onto the wrong target, deforming the mesh into something the document
+    // never states. The mesh therefore counts it and starts at zero.
     let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[None]))
         .expect("the morphed document parses");
     let primitive = gltf.primitive(0, 0);
-    assert_eq!(morph_target_count(&primitive), 0);
-    assert!(gltf.morph_weights(NodeId::new(0)).is_empty());
+    assert_eq!(morph_target_count(&primitive), 1);
+    assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.0]);
+}
+
+#[test]
+fn a_weight_lands_on_the_target_its_slot_names() {
+    // The first target displaces nothing and the second moves the vertex up,
+    // so the second weight is the one that has to reach the second target. A
+    // loader that counted only position-displacing targets would give the
+    // mesh a single target, put the up-displacement in slot 0 and hand the
+    // weight meant for the second target to the first.
+    let gltf = LitGltf::from_bytes(&morphed_document(
+        None,
+        Some(&[0.0, 1.0]),
+        &[None, Some([0.0, 1.0, 0.0])],
+    ))
+    .expect("the morphed document parses");
+    assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.0, 1.0]);
+    let streams = super::streams::from_reader(&gltf.buffers, &gltf.primitive(0, 0));
+    let morph = streams
+        .morph_deltas
+        .expect("the mesh carries displacements");
+    assert_eq!(morph.target_count, 2);
+    // Vertex 1 is the one the second target lifts; every vertex keeps three
+    // floats per target, so its slot is the second target's triplet.
+    let deltas = &morph.deltas;
+    let stride = 2 * 3;
+    assert_eq!(deltas[stride + 3..stride + 6], [0.0, 1.0, 0.0]);
+    assert_eq!(deltas[stride..stride + 3], [0.0, 0.0, 0.0]);
 }
 
 #[test]

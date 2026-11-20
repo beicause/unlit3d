@@ -162,8 +162,7 @@ fn push_view(
     // multiple of the accessor's component size. Padding the loader-owned
     // blob to the widest component the decoder writes keeps that true even
     // when a stream is not naturally a multiple of four bytes.
-    const ALIGNMENT: usize = size_of::<f32>();
-    blob.resize(blob.len().div_ceil(ALIGNMENT) * ALIGNMENT, 0);
+    blob.resize(super::image::align_up(blob.len(), size_of::<f32>()), 0);
     let offset = blob.len();
     let length = bytes.len();
     blob.extend(bytes);

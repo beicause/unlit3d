@@ -9,6 +9,7 @@ use unlit_ecs::bundle;
 
 mod animation;
 mod builders;
+mod documents;
 mod scene;
 
 use self::builders::*;

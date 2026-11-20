@@ -91,20 +91,18 @@ impl LitGltf {
         Some(self.node(node.index()).skin()?.joints().count())
     }
 
-    /// The morph weights a node's mesh starts at, one per target that
-    /// displaces positions.
+    /// The morph weights a node's mesh starts at, one per morph target.
     ///
     /// glTF lets a node override the mesh's own weights, so a node states them
     /// first and the mesh's `weights` is the fallback; a mesh that states
-    /// neither starts at zero, which is to say undeformed. The vector is as
-    /// long as the deforming target list, so it is always the right length for
-    /// the [`MorphWeights`](crate::components::MorphWeights) a spawned mesh
-    /// binds to — a document that states
-    /// fewer weights than it has targets is padded, and one that states more is
-    /// truncated, because the renderer rejects a mismatch.
+    /// neither starts at zero, which is to say undeformed. The vector is as long
+    /// as the target list, so it is always the right length for the
+    /// [`MorphWeights`](crate::components::MorphWeights) a spawned mesh binds
+    /// to — a document that states fewer weights than it has targets is padded,
+    /// and one that states more is truncated, because the renderer rejects a
+    /// mismatch.
     ///
-    /// Returns an empty vector for a node whose mesh has no positional morph
-    /// targets.
+    /// Returns an empty vector for a node whose mesh has no morph targets.
     pub fn morph_weights(&self, node: NodeId) -> Vec<f32> {
         let Some(mesh) = self.node(node.index()).mesh() else {
             return Vec::new();

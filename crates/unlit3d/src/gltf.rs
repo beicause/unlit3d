@@ -33,13 +33,15 @@
 //! what it uploaded alive:
 //!
 //! ```rust,no_run
+//! # use unlit3d::components::Transform;
 //! # use unlit3d::gltf::LitGltf;
 //! # use unlit3d::prelude::MeshSource;
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
 //! let resources = gltf.insert_resources(source, &world.as_scope());
-//! let entities = gltf.spawn_default_scene(world, &resources);
+//! // Where the document sits; `Transform::default()` is where it was authored.
+//! let entities = gltf.spawn_default_scene(world, &resources, &Transform::default());
 //! // ... render ...
 //! // Giving the handles up makes their resources collectable.
 //! drop(resources);
@@ -111,12 +113,16 @@
 //! skinned; [`LitGltf::skin_pose`] turns the node's skin into the
 //! [`SkinPose`](crate::components::SkinPose) its joints deform by, and spawning
 //! such a node creates the pose entity its mesh binds to. A primitive whose mesh
-//! declares a morph target that displaces positions uploads those displacements
-//! and spawns with a [`MorphBinding`](crate::components::MorphBinding) to a
-//! [`MorphWeights`](crate::components::MorphWeights) entity holding the node's
-//! starting weights — see [`LitGltf::morph_weights`] — so writing that entity is how
-//! a caller morphs the mesh. A `doubleSided` material rasterizes its back
-//! faces instead of culling them, so its geometry draws from either side.
+//! declares any morph target uploads the positional displacements of the ones
+//! that state them and spawns with a [`MorphBinding`](crate::components::MorphBinding)
+//! to a [`MorphWeights`](crate::components::MorphWeights) entity holding the
+//! node's starting weights — see [`LitGltf::morph_weights`] — so writing that
+//! entity is how a caller morphs the mesh. The weights are indexed by the
+//! target's slot in the primitive's `targets` array, which is the index the
+//! shader reads, so a target that displaces only normals keeps its slot and
+//! morphs nothing rather than shifting the weights of the targets after it.
+//! A `doubleSided` material rasterizes its back faces instead of culling them,
+//! so its geometry draws from either side.
 //! A document's animations are sampled on demand:
 //! [`LitGltf::animation_count`], [`LitGltf::animation_name`] and
 //! [`LitGltf::animation_duration`] describe what the document carries, and
@@ -130,14 +136,20 @@
 //! `KHR_draco_mesh_compression` is decoded on import into the same accessors,
 //! so morph target displacements, skins and animations apply to it exactly as
 //! to an uncompressed one; its `TRIANGLE_STRIP` mode, which the extension
-//! permits, is normalized to a triangle list as the stream is decoded. Only
-//! the `TRIANGLES` primitive mode is drawn for an ordinary primitive.
+//! permits, is normalized to a triangle list as the stream is decoded. An
+//! ordinary primitive is drawn as a triangle list whatever its mode states:
+//! the indices are uploaded as the document writes them, so `LINES`, `POINTS`,
+//! `TRIANGLE_STRIP` and `TRIANGLE_FAN` primitives draw as whatever triangles
+//! their index stream happens to form rather than as the document intends.
 //! Every primitive uploads its positions; its indices, `COLOR_0` and normals
 //! when the document declares them; UVs only when it samples a base-color
 //! texture, so a mesh that samples nothing carries no unused channel; and its
 //! joints and weights when it declares `JOINTS_0` and `WEIGHTS_0` both. Morph
-//! targets contribute positional displacements only. Tangents are the one
-//! attribute a primitive can declare that the loader drops.
+//! targets contribute positional displacements only. A primitive samples its
+//! base-color texture through `TEXCOORD_0`: one whose material names another
+//! `texCoord` set draws untextured, since the loader uploads a single UV
+//! channel. Tangents are the one attribute a primitive can declare that the
+//! loader drops.
 //! Everything else a glTF document can carry is ignored. A mesh whose
 //! primitive uses techniques outside this subset still uploads and spawns — it
 //! just renders without them.
@@ -178,7 +190,7 @@ mod tests;
 mod upload;
 
 use self::scene::{
-    decompose, node_children, node_locals, node_order, node_parents, node_world_matrices,
+    first_primitives, node_children, node_locals, node_order, node_parents, node_world_matrices,
     nodes_morph_targets,
 };
 
@@ -284,13 +296,11 @@ pub struct LitGltf {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     images: Vec<gltf::image::Data>,
-    /// World-space transform of every node, indexed by node index.
-    node_transforms: Vec<Transform>,
     /// World-space matrix of every node, indexed by node index.
     ///
-    /// Kept beside the decomposed transform because animation recomposes the
-    /// matrices from the node's own local transform and its parents, and a
-    /// shear in that chain has to survive the recomposition.
+    /// A spawn composes its placement into these and decomposes the result, and
+    /// animation recomposes them from the node's own local transform and its
+    /// parents, so a shear in that chain has to survive both.
     node_matrices: Vec<glam::Mat4>,
     /// The parent of every node, indexed by node index; `None` at a root.
     ///
@@ -317,6 +327,22 @@ pub struct LitGltf {
     /// to slice its values; keeping the count is what lets it read a node's
     /// targets without building the node's weight vector.
     morph_targets: Vec<usize>,
+    /// Where each mesh's first primitive sits in a document-mesh-major
+    /// primitive list, indexed by mesh index; one past the last primitive for
+    /// the last mesh.
+    ///
+    /// Every upload and every spawn walks a mesh's primitives in document
+    /// order, so a mesh's slot is its own start plus the primitive's index.
+    /// Deriving that from the document once turns the spawn's per-primitive
+    /// search of the uploaded handles into one lookup.
+    first_primitive: Vec<usize>,
+    /// Whether each node states its transform as a matrix, indexed by node
+    /// index.
+    ///
+    /// The specification gives a node written as a matrix no animatable
+    /// properties, so a channel targeting one is dropped as the clip is
+    /// decoded rather than sampled and overwritten every frame.
+    matrix_nodes: Vec<bool>,
     /// Each animation's channels, decoded on first use, indexed by animation
     /// index.
     ///
@@ -461,7 +487,6 @@ impl LitGltf {
     /// buffer or image cannot be decoded.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let base = path.parent().unwrap_or_else(|| Path::new("./"));
         let imported = gltf::import(path).or_else(|error| {
             Self::import_draco(
                 error,
@@ -470,7 +495,7 @@ impl LitGltf {
                         std::fs::File::open(path)?,
                     ))
                 },
-                Some(base),
+                path.parent(),
             )
         })?;
         Ok(Self::from_parts(imported.0, imported.1, imported.2))
@@ -538,8 +563,12 @@ impl LitGltf {
         let children = node_children(&document);
         let order = node_order(&children, &parents);
         let node_matrices = node_world_matrices(&document, &parents, &order);
-        let node_transforms = node_matrices.iter().map(|&m| decompose(m)).collect();
         let morph_targets = nodes_morph_targets(&document);
+        let first_primitive = first_primitives(&document);
+        let matrix_nodes = document
+            .nodes()
+            .map(|node| matches!(node.transform(), gltf::scene::Transform::Matrix { .. }))
+            .collect();
         let clips = std::iter::repeat_with(OnceLock::new)
             .take(document.animations().count())
             .collect();
@@ -547,13 +576,14 @@ impl LitGltf {
             document,
             buffers,
             images,
-            node_transforms,
             node_matrices,
             parents,
             locals,
             children,
             order,
             morph_targets,
+            first_primitive,
+            matrix_nodes,
             clips,
             mips: MipChain::default(),
         }

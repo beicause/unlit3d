@@ -229,7 +229,11 @@ impl Default for CameraConfig {
 pub struct DocumentConfig {
     /// The path to the .gltf or .glb file.
     pub path: String,
-    /// The transform every spawned node of the document is placed with.
+    /// Where the document sits.
+    ///
+    /// The transform composes with the document's own node transforms, so a
+    /// node that sits away from the document's origin keeps that offset: the
+    /// placement moves the whole scene rather than each node independently.
     pub placement: Option<PlacementConfig>,
     /// The animation to sample, by index or by name.
     pub animation: Option<AnimationRef>,
@@ -237,7 +241,7 @@ pub struct DocumentConfig {
     pub time: f32,
 }
 
-/// A placement transform for a document's nodes.
+/// Where a document sits: the transform composed onto the document's scene.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PlacementConfig {

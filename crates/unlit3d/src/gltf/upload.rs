@@ -18,7 +18,7 @@ use crate::lit::LitPipelineKey;
 use crate::mesh_source::MeshSource;
 use unlit_ecs::Scope;
 use unlit_wgpu::pipeline::LitOptions;
-use unlit_wgpu::resources::TextureExt;
+use unlit_wgpu::resources::ResHandle;
 
 impl LitGltf {
     /// The [`LitPipelineKey`] the primitive renders with.
@@ -185,6 +185,24 @@ impl LitGltf {
         material: MaterialId,
         images: &[GltfImage],
     ) -> Option<GltfMaterial> {
+        self.build_material(source, world, material, images, &mut Vec::new())
+    }
+
+    /// [Self::insert_material], sharing the samplers it has already built.
+    ///
+    /// Documents overwhelmingly repeat one sampler across their materials, and
+    /// a sampler is an immutable GPU object: `samplers` maps a descriptor to
+    /// the handle already uploaded for it, so a material that asks for a
+    /// descriptor an earlier material asked for reuses that handle instead of
+    /// creating a second sampler the graph would keep alive beside it.
+    fn build_material(
+        &self,
+        source: &mut MeshSource,
+        world: &Scope<'_>,
+        material: MaterialId,
+        images: &[GltfImage],
+        samplers: &mut Vec<(wgpu::SamplerDescriptor<'static>, ResHandle<wgpu::Sampler>)>,
+    ) -> Option<GltfMaterial> {
         let data = self.material(material.index());
         let info = data.pbr_metallic_roughness().base_color_texture()?;
         let image = images
@@ -208,23 +226,15 @@ impl LitGltf {
                 ..descriptor
             }
         };
-        let sampler = source.register_sampler(world, Some(descriptor));
-        let view = {
-            let texture = {
-                let mut graph_row = source.context().graph(world);
-                let graph = graph_row.get();
-                graph
-                    .get(&image.texture)
-                    .expect("the image's texture is in the graph")
-                    .clone()
-            };
-            let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-            let mut graph_row = source.context().graph(world);
-            let graph = graph_row.get();
-            let view = graph.insert(view, None);
-            graph.add_dependency(&view, &image.texture);
-            view
+        let sampler = match samplers.iter().find(|(built, _)| *built == descriptor) {
+            Some((_, sampler)) => sampler.clone(),
+            None => {
+                let sampler = source.register_sampler(world, Some(descriptor.clone()));
+                samplers.push((descriptor, sampler.clone()));
+                sampler
+            }
         };
+        let view = image.view.clone();
 
         let bind_group =
             source.allocate_lit_material(world, &key.options, view.clone(), sampler.clone());
@@ -252,8 +262,9 @@ impl LitGltf {
         world: &Scope<'_>,
         images: &[GltfImage],
     ) -> Vec<Option<GltfMaterial>> {
+        let mut samplers = Vec::new();
         self.materials()
-            .map(|material| self.insert_material(source, world, material, images))
+            .map(|material| self.build_material(source, world, material, images, &mut samplers))
             .collect()
     }
 
@@ -263,10 +274,11 @@ impl LitGltf {
     /// Which streams are uploaded follows the primitive's own attributes:
     /// `TEXCOORD_0` with a base-color-textured material enables the UV stream,
     /// `COLOR_0` the vertex-color stream, `JOINTS_0` and `WEIGHTS_0` the joint
-    /// stream, and a position-displacing morph target the displacement stream.
-    /// A primitive read with streams its attributes do not declare would
-    /// panic, so the derivation is the only safe choice here. Normals are
-    /// uploaded; tangents are ignored (see the module docs).
+    /// stream, and a `targets` array the displacement stream — one slot per
+    /// declared target, with a target that states no positions contributing
+    /// zeros rather than no slot. A primitive read with streams its attributes
+    /// do not declare would panic, so the derivation is the only safe choice
+    /// here. Normals are uploaded; tangents are ignored (see the module docs).
     ///
     /// # Panics
     ///

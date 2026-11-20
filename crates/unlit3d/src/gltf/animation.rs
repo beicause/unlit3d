@@ -42,9 +42,16 @@ pub(super) enum ChannelValues {
 /// two anyway. A weights channel is kept unvalidated against its target count,
 /// which depends on the mesh the node carries and is checked where that is
 /// known.
+///
+/// `matrix_nodes` marks the nodes whose transform the document states as a
+/// matrix. Such a node has no animatable translation, rotation or scale — the
+/// spec says so outright, because a matrix is not a property a channel can
+/// address — so a channel naming one is dropped; its morph weights stay
+/// animatable, since they belong to the mesh rather than to the transform.
 pub(super) fn channels(
     animation: gltf::animation::Animation<'_>,
     buffers: &[gltf::buffer::Data],
+    matrix_nodes: &[bool],
 ) -> Vec<Channel> {
     let mut channels = Vec::new();
     for channel in animation.channels() {
@@ -61,6 +68,13 @@ pub(super) fn channels(
         };
         let interpolation = channel.sampler().interpolation();
         let required = times.len() * interpolation_stride(interpolation);
+        let node = channel.target().node().index();
+        if matrix_nodes[node] {
+            match channel.target().property() {
+                Property::Translation | Property::Scale | Property::Rotation => continue,
+                Property::MorphTargetWeights => {}
+            }
+        }
         let values = match (channel.target().property(), outputs) {
             (Property::Translation, ReadOutputs::Translations(values)) => {
                 ChannelValues::Translations(complete(values, required))
@@ -77,7 +91,7 @@ pub(super) fn channels(
             _ => continue,
         };
         channels.push(Channel {
-            node: channel.target().node().index(),
+            node,
             interpolation,
             times,
             values,
@@ -161,7 +175,7 @@ pub(super) fn sample_vec3(
         }
         Interpolation::CubicSpline => {
             let (frame, t) = keyframe(times, time);
-            cubic_vec3(
+            cubic(
                 glam::Vec3::from(values[frame * 3 + 1]),
                 glam::Vec3::from(values[frame * 3 + 2]),
                 glam::Vec3::from(values[(frame + 1) * 3 + 1]),
@@ -193,7 +207,7 @@ pub(super) fn sample_rotation(
         }
         Interpolation::CubicSpline => {
             let (frame, t) = keyframe(times, time);
-            let value = cubic_vec4(
+            let value = cubic(
                 glam::Vec4::from(values[frame * 3 + 1]),
                 glam::Vec4::from(values[frame * 3 + 2]),
                 glam::Vec4::from(values[(frame + 1) * 3 + 1]),
@@ -238,7 +252,7 @@ pub(super) fn sample_weights(
             let base = frame * 3 * targets;
             let next = (frame + 1) * 3 * targets;
             out.extend((0..targets).map(|target| {
-                cubic_f32(
+                cubic(
                     values[base + targets + target],
                     values[base + 2 * targets + target],
                     values[next + targets + target],
@@ -251,48 +265,25 @@ pub(super) fn sample_weights(
     }
 }
 
+/// A value the cubic Hermite formula applies to: one weight, or a vector of
+/// them.
+///
+/// The formula is the same for a scalar and for a vector, so it is written once
+/// over this trait rather than once per component count.
+trait Hermite: Copy + std::ops::Mul<f32, Output = Self> + std::ops::Add<Output = Self> {}
+
+impl Hermite for f32 {}
+impl Hermite for glam::Vec3 {}
+impl Hermite for glam::Vec4 {}
+
 /// One segment of a cubic Hermite spline, the spec's `CUBICSPLINE` formula.
-fn cubic_f32(v0: f32, b0: f32, v1: f32, a1: f32, t: f32, span: f32) -> f32 {
+fn cubic<H: Hermite>(v0: H, b0: H, v1: H, a1: H, t: f32, span: f32) -> H {
     let t2 = t * t;
     let t3 = t2 * t;
-    (2.0 * t3 - 3.0 * t2 + 1.0) * v0
-        + span * (t3 - 2.0 * t2 + t) * b0
-        + (-2.0 * t3 + 3.0 * t2) * v1
-        + span * (t3 - t2) * a1
-}
-
-/// [`cubic_f32`] over three components.
-fn cubic_vec3(
-    v0: glam::Vec3,
-    b0: glam::Vec3,
-    v1: glam::Vec3,
-    a1: glam::Vec3,
-    t: f32,
-    span: f32,
-) -> glam::Vec3 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    (2.0 * t3 - 3.0 * t2 + 1.0) * v0
-        + span * (t3 - 2.0 * t2 + t) * b0
-        + (-2.0 * t3 + 3.0 * t2) * v1
-        + span * (t3 - t2) * a1
-}
-
-/// [`cubic_f32`] over four components.
-fn cubic_vec4(
-    v0: glam::Vec4,
-    b0: glam::Vec4,
-    v1: glam::Vec4,
-    a1: glam::Vec4,
-    t: f32,
-    span: f32,
-) -> glam::Vec4 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    (2.0 * t3 - 3.0 * t2 + 1.0) * v0
-        + span * (t3 - 2.0 * t2 + t) * b0
-        + (-2.0 * t3 + 3.0 * t2) * v1
-        + span * (t3 - t2) * a1
+    v0 * (2.0 * t3 - 3.0 * t2 + 1.0)
+        + b0 * (span * (t3 - 2.0 * t2 + t))
+        + v1 * (-2.0 * t3 + 3.0 * t2)
+        + a1 * (span * (t3 - t2))
 }
 
 /// A unit quaternion from the `[x, y, z, w]` a glTF rotation stores, falling

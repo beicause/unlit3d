@@ -99,16 +99,18 @@ pub(super) fn from_reader(
             .collect()
     });
 
-    // Pack each positional target's displacements for every vertex, in target
-    // order. A conformant document writes them in the decoded vertex order;
-    // displacements past the vertex count are ignored rather than panicking on
-    // a malformed one.
+    // Pack each target's displacements for every vertex, in target order. Every
+    // target owns a slot even when it displaces nothing this loader reads: the
+    // weights are indexed by the target's slot, so a target without positions
+    // keeps its slot's displacements at zero rather than shifting the targets
+    // after it one slot down. A conformant document writes the displacements in
+    // the decoded vertex order; displacements past the vertex count are ignored
+    // rather than panicking on a malformed one.
     let morph_deltas = {
         let target_count = morph_target_count(primitive);
         (target_count > 0).then(|| {
             let mut deltas = vec![0.0; positions.len() * target_count * 3];
-            let mut target = 0;
-            for (displacements, _, _) in reader.read_morph_targets() {
+            for (target, (displacements, _, _)) in reader.read_morph_targets().enumerate() {
                 let Some(displacements) = displacements else {
                     continue;
                 };
@@ -118,7 +120,6 @@ pub(super) fn from_reader(
                         slot.copy_from_slice(&displacement);
                     }
                 }
-                target += 1;
             }
             MorphDeltas {
                 deltas,

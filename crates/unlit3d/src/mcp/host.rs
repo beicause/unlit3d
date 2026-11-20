@@ -687,7 +687,7 @@ pub(crate) fn spawn_gltf(
         .try_scope_mut(scope)
         .map_err(|_| format!("no scope {scope:?}"))?;
     let nodes = gltf
-        .spawn_default_scene(&mut scope, &resources)
+        .spawn_default_scene(&mut scope, &resources, &Transform::default())
         .map_err(|error| error.to_string())?;
     let entities: Vec<Entity> = nodes
         .iter()

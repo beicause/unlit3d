@@ -33,14 +33,16 @@ use self::{
         a_masked_material_discards_fragments_below_its_cutoff,
     },
     scene::{
-        node_hierarchy_translates_the_quad, textured_quad_renders_four_colours,
-        unload_empties_the_frame, untextured_material_draws_flat,
+        a_placement_moves_the_whole_document, node_hierarchy_translates_the_quad,
+        textured_quad_renders_four_colours, unload_empties_the_frame,
+        untextured_material_draws_flat,
     },
 };
 
 gpu_tests! {
     textured_quad_renders_four_colours,
     node_hierarchy_translates_the_quad,
+    a_placement_moves_the_whole_document,
     untextured_material_draws_flat,
     a_blended_material_composites_over_the_frame,
     a_blended_material_writes_no_depth,

@@ -35,19 +35,17 @@ pub(super) fn samples_base_color_texture(primitive: &gltf::Primitive<'_>) -> boo
             .is_some()
 }
 
-/// How many of a primitive's morph targets displace positions.
+/// How many morph targets a primitive declares.
 ///
-/// A target may displace only normals or tangents; those are ignored here, and
-/// a target that carries no positions at all would contribute nothing to a
-/// displacement array, so it is not counted and the mesh is not uploaded as
-/// morphing. The count is therefore of the targets that *do* displace, in the
-/// order they appear — which is the order the shader's weights are indexed in,
-/// not the document's own target indices.
+/// The count is the length of the document's `targets` array, not the number of
+/// targets that displace positions: a weight is indexed by the target's own slot
+/// in that array, so a target that displaces only normals, or nothing at all,
+/// still owns a weight. Dropping such a target would shift every later target's
+/// weight onto the wrong slot and deform the mesh into the wrong shape. The
+/// loader uploads no displacement for it, leaving that slot's displacements at
+/// zero.
 pub(super) fn morph_target_count(primitive: &gltf::Primitive<'_>) -> usize {
-    primitive
-        .morph_targets()
-        .filter(|target| target.positions().is_some())
-        .count()
+    primitive.morph_targets().len()
 }
 
 /// The alpha a `MASK` material's fragments are cut off at.

@@ -85,17 +85,10 @@ impl LitGltf {
     ///
     /// If `animation` is out of bounds.
     pub fn animation_duration(&self, animation: AnimationId) -> f32 {
-        let animation = self.animation(animation.index());
-        let mut duration: f32 = 0.0;
-        for channel in animation.channels() {
-            let reader = channel.reader(|buffer| Some(&self.buffers[buffer.index()]));
-            if let Some(inputs) = reader.read_inputs()
-                && let Some(last) = inputs.last()
-            {
-                duration = duration.max(last);
-            }
-        }
-        duration
+        self.clip(animation)
+            .iter()
+            .filter_map(|channel| channel.times.last())
+            .fold(0.0, |duration, last| duration.max(*last))
     }
 
     /// Drive an animation to `time` seconds, writing what it moves back into
@@ -273,7 +266,7 @@ impl LitGltf {
         // Resolved first, so an out-of-bounds index panics with the same
         // message as every other accessor of an animation.
         let animation = self.animation(index);
-        self.clips[index].get_or_init(|| channels(animation, &self.buffers))
+        self.clips[index].get_or_init(|| channels(animation, &self.buffers, &self.matrix_nodes))
     }
 
     fn animation(&self, animation: usize) -> gltf::animation::Animation<'_> {

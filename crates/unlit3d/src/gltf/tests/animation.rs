@@ -234,3 +234,41 @@ fn apply_animation_writes_morph_weights() {
     let weights = morph_weights_row.get();
     assert_eq!(weights.weights, vec![1.0]);
 }
+
+#[test]
+fn a_matrix_node_ignores_the_channels_it_cannot_animate() {
+    // The node states its transform as a matrix, which the specification
+    // declares to have no animatable properties: sampling the translation
+    // channel would move a node the document places with a matrix. Its morph
+    // weights are the mesh's, not the transform's, so they still animate.
+    let gltf = LitGltf::from_bytes(&matrix_animated_document(
+        glam::Mat4::from_translation(glam::Vec3::new(0.0, 5.0, 0.0)).to_cols_array(),
+        &[0.0, 2.0],
+        &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+        &[0.0, 1.0],
+    ))
+    .expect("the matrix document parses");
+    let mut world = World::new();
+    let entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
+    let weights = world
+        .root_scope_mut()
+        .spawn(bundle![MorphWeights { weights: vec![0.0] }]);
+    let nodes = [GltfNode {
+        node: NodeId::new(0),
+        entities: vec![entity],
+        pose: None,
+        weights: Some(weights),
+    }];
+    gltf.apply_animation(&world.root_scope(), AnimationId::new(0), 1.0, &nodes);
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&Transform>(entity)
+            .get()
+            .translation,
+        glam::Vec3::ZERO,
+        "a matrix node has no animatable translation"
+    );
+    let mut row = world.root_scope().query_one::<&MorphWeights>(weights);
+    assert_eq!(row.get().weights, vec![0.5]);
+}

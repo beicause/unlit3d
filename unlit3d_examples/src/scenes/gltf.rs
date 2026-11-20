@@ -122,40 +122,19 @@ fn build(
 
     // The spawned handles are what `apply_animation` writes through: the fox's
     // handle carries the pose entity its skin reads, and the cube's carries
-    // the weights entity its morph targets read.
+    // the weights entity its morph targets read. Each document is spawned with
+    // its placement, which composes with the document's own node transforms.
     let (fox_nodes, morph_nodes) = {
         let mut scope = world.scope_mut(source_entity);
         // The embedded assets are checked in, so their scenes always spawn.
         (
-            fox.spawn_default_scene(&mut scope, &fox_resources)
+            fox.spawn_default_scene(&mut scope, &fox_resources, &FOX_PLACEMENT)
                 .expect("the fox asset spawns"),
             morph
-                .spawn_default_scene(&mut scope, &morph_resources)
+                .spawn_default_scene(&mut scope, &morph_resources, &MORPH_PLACEMENT)
                 .expect("the morph asset spawns"),
         )
     };
-
-    // Neither document animates the node its mesh hangs from — the fox's mesh
-    // sits on a root beside the skeleton, and the cube's node is animated only
-    // in its morph weights — so the placement written here survives every
-    // frame instead of being recomposed away.
-    {
-        let scope = world.scope(source_entity);
-        for node in &fox_nodes {
-            for &entity in &node.entities {
-                let _ = scope
-                    .try_query_one::<&mut Transform>(entity)
-                    .map(|mut current| *current.get() = FOX_PLACEMENT);
-            }
-        }
-        for node in &morph_nodes {
-            for &entity in &node.entities {
-                let _ = scope
-                    .try_query_one::<&mut Transform>(entity)
-                    .map(|mut current| *current.get() = MORPH_PLACEMENT);
-            }
-        }
-    }
 
     // Neither document carries `KHR_materials_unlit`, so both draw lit: a
     // frame without lights would draw them black. One ambient term keeps

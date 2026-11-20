@@ -8,9 +8,12 @@
 //! exactly the entities a node draws.
 
 use super::material::{alpha_cutoff, samples_base_color_texture};
-use super::{GltfMaterial, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId};
+use super::scene::decompose;
+use super::{
+    GltfMaterial, GltfMesh, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId,
+};
 use crate::components::{
-    GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, ZSortedDrawing,
+    GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, Transform, ZSortedDrawing,
 };
 use crate::lit::{InstanceColor, InstanceCutoff, LitMeshBundle};
 use unlit_ecs::bundle;
@@ -19,10 +22,23 @@ use unlit_ecs::{ScopeMut, prelude::Entity};
 impl LitGltf {
     /// Spawn the entities that draw `node`'s mesh into `world`.
     ///
+    /// `placement` says where the document sits: the node's own world transform
+    /// is composed with it, so one document can be spawned into several places.
+    /// The composition happens on matrices, before an entity's
+    /// [`Transform`] is derived, so a node under a
+    /// parent keeps the hierarchy's shape and the placement reaches the whole
+    /// document at once instead of every node on its own. Pass
+    /// [`Transform::default()`](crate::components::Transform::default) to spawn
+    /// the document where it was authored.
+    ///
+    /// An animation writes the transform of every node it reaches from the
+    /// document's own matrices, so a node a clip drives falls back to its
+    /// unplaced transform while that clip plays — see [`Self::apply_animation`].
+    ///
     /// Returns a [`GltfNode`] naming one entity per primitive of the node's
     /// mesh — each spawned as a
     /// [`LitMeshBundle`] carrying the
-    /// node's world-space [`Transform`](crate::components::Transform), the
+    /// node's world-space [`Transform`], the
     /// uploaded [`GpuMesh`](crate::components::GpuMesh), the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
     /// material's base-color factor. A primitive that samples its material's
@@ -52,9 +68,11 @@ impl LitGltf {
         world: &mut ScopeMut<'_>,
         node: NodeId,
         resources: &GltfResources,
+        placement: &Transform,
     ) -> Result<GltfNode, super::Error> {
         let index = node.index();
-        let transform = self.node_transforms[index].clone();
+        let placement = glam::Mat4::from(placement.compute_matrix());
+        let transform = decompose(placement * self.node_matrices[index]);
         let node = self.node(index);
         let mut entities = Vec::new();
         // One pose entity per skinned node, shared by every primitive it
@@ -65,13 +83,12 @@ impl LitGltf {
         let mut morphs: Option<Entity> = None;
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
-                let mesh_handle = resources
-                    .meshes
-                    .iter()
-                    .find(|handle| {
-                        handle.mesh_index == MeshId::new(mesh.index())
-                            && handle.primitive_index == PrimitiveId::new(primitive.index())
-                    })
+                let mesh_handle = self
+                    .uploaded_primitive(
+                        resources,
+                        MeshId::new(mesh.index()),
+                        PrimitiveId::new(primitive.index()),
+                    )
                     .ok_or(super::Error::MeshNotInserted { node: index })?;
                 // The base-color factor tints the instance whether or not the
                 // material samples a texture; a primitive naming no material
@@ -150,7 +167,7 @@ impl LitGltf {
     /// returned, so the list maps a document node to its entities. Nodes are
     /// visited root-first and each subtree fully; every node with a mesh
     /// contributes its primitives exactly where its world-space transform sits
-    /// in the hierarchy.
+    /// in the hierarchy, composed with `placement` — see [`Self::spawn_node`].
     ///
     /// # Errors
     ///
@@ -161,6 +178,7 @@ impl LitGltf {
         &self,
         world: &mut ScopeMut<'_>,
         resources: &GltfResources,
+        placement: &Transform,
     ) -> Result<Vec<GltfNode>, super::Error> {
         let scene = self
             .document
@@ -172,7 +190,7 @@ impl LitGltf {
             .map(|node| NodeId::new(node.index()))
             .collect();
         while let Some(node) = stack.pop() {
-            nodes.push(self.spawn_node(world, node, resources)?);
+            nodes.push(self.spawn_node(world, node, resources, placement)?);
             stack.extend(
                 self.node(node.index())
                     .children()
@@ -180,6 +198,32 @@ impl LitGltf {
             );
         }
         Ok(nodes)
+    }
+
+    /// The uploaded handle of one primitive of `mesh`, or `None` when the
+    /// resources do not hold it.
+    ///
+    /// The slots a document uploads into are document-mesh-major, so the
+    /// handle's own position follows from the mesh and primitive indices.
+    /// Resources a caller assembled itself may hold a subset of the document's
+    /// meshes and shift those positions, so a slot that names some other
+    /// primitive falls back to a scan; the ids are what decides either way.
+    fn uploaded_primitive<'r>(
+        &self,
+        resources: &'r GltfResources,
+        mesh: MeshId,
+        primitive: PrimitiveId,
+    ) -> Option<&'r GltfMesh> {
+        let named =
+            |handle: &&GltfMesh| handle.mesh_index == mesh && handle.primitive_index == primitive;
+        let slot = self
+            .first_primitive
+            .get(mesh.index())
+            .and_then(|start| start.checked_add(primitive.index()));
+        match slot.and_then(|slot| resources.meshes.get(slot)) {
+            Some(handle) if named(&handle) => Some(handle),
+            _ => resources.meshes.iter().find(named),
+        }
     }
 
     /// The inserted material a primitive draws with.

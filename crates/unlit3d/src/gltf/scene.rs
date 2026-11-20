@@ -20,8 +20,8 @@ pub(super) fn node_parents(document: &gltf::Document) -> Vec<Option<usize>> {
 /// The local-space transform of every node, indexed by node index.
 ///
 /// A matrix-form node transform is composed back into translation, rotation
-/// and scale so that an animation can address a single one of them; the
-/// decomposition is lossy for shear, which a `Transform` cannot carry.
+/// and scale so that an animation can address a single one of them; see
+/// [`decompose`] for what that costs.
 pub(super) fn node_locals(document: &gltf::Document) -> Vec<Transform> {
     document
         .nodes()
@@ -83,11 +83,16 @@ pub(super) fn node_order(children: &[Vec<usize>], parents: &[Option<usize>]) -> 
     order
 }
 
-/// How many morph targets each node's mesh displaces, indexed by node index.
+/// How many morph targets each node's mesh declares, indexed by node index.
 ///
 /// A weights channel states one value per target per keyframe, so the count is
-/// what slices a keyframe's values out of the channel; a node with no mesh, or
-/// a mesh whose targets displace nothing, counts as zero.
+/// what slices a keyframe's values out of the channel. It is the length of the
+/// primitive's `targets` array, not the number of targets this loader reads
+/// displacements for: a target that displaces only normals still owns a slot,
+/// and counting it out would shift every later target's weight. A node with no
+/// mesh counts as zero. The specification requires every primitive of one mesh
+/// to declare the same number of targets, so the widest primitive's count is
+/// the mesh's.
 pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
     document
         .nodes()
@@ -105,10 +110,12 @@ pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
 /// Split a world-space matrix into the parts an entity's
 /// [`Transform`] stores: translation, rotation and scale.
 ///
-/// The decomposition is lossy for a sheared matrix, and an axis scaled to zero
-/// keeps an arbitrary rotation (there is no rotation to preserve along a
-/// collapsed axis). Neither loss is recoverable from a [`Transform`], which
-/// stores the three parts and nothing else.
+/// The decomposition is lossy in three ways, none of them recoverable from a
+/// [`Transform`], which stores the three parts and nothing else: a sheared
+/// matrix loses the shear, an axis scaled to zero keeps an arbitrary rotation
+/// (there is no rotation to preserve along a collapsed axis), and a mirror —
+/// a negative scale, or any matrix of negative determinant — is read back as
+/// the positive lengths of its axes, so the reflection is gone.
 pub(super) fn decompose(matrix: glam::Mat4) -> Transform {
     let translation = matrix.w_axis.truncate();
     let x = matrix.x_axis.truncate();
@@ -134,4 +141,21 @@ fn axis_or_identity(axis: glam::Vec3, length: f32) -> glam::Vec3 {
     } else {
         glam::Vec3::X // direction is meaningless along a zero-length axis
     }
+}
+
+/// Where each mesh's first primitive sits in a document-mesh-major primitive
+/// list, indexed by mesh index; one past the last primitive for the last mesh.
+///
+/// A mesh's primitives are contiguous in that list, so a primitive's slot is
+/// its mesh's entry plus its own index. The table has one entry per mesh plus
+/// the total, which is what makes the last mesh's length readable too.
+pub(super) fn first_primitives(document: &gltf::Document) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(document.meshes().len() + 1);
+    let mut count = 0;
+    for mesh in document.meshes() {
+        starts.push(count);
+        count += mesh.primitives().len();
+    }
+    starts.push(count);
+    starts
 }

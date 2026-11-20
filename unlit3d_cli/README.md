@@ -118,7 +118,10 @@ optional and unknown fields are refused. The shape is:
 
 `animation` names one of the document's animations, either by index or by name;
 `time` is the animation time in seconds. A document is drawn with its own scene,
-and every node it spawns takes the `placement` transform when one is given.
+and `placement`, when given, is composed onto the document's own node transforms:
+the whole scene moves, so a node offset from the document's origin keeps that
+offset. A node the animation drives is written back at its unplaced transform
+while the animation plays.
 
 On the command line, `--document` is repeatable and replaces the configuration's
 document list, while `--animation` and `--time` apply to every document.

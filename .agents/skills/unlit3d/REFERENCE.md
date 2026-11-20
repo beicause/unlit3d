@@ -213,7 +213,7 @@
 
 ## glTF
 
-`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_default_scene`、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。
+`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**两者都要传 `placement: &Transform`**，它复合到文档自身的节点矩阵之上，`Transform::default()` 表示文档原处）、`apply_animation` / `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。被动画驱动的节点在播放期间写回未放置的变换。
 
 ## 常用常量
 

@@ -11,7 +11,7 @@ use zerocopy::{FromBytes, IntoBytes};
 use super::MAX_TEXEL_BYTES;
 
 /// Round `value` up to the next multiple of `alignment`.
-pub(super) fn align_up(value: u32, alignment: u32) -> u32 {
+pub(super) fn align_up(value: usize, alignment: usize) -> usize {
     value.div_ceil(alignment) * alignment
 }
 
@@ -119,7 +119,10 @@ impl EncodedMip {
     /// Pad `texels`, the tightly packed `width` by `height` image, to the copy
     /// stride a buffer-to-texture copy asks for.
     fn new(width: u32, height: u32, texel: usize, texels: &[u8]) -> Self {
-        let bytes_per_row = align_up(width * texel as u32, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let bytes_per_row = align_up(
+            width as usize * texel,
+            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize,
+        ) as u32;
         let row_bytes = width as usize * texel;
         let stride = bytes_per_row as usize;
         let mut rows = vec![0u8; stride * height as usize];
