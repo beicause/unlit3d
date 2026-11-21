@@ -296,3 +296,39 @@ fn a_callback_that_panicked_runs_again_next_time() {
         "the callback ran a second time"
     );
 }
+
+#[test]
+fn a_callback_that_spawns_into_a_dying_scope_takes_the_child_with_it() {
+    let mut world = World::new();
+    let scene = world.root_scope_mut().spawn(bundle![
+        Marker(1),
+        // The callback puts a child under the scope it is being removed from.
+        // The child has no way out of the tree once its parent's row is gone,
+        // so it goes with the parent rather than being left unreachable.
+        OnDespawn::new(|scope, doomed| {
+            scope.scope_mut(doomed).spawn(bundle![Marker(2)]);
+        }),
+    ]);
+    assert_eq!(world.root_scope_mut().despawn(scene), Ok(2));
+    assert_eq!(world.root_scope().len(), 0, "no row is left behind");
+    crate::scope::assert_invariants(&world);
+}
+
+#[test]
+fn a_queued_spawn_into_a_scope_that_is_gone_is_refused() {
+    let mut world = World::new();
+    let scene = world.root_scope_mut().spawn(bundle![Marker(1)]);
+    // The queue is filled while the scope is alive and applied after it is
+    // not: the spawn has nowhere to land, so it is turned down instead of
+    // attaching a row to an entity that is already gone.
+    let queue = world.scope(scene).queue();
+    let late = queue.spawn(bundle![Marker(2)]);
+    world.root_scope_mut().despawn(scene).unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(unlit_ecs::EntityAccessError::NotAlive { entity: scene })
+    );
+    assert_eq!(world.root_scope().len(), 0, "nothing was left in the world");
+    assert!(world.release_entity(late), "the handle is still reserved");
+    crate::scope::assert_invariants(&world);
+}

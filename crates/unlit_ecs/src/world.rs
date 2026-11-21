@@ -40,7 +40,7 @@ use crate::column::AnyColumn;
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
 use crate::error::{EntityAccessError, RemoteEntityError};
-use crate::hash::TypeIdHashMap;
+use crate::hash::{EntityHashSet, TypeIdHashMap};
 use crate::identity::{RemoteEntity, WorldId};
 use crate::lifecycle::{Lifecycle, LifecycleCallback};
 use crate::query::Mode;
@@ -423,6 +423,7 @@ impl World {
         name: &'static str,
         bundle: DynamicBundle,
     ) -> Entity {
+        self.assert_spawnable(scope);
         // Sorted before the handle is allocated: a bundle that names one
         // component twice panics, and the entity allocated for it would then be
         // neither spawned nor freed.
@@ -445,6 +446,10 @@ impl World {
         scope: Entity,
         bundle: B,
     ) -> Result<(), EntityAccessError> {
+        // Checked before the reservation is taken, so a scope that is already
+        // gone leaves the handle reserved for a later attempt rather than
+        // spending it on a row with nowhere to live.
+        self.check_spawnable(scope)?;
         // Sorted before the reservation is taken, so a rejected bundle leaves
         // the handle reserved for a later attempt rather than leaking it.
         let components = bundle.into_bundle().finish();
@@ -464,6 +469,14 @@ impl World {
     /// despawn callback still sees living ancestors. The answer is how many
     /// entities the despawn took with it: the subtree is the scope's to know
     /// about, and a caller that counts what it removed can say so.
+    ///
+    /// The subtree is swept rather than walked once, because a callback runs
+    /// while the tree is still its to change: whatever it puts back in is taken
+    /// too, instead of being left in a scope whose row is about to go. Each
+    /// entity runs its callback once per cascade, so a callback that adds a
+    /// child does not hold its own row back. A callback that adds a fresh
+    /// entity on every pass keeps the cascade going the way a command that
+    /// queues another keeps [`World::apply`] going: neither is bounded.
     pub(crate) fn despawn_in(
         &mut self,
         entity: Entity,
@@ -474,11 +487,33 @@ impl World {
         }
         self.location(entity)?;
         self.check_owns(caller, entity)?;
-        let doomed = self.tree.subtree_post_order(entity);
-        for victim in &doomed {
-            self.remove_entity(*victim);
+        let mut removed = 0;
+        // Which entities have already had their callback in this cascade. A
+        // row is held back until its children are gone, so the entity that put
+        // one back is visited again; without this it would run its callback
+        // again, and one that puts a child back on every run would never let
+        // the cascade finish. The set is this call's own, so a panic drops it
+        // with the stack rather than leaving a world marked as dying.
+        let mut called = EntityHashSet::default();
+        loop {
+            // Read the subtree every pass: it is the callbacks' to change, and
+            // a pass that had to leave a parent standing leaves work behind.
+            let doomed = self.tree.subtree_post_order(entity);
+            let mut taken = 0;
+            for victim in &doomed {
+                if self.remove_entity(*victim, &mut called) {
+                    taken += 1;
+                }
+            }
+            removed += taken;
+            // The row of `entity` going is what ends the cascade. A pass that
+            // took nothing has not necessarily finished: a callback can put a
+            // child under an entity this pass had to leave standing, and the
+            // next pass is what takes it.
+            if self.location(entity).is_err() {
+                return Ok(removed);
+            }
         }
-        Ok(doomed.len())
     }
 
     /// Make `child` a child of `parent` on behalf of `caller`.
@@ -564,6 +599,26 @@ impl World {
 
     // -- the row itself ----------------------------------------------------
 
+    /// Panic when `scope` is not a place a new row can land.
+    ///
+    /// A scope that has already been removed is not: its own row is gone, so
+    /// a row attached under it would have no link from the world to reach it,
+    /// which is an entity that exists and is nowhere. A caller that only has
+    /// this to answer with panics, the way [`World::scope_mut`] does; the
+    /// queued form answers [`EntityAccessError::NotAlive`] instead.
+    #[track_caller]
+    fn assert_spawnable(&self, scope: Entity) {
+        if let Err(error) = self.check_spawnable(scope) {
+            panic!("{error}");
+        }
+    }
+
+    /// The reason `scope` is not a place a new row can land.
+    fn check_spawnable(&self, scope: Entity) -> Result<(), EntityAccessError> {
+        self.tree.parent(scope)?;
+        Ok(())
+    }
+
     /// Insert a row for `entity` in `scope`, made of `components`.
     fn insert_row(&mut self, entity: Entity, scope: Entity, components: Components) {
         for component in &components {
@@ -590,20 +645,42 @@ impl World {
         self.tree_mut().attach(entity, scope);
     }
 
-    /// Run the despawn callbacks of `entity` and drop its row and handle.
-    fn remove_entity(&mut self, entity: Entity) {
+    /// Run the despawn callback of `entity` and drop its row and handle.
+    ///
+    /// Answers whether this pass took the row. A row goes only once its entity
+    /// has no children left: dropping it earlier leaves their rows in a scope
+    /// the tree no longer has a link to, which is nowhere at all. A callback
+    /// that puts a child in therefore keeps the row for the cascade to come back
+    /// to.
+    ///
+    /// `called` holds the entities that have already run their callback in this
+    /// cascade, so coming back for a held-back row does not run it a second
+    /// time. Re-entry from inside a callback needs no such guard: the callback
+    /// is out of the row while it runs, so the row it would find holds the
+    /// placeholder.
+    fn remove_entity(&mut self, entity: Entity, called: &mut EntityHashSet) -> bool {
         let Ok(_) = self.location(entity) else {
-            return;
+            return false;
         };
-        self.run_lifecycle::<crate::OnDespawn>(entity);
+        // The callback runs on the first visit, before the children are looked
+        // at: a child it puts in has to be swept by a later pass, and the row
+        // stays until then.
+        if called.insert(entity) {
+            self.run_lifecycle::<crate::OnDespawn>(entity);
+        }
         // The callback may have changed the tree, including despawning this
-        // entity itself. Re-check before touching a row that may be gone.
+        // entity itself. Re-check before touching a row that may be gone, and
+        // before dropping one it has just put a child into.
         let Ok(location) = self.location(entity) else {
-            return;
+            return false;
         };
+        if !self.tree.children(entity).is_empty() {
+            return false;
+        }
         self.tree_mut().detach(entity);
         self.remove_row(location);
         self.free_entity(entity);
+        true
     }
 
     /// Run the spawn callbacks of an entity whose row is already in place.

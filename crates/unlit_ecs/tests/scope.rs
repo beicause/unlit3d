@@ -369,7 +369,7 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
 }
 
 /// The invariants the tree keeps with itself and with what a scope counts.
-fn assert_invariants(world: &World) {
+pub(crate) fn assert_invariants(world: &World) {
     let root = world.root();
     let scope = world.root_scope();
     // The child index is the parent index read the other way.

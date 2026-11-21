@@ -168,7 +168,16 @@ itself, and `spawn_at` puts it on a handle reserved by
 or never reserved is answered with [`EntityAccessError::NotReserved`].
 [`ScopeMut::despawn`] removes the entity and its
 whole subtree, children first, so a child's [`OnDespawn`] still sees its living
-ancestors, and answers how many entities it took with it. [`ScopeMut::link`]
+ancestors, and answers how many entities it took with it. It sweeps the subtree
+rather than walking it once, because a callback runs while the tree is still its
+to change: whatever a callback puts back under the entity goes with it too,
+instead of being left in a scope whose row is about to disappear. Each entity
+runs its `OnDespawn` once per cascade, so a callback that adds a child does not
+hold its own row back; a callback that adds a fresh entity on every pass keeps
+the cascade going, the same way a command that queues another keeps `apply`
+going. A spawn into a scope that has already been removed is refused with
+[`EntityAccessError::NotAlive`], which is what a queued spawn finds when it is
+applied after its scope is gone. [`ScopeMut::link`]
 and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
 scaffolding; they are pure structure changes and run no lifecycle callback.
@@ -192,6 +201,9 @@ before the callback returns. Component queries go through [`ScopeMut::readonly`]
 which hands over the whole read-only surface; what it returns borrows the
 mutable scope, so while a holder from it is alive no structural change through
 that scope compiles.
+A despawn callback that spawns under the entity being removed does not save
+what it spawns: the row holds until it has no children, so the sweep comes back
+for them.
 The callback is moved out of the row before it runs and put back after, so a
 callback that reaches for its own lifecycle component reads the row instead of
 tripping the borrow check; a callback that panics stays on the row it was
