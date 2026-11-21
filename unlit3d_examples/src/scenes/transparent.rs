@@ -92,7 +92,7 @@ impl Bundle for Pane {
         bundle![
             Transform {
                 translation: self.translation,
-                rotation: glam::Quat::from_rotation_y(0.35),
+                rotation: glam::Quat::from_rotation_y(-0.35),
                 scale: glam::Vec3::new(1.05, 1.05, 0.05),
             },
             InstanceColor::new(self.tint),

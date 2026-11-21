@@ -40,6 +40,31 @@ pub struct AnimationPlayer {
     dirty: Vec<bool>,
     /// The nodes whose descendants are still to be marked.
     stack: Vec<usize>,
+    /// A placement premultiplied into the pose joint matrices this player
+    /// rebuilds.
+    ///
+    /// A skinned mesh draws from its pose joint matrices and ignores its
+    /// entity transform, so placing an animated document means placing the
+    /// joints. Each frame recomputes the pose from the document locals, so a
+    /// placement set once never accumulates.
+    placement: Option<glam::Mat4>,
+}
+
+impl AnimationPlayer {
+    /// Compose a placement into every world matrix this player writes.
+    ///
+    /// Set it once before animating a document the caller placed: a skinned
+    /// mesh vertices come from its pose joint matrices rather than its entity
+    /// transform, so the placement has to reach the joints. Clearing it makes
+    /// the player write the document transforms again.
+    pub fn set_placement(&mut self, placement: &Transform) {
+        self.placement = Some(glam::Mat4::from(placement.compute_matrix()));
+    }
+
+    /// Stop composing a placement into the matrices this player writes.
+    pub fn clear_placement(&mut self) {
+        self.placement = None;
+    }
 }
 
 impl LitGltf {
@@ -215,7 +240,15 @@ impl LitGltf {
             if let Some(entity) = handle.pose
                 && self.skin_moved(node, &player.dirty)
             {
-                let pose = self.skin_pose_with_matrices(node, &player.matrices);
+                let mut pose = self.skin_pose_with_matrices(node, &player.matrices);
+                // A skinned vertex is already in world space and skips the
+                // entity transform, so the document's placement has to go into
+                // the pose's joint matrices instead.
+                if let Some(placement) = player.placement {
+                    for joint in &mut pose.matrices {
+                        *joint = placement * *joint;
+                    }
+                }
                 if let Ok(mut current) = world.try_query_one::<&mut SkinPose>(entity) {
                     *current.get() = pose;
                 }

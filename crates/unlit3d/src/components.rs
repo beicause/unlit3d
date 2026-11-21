@@ -460,19 +460,6 @@ pub struct SkinBinding {
     /// The entity carrying the [`SkinPose`] this mesh is drawn with.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
     pub pose: Entity,
-    /// Whether the deformation mirrors the geometry, relative to this entity's
-    /// own transform.
-    ///
-    /// A skinned vertex goes through the pose before the entity's transform, so
-    /// the sign the rasterizer needs is the entity transform's determinant
-    /// times this one. Most poses deform without mirroring and leave it clear.
-    ///
-    /// A loader fills it in from what its own format states: glTF defines a
-    /// skinned primitive's winding by the determinant of the skin's skeleton
-    /// node — or of the joints' lowest common ancestor — rather than by the
-    /// node that instantiates the mesh, because the pose cancels that node's
-    /// own transform out of every vertex.
-    pub mirrored: bool,
 }
 
 /// Names the [`MorphWeights`] entity a mesh is drawn with.

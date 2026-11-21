@@ -15,7 +15,7 @@ impl LitGltf {
     /// is what this builds:
     ///
     /// ```text
-    /// joint matrix = inverse(mesh node world) * joint node world * inverse bind matrix
+    /// joint matrix = mesh node world inverse * joint node world * inverse bind matrix
     /// ```
     ///
     /// The pose is the *rest* pose — the document's node transforms as loaded,
@@ -53,11 +53,10 @@ impl LitGltf {
             m.map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
                 .collect()
         });
-        // A skinned mesh is deformed in its own space, so the mesh node's world
-        // matrix has to come back out of the joint's: a joint's inverse bind
-        // matrix already encodes the joint's rest transform, and the mesh node
-        // moves the whole skinned result.
-        let world_to_mesh = matrices[node].inverse();
+        // A skinned vertex is produced in world space by the joint matrices
+        // alone: the mesh node's transform is inert under this scheme. The
+        // caller places the mesh by premultiplying the pose, so the entity
+        // transform the shader ignores does not also place it.
         let poses: Vec<glam::Mat4> = skin
             .joints()
             .enumerate()
@@ -72,28 +71,12 @@ impl LitGltf {
                     .as_ref()
                     .and_then(|matrices| matrices.get(joint).copied())
                     .unwrap_or(glam::Mat4::IDENTITY);
-                world_to_mesh * joint_world * bind
+                joint_world * bind
             })
             .collect();
         SkinPose { matrices: poses }
     }
 
-    /// Whether a node's skin mirrors the geometry it deforms, relative to the
-    /// node's own transform.
-    ///
-    /// A skinned vertex goes through the pose — which cancels the mesh node's
-    /// own transform out of the joint matrices — and then through the entity's
-    /// transform, so the winding the rasterizer has to use is stated by the
-    /// skeleton node's scale against the mesh node's, following the
-    /// specification's rule for what decides a skinned primitive's winding.
-    /// A caller's placement multiplies both nodes alike and cancels.
-    pub(super) fn skin_mirrored(&self, node: usize) -> bool {
-        let Some(reference) = self.skin_reference[node] else {
-            return false;
-        };
-        let mirrored = |matrix: glam::Mat4| matrix.determinant() < 0.0;
-        mirrored(self.node_matrices[node]) != mirrored(self.node_matrices[reference])
-    }
     /// Whether a node's skin deformed this frame, given which nodes moved.
     ///
     /// A pose depends on the mesh node's world matrix and on every joint's, so

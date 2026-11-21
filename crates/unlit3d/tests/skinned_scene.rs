@@ -58,10 +58,7 @@ async fn meshes_can_share_one_skin_pose() {
             },
             first,
             GpuRenderPipeline::new(key.clone()),
-            SkinBinding {
-                pose: pose_entity,
-                mirrored: false,
-            },
+            SkinBinding { pose: pose_entity },
         ],
     );
     gpu.spawn(
@@ -73,10 +70,7 @@ async fn meshes_can_share_one_skin_pose() {
             },
             second,
             GpuRenderPipeline::new(key),
-            SkinBinding {
-                pose: pose_entity,
-                mirrored: false,
-            },
+            SkinBinding { pose: pose_entity },
         ],
     );
     let target = gpu.bind_offscreen_target(&world, "test::skinned_shared");

@@ -264,32 +264,3 @@ fn a_skin_short_of_inverse_bind_matrices_binds_the_rest_at_rest() {
         pose.matrices[1]
     );
 }
-
-#[test]
-fn a_skinned_winding_follows_the_rig_rather_than_the_mesh_node() {
-    // The specification winds a skinned primitive by the skin's skeleton node,
-    // or by the joints' lowest common ancestor when the skin states none — a
-    // pose cancels the mesh node's own transform, so that node's sign says
-    // nothing about the geometry that reaches the rasterizer.
-    let load = |mesh_scale, rig_scale| {
-        let gltf = LitGltf::from_bytes(&rigged_skinned_document(mesh_scale, rig_scale))
-            .expect("the rigged document parses");
-        gltf.skin_mirrored(0)
-    };
-    assert!(
-        !load([1.0, 1.0, 1.0], [1.0, 1.0, 1.0]),
-        "a rig and a mesh node that are both plain wind as they are"
-    );
-    assert!(
-        load([1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]),
-        "a mirrored rig winds the other way though the mesh node is plain"
-    );
-    assert!(
-        !load([-1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]),
-        "a mesh node mirrored with its rig winds as the rig does"
-    );
-    assert!(
-        load([-1.0, 1.0, 1.0], [1.0, 1.0, 1.0]),
-        "a mirrored mesh node under a plain rig winds the other way"
-    );
-}

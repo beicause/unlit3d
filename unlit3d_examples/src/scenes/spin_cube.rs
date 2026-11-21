@@ -352,7 +352,7 @@ fn build(
                 .next()
                 .map_or(0.0, |(_, spin)| spin.angle);
             for (_, transform) in view.query::<(Entity, &mut Transform)>().iter() {
-                transform.rotation = glam::Quat::from_rotation_y(angle);
+                transform.rotation = glam::Quat::from_rotation_y(-angle);
             }
 
             // The camera follows the orbit a slider or a drag set — and the

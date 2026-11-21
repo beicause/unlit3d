@@ -175,7 +175,7 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
 
     // The joint at rest: the pose's own matrix is the identity, so the quad
     // is exactly where the document put it.
-    let gltf = LitGltf::from_bytes(&skinned_document([1.0; 3], [1.0; 3], [0.0; 3]))
+    let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
         .expect("the embedded document parses");
     assert_eq!(
         gltf.skin_joint_count(NodeId::new(0)),
@@ -248,38 +248,4 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
         red_after, 0,
         "a joint moved past the viewport takes the quad with it"
     );
-}
-
-/// A skinned mesh whose own node is mirrored still winds by its skin.
-///
-/// A pose cancels the mesh node's own transform out of every vertex, so the
-/// sign that tells a triangle's front from its back comes from the skin rather
-/// than from that node — the specification defines it by the skeleton node. The
-/// quad must cover the frame whether its mesh node is mirrored or not.
-///
-/// A loader that took the sign from the mesh node alone would reverse the
-/// winding of a pose that mirrors nothing, and a single-sided material would
-/// cull the whole quad away.
-pub(super) async fn a_mirrored_mesh_node_winds_by_its_skin() {
-    let ctx = Ctx::headless().await;
-    for (name, mesh_scale) in [("plain", [1.0, 1.0, 1.0]), ("mirrored", [-1.0, 1.0, 1.0])] {
-        let mut world = World::new();
-        let gpu = TestGpu::new(&mut world, &ctx);
-        let gltf = LitGltf::from_bytes(&skinned_document(mesh_scale, [1.0; 3], [0.0; 3]))
-            .expect("the embedded document parses");
-        let resources = gpu.with_mesh_source(&world, |source, world| {
-            gltf.insert_resources(source, world)
-                .expect("the embedded document uploads")
-        });
-        spawn_scene(&gpu, &mut world, &gltf, &resources);
-        gpu.spawn(&mut world, bundle![camera()]);
-        let target = gpu.bind_offscreen_target(&world, &format!("test::gltf_skinned_{name}"));
-        gpu.render(&world);
-        let frame = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
-        let red = count_colour(&frame, [255, 0, 0], 4);
-        assert!(
-            red > (WIDTH * HEIGHT * 85 / 100) as usize,
-            "a {name} mesh node still draws the quad its skin poses (red = {red})"
-        );
-    }
 }

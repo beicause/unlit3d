@@ -106,8 +106,10 @@ public struct VertexOut {
 /// Transform a local-space point by an affine matrix packed as three columns
 /// with the translation in each column's `.w` lane.
 public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f32>) -> vec3<f32> {
-    let v = vec4<f32>(p, 1.0);
-    return vec3<f32>(dot(m0, v), dot(m1, v), dot(m2, v));
+    // m_i holds the matrix's i-th column, with the translation in its .w.
+    // A column-major matrix acts on a column vector by linear combination
+    // of its columns: M * p = col0*p.x + col1*p.y + col2*p.z + translation.
+    return m0.xyz * p.x + m1.xyz * p.y + m2.xyz * p.z + vec3<f32>(m0.w, m1.w, m2.w);
 }
 
 /// Transform a local-space direction by the linear part of an affine matrix
@@ -121,7 +123,9 @@ public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f
 /// transpose, which the stream does not carry; a uniformly scaled instance —
 /// and every unscaled one — is exact this way.
 public fn transform_vector(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(dot(m0.xyz, v), dot(m1.xyz, v), dot(m2.xyz, v));
+    // Same column convention as transform_point, without the translation:
+    // the linear part M3 * v = col0*v.x + col1*v.y + col2*v.z.
+    return m0.xyz * v.x + m1.xyz * v.y + m2.xyz * v.z;
 }
 
 /// Deform a local-space vertex by the joints `indices`/`weights` name.
@@ -148,6 +152,29 @@ public fn skin_position(
     skinned += weights.z * (array_access::load_joint_matrix(joint_base + indices.z) * point).xyz;
     skinned += weights.w * (array_access::load_joint_matrix(joint_base + indices.w) * point).xyz;
     return skinned;
+}
+
+/// Transform a direction by the joints `indices`/`weights` name.
+///
+/// The counterpart of [`skin_position`] for directions: the joint matrices
+/// carry the pose's own rotation and scale, so a direction a skinned vertex
+/// carries has to follow the same joints its position does. The weighted sum
+/// is left unnormalized; the caller normalizes once its directions are whole.
+@if(VERTEX_JOINTS)
+public fn skin_vector(
+    direction: vec3<f32>,
+    indices: vec4<u32>,
+    weights: vec4<f32>,
+    joint_base: u32,
+) -> vec3<f32> {
+    let j0 = array_access::load_joint_matrix(joint_base + indices.x);
+    let j1 = array_access::load_joint_matrix(joint_base + indices.y);
+    let j2 = array_access::load_joint_matrix(joint_base + indices.z);
+    let j3 = array_access::load_joint_matrix(joint_base + indices.w);
+    return weights.x * (j0[0].xyz * direction.x + j0[1].xyz * direction.y + j0[2].xyz * direction.z)
+         + weights.y * (j1[0].xyz * direction.x + j1[1].xyz * direction.y + j1[2].xyz * direction.z)
+         + weights.z * (j2[0].xyz * direction.x + j2[1].xyz * direction.y + j2[2].xyz * direction.z)
+         + weights.w * (j3[0].xyz * direction.x + j3[1].xyz * direction.y + j3[2].xyz * direction.z);
 }
 
 /// Add the weighted displacement of every morph target to a vertex.
@@ -265,30 +292,46 @@ public fn vertex_world(in: VertexInput, vertex_index: u32) -> VertexStage {
             metadata.morph_count,
         );
     }
-    @if(VERTEX_JOINTS) {
-        local = skin_position(local, in.joints, in.weights, in.joints_base);
-    }
-
-    // The instance transform always places the vertex, so a screen-space draw
-    // such as an overlay pass binds the identity record and the transform is a no-op.
+    // A skinned vertex is already in world space: the pose's joint matrices
+    // are global transforms, so what they produce is placed and needs no
+    // further model transform. The skinned entity's transform is inert — a
+    // caller cannot place a skinned mesh by writing it, only by moving the
+    // joints. An ordinary vertex is still placed from its mesh-local space.
     //
     // Mutable rather than a `let` because it is handed back: a caller may
     // displace it between this call and `vertex_out`, and everything after that
     // point -- the clip position, the world position the lights are addressed
     // from and the normal -- follows the displaced vertex.
-    var world = transform_point(in.model_0, in.model_1, in.model_2, local);
+    var world: vec3<f32>;
+    @if(VERTEX_JOINTS) {
+        world = skin_position(local, in.joints, in.weights, in.joints_base);
+    }
+    @if(!VERTEX_JOINTS) {
+        world = transform_point(in.model_0, in.model_1, in.model_2, local);
+    }
 
     // A hull is the same mesh, a little larger, so that what pokes out past the
     // mesh drawn over it reads as a line around it. The widening is along the
     // world-space normal and measured in world units, which keeps an outline
     // the same thickness however the instance scales its mesh.
     @if(EXPANDED) {
-        let outward = transform_vector(
-            in.model_0,
-            in.model_1,
-            in.model_2,
-            mesh_compression::decode_normal(in.normal),
-        );
+        var outward: vec3<f32>;
+        @if(VERTEX_JOINTS) {
+            outward = skin_vector(
+                mesh_compression::decode_normal(in.normal),
+                in.joints,
+                in.weights,
+                in.joints_base,
+            );
+        }
+        @if(!VERTEX_JOINTS) {
+            outward = transform_vector(
+                in.model_0,
+                in.model_1,
+                in.model_2,
+                mesh_compression::decode_normal(in.normal),
+            );
+        }
         // An instance scaled to nothing along an axis has no direction left
         // to spread along, and normalizing the zero vector it hands back would
         // put a NaN into every vertex of the shell, which the rasterizer then

@@ -33,7 +33,7 @@ async fn ecs_cube_covers_the_frame() {
     world.root_scope_mut().spawn(bundle![
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
-            rotation: glam::Quat::from_rotation_y(0.6),
+            rotation: glam::Quat::from_rotation_y(-0.6),
             scale: glam::Vec3::splat(0.7),
         },
         mesh,
@@ -83,7 +83,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
         bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, -0.6),
-                rotation: glam::Quat::from_rotation_y(0.6),
+                rotation: glam::Quat::from_rotation_y(-0.6),
                 scale: glam::Vec3::splat(0.7),
             },
             InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
@@ -98,7 +98,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
         bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.6),
-                rotation: glam::Quat::from_rotation_y(0.6),
+                rotation: glam::Quat::from_rotation_y(-0.6),
                 scale: glam::Vec3::splat(0.7),
             },
             InstanceColor::new(glam::Vec4::new(0.0, 1.0, 0.0, 1.0)),
@@ -202,7 +202,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
-                rotation: glam::Quat::from_rotation_y(0.6),
+                rotation: glam::Quat::from_rotation_y(-0.6),
                 scale: glam::Vec3::splat(0.7),
             },
             cube,
@@ -238,7 +238,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
-                rotation: glam::Quat::from_rotation_y(0.6),
+                rotation: glam::Quat::from_rotation_y(-0.6),
                 scale: glam::Vec3::splat(0.7),
             },
             InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
@@ -306,7 +306,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
         bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
-                rotation: glam::Quat::from_rotation_y(0.6),
+                rotation: glam::Quat::from_rotation_y(-0.6),
                 scale: glam::Vec3::splat(0.7),
             },
             first,
@@ -323,7 +323,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
             bundle![
                 Transform {
                     translation: glam::Vec3::new(-3.0 + 2.4 * frame_index as f32, -1.4, -2.0),
-                    rotation: glam::Quat::from_rotation_y(0.3),
+                    rotation: glam::Quat::from_rotation_y(-0.3),
                     scale: glam::Vec3::splat(0.05),
                 },
                 mesh,

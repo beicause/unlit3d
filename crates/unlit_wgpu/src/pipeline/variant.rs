@@ -47,11 +47,6 @@ pub struct LitVariant {
     /// flag stays clear for it: reversing the order there would compile a second
     /// variant that draws exactly the same frame.
     ///
-    /// What decides the sign is the format's business, which is why the flag is
-    /// a resolved fact rather than a determinant: a mesh whose vertex stream
-    /// carries joints is posed before it is placed, so the pose cancels the
-    /// entity's own transform out of every vertex and the sign comes from the
-    /// rig instead.
     pub reversed_winding: bool,
 }
 

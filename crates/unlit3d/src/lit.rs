@@ -39,7 +39,7 @@ use unlit_wgpu::specialize::{
 use unlit_wgpu::util::Hashed;
 use zerocopy::IntoBytes;
 
-use crate::components::{GpuMaterial, GpuMesh, SkinBinding};
+use crate::components::{GpuMaterial, GpuMesh};
 use crate::mesh::MorphDeltas;
 use crate::mesh_source::MeshSource;
 use crate::pipeline::{
@@ -108,34 +108,13 @@ pub(crate) fn lit_variant(options: &Hashed<LitOptions>, draw: &DrawContext<'_>) 
         // The matrix the draw places the geometry with decides which order its
         // triangles wind in, and a mirrored one — a negative determinant, which
         // a negative scale is the ordinary way to state — draws with the order
-        // reversed. A skinned draw is the exception the pose makes: the joint
-        // matrices cancel this entity's own transform out of every vertex, so
-        // the sign it winds by is the one the skin states instead, relative to
-        // this transform. Only a culling variant has a front to distinguish: one
-        // that culls nothing would compile a second variant drawing the same
-        // frame.
+        // reversed. Only a culling variant has a front to distinguish: one that
+        // culls nothing would compile a second variant drawing the same frame.
         reversed_winding: options.primitive.cull_mode.is_some()
-            && ((draw.world_from_local.matrix3.determinant() < 0.0) != skin_mirrored(draw)),
+            && draw.world_from_local.matrix3.determinant() < 0.0,
     }
 }
 
-/// Whether the pose a skinned draw deforms by mirrors it, relative to the
-/// entity's own transform.
-///
-/// A draw that reads no joints winds by its placement alone, so the answer is
-/// `false` for it. A skinned one reads the flag its [`SkinBinding`] carries,
-/// which a loader fills in from what its format says decides a skinned mesh's
-/// winding — glTF takes it from the skin's skeleton node rather than from the
-/// node that draws the mesh.
-fn skin_mirrored(draw: &DrawContext<'_>) -> bool {
-    if !draw.mesh.skinned {
-        return false;
-    }
-    draw.world
-        .try_query_one::<&SkinBinding>(draw.entity)
-        .map(|mut binding| binding.get().mirrored)
-        .unwrap_or(false)
-}
 /// The strip index format a draw's pipeline has to declare.
 ///
 /// Only a strip topology reads one, and there it has to equal the format of
@@ -199,7 +178,7 @@ impl RenderPipelineFactory<LitVariant> for LitFactory {
 ///
 /// The pose a mesh is drawn with is not here: joint matrices and morph weights
 /// are CPU-driven per-frame state, so they live on the entities a
-/// [`SkinBinding`] and a
+/// [`SkinBinding`](crate::components::SkinBinding) and a
 /// [`MorphBinding`](crate::components::MorphBinding) name and the renderer
 /// uploads them every frame.
 #[derive(Clone, Debug, Default)]

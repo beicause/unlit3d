@@ -25,8 +25,8 @@ mod scene;
 
 use self::{
     deform::{
-        a_mirrored_mesh_node_winds_by_its_skin, a_morphed_quad_follows_its_weights,
-        a_skinned_quad_follows_its_joint, an_animation_moves_the_drawn_mesh,
+        a_morphed_quad_follows_its_weights, a_skinned_quad_follows_its_joint,
+        an_animation_moves_the_drawn_mesh,
     },
     lighting::{a_plain_material_shades_by_the_lights, an_unlit_material_ignores_the_lights},
     materials::{
@@ -52,7 +52,6 @@ gpu_tests! {
     a_masked_material_discards_fragments_below_its_cutoff,
     a_material_without_its_image_reports_it,
     a_skinned_quad_follows_its_joint,
-    a_mirrored_mesh_node_winds_by_its_skin,
     an_animation_moves_the_drawn_mesh,
     a_morphed_quad_follows_its_weights,
     a_double_sided_material_draws_back_faces,

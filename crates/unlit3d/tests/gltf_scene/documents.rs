@@ -220,24 +220,19 @@ pub(super) fn spawn_placed_scene(
     nodes
 }
 
-/// The glTF JSON of one quad skinned to a single joint.
+/// The glTF JSON of one quad skinned to a single joint, whose node sits at
+/// `joint_translation`.
 ///
-/// The mesh node sits at the origin scaled by `mesh_scale`, and the joint node
-/// sits at `joint_translation` scaled by `joint_scale`. A pose cancels the mesh
-/// node's own transform out of every vertex, so the quad lands on the joint's
-/// own transform whatever `mesh_scale` says — which is what makes a mesh node
-/// that mirrors tell apart from a skin that does. The mesh carries a red vertex
-/// colour, so the quad it draws is one flat colour and a test can count it.
-pub(super) fn skinned_document(
-    mesh_scale: [f32; 3],
-    joint_scale: [f32; 3],
-    joint_translation: [f32; 3],
-) -> Vec<u8> {
+/// The mesh node sits at the origin, so the joint's world transform is
+/// exactly `joint_translation` and the pose is the matrix that moves the quad
+/// by it. The mesh carries a red vertex colour, so the quad it draws is one
+/// flat colour and a test can count it.
+pub(super) fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
     format!(
         r#"{{"asset":{{"version":"2.0"}},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
         "scenes":[{{"nodes":[0]}}],
-        "nodes":[{{"mesh":0,"skin":0,"scale":[{},{},{}]}},
-        {{"name":"joint","scale":[{},{},{}],"translation":[{},{},{}]}}],
+        "nodes":[{{"mesh":0,"skin":0}},
+        {{"name":"joint","translation":[{},{},{}]}}],
         "skins":[{{"joints":[1],"inverseBindMatrices":3}}],
         "meshes":[{{"primitives":[{{"attributes":
         {{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2,"COLOR_0":5}},
@@ -262,20 +257,13 @@ pub(super) fn skinned_document(
         {{"buffer":0,"byteOffset":220,"byteLength":16,"target":34962}}],
         "buffers":[{{"byteLength":236,
         "uri":"data:application/octet-stream;base64,{}"}}]}}"#,
-        mesh_scale[0],
-        mesh_scale[1],
-        mesh_scale[2],
-        joint_scale[0],
-        joint_scale[1],
-        joint_scale[2],
-        joint_translation[0],
-        joint_translation[1],
-        joint_translation[2],
-        SKINNED_BIN_BASE64,
+        joint_translation[0], joint_translation[1], joint_translation[2], SKINNED_BIN_BASE64,
     )
     .into_bytes()
 }
 
+/// A quad with two positional morph targets, weighted `[0, 0]` on its mesh.
+///
 /// A quad with two positional morph targets, weighted `[0, 0]` on its mesh.
 ///
 /// The buffer holds the positions (f32), the indices (u16), one red vertex

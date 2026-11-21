@@ -609,10 +609,21 @@ impl BendSkin {
 
     /// The pose the two joints are at, ready to attach to an entity.
     pub fn pose(&self) -> SkinPose {
+        self.pose_at(glam::Mat4::IDENTITY)
+    }
+
+    /// The pose with an entity's world transform baked into its joint matrices.
+    ///
+    /// Skinned vertices are produced by the pose alone in world space, so the
+    /// transform a mesh entity carries no longer places them: a caller that
+    /// wants its mesh placed composes that transform onto every joint here.
+    pub fn pose_at(&self, mesh_world: glam::Mat4) -> SkinPose {
         let mut matrices = rest_pose(2);
-        matrices[1] = glam::Mat4::from_translation(glam::Vec3::Y * self.pivot)
+        let bend = glam::Mat4::from_translation(glam::Vec3::Y * self.pivot)
             * glam::Mat4::from_rotation_z(self.angle)
             * glam::Mat4::from_translation(glam::Vec3::Y * -self.pivot);
+        matrices[0] = mesh_world;
+        matrices[1] = mesh_world * bend;
         SkinPose { matrices }
     }
 }

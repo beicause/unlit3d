@@ -498,7 +498,7 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
         bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
-                rotation: glam::Quat::from_rotation_y(0.6),
+                rotation: glam::Quat::from_rotation_y(-0.6),
                 scale: glam::Vec3::splat(0.7),
             },
             mesh,

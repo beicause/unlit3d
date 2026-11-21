@@ -37,7 +37,7 @@ const FOX_PLACEMENT: Transform = Transform {
     translation: glam::Vec3::new(-4.54, 0.0, -1.01),
     // A 25° turn about Y towards the camera, written out because
     // `from_rotation_y` is not a constant function.
-    rotation: glam::Quat::from_xyzw(0.0, -0.216_439_62, 0.0, 0.976_296),
+    rotation: glam::Quat::from_xyzw(0.0, 0.216_439_62, 0.0, 0.976_296),
     scale: glam::Vec3::ONE,
 };
 
@@ -189,7 +189,9 @@ fn build(
     // One player per document: each holds the buffers its clip samples into,
     // so the two never share a working set.
     let mut fox_player = unlit3d::gltf::AnimationPlayer::default();
+    fox_player.set_placement(&FOX_PLACEMENT);
     let mut morph_player = unlit3d::gltf::AnimationPlayer::default();
+    morph_player.set_placement(&MORPH_PLACEMENT);
 
     SceneControl {
         advance: Box::new(move |world, frame, delta, frame_size| {
@@ -245,18 +247,26 @@ fn build(
     }
 }
 
-/// Compose `placement` onto every entity `nodes` draws.
+/// Compose a placement onto every entity the nodes draw.
 ///
 /// The document spawns where it was authored, so each entity carries its own
-/// node's world transform; composing in matrix space keeps every node in its
-/// place in the hierarchy rather than moving them all onto one transform.
+/// node world transform; composing in matrix space keeps every node in its
+/// place in the hierarchy rather than moving them all onto one transform. A
+/// skinned mesh draws from its pose joint matrices rather than its entity
+/// transform, so the placement is composed into the pose as well.
 fn place(scope: &unlit_ecs::Scope<'_>, nodes: &[unlit3d::gltf::GltfNode], placement: &Transform) {
-    let placement = placement.compute_matrix();
+    let matrix = placement.compute_matrix();
     for node in nodes {
         for &entity in &node.entities {
             let mut current = scope.query_one::<&mut Transform>(entity);
-            let placed = placement * current.get().compute_matrix();
+            let placed = matrix * current.get().compute_matrix();
             *current.get() = Transform::from_matrix(placed);
+        }
+        if let Some(entity) = node.pose {
+            let mut pose = scope.query_one::<&mut SkinPose>(entity);
+            for joint in &mut pose.get().matrices {
+                *joint = glam::Mat4::from(matrix) * *joint;
+            }
         }
     }
 }

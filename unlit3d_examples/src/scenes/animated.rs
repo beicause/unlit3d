@@ -268,9 +268,9 @@ fn cell_transform(cell: usize, frame: usize) -> Transform {
                 glam::Vec3::ZERO
             },
         rotation: if moving {
-            glam::Quat::from_rotation_y(frame as f32 * 0.4 + cell as f32)
+            glam::Quat::from_rotation_y(-(frame as f32 * 0.4 + cell as f32))
         } else {
-            glam::Quat::from_rotation_y(cell as f32 * 0.7)
+            glam::Quat::from_rotation_y(-(cell as f32 * 0.7))
         },
         scale: glam::Vec3::splat(0.34 + 0.03 * (cell % 3) as f32),
     }

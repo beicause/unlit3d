@@ -121,7 +121,10 @@ optional and unknown fields are refused. The shape is:
 and `placement`, when given, is composed onto the document's own node transforms:
 the whole scene moves, so a node offset from the document's origin keeps that
 offset. A node the animation drives is written back at its unplaced transform
-while the animation plays.
+while the animation plays. A skinned mesh draws from its joint matrices in world
+space and ignores its entity's transform, so its placement is composed into the
+pose joint matrices instead; the animation player carries that placement forward
+when it rebuilds the pose each frame.
 
 On the command line, `--document` is repeatable and replaces the configuration's
 document list, while `--animation` and `--time` apply to every document.

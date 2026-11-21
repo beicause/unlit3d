@@ -197,26 +197,40 @@ pub fn build_world(
         // The document spawns where it was authored. A configured placement is
         // composed onto every entity afterwards, in matrix space, so each node
         // keeps its own place in the hierarchy rather than every node landing
-        // on one transform.
-        if let Some(placement) = &document.placement {
-            let placement = placement.transform().compute_matrix();
-            let scope = world.root_scope();
+        // on one transform. A skinned mesh draws from its pose's joint matrices
+        // rather than its entity transform, so the placement is composed into
+        // the pose too; the animation player carries it forward when an
+        // animation rebuilds the pose each frame.
+        let placement = document.placement.as_ref().map(PlacementConfig::transform);
+        let scope = world.root_scope();
+        if let Some(placement) = &placement {
+            let matrix = placement.compute_matrix();
             for node in &nodes {
                 for &entity in &node.entities {
                     let mut current = scope.query_one::<&mut Transform>(entity);
-                    let placed = placement * current.get().compute_matrix();
+                    let placed = matrix * current.get().compute_matrix();
                     *current.get() = Transform::from_matrix(placed);
+                }
+                if let Some(entity) = node.pose {
+                    let mut pose = scope.query_one::<&mut SkinPose>(entity);
+                    for joint in &mut pose.get().matrices {
+                        *joint = glam::Mat4::from(matrix) * *joint;
+                    }
                 }
             }
         }
         if let Some(animation) = &document.animation {
             let index = animation_index(&gltf, animation)?;
+            let mut player = unlit3d::gltf::AnimationPlayer::default();
+            if let Some(placement) = &placement {
+                player.set_placement(placement);
+            }
             gltf.apply_animation(
-                &world.root_scope(),
+                &scope,
                 unlit3d::gltf::AnimationId::new(index),
                 document.time,
                 &nodes,
-                &mut unlit3d::gltf::AnimationPlayer::default(),
+                &mut player,
             );
         }
     }

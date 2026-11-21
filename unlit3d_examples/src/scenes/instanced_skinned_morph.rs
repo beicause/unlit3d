@@ -11,7 +11,7 @@
 
 use super::{
     BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options,
-    morph_deltas, rest_pose,
+    morph_deltas,
 };
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
@@ -36,6 +36,17 @@ struct Instance {
     weights: Entity,
 }
 
+/// Where an instance sits. Skinned vertices ignore the mesh entity transform,
+/// so this placement is baked into the instance joint matrices; the entity
+/// keeps it for culling.
+fn instance_transform(index: usize) -> Transform {
+    Transform {
+        translation: glam::Vec3::new((index as f32 - 1.0) * 1.3, 0.0, 0.0),
+        scale: glam::Vec3::splat(0.8),
+        ..Default::default()
+    }
+}
+
 impl Bundle for Instance {
     fn into_bundle(self) -> DynamicBundle {
         bundle![
@@ -43,10 +54,7 @@ impl Bundle for Instance {
             InstanceColor::new(self.tint),
             self.mesh,
             self.pipeline,
-            SkinBinding {
-                pose: self.pose,
-                mirrored: false,
-            },
+            SkinBinding { pose: self.pose },
             MorphBinding {
                 weights: self.weights
             },
@@ -117,9 +125,10 @@ fn build(
     let mut pose_entities = Vec::new();
     let mut weight_entities = Vec::new();
     for instance in 0..INSTANCES {
-        let pose_entity = world.scope_mut(source_entity).spawn(bundle![SkinPose {
-            matrices: rest_pose(2)
-        }]);
+        let transform = instance_transform(instance);
+        let pose_entity = world.scope_mut(source_entity).spawn(bundle![
+            skin.pose_at(glam::Mat4::from(transform.compute_matrix()))
+        ]);
         let weight_entity = world.scope_mut(source_entity).spawn(bundle![MorphWeights {
             weights: instance_weights(0, instance).to_vec()
         }]);
@@ -129,11 +138,7 @@ fn build(
             _ => glam::Vec4::new(0.7, 1.0, 0.6, 1.0),
         };
         world.scope_mut(source_entity).spawn(Instance {
-            transform: Transform {
-                translation: glam::Vec3::new((instance as f32 - 1.0) * 1.3, 0.0, 0.0),
-                scale: glam::Vec3::splat(0.8),
-                ..Default::default()
-            },
+            transform,
             tint: color,
             mesh: mesh.clone(),
             pipeline: GpuRenderPipeline::new(key.clone()),
@@ -159,9 +164,10 @@ fn build(
                 let scope = world.scope(source_entity);
                 for instance in 0..INSTANCES {
                     skins[instance].set_angle(instance_angle(frame, instance));
+                    let world = glam::Mat4::from(instance_transform(instance).compute_matrix());
                     *scope
                         .query_one::<&mut SkinPose>(pose_entities[instance])
-                        .get() = skins[instance].pose();
+                        .get() = skins[instance].pose_at(world);
                     scope
                         .query_one::<&mut MorphWeights>(weight_entities[instance])
                         .get()

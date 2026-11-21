@@ -13,6 +13,10 @@ use unlit3d::prelude::*;
 /// The frames rendered, one snapshot each.
 const FRAMES: usize = 6;
 
+/// The cube's placement, baked into the pose's joints so skinned vertices land
+/// where the entity transform used to put them.
+const MESH_WORLD: glam::Mat4 = glam::Mat4::from_diagonal(glam::Vec4::new(0.9, 0.9, 0.9, 1.0));
+
 /// Where the camera sits, close enough that a deformation moves many pixels.
 const CAMERA_EYE: glam::Vec3 = glam::Vec3::new(0.9, 1.1, 2.6);
 
@@ -37,7 +41,9 @@ pub static SCENE: SceneDef = SceneDef {
 ///
 /// The mesh and the entity that carries the joint matrices are what a spawn
 /// has to name, so they are the fields; the transform and the tint belong to
-/// the scene, so they are the bundle's own.
+/// the scene, so they are the bundle's own. The transform also bounds the cube
+/// for culling; because skinned vertices ignore the mesh entity's transform,
+/// its scale is baked into the joint matrices to place the drawn geometry.
 struct SkinnedCube {
     mesh: GpuMesh,
     pipeline: GpuRenderPipeline,
@@ -54,10 +60,7 @@ impl Bundle for SkinnedCube {
             InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
             self.mesh,
             self.pipeline,
-            SkinBinding {
-                pose: self.pose,
-                mirrored: false,
-            },
+            SkinBinding { pose: self.pose },
         ]
     }
 }
@@ -120,7 +123,7 @@ fn build(
             *world
                 .scope(source_entity)
                 .query_one::<&mut SkinPose>(pose_entity)
-                .get() = skin.pose();
+                .get() = skin.pose_at(MESH_WORLD);
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the cube.
             super::aim_camera(

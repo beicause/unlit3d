@@ -63,7 +63,7 @@ fn reference(fox_time: f32, morph_time: f32, size: (u32, u32), scale: (f32, f32)
                 path: FOX.to_owned(),
                 placement: Some(PlacementConfig {
                     translation: [-4.54, 0.0, -1.01],
-                    rotation: [0.0, -0.216_439_62, 0.0, 0.976_296],
+                    rotation: [0.0, 0.216_439_62, 0.0, 0.976_296],
                     scale: [1.0, 1.0, 1.0],
                 }),
                 animation: Some(AnimationRef::Name("Walk".to_owned())),
