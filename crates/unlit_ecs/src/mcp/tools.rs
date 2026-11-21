@@ -92,10 +92,10 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
 /// `false` beside a name: what to do about it depends on why.
 fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
     let name = scope.readonly().entity_name(entity).unwrap_or("");
-    let removed = scope
+    scope
         .despawn(entity)
         .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
-    to_value(&Despawned { removed, name })
+    to_value(&Despawned { name })
 }
 
 /// Every world the host carries.
@@ -395,11 +395,6 @@ mod tests {
         assert!(!name.is_empty(), "the row names the entity");
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, child).expect("its own descendant");
-        assert_eq!(
-            answer["removed"],
-            serde_json::json!(1),
-            "the child took no subtree with it"
-        );
         assert_eq!(
             answer["name"],
             serde_json::json!(name),

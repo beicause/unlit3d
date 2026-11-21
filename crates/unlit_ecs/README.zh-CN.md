@@ -120,11 +120,11 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 **改变树。** `ScopeMut::spawn` 把新实体放进 scope 自身，`spawn_at` 则把它放到
 `World::reserve_entity` 预留的句柄上——已释放、已 spawn 过、或从未预留的句柄会得到
 `EntityAccessError::NotReserved`。`ScopeMut::despawn` 删除该实体及其整棵子树，
-子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先，并回答这次带走了多少实体。
-它把子树扫到空为止，而不是只走一趟，因为回调运行时树仍归它改：回调重新塞回该实体下的
-东西也一并被带走，不会留在一个行即将消失的 scope 里。每棵子树在一次级联中每个实体只跑
-一次 `OnDespawn`，所以往子树里加子实体的回调不会拖住自己这一行；但每趟都加一个全新实体的
-回调会一直拖下去，和排一条又排一条的命令一直拖住 `apply` 是同一种情形。往已被删除的 scope 里
+子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先。它把子树扫到空为止，而不是
+只走一趟，因为回调运行时树仍归它改：回调重新塞回该实体下的东西也一并被带走，不会留在
+一个行即将消失的 scope 里。每棵子树在一次级联中每个实体只跑一次 `OnDespawn`，所以往子树
+里加子实体的回调不会拖住自己这一行；但每趟都加一个全新实体的回调会一直拖下去，和排一条
+又排一条的命令一直拖住 `apply` 是同一种情形。往已被删除的 scope 里
 spawn 会被拒绝为 `EntityAccessError::NotAlive`，排队的 spawn 在其 scope 已消失之后落盘时
 遇到的正是这一条。`ScopeMut::link` 与
 `ScopeMut::unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；

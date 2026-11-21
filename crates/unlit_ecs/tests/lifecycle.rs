@@ -309,7 +309,7 @@ fn a_callback_that_spawns_into_a_dying_scope_takes_the_child_with_it() {
             scope.scope_mut(doomed).spawn(bundle![Marker(2)]);
         }),
     ]);
-    assert_eq!(world.root_scope_mut().despawn(scene), Ok(2));
+    world.root_scope_mut().despawn(scene).unwrap();
     assert_eq!(world.root_scope().len(), 0, "no row is left behind");
     crate::scope::assert_invariants(&world);
 }

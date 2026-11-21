@@ -466,9 +466,7 @@ impl World {
     /// Despawn `entity` and its whole subtree, on behalf of `caller`.
     ///
     /// Children are removed before the parent they lived in, so a child's
-    /// despawn callback still sees living ancestors. The answer is how many
-    /// entities the despawn took with it: the subtree is the scope's to know
-    /// about, and a caller that counts what it removed can say so.
+    /// despawn callback still sees living ancestors.
     ///
     /// The subtree is swept rather than walked once, because a callback runs
     /// while the tree is still its to change: whatever it puts back in is taken
@@ -481,13 +479,12 @@ impl World {
         &mut self,
         entity: Entity,
         caller: Entity,
-    ) -> Result<usize, EntityAccessError> {
+    ) -> Result<(), EntityAccessError> {
         if self.is_scaffolding(entity) {
             return Err(EntityAccessError::Scaffolding { entity });
         }
         self.location(entity)?;
         self.check_owns(caller, entity)?;
-        let mut removed = 0;
         // Which entities have already had their callback in this cascade. A
         // row is held back until its children are gone, so the entity that put
         // one back is visited again; without this it would run its callback
@@ -499,19 +496,15 @@ impl World {
             // Read the subtree every pass: it is the callbacks' to change, and
             // a pass that had to leave a parent standing leaves work behind.
             let doomed = self.tree.subtree_post_order(entity);
-            let mut taken = 0;
             for victim in &doomed {
-                if self.remove_entity(*victim, &mut called) {
-                    taken += 1;
-                }
+                self.remove_entity(*victim, &mut called);
             }
-            removed += taken;
             // The row of `entity` going is what ends the cascade. A pass that
             // took nothing has not necessarily finished: a callback can put a
             // child under an entity this pass had to leave standing, and the
             // next pass is what takes it.
             if self.location(entity).is_err() {
-                return Ok(removed);
+                return Ok(());
             }
         }
     }
@@ -647,21 +640,20 @@ impl World {
 
     /// Run the despawn callback of `entity` and drop its row and handle.
     ///
-    /// Answers whether this pass took the row. A row goes only once its entity
-    /// has no children left: dropping it earlier leaves their rows in a scope
-    /// the tree no longer has a link to, which is nowhere at all. A callback
-    /// that puts a child in therefore keeps the row for the cascade to come back
-    /// to.
+    /// A row goes only once its entity has no children left: dropping it
+    /// earlier leaves their rows in a scope the tree no longer has a link to,
+    /// which is nowhere at all. A callback that puts a child in therefore keeps
+    /// the row for the cascade to come back to.
     ///
     /// `called` holds the entities that have already run their callback in this
     /// cascade, so coming back for a held-back row does not run it a second
     /// time. Re-entry from inside a callback needs no such guard: the callback
     /// is out of the row while it runs, so the row it would find holds the
     /// placeholder.
-    fn remove_entity(&mut self, entity: Entity, called: &mut EntityHashSet) -> bool {
-        let Ok(_) = self.location(entity) else {
-            return false;
-        };
+    fn remove_entity(&mut self, entity: Entity, called: &mut EntityHashSet) {
+        if self.location(entity).is_err() {
+            return;
+        }
         // The callback runs on the first visit, before the children are looked
         // at: a child it puts in has to be swept by a later pass, and the row
         // stays until then.
@@ -672,15 +664,14 @@ impl World {
         // entity itself. Re-check before touching a row that may be gone, and
         // before dropping one it has just put a child into.
         let Ok(location) = self.location(entity) else {
-            return false;
+            return;
         };
         if !self.tree.children(entity).is_empty() {
-            return false;
+            return;
         }
         self.tree_mut().detach(entity);
         self.remove_row(location);
         self.free_entity(entity);
-        true
     }
 
     /// Run the spawn callbacks of an entity whose row is already in place.
