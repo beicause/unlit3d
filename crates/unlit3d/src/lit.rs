@@ -39,7 +39,7 @@ use unlit_wgpu::specialize::{
 use unlit_wgpu::util::Hashed;
 use zerocopy::IntoBytes;
 
-use crate::components::{GpuMaterial, GpuMesh};
+use crate::components::{GpuMaterial, GpuMesh, SkinBinding, SkinPose};
 use crate::mesh::MorphDeltas;
 use crate::mesh_source::MeshSource;
 use crate::pipeline::{
@@ -105,14 +105,41 @@ pub(crate) fn lit_variant(options: &Hashed<LitOptions>, draw: &DrawContext<'_>) 
         base_color_texture: draw.material.is_some(),
         morph: draw.mesh.morph_targets > 0,
         strip_index_format: strip_index_format(options.primitive.topology, index_format),
-        // The matrix the draw places the geometry with decides which order its
-        // triangles wind in, and a mirrored one — a negative determinant, which
-        // a negative scale is the ordinary way to state — draws with the order
-        // reversed. Only a culling variant has a front to distinguish: one that
-        // culls nothing would compile a second variant drawing the same frame.
+        // A mirrored geometry winds the other way. An ordinary mesh is placed
+        // by its instance transform, so that transform's determinant decides;
+        // a skinned one is produced in world space by its joints and skips the
+        // instance transform, so the pose's own determinant decides instead.
+        // Only a culling variant has a front to distinguish: one that culls
+        // nothing would compile a second variant drawing the same frame.
         reversed_winding: options.primitive.cull_mode.is_some()
-            && draw.world_from_local.matrix3.determinant() < 0.0,
+            && if draw.mesh.skinned {
+                skin_mirrored(draw)
+            } else {
+                draw.world_from_local.matrix3.determinant() < 0.0
+            },
     }
+}
+
+/// Whether a skinned draw's pose mirrors the geometry it deforms.
+///
+/// A skinned vertex is produced in world space by its joint matrices and skips
+/// the instance transform, so its winding follows the pose rather than the
+/// entity. The joints of one skin share the ancestry that places them, so the
+/// first joint's determinant carries the sign the whole skin winds by.
+fn skin_mirrored(draw: &DrawContext<'_>) -> bool {
+    let pose_entity = {
+        let Ok(mut binding) = draw.world.try_query_one::<&SkinBinding>(draw.entity) else {
+            return false;
+        };
+        binding.get().pose
+    };
+    let Ok(mut pose) = draw.world.try_query_one::<&SkinPose>(pose_entity) else {
+        return false;
+    };
+    pose.get()
+        .matrices
+        .first()
+        .is_some_and(|matrix| matrix.determinant() < 0.0)
 }
 
 /// The strip index format a draw's pipeline has to declare.
@@ -178,7 +205,7 @@ impl RenderPipelineFactory<LitVariant> for LitFactory {
 ///
 /// The pose a mesh is drawn with is not here: joint matrices and morph weights
 /// are CPU-driven per-frame state, so they live on the entities a
-/// [`SkinBinding`](crate::components::SkinBinding) and a
+/// [`SkinBinding`] and a
 /// [`MorphBinding`](crate::components::MorphBinding) name and the renderer
 /// uploads them every frame.
 #[derive(Clone, Debug, Default)]

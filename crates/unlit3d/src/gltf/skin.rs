@@ -15,7 +15,7 @@ impl LitGltf {
     /// is what this builds:
     ///
     /// ```text
-    /// joint matrix = mesh node world inverse * joint node world * inverse bind matrix
+    /// joint matrix = joint node world * inverse bind matrix
     /// ```
     ///
     /// The pose is the *rest* pose — the document's node transforms as loaded,
@@ -79,15 +79,13 @@ impl LitGltf {
 
     /// Whether a node's skin deformed this frame, given which nodes moved.
     ///
-    /// A pose depends on the mesh node's world matrix and on every joint's, so
-    /// it is stale when either moved and current otherwise. Walking the joints
-    /// is cheaper than rebuilding a matrix per joint and writing it back.
+    /// A pose depends on every joint's world matrix, so it is stale when any
+    /// joint moved and current otherwise. Walking the joints is cheaper than
+    /// rebuilding a matrix per joint and writing it back.
     pub(super) fn skin_moved(&self, node: usize, dirty: &[bool]) -> bool {
-        dirty[node]
-            || self
-                .node(node)
-                .skin()
-                .is_some_and(|skin| skin.joints().any(|joint| dirty[joint.index()]))
+        self.node(node)
+            .skin()
+            .is_some_and(|skin| skin.joints().any(|joint| dirty[joint.index()]))
     }
 
     /// The number of joints a node's skin has.

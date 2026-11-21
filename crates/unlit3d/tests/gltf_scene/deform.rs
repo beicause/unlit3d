@@ -249,3 +249,47 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
         "a joint moved past the viewport takes the quad with it"
     );
 }
+
+/// A mirrored skin pose still draws the front faces of a single-sided mesh.
+///
+/// A skinned vertex is produced by its joints in world space and skips the
+/// entity transform, so the sign its triangles wind by is the pose's rather
+/// than the entity's. Mirroring the joint matrix has to reverse the winding or
+/// every front face is culled and the frame goes empty.
+pub(super) async fn a_mirrored_skin_pose_draws_its_front_faces() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
+        .expect("the embedded document parses");
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
+    });
+    let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    assert_eq!(entities.len(), 1, "one mesh node draws one entity");
+
+    let pose = {
+        let mut skin_binding_rows = world.root_scope().query::<&SkinBinding>();
+        let skin_binding = skin_binding_rows
+            .iter()
+            .next()
+            .expect("a skinned mesh binds to a pose");
+        skin_binding.pose
+    };
+    // Mirror the skin in x. The mesh entity keeps its identity transform, so a
+    // draw that read the winding from the entity would cull every triangle.
+    *world.root_scope().query_one::<&mut SkinPose>(pose).get() = SkinPose {
+        matrices: vec![glam::Mat4::from_scale(glam::Vec3::new(-1.0, 1.0, 1.0))],
+    };
+
+    gpu.spawn(&mut world, bundle![camera()]);
+    let target = gpu.bind_offscreen_target(&world, "test::gltf_mirrored_skin");
+    gpu.render(&world);
+    let frame = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
+    let red = count_colour(&frame, [255, 0, 0], 4);
+    assert!(
+        red > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the mirrored skin still draws its front faces (red = {red})"
+    );
+}

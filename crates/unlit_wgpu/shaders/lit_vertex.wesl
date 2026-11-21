@@ -3,9 +3,9 @@
 // The stage runs in two halves with the world-space vertex between them:
 //
 // * `vertex_world` decodes the vertex's own channels, deforms it, places it
-//   with the instance transform and widens it into a hull. It returns a
-//   `VertexStage`: the world-space vertex, together with the mesh metadata the
-//   second half reads, so the metadata is loaded once.
+//   in the world and widens it into a hull. It returns a `VertexStage`: the
+//   world-space vertex, together with the mesh metadata the second half reads,
+//   so the metadata is loaded once.
 // * `vertex_out` finishes the stage from the vertex it is handed: the clip
 //   position, the color, the UV and, for a lit variant, the world position and
 //   normal the fragment stage shades with.
@@ -231,12 +231,13 @@ public struct VertexStage {
     @if(COMPRESSED_CHANNEL_OR_MORPH) metadata: mesh_metadata::MeshMetadata,
 }
 
-/// Place a vertex in the world: decode it, deform it, transform it and widen it
+/// Place a vertex in the world: decode it, deform it, place it and widen it
 /// into a hull where the variant draws one.
 ///
-/// Deformation happens in the mesh's own space, before the instance transform
-/// places the vertex in the world: a joint matrix is relative to the mesh, and a
-/// morph displacement is a local offset.
+/// A morph displacement is a local offset applied in the mesh's own space,
+/// after which the instance transform places the vertex in the world. A skinned
+/// vertex takes the other path: the pose's joint matrices already produce it in
+/// world space, so the instance transform is skipped entirely.
 ///
 /// `vertex_index` is the draw's vertex ordinal in the stream's pool --
 /// `firstVertex + i`, or an index plus `baseVertex` -- so the morph
@@ -353,8 +354,9 @@ public fn vertex_world(in: VertexInput, vertex_index: u32) -> VertexStage {
 
 /// Finish the vertex stage from the vertex `vertex_world` placed.
 ///
-/// The instance transform always places the vertex, so a screen-space draw such
-/// as an overlay pass binds the identity record and the transform is a no-op.
+/// A screen-space draw such as an overlay pass places the vertex with an
+/// identity instance record. A skinned vertex needs no such placement: its
+/// world position was already produced by the pose in `vertex_world`.
 public fn vertex_out(in: VertexInput, stage: VertexStage) -> VertexOut {
     var out: VertexOut;
     out.clip = lit_bindings::camera.clip_from_world * vec4<f32>(stage.world, 1.0);
@@ -378,12 +380,25 @@ public fn vertex_out(in: VertexInput, stage: VertexStage) -> VertexOut {
         out.world = stage.world;
     }
     @if(LIT && VERTEX_NORMAL) {
-        out.normal = transform_vector(
-            in.model_0,
-            in.model_1,
-            in.model_2,
-            mesh_compression::decode_normal(in.normal),
-        );
+        @if(VERTEX_JOINTS) {
+            // A skinned vertex is already in world space, deformed by the pose
+            // joints rather than placed by the instance transform, so its
+            // normal has to follow those same joints.
+            out.normal = skin_vector(
+                mesh_compression::decode_normal(in.normal),
+                in.joints,
+                in.weights,
+                in.joints_base,
+            );
+        }
+        @if(!VERTEX_JOINTS) {
+            out.normal = transform_vector(
+                in.model_0,
+                in.model_1,
+                in.model_2,
+                mesh_compression::decode_normal(in.normal),
+            );
+        }
     }
     @if(LIT && !VERTEX_NORMAL) {
         // A mesh with no normal channel is lit by its geometric normal, which

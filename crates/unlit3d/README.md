@@ -857,8 +857,10 @@ world you already render:
   winding with it; a `doubleSided` material needs no flip because it culls
   nothing. A skinned mesh ignores its entity's transform in the shader: its
   vertices are produced in world space by the joint matrices, so neither the
-  placement nor a negative scale on the mesh entity changes the geometry or its
-  winding.
+  placement nor a negative scale on the mesh entity changes the geometry. Its
+  winding is read from the pose's joint matrices instead, so a mirrored pose
+  (and the placement that is composed into every joint) still draws its front
+  faces with the right winding.
 - The UV stream is the `TEXCOORD_n` set the material's base-color texture
   names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
   primitive whose material names a set it does not carry draws untextured
