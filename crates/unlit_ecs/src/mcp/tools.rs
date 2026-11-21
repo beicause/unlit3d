@@ -91,7 +91,7 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
 /// An entity the scope cannot remove is an error the caller reads, not a
 /// `false` beside a name: what to do about it depends on why.
 fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
-    let name = scope.as_scope().entity_name(entity).unwrap_or("");
+    let name = scope.readonly().entity_name(entity).unwrap_or("");
     let removed = scope
         .despawn(entity)
         .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;

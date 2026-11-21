@@ -7,17 +7,19 @@
 //! deferred pass -- an [`OnDespawn`] callback runs while the entity still has
 //! its components, because afterwards there is nothing left to read.
 //!
-//! A callback gets the scope of the entity's own scope, which is its parent, and
-//! cannot change the world's structure: it queues those changes instead. The
-//! callback is taken out of the entity's row for the run and put back after, so
-//! a callback that reaches for its own lifecycle component reads the row rather
-//! than finding it held open by its own run.
+//! A callback gets a mutable scope over the entity's parent, so it changes the
+//! world's structure directly: spawning, despawning and relinking all take
+//! effect before the callback returns. Component queries go through
+//! [`ScopeMut::readonly`], whose result borrows the mutable scope for as long as
+//! it is held. The callback is taken out of the entity's row for the run and put
+//! back after, so a callback that reaches for its own lifecycle component reads
+//! the row rather than finding it held open by its own run.
 
 use crate::entity::Entity;
-use crate::view::Scope;
+use crate::view::ScopeMut;
 
 /// The callback of a lifecycle component.
-pub type LifecycleCallback = Box<dyn for<'a, 'b> FnMut(&'a Scope<'b>, Entity)>;
+pub type LifecycleCallback = Box<dyn for<'a, 'b> FnMut(&'a mut ScopeMut<'b>, Entity)>;
 
 /// Declare one lifecycle component: its callback and its constructor.
 macro_rules! lifecycle_component {
@@ -32,7 +34,7 @@ macro_rules! lifecycle_component {
             #[doc = concat!("Wrap `callback` as an [`", stringify!($name), "`].")]
             #[must_use]
             pub fn new(
-                callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
+                callback: impl for<'a, 'b> FnMut(&'a mut ScopeMut<'b>, Entity) + 'static,
             ) -> Self {
                 Self(Box::new(callback))
             }

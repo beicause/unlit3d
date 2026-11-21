@@ -35,7 +35,7 @@ fn a_despawn_callback_runs_before_the_row_is_removed() {
     let entity = world.root_scope_mut().spawn(bundle![
         Marker(7),
         OnDespawn::new(move |scope, doomed| {
-            let mut marker_row = scope.query_one::<&Marker>(doomed);
+            let mut marker_row = scope.readonly().query_one::<&Marker>(doomed);
 
             // The entity still has its components, which is the whole reason
             // a despawn callback cannot be deferred.
@@ -74,6 +74,7 @@ fn a_spawn_callback_sees_its_own_components() {
         Marker(42),
         OnSpawn::new(move |scope, spawned| {
             *sink.borrow_mut() = scope
+                .readonly()
                 .try_query_one::<&Marker>(spawned)
                 .map(|mut marker| {
                     let marker = marker.get();
@@ -86,14 +87,14 @@ fn a_spawn_callback_sees_its_own_components() {
 }
 
 #[test]
-fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
+fn a_callback_can_spawn_immediately() {
     let seen = log();
     let mut world = World::new();
     let sink = Rc::clone(&seen);
     world
         .root_scope_mut()
         .spawn(bundle![OnSpawn::new(move |scope, _| {
-            scope.queue().spawn(bundle![
+            scope.spawn(bundle![
                 Marker(9),
                 OnSpawn::new({
                     let nested = Rc::clone(&sink);
@@ -101,9 +102,11 @@ fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
                 }),
             ]);
         }),]);
-    assert!(seen.borrow().is_empty(), "queued, not spawned");
-    world.apply().unwrap();
-    assert_eq!(*seen.borrow(), ["nested"]);
+    assert_eq!(
+        *seen.borrow(),
+        ["nested"],
+        "the nested spawn ran right away"
+    );
 }
 
 #[test]
@@ -153,7 +156,11 @@ fn a_callback_can_descend_into_the_entity_it_sits_on() {
         OnSpawn::new(move |scope, spawned| {
             // The entity's own scope is its parent, so its subtree is one
             // level down.
-            *sink.borrow_mut() = scope.try_scope(spawned).map(|scene| scene.len()).ok();
+            *sink.borrow_mut() = scope
+                .readonly()
+                .try_scope(spawned)
+                .map(|scene| scene.len())
+                .ok();
         }),
     ]);
     // The scene's own scope counts the scene itself, so an empty subtree reads
@@ -206,11 +213,28 @@ fn a_callback_reads_its_own_lifecycle_component() {
         .spawn(bundle![OnSpawn::new(move |scope, spawned| {
             // The runner takes the callback out of the row for the run, so the row
             // itself is free: the callback reads what it is attached to.
-            let mut holder = scope.query_one::<&OnSpawn>(spawned);
+            let mut holder = scope.readonly().query_one::<&OnSpawn>(spawned);
             let _ = holder.get();
             sink.borrow_mut().push("saw".to_owned());
         }),]);
     assert_eq!(*seen.borrow(), ["saw"], "the component was reachable");
+}
+
+#[test]
+fn a_callback_can_despawn_itself() {
+    let seen = log();
+    let mut world = World::new();
+    let sink = Rc::clone(&seen);
+    let entity = world.root_scope_mut().spawn(bundle![
+        Marker(1),
+        OnSpawn::new(move |scope, spawned| {
+            sink.borrow_mut().push("born".to_owned());
+            scope.despawn(spawned).unwrap();
+        }),
+    ]);
+    assert_eq!(*seen.borrow(), ["born"]);
+    assert!(!world.root_scope().contains(entity), "it removed itself");
+    assert_eq!(world.root_scope().len(), 0, "no stale or swapped-in row");
 }
 
 #[test]

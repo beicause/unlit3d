@@ -1,9 +1,10 @@
 //! Deferred structural changes.
 //!
-//! A callback that only has a shared world cannot spawn or despawn directly --
+//! A caller with only a read-only scope cannot spawn or despawn directly --
 //! those need `&mut World`. Instead it queues the change on a [`Commands`]
-//! queue; the driver applies the queue with [`World::apply`] once the callback
-//! has returned.
+//! queue; the driver applies the queue with [`World::apply`] later. Lifecycle
+//! callbacks receive a mutable scope and change the tree directly, so they do
+//! not need this queue.
 //!
 //! A queue belongs to a scope: everything queued through it lands in that
 //! scope, and every command carries the scope it was queued from so that
@@ -74,8 +75,8 @@ impl<C: Command> CommandErase for C {
 
 /// A queue of structural changes, all of them in one scope.
 ///
-/// The queue lives in the world, so deferring a spawn from a callback to the
-/// driver needs no channel.
+/// The queue lives in the world, so a caller that can only queue a change
+/// needs no channel to the driver that applies it.
 #[derive(Clone, Copy)]
 pub struct Commands<'w> {
     world: &'w World,
@@ -136,10 +137,10 @@ impl<'w> Commands<'w> {
     /// Queue the despawn of `entity` and its subtree.
     ///
     /// A refusal is answered when the queue is applied, not when it is
-    /// filled: the queue is filled from a callback that holds a shared world
-    /// and has nobody to answer, and the scope it was filled from is the only
-    /// thing it can say about ownership. [`World::apply`] reports the first
-    /// refusal it meets and keeps going.
+    /// filled: the caller that fills the queue may have nobody to answer, and
+    /// the scope it was filled from is the only thing it can say about
+    /// ownership. [`World::apply`] reports the first refusal it meets and
+    /// keeps going.
     pub fn despawn(&self, entity: Entity) {
         self.push(Despawn {
             entity,

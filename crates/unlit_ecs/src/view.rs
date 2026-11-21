@@ -492,9 +492,20 @@ impl<'w> ScopeMut<'w> {
         self.scope
     }
 
-    /// The read-only form of this scope.
+    /// The read-only form of this scope: every [`Scope`] accessor, on the same
+    /// entity.
+    ///
+    /// This is the whole read-only surface, not a subset of it: whatever a
+    /// [`Scope`] can do, the returned value can do too, so no accessor is
+    /// mirrored here one by one.
+    ///
+    /// The return borrows `self`, which is what keeps the two from aliasing:
+    /// while the returned scope or a query holder taken through it is alive,
+    /// `self` is frozen, so no structural change can run beside the read. A
+    /// reused temporary is enough for a single call; binding the scope and
+    /// then spawning through `self` does not compile.
     #[must_use]
-    pub fn as_scope(&self) -> Scope<'_> {
+    pub fn readonly(&self) -> Scope<'_> {
         Scope::new(self.world, self.scope)
     }
 
@@ -591,7 +602,7 @@ impl<'w> ScopeMut<'w> {
     ///
     /// Answers what that does, as a [`Result`] instead of a panic.
     pub fn try_scope_mut(&mut self, scope: Entity) -> Result<ScopeMut<'_>, EntityAccessError> {
-        self.as_scope().location(scope)?;
+        self.readonly().location(scope)?;
         Ok(ScopeMut::new(self.world, scope))
     }
 

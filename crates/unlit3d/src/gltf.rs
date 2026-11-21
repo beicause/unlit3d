@@ -38,7 +38,7 @@
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
-//! let resources = gltf.insert_resources(source, &world.as_scope())?;
+//! let resources = gltf.insert_resources(source, &world.readonly())?;
 //! // The entities land where the document authored its nodes.
 //! let entities = gltf.spawn_default_scene(world, &resources)?;
 //! // ... render ...

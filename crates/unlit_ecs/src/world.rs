@@ -7,9 +7,9 @@
 //! a renderer or any other `!Send` state lives.
 //!
 //! Reading and writing components needs only `&World`. Structural changes --
-//! spawning and despawning -- need `&mut World`. A callback that only has a shared world can queue those
-//! changes instead with [`crate::Commands`] and apply them later with
-//! [`World::apply`].
+//! spawning and despawning -- need `&mut World`. A caller with only a read-only
+//! scope can queue those changes instead with [`crate::Commands`] and apply them
+//! later with [`World::apply`].
 //!
 //! Every entity lives in a scope, and a scope is another entity: the one the
 //! world's tree says it lives in. The world therefore holds a tree, and the
@@ -592,10 +592,15 @@ impl World {
 
     /// Run the despawn callbacks of `entity` and drop its row and handle.
     fn remove_entity(&mut self, entity: Entity) {
-        let Ok(location) = self.location(entity) else {
+        let Ok(_) = self.location(entity) else {
             return;
         };
         self.run_lifecycle::<crate::OnDespawn>(entity);
+        // The callback may have changed the tree, including despawning this
+        // entity itself. Re-check before touching a row that may be gone.
+        let Ok(location) = self.location(entity) else {
+            return;
+        };
         self.tree_mut().detach(entity);
         self.remove_row(location);
         self.free_entity(entity);
@@ -656,12 +661,12 @@ impl World {
         // SAFETY: `held` holds the world exclusively as a raw pointer for
         // exactly this borrow, which ends before the guard is dropped.
         let world = unsafe { &mut *held.world };
-        let scope = Scope::new(world, scope);
+        let mut scope = ScopeMut::new(world, scope);
         let callback = held
             .callback
             .as_mut()
             .expect("the guard holds the callback until it is dropped");
-        callback(&scope, entity);
+        callback(&mut scope, entity);
     }
 
     /// Move the callback of the lifecycle component `C` out of the entity's row.

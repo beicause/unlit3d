@@ -185,9 +185,13 @@ failed and still runs the ones behind it.
 that is not live, rather than an empty list that would read the same as a
 childless entity.
 
-**Where callbacks land.** A lifecycle callback receives the scope of the
-entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
-change the tree either — it queues that, the same way a read-only scope does.
+**Where callbacks land.** A lifecycle callback receives a mutable scope over
+the entity's parent, so an `OnSpawn` on a scene's child sees the scene and can
+change the tree directly: a spawn, despawn or relink it makes takes effect
+before the callback returns. Component queries go through [`ScopeMut::readonly`],
+which hands over the whole read-only surface; what it returns borrows the
+mutable scope, so while a holder from it is alive no structural change through
+that scope compiles.
 The callback is moved out of the row before it runs and put back after, so a
 callback that reaches for its own lifecycle component reads the row instead of
 tripping the borrow check; a callback that panics stays on the row it was
@@ -355,7 +359,7 @@ culled a scene into a list — so it can group them by archetype and resolve eac
 archetype's columns once for all of them instead of re-looking up every entity.
 
 A [`Commands`] queue exists because structural changes need `&mut World`: a
-callback that only holds a shared world queues a spawn or despawn instead, and
+caller holding only a read-only scope queues a spawn or despawn instead, and
 the driver applies it with [`World::apply`]. [`Commands::spawn`] reserves an
 [`Entity`] immediately, so the handle is usable — storable in a component,
 passable to another callback — before the queue is applied.
