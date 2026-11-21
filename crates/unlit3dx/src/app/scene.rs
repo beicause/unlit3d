@@ -211,10 +211,9 @@ impl Stepping {
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.
     ///
-    /// The count the stepper shares advances here, so the frame this step
-    /// produced is the one it is named by.
+    /// The count the stepper shares advances here, once every tick has run, so
+    /// the frame this step produced is the one it is named by.
     pub fn step(&mut self, host: &World, delta_seconds: f64) {
-        self.frames.advance();
         // Gameplay runs once per host frame with its measured duration: its
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
@@ -231,6 +230,7 @@ impl Stepping {
         }
         step_stepped_world(host, self.worlds.audio.entity, delta_seconds as f32)
             .expect("the stepped world starts");
+        self.frames.advance();
     }
 
     /// The audio frames this frame's duration asks for, carrying the fraction

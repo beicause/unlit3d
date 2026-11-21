@@ -67,7 +67,8 @@
 | 无响应                                                   | 宿主没起来（缺 DISPLAY 会 panic），或宿主没带 `--mcp-stdio`，或宿主没泵命令（无窗口宿主必须每轮调 `pump_mcp`）                 |
 | 发给 stepped world 的命令一直不回                        | 宿主没在泵，或没跑 `pump_mcp` 的 job 阶段；stepped world 的队列只在推进帧时被 drain                                        |
 | `the host has no exit request`                           | 该宿主没挂 `ExitRequest` 组件，`request_exit` 对它无效                                                                      |
-| `the host is not an interactive headless scene`          | `step_frames` / `scene_status` 只存在于 `unlit3dx_examples --headless --interactive --mcp-stdio`                                              |
+| `the host is not an interactive headless scene`          | 这条来自写捕获与 `scene_status`：它们只认 `unlit3dx_examples --headless --interactive --mcp-stdio` 这样的交互式无头宿主。`step_frames` 在客户端配速的窗口宿主上也管用 |
+| `the host paces its own frames and takes no stepping`    | 该宿主没带 `--interactive`：它自己推进帧，`step_frames` 无从插入。要客户端配速就加 `--interactive` 并配一个传输 |
 | `the world has no input writer`                          | 指名的 world 没挂 `InputWriter`；给玩法 world 发输入，不是 `Host`                                                          |
 | `failed to deserialize parameters: missing field 'target'` | `read_screenshot` / `save_screenshot` 必须点名纹理，没有默认目标 |
 | `resource id N is a texture no one can read back` | 那张纹理没带 `COPY_SRC`；用 `list_resources` 里 `label` 为 `scene color` 的那条，或 `scene_status` 的 `target` |

@@ -325,45 +325,43 @@ where
     let (sender, receiver) = async_channel::bounded::<McpCommand>(4);
     // A pump rather than a task per command: the sink is synchronous, and the
     // service would otherwise be blocked on it.
-    tokio::task::spawn_blocking(move || {
-        // A sink that panics unwinds the pump, which would end the one thread
-        // every tool call goes through. The panic is caught so the calls still
-        // queued are answered with what happened instead of being dropped as
-        // if the world thread had gone missing: they never reached a world.
-        //
-        // The call the sink was delivering when it panicked has no answer:
-        // the sink unwound mid-way, so what it guards is not promised to be
-        // usable again, and the pump stops rather than handing it more work.
-        let mut stopped = None;
-        while let Ok(command) = receiver.recv_blocking() {
-            let delivered =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(command)));
-            match delivered {
-                Ok(true) => {}
-                Ok(false) => {
-                    stopped = Some("the transport that delivers commands stopped".to_owned());
-                    break;
-                }
-                Err(payload) => {
-                    let message = format!(
-                        "the transport that delivers commands panicked: {}",
-                        panic_message(payload.as_ref())
-                    );
-                    log::error!("{message}");
-                    stopped = Some(message);
-                    break;
-                }
-            }
-        }
-        if let Some(message) = stopped {
-            while let Ok(command) = receiver.try_recv() {
-                command.fail(message.clone());
-            }
-        }
-    });
+    tokio::task::spawn_blocking(move || pump(receiver, sink));
     rmcp::serve_server(McpServer::new(sender), transport)
         .await
         .map_err(Box::new)
+}
+
+/// Hand every posted command to `sink` until it refuses one or panics.
+///
+/// A sink that panics unwinds this pump, which would end the one thread every
+/// tool call goes through. The panic is caught so the calls still queued are
+/// answered with what happened instead of being dropped as if the world thread
+/// had gone missing: they never reached a world.
+///
+/// The call the sink was delivering when it panicked has no answer: the sink
+/// unwound mid-way, so what it guards is not promised to be usable again, and
+/// the pump stops rather than handing it more work.
+fn pump(receiver: async_channel::Receiver<McpCommand>, sink: impl Fn(McpCommand) -> bool) {
+    let stopped = loop {
+        let Ok(command) = receiver.recv_blocking() else {
+            return;
+        };
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(command))) {
+            Ok(true) => {}
+            Ok(false) => break "the transport that delivers commands stopped".to_owned(),
+            Err(payload) => {
+                let message = format!(
+                    "the transport that delivers commands panicked: {}",
+                    panic_message(payload.as_ref())
+                );
+                log::error!("{message}");
+                break message;
+            }
+        }
+    };
+    while let Ok(command) = receiver.try_recv() {
+        command.fail(stopped.clone());
+    }
 }
 
 /// Which world a tool runs against.
@@ -492,6 +490,61 @@ mod tests {
         assert_eq!(into.map.len(), 1, "the second registration was dropped");
         let routed: &Tool = &into.map["read_texture"].attr;
         assert_eq!(routed.description.as_deref(), Some("a tool"));
+    }
+
+    /// A queue of `count` calls, and the receivers their answers arrive on.
+    fn queued(
+        count: usize,
+    ) -> (
+        async_channel::Receiver<super::McpCommand>,
+        Vec<async_channel::Receiver<Result<super::Output, String>>>,
+    ) {
+        let (sender, receiver) = async_channel::bounded(count.max(1));
+        let mut replies = Vec::new();
+        for _ in 0..count {
+            let (command, reply) =
+                super::McpCommand::new(|_world| unreachable!("the pump never runs a job"));
+            sender.try_send(command).expect("the queue takes the call");
+            replies.push(reply);
+        }
+        (receiver, replies)
+    }
+
+    #[test]
+    fn a_pump_whose_sink_panics_answers_the_calls_still_queued() {
+        // A sink that panics must not take the queued calls down with it:
+        // they never reached a world, and a client that heard nothing would
+        // read the silence as a hung host.
+        let (receiver, mut replies) = queued(3);
+        // The call the sink was handing over has no answer: the pump unwound
+        // in the middle of delivering it.
+        replies.remove(0);
+        super::pump(receiver, |_command| panic!("the sink panicked"));
+        for reply in replies {
+            let message = reply
+                .recv_blocking()
+                .expect("the pump answers the call")
+                .err()
+                .expect("the call never reached a world");
+            assert!(
+                message.starts_with("the transport that delivers commands panicked"),
+                "the answer says why the call stopped: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pump_whose_sink_stops_answers_the_calls_still_queued() {
+        let (receiver, replies) = queued(3);
+        super::pump(receiver, |_command| false);
+        for reply in replies.into_iter().skip(1) {
+            let message = reply
+                .recv_blocking()
+                .expect("the pump answers the call")
+                .err()
+                .expect("the call never reached a world");
+            assert_eq!(message, "the transport that delivers commands stopped");
+        }
     }
 
     #[test]

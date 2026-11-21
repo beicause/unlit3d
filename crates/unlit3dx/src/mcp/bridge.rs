@@ -55,13 +55,50 @@ impl InboxWake {
     }
 }
 
+/// The wake every transport serving one host rings.
+///
+/// One per host rather than one per transport: a host wakes on whichever of
+/// its transports posted, so a second transport's command does not wait out
+/// the poll timeout behind a wake nobody rang.
+#[derive(Clone)]
+struct HostWake(InboxWake);
+
+/// The host's wake, made on first use and shared by every transport after.
+fn host_wake(world: &mut World) -> InboxWake {
+    let existing = world
+        .root_scope()
+        .query::<&HostWake>()
+        .iter()
+        .next()
+        .map(|wake| wake.0.clone());
+    if let Some(wake) = existing {
+        return wake;
+    }
+    let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+    world
+        .root_scope_mut()
+        .spawn(bundle![HostWake(wake.clone())]);
+    wake
+}
+
 /// The handle that wakes a host waiting for its transports, when it has one.
 ///
 /// A host with no transport wired in has nothing to wait on, and its caller
 /// falls back to polling.
 pub(crate) fn inbox_wake(world: &World) -> Option<InboxWake> {
-    let mut inboxes = world.root_scope().query::<&McpInbox>();
-    inboxes.iter().next().map(|inbox| inbox.wake.clone())
+    world
+        .root_scope()
+        .query::<&McpInbox>()
+        .iter()
+        .next()
+        .and_then(|_| {
+            world
+                .root_scope()
+                .query::<&HostWake>()
+                .iter()
+                .next()
+                .map(|wake| wake.0.clone())
+        })
 }
 
 /// The commands the transport thread has posted for the host to run.
@@ -71,8 +108,6 @@ pub(crate) fn inbox_wake(world: &World) -> Option<InboxWake> {
 #[derive(Clone)]
 struct McpInbox {
     receiver: Arc<Receiver<McpCommand>>,
-    /// Ring so a host waiting for a command stops waiting.
-    wake: InboxWake,
 }
 
 impl Bundle for McpInbox {
@@ -87,7 +122,7 @@ impl Bundle for McpInbox {
 /// inbox behaviour drains whatever arrives every turn of the event loop.
 pub fn serve_mcp(world: &mut World) {
     let (sender, receiver) = unbounded::<McpCommand>();
-    let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+    let wake = host_wake(world);
     let ring = wake.clone();
     let started = std::thread::Builder::new()
         .name("unlit3dx-mcp-transport".to_owned())
@@ -114,7 +149,6 @@ pub fn serve_mcp(world: &mut World) {
         Ok(_) => {
             world.root_scope_mut().spawn(McpInbox {
                 receiver: Arc::new(receiver),
-                wake,
             });
         }
         Err(error) => log::error!("the MCP transport thread failed to start: {error}"),
@@ -136,7 +170,7 @@ pub fn serve_mcp(world: &mut World) {
 #[cfg(feature = "mcp-http")]
 pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr, String> {
     let (sender, receiver) = unbounded::<McpCommand>();
-    let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+    let wake = host_wake(world);
     let ring = wake.clone();
     let sink = move |command| match sender.try_send(command) {
         Ok(()) => {
@@ -152,7 +186,6 @@ pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr,
     let bound = server.local_addr();
     world.root_scope_mut().spawn(McpInbox {
         receiver: Arc::new(receiver),
-        wake,
     });
     // The handle is the component that keeps the server alive: the world
     // dropping it stops the transport.
@@ -347,12 +380,33 @@ mod tests {
     fn host_with_wake() -> (World, async_channel::Sender<McpCommand>, InboxWake) {
         let mut host = World::new();
         let (sender, receiver) = unbounded::<McpCommand>();
-        let wake = InboxWake(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+        let wake = host_wake(&mut host);
         host.root_scope_mut().spawn(McpInbox {
             receiver: Arc::new(receiver),
-            wake: wake.clone(),
         });
         (host, sender, wake)
+    }
+
+    /// Two transports serving one host ring the same wake, so a command on
+    /// either ends the host's wait instead of waiting out the poll timeout.
+    #[test]
+    fn every_transport_of_one_host_rings_the_same_wake() {
+        let mut host = World::new();
+        let first = host_wake(&mut host);
+        let second = host_wake(&mut host);
+        let waiter = std::thread::spawn(move || {
+            let start = Instant::now();
+            second.wait(Duration::from_secs(30));
+            start.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        // The first transport posts, and rings the handle it holds.
+        first.wake();
+        let waited = waiter.join().expect("the waiter survives");
+        assert!(
+            waited < Duration::from_secs(5),
+            "a post on one transport ends a wait on another: {waited:?}"
+        );
     }
 
     /// A waited turn ends as soon as a transport posts, rather than at its

@@ -50,7 +50,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 - **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：`neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.` 要完全无窗口就用 `unlit3dx_examples --headless --interactive --mcp-stdio`，它不建 winit 事件循环。
 - **`--mcp-stdio` 与 `--mcp-http` 会改变渲染路径**：带任一开关时场景自己的 pass 画进常驻纹理（`PresentationPath::Intermediate`），同一个 world 里再加一个 blit pass 把结果贴到交换链。world 数量不变，只是多一个 `FramePass` 实体。不改这条路径的话，MCP 截图拿不到画面——交换链图像不是资源图节点。
-- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"frame": n}`（跑过这些步之后 run 走到的帧数，与无头那条路径同一个计数），而 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主的帧与音频世界要问 `frame_clock` 与 `list_resources`。`--interactive` 要生效必须搭配一个传输：没有传输时客户端到不了，运行会打一条 warn 说明该开关不生效、然后自己配速，而不是拒绝启动。
+- **节奏轴独立于传输轴**：不带 `--interactive`，宿主自己推进时间，MCP 只是观察与注入（无头自驱运行在帧与帧之间泵命令；窗口宿主本来就这样）；带 `--interactive`，时间只随 `step_frames` 前进。无头下它建 Interactive 宿主；窗口下它关掉自动步进、强制 stepped 世界（自成线程的世界无法被客户端拦住），`step_frames` 通过 host world 里的 `ClientPacing` 组件（携带 `Stepping`，公开的「我这个宿主由客户端配速」契约）推进场景，返回 `{"frame": n, "stepped": k}`——`frame` 是跑过这些步之后 run 走到的帧数（两条路径同一个计数），`stepped` 是这次真的推进了几帧。给了 `--max-frames` 时步数会被截到预算末尾，所以 `stepped` 可能小于请求的 `frames`：`k` 的小于请求值是预算用尽，不是命令丢了，而 `scene_status` 这类只认交互式无头宿主的工具会报错——窗口宿主的帧与音频世界要问 `frame_clock` 与 `list_resources`。`--interactive` 要生效必须搭配一个传输：没有传输时客户端到不了，运行会打一条 warn 说明该开关不生效、然后自己配速，而不是拒绝启动。
 - **截图只能读到常驻纹理，且 `target` 必填**：`read_screenshot` / `save_screenshot` 按资源 id 从资源图里取 `COPY_SRC` 纹理。离屏目标/中间纹理由 `PersistentTarget` 建，创建时就带 `COPY_SRC | TEXTURE_BINDING`，所以离屏目标与中间纹理天然可读；`PresentationPath::Surface` 没有可读纹理，只能改造场景或换 `Intermediate`。`target` 既可以给纹理的 id，也可以给它任意一个 view 的 id（画进离屏目标的 pass 手里通常只有 view）。服务器不再替你挑：一个 world 里有几张可读纹理时，「哪张是本帧」只有建它的人知道，猜出来的图可能不是你要的那一帧。`PersistentTarget` 建的纹理带 `label`（缺省是 `scene color`），在 `list_resources` 里按它找就是本帧落点；`scene_status` 的 `target` 也是同一个 id。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是 `async_channel`。
@@ -168,7 +168,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 | 工具            | 作用                                                             | 关键参数        |
 | --------------- | ---------------------------------------------------------------- | --------------- |
-| `step_frames`    | 按固定 60 Hz 帧推进场景                                          | `frames`（≥1）  |
+| `step_frames`    | 按固定 60 Hz 帧推进场景，到预算末尾为止                          | `frames`（≥1）  |
 | `scene_status`   | 报告帧号、world 与纹理 id（库提供的那一半）                      | 无              |
 
 `scene_status` 由库提供，字段只有 `frame`、`render_world`、`audio_world`、`target`（离屏纹理的 `ResId` bits，可直接当 `read_texture_as_image` 的 `id` 与 `save_screenshot` 的 `target`；同一张纹理在 `list_resources` 里带 `label` `scene color`，两者是同一个 id）。场景自己的状态——球数、MIDI 序列、各按钮中心——由**示例**注册的 `scene_extra_status` 报：`balls`、`sequence_paused`、`sequence_time`、`sequence_finished`、`buttons`（`{"按钮标签": [中心 x, 中心 y]}`）。两个工具分开调，别指望 `scene_status` 里有按钮坐标。

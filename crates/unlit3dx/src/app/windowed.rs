@@ -34,6 +34,7 @@ use super::capture::Capture;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use super::capture::capture_presented;
 use super::headless::RENDER_COMMAND_CAPACITY;
+use super::pace::Pacing;
 #[cfg(all(
     feature = "mcp",
     not(target_arch = "wasm32"),
@@ -183,6 +184,29 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     // behaviours that spend a budget and keep a capture count the same frames
     // the scene does.
     let frames = RunFrames::default();
+    // The host carries the count as a component as well as handing clones to
+    // the behaviours: the MCP tools read it out of the host world, which is
+    // the only world they see.
+    world.root_scope_mut().spawn(bundle![frames.clone()]);
+    // Whether a client paces the run. Parking the stepper is what lets one
+    // step the scene, and only a build with the tools has a client to hand
+    // it to: without one the switch would park the run with nothing left to
+    // unpark it, so the frame behaviour paces the run instead.
+    let parked = options.interactive
+        && cfg!(all(
+            feature = "mcp",
+            not(target_arch = "wasm32"),
+            not(target_os = "android")
+        ))
+        && (options.mcp_stdio || options.mcp_http_addr.is_some());
+    // The pacing is a component of the host rather than an argument of the
+    // frame loop, because the stepping tool reads it to answer how far the
+    // run may still go: a client that asks for more frames than the budget
+    // has left is served up to the end of the run, not past it.
+    world.root_scope_mut().spawn(bundle![Pacing {
+        client: parked,
+        frames: options.max_frames,
+    }]);
     // The stepped worlds run before the draw, so the transforms they publish
     // are the ones this frame shows. The two pacing paths are exclusive: a
     // client-paced run parks its stepper in the host world, where the MCP
@@ -192,17 +216,6 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     if stepped {
         let stepper = Stepping::new(worlds, A::PHYSICS_HZ, None, frames.clone());
         let stepper = Arc::new(Mutex::new(stepper));
-        // Parking the stepper is what lets a client step the scene, and
-        // only a build with the tools has a client to hand it to: without
-        // one the switch would park the run with nothing left to unpark it,
-        // so the frame behaviour paces the run instead.
-        let parked = options.interactive
-            && cfg!(all(
-                feature = "mcp",
-                not(target_arch = "wasm32"),
-                not(target_os = "android")
-            ))
-            && (options.mcp_stdio || options.mcp_http_addr.is_some());
         if parked {
             #[cfg(all(
                 feature = "mcp",

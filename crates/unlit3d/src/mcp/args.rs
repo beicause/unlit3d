@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use unlit_ecs::mcp::WorldRef;
 use unlit_ecs::mcp::serde_json::Value;
+
 /// Which world and render context a GPU tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

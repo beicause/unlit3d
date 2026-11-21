@@ -209,8 +209,10 @@ pub(crate) enum CaptureError {
 /// drawing the scene a second time. The target is the one labelled
 /// [`SCENE_COLOR_LABEL`](unlit3d::offscreen::SCENE_COLOR_LABEL), which is how
 /// the capture names the picture without depending on the presenter that drew
-/// it: a frame can be captured as soon as the target exists, and a host that
-/// carries more than one argument about which presenter is first.
+/// it: a frame can be captured as soon as the target exists, whichever
+/// presentation path drew it, and a host that presents through more than one
+/// target names the one it means by its label rather than by the order the
+/// behaviours were spawned in.
 ///
 /// `frames` is how the behaviour knows which frame it is looking at: the run
 /// advances the count once per frame it actually drew, so the frame a capture

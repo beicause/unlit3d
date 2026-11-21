@@ -5,7 +5,7 @@
 //! reads frames back, or an MCP host that does the same over a process
 //! boundary. The GPU is injected, the way the headless run takes one.
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, World, bundle};
 use unlit_wgpu::context::RenderDevice;
 use unlit_wgpu::readback::try_readback_texture;
 use unlit_wgpu::resources::ResHandle;
@@ -342,8 +342,12 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interact
         .expect("the offscreen target binds")
     };
     // The count the run's length is read from. Nothing else advances it
-    // here: the stepper is this run's only driver.
+    // here: the stepper is this run's only driver. It is spawned into the
+    // host world as well as held by the stepper, because the tools that read
+    // it — the budget, the capture, the report of frames a capture never
+    // reached — see the host world, not the stepper.
     let frames = RunFrames::default();
+    host.root_scope_mut().spawn(bundle![frames.clone()]);
     let interactive = Interactive {
         stepper: Stepping::new(
             worlds.clone(),
