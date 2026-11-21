@@ -275,6 +275,14 @@ mod tests {
 
     /// Reaching a server under an address other than the loopback names it is
     /// bound to works: the guard admits the address, not just `localhost`.
+    // macOS only binds 127.0.0.1 out of the loopback block, so the alias this
+    // test uses cannot be bound there. The Host-guard rule it exercises is
+    // covered by a_bound_address_is_one_of_the_names_it_answers_to on every
+    // platform.
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS does not bind 127.0.0.2 loopback aliases"
+    )]
     #[tokio::test]
     async fn a_client_reaches_a_server_bound_to_another_loopback_address() {
         // 127.0.0.2 is on the loopback interface but is not one of the names

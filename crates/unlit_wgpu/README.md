@@ -178,6 +178,7 @@ impl Example {
             base_color_texture: true,
             morph: false,
             strip_index_format: None,
+            reversed_winding: false,
         };
         let pipeline = SpecializedPipeline::create(device, variant.clone(), &mut ShaderCache::new());
 
