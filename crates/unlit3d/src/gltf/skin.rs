@@ -78,6 +78,22 @@ impl LitGltf {
         SkinPose { matrices: poses }
     }
 
+    /// Whether a node's skin mirrors the geometry it deforms, relative to the
+    /// node's own transform.
+    ///
+    /// A skinned vertex goes through the pose — which cancels the mesh node's
+    /// own transform out of the joint matrices — and then through the entity's
+    /// transform, so the winding the rasterizer has to use is stated by the
+    /// skeleton node's scale against the mesh node's, following the
+    /// specification's rule for what decides a skinned primitive's winding.
+    /// A caller's placement multiplies both nodes alike and cancels.
+    pub(super) fn skin_mirrored(&self, node: usize) -> bool {
+        let Some(reference) = self.skin_reference[node] else {
+            return false;
+        };
+        let mirrored = |matrix: glam::Mat4| matrix.determinant() < 0.0;
+        mirrored(self.node_matrices[node]) != mirrored(self.node_matrices[reference])
+    }
     /// Whether a node's skin deformed this frame, given which nodes moved.
     ///
     /// A pose depends on the mesh node's world matrix and on every joint's, so

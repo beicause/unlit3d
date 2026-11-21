@@ -43,7 +43,10 @@ impl Bundle for Instance {
             InstanceColor::new(self.tint),
             self.mesh,
             self.pipeline,
-            SkinBinding { pose: self.pose },
+            SkinBinding {
+                pose: self.pose,
+                mirrored: false,
+            },
             MorphBinding {
                 weights: self.weights
             },

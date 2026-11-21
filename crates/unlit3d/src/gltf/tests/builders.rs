@@ -25,6 +25,42 @@ pub(super) fn skinned_document_with(
     joints: usize,
     inverse_binds: usize,
 ) -> Vec<u8> {
+    // Joint `i` sits `i` units further along x, so the pose of each is
+    // distinguishable from its neighbour.
+    let (y, z) = (translation[1], translation[2]);
+    let joint_nodes: Vec<String> = (0..joints)
+        .map(|joint| {
+            let x = translation[0] + joint as f32;
+            format!(r#"{{"name":"joint","translation":[{x},{y},{z}]}}"#)
+        })
+        .collect();
+    let joint_list: Vec<String> = (1..=joints).map(|joint| joint.to_string()).collect();
+    let nodes = format!(r#"{{"mesh":0,"skin":0}},{}"#, joint_nodes.join(", "));
+    skinned_glb(&nodes, "0", &joint_list.join(","), inverse_binds)
+}
+
+/// A GLB holding one skinned triangle whose skin has two joints, both children
+/// of a node that is not itself a joint.
+///
+/// The skin states no `skeleton`, so the winding of the primitive it poses is
+/// decided by the joints' lowest common ancestor — the rig node — rather than
+/// by either joint or by the node that draws the mesh. The rig is drawn by no
+/// primitive; it exists to hold the joints.
+pub(super) fn rigged_skinned_document(mesh_scale: [f32; 3], rig_scale: [f32; 3]) -> Vec<u8> {
+    let nodes = format!(
+        r#"{{"mesh":0,"skin":0,"scale":[{},{},{}]}},
+           {{"name":"joint","translation":[1.0,0.0,0.0]}},
+           {{"name":"joint","translation":[0.0,1.0,0.0]}},
+           {{"name":"rig","scale":[{},{},{}],"children":[1,2]}}"#,
+        mesh_scale[0], mesh_scale[1], mesh_scale[2], rig_scale[0], rig_scale[1], rig_scale[2],
+    );
+    skinned_glb(&nodes, "0, 3", "1,2", 2)
+}
+
+/// The skinned triangle every skin document draws, with the parts that differ
+/// between them passed in: the whole `nodes` array, the nodes the scene roots
+/// at, the joints the skin names and how many inverse bind matrices it states.
+fn skinned_glb(nodes: &str, roots: &str, joints: &str, inverse_binds: usize) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
 
@@ -46,22 +82,12 @@ pub(super) fn skinned_document_with(
     let index_view = add_view(&mut bin, &mut views, &bytes(&TRIANGLE_INDICES), Some(34963));
     pad(&mut bin);
 
-    // Joint `i` sits `i` units further along x, so the pose of each is
-    // distinguishable from its neighbour.
-    let (y, z) = (translation[1], translation[2]);
-    let joint_nodes: Vec<String> = (0..joints)
-        .map(|joint| {
-            let x = translation[0] + joint as f32;
-            format!(r#"{{"name":"joint","translation":[{x},{y},{z}]}}"#)
-        })
-        .collect();
-    let joint_indices: Vec<String> = (1..=joints).map(|joint| joint.to_string()).collect();
     let json = format!(
         r#"{{"asset":{{"version":"2.0"}},
             "scene":0,
-            "scenes":[{{"nodes":[0]}}],
-            "nodes":[{{"mesh":0,"skin":0}},{}],
-            "skins":[{{"joints":[{}],"inverseBindMatrices":3}}],
+            "scenes":[{{"nodes":[{roots}]}}],
+            "nodes":[{nodes}],
+            "skins":[{{"joints":[{joints}],"inverseBindMatrices":3}}],
             "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},
                                         "indices":4}}]}}],
             "accessors":[{{"bufferView":{position_view},"componentType":5126,"count":3,
@@ -72,8 +98,6 @@ pub(super) fn skinned_document_with(
                          {{"bufferView":{index_view},"componentType":5123,"count":3,"type":"SCALAR"}}],
             "bufferViews":[{}],
             "buffers":[{{"byteLength":{}}}]}}"#,
-        joint_nodes.join(", "),
-        joint_indices.join(","),
         views.join(", "),
         bin.len(),
     );

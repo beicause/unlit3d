@@ -111,6 +111,81 @@ pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
         .collect()
 }
 
+/// The node whose global transform decides the winding of each node's skinned
+/// primitives, indexed by node index; `None` for a node without a skin.
+///
+/// The specification defines it as the skin's `skeleton` node when the document
+/// states one and as the lowest common ancestor of the skin's joint nodes
+/// otherwise. A skin with no joints gets itself, whose transform is the
+/// identity, so its primitives wind as the rest of the document does.
+pub(super) fn skin_reference_nodes(
+    document: &gltf::Document,
+    parents: &[Option<usize>],
+) -> Vec<Option<usize>> {
+    let depths = node_depths(parents);
+    document
+        .nodes()
+        .map(|node| {
+            let skin = node.skin()?;
+            if let Some(skeleton) = skin.skeleton() {
+                return Some(skeleton.index());
+            }
+            let mut joints = skin.joints();
+            let first = joints.next()?.index();
+            Some(joints.fold(first, |ancestor, joint| {
+                lowest_common_ancestor(ancestor, joint.index(), parents, &depths)
+            }))
+        })
+        .collect()
+}
+
+/// How far every node sits below its root, indexed by node index.
+fn node_depths(parents: &[Option<usize>]) -> Vec<usize> {
+    (0..parents.len())
+        .map(|node| {
+            let mut depth = 0;
+            let mut current = node;
+            while let Some(parent) = parents[current] {
+                current = parent;
+                depth += 1;
+            }
+            depth
+        })
+        .collect()
+}
+
+/// The deepest node both `a` and `b` descend from.
+///
+/// The climb is bounded by the two depths, so a children list that states a
+/// cycle — which nothing validates against — terminates at the highest node it
+/// reaches instead of looping.
+fn lowest_common_ancestor(
+    mut a: usize,
+    mut b: usize,
+    parents: &[Option<usize>],
+    depths: &[usize],
+) -> usize {
+    // Everything below the shallower node is out of reach of the other, so the
+    // climb never needs more steps than that depth.
+    let bound = depths[a].min(depths[b]);
+    let mut steps = depths[a].saturating_sub(bound);
+    while steps > 0 {
+        a = parents[a].unwrap_or(a);
+        steps -= 1;
+    }
+    steps = depths[b].saturating_sub(bound);
+    while steps > 0 {
+        b = parents[b].unwrap_or(b);
+        steps -= 1;
+    }
+    let mut steps = bound;
+    while a != b && steps > 0 {
+        a = parents[a].unwrap_or(a);
+        b = parents[b].unwrap_or(b);
+        steps -= 1;
+    }
+    a
+}
 /// Where each mesh's first primitive sits in a document-mesh-major primitive
 /// list, indexed by mesh index; one past the last primitive for the last mesh.
 ///

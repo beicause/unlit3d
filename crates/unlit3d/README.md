@@ -855,7 +855,12 @@ world you already render:
   the frame draws the entity with — not from the key the mesh was uploaded
   with — so a `Transform` a caller or a clip turns negative mid-frame flips the
   winding with it; a `doubleSided` material needs no flip because it culls
-  nothing.
+  nothing. A skinned mesh is the exception the pose makes: the joint matrices
+  cancel the drawn node's own transform out of every vertex, so the sign comes
+  from the node the skin names — its `skeleton`, or the joints' lowest common
+  ancestor when it states none — and the spawn records that sign against the
+  drawn node's own. A mirrored rig therefore flips a skinned mesh's winding even
+  though its node is plain, and a mirrored node winds as its rig does.
 - The UV stream is the `TEXCOORD_n` set the material's base-color texture
   names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
   primitive whose material names a set it does not carry draws untextured

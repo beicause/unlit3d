@@ -213,7 +213,7 @@
 
 ## glTF
 
-`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**不收放置参数**：实体变换就是节点自身的世界变换，要放置就自己逐实体前乘 `Transform::from_matrix(placement.compute_matrix() * current.compute_matrix())`）、`apply_animation`（第五个参数是调用方持有的 `gltf::AnimationPlayer`，它存放采样缓冲，跨帧复用；只写文档自身的变换，因此会覆写调用方放在被驱动节点上的放置）/ `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死。
+`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**不收放置参数**：实体变换就是节点自身的世界变换，要放置就自己逐实体前乘 `Transform::from_matrix(placement.compute_matrix() * current.compute_matrix())`）、`apply_animation`（第五个参数是调用方持有的 `gltf::AnimationPlayer`，它存放采样缓冲，跨帧复用；只写文档自身的变换，因此会覆写调用方放在被驱动节点上的放置）/ `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死；蒙皮网格例外，姿态把绘制节点自身的变换从顶点里抵掉，符号取自 skin 的 `skeleton` 节点（未声明则关节最低公共祖先），spawn 时记进 `SkinBinding::mirrored`。
 
 ## 常用常量
 

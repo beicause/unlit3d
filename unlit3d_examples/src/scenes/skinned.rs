@@ -54,7 +54,10 @@ impl Bundle for SkinnedCube {
             InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
             self.mesh,
             self.pipeline,
-            SkinBinding { pose: self.pose },
+            SkinBinding {
+                pose: self.pose,
+                mirrored: false,
+            },
         ]
     }
 }

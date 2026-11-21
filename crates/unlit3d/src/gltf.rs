@@ -40,7 +40,7 @@
 //! let gltf = LitGltf::load("model.glb")?;
 //! let resources = gltf.insert_resources(source, &world.as_scope())?;
 //! // The entities land where the document authored its nodes.
-//! let entities = gltf.spawn_default_scene(world, &resources);
+//! let entities = gltf.spawn_default_scene(world, &resources)?;
 //! // ... render ...
 //! // Giving the handles up makes their resources collectable.
 //! drop(resources);
@@ -147,7 +147,10 @@
 //! geometry. A `LINE_STRIP` or `TRIANGLE_STRIP` reaches the rasterizer
 //! untouched. An instance whose composed transform has a negative determinant
 //! draws with the reversed winding the specification gives it, so a negative
-//! scale mirrors the geometry instead of turning it inside out.
+//! scale mirrors the geometry instead of turning it inside out. A skinned
+//! primitive takes its sign from the skin's skeleton node — or from the joints'
+//! lowest common ancestor — because the pose cancels the drawn node's own
+//! transform out of every vertex.
 //! Every primitive uploads its positions; its indices, `COLOR_0` and normals
 //! when the document declares them; UVs only when it samples a base-color
 //! texture, so a mesh that samples nothing carries no unused channel; and its
@@ -200,7 +203,7 @@ mod upload;
 
 use self::scene::{
     first_primitives, node_children, node_locals, node_order, node_parents, node_world_matrices,
-    nodes_morph_targets,
+    nodes_morph_targets, skin_reference_nodes,
 };
 
 /// Everything that can stop a load, a spawn or an animation of a glTF document.
@@ -352,6 +355,15 @@ pub struct LitGltf {
     /// to slice its values; keeping the count is what lets it read a node's
     /// targets without building the node's weight vector.
     morph_targets: Vec<usize>,
+    /// The node whose global transform decides the winding of each node's
+    /// skinned primitives, indexed by node index; `None` for a node with no
+    /// skin.
+    ///
+    /// The specification states it as the skin's `skeleton` node, or the
+    /// lowest common ancestor of its joints when the document names none. A
+    /// spawn compares it against the mesh node's own transform to get the
+    /// mirror a skinned draw starts from.
+    skin_reference: Vec<Option<usize>>,
     /// Where each mesh's first primitive sits in a document-mesh-major
     /// primitive list, indexed by mesh index; one past the last primitive for
     /// the last mesh.
@@ -590,6 +602,7 @@ impl LitGltf {
         let node_matrices = node_world_matrices(&document, &parents, &order);
         let morph_targets = nodes_morph_targets(&document);
         let first_primitive = first_primitives(&document);
+        let skin_reference = skin_reference_nodes(&document, &parents);
         let matrix_nodes = document
             .nodes()
             .map(|node| matches!(node.transform(), gltf::scene::Transform::Matrix { .. }))
@@ -608,6 +621,7 @@ impl LitGltf {
             order,
             morph_targets,
             first_primitive,
+            skin_reference,
             matrix_nodes,
             clips,
             mips: MipChain::default(),

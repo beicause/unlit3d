@@ -118,7 +118,10 @@ impl LitGltf {
                             bundle![self.skin_pose(NodeId::new(index))],
                         )
                     });
-                    SkinBinding { pose }
+                    SkinBinding {
+                        pose,
+                        mirrored: self.skin_mirrored(index),
+                    }
                 });
                 let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
