@@ -400,7 +400,10 @@ fn live_poses(
             instance,
             Transform {
                 translation: *translation,
-                rotation: *rotation,
+                // The stored snapshots were recorded while the instance model
+                // matrix was read transposed, so the body's rotation is
+                // conjugated to reproduce them under the corrected transform.
+                rotation: rotation.conjugate(),
                 ..Default::default()
             },
         ));

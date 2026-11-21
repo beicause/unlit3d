@@ -34,7 +34,7 @@ pub(super) async fn instanced_cubes_match_snapshot() {
         (0.9, 0.4, [0.4, 0.5, 1.0, 1.0]),
     ]
     .into_iter()
-    .map(|(x, z, color)| placed(0.55, 0.6, glam::Vec3::new(x, 0.0, z), color))
+    .map(|(x, z, color)| placed(0.55, -0.6, glam::Vec3::new(x, 0.0, z), color))
     .collect();
 
     let frame = render(&ctx, &fixture, &instances).await;
@@ -223,7 +223,7 @@ pub(super) async fn textured_cube_matches_snapshot() {
         false,
     );
     let fixture = fixture(&ctx, &variant, 4);
-    let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
+    let instance = placed(0.8, -0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
     let frame = render(&ctx, &fixture, &[instance]).await;
     assert_image_snapshot_with_tolerance(
         snapshot!("lit_cube_textured.webp"),

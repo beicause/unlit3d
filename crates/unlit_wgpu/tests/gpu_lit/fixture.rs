@@ -539,8 +539,12 @@ pub(super) async fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshI
 }
 
 /// The cube's default placement in every test: scaled, Y-rotated, raised.
+///
+/// The stored snapshots were recorded while the instance model matrix was
+/// read transposed, so the authored angle is negated to reproduce them under
+/// the corrected column-major transform.
 pub(super) fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
-    placed(0.7, 0.6, glam::Vec3::new(0.0, 0.2, 0.0), base_color)
+    placed(0.7, -0.6, glam::Vec3::new(0.0, 0.2, 0.0), base_color)
 }
 
 /// A variant built for the test's render target from `options` and the draw
