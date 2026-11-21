@@ -204,10 +204,12 @@ that scope compiles.
 A despawn callback that spawns under the entity being removed does not save
 what it spawns: the row holds until it has no children, so the sweep comes back
 for them.
-The callback is moved out of the row before it runs and put back after, so a
-callback that reaches for its own lifecycle component reads the row instead of
-tripping the borrow check; a callback that panics stays on the row it was
-spawned with.
+The callback is off the row while it runs, so a callback that reaches for its
+own lifecycle component reads a row without one rather than one its own run
+holds open. What the row carries afterwards is what the run left there: a
+replacement the callback wrote stays, and a callback that wrote nothing -- or
+wrote `None`, which reads the same as having no callback -- gets its own back,
+so the next structural change on that entity still runs it.
 
 **Cost.** Whether a query row is visible costs one array read: an archetype
 records the scope of every row beside its entities, so filtering never walks the

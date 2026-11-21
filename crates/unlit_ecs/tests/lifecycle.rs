@@ -332,3 +332,54 @@ fn a_queued_spawn_into_a_scope_that_is_gone_is_refused() {
     assert!(world.release_entity(late), "the handle is still reserved");
     crate::scope::assert_invariants(&world);
 }
+
+#[test]
+fn a_callback_that_writes_a_replacement_keeps_it() {
+    let mut world = World::new();
+    let runs = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    // The first run writes a replacement and then panics, so the row survives
+    // the cascade with the replacement on it. A second despawn is what tells
+    // the two callbacks apart.
+    let (writer, replacement) = (Rc::clone(&runs), Rc::clone(&runs));
+    let entity = world.root_scope_mut().spawn(bundle![
+        Marker(1),
+        OnDespawn::new(move |scope, me| {
+            writer.borrow_mut().push("first");
+            let replacement = Rc::clone(&replacement);
+            let mut holder = scope.readonly().query_one::<&mut OnDespawn>(me);
+            *holder.get() = OnDespawn::new(move |_scope, _me| {
+                replacement.borrow_mut().push("second");
+            });
+            panic!("first run");
+        }),
+    ]);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = world.root_scope_mut().despawn(entity);
+    }));
+    assert!(caught.is_err(), "the panic reaches the caller");
+    world.root_scope_mut().despawn(entity).unwrap();
+    assert_eq!(
+        *runs.borrow(),
+        ["first", "second"],
+        "the replacement the callback wrote is what ran next"
+    );
+}
+
+#[test]
+fn a_callback_that_clears_its_own_component_gets_it_back() {
+    let mut world = World::new();
+    // A spawn callback runs while its row is alive, so what the row carries
+    // afterwards is what the run left on it.
+    let entity = world.root_scope_mut().spawn(bundle![
+        Marker(1),
+        OnSpawn::new(|scope, me| {
+            let mut holder = scope.readonly().query_one::<&mut OnSpawn>(me);
+            *holder.get() = OnSpawn(None);
+        }),
+    ]);
+    let mut holder = world.root_scope().query_one::<&OnSpawn>(entity);
+    assert!(
+        holder.get().0.is_some(),
+        "clearing the row mid-run does not leave it without a callback"
+    );
+}

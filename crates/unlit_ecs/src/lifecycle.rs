@@ -11,9 +11,15 @@
 //! world's structure directly: spawning, despawning and relinking all take
 //! effect before the callback returns. Component queries go through
 //! [`ScopeMut::readonly`], whose result borrows the mutable scope for as long as
-//! it is held. The callback is taken out of the entity's row for the run and put
-//! back after, so a callback that reaches for its own lifecycle component reads
-//! the row rather than finding it held open by its own run.
+//! it is held.
+//!
+//! The callback is moved out of the entity's row for the run, so the row carries
+//! no callback while it runs and a callback that reaches for its own lifecycle
+//! component reaches a row rather than one held open by its own run. It is put
+//! back afterwards unless the row has a callback again by then: a callback that
+//! writes a replacement keeps it, and one that writes `None` cannot be told
+//! apart from one that wrote nothing, so `None` gets the callback it was
+//! spawned with.
 
 use crate::entity::Entity;
 use crate::view::ScopeMut;
@@ -26,8 +32,9 @@ macro_rules! lifecycle_component {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
         pub struct $name(
-            /// The callback, run at the structural change.
-            pub LifecycleCallback,
+            /// The callback, run at the structural change, or `None` while it
+            /// runs and for an entity that carries no callback.
+            pub Option<LifecycleCallback>,
         );
 
         impl $name {
@@ -36,17 +43,17 @@ macro_rules! lifecycle_component {
             pub fn new(
                 callback: impl for<'a, 'b> FnMut(&'a mut ScopeMut<'b>, Entity) + 'static,
             ) -> Self {
-                Self(Box::new(callback))
+                Self(Some(Box::new(callback)))
             }
         }
 
         impl $crate::lifecycle::Lifecycle for $name {
-            fn take(&mut self) -> LifecycleCallback {
-                core::mem::replace(&mut self.0, Box::new(|_, _| {}))
+            fn take(&mut self) -> Option<LifecycleCallback> {
+                self.0.take()
             }
 
             fn restore(&mut self, callback: LifecycleCallback) {
-                self.0 = callback;
+                self.0.get_or_insert(callback);
             }
         }
     };
@@ -67,10 +74,11 @@ lifecycle_component!(
 /// sealed: the world only knows how to run [`OnSpawn`] and [`OnDespawn`], so
 /// implementing it elsewhere would not make anything run.
 pub trait Lifecycle: 'static + sealed::Sealed {
-    /// Take the callback out, leaving a placeholder in its place.
-    fn take(&mut self) -> LifecycleCallback;
+    /// Take the callback out, leaving [`None`] in its place.
+    fn take(&mut self) -> Option<LifecycleCallback>;
 
-    /// Put a callback taken by [`Lifecycle::take`] back.
+    /// Put a callback taken by [`Lifecycle::take`] back, unless the row has
+    /// grown one of its own since.
     fn restore(&mut self, callback: LifecycleCallback);
 }
 

@@ -738,6 +738,9 @@ impl World {
     }
 
     /// Move the callback of the lifecycle component `C` out of the entity's row.
+    ///
+    /// `None` means there is nothing to run: the archetype has no such column,
+    /// the handle is dead, or the row carries no callback.
     fn take_lifecycle<C: 'static + Lifecycle>(
         &mut self,
         entity: Entity,
@@ -748,10 +751,11 @@ impl World {
         let cell = column.cells_mut().get_mut(location.row())?;
         // SAFETY: `&mut World` excludes every query and every other reference to
         // the world's components, so nothing else can be looking at this row.
-        Some(unsafe { &mut *cell.get() }.take())
+        unsafe { &mut *cell.get() }.take()
     }
 
-    /// Put back a callback moved out by the world's own run of it.
+    /// Put back a callback moved out by the world's own run of it, unless the
+    /// callback left a replacement of its own on the row.
     fn restore_lifecycle<C: 'static + Lifecycle>(
         &mut self,
         entity: Entity,
