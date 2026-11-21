@@ -25,6 +25,7 @@ Scenes:
   blitz_only             an HTML page laid out by Blitz, no mesh source and no camera
   animated               a grid of cubes filling, moving and recycling over eight frames
   skinned                a cube bent by a two-joint skin over six frames
+  skinned_normals        a lit cube bent and mirrored by its skin over six frames
   morphed                a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
   lit                    one relief surface under directional, point, spot and quad lights

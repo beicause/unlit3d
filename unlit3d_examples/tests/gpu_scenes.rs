@@ -402,6 +402,22 @@ async fn skinned_matches_its_snapshots() {
     .await;
 }
 
+async fn skinned_normals_matches_its_snapshots() {
+    compare_scene(
+        &scenes::skinned_normals::SCENE,
+        SCENE_TOLERANCE,
+        &snapshots![
+            "skinned_normals/frame_00.webp",
+            "skinned_normals/frame_01.webp",
+            "skinned_normals/frame_02.webp",
+            "skinned_normals/frame_03.webp",
+            "skinned_normals/frame_04.webp",
+            "skinned_normals/frame_05.webp",
+        ],
+    )
+    .await;
+}
+
 async fn morphed_matches_its_snapshots() {
     compare_scene(
         &scenes::morphed::SCENE,
@@ -651,6 +667,7 @@ async fn the_default_scene_letterboxes_into_a_narrow_target() {
 gpu_tests! {
     animated_matches_its_snapshots,
     skinned_matches_its_snapshots,
+    skinned_normals_matches_its_snapshots,
     morphed_matches_its_snapshots,
     instanced_skinned_morph_matches_its_snapshots,
     gltf_matches_its_snapshots,

@@ -27,6 +27,7 @@ pub mod mesh_topologies;
 pub mod morphed;
 pub mod outline;
 pub mod skinned;
+pub mod skinned_normals;
 pub mod spin_cube;
 pub mod transparent;
 
@@ -152,6 +153,7 @@ pub static SCENES: &[&SceneDef] = &[
     &blitz_only::SCENE,
     &animated::SCENE,
     &skinned::SCENE,
+    &skinned_normals::SCENE,
     &morphed::SCENE,
     &instanced_skinned_morph::SCENE,
     &lit::SCENE,
