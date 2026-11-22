@@ -58,6 +58,12 @@ impl World {
         Ok(self.archetypes.get(location.archetype())?.entities()[location.row()].name())
     }
 
+    /// The live entity holding the singleton key `type_id`, if any.
+    #[must_use]
+    pub(crate) fn singleton_holder(&self, type_id: TypeId) -> Option<Entity> {
+        self.singleton_holders.get(&type_id).copied()
+    }
+
     /// The archetypes, including the empty one.
     ///
     /// This is the storage itself, not a view of one scope: it holds every row

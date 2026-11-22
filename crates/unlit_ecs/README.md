@@ -45,6 +45,12 @@ It is at an **early stage of development** and its API changes freely.
   "resource"; an entity a caller wants to reach from anywhere is an ordinary
   entity whose handle the caller keeps, optionally marked with a marker
   component of the caller's own.
+- **A singleton is declared, and the world holds the declaration to one.**
+  `bundle![...].singleton::<K>()` makes the spawned entity the only live holder
+  of the key `K` in its world, whichever scope spawns it. A second spawn is
+  refused, and [`Scope::singleton`] finds the holder from any scope that can see
+  it. The key is a type that is never stored, so it adds no component. It is
+  released once the holder's row is removed, after its `OnDespawn` has run.
 - **Every `'static` type is a component.** No derive, no registration: a tuple
   is a component too. A *bundle* is therefore not a tuple of components but the
   list [`bundle!`] builds or a [`DynamicBundle`] gathers, and a plain

@@ -12,4 +12,5 @@ mod lifecycle;
 mod names;
 mod query;
 mod scope;
+mod singleton;
 mod world;

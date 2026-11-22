@@ -9,6 +9,8 @@
 //! changes -- spawning, despawning, relinking -- need [`ScopeMut`], whose
 //! operations are confined to the scope's own subtree.
 
+use core::any::TypeId;
+
 use crate::archetype::{Archetype, ScopeSummary};
 use crate::borrow::Claims;
 use crate::bundle::Bundle;
@@ -55,6 +57,18 @@ impl<'w> Scope<'w> {
     #[must_use]
     pub fn contains(&self, entity: Entity) -> bool {
         self.world.visible(self.scope, entity)
+    }
+
+    /// The live entity holding the singleton key `K`, when this scope can see
+    /// it.
+    ///
+    /// A key is held by one entity in the whole world, so this answers `None`
+    /// both when no entity holds `K` and when the holder lies outside this
+    /// scope's reach: the key is taken either way.
+    #[must_use]
+    pub fn singleton<K: 'static>(&self) -> Option<Entity> {
+        let holder = self.world.singleton_holder(TypeId::of::<K>())?;
+        self.contains(holder).then_some(holder)
     }
 
     /// Where a visible entity's components live.
@@ -535,7 +549,9 @@ impl<'w> ScopeMut<'w> {
     ///
     /// Answers [`EntityAccessError::NotReserved`] when the handle is not a live
     /// reservation: it has already been spawned on, was released, or was never
-    /// reserved to begin with.
+    /// reserved to begin with. It is refused with
+    /// [`EntityAccessError::SingletonTaken`] when the bundle's key is held, and
+    /// the reservation is then left in place.
     pub fn spawn_at<B: Bundle>(
         &mut self,
         entity: Entity,

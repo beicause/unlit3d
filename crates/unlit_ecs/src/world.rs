@@ -43,6 +43,7 @@
 //! - [`storage`]: plain reads of the entity table and archetype pool
 //! - [`identity`]: telling one world's handles from another's
 
+use core::any::TypeId;
 use core::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -51,7 +52,7 @@ use crate::borrow::BorrowLedger;
 use crate::column::AnyColumn;
 use crate::command::Command;
 use crate::entity::{Entities, Entity};
-use crate::hash::TypeIdHashMap;
+use crate::hash::{EntityHashMap, TypeIdHashMap};
 use crate::identity::WorldId;
 use crate::scope::ScopeTree;
 
@@ -111,6 +112,15 @@ pub struct World {
     /// that counts rows has to know where they are. They take the first
     /// [`World::SCAFFOLDING_ROWS`] rows of it.
     scaffolding: u32,
+    /// The live entity holding each singleton key.
+    ///
+    /// World-wide: a scope's visibility does not narrow a key. A key is claimed
+    /// once its entity's row is in and released once the row is removed, after
+    /// the entity's `OnDespawn` callback has run.
+    singleton_holders: TypeIdHashMap<Entity>,
+    /// The key each singleton holder claimed, so removing a holder finds its key
+    /// without searching `singleton_holders`.
+    singleton_keys: EntityHashMap<TypeId>,
     /// What tells this world's handles from another world's.
     id: WorldId,
 }
@@ -149,6 +159,8 @@ impl World {
             root: Entity::from_raw(0, 0),
             shared: Entity::from_raw(0, 0),
             scaffolding: 0,
+            singleton_holders: TypeIdHashMap::default(),
+            singleton_keys: EntityHashMap::default(),
             id: WorldId::next(),
         };
         // The root's scope is itself, which is where walking up the tree stops.

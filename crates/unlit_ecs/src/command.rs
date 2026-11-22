@@ -109,6 +109,10 @@ impl<'w> Commands<'w> {
     /// it after itself, and a `bundle!` after the source position that wrote the
     /// bundle, so a queued spawn names the code that wrote the bundle rather
     /// than the place that queued it.
+    ///
+    /// A bundle whose singleton key a live entity holds when the queue is
+    /// applied is refused then, with [`EntityAccessError::SingletonTaken`]; its
+    /// reserved handle stays reserved, as for any refused spawn.
     pub fn spawn<B: Bundle + 'static>(&self, bundle: B) -> Entity {
         let entity = self.world.reserve_entity(bundle.name());
         let bundle = bundle.into_bundle();

@@ -27,10 +27,7 @@
 use crate::Entity;
 use crate::identity::WorldId;
 
-/// Why a lookup of, or through, an entity handle was turned down.
-///
-/// The handle is carried by every variant, so a caller that reports the error
-/// does not have to thread it alongside.
+/// Why an entity lookup or structural change was turned down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EntityAccessError {
@@ -67,6 +64,18 @@ pub enum EntityAccessError {
     NotReserved {
         /// The handle that was spawned on.
         entity: Entity,
+    },
+
+    /// The bundle declares a singleton key that a live entity already holds.
+    ///
+    /// A key is held world-wide from the moment its entity's row goes in until
+    /// that row is removed, so a scope that cannot see the holder is refused
+    /// too. The error names the key rather than the holder, which may be out of
+    /// sight.
+    #[error("the singleton {key} is already held by a live entity")]
+    SingletonTaken {
+        /// The name of the key type, as [`core::any::type_name`] reports it.
+        key: &'static str,
     },
 
     /// The entity is alive, but this scope's subtree does not reach it, so it
