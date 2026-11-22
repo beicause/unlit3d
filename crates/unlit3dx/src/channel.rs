@@ -27,7 +27,7 @@
 //! never blocks.
 
 use unlit_ecs::World;
-use unlit_ecs::{Entity, bundle};
+use unlit_ecs::bundle;
 
 use crate::job::{JobSender, SendError};
 
@@ -113,11 +113,14 @@ impl JobSender {
 /// guard: a host that drives a world of its own calls this once per turn, and
 /// calling it twice would run every collector twice.
 pub fn publish_collected(world: &World) -> usize {
-    let mut snapshot_outlet_rows = world.root_scope().query::<&mut SnapshotOutlet>();
-
-    let Some(outlet) = snapshot_outlet_rows.iter().next() else {
+    let scope = world.root_scope();
+    let Some(entity) = scope.singleton::<SnapshotOutlet>() else {
         return 0;
     };
+    let Ok(mut snapshot_outlet) = scope.try_query_one::<&mut SnapshotOutlet>(entity) else {
+        return 0;
+    };
+    let outlet = snapshot_outlet.get();
     outlet.entries.retain_mut(|entry| entry.publish(world));
     outlet.entries.len()
 }
@@ -180,28 +183,33 @@ where
 /// Every subscription a world carries, as one component.
 ///
 /// The first subscription to arrive creates it; it lives as long as the world
-/// does, and an entry is pruned once its reader is dropped.
+/// does, and an entry is pruned once its reader is dropped. It claims the
+/// [`SnapshotOutlet`] singleton key, so a world carries at most one outlet --
+/// subscriptions from every producer share it.
 struct SnapshotOutlet {
     entries: Vec<Box<dyn Entry>>,
 }
 
 /// Add one subscription to `world`, creating the outlet on first use.
 fn install(world: &mut World, entry: Box<dyn Entry>) {
-    let existing = world
-        .root_scope()
-        .query::<(&SnapshotOutlet, Entity)>()
-        .iter()
-        .next()
-        .map(|(_snapshot_outlet, entity)| entity);
+    let existing = world.root_scope().singleton::<SnapshotOutlet>();
     match existing {
         Some(entity) => {
-            let mut outlet = world.root_scope().query_one::<&mut SnapshotOutlet>(entity);
+            let Ok(mut outlet) = world
+                .root_scope()
+                .try_query_one::<&mut SnapshotOutlet>(entity)
+            else {
+                return;
+            };
             outlet.get().entries.push(entry);
         }
         None => {
-            world.root_scope_mut().spawn(bundle![SnapshotOutlet {
-                entries: vec![entry],
-            },]);
+            world.root_scope_mut().spawn(
+                bundle![SnapshotOutlet {
+                    entries: vec![entry],
+                }]
+                .singleton::<SnapshotOutlet>(),
+            );
         }
     }
 }

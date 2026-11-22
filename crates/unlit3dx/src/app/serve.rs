@@ -94,8 +94,12 @@ pub fn serve<A: App>(
     // run ends when its client says so, so the length is not the run's to
     // know, and an unbounded recording would grow with the session.
     if let Some(capture) = &capture {
-        let mut interactive = host.root_scope().query::<&mut Interactive>();
-        if let Some(interactive) = interactive.iter().next() {
+        let scope = host.root_scope();
+        if let Some(mut interactive) = scope
+            .singleton::<Interactive>()
+            .and_then(|entity| scope.try_query_one::<&mut Interactive>(entity).ok())
+        {
+            let interactive = interactive.get();
             let seconds = match pacing.frames {
                 Some(count) => count as f32 / HEADLESS_HZ as f32,
                 // A client-paced run has no length to read here, so what
@@ -141,8 +145,13 @@ fn interactive_host<A: App>(app: A, device: RenderDevice, pacing: Pacing) -> Res
     // The pacing is part of the host rather than of the loop that reads it:
     // the stepping tool answers how far the run may still go, and it reaches
     // the host through the same world the client does.
-    host.root_scope_mut().spawn(bundle![pacing]);
-    host.root_scope_mut().spawn(bundle![interactive]);
+    host.root_scope_mut()
+        .spawn(bundle![pacing].singleton::<Pacing>());
+    // One scene per served host: a second interactive scene would be a second
+    // driver of the same frames, so the key makes that a panic rather than a
+    // silently ignored second scene.
+    host.root_scope_mut()
+        .spawn(bundle![interactive].singleton::<Interactive>());
     Ok(host)
 }
 
@@ -211,9 +220,12 @@ fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), String> {
     let mut next = Instant::now() + step;
     while !pacing.is_spent(advanced(host)) {
         {
-            let mut interactive = host.root_scope().query::<&mut Interactive>();
-            if let Some(interactive) = interactive.iter().next() {
-                match interactive.step(host, 1)? {
+            let scope = host.root_scope();
+            if let Some(mut interactive) = scope
+                .singleton::<Interactive>()
+                .and_then(|entity| scope.try_query_one::<&mut Interactive>(entity).ok())
+            {
+                match interactive.get().step(host, 1)? {
                     StepOutcome::Ran => {}
                     StepOutcome::Finished | StepOutcome::Stopped => break,
                     StepOutcome::Failed => return Err("the interactive scene failed".to_owned()),
@@ -277,10 +289,14 @@ fn advanced(host: &World) -> u32 {
 /// answer names what the call stepped, so a clamped step reads as a shorter
 /// answer rather than as a lost one.
 fn allowed(host: &World, asked: u32) -> u32 {
-    let mut pacing = host.root_scope().query::<&Pacing>();
-    let Some(pacing) = pacing.iter().next() else {
+    let scope = host.root_scope();
+    let Some(mut pacing) = scope
+        .singleton::<Pacing>()
+        .and_then(|entity| scope.try_query_one::<&Pacing>(entity).ok())
+    else {
         return asked;
     };
+    let pacing = pacing.get();
     match pacing.frames {
         Some(budget) => asked.min(budget.saturating_sub(advanced(host))),
         None => asked,
@@ -300,10 +316,14 @@ fn write_capture(host: &mut World, capture: Option<&Capture>) -> Result<(), Stri
     let Some(capture) = capture else {
         return Ok(());
     };
-    let mut interactive = host.root_scope().query::<&mut Interactive>();
-    let Some(interactive) = interactive.iter().next() else {
+    let scope = host.root_scope();
+    let Some(mut interactive) = scope
+        .singleton::<Interactive>()
+        .and_then(|entity| scope.try_query_one::<&mut Interactive>(entity).ok())
+    else {
         return Err("the host is not an interactive headless scene".to_owned());
     };
+    let interactive = interactive.get();
     let advanced = interactive.frame();
     let audio = interactive
         .stop_recording(host)?
@@ -369,22 +389,28 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         }
         // A self-paced host owns its clock. Letting this tool step it as well
         // would advance the same scene twice and violate the pacing contract.
-        let mut pacing_rows = host.root_scope().query::<&Pacing>();
-        if pacing_rows
-            .iter()
-            .next()
-            .is_some_and(|pacing| !pacing.client)
-        {
+        let scope = host.root_scope();
+        let self_paced = scope
+            .singleton::<Pacing>()
+            .and_then(|entity| scope.try_query_one::<&Pacing>(entity).ok())
+            .is_some_and(|mut pacing| !pacing.get().client);
+        if self_paced {
             return Err("the host paces its own frames and takes no stepping".to_owned());
         }
-        drop(pacing_rows);
         let frames = allowed(host, args.frames);
-        let mut interactive = host.root_scope().query::<&mut Interactive>();
-        if let Some(interactive) = interactive.iter().next() {
+        if let Some(mut interactive) = scope
+            .singleton::<Interactive>()
+            .and_then(|entity| scope.try_query_one::<&mut Interactive>(entity).ok())
+        {
+            let interactive = interactive.get();
             let before = interactive.frame();
             let outcome = interactive.step(host, frames)?;
             if outcome != StepOutcome::Ran {
-                if let Some(request) = host.root_scope().query::<&mut ExitRequest>().iter().next() {
+                // The flag is per entity and the host exits when any of them
+                // is set, so a refused step has to mark every request it can
+                // reach: writing one would leave the other holders of the
+                // flag with nothing to notice.
+                for request in host.root_scope().query::<&mut ExitRequest>().iter() {
                     request.0 = true;
                 }
                 if outcome == StepOutcome::Failed {
@@ -394,7 +420,6 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
             let frame = interactive.frame();
             return Ok(json!({ "frame": frame, "stepped": frame - before }));
         }
-        drop(interactive);
         let mut windows = host.root_scope().query::<&mut WindowFrames>();
         let Some(window) = windows.iter().next() else {
             return Err("the host has no client-paced frame driver".to_owned());
@@ -410,17 +435,20 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
 
 async fn scene_status(commands: CommandSender, args: WorldArg) -> ToolResult {
     command(&commands, args.world, |host: &mut World| {
-        let mut interactive = host.root_scope().query::<&Interactive>();
-        let Some(interactive) = interactive.iter().next() else {
-            // A windowed host has the frame count but not the scene this
-            // reports: its picture, its worlds and its target are the
-            // window's, and a client reads those through the resource graph.
+        let scope = host.root_scope();
+        // A windowed host has the frame count but not the scene this
+        // reports: its picture, its worlds and its target are the window's,
+        // and a client reads those through the resource graph.
+        let Some(mut interactive) = scope
+            .singleton::<Interactive>()
+            .and_then(|entity| scope.try_query_one::<&Interactive>(entity).ok())
+        else {
             return Err(
                 "the host is not an interactive headless scene; a windowed host reports its frame through step_frames and its picture through list_resources"
                     .to_owned(),
             );
         };
-        Ok(status(interactive))
+        Ok(status(interactive.get()))
     })
     .await
 }
@@ -433,11 +461,16 @@ mod tests {
     use unlit_ecs::{World, bundle};
 
     /// A host carrying a frame count and, when named, a budget.
+    ///
+    /// The pacing claims its singleton key, the way `interactive_host` spawns
+    /// it, so the lookup under test finds it.
     fn host(pacing: Option<Pacing>) -> (World, RunFrames) {
         let mut host = World::new();
         let frames = RunFrames::default();
         match pacing {
-            Some(pacing) => host.root_scope_mut().spawn(bundle![frames.clone(), pacing]),
+            Some(pacing) => host
+                .root_scope_mut()
+                .spawn(bundle![frames.clone(), pacing].singleton::<Pacing>()),
             None => host.root_scope_mut().spawn(bundle![frames.clone()]),
         };
         (host, frames)

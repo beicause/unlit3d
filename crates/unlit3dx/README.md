@@ -274,10 +274,10 @@ The bridges:
   world's `GlobalAudioGain`; the device callback drains the ring and underruns to
   silence. A fill commits the commands its sources queued, the way a frame
   does, so a caller that fills a world the host does not otherwise drive still
-  gets what a source built. The gain is one per world: the dispatcher reads the first
-  `GlobalAudioGain` a query hands back, and a world that holds more than one
-  picks by no stated rule, so a scene spawns one and shapes a source's loudness
-  in its own fill.
+  gets what a source built. The gain is one per world: `GlobalAudioGain` is a
+  singleton key, so the dispatcher reads the one the world holds and a second
+  spawn panics rather than picking between them by no stated rule. A scene
+  shapes a source's loudness in its own fill instead.
   A world that carries no source plays nothing.
   Gameplay never touches audio directly — it sends jobs. The world spawns an
   `AudioFormat` component the moment its stream opens — a source that renders

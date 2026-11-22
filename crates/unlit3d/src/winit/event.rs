@@ -216,22 +216,21 @@ impl<U: 'static> WinitHost<U> {
     /// Write the state every callback may read before the loop starts.
     fn prepare(&mut self, event_loop: &EventLoop<U>) {
         let display = event_loop.owned_display_handle();
+        // The display handle rides on the resumed state's entity: a bundle
+        // declares one singleton key, so the two share a row rather than
+        // each carrying one.
         self.world
             .root_scope_mut()
-            .spawn(bundle![Resumed(false), DisplayHandle(display)]);
+            .spawn(bundle![Resumed(false), DisplayHandle(display)].singleton::<Resumed>());
     }
 
     /// Set the host's [`Resumed`] state.
     fn set_resumed(&mut self, resumed: bool) {
-        let Some(entity) = ({
-            let mut resumed_rows = self.world.root_scope().query::<(&Resumed, Entity)>();
-            resumed_rows.iter().next().map(|(_resumed, entity)| entity)
-        }) else {
+        let scope = self.world.root_scope();
+        let Some(entity) = scope.singleton::<Resumed>() else {
             return;
         };
-        let _ = self
-            .world
-            .root_scope()
+        let _ = scope
             .try_query_one::<&mut Resumed>(entity)
             .map(|mut state| {
                 let state = state.get();
@@ -291,7 +290,7 @@ impl<U: 'static> WinitHost<U> {
                     }
                     self.world
                         .root_scope_mut()
-                        .spawn(bundle![WinitWindow(Arc::new(window))]);
+                        .spawn(bundle![WinitWindow(Arc::new(window))].singleton::<WinitWindow>());
                 }
                 Err(error) => {
                     log::error!("could not create the window: {error}");
@@ -463,9 +462,11 @@ mod tests {
     #[test]
     fn set_resumed_writes_the_host_state() {
         let mut host = WinitHost::<()>::new();
+        // The host's own `prepare` spawns the resumed state with its singleton
+        // key, so the test spawns the row the same way.
         host.world_mut()
             .root_scope_mut()
-            .spawn(bundle![Resumed(false)]);
+            .spawn(bundle![Resumed(false)].singleton::<Resumed>());
         host.set_resumed(true);
         assert_eq!(
             host.world()

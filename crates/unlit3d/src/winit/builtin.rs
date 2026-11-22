@@ -41,15 +41,14 @@ pub struct WinitWindow(pub Arc<Window>);
 
 /// The one window of the world, if the host has created it.
 ///
-/// A world with more than one window is not modelled yet; this returns the
-/// first, in query order.
+/// The window is a singleton keyed by [`WinitWindow`], so a request that would
+/// create a second one panics instead of leaving the first in place and
+/// orphaning the new window.
 pub fn window(world: &World) -> Option<Arc<Window>> {
-    world
-        .root_scope()
-        .query::<&WinitWindow>()
-        .iter()
-        .next()
-        .map(|winit_window| winit_window.0.clone())
+    let scope = world.root_scope();
+    let entity = scope.singleton::<WinitWindow>()?;
+    let mut window = scope.try_query_one::<&WinitWindow>(entity).ok()?;
+    Some(window.get().0.clone())
 }
 
 /// Asks the host to create the window in this component.
@@ -164,9 +163,11 @@ pub fn exit_on_escape() -> OnWindowEvent {
 /// application with a finer policy writes its own [`OnAboutToWait`].
 pub fn request_redraw_while_foreground() -> OnAboutToWait {
     OnAboutToWait::new(|world, _entity, ()| {
-        let mut resumed_rows = world.root_scope().query::<&Resumed>();
-
-        let resumed = resumed_rows.iter().next().is_some_and(|resumed| resumed.0);
+        let scope = world.root_scope();
+        let resumed = scope
+            .singleton::<Resumed>()
+            .and_then(|entity| scope.try_query_one::<&Resumed>(entity).ok())
+            .is_some_and(|mut state| state.get().0);
         if resumed && let Some(window) = window(world) {
             window.request_redraw();
         }

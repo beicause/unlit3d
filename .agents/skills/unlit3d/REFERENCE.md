@@ -16,6 +16,7 @@
 | 作用域只读 | `Scope`：`entity` / `query` / `query_one` / `archetype_of` / `children` / `queue` 等；`query_one` 找不到那一行即 panic，预料缺席用 `try_query_one` | `crates/unlit_ecs/src/view.rs` |
 | 作用域可写 | `ScopeMut`：`spawn` / `spawn_named` / `spawn_at` / `despawn` / `link` / `unlink` / `apply` 等 | 同上 |
 | 落地排队命令 | `World::apply`：按序应用，期间新排的也应用，失败不中断 | `crates/unlit_ecs/src/world/commands.rs` |
+| 单例 | `bundle![...].singleton::<T>()` 声明「这个 world 至多一份」；`Scope::singleton::<T>()` 交出持有者 `Entity`（键被占但持有者不可见时也返回 `None`）。再 spawn 一份即 panic（`spawn_at` 则返回 `EntityAccessError::SingletonTaken`），持有者 despawn 后键随之释放。渲染侧已用它标记 `Presenter` / `WinitWindow` / `Resumed` / `OpenUrls` / `Pacing` / `Interactive` / `LocalTasks` / `GlobalAudioGain` / `InputEvents` | `crates/unlit_ecs/src/bundle.rs`、`crates/unlit_ecs/src/view.rs` |
 | 渲染器 | `Renderer::new` / `render` / `context` | `crates/unlit3d/src/renderer.rs` |
 
 ## pass 与 source

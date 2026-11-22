@@ -29,8 +29,8 @@
 
 use std::future::Future;
 
-use unlit_ecs::World;
 use unlit_ecs::bundle;
+use unlit_ecs::{Entity, World};
 
 pub use futures_executor::LocalPool;
 pub use futures_util::task::LocalSpawnExt;
@@ -39,7 +39,8 @@ pub use futures_util::task::LocalSpawnExt;
 ///
 /// Whoever drives the world pumps them, which is what [`LocalTasks::pump`]
 /// does, so a task lasts as long as the world rather than as long as the call
-/// that started it. A world holds at most one set.
+/// that started it. A world holds at most one set: installation claims the
+/// [`LocalTasks`] singleton key.
 pub struct LocalTasks(LocalPool);
 
 impl LocalTasks {
@@ -49,19 +50,20 @@ impl LocalTasks {
         Self(LocalPool::new())
     }
 
+    /// The entity holding `world`'s task set, if it has one.
+    fn entity(world: &World) -> Option<Entity> {
+        world.root_scope().singleton::<LocalTasks>()
+    }
+
     /// Give `world` a task set, unless it already has one.
     ///
     /// Every world the framework builds is given one this way at creation,
     /// before its setup runs, so the setup can spawn a task of its own.
     pub fn install(world: &mut World) {
-        if world
-            .root_scope()
-            .query::<&LocalTasks>()
-            .iter()
-            .next()
-            .is_none()
-        {
-            world.root_scope_mut().spawn(bundle![Self::new()]);
+        if Self::entity(world).is_none() {
+            world
+                .root_scope_mut()
+                .spawn(bundle![Self::new()].singleton::<LocalTasks>());
         }
     }
 
@@ -81,17 +83,19 @@ impl LocalTasks {
         // a claim the pump still holds. The pool comes back after the run; a
         // task that panics takes the turn with it (documented above), which
         // ends the pump before the restore.
+        let Some(entity) = Self::entity(world) else {
+            return;
+        };
         let mut pool = {
-            let mut local_tasks_rows = world.root_scope().query::<&mut LocalTasks>();
-            let Some(local_tasks) = local_tasks_rows.iter().next() else {
+            let Ok(mut local_tasks) = world.root_scope().try_query_one::<&mut LocalTasks>(entity)
+            else {
                 return;
             };
-            core::mem::take(&mut local_tasks.0)
+            core::mem::take(&mut local_tasks.get().0)
         };
         pool.run_until_stalled();
-        let mut restore = world.root_scope().query::<&mut LocalTasks>();
-        if let Some(local_tasks) = restore.iter().next() {
-            local_tasks.0 = pool;
+        if let Ok(mut local_tasks) = world.root_scope().try_query_one::<&mut LocalTasks>(entity) {
+            local_tasks.get().0 = pool;
         }
     }
 
@@ -104,12 +108,13 @@ impl LocalTasks {
     where
         F: Future<Output = ()> + 'static,
     {
-        let mut local_tasks_rows_2 = world.root_scope().query::<&LocalTasks>();
-
-        let Some(local_tasks) = local_tasks_rows_2.iter().next() else {
+        let Some(entity) = Self::entity(world) else {
             return false;
         };
-        local_tasks.0.spawner().spawn_local(future).is_ok()
+        let Ok(mut local_tasks) = world.root_scope().try_query_one::<&LocalTasks>(entity) else {
+            return false;
+        };
+        local_tasks.get().0.spawner().spawn_local(future).is_ok()
     }
 }
 

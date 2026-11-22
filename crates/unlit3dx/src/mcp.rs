@@ -368,7 +368,9 @@ mod tests {
     /// its fills carry.
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
-        world.root_scope_mut().spawn(bundle![GlobalAudioGain(1.0)]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![GlobalAudioGain(1.0)].singleton::<GlobalAudioGain>());
         world.root_scope_mut().spawn(bundle![OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),

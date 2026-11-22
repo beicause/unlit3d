@@ -932,7 +932,9 @@ egui 是否想独占指针/键盘是**egui 自己的答案**，不由源再写�
 之后由宿主 `apply` 时落地。回调签名刻意不带 `ActiveEventLoop`：该类型只能在回调内
 构造，带它的组件永远无法单元测试。回调需要事件循环做的事改为请求组件——
 `CreateWindowRequest` 与 `ExitRequest` 由宿主在分发后执行，`WinitWindow` 是组件
-请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。
+请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。窗口与
+resume 状态都是单例键，因此一个 world 各只有一份：宿主在循环开始前落下 resume 那一行，
+第二个建窗请求会 panic，而不是留下第一个窗口、把新窗口变成孤儿。
 
 一帧之内的推进同样是行为。[`frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/index.html) 模块只有一个族
 [`OnFrame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html)，由 [`dispatch_frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/fn.dispatch_frame.html) 驱动；

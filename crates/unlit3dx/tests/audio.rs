@@ -36,7 +36,9 @@ fn wait_for(probe: impl Fn() -> bool) -> bool {
 /// A caller queues this as a job to the audio world once it has a soundfont;
 /// these tests drive worlds themselves, so they call it directly.
 fn install_synth(world: &mut World, bytes: &[u8], gain: f32) -> Option<Entity> {
-    world.root_scope_mut().spawn(bundle![GlobalAudioGain(gain)]);
+    world
+        .root_scope_mut()
+        .spawn(bundle![GlobalAudioGain(gain)].singleton::<GlobalAudioGain>());
     load_soundfont(bytes)
         .ok()
         .map(|font| SynthVoice::from_font(world, &font))
@@ -91,7 +93,9 @@ fn an_audio_tick_dispatches_its_frame() {
 #[test]
 fn a_post_fill_sees_the_finished_mix() {
     let mut world = World::new();
-    world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
+    world
+        .root_scope_mut()
+        .spawn(bundle![GlobalAudioGain(2.0)].singleton::<GlobalAudioGain>());
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.6, &counts);
     let seen: Arc<Mutex<Vec<f32>>> = Arc::default();
@@ -146,7 +150,9 @@ fn the_dispatcher_mixes_the_worlds_sources() {
 #[test]
 fn the_worlds_gain_scales_the_mix() {
     let mut world = World::new();
-    world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
+    world
+        .root_scope_mut()
+        .spawn(bundle![GlobalAudioGain(2.0)].singleton::<GlobalAudioGain>());
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.4, &counts);
     let mut out = vec![0.0f32; 8];

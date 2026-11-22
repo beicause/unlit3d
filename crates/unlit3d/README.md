@@ -1343,7 +1343,10 @@ that type can only be built inside a callback, so a component taking it could
 never be unit-tested. What a callback needs from the loop is a request instead —
 `CreateWindowRequest` and `ExitRequest` are executed by the host after the
 dispatch, `WinitWindow` is the window a component asks for a redraw on, and the
-host maintains `Resumed` and `DisplayHandle` itself.
+host maintains `Resumed` and `DisplayHandle` itself. Both the window and the
+resumed state are singleton keys, so a world holds one of each: the host spawns
+the resumed row before the loop starts, and a second window request panics
+rather than leaving the first in place and orphaning the new one.
 
 What happens *within* one frame is a behaviour too. The [`frame`](frame) module
 has one family, [`OnFrame`](frame::OnFrame), dispatched by

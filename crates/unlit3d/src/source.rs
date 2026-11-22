@@ -314,6 +314,9 @@ pub struct OpenUrl {
 /// instead, and the host drains it after the frame and opens each URL where it
 /// has the means to — see [`drain_open_urls`]. The frame context spawns it, so
 /// a world that draws a frame has one.
+///
+/// The queue is a singleton keyed by [`OpenUrls`]: one world opens one set of
+/// tabs, so every producer appends to the same queue and one drain empties it.
 #[derive(Debug, Default)]
 pub struct OpenUrls(Vec<OpenUrl>);
 
@@ -345,23 +348,17 @@ impl OpenUrls {
 /// on the web, and nothing at all where there is no browser. A world without a
 /// queue — one built without [`spawn_context`] — yields none.
 pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
-    // The scan claims the rows and the writes below claim each of them
-    // exclusively, so the scan's borrow has to end before them: a claim lasts
-    // as long as its row holder, not as long as the loop that read it.
-    let scanned = {
-        let mut rows = world.root_scope().query::<(Entity, &OpenUrls)>();
-        rows.iter().map(|(entity, _)| entity).collect::<Vec<_>>()
+    let scope = world.root_scope();
+    let Some(entity) = scope.singleton::<OpenUrls>() else {
+        return Vec::new();
     };
-    let mut urls = Vec::new();
-    for entity in scanned {
-        // One queue per source that publishes URLs, and every one of them is
-        // the host's to open: taking only the first would drop the rest.
-        match world.root_scope().try_query_one::<&mut OpenUrls>(entity) {
-            Ok(mut row) => urls.append(&mut row.get().0),
-            Err(error) => log::warn!("the open-url queue of {entity:?} is unreachable: {error}"),
+    match scope.try_query_one::<&mut OpenUrls>(entity) {
+        Ok(mut row) => core::mem::take(&mut row.get().0),
+        Err(error) => {
+            log::warn!("the open-url queue of {entity:?} is unreachable: {error}");
+            Vec::new()
         }
     }
-    urls
 }
 
 /// A source of one frame's draws.
@@ -600,8 +597,9 @@ pub fn spawn_context(
     spawn_row(&mut shared_view, graph, graph_component, context);
     spawn_row(&mut shared_view, context.uniforms, uniforms, context);
     // The URLs the frame's sources asked to open, drained by the host after
-    // the frame.
-    shared_view.spawn_named("open_urls", bundle![OpenUrls::default()]);
+    // the frame. The queue is a singleton: one world opens one set of tabs,
+    // and every producer appends to the same queue.
+    shared_view.spawn(bundle![OpenUrls::default()].singleton::<OpenUrls>());
     // How much time has passed, advanced once per frame by the frame loop. It
     // belongs to the world rather than to a source because a source may be
     // built once per pass: a clock each source counted for itself would run

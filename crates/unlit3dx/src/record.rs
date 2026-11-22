@@ -468,7 +468,9 @@ mod tests {
     fn a_recording_captures_the_mixed_samples() {
         let mut world = World::new();
         constant_source(&mut world, 0.75);
-        world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![GlobalAudioGain(2.0)].singleton::<GlobalAudioGain>());
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,
@@ -499,7 +501,9 @@ mod tests {
         // here as samples that no longer match.
         let mut world = World::new();
         constant_source(&mut world, 0.2);
-        world.root_scope_mut().spawn(bundle![GlobalAudioGain(3.0)]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![GlobalAudioGain(3.0)].singleton::<GlobalAudioGain>());
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,
@@ -532,7 +536,9 @@ mod tests {
     fn a_full_recording_keeps_nothing_from_later_fills() {
         let mut world = World::new();
         constant_source(&mut world, 0.5);
-        world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![GlobalAudioGain(2.0)].singleton::<GlobalAudioGain>());
         let format = AudioFormat {
             sample_rate: 4,
             channels: 2,

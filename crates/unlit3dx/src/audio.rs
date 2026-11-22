@@ -252,6 +252,10 @@ thread_local! {
 /// runs after it instead: an [`OnAudioPostFill`] behaviour sees the finished
 /// mix, gain and clamp included, rather than scaling the buffer it observes
 /// itself.
+///
+/// The gain is a singleton keyed by [`GlobalAudioGain`]: the mixture is
+/// scaled once after every source summed, so two gains on one world would
+/// leave the order between them unstated.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GlobalAudioGain(pub f32);
 
@@ -307,8 +311,11 @@ pub fn dispatch_audio_fill(world: &mut World, out: &mut [f32], sample_rate: u32,
     // The query holds a borrow of the world, so it ends before the queue is
     // applied below.
     let gain = {
-        let mut rows = world.root_scope().query::<&GlobalAudioGain>();
-        rows.iter().next().map_or(1.0, |audio_gain| audio_gain.0)
+        let scope = world.root_scope();
+        let gain = scope
+            .singleton::<GlobalAudioGain>()
+            .and_then(|entity| scope.try_query_one::<&GlobalAudioGain>(entity).ok());
+        gain.map_or(1.0, |mut audio_gain| audio_gain.get().0)
     };
     for sample in chunk.out.iter_mut() {
         *sample = (*sample * gain).clamp(-1.0, 1.0);

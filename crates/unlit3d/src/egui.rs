@@ -572,20 +572,17 @@ fn take_open_urls(output: &mut egui::PlatformOutput, out: &mut Vec<OpenUrl>) {
 
 /// Publish the URLs egui was asked to open as an [`OpenUrls`] resource.
 ///
-/// The resource is looked up by type, so a world gets one from `spawn_context`
-/// — the frame's own setup — and a caller never has to create it. A world
-/// without one is not an error: the overlay still draws, and the request is simply
-/// dropped. The frame's requests are appended to whatever a previous frame
-/// left behind — [`drain_open_urls`] is what empties the queue, and a request
-/// left in it is served by a later drain rather than dropped; `urls` is
-/// emptied either way, so its allocation is reused by the next frame.
+/// The resource is looked up by its singleton key, so a world gets one from
+/// `spawn_context` — the frame's own setup — and a caller never has to create
+/// it. A world without one is not an error: the overlay still draws, and the
+/// request is simply dropped. The frame's requests are appended to whatever a
+/// previous frame left behind — [`drain_open_urls`] is what empties the queue,
+/// and a request left in it is served by a later drain rather than dropped;
+/// `urls` is emptied either way, so its allocation is reused by the next frame.
 ///
 /// [`drain_open_urls`]: crate::source::drain_open_urls
 fn publish_open_urls(scope: &Scope<'_>, urls: &mut Vec<OpenUrl>) {
-    let Some(entity) = ({
-        let mut open_urls_rows = scope.query::<(&OpenUrls, Entity)>();
-        open_urls_rows.iter().next().map(|(_open_urls, e)| e)
-    }) else {
+    let Some(entity) = scope.singleton::<OpenUrls>() else {
         urls.clear();
         return;
     };

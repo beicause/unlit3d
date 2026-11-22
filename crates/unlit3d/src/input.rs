@@ -233,6 +233,10 @@ impl InputWriter {
     /// `bundle![writer.subscribe(), InputState::default()]` does. A buffer
     /// alone compiles, but nothing ever folds its batch out, so every event it
     /// is fed piles up unread.
+    ///
+    /// The buffer is a singleton keyed by [`InputEvents`]: a world dispatches
+    /// one batch per tick, so a second buffer on the same world would be fed
+    /// and never read.
     pub fn subscribe(&self) -> InputEvents {
         InputEvents {
             events: self.0.subscribe(),
@@ -255,6 +259,7 @@ pub struct InputFeed(pub InputWriter);
 impl Bundle for InputFeed {
     fn into_bundle(self) -> DynamicBundle {
         bundle![self.0.clone(), self.0.subscribe(), InputState::default()]
+            .singleton::<InputEvents>()
     }
 }
 
@@ -268,7 +273,7 @@ pub struct InputPair(pub InputEvents);
 
 impl Bundle for InputPair {
     fn into_bundle(self) -> DynamicBundle {
-        bundle![self.0, InputState::default()]
+        bundle![self.0, InputState::default()].singleton::<InputEvents>()
     }
 }
 
@@ -330,13 +335,7 @@ pub fn refresh_input(world: &World) -> bool {
 /// spawned outside that hierarchy — one a runner started as a sibling —
 /// subscribes itself from its own setup.
 pub fn subscribe_input(world: &mut World) -> bool {
-    if world
-        .root_scope()
-        .query::<&InputEvents>()
-        .iter()
-        .next()
-        .is_some()
-    {
+    if world.root_scope().singleton::<InputEvents>().is_some() {
         return false;
     }
     let events = {
@@ -352,9 +351,7 @@ pub fn subscribe_input(world: &mut World) -> bool {
     // The buffer belongs to the shared subtree: a source reads the world's
     // input from its own scope, and a sibling's component is out of reach.
     let shared = world.shared();
-    world
-        .scope_mut(shared)
-        .spawn(bundle![events, InputState::default()]);
+    world.scope_mut(shared).spawn(InputPair(events));
     true
 }
 

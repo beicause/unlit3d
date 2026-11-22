@@ -541,6 +541,10 @@ fn build_in(
 /// Build the presentation path and spawn its [`Presenter`], answering the
 /// entity it landed on.
 ///
+/// The presenter claims the [`Presenter`] singleton key, so a world holds at
+/// most one: a host that swaps scenes despawns the old one first, which
+/// releases the key.
+///
 /// See [`build_presenter`] for the arguments.
 ///
 /// # Errors
@@ -574,7 +578,9 @@ pub fn setup_presenter(
         path,
         surface_options,
     )?;
-    let entity = world.root_scope_mut().spawn(bundle![presenter]);
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle![presenter].singleton::<Presenter>());
     Ok(entity)
 }
 
@@ -633,28 +639,30 @@ impl Command for DrawFrame {
 /// A frame the host skipped -- because its scene or its presentation path is
 /// not up yet -- is not presented either, so the behaviour that decides
 /// states an earlier order. Neither is a frame the winit host reports the
-/// app suspended for; a world with no winit host counts as resumed. When a
-/// world carries more than one presenter, the first one the query yields
-/// presents.
+/// app suspended for; a world with no winit host counts as resumed.
+///
+/// A world holds at most one [`Presenter`] -- [`setup_presenter`] claims the
+/// singleton key -- so presenting finds either that one or none.
 pub fn present_frames() -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER),
         move |world, _entity, _frame| {
             // A suspended winit host has no surface worth presenting into.
-            let resumed = world
-                .root_scope()
-                .query::<&Resumed>()
-                .iter()
-                .next()
-                .is_none_or(|state| state.0);
+            let scope = world.root_scope();
+            let resumed = scope
+                .singleton::<Resumed>()
+                .and_then(|entity| scope.try_query_one::<&Resumed>(entity).ok())
+                .is_none_or(|mut state| state.get().0);
             if !resumed || FrameSkip::is_skipped(world) {
                 return;
             }
-            let mut rows = world.root_scope().query::<(Entity, &mut Presenter)>();
-            let Some((_, presenter)) = rows.iter().next() else {
+            let Some(entity) = scope.singleton::<Presenter>() else {
                 return;
             };
-            if let Err(error) = presenter.present(world) {
+            let Ok(mut presenter) = scope.try_query_one::<&mut Presenter>(entity) else {
+                return;
+            };
+            if let Err(error) = presenter.get().present(world) {
                 log::error!("failed to present a frame: {error}");
             }
         },
@@ -734,11 +742,14 @@ pub fn resize_presented() -> OnWindowEvent {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        let mut rows = world.root_scope().query::<(Entity, &mut Presenter)>();
-        let Some((_, presenter)) = rows.iter().next() else {
+        let scope = world.root_scope();
+        let Some(entity) = scope.singleton::<Presenter>() else {
             return;
         };
-        if let Err(error) = presenter.resize(world, (size.width, size.height)) {
+        let Ok(mut presenter) = scope.try_query_one::<&mut Presenter>(entity) else {
+            return;
+        };
+        if let Err(error) = presenter.get().resize(world, (size.width, size.height)) {
             log::error!("failed to resize the presentation path: {error}");
         }
     })
