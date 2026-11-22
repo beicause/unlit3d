@@ -10,10 +10,11 @@ use unlit3d::egui::EguiTarget;
 use unlit3d::input::InputWriter;
 use unlit3d::relay::Snapshot;
 
+use crate::audio::{AudioFormat, dispatch_audio_fill};
 pub use crate::frames::RunFrames;
 use crate::handle::WorldHandle;
 use crate::thread::fixed_steps;
-use crate::world::{StepOutcome, step_stepped_world};
+use crate::world::{StepOutcome, step_stepped_world, with_stepped_world_mut};
 
 /// Which run is building the scene.
 ///
@@ -80,59 +81,139 @@ pub struct SceneWorlds {
 
 /// The most audio one frame may be asked to fill, in seconds.
 ///
-/// The audio debt is carried in sample frames rather than steps, so the
-/// physics catch-up limit says nothing about it. A host that stalled — a
-/// suspended window, a debugger pause — would otherwise ask the world to
-/// fill a buffer as long as the pause, which is neither wanted nor cheap; a
-/// quarter second is well past any jitter a running host shows.
+/// The audio debt is carried in seconds rather than steps, so the physics
+/// catch-up limit says nothing about it. A host that stalled — a suspended
+/// window, a debugger pause — would otherwise ask the world to fill a buffer
+/// as long as the pause, which is neither wanted nor cheap; a quarter second
+/// is well past any jitter a running host shows.
 const MAX_AUDIO_CATCH_UP_SECONDS: f64 = 0.25;
+
+/// The world's mix, pulled by the host a frame at a time.
 ///
-/// The frame's own duration is what drives the worlds, and none of their
-/// rates is an integer multiple of the display's, so each frame carries the
-/// fraction of a step it did not spend into the next one. Counting seconds
-/// rather than frames is what keeps the simulation at its rates on a display
-/// that redraws at anything but 60 Hz; a fixed-rate run passes an exact step
+/// Only a run that consumes the samples itself owns one of these: the headless
+/// run, which captures the mix, and the interactive run, which records it. The
+/// samples come out of the audio world's own [`dispatch_audio_fill`], so what
+/// a caller receives is exactly what an output stream would: every source's
+/// samples, the world's gain, and the clamp.
+///
+/// A windowed run takes none: its audio world opens an output device of its
+/// own and fills the device's ring from its own tick, so there is no buffer for
+/// the host to pull. That is why this type, rather than an `Option` on the
+/// stepper, is what says whether a run pulls: a run that has no `AudioPull`
+/// cannot silently pull nothing.
+///
+/// [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
+pub struct AudioPull {
+    /// The interleaved samples the last pull filled, reused across frames so
+    /// a run does not allocate one buffer per frame.
+    samples: Vec<f32>,
+    /// The audio time the last frame did not spend.
+    debt: f64,
+    /// How long one audio frame lasts.
+    period: f64,
+}
+
+impl AudioPull {
+    /// A puller for an audio world whose synthesizer runs at `sample_rate`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `sample_rate` is zero, which names no period at all.
+    #[must_use]
+    pub fn new(sample_rate: u32) -> Self {
+        assert!(sample_rate > 0, "an audio sample rate must be positive");
+        Self {
+            samples: Vec::new(),
+            debt: 0.0,
+            period: 1.0 / f64::from(sample_rate),
+        }
+    }
+
+    /// Fill the mix `delta_seconds` asks for and hand back the samples.
+    ///
+    /// The frames come out of `host`'s audio world at `world`, which must be
+    /// the stepped world this run drives. A frame whose duration is too short
+    /// to fill a whole sample frame fills nothing and carries the fraction
+    /// into the next one, the way the physics steps do.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the audio world is not available to fill.
+    pub fn pull(
+        &mut self,
+        host: &World,
+        world: Entity,
+        delta_seconds: f64,
+        format: AudioFormat,
+    ) -> Result<&[f32], String> {
+        // Debt past the catch-up limit is discarded rather than owed, the way
+        // `fixed_steps` discards it: the audio a long stall skipped is gone
+        // either way, and filling a buffer as long as the stall would only
+        // delay the run further. A negative interval — a clock that went
+        // backwards — owes nothing.
+        self.debt = (self.debt + delta_seconds.max(0.0)).min(MAX_AUDIO_CATCH_UP_SECONDS);
+        let frames = (self.debt / self.period) as usize;
+        self.debt -= frames as f64 * self.period;
+        if frames == 0 {
+            self.samples.clear();
+            return Ok(&self.samples);
+        }
+        self.samples.clear();
+        self.samples
+            .resize(frames * usize::from(format.channels), 0.0);
+        with_stepped_world_mut(host, world, |audio| {
+            dispatch_audio_fill(
+                audio,
+                &mut self.samples,
+                format.sample_rate,
+                format.channels,
+            );
+        })
+        .map_err(|error| format!("the audio world could not fill the mix: {error}"))?;
+        Ok(&self.samples)
+    }
+}
+
+/// The frame's own duration drives the worlds, and none of their rates is an
+/// integer multiple of the display's, so each frame carries the fraction of a
+/// step it did not spend into the next one. Counting seconds rather than
+/// frames is what keeps the simulation at its rates on a display that
+/// redraws at anything but 60 Hz; a fixed-rate run passes an exact step
 /// instead of a measured one, which is what makes it reproducible.
+///
+/// The mix is not among the worlds this drives at a rate of its own: a run
+/// that consumes it pulls it with [`AudioPull`], and a windowed run leaves
+/// filling to the audio world's own device.
 pub struct Stepping {
     /// The worlds this stepper drives.
     worlds: SceneWorlds,
     /// The physics time the last frame did not spend.
     physics_debt: f32,
-    /// The audio time the last frame did not spend.
-    audio_debt: f64,
     /// How long one physics step lasts.
     physics_period: f32,
-    /// How long one audio frame lasts, or none when the host pulls no audio.
-    sample_period: Option<f64>,
 }
 
 impl Stepping {
-    /// A stepper for a scene whose physics world runs at `physics_hz`, and —
-    /// when `sample_rate` is given — whose synthesizer runs at that rate.
+    /// A stepper for a scene whose physics world runs at `physics_hz`.
     ///
     /// Gameplay has no rate here: its world ticks once per frame, with the
-    /// frame's own duration.
+    /// frame's own duration. Neither does the mix: a run that consumes the
+    /// samples pulls them with [`AudioPull`], at the rate it names there.
     ///
     /// # Panics
     ///
-    /// Panics if a rate does not give a positive, finite period.
+    /// Panics if `physics_hz` gives no positive, finite period.
     #[must_use]
-    pub fn new(worlds: SceneWorlds, physics_hz: f64, sample_rate: Option<u32>) -> Self {
+    pub fn new(worlds: SceneWorlds, physics_hz: f64) -> Self {
         let physics_period = (1.0 / physics_hz) as f32;
         assert!(
             physics_period.is_finite() && physics_period > 0.0,
             "a physics rate must be a positive finite number, not {physics_hz}"
         );
-        assert!(
-            sample_rate.is_none_or(|rate| rate > 0),
-            "an audio sample rate must be positive"
-        );
         Self {
             worlds,
             physics_debt: 0.0,
-            audio_debt: 0.0,
             physics_period,
-            sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
         }
     }
 
@@ -194,26 +275,6 @@ impl Stepping {
             return outcome;
         }
         StepOutcome::Ran
-    }
-
-    /// The audio frames this frame's duration asks for, carrying the fraction
-    /// it did not spend into the next frame.
-    ///
-    /// Zero when the stepper was built without a sample rate.
-    pub fn audio_frames(&mut self, delta_seconds: f64) -> usize {
-        let Some(period) = self.sample_period else {
-            return 0;
-        };
-        // Debt past the catch-up limit is discarded rather than owed, the way
-        // `fixed_steps` discards it: a host that stalled for a long while
-        // would otherwise ask the world to fill a buffer as long as the pause,
-        // and the audio that pause skipped is gone either way. A negative
-        // interval — a clock that went backwards — owes nothing.
-        self.audio_debt =
-            (self.audio_debt + delta_seconds.max(0.0)).min(MAX_AUDIO_CATCH_UP_SECONDS);
-        let frames = (self.audio_debt / period) as usize;
-        self.audio_debt -= frames as f64 * period;
-        frames
     }
 }
 

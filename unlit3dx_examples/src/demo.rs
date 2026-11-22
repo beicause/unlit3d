@@ -58,16 +58,11 @@ impl App for Demo {
         ports: ScenePorts<'_>,
     ) -> SceneWorlds {
         let audio_setup = match ports.mode {
-            Mode::Windowed if R::SELF_DRIVEN => AudioSetup::Device,
-            // A stepped windowed run has no output device on the desktop,
-            // and a browser's audio context opens on the first Play click.
-            Mode::Windowed => {
-                if cfg!(target_arch = "wasm32") {
-                    AudioSetup::Device
-                } else {
-                    AudioSetup::Silent
-                }
-            }
+            // A windowed run leaves the mix to its audio world: the world opens
+            // the device and fills the device's ring from its own tick, so a
+            // stepped window plays exactly what a threaded one does. Whether
+            // the window is stepped is the runner's business, not audio's.
+            Mode::Windowed => AudioSetup::Device,
             Mode::Headless => {
                 if self.soundfont.is_empty() {
                     AudioSetup::Silent

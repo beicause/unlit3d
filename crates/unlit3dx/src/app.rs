@@ -71,7 +71,7 @@ pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;
 pub use options::RunOptions;
 pub use pace::Pacing;
-pub use scene::{Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
+pub use scene::{AudioPull, Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
 pub use windowed::{WindowOptions, windowed};
 
 #[cfg(all(
@@ -212,10 +212,9 @@ fn read_command<A: clap::Args>(argv: &[String]) -> Result<(RunOptions, A), clap:
 /// The windowed path is the one a browser and an Android activity take:
 /// neither has a headless run.
 ///
-/// # Panics
-///
-/// Panics when the platform refuses to build an event loop, which is fatal
-/// for a windowed run: there is nothing to fall back to.
+/// A run that cannot build its event loop exits with a failure status and a
+/// logged error rather than panicking: the platform has nothing to fall back
+/// to, so the exit is the whole report.
 pub fn run<A: App>(app: A) -> std::process::ExitCode {
     logging::init();
     let argv: Vec<String> = std::env::args().collect();

@@ -448,8 +448,7 @@ struct OpenOutput {
 ///
 /// # Panics
 ///
-/// Panics when `buffer_frames` cannot hold two fill chunks, or when
-/// `command_capacity` is zero.
+/// Panics when `buffer_frames` cannot hold two fill chunks.
 pub fn spawn_audio_world_with<R: WorldRunner>(
     host: &mut World,
     config: AudioConfig,

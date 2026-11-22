@@ -15,10 +15,10 @@ use super::App;
 use super::capture::Capture;
 use super::offscreen;
 use super::pace::Pacing;
-use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
-use crate::audio::dispatch_audio_fill;
+use super::scene::{AudioPull, Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
+use crate::audio::AudioFormat;
 use crate::host::{spawn_sub_world, tick_sub_world};
-use crate::world::{StepOutcome, Stepped, with_stepped_world_mut};
+use crate::world::{StepOutcome, Stepped};
 
 /// The audio sample rate a run renders at when its configuration names no
 /// other, in hertz.
@@ -153,15 +153,16 @@ pub async fn headless<A: App>(
         delta_time: (1.0 / HEADLESS_HZ) as f32,
         index: 0,
     };
-    // The stepper carries the step remainders: physics runs at its own rate
-    // and the synthesizer at the sample rate, neither necessarily an integer
-    // multiple of the frame rate, so both accumulate their fractional steps
-    // across frames.
+    // The stepper carries the physics remainder: physics runs at its own rate,
+    // not necessarily an integer multiple of the frame rate, so it accumulates
+    // the fractional steps across frames. The puller carries the mix's.
     let frames = RunFrames::default();
-    let mut stepper = Stepping::new(worlds, A::PHYSICS_HZ, Some(config.audio_sample_rate));
-    // The interleaved sample buffer, reused across frames so the audio loop
-    // does not allocate one per frame.
-    let mut samples_out: Vec<f32> = Vec::new();
+    let mut stepper = Stepping::new(worlds, A::PHYSICS_HZ);
+    let mut mix = AudioPull::new(config.audio_sample_rate);
+    let format = AudioFormat {
+        sample_rate: config.audio_sample_rate,
+        channels: AUDIO_CHANNELS as u16,
+    };
     // An unbounded run keeps a bounded mix: see `UNBOUNDED_MIX_SECONDS`.
     let mix_limit = config.pacing.frames.map_or_else(
         || (UNBOUNDED_MIX_SECONDS * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS,
@@ -193,28 +194,22 @@ pub async fn headless<A: App>(
         }
 
         // Audio: render whatever samples the frame's duration asks for.
-        let fill = stepper.audio_frames(1.0 / HEADLESS_HZ);
-        if fill > 0 {
-            samples_out.clear();
-            samples_out.resize(fill * AUDIO_CHANNELS, 0.0);
-            with_stepped_world_mut(&host, stepper.worlds().audio.entity, |audio| {
-                dispatch_audio_fill(
-                    audio,
-                    &mut samples_out,
-                    config.audio_sample_rate,
-                    AUDIO_CHANNELS as u16,
-                );
-            })
-            .map_err(|error| format!("the audio world could not fill the mix: {error}"))?;
+        let samples = mix.pull(
+            &host,
+            stepper.worlds().audio.entity,
+            1.0 / HEADLESS_HZ,
+            format,
+        )?;
+        if !samples.is_empty() {
             let room = mix_limit.saturating_sub(output.audio.len());
-            if room < samples_out.len() && !mix_capped {
+            if room < samples.len() && !mix_capped {
                 mix_capped = true;
                 log::warn!(
                     "the run has no length, so its mix stops at {UNBOUNDED_MIX_SECONDS} seconds; name --max-frames to record a longer one"
                 );
             }
-            let take = room.min(samples_out.len());
-            output.audio.extend_from_slice(&samples_out[..take]);
+            let take = room.min(samples.len());
+            output.audio.extend_from_slice(&samples[..take]);
         }
 
         // The render world advances and renders every frame. Readback remains

@@ -17,8 +17,8 @@ use super::App;
 use super::capture::Capture;
 use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, RENDER_COMMAND_CAPACITY};
 use super::offscreen;
-use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds, Stepping};
-use crate::audio::{AudioFormat, dispatch_audio_fill};
+use super::scene::{AudioPull, Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds, Stepping};
+use crate::audio::AudioFormat;
 use crate::host::{drain_sub_world, spawn_sub_world, tick_sub_world};
 use crate::record::{RecordedAudio, RecordingHandle, start_recording};
 use crate::world::{StepOutcome, Stepped, with_stepped_world_mut};
@@ -41,7 +41,10 @@ pub struct Interactive {
     stepper: Stepping,
     frames: RunFrames,
     frame: Frame,
-    samples: Vec<f32>,
+    /// The mix's puller, and the format it fills at. A recording observes the
+    /// fills, so the run pulls even when no one reads the samples back.
+    mix: AudioPull,
+    format: AudioFormat,
     recording: Option<RecordingHandle>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -70,20 +73,16 @@ impl Interactive {
                 return Ok(outcome);
             }
             self.frame.index = self.frames.advanced();
-            let frames = self.stepper.audio_frames(1.0 / HEADLESS_HZ);
-            if frames > 0 {
-                self.samples.clear();
-                self.samples.resize(frames * AUDIO_CHANNELS, 0.0);
-                with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
-                    dispatch_audio_fill(
-                        audio,
-                        &mut self.samples,
-                        AUDIO_SAMPLE_RATE,
-                        AUDIO_CHANNELS as u16,
-                    );
-                })
-                .map_err(|error| format!("the audio world could not fill the mix: {error}"))?;
-            }
+            // A recording observes the fills, so the frame has to fill even
+            // when nothing reads the samples back: the notes the frame booked
+            // only become recorded audio through a fill. Drawing without a
+            // recording fill would leave the mix ringing nothing at all.
+            self.mix.pull(
+                host,
+                self.worlds.audio.entity,
+                1.0 / HEADLESS_HZ,
+                self.format,
+            )?;
             {
                 let mut nested = host
                     .root_scope()
@@ -290,7 +289,7 @@ pub fn interactive<A: App>(
     let frames = RunFrames::default();
     host.root_scope_mut().spawn(bundle![frames.clone()]);
     let interactive = Interactive {
-        stepper: Stepping::new(worlds.clone(), A::PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
+        stepper: Stepping::new(worlds.clone(), A::PHYSICS_HZ),
         frames,
         worlds,
         render: render.entity,
@@ -301,7 +300,11 @@ pub fn interactive<A: App>(
             delta_time: (1.0 / HEADLESS_HZ) as f32,
             index: 0,
         },
-        samples: Vec::new(),
+        mix: AudioPull::new(AUDIO_SAMPLE_RATE),
+        format: AudioFormat {
+            sample_rate: AUDIO_SAMPLE_RATE,
+            channels: AUDIO_CHANNELS as u16,
+        },
         recording: None,
         capture: Capture::default(),
         device: device.device,

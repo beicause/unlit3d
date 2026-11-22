@@ -189,7 +189,10 @@ pub fn windowed<A: App>(
     world
         .root_scope_mut()
         .spawn(bundle![frames.clone(), pacing]);
-    let stepper = stepped.then(|| Stepping::new(worlds, A::PHYSICS_HZ, None));
+    // A windowed run pulls no mix: whatever the scene's audio world does with
+    // its samples, the device it opens fills its own ring from its own tick.
+    // Only a run that consumes the samples itself holds an `AudioPull`.
+    let stepper = stepped.then(|| Stepping::new(worlds, A::PHYSICS_HZ));
     world
         .root_scope_mut()
         .spawn(bundle![display_refresh_rate(refresh_millihertz)]);
