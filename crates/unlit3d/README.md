@@ -929,7 +929,7 @@ chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
 backend, and composites the result over the frame. It is the counterpart of
 [`EguiSource`](egui::EguiSource) for pages rather than widgets.
 
-The page is not the source's own: it is a [`BlitzDocument`](blitz::BlitzDocument)
+The page is not the source's own: it is a `BlitzDocument`
 component, and the source draws the first one its scope carries. Spawn a page
 under the source that draws it, exactly as a panel hangs under the egui source.
 The markup therefore lives in the world like any other behaviour, and the code
@@ -965,16 +965,16 @@ the pointer, wheel, key, text and IME events Blitz expects, in CSS pixels rather
 than the physical pixels an input reports, so hover, focus, scrolling, text
 editing and the checked state of form controls are Blitz's own. It has no
 script, though: what a page should do about an event is Rust's decision, and
-[`OnBlitzEvent`](blitz::OnBlitzEvent) is where it is made — a behaviour
+`OnBlitzEvent` is where it is made — a behaviour
 component that runs for every DOM event Blitz dispatches, with the node chain it
 would bubble through and the document it targets.
 
 Bytes come from the page itself: nothing reaches the network. A `data:` URL is
 decoded on the spot, and anything else is served by
-[`BlitzDocument::insert_resource`](blitz::BlitzDocument::insert_resource) from
+`BlitzDocument::insert_resource` from
 the bytes the entity registered for that path. A path resolves against the page
 base when the page loads it, so
-[`BlitzDocument::set_base_url`](blitz::BlitzDocument::set_base_url) moves the
+`BlitzDocument::set_base_url` moves the
 same registration to the addresses the new base gives it. A path nothing serves
 is answered with empty bytes, which a stylesheet reads as an empty sheet and an
 image as a failed load that leaves a hole: every request is answered, because a
@@ -1005,7 +1005,7 @@ of them the frame builds first.
 The page asks the host for one thing only: another frame. Cursor shape and the
 clipboard are not plumbed through, so a page never asks for them, and Rust
 decides what a click or a keystroke means through
-[`OnBlitzEvent`](blitz::OnBlitzEvent) instead. An input-method composition does
+`OnBlitzEvent` instead. An input-method composition does
 reach the page as the preedit and commit Blitz composes from, but the window
 never turns the platform's input method on, so a windowed run sees composition
 only when the host enables it.
