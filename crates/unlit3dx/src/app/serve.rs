@@ -22,7 +22,7 @@ use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, UNBOUNDED_
 use super::interactive::{Interactive, interactive};
 use super::pace::Pacing;
 use super::scene::RunFrames;
-use super::window_frame::WindowFrames;
+use super::window_frame::{FrameOutcome, WindowFrames};
 use crate::audio::AudioFormat;
 use crate::mcp::{pump_mcp, serve_mcp};
 use crate::world::StepOutcome;
@@ -425,8 +425,15 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
             return Err("the host has no client-paced frame driver".to_owned());
         };
         let mut stepped = 0;
-        while stepped < frames && window.submit(host, (1.0 / HEADLESS_HZ) as f32)? {
-            stepped += 1;
+        while stepped < frames {
+            match window.submit(host, (1.0 / HEADLESS_HZ) as f32) {
+                // A frame that drew, and one the surface had no image for,
+                // both count as stepped: the run moved on either way, and the
+                // client asked for frames of the run, not of the display.
+                FrameOutcome::Presented | FrameOutcome::Skipped => stepped += 1,
+                FrameOutcome::Ended => break,
+                FrameOutcome::Failed(message) => return Err(message),
+            }
         }
         Ok(json!({ "frame": advanced(host), "stepped": stepped }))
     })

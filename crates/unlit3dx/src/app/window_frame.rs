@@ -33,6 +33,30 @@ impl RunFailure {
     }
 }
 
+/// What one window frame came to.
+///
+/// The ways a frame ends are told apart by variant rather than folded into a
+/// `Result<bool, String>`: a spent frame budget and a scene whose worlds have
+/// all ended both stop the run without an error, a surface with no image is
+/// left to the next turn, and only [`FrameOutcome::Failed`] carries a message
+/// for the run to record. A caller therefore decides once per variant what to
+/// do, instead of re-deriving the case from a boolean it had to guess at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum FrameOutcome {
+    /// The frame was drawn and presented.
+    Presented,
+    /// The surface had no image to draw into, so nothing was drawn and the
+    /// next turn tries again. No world ticked: a frame nobody draws is no
+    /// time passing.
+    Skipped,
+    /// No frame will be drawn again, because the run's frame budget ran out
+    /// or the scene ended. The exit has already been requested.
+    Ended,
+    /// The frame could not be taken, and the run cannot continue. The caller
+    /// records the message, which stops the run.
+    Failed(String),
+}
+
 pub(super) struct WindowFrames {
     pub(super) render: Entity,
     pub(super) app: Entity,
@@ -45,55 +69,65 @@ pub(super) struct WindowFrames {
 }
 
 impl WindowFrames {
-    /// Return false when the surface is unavailable or the run is done.
-    pub(super) fn submit(&mut self, world: &World, delta_time: f32) -> Result<bool, String> {
+    /// Take one frame: step the worlds, draw, and present.
+    ///
+    /// The worlds are stepped only once a surface image is in hand, so a run
+    /// whose window is hidden or whose surface is being rebuilt stands still
+    /// rather than banking time it would then have to catch up on.
+    pub(super) fn submit(&mut self, world: &World, delta_time: f32) -> FrameOutcome {
         if self.pacing.is_spent(self.frames.advanced()) {
             exit(world, self.app);
-            return Ok(false);
+            return FrameOutcome::Ended;
         }
         if self.failure.0.borrow().is_some() {
-            return Err("the windowed run has already failed".to_owned());
+            return FrameOutcome::Failed("the windowed run has already failed".to_owned());
         }
         let index = self.frames.advanced();
         let mut frame = Frame { delta_time, index };
-        let mut finished = false;
+        // Why the worlds stopped, when they did: the stepper's outcome is the
+        // reason, so no separate flag has to carry it across the callback.
+        let mut stopped: Option<StepOutcome> = None;
         let result = present_turn(world, self.render, &mut frame, || {
-            match self
-                .stepper
-                .as_mut()
-                .map(|stepper| stepper.step(world, f64::from(delta_time)))
-            {
-                None | Some(StepOutcome::Ran) => Ok(()),
-                Some(StepOutcome::Finished | StepOutcome::Stopped) => {
-                    finished = true;
-                    Err("the scene ended".to_owned())
-                }
-                Some(StepOutcome::Failed) => Err("a simulation world failed".to_owned()),
+            let outcome = self.stepper.as_mut().map_or(StepOutcome::Ran, |stepper| {
+                stepper.step(world, f64::from(delta_time))
+            });
+            if outcome == StepOutcome::Ran {
+                Ok(())
+            } else {
+                stopped = Some(outcome);
+                Err(format!("a simulation world stopped ({outcome:?})"))
             }
         });
-        if finished {
+        if let Some(outcome) = stopped {
             exit(world, self.app);
-            return Ok(false);
+            return if outcome == StepOutcome::Failed {
+                FrameOutcome::Failed("a simulation world failed".to_owned())
+            } else {
+                FrameOutcome::Ended
+            };
         }
-        let result = result.and_then(|presented| {
-            if presented {
+        match result {
+            Ok(true) => {
                 self.frames.advance();
                 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-                if let Some(capture) = &self.capture {
-                    super::capture::capture_presented(world, self.render, capture, index)?;
+                if let Some(capture) = &self.capture
+                    && let Err(message) =
+                        super::capture::capture_presented(world, self.render, capture, index)
+                {
+                    return FrameOutcome::Failed(message);
                 }
                 if self.pacing.is_spent(self.frames.advanced()) {
                     exit(world, self.app);
+                    return FrameOutcome::Ended;
                 }
-            } else {
-                self.service_idle(world)?;
+                FrameOutcome::Presented
             }
-            Ok(presented)
-        });
-        if let Err(message) = &result {
-            self.failure.report(world, self.app, message.clone());
+            Ok(false) => match self.service_idle(world) {
+                Ok(()) => FrameOutcome::Skipped,
+                Err(message) => FrameOutcome::Failed(message),
+            },
+            Err(message) => FrameOutcome::Failed(message),
         }
-        result
     }
 
     fn service_idle(&self, world: &World) -> Result<(), String> {
@@ -120,20 +154,21 @@ pub(super) fn drive_window() -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER),
         |world, entity, frame| {
-            if let Ok(mut row) = world
+            let Ok(mut row) = world
                 .root_scope()
                 .try_query_one::<&mut WindowFrames>(entity)
-            {
-                let state = row.get();
-                if state.pacing.is_spent(state.frames.advanced()) {
-                    exit(world, state.app);
-                } else if state.pacing.client {
-                    if let Err(message) = state.service_idle(world) {
-                        state.failure.report(world, state.app, message);
-                    }
-                } else {
-                    let _ = state.submit(world, frame.delta_time);
+            else {
+                return;
+            };
+            let state = row.get();
+            if state.pacing.is_spent(state.frames.advanced()) {
+                exit(world, state.app);
+            } else if state.pacing.client {
+                if let Err(message) = state.service_idle(world) {
+                    state.failure.report(world, state.app, message);
                 }
+            } else if let FrameOutcome::Failed(message) = state.submit(world, frame.delta_time) {
+                state.failure.report(world, state.app, message);
             }
         },
     )
