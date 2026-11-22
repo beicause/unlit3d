@@ -410,8 +410,9 @@ pub(crate) mod sampling;
 pub use bundle::{LitMeshBundle, LitMeshPrimitive};
 pub use model::{
     LIT_MODEL_UPDATE_ORDER, LitModel, LitModelAnimation, LitModelBundle, LitModelChannel,
-    LitModelChannelValues, LitModelClip, LitModelInstance, LitModelInterpolation, LitModelMorph,
-    LitModelNode, LitModelNodeState, LitModelProperty, LitModelSkin,
+    LitModelClip, LitModelClock, LitModelData, LitModelError, LitModelInstance,
+    LitModelInterpolation, LitModelMorph, LitModelNode, LitModelNodeState, LitModelOutput,
+    LitModelSkin,
 };
 
 #[cfg(test)]

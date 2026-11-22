@@ -34,27 +34,23 @@ fn a_model_places_and_animates_its_own_subtree() {
             channels: vec![
                 LitModelChannel {
                     node: 1,
-                    property: LitModelProperty::Translation,
                     interpolation: LitModelInterpolation::Linear,
                     times: vec![0.0, 1.0],
-                    values: LitModelChannelValues::Translations(vec![
-                        [1.0, 0.0, 0.0],
-                        [3.0, 0.0, 0.0],
-                    ]),
+                    values: LitModelOutput::Translation(vec![[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
                 },
                 LitModelChannel {
                     node: 0,
-                    property: LitModelProperty::Weights,
                     interpolation: LitModelInterpolation::Step,
                     times: vec![0.0, 0.5],
-                    values: LitModelChannelValues::Weights {
+                    values: LitModelOutput::Weights {
                         targets: 2,
                         values: vec![0.25, 0.5, 0.75, 1.0],
                     },
                 },
             ],
         }],
-    );
+    )
+    .expect("the model is well formed");
     let mut world = World::new();
     let root = world.root_scope_mut().spawn(LitModelBundle {
         transform: Transform {
@@ -74,10 +70,10 @@ fn a_model_places_and_animates_its_own_subtree() {
         let mut query = scope.query_one::<&LitModelInstance>(root);
         let instance = query.get();
         (
-            instance.nodes[0],
-            instance.nodes[1],
-            instance.poses[0].unwrap(),
-            instance.weights[0].unwrap(),
+            instance.nodes()[0],
+            instance.nodes()[1],
+            instance.poses()[0].unwrap(),
+            instance.weights()[0].unwrap(),
         )
     };
     let (child, joint, pose, weights) = handles(&world, root);
@@ -87,7 +83,7 @@ fn a_model_places_and_animates_its_own_subtree() {
         let scope = world.root_scope();
         let mut query = scope.query_one::<&LitModelInstance>(root);
         assert_eq!(
-            query.get().matrices[0].transform_point3(Vec3::ZERO),
+            query.get().matrices()[0].transform_point3(Vec3::ZERO),
             Vec3::new(child_x, 1.0, 0.0)
         );
         assert_eq!(
@@ -150,13 +146,13 @@ fn explicit_evaluation_samples_without_advancing_time() {
             duration: 1.0,
             channels: vec![LitModelChannel {
                 node: 0,
-                property: LitModelProperty::Translation,
                 interpolation: LitModelInterpolation::Linear,
                 times: vec![0.0, 1.0],
-                values: LitModelChannelValues::Translations(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+                values: LitModelOutput::Translation(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
             }],
         }],
-    );
+    )
+    .expect("the model is well formed");
     let mut world = World::new();
     let root = world.root_scope_mut().spawn(LitModelBundle {
         transform: Transform::default(),
@@ -172,15 +168,157 @@ fn explicit_evaluation_samples_without_advancing_time() {
     assert_eq!(scope.query_one::<&LitModelAnimation>(root).get().time, 1.25);
     let mut instance_query = scope.query_one::<&LitModelInstance>(root);
     let instance = instance_query.get();
-    assert_eq!(instance.matrices[0].transform_point3(Vec3::ZERO).x, 0.25);
+    assert_eq!(instance.matrices()[0].transform_point3(Vec3::ZERO).x, 0.25);
 }
 
 #[test]
-fn malformed_parent_edges_are_cut_before_evaluation() {
+fn a_parent_outside_the_node_list_is_refused() {
     let nodes = vec![
         node(Some(1), Vec3::X),
         node(Some(0), Vec3::Y),
         node(Some(99), Vec3::Z),
     ];
-    assert_eq!(hierarchy(&nodes), [(1, None), (0, Some(1)), (2, None)]);
+    assert_eq!(
+        LitModel::new(nodes, Vec::new()).unwrap_err(),
+        LitModelError::ParentOutOfRange {
+            node: 2,
+            parent: 99
+        }
+    );
+}
+
+#[test]
+fn a_parent_cycle_is_refused() {
+    // Two nodes naming each other have no evaluation order: whatever order a
+    // walk picks, one of them multiplies by a matrix that is not built yet.
+    let nodes = vec![node(Some(1), Vec3::X), node(Some(0), Vec3::Y)];
+    assert_eq!(
+        LitModel::new(nodes, Vec::new()).unwrap_err(),
+        LitModelError::ParentCycle { node: 0 }
+    );
+}
+
+#[test]
+fn a_channel_short_of_the_values_its_keys_name_is_refused() {
+    let model = LitModel::new(
+        vec![node(None, Vec3::ZERO)],
+        vec![LitModelClip {
+            name: Some("short".to_owned()),
+            duration: 1.0,
+            channels: vec![LitModelChannel {
+                node: 0,
+                interpolation: LitModelInterpolation::Linear,
+                times: vec![0.0, 1.0],
+                values: LitModelOutput::Translation(vec![[0.0, 0.0, 0.0]]),
+            }],
+        }],
+    );
+    assert_eq!(
+        model.unwrap_err(),
+        LitModelError::ChannelValuesShort {
+            clip: 0,
+            channel: 0,
+            times: 2,
+            values: 1,
+            expected: 2
+        }
+    );
+}
+
+#[test]
+fn morph_weights_that_do_not_match_the_node_are_refused() {
+    let mut morphed = node(None, Vec3::ZERO);
+    morphed.morph = Some(LitModelMorph {
+        weights: vec![0.0, 0.0],
+    });
+    let model = LitModel::new(
+        vec![morphed],
+        vec![LitModelClip {
+            name: None,
+            duration: 1.0,
+            channels: vec![LitModelChannel {
+                node: 0,
+                interpolation: LitModelInterpolation::Linear,
+                times: vec![0.0, 1.0],
+                values: LitModelOutput::Weights {
+                    targets: 3,
+                    values: vec![0.0; 6],
+                },
+            }],
+        }],
+    );
+    assert_eq!(
+        model.unwrap_err(),
+        LitModelError::MorphTargetsMismatch {
+            clip: 0,
+            channel: 0,
+            node: 0,
+            targets: 3,
+            weights: 2
+        }
+    );
+}
+
+#[test]
+fn a_clip_is_found_by_the_name_the_document_gave_it() {
+    let model = LitModel::new(
+        vec![node(None, Vec3::ZERO)],
+        vec![
+            LitModelClip {
+                name: Some("Idle".to_owned()),
+                duration: 1.0,
+                channels: Vec::new(),
+            },
+            LitModelClip {
+                name: Some("Walk".to_owned()),
+                duration: 2.0,
+                channels: Vec::new(),
+            },
+        ],
+    )
+    .expect("the model is well formed");
+    assert_eq!(model.clip_index("Walk"), Some(1));
+    assert_eq!(model.clip_index("Run"), None);
+}
+
+#[test]
+fn a_manual_clock_leaves_the_stored_time_alone() {
+    let model = LitModel::new(
+        vec![node(None, Vec3::ZERO)],
+        vec![LitModelClip {
+            name: None,
+            duration: 1.0,
+            channels: vec![LitModelChannel {
+                node: 0,
+                interpolation: LitModelInterpolation::Linear,
+                times: vec![0.0, 1.0],
+                values: LitModelOutput::Translation(vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+            }],
+        }],
+    )
+    .expect("the model is well formed");
+    let mut world = World::new();
+    let root = world.root_scope_mut().spawn(LitModelBundle {
+        transform: Transform::default(),
+        model,
+        animation: LitModelAnimation {
+            clip: Some(0),
+            time: 0.25,
+            clock: LitModelClock::Manual,
+        },
+    });
+    dispatch_frame(
+        &mut world,
+        &mut Frame {
+            delta_time: 0.5,
+            index: 0,
+        },
+    );
+    let scope = world.root_scope();
+    assert_eq!(scope.query_one::<&LitModelAnimation>(root).get().time, 0.25);
+    let mut instance_query = scope.query_one::<&LitModelInstance>(root);
+    assert_eq!(
+        instance_query.get().matrices()[0].transform_point3(Vec3::ZERO),
+        Vec3::new(0.5, 0.0, 0.0)
+    );
 }

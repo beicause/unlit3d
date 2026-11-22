@@ -1,9 +1,6 @@
 //! Sampling for both authored models and decoded glTF clips.
 
-use super::model::{
-    LitModelChannel, LitModelChannelValues, LitModelInterpolation as Interpolation,
-    LitModelProperty,
-};
+use super::model::{LitModelChannel, LitModelInterpolation as Interpolation, LitModelOutput};
 use crate::components::Transform;
 
 /// How many values a keyframe stores under an interpolation.
@@ -193,64 +190,55 @@ fn quat(value: [f32; 4]) -> glam::Quat {
     }
 }
 
-/// Sample a channel after checking that it contains all the values its keys name.
+/// Sample a channel into the node local and weight buffer it drives.
+///
+/// [`LitModel::new`](super::LitModel::new) refuses a channel whose key times and
+/// values do not agree with its interpolation and target count, so this reads
+/// the values its keys name without a length guard: the only channel that can
+/// be short here is one built by hand, out of a model that was never checked.
 pub(super) fn sample_channel(
     channel: &LitModelChannel,
     time: f32,
     local: &mut Transform,
     weights: &mut Vec<f32>,
 ) {
-    let stride = interpolation_stride(channel.interpolation);
-    let Some(required) = channel.times.len().checked_mul(stride).filter(|&n| n != 0) else {
-        return;
-    };
     let mode = channel.interpolation;
     let times = &channel.times;
+    // A cubic keyframe stores its value in the middle of three slots.
     let value = usize::from(mode == Interpolation::CubicSpline);
-    match (channel.property, &channel.values) {
-        (LitModelProperty::Translation, LitModelChannelValues::Translations(values))
-            if values.len() >= required =>
-        {
-            local.translation = if times.len() == 1 {
+    let single = times.len() == 1;
+    match &channel.values {
+        LitModelOutput::Translation(values) => {
+            local.translation = if single {
                 values[value]
             } else {
                 sample_vec3(mode, times, values, time)
             }
             .into();
         }
-        (LitModelProperty::Scale, LitModelChannelValues::Scales(values))
-            if values.len() >= required =>
-        {
-            local.scale = if times.len() == 1 {
+        LitModelOutput::Scale(values) => {
+            local.scale = if single {
                 values[value]
             } else {
                 sample_vec3(mode, times, values, time)
             }
             .into();
         }
-        (LitModelProperty::Rotation, LitModelChannelValues::Rotations(values))
-            if values.len() >= required =>
-        {
-            local.rotation = if times.len() == 1 {
+        LitModelOutput::Rotation(values) => {
+            local.rotation = if single {
                 quat(values[value])
             } else {
                 sample_rotation(mode, times, values, time)
             };
         }
-        (LitModelProperty::Weights, LitModelChannelValues::Weights { targets, values })
-            if *targets > 0
-                && required
-                    .checked_mul(*targets)
-                    .is_some_and(|needed| values.len() >= needed) =>
-        {
-            if times.len() == 1 {
+        LitModelOutput::Weights { targets, values } => {
+            if single {
                 weights.clear();
                 weights.extend_from_slice(&values[value * targets..(value + 1) * targets]);
             } else {
                 sample_weights(mode, times, values, *targets, time, weights);
             }
         }
-        _ => {}
     }
 }
 
@@ -418,14 +406,12 @@ mod model_tests {
     use super::*;
 
     fn channel(
-        property: LitModelProperty,
         interpolation: LitModelInterpolation,
         times: Vec<f32>,
-        values: LitModelChannelValues,
+        values: LitModelOutput,
     ) -> LitModelChannel {
         LitModelChannel {
             node: 0,
-            property,
             interpolation,
             times,
             values,
@@ -435,10 +421,9 @@ mod model_tests {
     #[test]
     fn step_sampling_holds_the_last_key() {
         let channel = channel(
-            LitModelProperty::Translation,
             LitModelInterpolation::Step,
             vec![0.0, 1.0],
-            LitModelChannelValues::Translations(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+            LitModelOutput::Translation(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
         );
         let mut local = Transform::default();
         let mut weights = Vec::new();
@@ -449,35 +434,13 @@ mod model_tests {
     #[test]
     fn one_cubic_key_uses_the_value_slot() {
         let channel = channel(
-            LitModelProperty::Translation,
             LitModelInterpolation::CubicSpline,
             vec![0.0],
-            LitModelChannelValues::Translations(vec![
-                [9.0, 9.0, 9.0],
-                [1.0, 2.0, 3.0],
-                [8.0, 8.0, 8.0],
-            ]),
+            LitModelOutput::Translation(vec![[9.0, 9.0, 9.0], [1.0, 2.0, 3.0], [8.0, 8.0, 8.0]]),
         );
         let mut local = Transform::default();
         let mut weights = Vec::new();
         sample_channel(&channel, 0.0, &mut local, &mut weights);
         assert_eq!(local.translation, glam::Vec3::new(1.0, 2.0, 3.0));
-    }
-
-    #[test]
-    fn malformed_channels_are_ignored() {
-        let channel = channel(
-            LitModelProperty::Weights,
-            LitModelInterpolation::Linear,
-            vec![0.0, 1.0],
-            LitModelChannelValues::Weights {
-                targets: 2,
-                values: vec![0.5],
-            },
-        );
-        let mut local = Transform::default();
-        let mut weights = vec![7.0];
-        sample_channel(&channel, 0.5, &mut local, &mut weights);
-        assert_eq!(weights, vec![7.0]);
     }
 }

@@ -77,7 +77,7 @@ impl LitGltf {
         // drawn whole or discarded, so it neither blends nor needs the
         // back-to-front sort a blended one does. The cutoff itself is
         // per-instance state, so it rides the instance stream rather than the
-        // material group — see [`Self::spawn_node`].
+        // material group — see [`LitModelBundle`](crate::lit::LitModelBundle).
         if alpha_cutoff(&material).is_some() {
             options.alpha_cutoff = true;
         }
@@ -352,8 +352,8 @@ impl LitGltf {
     /// This is the one call that uploads a document: it inserts the images,
     /// builds the materials from them and uploads every primitive, and hands
     /// back a [`GltfResources`] holding all of it. Pass that to
-    /// [`Self::spawn_node`] or [`Self::spawn_default_scene`] to draw the
-    /// document; keep it alive for as long as the entities live.
+    /// [`Self::to_model`] to turn the default scene into model data; keep it
+    /// alive for as long as the entities that draw it live.
     ///
     /// A caller that inserts the pieces itself — to share a texture between
     /// documents, say — can call [`Self::insert_images`],

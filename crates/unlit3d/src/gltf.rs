@@ -1,8 +1,7 @@
 //! Load glTF documents and patch them into another world's
 //! [`MeshSource`](crate::mesh_source::MeshSource): upload textures, materials
 //! and meshes into an existing resource graph, unload them again, and prepare
-//! a reusable [`LitModel`](crate::lit::LitModel) or spawn the document's
-//! default scene with the lower-level API.
+//! the document's default scene as a reusable [`LitModel`](crate::lit::LitModel).
 //!
 //! [`LitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each
@@ -52,8 +51,7 @@
 //! node transforms, parent relationships, skins, morph weights and decoded
 //! clips; each bundle instance owns its root [`Transform`],
 //! so a caller can place and animate multiple instances without sharing ECS
-//! state. The lower-level `spawn_*` and `apply_animation` methods remain
-//! available when a caller needs to assemble or drive those entities directly.
+//! state.
 //! A caller that wants to insert one kind of resource at a time — to reuse a
 //! texture between documents, say — can still call
 //! [`LitGltf::insert_images`], [`LitGltf::insert_materials`] and
@@ -129,15 +127,13 @@
 //! morphs nothing rather than shifting the weights of the targets after it.
 //! A `doubleSided` material rasterizes its back faces instead of culling them,
 //! so its geometry draws from either side.
-//! A document's animations are sampled on demand:
-//! [`LitGltf::animation_count`], [`LitGltf::animation_name`] and
-//! [`LitGltf::animation_duration`] describe what the document carries, and
-//! [`LitGltf::apply_animation`] samples one at a time into the entities a
-//! spawn produced — moving each animated node's children with it, rebuilding
-//! the skin poses and writing the morph weights the clip targets. Nothing
-//! plays by itself; the caller picks the time, and passes the
-//! [`AnimationPlayer`] that holds the buffers the samples land in, so a frame
-//! that animates reuses them instead of allocating them again.
+//! A document's animations become clips of the model [`LitGltf::to_model`]
+//! prepares: [`LitGltf::animation_count`], [`LitGltf::animation_name`] and
+//! [`LitGltf::animation_duration`] describe what the document carries, and the
+//! model samples them into its own subtree when its playback state asks for
+//! one. Nothing plays by itself; the caller selects a clip and either lets the
+//! frame dispatcher advance it or writes the time itself — see
+//! [`LitModelAnimation`](crate::lit::LitModelAnimation).
 //! A primitive that carries normals uploads them, so a lit surface is shaded by
 //! the normals the document gives it rather than by the ones screen-space
 //! derivatives infer from its positions. A primitive compressed with
@@ -184,7 +180,6 @@ use core::mem::size_of;
 
 use crate::components::{GpuMaterial, GpuMesh, Transform};
 use crate::lit::LitPipelineKey;
-use unlit_ecs::prelude::Entity;
 use unlit_wgpu::resources::{ResHandle, TextureView};
 
 mod animation;
@@ -196,10 +191,9 @@ pub use self::image::MipChain;
 mod material;
 mod model;
 mod playback;
-pub use self::playback::AnimationPlayer;
+mod primitive;
 mod scene;
 mod skin;
-mod spawn;
 mod streams;
 #[cfg(test)]
 mod tests;
@@ -237,10 +231,29 @@ pub enum Error {
         /// The primitive that samples the texture.
         primitive: usize,
     },
-    /// The document declares no default scene, so [`LitGltf::spawn_default_scene`]
-    /// and [`LitGltf::to_model`] have no root nodes to instantiate.
+    /// The document declares no default scene, so [`LitGltf::to_model`] has no
+    /// root nodes to instantiate.
     #[error("the glTF document declares no default scene")]
     NoDefaultScene,
+    /// A skin's joint was left out of the node set the model carries.
+    ///
+    /// A joint and its whole ancestry join the model even when the default
+    /// scene leaves them outside, so this reports a document whose joint list
+    /// disagrees with the node list it is read against.
+    #[error("joint {joint} of the skin of node {node} is not a node of the model")]
+    JointOutsideModel {
+        /// The skinned node.
+        node: usize,
+        /// The joint index inside that skin.
+        joint: usize,
+    },
+    /// The document decoded into model data the model refused.
+    ///
+    /// The document is the source of the inconsistency, not the model: a skin
+    /// whose joints fall outside the nodes the default scene reaches, or an
+    /// accessor that states fewer values than its key times name, lands here.
+    #[error(transparent)]
+    Model(#[from] crate::lit::LitModelError),
     /// A material samples its base-color texture, but the image the texture
     /// names was not among the images the caller inserted.
     ///
@@ -347,13 +360,6 @@ pub struct LitGltf {
     /// node's local translation, rotation or scale, and the world matrices are
     /// then recomposed from these locals and [`Self::parents`].
     locals: Vec<Transform>,
-    /// The children of every node, indexed by node index.
-    ///
-    /// An animation walks it to mark what a moved node carries.
-    children: Vec<Vec<usize>>,
-    /// Every node index, parent before child: the order the world matrices are
-    /// recomposed in, so a node always sees its parent's matrix.
-    order: Vec<usize>,
     /// How many morph targets each node's mesh displaces, indexed by node index.
     ///
     /// A weights channel is as long as its targets, so a frame needs the count
@@ -464,33 +470,11 @@ pub struct GltfMesh {
     pub mesh: GpuMesh,
 }
 
-/// The entities a spawned glTF node consists of.
-///
-/// Produced by [`LitGltf::spawn_node`] / [`LitGltf::spawn_default_scene`]
-/// and given back to [`LitGltf::apply_animation`], which drives the node's
-/// transform, its [`SkinPose`](crate::components::SkinPose) and its
-/// [`MorphWeights`](crate::components::MorphWeights) through the entities this
-/// names.
-#[derive(Clone, Debug)]
-pub struct GltfNode {
-    /// The node in the glTF document these entities draw.
-    pub node: NodeId,
-    /// One entity per primitive of the node's mesh; empty for a node with no
-    /// mesh.
-    pub entities: Vec<Entity>,
-    /// The entity holding the node's [`SkinPose`](crate::components::SkinPose),
-    /// when the node is skinned.
-    pub pose: Option<Entity>,
-    /// The entity holding the node's [`MorphWeights`](crate::components::MorphWeights),
-    /// when the node's mesh has morph targets.
-    pub weights: Option<Entity>,
-}
-
 /// Every resource one document uploaded, in document order.
 ///
 /// Produced by [`LitGltf::insert_resources`], which uploads the whole
-/// document in one call, and taken by [`LitGltf::spawn_node`] and
-/// [`LitGltf::spawn_default_scene`] to draw it. Each vector is in document
+/// document in one call, and taken by [`LitGltf::to_model`] to draw it. Each
+/// vector is in document
 /// order — `images[i]` came from image `i`, `materials[m]` from material
 /// `m` (`None` when it names no base-color texture), and `meshes` holds every
 /// primitive of every mesh, document-mesh-major and then primitive-minor —
@@ -612,8 +596,6 @@ impl LitGltf {
             node_matrices,
             parents,
             locals,
-            children,
-            order,
             morph_targets,
             first_primitive,
             matrix_nodes,

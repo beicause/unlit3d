@@ -232,7 +232,7 @@ pub(super) async fn a_placement_moves_the_whole_document() {
     let mut instance = scope.query_one::<&LitModelInstance>(root);
     let mut translations: Vec<f32> = instance
         .get()
-        .draws
+        .draws()
         .iter()
         .flatten()
         .map(|&entity| scope.query_one::<&Transform>(entity).get().translation.x)

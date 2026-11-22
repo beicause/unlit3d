@@ -8,6 +8,7 @@ use glam::Mat4;
 use unlit_wgpu::context::{GpuContext, RenderDevice};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::gltf::LitGltf;
+use unlit3d::lit::LitModel;
 use unlit3d::prelude::*;
 
 pub mod cli;
@@ -194,7 +195,7 @@ pub fn build_world(
         let clip = document
             .animation
             .as_ref()
-            .map(|animation| animation_index(&gltf, animation))
+            .map(|animation| clip_index(&model, animation))
             .transpose()?;
         world.scope_mut(source_entity).spawn(LitModelBundle {
             transform: document
@@ -205,8 +206,7 @@ pub fn build_world(
             animation: LitModelAnimation {
                 clip,
                 time: document.time,
-                speed: 0.0,
-                looping: false,
+                clock: LitModelClock::Manual,
             },
         });
     }
@@ -531,42 +531,41 @@ fn camera(config: &CameraConfig, render_size: (u32, u32)) -> Camera {
 }
 
 /// Resolve the animation a document reference names.
-fn animation_index(document: &LitGltf, reference: &AnimationRef) -> Result<usize, Error> {
+///
+/// The reference is resolved against the model the document became, not
+/// against the document itself: `to_model` drops the nodes the default scene
+/// does not reach, and a clip index has to mean the same thing on both sides.
+fn clip_index(model: &LitModel, reference: &AnimationRef) -> Result<usize, Error> {
     match reference {
         AnimationRef::Index(index) => {
-            if *index < document.animation_count() {
+            if *index < model.animations.len() {
                 Ok(*index)
             } else {
                 Err(Error::Animation(format!(
                     "animation index {index} is out of range: the document has {} animations",
-                    document.animation_count()
+                    model.animations.len()
                 )))
             }
         }
-        AnimationRef::Name(name) => (0..document.animation_count())
-            .find(|&animation| {
-                document.animation_name(unlit3d::gltf::AnimationId::new(animation))
-                    == Some(name.as_str())
-            })
-            .ok_or_else(|| {
-                Error::Animation(format!(
-                    "the document has no animation named {name}; it has {}",
-                    animation_list(document)
-                ))
-            }),
+        AnimationRef::Name(name) => model.clip_index(name).ok_or_else(|| {
+            Error::Animation(format!(
+                "the document has no animation named {name}; it has {}",
+                clip_list(model)
+            ))
+        }),
     }
 }
 
-/// The comma-separated animation names of a document.
-fn animation_list(document: &LitGltf) -> String {
+/// The comma-separated animation names of a model.
+fn clip_list(model: &LitModel) -> String {
     let mut list = String::new();
-    for animation in 0..document.animation_count() {
-        if animation > 0 {
+    for (index, clip) in model.animations.iter().enumerate() {
+        if index > 0 {
             list.push_str(", ");
         }
-        match document.animation_name(unlit3d::gltf::AnimationId::new(animation)) {
+        match &clip.name {
             Some(name) => list.push_str(name),
-            None => list.push_str(&format!("#{animation}")),
+            None => list.push_str(&format!("#{index}")),
         }
     }
     if list.is_empty() {

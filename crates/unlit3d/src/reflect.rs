@@ -23,8 +23,8 @@ mod registry;
 
 pub use proxies::{
     AabbProxy, ColorLoadOpProxy, DepthLoadOpProxy, GpuMaterialProxy, GpuMeshProxy,
-    GpuRenderPipelineProxy, InputEventsProxy, InputStateProxy, LineProxy, Mat4Proxy, Mat4VecProxy,
-    QuatProxy, StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
+    GpuRenderPipelineProxy, InputEventsProxy, InputStateProxy, LineProxy, LitModelInstanceProxy,
+    Mat4Proxy, Mat4VecProxy, QuatProxy, StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
 };
 pub use unlit_ecs::reflect::{
     ComponentEntry, ComponentError, contains, current_partial, default_partial, encode_json,

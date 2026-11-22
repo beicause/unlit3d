@@ -1,10 +1,7 @@
 //! Decode glTF animation channels into the shared model representation.
 
 use crate::lit::sampling::interpolation_stride;
-use crate::lit::{
-    LitModelChannel as Channel, LitModelChannelValues as ChannelValues, LitModelInterpolation,
-    LitModelProperty,
-};
+use crate::lit::{LitModelChannel as Channel, LitModelInterpolation, LitModelOutput};
 use gltf::animation::Property;
 use gltf::animation::util::ReadOutputs;
 
@@ -56,13 +53,20 @@ pub(super) fn channels(
         }
         let values = match (channel.target().property(), outputs) {
             (Property::Translation, ReadOutputs::Translations(values)) => {
-                ChannelValues::Translations(complete(values, required))
+                match complete(values, required) {
+                    Some(values) => LitModelOutput::Translation(values),
+                    None => continue,
+                }
             }
-            (Property::Scale, ReadOutputs::Scales(values)) => {
-                ChannelValues::Scales(complete(values, required))
-            }
+            (Property::Scale, ReadOutputs::Scales(values)) => match complete(values, required) {
+                Some(values) => LitModelOutput::Scale(values),
+                None => continue,
+            },
             (Property::Rotation, ReadOutputs::Rotations(values)) => {
-                ChannelValues::Rotations(complete(values.into_f32(), required))
+                match complete(values.into_f32(), required) {
+                    Some(values) => LitModelOutput::Rotation(values),
+                    None => continue,
+                }
             }
             (Property::MorphTargetWeights, ReadOutputs::MorphTargetWeights(values)) => {
                 let targets = morph_targets[node];
@@ -73,18 +77,11 @@ pub(super) fn channels(
                 if targets == 0 || values.len() < required * targets {
                     continue;
                 }
-                ChannelValues::Weights { targets, values }
+                LitModelOutput::Weights { targets, values }
             }
             _ => continue,
         };
-        let property = match &values {
-            ChannelValues::Translations(_) => LitModelProperty::Translation,
-            ChannelValues::Scales(_) => LitModelProperty::Scale,
-            ChannelValues::Rotations(_) => LitModelProperty::Rotation,
-            ChannelValues::Weights { .. } => LitModelProperty::Weights,
-        };
         channels.push(Channel {
-            property,
             node,
             interpolation,
             times,
@@ -96,11 +93,7 @@ pub(super) fn channels(
 
 /// The values of a channel that states every keyframe the times name, or
 /// nothing when it states fewer — such a channel cannot be sampled.
-fn complete<T>(values: impl Iterator<Item = T>, required: usize) -> Vec<T> {
+fn complete<T>(values: impl Iterator<Item = T>, required: usize) -> Option<Vec<T>> {
     let values: Vec<T> = values.collect();
-    if values.len() < required {
-        Vec::new()
-    } else {
-        values
-    }
+    (values.len() >= required).then_some(values)
 }

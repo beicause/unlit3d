@@ -111,7 +111,7 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
         .root_scope()
         .query_one::<&super::LitModelInstance>(root)
         .get()
-        .draws
+        .draws()
         .iter()
         .flatten()
         .copied()
@@ -221,7 +221,7 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
 
         // The cutoff is per-instance state the spawned entity carries, not a
         // uniform the material binds: the key only declares that fragments are
-        // cut off, and `spawn_node` writes each instance's own value.
+        // cut off, and the model writes each instance's own value.
         let key = gpu.with_mesh_source(&world, |source, world| {
             gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
         });

@@ -5,8 +5,9 @@ use super::documents::{
     spawn_scene,
 };
 use super::{
-    AnimationId, Ctx, HEIGHT, LitGltf, LitModelAnimation, LitModelBundle, LitModelInstance,
-    MorphBinding, MorphWeights, NodeId, SkinBinding, SkinPose, TestGpu, WIDTH, World, bundle,
+    AnimationId, Ctx, HEIGHT, LitGltf, LitModelAnimation, LitModelBundle, LitModelClock,
+    LitModelInstance, MorphBinding, MorphWeights, NodeId, SkinBinding, SkinPose, TestGpu, WIDTH,
+    World, bundle,
 };
 
 /// A morphed quad follows its weights: spawning binds the mesh to a weight
@@ -42,7 +43,7 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
         scope
             .query_one::<&LitModelInstance>(root)
             .get()
-            .draws
+            .draws()
             .iter()
             .flatten()
             .count(),
@@ -145,8 +146,7 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
         *scope.query_one::<&mut LitModelAnimation>(root).get() = LitModelAnimation {
             clip: Some(0),
             time,
-            speed: 0.0,
-            looping: false,
+            clock: LitModelClock::Manual,
         };
         LitModelBundle::evaluate(&scope, root);
         gpu.render(&world);
@@ -206,7 +206,7 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
         scope
             .query_one::<&LitModelInstance>(root)
             .get()
-            .draws
+            .draws()
             .iter()
             .flatten()
             .count(),
@@ -290,7 +290,7 @@ pub(super) async fn a_mirrored_skin_pose_draws_its_front_faces() {
         scope
             .query_one::<&LitModelInstance>(root)
             .get()
-            .draws
+            .draws()
             .iter()
             .flatten()
             .count(),

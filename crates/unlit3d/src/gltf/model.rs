@@ -3,15 +3,36 @@
 use super::{AnimationId, GltfResources, LitGltf};
 use crate::lit::{LitModel, LitModelClip, LitModelMorph, LitModelNode, LitModelSkin};
 
+/// Remap a skin's joints into model node indices.
+///
+/// Building the included set added every joint, and each joint's ancestry with
+/// it, so every cell here is filled; a document whose joint list changed after
+/// that pass would leave one empty, and the error names it rather than
+/// asserting a fact the caller cannot check.
+fn remapped_joints(
+    joints: impl Iterator<Item = Option<usize>>,
+    node: usize,
+) -> Result<Vec<usize>, super::Error> {
+    joints
+        .enumerate()
+        .map(|(joint, cell)| cell.ok_or(super::Error::JointOutsideModel { node, joint }))
+        .collect()
+}
+
 impl LitGltf {
     /// Prepare the default scene as a reusable model asset with no playback state.
     /// Only the scene and any joint dependencies become model nodes. Animation
     /// channels are remapped to those nodes; clip indices stay unchanged.
     ///
+    /// A skin keeps the joints the document leaves outside the default scene:
+    /// an animation that drives a skeleton has to find every joint of it, so
+    /// the skeleton comes along whether or not the scene reaches it.
+    ///
     /// # Errors
     ///
-    /// Returns an error if there is no default scene or a drawn primitive is
-    /// missing its uploaded mesh or material.
+    /// Returns an error if there is no default scene, a drawn primitive is
+    /// missing its uploaded mesh or material, or the document decodes into
+    /// model data [`LitModel::new`] refuses — see [`super::Error::Model`].
     pub fn to_model(&self, resources: &GltfResources) -> Result<LitModel, super::Error> {
         let scene = self
             .document
@@ -59,37 +80,8 @@ impl LitGltf {
                         .collect::<Result<Vec<_>, _>>()?,
                     None => Vec::new(),
                 };
-                let skin = primitives
-                    .iter()
-                    .any(|primitive| primitive.mesh.skinned)
-                    .then(|| node.skin())
-                    .flatten()
-                    .map(|skin| {
-                        let reader = skin.reader(|buffer| {
-                            self.buffers
-                                .get(buffer.index())
-                                .map(|data| data.0.as_slice())
-                        });
-                        let joints = skin
-                            .joints()
-                            .map(|joint| {
-                                remap[joint.index()]
-                                    .expect("joint dependencies were included before remapping")
-                            })
-                            .collect();
-                        let inverse_bind = reader
-                            .read_inverse_bind_matrices()
-                            .map(|values| {
-                                values
-                                    .map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        LitModelSkin {
-                            joints,
-                            inverse_bind,
-                        }
-                    });
+                let skinned = primitives.iter().any(|primitive| primitive.mesh.skinned);
+                let skin = self.model_skin(&node, index, &remap, skinned)?;
                 let morph = primitives
                     .iter()
                     .any(|primitive| primitive.mesh.morph_targets > 0)
@@ -108,12 +100,21 @@ impl LitGltf {
         let animations = (0..self.document.animations().count())
             .map(|index| self.clip_model(AnimationId::new(index), &remap))
             .collect();
-        Ok(LitModel::new(nodes, animations))
+        Ok(LitModel::new(nodes, animations)?)
     }
 
     fn clip_model(&self, animation: AnimationId, remap: &[Option<usize>]) -> LitModelClip {
-        let channels: Vec<_> = self
-            .clip(animation)
+        let source = self.clip(animation);
+        // The length is the document's, taken before any channel is dropped:
+        // a clip that drives a node this model leaves out was still authored as
+        // long as the document says, so a caller phases over the clip the
+        // author made rather than over the part of it that survived the remap.
+        // `animation_duration` answers the same number from the same channels.
+        let duration = source
+            .iter()
+            .filter_map(|channel| channel.times.last().copied())
+            .fold(0.0, f32::max);
+        let channels: Vec<_> = source
             .iter()
             .filter_map(|channel| {
                 Some(crate::lit::LitModelChannel {
@@ -122,14 +123,50 @@ impl LitGltf {
                 })
             })
             .collect();
-        let duration = channels
-            .iter()
-            .filter_map(|channel| channel.times.last().copied())
-            .fold(0.0, f32::max);
         LitModelClip {
             name: self.animation_name(animation).map(str::to_owned),
             duration,
             channels,
         }
+    }
+
+    /// The skin a model node carries, or `None` when no drawn primitive of it
+    /// is skinned.
+    ///
+    /// A node's skin is only carried when a primitive drawn from it is
+    /// skinned: an unskinned draw would ignore the pose, so the joints and the
+    /// per-frame matrix work that comes with them would be spent for nothing.
+    fn model_skin(
+        &self,
+        node: &gltf::Node<'_>,
+        index: usize,
+        remap: &[Option<usize>],
+        skinned: bool,
+    ) -> Result<Option<LitModelSkin>, super::Error> {
+        let Some(skin) = node.skin().filter(|_| skinned) else {
+            return Ok(None);
+        };
+        let reader = skin.reader(|buffer| {
+            self.buffers
+                .get(buffer.index())
+                .map(|data| data.0.as_slice())
+        });
+        // Every joint was added to the included set above, and its ancestors
+        // with it, so the remapped set covers them. A joint it missed would
+        // leave a skin indexing a node the model does not carry, which is what
+        // the error names.
+        let joints = remapped_joints(skin.joints().map(|joint| remap[joint.index()]), index)?;
+        let inverse_bind = reader
+            .read_inverse_bind_matrices()
+            .map(|values| {
+                values
+                    .map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Some(LitModelSkin {
+            joints,
+            inverse_bind,
+        }))
     }
 }

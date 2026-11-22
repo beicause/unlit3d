@@ -295,8 +295,8 @@ pub(super) const ANIMATED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZm
 /// whole screen to the left at `t = 2`.
 ///
 /// The mesh node itself is never animated, so the quad only leaves the frame
-/// because `apply_animation` recomposed the joint and rebuilt the skin pose
-/// against it.
+/// because the model recomposed the joint and rebuilt the skin pose against
+/// it.
 pub(super) fn animated_skinned_document() -> Vec<u8> {
     let json = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],"scene":0,
  "scenes":[{"nodes":[0]}],

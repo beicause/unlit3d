@@ -16,6 +16,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh, GpuRenderPipeline};
 use crate::input::{InputEvent, InputEvents, InputState};
+use crate::lit::LitModelInstance;
 
 /// A [wgpu::LoadOp] over an `f32` as either a clear to a value or a load.
 ///
@@ -415,5 +416,47 @@ impl From<Mat4VecProxy> for Vec<Mat4> {
 impl From<&Vec<Mat4>> for Mat4VecProxy {
     fn from(value: &Vec<Mat4>) -> Self {
         Self(value.iter().map(Mat4::to_cols_array).collect())
+    }
+}
+
+/// A [LitModelInstance] as the node handles and node matrices it derives.
+///
+/// The instance is the model's own bookkeeping: it spawns the node, draw, pose
+/// and weight entities and rewrites them as it evaluates, so the type is
+/// read-only from a JSON bridge's side. Its read shape is what a caller can
+/// usefully ask for — which entity is which node, and where each node ended up
+/// in world space — rather than the eight parallel vectors it keeps.
+#[derive(Facet)]
+pub struct LitModelInstanceProxy {
+    /// One node entity per model node, indexed like the model's own node list.
+    #[facet(default)]
+    pub nodes: Vec<u64>,
+    /// Each node's world matrix, in column-major order.
+    #[facet(default)]
+    pub matrices: Vec<[f32; 16]>,
+}
+
+impl From<&LitModelInstance> for LitModelInstanceProxy {
+    fn from(instance: &LitModelInstance) -> Self {
+        Self {
+            nodes: instance
+                .nodes()
+                .iter()
+                .map(|entity| entity.to_bits())
+                .collect(),
+            matrices: instance
+                .matrices()
+                .iter()
+                .map(glam::Mat4::to_cols_array)
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<LitModelInstanceProxy> for LitModelInstance {
+    type Error = String;
+
+    fn try_from(_proxy: LitModelInstanceProxy) -> Result<Self, Self::Error> {
+        Err("LitModelInstance is read-only; spawn a LitModelBundle to build one".to_string())
     }
 }

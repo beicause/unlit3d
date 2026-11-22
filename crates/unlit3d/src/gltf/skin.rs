@@ -1,8 +1,11 @@
 //! A node's skin and morph weights, read out of the document.
 //!
 //! The pose is the deformation a mesh's joint stream addresses; the weights
-//! are the morph targets' blend factors. Both are per-node state, so a caller
-//! spawns one of each per node and rewrites them while animating.
+//! are the morph targets' blend factors. Both are per-node state: a model node
+//! carries them as [`LitModelSkin`](crate::lit::LitModelSkin) and
+//! [`LitModelMorph`](crate::lit::LitModelMorph), and these accessors answer the
+//! same questions about the document alone, for a caller inspecting one before
+//! building a model.
 
 use super::{LitGltf, NodeId};
 use crate::components::SkinPose;
@@ -35,16 +38,8 @@ impl LitGltf {
     /// `inverseBindMatrices` than it has joints binds the joints beyond them
     /// at the identity, so each of those poses by its own world matrix.
     pub fn skin_pose(&self, node: NodeId) -> SkinPose {
-        self.skin_pose_with_matrices(node.index(), &self.node_matrices)
-    }
-
-    /// The [`SkinPose`] a node's skin deforms by, evaluated against a given
-    /// set of node world matrices.
-    ///
-    /// [`Self::skin_pose`] evaluates the rest pose; [`Self::apply_animation`]
-    /// evaluates one where the joints have been animated.
-    pub(super) fn skin_pose_with_matrices(&self, node: usize, matrices: &[glam::Mat4]) -> SkinPose {
-        let node_data = self.node(node);
+        let node_index = node.index();
+        let node_data = self.node(node_index);
         let Some(skin) = node_data.skin() else {
             return SkinPose::default();
         };
@@ -61,7 +56,7 @@ impl LitGltf {
             .joints()
             .enumerate()
             .map(|(joint, joint_node)| {
-                let joint_world = matrices[joint_node.index()];
+                let joint_world = self.node_matrices[joint_node.index()];
                 // The specification asks for one inverse bind matrix per
                 // joint, but nothing in the document JSON says so: a list
                 // shorter than the joint array is a document whose skin says
@@ -75,17 +70,6 @@ impl LitGltf {
             })
             .collect();
         SkinPose { matrices: poses }
-    }
-
-    /// Whether a node's skin deformed this frame, given which nodes moved.
-    ///
-    /// A pose depends on every joint's world matrix, so it is stale when any
-    /// joint moved and current otherwise. Walking the joints is cheaper than
-    /// rebuilding a matrix per joint and writing it back.
-    pub(super) fn skin_moved(&self, node: usize, dirty: &[bool]) -> bool {
-        self.node(node)
-            .skin()
-            .is_some_and(|skin| skin.joints().any(|joint| dirty[joint.index()]))
     }
 
     /// The number of joints a node's skin has.

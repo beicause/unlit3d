@@ -4,33 +4,212 @@
 //! transforms, skin poses, and morph weights are model-owned derived state:
 //! callers edit the root, node states, or playback component, then the model
 //! evaluates those inputs into its child entities.
+//!
+//! The model owns its subtree. Despawning part of it leaves the instance
+//! incomplete: evaluation writes to the handles that are still alive and
+//! leaves the rest where they were, because a model is spawned as one unit and
+//! a piece of it going away is a caller bug the frame cannot repair. Despawn
+//! the root to remove the whole model.
 
 #[cfg(test)]
 mod tests;
+
+use std::ops::Deref;
+use std::rc::Rc;
 
 use super::sampling::sample_channel;
 use crate::components::{MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform};
 use crate::frame::{FrameBehaviourOrder, OnFrame};
 use crate::lit::{LitMeshBundle, LitMeshPrimitive};
-use unlit_ecs::{Bundle, DynamicBundle, Entity, OnSpawn, ScopeMut, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, OnSpawn, Scope, ScopeMut, World, bundle};
 
 /// The update band for model graph evaluation.
 pub const LIT_MODEL_UPDATE_ORDER: FrameBehaviourOrder = FrameBehaviourOrder(-10);
 
-/// Prepared model data. GPU handles are cloneable, so one asset can serve many instances.
-#[derive(Clone, Debug)]
-pub struct LitModel {
+/// Why a [`LitModel`] could not be built.
+///
+/// Every case the sampler would otherwise have to tolerate is caught here, so a
+/// built model indexes its own data without a guard: a channel that names a
+/// node, a joint, or a keyframe the model does not carry is refused at the door
+/// rather than skipped on every frame.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum LitModelError {
+    /// A node names a parent index outside the node list.
+    #[error("node {node} names parent {parent}, which is not a node of the model")]
+    ParentOutOfRange {
+        /// The node that states the parent.
+        node: usize,
+        /// The parent it names.
+        parent: usize,
+    },
+    /// The parent chain of a node runs in a circle, so it has no root.
+    #[error("the parent chain of node {node} runs in a circle")]
+    ParentCycle {
+        /// One node of the cycle.
+        node: usize,
+    },
+    /// A channel targets a node index outside the node list.
+    #[error(
+        "channel {channel} of clip {clip} targets node {node}, which is not a node of the model"
+    )]
+    ChannelNodeOutOfRange {
+        /// The clip the channel belongs to.
+        clip: usize,
+        /// The channel inside that clip.
+        channel: usize,
+        /// The node it targets.
+        node: usize,
+    },
+    /// A channel states no keyframe at all.
+    #[error("channel {channel} of clip {clip} states no keyframe")]
+    ChannelWithoutKeys {
+        /// The clip the channel belongs to.
+        clip: usize,
+        /// The channel inside that clip.
+        channel: usize,
+    },
+    /// A channel's key times are not in ascending order.
+    #[error("channel {channel} of clip {clip} states a key time at {index} that is not ascending")]
+    ChannelTimesNotAscending {
+        /// The clip the channel belongs to.
+        clip: usize,
+        /// The channel inside that clip.
+        channel: usize,
+        /// The index of the offending key time.
+        index: usize,
+    },
+    /// A channel's key times are not finite numbers.
+    #[error("channel {channel} of clip {clip} states a key time at {index} that is not a number")]
+    ChannelTimeNotFinite {
+        /// The clip the channel belongs to.
+        clip: usize,
+        /// The channel inside that clip.
+        channel: usize,
+        /// The index of the offending key time.
+        index: usize,
+    },
+    /// A channel states fewer values than its keyframes and interpolation need.
+    #[error(
+        "channel {channel} of clip {clip} states {values} values, \
+         but its {times} keyframes need {expected}"
+    )]
+    ChannelValuesShort {
+        /// The clip the channel belongs to.
+        clip: usize,
+        /// The channel inside that clip.
+        channel: usize,
+        /// How many keyframes the channel states.
+        times: usize,
+        /// How many values it states.
+        values: usize,
+        /// How many values its keyframes need.
+        expected: usize,
+    },
+    /// A weights channel animates a target count the node does not carry.
+    #[error(
+        "channel {channel} of clip {clip} animates {targets} morph targets, \
+         but node {node} carries {weights}"
+    )]
+    MorphTargetsMismatch {
+        /// The clip the channel belongs to.
+        clip: usize,
+        /// The channel inside that clip.
+        channel: usize,
+        /// The node it targets.
+        node: usize,
+        /// How many targets the channel animates.
+        targets: usize,
+        /// How many the node carries.
+        weights: usize,
+    },
+    /// A skin names a joint index outside the node list.
+    #[error("the skin of node {node} names joint {joint}, which is not a node of the model")]
+    JointOutOfRange {
+        /// The skinned node.
+        node: usize,
+        /// The joint it names.
+        joint: usize,
+    },
+    /// A skin's inverse bind matrices do not pair with its joints.
+    #[error("the skin of node {node} states {matrices} inverse bind matrices for {joints} joints")]
+    InverseBindCount {
+        /// The skinned node.
+        node: usize,
+        /// How many joints it states.
+        joints: usize,
+        /// How many inverse bind matrices it states.
+        matrices: usize,
+    },
+    /// A clip states a duration that is not a finite, non-negative length.
+    #[error("clip {clip} states the duration {duration}, which is not a length")]
+    ClipDuration {
+        /// The clip.
+        clip: usize,
+        /// The duration it states.
+        duration: f32,
+    },
+}
+
+/// The data one model asset carries, shared by every instance that draws it.
+#[derive(Debug)]
+pub struct LitModelData {
     /// Nodes in any order; each parent is addressed by its index.
     pub nodes: Vec<LitModelNode>,
     /// Animation clips that can drive the nodes.
     pub animations: Vec<LitModelClip>,
 }
 
+/// A prepared model asset: one shared handle to its [`LitModelData`].
+///
+/// A clone is a handle copy, so one asset serves any number of instances
+/// without duplicating its nodes, keyframes, or GPU handles — the same bargain
+/// [`GpuMesh`](crate::components::GpuMesh) makes for its buffers. The data is
+/// checked once, in [`LitModel::new`], which is the only way to build one.
+#[derive(Clone, Debug)]
+pub struct LitModel(Rc<LitModelData>);
+
+impl Deref for LitModel {
+    type Target = LitModelData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl LitModel {
-    /// Construct model data. Indices must refer to `nodes`.
+    /// Check `nodes` and `animations`, then share them as one asset.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first inconsistency it finds: see [`LitModelError`]. The
+    /// rules a built model is held to, and the sampler relieves itself of, are
+    /// that every parent index addresses a node, that no parent chain circles,
+    /// that every skin joints only nodes it names and states one inverse bind
+    /// matrix per joint, that every channel targets a node and states at least
+    /// one finite, ascending key time with every value its interpolation and
+    /// morph target count need, and that a clip's duration is a finite length.
+    pub fn new(
+        nodes: Vec<LitModelNode>,
+        animations: Vec<LitModelClip>,
+    ) -> Result<Self, LitModelError> {
+        check_nodes(&nodes)?;
+        for (index, clip) in animations.iter().enumerate() {
+            check_clip(&nodes, index, clip)?;
+        }
+        Ok(Self(Rc::new(LitModelData { nodes, animations })))
+    }
+
+    /// The index of the clip called `name`, or `None` when the asset carries no
+    /// such clip.
+    ///
+    /// Assets name their clips, so a caller that wants a particular one asks by
+    /// name rather than by a position a re-export could shuffle.
     #[must_use]
-    pub fn new(nodes: Vec<LitModelNode>, animations: Vec<LitModelClip>) -> Self {
-        Self { nodes, animations }
+    pub fn clip_index(&self, name: &str) -> Option<usize> {
+        self.animations
+            .iter()
+            .position(|clip| clip.name.as_deref() == Some(name))
     }
 }
 
@@ -38,6 +217,10 @@ impl LitModel {
 #[derive(Clone, Debug)]
 pub struct LitModelNode {
     /// Parent node, or `None` for a model root.
+    ///
+    /// [`LitModel::new`] refuses an index outside the node list and a chain
+    /// that returns to a node it already passed through, so every node here
+    /// reaches a root.
     pub parent: Option<usize>,
     /// The node local transform before animation.
     pub transform: Transform,
@@ -54,7 +237,7 @@ pub struct LitModelNode {
 pub struct LitModelSkin {
     /// Node indices of the joints.
     pub joints: Vec<usize>,
-    /// One inverse bind matrix per joint.
+    /// One inverse bind matrix per joint, in joint order.
     pub inverse_bind: Vec<glam::Mat4>,
 }
 
@@ -76,28 +259,19 @@ pub enum LitModelInterpolation {
     CubicSpline,
 }
 
-/// Node property driven by an animation channel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LitModelProperty {
-    /// Node translation.
-    Translation,
-    /// Node scale.
-    Scale,
-    /// Node rotation.
-    Rotation,
-    /// Morph target weights.
-    Weights,
-}
-
-/// Values decoded for one animation channel.
-#[derive(Clone, Debug)]
-pub enum LitModelChannelValues {
+/// The property one animation channel drives, with its decoded key values.
+///
+/// The variant carries both, because they are one fact: a channel that states
+/// rotations and a channel that says it states rotations cannot disagree when
+/// there is only one field to state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LitModelOutput {
     /// Translation keys, with cubic values stored in glTF kind-first triples.
-    Translations(Vec<[f32; 3]>),
+    Translation(Vec<[f32; 3]>),
     /// Scale keys, with cubic values stored in glTF kind-first triples.
-    Scales(Vec<[f32; 3]>),
+    Scale(Vec<[f32; 3]>),
     /// Rotation keys as `[x, y, z, w]`, with cubic values kind-first.
-    Rotations(Vec<[f32; 4]>),
+    Rotation(Vec<[f32; 4]>),
     /// Weight keys, packed by key and target.
     Weights {
         /// Number of targets in each key.
@@ -112,14 +286,12 @@ pub enum LitModelChannelValues {
 pub struct LitModelChannel {
     /// Node index targeted by the channel.
     pub node: usize,
-    /// Property targeted by the channel.
-    pub property: LitModelProperty,
     /// Interpolation mode.
     pub interpolation: LitModelInterpolation,
-    /// Monotonically increasing key times.
+    /// Ascending key times.
     pub times: Vec<f32>,
-    /// Decoded key values.
-    pub values: LitModelChannelValues,
+    /// The property the channel drives and the key values it states.
+    pub values: LitModelOutput,
 }
 
 /// One decoded animation clip.
@@ -129,8 +301,38 @@ pub struct LitModelClip {
     pub name: Option<String>,
     /// Channels evaluated by the clip.
     pub channels: Vec<LitModelChannel>,
-    /// Duration in seconds.
+    /// The clip's authored length in seconds.
+    ///
+    /// This is a property of the document rather than of `channels`: a loader
+    /// that drops the channels of nodes its model leaves out still reports the
+    /// length the clip was authored at, so playback loops over the clip the
+    /// author made rather than over the part of it that survived.
     pub duration: f32,
+}
+
+/// How a model instance's clip time moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub enum LitModelClock {
+    /// The frame dispatcher advances the time by the frame's delta.
+    Playing {
+        /// Seconds of clip time per second of real time.
+        speed: f32,
+        /// Whether the time wraps at the clip's duration instead of stopping there.
+        looping: bool,
+    },
+    /// The caller writes [`LitModelAnimation::time`] itself.
+    ///
+    /// The frame dispatcher samples that time every frame and never changes it,
+    /// which is what a caller driving playback from its own clock — a fixed
+    /// sequence of frames, or a scrubber — wants.
+    ///
+    /// A caller that writes [`LitModelAnimation::time`] after the model's own
+    /// ordered callback has run samples again with
+    /// [`LitModelBundle::evaluate`]: the pass is idempotent here, since a
+    /// manual clock neither advances the time nor writes it back.
+    Manual,
 }
 
 /// Per-instance playback state.
@@ -141,10 +343,8 @@ pub struct LitModelAnimation {
     pub clip: Option<usize>,
     /// Current clip time in seconds.
     pub time: f32,
-    /// Playback speed multiplier.
-    pub speed: f32,
-    /// Whether playback wraps at the clip duration.
-    pub looping: bool,
+    /// How the time moves.
+    pub clock: LitModelClock,
 }
 
 impl Default for LitModelAnimation {
@@ -152,36 +352,73 @@ impl Default for LitModelAnimation {
         Self {
             clip: None,
             time: 0.0,
-            speed: 1.0,
-            looping: true,
+            clock: LitModelClock::Playing {
+                speed: 1.0,
+                looping: true,
+            },
         }
     }
 }
 
-/// Runtime handles owned by one model root.
+/// The handles one model root's evaluation writes through.
+///
+/// Every field is derived: the model spawns these entities and rewrites them as
+/// it evaluates, so the type is read-only from the outside. A caller that needs
+/// a node's transform edits that node's [`LitModelNodeState`], not the entity
+/// this names.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::LitModelInstanceProxy)
+)]
 pub struct LitModelInstance {
-    /// Spawned node entities, indexed like [`LitModel::nodes`].
-    pub nodes: Vec<Entity>,
-    /// Draw entities owned and updated by this model instance.
-    pub draws: Vec<Vec<Entity>>,
-    /// Skin-pose entities owned and updated by this model instance.
-    pub poses: Vec<Option<Entity>>,
-    /// Morph-weight entities owned and updated by this model instance.
-    pub weights: Vec<Option<Entity>>,
-    /// Last evaluated world matrix for each node.
-    pub matrices: Vec<glam::Mat4>,
+    nodes: Vec<Entity>,
+    draws: Vec<Vec<Entity>>,
+    poses: Vec<Option<Entity>>,
+    weights: Vec<Option<Entity>>,
+    matrices: Vec<glam::Mat4>,
     order: Vec<(usize, Option<usize>)>,
     locals: Vec<Transform>,
     morphs: Vec<Vec<f32>>,
+}
+
+impl LitModelInstance {
+    /// The node entities, indexed like [`LitModelData::nodes`].
+    #[must_use]
+    pub fn nodes(&self) -> &[Entity] {
+        &self.nodes
+    }
+
+    /// The draw entities per node, in the order the node's primitives were spawned.
+    #[must_use]
+    pub fn draws(&self) -> &[Vec<Entity>] {
+        &self.draws
+    }
+
+    /// The skin-pose entity per node, where the node carries a skin.
+    #[must_use]
+    pub fn poses(&self) -> &[Option<Entity>] {
+        &self.poses
+    }
+
+    /// The morph-weight entity per node, where the node carries morph targets.
+    #[must_use]
+    pub fn weights(&self) -> &[Option<Entity>] {
+        &self.weights
+    }
+
+    /// The world matrix each node was last evaluated at.
+    #[must_use]
+    pub fn matrices(&self) -> &[glam::Mat4] {
+        &self.matrices
+    }
 }
 
 /// Editable state on a spawned model node.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct LitModelNodeState {
-    /// Node index in the model.
-    pub node: usize,
     /// Base local transform. A channel overrides only the property it samples.
     pub local: Transform,
 }
@@ -207,65 +444,56 @@ impl LitModelBundle {
             animation: LitModelAnimation::default(),
         }
     }
-}
 
-impl Bundle for LitModelBundle {
-    fn into_bundle(self) -> DynamicBundle {
-        let mut bundle = DynamicBundle::new();
-        let mut spawn_data = Some(self.model.clone());
-        bundle.push_component(self.transform);
-        bundle.push_component(self.model);
-        bundle.push_component(LitModelInstance::default());
-        bundle.push_component(self.animation);
-        bundle.push_component(OnSpawn::new(move |scope, root| {
-            if let Some(model) = spawn_data.take() {
-                spawn_model(scope, root, &model);
-                LitModelBundle::evaluate(&scope.readonly(), root);
-            }
-        }));
-        bundle.push_component(OnFrame::with_order(LIT_MODEL_UPDATE_ORDER, update_model));
-        bundle
-    }
-}
-
-impl LitModelBundle {
-    /// Evaluate the current root transform and playback time without advancing the clock.
-    /// Use this when rendering outside the frame dispatcher or driving time explicitly.
+    /// Evaluate the node states, root transform and playback time into the
+    /// instance's derived entities, without advancing the clock.
     ///
-    /// The animation time is sampled as-is, wrapping or clamping only for the
-    /// lookup; the stored time is not changed. The ordered [`OnFrame`] callback
-    /// is the only path that advances playback.
-    pub fn evaluate(scope: &unlit_ecs::Scope<'_>, root: Entity) {
-        evaluate_model(scope, root, 0.0, false);
+    /// Use this when rendering outside the frame dispatcher or after writing
+    /// inputs yourself. The sampling wraps or clamps the time only for its own
+    /// lookup; the stored time is left as the caller wrote it. The ordered
+    /// [`OnFrame`] callback is the only path that advances playback, and it
+    /// advances it only for [`LitModelClock::Playing`].
+    pub fn evaluate(scope: &Scope<'_>, root: Entity) {
+        evaluate_model(scope, root, Step::Sample);
     }
 }
 
-/// Resolve parents once, in the same order for entity creation and matrix evaluation.
-/// Cut a cycle at the first edge that returns to a node already on the path.
+/// Whether an evaluation moves the clip time or only samples it.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// Advance by this many seconds first, when the clock is playing.
+    Advance(f32),
+    /// Sample the stored time as it stands.
+    Sample,
+}
+
+/// The parent of each node, with every chain rooted, in root-before-child order.
+///
+/// [`LitModel::new`] guarantees every parent is in range and no chain circles,
+/// so each walk climbs to a root and stops there; a chain that reaches a node an
+/// earlier walk already placed stops there too, which is what keeps the order
+/// parent-before-child.
 fn hierarchy(nodes: &[LitModelNode]) -> Vec<(usize, Option<usize>)> {
     let mut result = Vec::with_capacity(nodes.len());
-    let mut visited = vec![false; nodes.len()];
-    let mut attached = vec![false; nodes.len()];
+    let mut placed = vec![false; nodes.len()];
     let mut path = Vec::new();
     for start in 0..nodes.len() {
         let mut index = start;
-        while !visited[index] {
-            visited[index] = true;
-            let parent = nodes[index].parent.filter(|&p| p < nodes.len());
-            let parent = parent.filter(|&p| !visited[p] || attached[p]);
+        while !placed[index] {
+            placed[index] = true;
+            let parent = nodes[index].parent;
             path.push((index, parent));
             let Some(parent) = parent else { break };
             index = parent;
         }
         while let Some((index, parent)) = path.pop() {
-            attached[index] = true;
             result.push((index, parent));
         }
     }
     result
 }
 
-fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModel) {
+fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModelData) {
     let count = model.nodes.len();
     let order = hierarchy(&model.nodes);
     let mut instance = LitModelInstance {
@@ -285,7 +513,6 @@ fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModel) {
         let entity = scope.scope_mut(parent).spawn_named(
             "lit model node",
             bundle![LitModelNodeState {
-                node: index,
                 local: node.transform.clone(),
             }],
         );
@@ -323,10 +550,10 @@ fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModel) {
 }
 
 fn update_model(world: &World, root: Entity, frame: &mut crate::frame::Frame) {
-    evaluate_model(&world.root_scope(), root, frame.delta_time, true);
+    evaluate_model(&world.root_scope(), root, Step::Advance(frame.delta_time));
 }
 
-fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32, advance_time: bool) {
+fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
     let Ok(mut query) = scope.try_query_one::<(
         &Transform,
         &LitModel,
@@ -346,58 +573,63 @@ fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32, advanc
         locals,
         morphs,
     } = instance;
-    let count = order.len();
-    if count != model.nodes.len() || count != matrices.len() {
-        return;
-    }
+    debug_assert_eq!(
+        order.len(),
+        model.nodes.len(),
+        "a model instance is built against the asset it came from",
+    );
     let clip = animation.clip.and_then(|index| model.animations.get(index));
-    let sample_time = if let Some(clip) = clip {
-        if advance_time {
-            animation.time += delta * animation.speed;
+    let sample_time = clip.map(|clip| match (animation.clock, step) {
+        (LitModelClock::Playing { speed, looping }, Step::Advance(delta)) => {
+            animation.time += delta * speed;
+            let time = if clip.duration > 0.0 {
+                if looping {
+                    animation.time.rem_euclid(clip.duration)
+                } else {
+                    animation.time.clamp(0.0, clip.duration)
+                }
+            } else {
+                animation.time
+            };
+            animation.time = time;
+            time
         }
-        let sample_time = if clip.duration > 0.0 {
-            if animation.looping {
+        // A one-off sampling pass of a playing clip brings the stored time into
+        // the clip's range without advancing it, so sampling twice in a frame
+        // reads the same pose.
+        (LitModelClock::Playing { looping, .. }, Step::Sample) if clip.duration > 0.0 => {
+            if looping {
                 animation.time.rem_euclid(clip.duration)
             } else {
                 animation.time.clamp(0.0, clip.duration)
             }
-        } else {
-            animation.time
-        };
-        if advance_time {
-            animation.time = sample_time;
         }
-        Some(sample_time)
-    } else {
-        None
-    };
+        // A manual clock's time is the caller's to choose: it is sampled as
+        // written, and a time past the last keyframe holds that keyframe rather
+        // than wrapping to the start of the clip.
+        (LitModelClock::Manual, _) | (LitModelClock::Playing { .. }, Step::Sample) => {
+            animation.time
+        }
+    });
     for (i, node) in model.nodes.iter().enumerate() {
-        let local = nodes
-            .get(i)
-            .and_then(|&entity| scope.try_query_one::<&LitModelNodeState>(entity).ok());
-        match local {
-            Some(mut query) => locals[i].clone_from(&query.get().local),
-            None => locals[i].clone_from(&node.transform),
+        if let Some(&entity) = nodes.get(i)
+            && let Ok(mut query) = scope.try_query_one::<&LitModelNodeState>(entity)
+        {
+            locals[i].clone_from(&query.get().local);
         }
         match &node.morph {
             Some(morph) => morphs[i].clone_from(&morph.weights),
             None => morphs[i].clear(),
         }
     }
-    if let Some(clip) = clip {
+    if let (Some(clip), Some(sample_time)) = (clip, sample_time) {
         for channel in &clip.channels {
-            let i = channel.node;
-            if i >= count {
-                continue;
-            }
-            if let LitModelChannelValues::Weights { targets, .. } = &channel.values
-                && *targets != morphs[i].len()
-            {
-                continue;
-            }
-            if let Some(sample_time) = sample_time {
-                sample_channel(channel, sample_time, &mut locals[i], &mut morphs[i]);
-            }
+            sample_channel(
+                channel,
+                sample_time,
+                &mut locals[channel.node],
+                &mut morphs[channel.node],
+            );
         }
     }
     let root_matrix = glam::Mat4::from(root_transform.compute_matrix());
@@ -406,33 +638,183 @@ fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32, advanc
         matrices[i] = parent.map_or(root_matrix, |p| matrices[p]) * local;
     }
     for (i, node) in model.nodes.iter().enumerate() {
-        if let Some(entities) = draws.get(i).filter(|draws| !draws.is_empty()) {
-            let transform = Transform::from_matrix(glam::Affine3A::from_mat4(matrices[i]));
-            for &entity in entities {
-                if let Ok(mut q) = scope.try_query_one::<&mut Transform>(entity) {
-                    q.get().clone_from(&transform);
-                }
+        let transform = Transform::from_matrix(glam::Affine3A::from_mat4(matrices[i]));
+        for &entity in &draws[i] {
+            if let Ok(mut query) = scope.try_query_one::<&mut Transform>(entity) {
+                query.get().clone_from(&transform);
             }
         }
         if let Some(Some(entity)) = poses.get(i)
             && let Some(skin) = &node.skin
-            && let Ok(mut q) = scope.try_query_one::<&mut SkinPose>(*entity)
+            && let Ok(mut query) = scope.try_query_one::<&mut SkinPose>(*entity)
         {
-            let pose = &mut q.get().matrices;
+            let pose = &mut query.get().matrices;
             pose.clear();
-            pose.extend(skin.joints.iter().enumerate().map(|(j, &joint)| {
-                matrices.get(joint).copied().unwrap_or(root_matrix)
-                    * skin
-                        .inverse_bind
-                        .get(j)
-                        .copied()
-                        .unwrap_or(glam::Mat4::IDENTITY)
-            }));
+            pose.extend(
+                skin.joints
+                    .iter()
+                    .enumerate()
+                    .map(|(joint, &node)| matrices[node] * skin.inverse_bind[joint]),
+            );
         }
         if let Some(Some(entity)) = weights.get(i)
-            && let Ok(mut q) = scope.try_query_one::<&mut MorphWeights>(*entity)
+            && let Ok(mut query) = scope.try_query_one::<&mut MorphWeights>(*entity)
         {
-            q.get().weights.clone_from(&morphs[i]);
+            query.get().weights.clone_from(&morphs[i]);
         }
+    }
+}
+
+/// Check every parent index, the absence of cycles, and every skin's joints.
+fn check_nodes(nodes: &[LitModelNode]) -> Result<(), LitModelError> {
+    for (node, entry) in nodes.iter().enumerate() {
+        if let Some(parent) = entry.parent
+            && parent >= nodes.len()
+        {
+            return Err(LitModelError::ParentOutOfRange { node, parent });
+        }
+    }
+    // 0 unseen, 1 on the chain being walked, 2 placed.
+    let mut state = vec![0u8; nodes.len()];
+    for start in 0..nodes.len() {
+        if state[start] != 0 {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut index = start;
+        // Walk up until the chain reaches a node already placed or a root.
+        // Only a node still marked as being on the chain closes a cycle: a
+        // root ends the chain without one.
+        loop {
+            if state[index] == 2 {
+                break;
+            }
+            if state[index] == 1 {
+                return Err(LitModelError::ParentCycle { node: index });
+            }
+            state[index] = 1;
+            path.push(index);
+            let Some(parent) = nodes[index].parent else {
+                break;
+            };
+            index = parent;
+        }
+        for node in path {
+            state[node] = 2;
+        }
+    }
+    for (node, entry) in nodes.iter().enumerate() {
+        let Some(skin) = &entry.skin else { continue };
+        for &joint in &skin.joints {
+            if joint >= nodes.len() {
+                return Err(LitModelError::JointOutOfRange { node, joint });
+            }
+        }
+        if !skin.inverse_bind.is_empty() && skin.inverse_bind.len() != skin.joints.len() {
+            return Err(LitModelError::InverseBindCount {
+                node,
+                joints: skin.joints.len(),
+                matrices: skin.inverse_bind.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Check one clip against the nodes it drives.
+fn check_clip(
+    nodes: &[LitModelNode],
+    clip: usize,
+    data: &LitModelClip,
+) -> Result<(), LitModelError> {
+    if !data.duration.is_finite() || data.duration < 0.0 {
+        return Err(LitModelError::ClipDuration {
+            clip,
+            duration: data.duration,
+        });
+    }
+    for (channel, entry) in data.channels.iter().enumerate() {
+        if entry.node >= nodes.len() {
+            return Err(LitModelError::ChannelNodeOutOfRange {
+                clip,
+                channel,
+                node: entry.node,
+            });
+        }
+        if entry.times.is_empty() {
+            return Err(LitModelError::ChannelWithoutKeys { clip, channel });
+        }
+        for (index, &time) in entry.times.iter().enumerate() {
+            if !time.is_finite() {
+                return Err(LitModelError::ChannelTimeNotFinite {
+                    clip,
+                    channel,
+                    index,
+                });
+            }
+            if index > 0 && time < entry.times[index - 1] {
+                return Err(LitModelError::ChannelTimesNotAscending {
+                    clip,
+                    channel,
+                    index,
+                });
+            }
+        }
+        let stride = super::sampling::interpolation_stride(entry.interpolation);
+        let targets = match &entry.values {
+            LitModelOutput::Weights { targets, .. } => {
+                let weights = nodes[entry.node]
+                    .morph
+                    .as_ref()
+                    .map_or(0, |morph| morph.weights.len());
+                if *targets != weights {
+                    return Err(LitModelError::MorphTargetsMismatch {
+                        clip,
+                        channel,
+                        node: entry.node,
+                        targets: *targets,
+                        weights,
+                    });
+                }
+                *targets
+            }
+            _ => 1,
+        };
+        let expected = entry.times.len() * stride * targets;
+        let stated = match &entry.values {
+            LitModelOutput::Translation(values) => values.len(),
+            LitModelOutput::Scale(values) => values.len(),
+            LitModelOutput::Rotation(values) => values.len(),
+            LitModelOutput::Weights { values, .. } => values.len(),
+        };
+        if stated < expected {
+            return Err(LitModelError::ChannelValuesShort {
+                clip,
+                channel,
+                times: entry.times.len(),
+                values: stated,
+                expected,
+            });
+        }
+    }
+    Ok(())
+}
+
+impl Bundle for LitModelBundle {
+    fn into_bundle(self) -> DynamicBundle {
+        let mut bundle = DynamicBundle::new();
+        let mut spawn_data = Some(self.model.clone());
+        bundle.push_component(self.transform);
+        bundle.push_component(self.model);
+        bundle.push_component(LitModelInstance::default());
+        bundle.push_component(self.animation);
+        bundle.push_component(OnSpawn::new(move |scope, root| {
+            if let Some(model) = spawn_data.take() {
+                spawn_model(scope, root, &model);
+                LitModelBundle::evaluate(&scope.readonly(), root);
+            }
+        }));
+        bundle.push_component(OnFrame::with_order(LIT_MODEL_UPDATE_ORDER, update_model));
+        bundle
     }
 }
