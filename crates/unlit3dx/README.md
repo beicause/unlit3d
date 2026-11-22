@@ -222,7 +222,10 @@ tick body serves both: `FixedClock` waits out a wall-clock deadline under
 `Threaded`, and under `Stepped` the tick is simply due again on the next
 call. A caller stepping a world therefore owns the rate — it decides how many
 steps a frame is worth, which is what the `app` skeleton's `Stepping` does
-for every run it hosts.
+for the physics world of every run it hosts. The audio mix is a separate
+ledger: `AudioPull` turns the same frame deltas into fill lengths for the
+runs that consume the samples themselves, while a windowed run leaves the
+mix to its audio world, whose own tick fills the device's ring.
 
 Both modes turn a measured interval into whole steps with the same rule:
 `fixed_steps` carries the fraction of a step a tick did not spend into the
@@ -463,12 +466,14 @@ pass in the same world that copies it over the surface, which keeps the frame
 long enough to read back, so screenshots and snapshot tests ask for it. Both
 paths take a `SurfaceOptions`: the present mode and how many frames may be in
 flight, which decide whether the swap chain waits for the display.
-`draw_presented` is the simple per-frame behaviour that ticks the sub-world —
+`present_turn` is the per-frame transaction that ticks the sub-world —
 drains its jobs, folds the input it has been fed, runs its tasks, dispatches
 the frame — and presents it; a sub-world has no turn of its own, so the
 behaviour that drives its frame is also what keeps its input queue from
 filling. `pump_presented` keeps frames coming while the window lives, and
-`resize_presented` follows the window around. The render
+`resize_presented` follows the window around. The `app` module's windowed
+entry is the assembled version of that behaviour, and the one to reach for
+unless a caller is assembling the window itself. The render
 bridge a drawing world needs — the asset server and the mesh and camera
 helpers around it — is the caller's to build; `unlit3dx_examples` ships one
 as `src/render.rs`.

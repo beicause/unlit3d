@@ -181,7 +181,9 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
 并非自驱时立刻返回，于是同一个 tick 体服务两者：在 `Threaded` 下 `FixedClock` 等
 一个挂钟期限过去，在 `Stepped` 下这次 tick 在下次调用时就又到期了。因此步进一个
 world 的调用方自己拥有节奏——由它决定一帧值多少步，`app` 骨架的 `Stepping`
-对它承载的每个运行正是这么做的。
+对它承载的每个运行的物理 world 正是这么做的。音频混音是另一笔账：`AudioPull`
+把同样的帧间隔换成填充长度，供自己消费样本的运行使用；而窗口运行把混音留给
+音频 world，由它自己的 tick 填满设备的环。
 
 两种模式用同一条规则把实测的间隔换成整数步：`fixed_steps` 把一次 tick 没花掉的
 零头记到下一次，超过 `MAX_CATCH_UP_STEPS`（四步）的部分则直接丢弃，于是停摆的宿主
@@ -347,10 +349,10 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 打开离屏路径后改建 `PresentationPath::Intermediate`，即一张常驻目标加同一个 world 里
 的第二个 pass，把目标拷到表面——这让帧存活得足够久、可以读回，截图与快照测试就走
 这条路。两条路都收一个 `SurfaceOptions`：呈现模式与允许在途的帧数，它们决定交换链是否
-等显示器。`draw_presented` 是简单的每帧驱动子 world 再呈现它的行为：排空它的 job、折叠它收到的输入、
-跑它的本地任务、分发帧。子 world 没有自己的回合，所以驱动它那一帧的地方也是让它输入队列
+等显示器。`present_turn` 是每帧那一趟事务：排空子 world 的 job、折叠它收到的输入、跑它的本地任务、
+分发帧，再呈现它。子 world 没有自己的回合，所以驱动它那一帧的地方也是让它输入队列
 不堆满的地方。`pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随
-窗口变化。绘制 world 所需的 render
+窗口变化。`app` 模块的窗口入口就是这套行为的组装版，除非调用方自己在拼窗口，否则用它。绘制 world 所需的 render
 桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`
 自带一份，位于 `src/render.rs`。
 

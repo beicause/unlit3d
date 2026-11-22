@@ -776,9 +776,14 @@ Upload with `LitGltf::insert_resources`, then use `LitGltf::to_model` and
 spawn a `LitModelBundle` under the mesh source. Its root `Transform` places the
 whole model, including animated nodes and world-space skin poses. The bundle
 evaluates once at spawn and on each dispatched frame at `LIT_MODEL_UPDATE_ORDER`.
-Write `LitModelAnimation` to select a clip or seek; use `LitModelBundle::evaluate`
-if you render without dispatching a frame. Despawn the root to remove the whole
-instance. The same bundle accepts hand-authored `LitModel` data without glTF.
+Write `LitModelAnimation` to select a clip, and its `LitModelClock` to say who
+drives the time: `Playing` advances it by the frame's delta, `Manual` samples
+whatever time the caller wrote. Despawn the root to remove the whole instance;
+the nodes it spawned are the model's own, so a subtree despawned on its own
+leaves nothing meaningful behind. The same bundle accepts hand-authored
+`LitModel` data without glTF, and `LitModel::new` refuses data whose indices,
+key times or value counts do not agree with each other rather than sampling a
+model that cannot draw.
 
 - A document's collections are addressed by typed ids — `ImageId`,
   `MaterialId`, `MeshId`, `PrimitiveId`, `NodeId` and `AnimationId` —
@@ -787,8 +792,8 @@ instance. The same bundle accepts hand-authored `LitModel` data without glTF.
   `animations()` iterators yield the ids a document carries.
 - `insert_resources` uploads the whole document in one call and returns a
   `gltf::GltfResources` holding every handle it made; that is the struct
-  `spawn_node` / `spawn_default_scene` take, and every handle carries the
-  typed id of the document item it came from. A caller that wants one
+  `to_model` takes, and every handle carries the typed id of the document item
+  it came from. A caller that wants one
   kind of resource at a time — to share a texture between two documents, say —
   can instead call `insert_image` / `insert_material` / `insert_mesh` for a
   single image, material or mesh, or the batch versions (`insert_images`,
@@ -805,11 +810,8 @@ instance. The same bundle accepts hand-authored `LitModel` data without glTF.
   exactly as the file states it; every other material draws lit, shaded by the
   lights the frame carries — a document opts out of shading, it does not opt
   in.
-- The lower-level `spawn_node` / `spawn_default_scene` functions spawn the
-  entities that draw the node's mesh (or every node reachable from the default
-  scene): one entity per primitive, each carrying the node's world-space
-  [`Transform`](components::Transform). The caller is responsible for placement
-  when using these functions. Each entity also carries the uploaded
+- A model node puts one entity per primitive under itself, and the clip that
+  names the node moves it: each such entity carries the uploaded
   [`GpuMesh`](components::GpuMesh), the
   [`GpuRenderPipeline`](components::GpuRenderPipeline)
   for the mesh, an [`InstanceColor`](lit::InstanceColor) tinted with the
@@ -827,8 +829,8 @@ instance. The same bundle accepts hand-authored `LitModel` data without glTF.
   [`InstanceCutoff`](lit::InstanceCutoff) whose value travels in the
   per-instance stream, and the primitive needs neither blending nor a sort.
 - A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its
-  joint stream and drawn skinned: `spawn_node`/`spawn_default_scene` create a
-  [`SkinPose`](components::SkinPose) entity for the node's skin and put a
+  joint stream and drawn skinned: the model creates a
+  [`SkinPose`](components::SkinPose) entity for the node's skin and puts a
   [`SkinBinding`](components::SkinBinding) on the mesh, so writing that pose's
   matrices is how a caller animates the skeleton.
   `LitGltf::skin_pose` builds the document's rest pose — one matrix per
@@ -837,8 +839,8 @@ instance. The same bundle accepts hand-authored `LitModel` data without glTF.
   many joints a node's skin has.
 - A primitive whose mesh declares any morph target is uploaded with the
   positional displacements of the targets that state them and drawn morphed:
-  `spawn_node` / `spawn_default_scene` create a
-  [`MorphWeights`](components::MorphWeights) entity for the node and put a
+  the model creates a
+  [`MorphWeights`](components::MorphWeights) entity for the node and puts a
   [`MorphBinding`](components::MorphBinding) on the mesh, so writing that
   entity's weights is how a caller morphs the mesh. `LitGltf::morph_weights`
   returns the node's starting weights — the node's own `weights` when it states
@@ -877,33 +879,15 @@ instance. The same bundle accepts hand-authored `LitModel` data without glTF.
   names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
   primitive whose material names a set it does not carry draws untextured
   rather than failing the load.
-- With the lower-level API, a caller samples animations explicitly:
-  `LitGltf::animation_count`, `LitGltf::animation_name` and
-  `LitGltf::animation_duration` describe the clips it carries, and
-  `document.apply_animation(&scope, clip, time, &spawned, &mut player)`
-  evaluates one at a chosen time. It samples each channel — `STEP`, `LINEAR` or
-  `CUBICSPLINE`, with spherical interpolation for `LINEAR` rotation channels —
-  into the animated nodes' local transforms, recomposes the
-  world matrices down the node hierarchy, and writes the result where the
-  spawned entities read it: each animated node's [`Transform`](components::Transform) (and
-  its descendants', which inherit the change), every [`SkinPose`](components::SkinPose) whose mesh
-  follows a moved joint, and every [`MorphWeights`](components::MorphWeights) a weight channel names.
-  It takes a `&Scope`, so a caller drives it alongside anything else that reads
-  the world, and it touches nothing the passed `&[GltfNode]` does not name. The
-  recomposition starts from the document's own node locals, so a node a clip
-  reaches is written at its document transform: a placement the caller
-  composed onto the entities survives on every node the clip leaves alone,
-  and is dropped while the clip plays on the nodes it drives — a caller that
-  wants both composes the placement again onto whatever the clip wrote.
-- A clip is decoded once and kept: the keyframes a channel addresses are
-  collected on the first frame that plays the clip rather than re-read from the
-  document's buffers on every frame. The working set — the locals it overwrites,
-  the recomposed world matrices, and the per-node flags and weight buffers —
-  lives in a `gltf::AnimationPlayer` the caller keeps, so it too is reused
-  across frames and grows to its high-water mark once. Holding it caller-side is
-  what lets `apply_animation` take `&self`: two documents, or two threads,
-  animate through players of their own. A frame therefore allocates only where
-  it writes something new into the world.
+- A clip is decoded on the frame that first samples it and kept, so the
+  keyframes a channel addresses are not re-read from the document's buffers
+  every frame. `LitGltf::animation_count`, `LitGltf::animation_name` and
+  `LitGltf::animation_duration` describe the clips a document carries, and
+  `LitModel::clip_index` finds one by the name the document gave it, which is
+  steadier than a position a re-export could shuffle. A clip's `duration` is
+  the length it was authored at even when the model leaves out a node the clip
+  drives, so playback runs as long as the document says rather than stopping
+  short.
 
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `LitGltf::pipeline_key`), so the variant it draws with never

@@ -519,16 +519,18 @@ impl InstanceContext<'_> {
 先用 `LitGltf::insert_resources` 上传，再调用 `LitGltf::to_model`，把 `LitModelBundle`
 生成在网格源下。根 `Transform` 放置整份模型，包括动画节点和世界空间的蒙皮姿态。
 bundle 在生成时求值一次，之后在每次帧派发中按 `LIT_MODEL_UPDATE_ORDER` 求值。写入
-`LitModelAnimation` 可选择片段或调整时间；不派发帧时可用 `LitModelBundle::evaluate`
-手动求值。销毁根实体即可移除整份实例。同一个 bundle 也接受不经 glTF 的手工 `LitModel` 数据。
+`LitModelAnimation` 可选择片段，其 `LitModelClock` 说明时间由谁推进：`Playing` 按帧
+delta 推进，`Manual` 只采样调用方写下的时间。销毁根实体即可移除整份实例；它生成的节点
+属于模型自己，单独销毁一棵子树不会留下有意义的东西。同一个 bundle 也接受不经 glTF 的
+手工 `LitModel` 数据；`LitModel::new` 会拒绝索引、关键时间或值数量互相矛盾的输入，
+而不是去采样一份画不出来的模型。
 
 - 文档的集合用类型化 id 寻址——`ImageId`、`MaterialId`、`MeshId`、
   `PrimitiveId`、`NodeId` 与 `AnimationId`——节点下标因此不会误传给动画或图像。
   `images()`、`materials()`、`meshes()`、`primitives()`、`nodes()` 与
   `animations()` 迭代器给出文档实际携带的 id。
 - `insert_resources` 一次上传整份文档，返回持有全部句柄的 `gltf::GltfResources`；
-  `spawn_node` / `spawn_default_scene` 接收的正是这个结构体，每个句柄都带有它来自的
-  文档条目的类型化 id。想一次只插入一类资源的调用方
+  `to_model` 接收的正是这个结构体，每个句柄都带有它来自的文档条目的类型化 id。想一次只插入一类资源的调用方
   ——比如让两份文档共用一个纹理——也可以改用 `insert_image` / `insert_material` /
   `insert_mesh` 上传单个图像、材质或网格，或用批量版本（`insert_images`、
   `insert_materials`、`insert_meshes`）一次上传某一类全部资源（按文档顺序），
@@ -539,9 +541,7 @@ bundle 在生成时求值一次，之后在每次帧派发中按 `LIT_MODEL_UPDA
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - 带 `KHR_materials_unlit` 的材质按无光绘制，基础色就是文件所写；其余材质按受光绘制，
   由帧里的光照着色——文档声明的是退出着色，而不是选择受光。
-- 低层 `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
-  的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`。使用这些函数时，
-  调用方负责放置模型。各实体还携带已上传的
+- 模型节点在自己下面为每个 primitive 生成一个实体，指出该节点的片段驱动它：各实体还携带已上传的
   `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
   primitive 还会带上 `ZSortedDrawing` 标记，于是 pass 的合成把它与各源的混合绘制一起
@@ -550,13 +550,13 @@ bundle 在生成时求值一次，之后在每次帧派发中按 `LIT_MODEL_UPDA
   `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `LitOptions::alpha_cutoff` 被置位，
   生成的实体带上 `lit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
 - 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：
-  `spawn_node` / `spawn_default_scene` 为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
+  模型为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
   放置 `SkinBinding`，因此写入该 pose 的矩阵就是调用方驱动骨架的方式。
   `LitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
   pose（每个关节一个矩阵）作为起点，`LitGltf::skin_joint_count` 报告某节点的 skin 有几个
   关节。
 - 网格只要声明了形变目标，该 primitive 就会连其中带位置的位移一起上传并按形变绘制：
-  `spawn_node` / `spawn_default_scene` 为该节点生成一个 `MorphWeights` 实体，并在网格上放置
+  模型为该节点生成一个 `MorphWeights` 实体，并在网格上放置
   `MorphBinding`，因此写入该实体的权重就是调用方形变网格的方式。`LitGltf::morph_weights`
   返回节点的起始权重——节点自身给出 `weights` 时用它，否则用网格的，未加权的目标为零——
   并按 primitive 的 `targets` 数组长度补齐或截断，这正是渲染器要求的长度。权重按目标在
@@ -577,23 +577,11 @@ bundle 在生成时求值一次，之后在每次帧派发中按 `LIT_MODEL_UPDA
   关节矩阵读取，所以镜像的姿态（以及复合进每个关节的放置）仍能以正确的绕序绘制正面。
 - UV 流是材质基础色纹理所指的那个 `TEXCOORD_n` 集，因此通过 `TEXCOORD_1` 采样的 primitive
   就用它贴图。材质所指的集而 primitive 并未携带时，该 primitive 按无贴图绘制，而不是加载失败。
-- 使用低层 API 时，由调用方显式采样动画：`LitGltf::animation_count`、
-  `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
-  `document.apply_animation(&scope, clip, time, &spawned, &mut player)`
-  在选定的时间求值其中一个。
-  它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，其中 `LINEAR` 旋转通道走球面插值）采样进节点的局部
-  变换，沿节点层级重新组合出世界矩阵，再把结果写到生成实体读取它的地方：每个被动画节点的
-  `Transform`（以及继承其变化的子孙节点）、每个因关节移动而跟随的网格的 `SkinPose`、以及
-  权重通道所指的每个 `MorphWeights`。它接受 `&Scope`，因此调用方可以与其他读取 world 的
-  代码同时驱动它，并且不会碰传入 `&[GltfNode]` 之外的任何东西。重新组合从文档自身的节点
-  局部变换出发，所以被片段触及的节点写回的是文档自身的变换：调用方复合到实体上的放置矩阵
-  在片段不碰的节点上一直保留，在被片段驱动的节点上则于播放期间丢失——两者都要的调用方，
-  在片段写入后再把放置复合一遍。
-- 片段只解码一次并保留：通道指向的关键帧在第一次播放该片段的帧里收集，之后不再从文档的
-  缓冲区逐帧重读。工作集——它覆写的局部变换、重新组合的世界矩阵，以及每节点的标志与权重
-  缓冲——存放在调用方持有的 `gltf::AnimationPlayer` 里，跨帧复用，只增长到其高水位一次。
-  把工作集放在调用方这一侧，`apply_animation` 才能只借 `&self`：两份文档、两个线程各用
-  自己的播放器，谁也不挡谁。因此一帧只在向 world 写入新内容的地方分配。
+- 片段在第一次采样它的那一帧解码并保留，因此通道指向的关键帧不会逐帧从文档缓冲区重读。
+  `LitGltf::animation_count`、`LitGltf::animation_name` 与 `LitGltf::animation_duration`
+  描述文档携带的片段，`LitModel::clip_index` 按文档给出的名字找到一个，
+  比一个可能被重新导出打乱的位置更稳。片段的 `duration` 始终是它被创作时的长度，
+  即使模型漏掉了该片段驱动的某个节点，因此播放长度按文档所述，而不是提前结束。
 
 网格上传所用的管线 key 总是由 primitive 自身的属性推导（见 `LitGltf::pipeline_key`），
 所以它绘制所用的变体绝不会要求网格不存在的流。加载器读取什么、忽略什么，完整清单见

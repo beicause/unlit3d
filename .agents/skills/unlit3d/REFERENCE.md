@@ -197,7 +197,7 @@
 | 装配（库） | `build_presenter(world, render, renderer, scene_pass, surface, instance, adapter, fallback_size, path, surface_options)` → `Presenter`；`setup_presenter(..)` 同参再 spawn 成组件并返回 `Entity`。`surface` 由调用方 `instance.create_surface(window)` 造 | 同上 |
 | 装配（dx） | `setup_presenter(world, render, renderer, scene_pass, gpu, fallback_size, offscreen: bool, surface_options)`，内部造 surface 并映射成 `Intermediate(TargetConfig::default())` / `Surface`，返回 `Result<(), PresenterError>`——**是 enum，不是 `String`** | `crates/unlit3dx/src/present.rs` |
 | 组件方法 | `Presenter::present(host)` / `present_with(host, prepare)` / `resize(host, size)` / `release(host)`；`present_with` 先取得交换链图像，再运行准备回调，成功呈现才返回 `Ok(true)`，没有图像时返回 `Ok(false)`；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
-| 每帧行为（dx） | `draw_presented(render)`——它自己 `tick_sub_world`（drain + 折叠输入 + 本地任务 + 分发帧）再调 `Presenter::present`；需要把模拟推进与成功呈现绑成一个事务时用 `present_turn` / `Presenter::present_with`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
+| 每帧行为（dx） | `present_turn(world, render, &mut frame, prepare)` 把模拟推进与呈现绑成一趟事务：它自己 `tick_sub_world`（drain + 折叠输入 + 本地任务 + 分发帧）再调 `Presenter::present`；只想呈现时 `prepare` 传 `\|\| Ok(())`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
 | 每帧行为（单 world） | `present_frames()` / `pump_presented()` / `resize_presented()`：`present_frames` 跳过 `FrameSkip` 标记的帧、且 winit 宿主报告挂起时不呈现（无 `Resumed` 组件的 world 视为已恢复），所以设标志的行为要给更小的 order；它不懂示例的 `Scene`，重述 viewport、`Scene::end_frame` 要自己挂行为 | 同上 |
 | 宿主前置任务 | `pump_presented_with(Some(Box::new(pump)))`：`pump: HostPump = Box<dyn FnMut(&mut World)>`，每帧 dispatch 前在宿主 world 上跑一次，用来排空子 world 的 job、poll 宿主任务 | 同上 |
 | 纯离屏 | `PersistentTarget::bind(world, context, pass, &device, size, TargetConfig { format, samples, with_depth, size })` + `readback_texture`；`resize` 原地 `replace` 纹理与 view，节点 id 不变 | `crates/unlit3d/src/offscreen.rs` |
@@ -215,9 +215,15 @@
 
 ## glTF
 
-完整模型用 `insert_resources` → `to_model(&resources)` → 在 mesh source 下 spawn `LitModelBundle`。移动整个实例时改根实体的 `Transform`，选片段或调整时间则改 `LitModelAnimation`；帧派发会求值，不派帧时调用 `LitModelBundle::evaluate(&scope, root)`。
+完整模型用 `insert_resources` → `to_model(&resources)` → 在 mesh source 下 spawn `LitModelBundle`。`to_model` 返回 `Result`：图元缺 mesh/材质得 `Error::MeshNotInserted` / `Error::MaterialNotInserted`，数据被 `LitModel::new` 拒绝得 `Error::Model`（越界索引、父链成环、关键时间非升序、值数量不够等）。
 
-低层 API：`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**不收放置参数**：实体变换就是节点自身的世界变换，要放置就自己逐实体前乘 `Transform::from_matrix(placement.compute_matrix() * current.compute_matrix())`）、`apply_animation`（第五个参数是调用方持有的 `gltf::AnimationPlayer`，它存放采样缓冲，跨帧复用；只写文档自身的变换，因此会覆写调用方放在被驱动节点上的放置）/ `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死；蒙皮网格在着色器里忽略实体变换、顶点由骨骼矩阵直接在世界空间产出，因此实体变换不影响蒙皮网格的绕序。
+移动整个实例时改根实体的 `Transform`；选片段写 `LitModelAnimation::clip`（也可用 `LitModel::clip_index(name)` 按名字找，比位置稳），时间由 `LitModelAnimation::clock` 决定：`LitModelClock::Playing { speed, looping }` 由帧派发按 delta 推进，`LitModelClock::Manual` 只采样调用方写下的 `time`、从不改动它。
+
+帧派发在 `LIT_MODEL_UPDATE_ORDER = -10` 求值，那是唯一的自动求值点。**排在 `-10` 之后写 `time`（如示例的 `SCENE_ADVANCE_ORDER = 20`）时，本帧的绘制读到的仍是上一帧的时间**，需再调用 `LitModelBundle::evaluate(&scope, root)` 补一次采样；`Manual` 下这次补采样是幂等的（不推进、不回写时间），所以不会把时间推快或回绕。
+
+模型节点、绘制实体、蒙皮姿态与权重实体都是模型自持的派生状态，`LitModelInstance`（`nodes()` / `draws()` / `poses()` / `weights()` / `matrices()`）只读。单独 despawn 一棵子树不受支持：失效的句柄会让那次求值静默跳过它们，留下半活的模型；要移除就 despawn 根。
+
+低层 API：`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`to_model`（装配整份模型为 `LitModel`，放置交给 `LitModelBundle` 的根 `Transform`，不要在节点上另写变换）、`animation_count` / `animation_name` / `animation_duration`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死；蒙皮网格在着色器里忽略实体变换、顶点由骨骼矩阵直接在世界空间产出，因此实体变换不影响蒙皮网格的绕序。
 
 ## 常用常量
 

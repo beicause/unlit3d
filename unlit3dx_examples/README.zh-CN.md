@@ -94,7 +94,7 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
 情况下都携带同样的实体与组件，差别只在于谁调用 tick、以及如何配速。
 
 - **宿主（host）** 拥有窗口并驱动帧。它请求 GPU；GPU 应答之后它装配渲染 world
-  与展示路径，随后一切交给库里的行为：`draw_presented` 每帧排空渲染 world 的
+  与展示路径，随后一切交给库里的行为：窗口入口每帧排空渲染 world 的
   job 收件箱、分发帧并呈现，`pump_presented` 在窗口存活期间让帧持续到来，
   `resize_presented` 跟随窗口变化——宿主对物理与音频一无所知，也不知道场景里
   有什么。

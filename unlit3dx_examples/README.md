@@ -129,7 +129,7 @@ it is paced differs.
 
 - The **host** owns the window and drives frames. It requests the GPU, and
   once the GPU answers it assembles the render world and the presentation
-  path; from then on the library's behaviours take over: `draw_presented`
+  path; from then on the library's behaviours take over: the windowed entry
   drains the render world's job inbox every frame, dispatches the frame and
   presents it, `pump_presented` keeps the frames coming while the window
   lives, and `resize_presented` follows the window around — the host knows
