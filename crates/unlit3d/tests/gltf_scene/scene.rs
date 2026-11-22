@@ -5,7 +5,7 @@ use super::documents::{
     two_quad_document,
 };
 use super::{
-    CLEAR, Ctx, HEIGHT, LitGltf, TestGpu, Transform, WIDTH, World, bundle,
+    CLEAR, Ctx, HEIGHT, LitGltf, LitModelInstance, TestGpu, Transform, WIDTH, World, bundle,
     count_pixels_off_background,
 };
 
@@ -80,18 +80,14 @@ pub(super) async fn node_hierarchy_translates_the_quad() {
                 .expect("the embedded document uploads")
         });
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_translated_quad");
-        let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
+        let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
         gpu.spawn(&mut world, bundle![camera()]);
         gpu.render(&world);
         let px =
             unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle).await;
         // Drop what the document added and despawn its entities, so the next
         // closure starts from the same empty world.
-        for node in entities {
-            for entity in node.entities {
-                gpu.despawn(&mut world, entity);
-            }
-        }
+        gpu.despawn(&mut world, root);
         // Giving up the handles is the unload; the next maintain collects.
         drop(resources);
         gpu.maintain(&world);
@@ -172,7 +168,7 @@ pub(super) async fn unload_empties_the_frame() {
         gltf.insert_resources(source, world)
             .expect("the embedded document uploads")
     });
-    let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_before");
@@ -183,11 +179,7 @@ pub(super) async fn unload_empties_the_frame() {
         "the quad draws before unloading"
     );
 
-    for node in entities {
-        for entity in node.entities {
-            gpu.despawn(&mut world, entity);
-        }
-    }
+    gpu.despawn(&mut world, root);
     // Giving up the handles is the unload; the next maintain collects.
     drop(resources);
     gpu.maintain(&world);
@@ -231,19 +223,19 @@ pub(super) async fn a_placement_moves_the_whole_document() {
         translation: glam::Vec3::new(0.5, 0.0, 0.0),
         ..Transform::default()
     };
-    let nodes = spawn_placed_scene(&gpu, &mut world, &gltf, &resources, &placement);
+    let root = spawn_placed_scene(&gpu, &mut world, &gltf, &resources, placement);
 
     // The document puts its second node at +OFFSET and the placement shifts
     // both by its own translation, so the two stay OFFSET apart. A spawn that
     // handed every node the same transform would leave both at 0.5.
     let scope = world.root_scope();
-    let mut translations: Vec<f32> = nodes
+    let mut instance = scope.query_one::<&LitModelInstance>(root);
+    let mut translations: Vec<f32> = instance
+        .get()
+        .draws
         .iter()
-        .filter_map(|node| {
-            node.entities
-                .first()
-                .map(|&entity| scope.query_one::<&Transform>(entity).get().translation.x)
-        })
+        .flatten()
+        .map(|&entity| scope.query_one::<&Transform>(entity).get().translation.x)
         .collect();
     translations.sort_by(f32::total_cmp);
     assert_eq!(translations.len(), 2, "both meshed nodes spawn");

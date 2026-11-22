@@ -146,15 +146,17 @@ fn build_clusters(
         ))]);
     world.scope_mut(source_entity).spawn(LitMeshBundle {
         transform: Transform::default(),
-        mesh,
-        pipeline,
-        color: InstanceColor::default(),
-        cutoff: None,
-        hull_width: None,
-        material: None,
+        primitive: LitMeshPrimitive {
+            mesh,
+            pipeline,
+            color: InstanceColor::default(),
+            cutoff: None,
+            hull_width: None,
+            material: None,
+            z_sorted: None,
+        },
         skin: None,
         morph: None,
-        z_sorted: None,
     });
 
     // One row per light kind, each light aimed straight down at the floor. The

@@ -98,7 +98,7 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
         gltf.insert_resources(source, world)
             .expect("the embedded document uploads")
     });
-    let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
 
     // ...and the spawned entity is marked for back-to-front compositing.
     let z_sorted: Vec<Entity> = world
@@ -107,9 +107,14 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
         .iter()
         .map(|(_zsorted_drawing, entity)| entity)
         .collect();
-    let spawned: Vec<Entity> = entities
+    let spawned: Vec<Entity> = world
+        .root_scope()
+        .query_one::<&super::LitModelInstance>(root)
+        .get()
+        .draws
         .iter()
-        .flat_map(|node| node.entities.iter().copied())
+        .flatten()
+        .copied()
         .collect();
     assert_eq!(
         z_sorted, spawned,
@@ -233,7 +238,7 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
             gltf.insert_resources(source, world)
                 .expect("the embedded document uploads")
         });
-        let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
+        let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
         assert!(
             world
                 .root_scope()
@@ -249,11 +254,7 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
         gpu.render(&world);
         let px =
             unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle).await;
-        for node in entities {
-            for entity in node.entities {
-                gpu.despawn(&mut world, entity);
-            }
-        }
+        gpu.despawn(&mut world, root);
         // Giving up the handles is the unload; the next maintain collects.
         drop(resources);
         gpu.maintain(&world);
@@ -310,7 +311,7 @@ pub(super) async fn a_mirrored_instance_draws_its_front_faces() {
                 scale: glam::Vec3::new(if mirrored { -1.0 } else { 1.0 }, 1.0, 1.0),
                 ..Transform::default()
             };
-            super::documents::spawn_placed_scene(&gpu, &mut world, &gltf, &resources, &placement);
+            super::documents::spawn_placed_scene(&gpu, &mut world, &gltf, &resources, placement);
             gpu.spawn(&mut world, bundle![camera()]);
 
             let target = gpu.bind_offscreen_target(&world, "test::gltf_mirrored");

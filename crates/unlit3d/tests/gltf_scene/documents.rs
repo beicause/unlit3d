@@ -1,8 +1,8 @@
 //! The glTF documents the tests render, built in memory as JSON plus a data-URI buffer.
 
 use super::{
-    Camera, GltfNode, GltfResources, HEIGHT, LitGltf, TestGpu, Transform, WIDTH, World,
-    camera_looking_at,
+    Camera, Entity, GltfResources, HEIGHT, LitGltf, LitModelBundle, TestGpu, Transform, WIDTH,
+    World, camera_looking_at,
 };
 
 /// The buffer: 4 positions (f32), 4 uvs (f32), 6 indices (u16), the PNG.
@@ -176,48 +176,26 @@ pub(super) fn camera() -> Camera {
     )
 }
 
-/// Spawn the document's default scene into the harness's mesh source.
-///
-/// A frame draws a source's own subtree, so the nodes have to land under the
-/// source rather than beside it.
+/// Spawn the document underneath the source that will draw it.
 pub(super) fn spawn_scene(
     gpu: &TestGpu,
     world: &mut World,
     gltf: &LitGltf,
     resources: &GltfResources,
-) -> Vec<GltfNode> {
-    spawn_placed_scene(gpu, world, gltf, resources, &Transform::default())
+) -> Entity {
+    spawn_placed_scene(gpu, world, gltf, resources, Transform::default())
 }
 
-/// Spawn the document's default scene, then compose `placement` onto every
-/// entity it drew.
-///
-/// The document spawns where it was authored; composing in matrix space after
-/// the fact is what a caller placing a document does, and it leaves each node
-/// in its own place in the hierarchy.
 pub(super) fn spawn_placed_scene(
     gpu: &TestGpu,
     world: &mut World,
     gltf: &LitGltf,
     resources: &GltfResources,
-    placement: &Transform,
-) -> Vec<GltfNode> {
-    let source = gpu.mesh_source();
-    let nodes = {
-        let mut scope = world.scope_mut(source);
-        gltf.spawn_default_scene(&mut scope, resources)
-            .expect("the test document spawns")
-    };
-    let placement = placement.compute_matrix();
-    let scope = world.root_scope();
-    for node in &nodes {
-        for &entity in &node.entities {
-            let mut current = scope.query_one::<&mut Transform>(entity);
-            let placed = placement * current.get().compute_matrix();
-            *current.get() = Transform::from_matrix(placed);
-        }
-    }
-    nodes
+    transform: Transform,
+) -> Entity {
+    let mut bundle = LitModelBundle::new(gltf.to_model(resources).expect("the scene is prepared"));
+    bundle.transform = transform;
+    world.scope_mut(gpu.mesh_source()).spawn(bundle)
 }
 
 /// The glTF JSON of one quad skinned to a single joint, whose node sits at
@@ -262,8 +240,6 @@ pub(super) fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
     .into_bytes()
 }
 
-/// A quad with two positional morph targets, weighted `[0, 0]` on its mesh.
-///
 /// A quad with two positional morph targets, weighted `[0, 0]` on its mesh.
 ///
 /// The buffer holds the positions (f32), the indices (u16), one red vertex

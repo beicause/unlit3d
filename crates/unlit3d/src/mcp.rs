@@ -339,8 +339,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
     ));
     router.add_route(tool(
         "spawn_gltf",
-
-        "Load a glTF or GLB document into a world's mesh source and spawn its default scene, returning the spawned entity ids. Pass either `path`, a file to read, or `document`, the document itself: glTF JSON text, or a GLB's bytes encoded as base64. A document given inline must embed its buffers and images, since there is no base URI for external ones to resolve against.",
+        "Load a glTF or GLB document into a world's mesh source and spawn its default scene. Return the model root first, followed by all descendants, with their names. Despawn the root to remove the whole model. Pass either `path`, a file to read, or `document`, the document itself: glTF JSON text, or a GLB's bytes encoded as base64. A document given inline must embed its buffers and images, since there is no base URI for external ones to resolve against.",
         spawn_gltf,
     ));
 }

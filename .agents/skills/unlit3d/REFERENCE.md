@@ -59,7 +59,8 @@
 | 描述 | `LitMeshDesc`：`positions` 必填，其余通道都是 `Option`，照抄时用 `..Default::default()` 补齐。`normals` 是 `expanded` / `inverted_hull()` 外扩壳的方向，缺了画不出壳 |
 | key | `LitPipelineKey::new(LitOptions)`，`pub options: Hashed<LitOptions>`；受光与否由 `LitOptions::unlit` 定（`false` 受光） |
 | 管线组件 | `GpuRenderPipeline::new(key)`，不带 key 类型参数 |
-| 画一份 | `LitMeshBundle`（`crates/unlit3d/src/lit/bundle.rs`）——一条受光绘制的全部组件，`transform`/`mesh`/`pipeline`/`color` 必带，`cutoff`/`hull_width`/`material`/`skin`/`morph`/`z_sorted` 按 `Option` 给；glTF 的每个 primitive 也用它 spawn |
+| 画一份 | `LitMeshBundle`（`crates/unlit3d/src/lit/bundle.rs`）——一条受光绘制的组件，`transform`、`primitive`、`skin`、`morph`；`primitive` 携带 mesh/pipeline/color 等可复用绘制数据 |
+| 画模型 | `LitModelBundle`（`crates/unlit3d/src/lit/model.rs`）——根 `Transform` 加节点层级、动画、蒙皮与 morph；glTF 用 `LitGltf::to_model` 适配 |
 | 每实例覆盖 | `InstanceColor { color }` / `InstanceCutoff { cutoff }` / `InstanceHullWidth { width }` / `InstanceVisibility { visible }`。都是**具名字段**结构体，**不是元组结构体**：前三个有 `new(..)`，四个都有 `Default`（`InstanceVisibility` 没有 `new`） |
 | 实例记录 | `LitInstance`（family 的 `InstanceData`） |
 | 排序 | `ZSortedDrawing`：带它的在不带它的之后画，按视轴深度从后往前；不改 blend |
@@ -213,7 +214,9 @@
 
 ## glTF
 
-`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**不收放置参数**：实体变换就是节点自身的世界变换，要放置就自己逐实体前乘 `Transform::from_matrix(placement.compute_matrix() * current.compute_matrix())`）、`apply_animation`（第五个参数是调用方持有的 `gltf::AnimationPlayer`，它存放采样缓冲，跨帧复用；只写文档自身的变换，因此会覆写调用方放在被驱动节点上的放置）/ `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死；蒙皮网格在着色器里忽略实体变换、顶点由骨骼矩阵直接在世界空间产出，因此实体变换不影响蒙皮网格的绕序。
+完整模型用 `insert_resources` → `to_model(&resources)` → 在 mesh source 下 spawn `LitModelBundle`。移动整个实例时改根实体的 `Transform`，选片段或调整时间则改 `LitModelAnimation`；帧派发会求值，不派帧时调用 `LitModelBundle::evaluate(&scope, root)`。
+
+低层 API：`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`spawn_node` / `spawn_default_scene`（**不收放置参数**：实体变换就是节点自身的世界变换，要放置就自己逐实体前乘 `Transform::from_matrix(placement.compute_matrix() * current.compute_matrix())`）、`apply_animation`（第五个参数是调用方持有的 `gltf::AnimationPlayer`，它存放采样缓冲，跨帧复用；只写文档自身的变换，因此会覆写调用方放在被驱动节点上的放置）/ `animation_duration` / `animation_name`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死；蒙皮网格在着色器里忽略实体变换、顶点由骨骼矩阵直接在世界空间产出，因此实体变换不影响蒙皮网格的绕序。
 
 ## 常用常量
 

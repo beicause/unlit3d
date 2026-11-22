@@ -12,9 +12,7 @@ use crate::common::{
 };
 use unlit_ecs::bundle;
 use unlit_wgpu_test_util::gpu_tests;
-use unlit3d::gltf::{
-    AnimationId, AnimationPlayer, GltfNode, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId,
-};
+use unlit3d::gltf::{AnimationId, GltfResources, LitGltf, MeshId, NodeId, PrimitiveId};
 use unlit3d::prelude::*;
 
 mod deform;

@@ -124,22 +124,36 @@ fn build(
             (fox_resources, morph_resources)
         });
 
-    // The spawned handles are what `apply_animation` writes through: the fox's
-    // handle carries the pose entity its skin reads, and the cube's carries
-    // the weights entity its morph targets read.
-    let (fox_nodes, morph_nodes) = {
-        let mut scope = world.scope_mut(source_entity);
-        // The embedded assets are checked in, so their scenes always spawn.
-        (
-            fox.spawn_default_scene(&mut scope, &fox_resources)
-                .expect("the fox asset spawns"),
-            morph
-                .spawn_default_scene(&mut scope, &morph_resources)
-                .expect("the morph asset spawns"),
-        )
-    };
-    place(&world.root_scope(), &fox_nodes, &FOX_PLACEMENT);
-    place(&world.root_scope(), &morph_nodes, &MORPH_PLACEMENT);
+    let fox_animation = animation_index(&fox, FOX_ANIMATION);
+    let morph_animation = animation_index(&morph, MORPH_ANIMATION);
+    let fox_duration = fox.animation_duration(unlit3d::gltf::AnimationId::new(fox_animation));
+    let morph_duration = morph.animation_duration(unlit3d::gltf::AnimationId::new(morph_animation));
+
+    let mut scope = world.scope_mut(source_entity);
+    let fox_root = scope.spawn(LitModelBundle {
+        transform: FOX_PLACEMENT,
+        model: fox
+            .to_model(&fox_resources)
+            .expect("the fox scene has uploaded resources"),
+        animation: LitModelAnimation {
+            clip: Some(fox_animation),
+            speed: 0.0,
+            looping: false,
+            ..Default::default()
+        },
+    });
+    let morph_root = scope.spawn(LitModelBundle {
+        transform: MORPH_PLACEMENT,
+        model: morph
+            .to_model(&morph_resources)
+            .expect("the morph scene has uploaded resources"),
+        animation: LitModelAnimation {
+            clip: Some(morph_animation),
+            speed: 0.0,
+            looping: false,
+            ..Default::default()
+        },
+    });
 
     // Neither document carries `KHR_materials_unlit`, so both draw lit: a
     // frame without lights would draw them black. One ambient term keeps
@@ -176,23 +190,11 @@ fn build(
             size
         )]);
 
-    let fox_animation = animation_index(&fox, FOX_ANIMATION);
-    let morph_animation = animation_index(&morph, MORPH_ANIMATION);
-    let fox_duration = fox.animation_duration(unlit3d::gltf::AnimationId::new(fox_animation));
-    let morph_duration = morph.animation_duration(unlit3d::gltf::AnimationId::new(morph_animation));
-
     // In the window each clip plays at its own real duration and loops. A
     // snapshot capture instead walks a fixed six-step sequence, so a frame does
     // not depend on when it was drawn.
     let reproducible = options.reproducible;
     let mut clock = 0.0f32;
-    // One player per document: each holds the buffers its clip samples into,
-    // so the two never share a working set.
-    let mut fox_player = unlit3d::gltf::AnimationPlayer::default();
-    fox_player.set_placement(&FOX_PLACEMENT);
-    let mut morph_player = unlit3d::gltf::AnimationPlayer::default();
-    morph_player.set_placement(&MORPH_PLACEMENT);
-
     SceneControl {
         advance: Box::new(move |world, frame, delta, frame_size| {
             let (fox_time, morph_time) = if reproducible {
@@ -216,20 +218,10 @@ fn build(
                 (loop_time(fox_duration), loop_time(morph_duration))
             };
             let scope = world.scope(source_entity);
-            fox.apply_animation(
-                &scope,
-                unlit3d::gltf::AnimationId::new(fox_animation),
-                fox_time,
-                &fox_nodes,
-                &mut fox_player,
-            );
-            morph.apply_animation(
-                &scope,
-                unlit3d::gltf::AnimationId::new(morph_animation),
-                morph_time,
-                &morph_nodes,
-                &mut morph_player,
-            );
+            for (root, time) in [(fox_root, fox_time), (morph_root, morph_time)] {
+                scope.query_one::<&mut LitModelAnimation>(root).get().time = time;
+                LitModelBundle::evaluate(&scope, root);
+            }
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.
             super::aim_camera(
@@ -244,30 +236,6 @@ fn build(
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("gltf/frame_{frame:02}.webp"))
         }),
-    }
-}
-
-/// Compose a placement onto every entity the nodes draw.
-///
-/// The document spawns where it was authored, so each entity carries its own
-/// node world transform; composing in matrix space keeps every node in its
-/// place in the hierarchy rather than moving them all onto one transform. A
-/// skinned mesh draws from its pose joint matrices rather than its entity
-/// transform, so the placement is composed into the pose as well.
-fn place(scope: &unlit_ecs::Scope<'_>, nodes: &[unlit3d::gltf::GltfNode], placement: &Transform) {
-    let matrix = placement.compute_matrix();
-    for node in nodes {
-        for &entity in &node.entities {
-            let mut current = scope.query_one::<&mut Transform>(entity);
-            let placed = matrix * current.get().compute_matrix();
-            *current.get() = Transform::from_matrix(placed);
-        }
-        if let Some(entity) = node.pose {
-            let mut pose = scope.query_one::<&mut SkinPose>(entity);
-            for joint in &mut pose.get().matrices {
-                *joint = glam::Mat4::from(matrix) * *joint;
-            }
-        }
     }
 }
 

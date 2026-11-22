@@ -19,16 +19,27 @@ pub(super) fn node_parents(document: &gltf::Document) -> Vec<Option<usize>> {
 
 /// The local-space transform of every node, indexed by node index.
 ///
-/// A matrix-form node transform is composed back into translation, rotation
-/// and scale so that an animation can address a single one of them; see
-/// [`Transform::from_matrix`] for what that costs.
+/// Preserve authored TRS so a channel can replace one property independently.
+/// Matrix-form nodes have no animated TRS properties; for their conversion
+/// to the model representation, see [`Transform::from_matrix`].
 pub(super) fn node_locals(document: &gltf::Document) -> Vec<Transform> {
     document
         .nodes()
-        .map(|node| {
-            Transform::from_matrix(glam::Affine3A::from_mat4(glam::Mat4::from_cols_array_2d(
-                &node.transform().matrix(),
-            )))
+        .map(|node| match node.transform() {
+            // Preserve the axes and signs of the authored scale: replacing
+            // only one TRS property must not reinterpret the other two.
+            gltf::scene::Transform::Decomposed {
+                translation,
+                rotation,
+                scale,
+            } => Transform {
+                translation: translation.into(),
+                rotation: glam::Quat::from_array(rotation),
+                scale: scale.into(),
+            },
+            gltf::scene::Transform::Matrix { matrix } => Transform::from_matrix(
+                glam::Affine3A::from_mat4(glam::Mat4::from_cols_array_2d(&matrix)),
+            ),
         })
         .collect()
 }

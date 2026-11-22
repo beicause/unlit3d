@@ -57,7 +57,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 建 mesh  | `source.allocate_lit_mesh(&scope, &key.options, LitMeshDesc { .. })` 返回 `GpuMesh`；顶点通道由你给的 slice 决定（positions 必填，uvs/colors/normals/indices/joints/weights/morph 可选；`expanded` 外扩壳需要 normals） |
 | 建材质   | 纹理 `register_texture_and_default_view`、采样器 `register_sampler`，再 `allocate_lit_material(&scope, &key.options, view, sampler)`                                          |
-| 画一份   | `spawn(LitMeshBundle { transform, mesh, pipeline, color, cutoff, hull_width, material, skin, morph, z_sorted })`——前四件必带，`Option` 字段按需，挂在 source 子树里                                                                           |
+| 画一份   | `spawn(LitMeshBundle { transform, primitive: LitMeshPrimitive { mesh, pipeline, color, cutoff, hull_width, material, z_sorted }, skin, morph })`；多 mesh/层级/动画模型用 `LitModelBundle` |
 | 画多份   | 同一个 `key` / `mesh` / `material` clone 到多个实体；每份差异用 `InstanceColor` / `InstanceCutoff` / `Transform`，**不要**为每个颜色重建 mesh                          |
 | 暂时隐藏 | `InstanceVisibility { visible: false }`，不要 despawn                                                                                                                     |
 | 释放     | 直接 drop `GpuMesh`（并 despawn 绘制实体）：最后一个句柄一丢，mesh 在 source 下一次 `maintain` 时被收集，池子区间与 metadata 槽随之归还；无需手动调用释放方法 |

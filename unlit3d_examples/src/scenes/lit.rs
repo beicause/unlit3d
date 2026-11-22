@@ -230,15 +230,17 @@ fn build(
     for (mesh, pipeline) in [(floor_mesh, pipeline), (wall_mesh, relief_pipeline)] {
         world.scope_mut(source_entity).spawn(LitMeshBundle {
             transform: Transform::default(),
-            mesh,
-            pipeline,
-            color: InstanceColor::default(),
-            cutoff: None,
-            hull_width: None,
-            material: None,
+            primitive: LitMeshPrimitive {
+                mesh,
+                pipeline,
+                color: InstanceColor::default(),
+                cutoff: None,
+                hull_width: None,
+                material: None,
+                z_sorted: None,
+            },
             skin: None,
             morph: None,
-            z_sorted: None,
         });
     }
 

@@ -29,7 +29,7 @@
 | `transparent`                                               | 透明 + `ZSortedDrawing` + blend                                  |
 | `animated`                                                  | 八帧内 mesh 的分配、回收、平移旋转                               |
 | `skinned` / `morphed` / `instanced_skinned_morph`           | 蒙皮、morph，以及共享一个 mesh 的实例合并                        |
-| `gltf`                                                      | `LitGltf` 加载、动画采样、`spawn_default_scene`                  |
+| `gltf`                                                      | `LitGltf` 加载、`LitModelBundle` 层级与动画、蒙皮与 morph                  |
 | `mesh_topologies`                                           | 五种 primitive topology，索引与非索引各一遍                      |
 | `custom_pipeline`                                           | 自己注册 family（程序化天空 + 粒子）                             |
 | `lit`                                                       | Lambert 光照：共 8 盏（2 方向 + 3 点 + 1 聚光 + 1 矩形 + 1 三角面光），`unlit: false` 的 key |

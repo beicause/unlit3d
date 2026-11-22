@@ -243,6 +243,27 @@ fn a_mirror_survives_the_decomposition() {
 }
 
 #[test]
+fn a_model_import_keeps_only_the_default_scene_and_preserves_authored_trs() {
+    let gltf = LitGltf::from_bytes(
+        br#"{
+        "asset":{"version":"2.0"},"scene":0,
+        "scenes":[{"nodes":[2]},{"nodes":[0]}],
+        "nodes":[{}, {"scale":[1,-2,3]}, {"children":[1]}]
+    }"#,
+    )
+    .unwrap();
+    let model = gltf.to_model(&GltfResources::default()).unwrap();
+    assert_eq!(model.nodes.len(), 2);
+    assert_eq!(model.nodes[0].parent, Some(1));
+    assert_eq!(
+        model.nodes[0].transform.scale,
+        glam::Vec3::new(1.0, -2.0, 3.0)
+    );
+    assert_eq!(model.nodes[0].transform.rotation, glam::Quat::IDENTITY);
+    assert_eq!(model.nodes[1].parent, None);
+}
+
+#[test]
 fn a_skin_short_of_inverse_bind_matrices_binds_the_rest_at_rest() {
     // The specification asks for one inverse bind matrix per joint, and
     // nothing in the document's JSON states the count, so a skin can list

@@ -506,7 +506,7 @@ pub fn run() {
 
         // A red triangle from an inline document, so the centre of the frame
         // is the mesh and the rest is the clear colour.
-        let spawned = server
+        server
             .tool("spawn_gltf", json!({ "document": triangle_document() }))
             .await;
         let image = screenshot(&mut server).await;
@@ -644,43 +644,46 @@ pub fn run() {
                 .is_some_and(|entities| !entities.is_empty()),
             "spawning a file spawns its scene: {fox}"
         );
-        // The answer names every entity the spawn made: one per primitive, plus
-        // the ones carrying the node's skin pose and morph weights, since a
-        // caller animating the node addresses those too.
+        // The model is one ECS subtree rooted at the returned bundle entity;
+        // the response keeps the root and every child handle so callers can
+        // inspect or despawn any part of the model.
+        let fox_entities = fox["entities"]
+            .as_array()
+            .expect("spawn_gltf returns entity handles");
         assert!(
+            fox_entities.len() > 1,
+            "a model spawn returns its root and descendants: {fox}"
+        );
+        assert_eq!(
             fox["names"]
                 .as_array()
-                .is_some_and(|names| names.iter().all(|name| matches!(
-                    name.as_str(),
-                    Some("gltf primitive" | "gltf skin pose" | "gltf morph weights")
-                ))),
-            "every spawned entity is named for what it carries: {fox}"
+                .and_then(|names| names.first())
+                .and_then(Value::as_str),
+            Some("lit model"),
+            "the first handle identifies the model bundle root: {fox}"
         );
         assert!(
             fox["names"]
                 .as_array()
-                .is_some_and(|names| names.iter().any(|name| name == "gltf primitive")),
-            "the spawned scene draws at least one primitive: {fox}"
+                .is_some_and(|names| { names.iter().any(|name| name == "lit model primitive") }),
+            "the response includes a drawable descendant: {fox}"
         );
 
-        // A spawned scene is despawned entity by entity; the mesh its entities
-        // drew goes back to the source's pool at the source's next maintain.
-        let entity = spawned["entities"]
-            .as_array()
-            .and_then(|entities| entities.first())
-            .and_then(|entity| entity.as_u64())
-            .expect("the document spawned an entity");
+        // Despawning a model root removes every returned descendant as well.
+        let entity = fox_entities[0]
+            .as_u64()
+            .expect("the model root is an entity");
         server
             .tool("despawn_entity", json!({ "entity": entity }))
             .await;
-        let gone = server.tool("list_entities", json!({})).await;
+        let remaining = server.tool("list_entities", json!({})).await;
         assert!(
-            !gone
+            !remaining
                 .as_array()
                 .expect("list_entities returns an array")
                 .iter()
-                .any(|row| row["entity"].as_u64() == Some(entity)),
-            "the despawned entity is gone"
+                .any(|row| fox_entities.contains(&row["entity"])),
+            "no entity of the despawned model remains"
         );
 
         // The save tools answer with the path they wrote instead of the image,

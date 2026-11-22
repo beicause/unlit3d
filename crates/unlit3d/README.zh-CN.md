@@ -512,7 +512,13 @@ impl InstanceContext<'_> {
 `KHR_draco_mesh_compression` 的文档在本引擎运行的每个目标上都能加载，包括 wasm32。
 指向同一 bufferView 的多个 primitive——扩展里没有「逐 primitive 流」这个概念——共用一次解码。
 这条导入路径与「每张图像上传成什么 GPU 格式」都归 `gltf` 模块自身的文档管；
-本节的职责是它往你已经在渲染的那个世界里修补了什么：
+本节介绍导入会往你已经在渲染的 world 里添加什么。
+
+先用 `LitGltf::insert_resources` 上传，再调用 `LitGltf::to_model`，把 `LitModelBundle`
+生成在网格源下。根 `Transform` 放置整份模型，包括动画节点和世界空间的蒙皮姿态。
+bundle 在生成时求值一次，之后在每次帧派发中按 `LIT_MODEL_UPDATE_ORDER` 求值。写入
+`LitModelAnimation` 可选择片段或调整时间；不派发帧时可用 `LitModelBundle::evaluate`
+手动求值。销毁根实体即可移除整份实例。同一个 bundle 也接受不经 glTF 的手工 `LitModel` 数据。
 
 - 文档的集合用类型化 id 寻址——`ImageId`、`MaterialId`、`MeshId`、
   `PrimitiveId`、`NodeId` 与 `AnimationId`——节点下标因此不会误传给动画或图像。
@@ -531,10 +537,9 @@ impl InstanceContext<'_> {
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - 带 `KHR_materials_unlit` 的材质按无光绘制，基础色就是文件所写；其余材质按受光绘制，
   由帧里的光照着色——文档声明的是退出着色，而不是选择受光。
-- `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
-  的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`，因此文档就生成在它
-  被创作的位置；要把它放到别处是调用方自己的动作，用一个放置矩阵复合到每个生成实体上。
-  各实体还携带已上传的
+- 低层 `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
+  的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`。使用这些函数时，
+  调用方负责放置模型。各实体还携带已上传的
   `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
   primitive 还会带上 `ZSortedDrawing` 标记，于是 pass 的合成把它与各源的混合绘制一起
@@ -570,11 +575,11 @@ impl InstanceContext<'_> {
   关节矩阵读取，所以镜像的姿态（以及复合进每个关节的放置）仍能以正确的绕序绘制正面。
 - UV 流是材质基础色纹理所指的那个 `TEXCOORD_n` 集，因此通过 `TEXCOORD_1` 采样的 primitive
   就用它贴图。材质所指的集而 primitive 并未携带时，该 primitive 按无贴图绘制，而不是加载失败。
-- 文档中的动画按需采样而非自动播放：`LitGltf::animation_count`、
+- 使用低层 API 时，由调用方显式采样动画：`LitGltf::animation_count`、
   `LitGltf::animation_name` 与 `LitGltf::animation_duration` 描述它含有的片段，
   `document.apply_animation(&scope, clip, time, &spawned, &mut player)`
   在选定的时间求值其中一个。
-  它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，旋转走球面插值）采样进被动画节点的局部
+  它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，其中 `LINEAR` 旋转通道走球面插值）采样进节点的局部
   变换，沿节点层级重新组合出世界矩阵，再把结果写到生成实体读取它的地方：每个被动画节点的
   `Transform`（以及继承其变化的子孙节点）、每个因关节移动而跟随的网格的 `SkinPose`、以及
   权重通道所指的每个 `MorphWeights`。它接受 `&Scope`，因此调用方可以与其他读取 world 的
@@ -790,15 +795,17 @@ world
     .scope_mut(source)
     .spawn(LitMeshBundle {
         transform: Transform::default(),
-        mesh,
-        pipeline: GpuRenderPipeline::new(key),
-        color: InstanceColor::default(),
-        cutoff: None,
-        hull_width: None,
-        material: Some(material),
+        primitive: LitMeshPrimitive {
+            mesh,
+            pipeline: GpuRenderPipeline::new(key),
+            color: InstanceColor::default(),
+            cutoff: None,
+            hull_width: None,
+            material: Some(material),
+            z_sorted: None,
+        },
         skin: None,
         morph: None,
-        z_sorted: None,
     });
 
 // 4. Give the pass a render target and render one frame (uses the noop

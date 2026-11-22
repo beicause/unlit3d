@@ -1,7 +1,8 @@
 //! Load glTF documents and patch them into another world's
 //! [`MeshSource`](crate::mesh_source::MeshSource): upload textures, materials
-//! and meshes into an existing resource graph, unload them again, and spawn
-//! entities that draw the document's default scene.
+//! and meshes into an existing resource graph, unload them again, and prepare
+//! a reusable [`LitModel`](crate::lit::LitModel) or spawn the document's
+//! default scene with the lower-level API.
 //!
 //! [`LitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each
@@ -35,18 +36,24 @@
 //! ```rust,no_run
 //! # use unlit3d::gltf::LitGltf;
 //! # use unlit3d::prelude::MeshSource;
+//! use unlit3d::lit::LitModelBundle;
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
 //! let resources = gltf.insert_resources(source, &world.readonly())?;
-//! // The entities land where the document authored its nodes.
-//! let entities = gltf.spawn_default_scene(world, &resources)?;
-//! // ... render ...
-//! // Giving the handles up makes their resources collectable.
-//! drop(resources);
+//! let model = gltf.to_model(&resources)?;
+//! // Spawn under the mesh source that will draw the model.
+//! let root = world.spawn(LitModelBundle::new(model));
 //! # Ok(()) }
 //! ```
 //!
+//! [`LitGltf::to_model`] adapts the uploaded default scene to the generic
+//! [`LitModelBundle`](crate::lit::LitModelBundle) API. The model keeps local
+//! node transforms, parent relationships, skins, morph weights and decoded
+//! clips; each bundle instance owns its root [`Transform`],
+//! so a caller can place and animate multiple instances without sharing ECS
+//! state. The lower-level `spawn_*` and `apply_animation` methods remain
+//! available when a caller needs to assemble or drive those entities directly.
 //! A caller that wants to insert one kind of resource at a time — to reuse a
 //! texture between documents, say — can still call
 //! [`LitGltf::insert_images`], [`LitGltf::insert_materials`] and
@@ -187,6 +194,7 @@ mod draco_tests;
 mod image;
 pub use self::image::MipChain;
 mod material;
+mod model;
 mod playback;
 pub use self::playback::AnimationPlayer;
 mod scene;
@@ -374,7 +382,7 @@ pub struct LitGltf {
     /// Decoding a channel's accessors yields an iterator, and sampling needs
     /// random access to the keyframes, so they are collected once here rather
     /// than on every frame that plays the clip.
-    clips: Vec<OnceLock<Vec<animation::Channel>>>,
+    clips: Vec<OnceLock<Vec<crate::lit::LitModelChannel>>>,
     /// How much of a mip chain the document's textures carry.
     mips: MipChain,
 }

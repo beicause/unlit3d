@@ -684,21 +684,23 @@ pub(crate) fn spawn_gltf(
         gltf.insert_resources(source, scope)
     })?
     .map_err(|error| error.to_string())?;
-    let mut scope = world
-        .try_scope_mut(scope)
-        .map_err(|_| format!("no scope {scope:?}"))?;
-    let nodes = gltf
-        .spawn_default_scene(&mut scope, &resources)
+    let model = gltf
+        .to_model(&resources)
         .map_err(|error| error.to_string())?;
-    let entities: Vec<Entity> = nodes
-        .iter()
-        .flat_map(|node| {
-            let pose = node.pose.iter();
-            let weights = node.weights.iter();
-            node.entities.iter().chain(pose).chain(weights)
-        })
-        .copied()
-        .collect();
+    let root = world
+        .try_scope_mut(scope)
+        .map_err(|_| format!("no scope {scope:?}"))?
+        .spawn_named("lit model", LitModelBundle::new(model));
+    let mut entities = vec![root];
+    let mut cursor = 0;
+    while cursor < entities.len() {
+        let parent = entities[cursor];
+        let children = world
+            .children(parent)
+            .map_err(|error| format!("cannot enumerate model child {parent:?}: {error}"))?;
+        entities.extend(children);
+        cursor += 1;
+    }
     let names = entities.iter().map(|entity| entity.name()).collect();
     to_value(&SpawnedEntities { entities, names })
 }

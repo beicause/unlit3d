@@ -117,14 +117,10 @@ optional and unknown fields are refused. The shape is:
 ```
 
 `animation` names one of the document's animations, either by index or by name;
-`time` is the animation time in seconds. A document is drawn with its own scene,
-and `placement`, when given, is composed onto the document's own node transforms:
-the whole scene moves, so a node offset from the document's origin keeps that
-offset. A node the animation drives is written back at its unplaced transform
-while the animation plays. A skinned mesh draws from its joint matrices in world
-space and ignores its entity's transform, so its placement is composed into the
-pose joint matrices instead; the animation player carries that placement forward
-when it rebuilds the pose each frame.
+`time` is the animation time in seconds. The CLI builds a `LitModelBundle`: the
+model root carries `placement`, while animation updates the local node transforms
+beneath it. A skinned mesh draws from its joint matrices in world space; model
+evaluation composes the root placement into those joints as it updates the pose.
 
 On the command line, `--document` is repeatable and replaces the configuration's
 document list, while `--animation` and `--time` apply to every document.

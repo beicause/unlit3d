@@ -14,7 +14,7 @@ use super::{
 use crate::components::{
     GpuRenderPipeline, MorphBinding, MorphWeights, SkinBinding, Transform, ZSortedDrawing,
 };
-use crate::lit::{InstanceColor, InstanceCutoff, LitMeshBundle};
+use crate::lit::{InstanceColor, InstanceCutoff, LitMeshBundle, LitMeshPrimitive};
 use unlit_ecs::bundle;
 use unlit_ecs::{ScopeMut, prelude::Entity};
 
@@ -84,33 +84,8 @@ impl LitGltf {
         let mut morphs: Option<Entity> = None;
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
-                let mesh_handle = self
-                    .uploaded_primitive(
-                        resources,
-                        MeshId::new(mesh.index()),
-                        PrimitiveId::new(primitive.index()),
-                    )
-                    .ok_or(super::Error::MeshNotInserted { node: index })?;
-                // The base-color factor tints the instance whether or not the
-                // material samples a texture; a primitive naming no material
-                // falls back to the glTF default, opaque white.
-                let tint: glam::Vec4 = primitive
-                    .material()
-                    .pbr_metallic_roughness()
-                    .base_color_factor()
-                    .into();
-                // The `alphaMode: MASK` cutoff the shader compares against is
-                // read before the primitive is handed to the material lookup,
-                // which takes it by value.
-                let cutoff = alpha_cutoff(&primitive.material());
-                let material = match base_color_uv_set(&primitive).is_some() {
-                    true => {
-                        Some(self.primitive_material(&mesh, primitive, &resources.materials)?)
-                    }
-                    false => None,
-                };
-                let z_sorted = mesh_handle.key.options.blend.is_some();
-                let skinned = mesh_handle.mesh.skinned;
+                let primitive = self.draw_primitive(index, &mesh, &primitive, resources)?;
+                let skinned = primitive.mesh.skinned;
                 let binding = skinned.then(|| {
                     let pose = *pose.get_or_insert_with(|| {
                         world.spawn_named(
@@ -120,7 +95,7 @@ impl LitGltf {
                     });
                     SkinBinding { pose }
                 });
-                let morphed = mesh_handle.mesh.morph_targets > 0;
+                let morphed = primitive.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
                         world.spawn_named(
@@ -138,17 +113,9 @@ impl LitGltf {
                 // renderer `None`s to look through.
                 let drawn = LitMeshBundle {
                     transform: transform.clone(),
-                    mesh: mesh_handle.mesh.clone(),
-                    pipeline: GpuRenderPipeline::new(mesh_handle.key.clone()),
-                    color: InstanceColor::new(tint),
-                    // The cutoff is per-instance state, so the entity carries
-                    // it and the shader reads it out of the instance stream.
-                    cutoff: cutoff.map(InstanceCutoff::new),
-                    hull_width: None,
-                    material: material.map(|material| material.bind_group.clone()),
+                    primitive,
                     skin: binding,
                     morph: morph_binding,
-                    z_sorted: z_sorted.then_some(ZSortedDrawing),
                 };
                 entities.push(world.spawn_named("gltf primitive", drawn));
             }
@@ -200,6 +167,45 @@ impl LitGltf {
         Ok(nodes)
     }
 
+    pub(super) fn draw_primitive(
+        &self,
+        node: usize,
+        mesh: &gltf::Mesh<'_>,
+        primitive: &gltf::Primitive<'_>,
+        resources: &GltfResources,
+    ) -> Result<LitMeshPrimitive, super::Error> {
+        let handle = self
+            .uploaded_primitive(
+                resources,
+                MeshId::new(mesh.index()),
+                PrimitiveId::new(primitive.index()),
+            )
+            .ok_or(super::Error::MeshNotInserted { node })?;
+        let material = if base_color_uv_set(primitive).is_some() {
+            Some(
+                self.primitive_material(mesh, primitive, &resources.materials)?
+                    .bind_group
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let tint = primitive
+            .material()
+            .pbr_metallic_roughness()
+            .base_color_factor()
+            .into();
+        Ok(LitMeshPrimitive {
+            mesh: handle.mesh.clone(),
+            pipeline: GpuRenderPipeline::new(handle.key.clone()),
+            color: InstanceColor::new(tint),
+            cutoff: alpha_cutoff(&primitive.material()).map(InstanceCutoff::new),
+            hull_width: None,
+            material,
+            z_sorted: handle.key.options.blend.is_some().then_some(ZSortedDrawing),
+        })
+    }
+
     /// The uploaded handle of one primitive of `mesh`, or `None` when the
     /// resources do not hold it.
     ///
@@ -236,7 +242,7 @@ impl LitGltf {
     fn primitive_material<'m>(
         &self,
         mesh: &gltf::Mesh<'_>,
-        primitive: gltf::Primitive<'_>,
+        primitive: &gltf::Primitive<'_>,
         materials: &'m [Option<GltfMaterial>],
     ) -> Result<&'m GltfMaterial, super::Error> {
         let missing = || super::Error::MaterialNotInserted {

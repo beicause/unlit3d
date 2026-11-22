@@ -766,7 +766,15 @@ target the engine runs on, wasm32 included. Primitives that name the same
 buffer view — the extension has no notion of a per-primitive stream — share one
 decoding of it. The import and the GPU format each image is uploaded in are the
 `gltf` module's own subject; what follows is what the module patches into the
-world you already render:
+world you already render.
+
+Upload with `LitGltf::insert_resources`, then use `LitGltf::to_model` and
+spawn a `LitModelBundle` under the mesh source. Its root `Transform` places the
+whole model, including animated nodes and world-space skin poses. The bundle
+evaluates once at spawn and on each dispatched frame at `LIT_MODEL_UPDATE_ORDER`.
+Write `LitModelAnimation` to select a clip or seek; use `LitModelBundle::evaluate`
+if you render without dispatching a frame. Despawn the root to remove the whole
+instance. The same bundle accepts hand-authored `LitModel` data without glTF.
 
 - A document's collections are addressed by typed ids — `ImageId`,
   `MaterialId`, `MeshId`, `PrimitiveId`, `NodeId` and `AnimationId` —
@@ -793,12 +801,12 @@ world you already render:
   exactly as the file states it; every other material draws lit, shaded by the
   lights the frame carries — a document opts out of shading, it does not opt
   in.
-- `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
-  mesh (or every node reachable from the default scene): one entity per
-  primitive, each carrying the node's world-space [`Transform`](components::Transform),
-  so the document spawns where it was authored; placing it elsewhere is the
-  caller's own move, a placement matrix composed onto every spawned entity.
-  Each entity also carries the uploaded [`GpuMesh`](components::GpuMesh), the
+- The lower-level `spawn_node` / `spawn_default_scene` functions spawn the
+  entities that draw the node's mesh (or every node reachable from the default
+  scene): one entity per primitive, each carrying the node's world-space
+  [`Transform`](components::Transform). The caller is responsible for placement
+  when using these functions. Each entity also carries the uploaded
+  [`GpuMesh`](components::GpuMesh), the
   [`GpuRenderPipeline`](components::GpuRenderPipeline)
   for the mesh, an [`InstanceColor`](lit::InstanceColor) tinted with the
   material's base-color factor, and — when the mesh reads a base-color texture —
@@ -865,12 +873,13 @@ world you already render:
   names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
   primitive whose material names a set it does not carry draws untextured
   rather than failing the load.
-- A document's animations are sampled rather than played:
+- With the lower-level API, a caller samples animations explicitly:
   `LitGltf::animation_count`, `LitGltf::animation_name` and
   `LitGltf::animation_duration` describe the clips it carries, and
   `document.apply_animation(&scope, clip, time, &spawned, &mut player)`
-  evaluates one at a chosen time. It samples each channel — `STEP`, `LINEAR` or `CUBICSPLINE`, with
-  rotations slerped — into the animated nodes' local transforms, recomposes the
+  evaluates one at a chosen time. It samples each channel — `STEP`, `LINEAR` or
+  `CUBICSPLINE`, with spherical interpolation for `LINEAR` rotation channels —
+  into the animated nodes' local transforms, recomposes the
   world matrices down the node hierarchy, and writes the result where the
   spawned entities read it: each animated node's [`Transform`](components::Transform) (and
   its descendants', which inherit the change), every [`SkinPose`](components::SkinPose) whose mesh
@@ -1156,15 +1165,17 @@ world
     .scope_mut(source)
     .spawn(LitMeshBundle {
         transform: Transform::default(),
-        mesh,
-        pipeline: GpuRenderPipeline::new(key),
-        color: InstanceColor::default(),
-        cutoff: None,
-        hull_width: None,
-        material: Some(material),
+        primitive: LitMeshPrimitive {
+            mesh,
+            pipeline: GpuRenderPipeline::new(key),
+            color: InstanceColor::default(),
+            cutoff: None,
+            hull_width: None,
+            material: Some(material),
+            z_sorted: None,
+        },
         skin: None,
         morph: None,
-        z_sorted: None,
     });
 
 // 4. Give the pass a render target and render one frame (uses the noop

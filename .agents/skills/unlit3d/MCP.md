@@ -119,9 +119,9 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `target`（必填）、`context`、`renderer`、`format`     |
 | `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `target`（必填）、`directory`（必填）、`file_name`、`context`、`renderer` |
 
-`spawn_gltf` 的 `document` 可以是 glTF JSON 文本，也可以是把 GLB 的字节 base64 编码后的字符串——JSON 参数装不下裸二进制；与 `path` 只能给其中一个。场景画出的实体逐个 `despawn_entity` 删除即可，它们画的 mesh 由 source 下一次 `maintain` 回收。
+`spawn_gltf` 的 `document` 可以是 glTF JSON 文本，也可以是把 GLB 的字节 base64 编码后的字符串——JSON 参数装不下裸二进制；与 `path` 只能给其中一个。工具返回模型根和全部后代实体；删除根实体即可通过 ECS 子树清理整份场景，绘制 mesh 由 source 下一次 `maintain` 回收。
 
-`context` / `renderer` / `source` 分别是携带渲染上下文 / `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体用 `despawn_entity`，mesh 由 source 下一次 `maintain` 回收。
+`context` / `renderer` / `source` 分别是携带渲染上下文 / `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体时应删除返回句柄中的根实体；ECS 会清理整棵模型子树，mesh 由 source 下一次 `maintain` 回收。
 
 ### 帧与时序
 

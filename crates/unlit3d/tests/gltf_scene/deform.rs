@@ -5,8 +5,8 @@ use super::documents::{
     spawn_scene,
 };
 use super::{
-    AnimationId, AnimationPlayer, Ctx, HEIGHT, LitGltf, MorphBinding, MorphWeights, NodeId,
-    SkinBinding, SkinPose, TestGpu, WIDTH, World, bundle,
+    AnimationId, Ctx, HEIGHT, LitGltf, LitModelAnimation, LitModelBundle, LitModelInstance,
+    MorphBinding, MorphWeights, NodeId, SkinBinding, SkinPose, TestGpu, WIDTH, World, bundle,
 };
 
 /// A morphed quad follows its weights: spawning binds the mesh to a weight
@@ -36,8 +36,18 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
         "the primitive declares targets, so the uploaded mesh reads displacements"
     );
 
-    let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    assert_eq!(entities.len(), 1, "one mesh node draws one entity");
+    let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let scope = world.root_scope();
+    assert_eq!(
+        scope
+            .query_one::<&LitModelInstance>(root)
+            .get()
+            .draws
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
 
     let weights_entity = {
         let mut morph_binding_rows = world.root_scope().query::<&MorphBinding>();
@@ -126,21 +136,19 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
         gltf.insert_resources(source, world)
             .expect("the embedded document uploads")
     });
-    let nodes = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
-    // One player serves both frames: it holds the buffers the samples land in
-    // and nothing that would carry from one call to the next.
-    let mut player = AnimationPlayer::default();
-    let mut read = async |gpu: &TestGpu, time: f32| {
-        gltf.apply_animation(
-            &world.root_scope(),
-            AnimationId::new(0),
+    let scope = world.root_scope();
+    let read = async |gpu: &TestGpu, time: f32| {
+        *scope.query_one::<&mut LitModelAnimation>(root).get() = LitModelAnimation {
+            clip: Some(0),
             time,
-            &nodes,
-            &mut player,
-        );
+            speed: 0.0,
+            looping: false,
+        };
+        LitModelBundle::evaluate(&scope, root);
         gpu.render(&world);
         unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await
     };
@@ -192,8 +200,18 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
         "the primitive declares JOINTS_0, so the uploaded mesh reads joints"
     );
 
-    let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    assert_eq!(entities.len(), 1, "one mesh node draws one entity");
+    let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let scope = world.root_scope();
+    assert_eq!(
+        scope
+            .query_one::<&LitModelInstance>(root)
+            .get()
+            .draws
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
 
     // The drawn entity names the pose entity the spawn created, and that
     // entity holds the rest pose: the identity, one matrix per joint.
@@ -266,8 +284,18 @@ pub(super) async fn a_mirrored_skin_pose_draws_its_front_faces() {
         gltf.insert_resources(source, world)
             .expect("the embedded document uploads")
     });
-    let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    assert_eq!(entities.len(), 1, "one mesh node draws one entity");
+    let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let scope = world.root_scope();
+    assert_eq!(
+        scope
+            .query_one::<&LitModelInstance>(root)
+            .get()
+            .draws
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
 
     let pose = {
         let mut skin_binding_rows = world.root_scope().query::<&SkinBinding>();

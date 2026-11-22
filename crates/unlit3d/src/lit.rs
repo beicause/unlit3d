@@ -404,8 +404,15 @@ impl InstanceData for LitInstance {
 mod allocate;
 
 mod bundle;
+mod model;
+pub(crate) mod sampling;
 
-pub use bundle::LitMeshBundle;
+pub use bundle::{LitMeshBundle, LitMeshPrimitive};
+pub use model::{
+    LIT_MODEL_UPDATE_ORDER, LitModel, LitModelAnimation, LitModelBundle, LitModelChannel,
+    LitModelChannelValues, LitModelClip, LitModelInstance, LitModelInterpolation, LitModelMorph,
+    LitModelNode, LitModelNodeState, LitModelProperty, LitModelSkin,
+};
 
 #[cfg(test)]
 mod tests;
