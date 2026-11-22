@@ -1,4 +1,9 @@
 //! A bundle for one complete lit model instance.
+//!
+//! The root [`Transform`] is the model's placement. Node transforms, draw
+//! transforms, skin poses, and morph weights are model-owned derived state:
+//! callers edit the root, node states, or playback component, then the model
+//! evaluates those inputs into its child entities.
 
 #[cfg(test)]
 mod tests;
@@ -130,6 +135,7 @@ pub struct LitModelClip {
 
 /// Per-instance playback state.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct LitModelAnimation {
     /// Selected clip index.
     pub clip: Option<usize>,
@@ -157,11 +163,11 @@ impl Default for LitModelAnimation {
 pub struct LitModelInstance {
     /// Spawned node entities, indexed like [`LitModel::nodes`].
     pub nodes: Vec<Entity>,
-    /// Draw entities for each node.
+    /// Draw entities owned and updated by this model instance.
     pub draws: Vec<Vec<Entity>>,
-    /// Skin-pose entities for each node.
+    /// Skin-pose entities owned and updated by this model instance.
     pub poses: Vec<Option<Entity>>,
-    /// Morph-weight entities for each node.
+    /// Morph-weight entities owned and updated by this model instance.
     pub weights: Vec<Option<Entity>>,
     /// Last evaluated world matrix for each node.
     pub matrices: Vec<glam::Mat4>,
@@ -172,6 +178,7 @@ pub struct LitModelInstance {
 
 /// Editable state on a spawned model node.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct LitModelNodeState {
     /// Node index in the model.
     pub node: usize,
@@ -224,8 +231,12 @@ impl Bundle for LitModelBundle {
 impl LitModelBundle {
     /// Evaluate the current root transform and playback time without advancing the clock.
     /// Use this when rendering outside the frame dispatcher or driving time explicitly.
+    ///
+    /// The animation time is sampled as-is, wrapping or clamping only for the
+    /// lookup; the stored time is not changed. The ordered [`OnFrame`] callback
+    /// is the only path that advances playback.
     pub fn evaluate(scope: &unlit_ecs::Scope<'_>, root: Entity) {
-        evaluate_model(scope, root, 0.0);
+        evaluate_model(scope, root, 0.0, false);
     }
 }
 
@@ -312,10 +323,10 @@ fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModel) {
 }
 
 fn update_model(world: &World, root: Entity, frame: &mut crate::frame::Frame) {
-    evaluate_model(&world.root_scope(), root, frame.delta_time);
+    evaluate_model(&world.root_scope(), root, frame.delta_time, true);
 }
 
-fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32) {
+fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32, advance_time: bool) {
     let Ok(mut query) = scope.try_query_one::<(
         &Transform,
         &LitModel,
@@ -340,16 +351,26 @@ fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32) {
         return;
     }
     let clip = animation.clip.and_then(|index| model.animations.get(index));
-    if let Some(clip) = clip {
-        animation.time += delta * animation.speed;
-        if clip.duration > 0.0 {
-            animation.time = if animation.looping && delta != 0.0 {
+    let sample_time = if let Some(clip) = clip {
+        if advance_time {
+            animation.time += delta * animation.speed;
+        }
+        let sample_time = if clip.duration > 0.0 {
+            if animation.looping {
                 animation.time.rem_euclid(clip.duration)
             } else {
                 animation.time.clamp(0.0, clip.duration)
-            };
+            }
+        } else {
+            animation.time
+        };
+        if advance_time {
+            animation.time = sample_time;
         }
-    }
+        Some(sample_time)
+    } else {
+        None
+    };
     for (i, node) in model.nodes.iter().enumerate() {
         let local = nodes
             .get(i)
@@ -374,7 +395,9 @@ fn evaluate_model(scope: &unlit_ecs::Scope<'_>, root: Entity, delta: f32) {
             {
                 continue;
             }
-            sample_channel(channel, animation.time, &mut locals[i], &mut morphs[i]);
+            if let Some(sample_time) = sample_time {
+                sample_channel(channel, sample_time, &mut locals[i], &mut morphs[i]);
+            }
         }
     }
     let root_matrix = glam::Mat4::from(root_transform.compute_matrix());

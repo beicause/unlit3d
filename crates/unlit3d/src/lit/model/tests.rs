@@ -142,6 +142,40 @@ fn a_model_places_and_animates_its_own_subtree() {
 }
 
 #[test]
+fn explicit_evaluation_samples_without_advancing_time() {
+    let model = LitModel::new(
+        vec![node(None, Vec3::ZERO)],
+        vec![LitModelClip {
+            name: None,
+            duration: 1.0,
+            channels: vec![LitModelChannel {
+                node: 0,
+                property: LitModelProperty::Translation,
+                interpolation: LitModelInterpolation::Linear,
+                times: vec![0.0, 1.0],
+                values: LitModelChannelValues::Translations(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            }],
+        }],
+    );
+    let mut world = World::new();
+    let root = world.root_scope_mut().spawn(LitModelBundle {
+        transform: Transform::default(),
+        model,
+        animation: LitModelAnimation {
+            clip: Some(0),
+            time: 1.25,
+            ..LitModelAnimation::default()
+        },
+    });
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    let scope = world.root_scope();
+    assert_eq!(scope.query_one::<&LitModelAnimation>(root).get().time, 1.25);
+    let mut instance_query = scope.query_one::<&LitModelInstance>(root);
+    let instance = instance_query.get();
+    assert_eq!(instance.matrices[0].transform_point3(Vec3::ZERO).x, 0.25);
+}
+
+#[test]
 fn malformed_parent_edges_are_cut_before_evaluation() {
     let nodes = vec![
         node(Some(1), Vec3::X),

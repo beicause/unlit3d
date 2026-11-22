@@ -1355,10 +1355,13 @@ the frame context in place of an event. A behaviour spawned with
 none form a band, and the dispatch promises nothing about the order within it.
 One whose reads or writes another behaviour depends on states the order at both
 ends, with [`OnFrame::with_order`](frame::OnFrame::with_order) and a
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), and the only order value the
-library itself declares is [`PRESENT_ORDER`](winit::presenter::PRESENT_ORDER),
-which places [`present_frames`](winit::presenter::present_frames) after the
-default band; beyond that, what runs before what is the application's to define. A
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), and the library declares two ordering points: [`LIT_MODEL_UPDATE_ORDER`](lit::LIT_MODEL_UPDATE_ORDER)
+(`-10`) evaluates model hierarchies and animation before ordinary scene behaviour,
+and [`PRESENT_ORDER`](winit::presenter::PRESENT_ORDER) places
+[`present_frames`](winit::presenter::present_frames) after the default band. A
+behaviour that changes model inputs and must affect the same frame needs an order
+below `-10`; one ordered after it is observed on the next model evaluation.
+Beyond these points, what runs before what is the application's to define. A
 windowed application's host world and each world it drives dispatch the same
 family, so the scene side is componentised the same way. Spawn a behaviour with
 [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn). A behaviour that needs the rest

@@ -15,7 +15,9 @@ use crate::components::{
 use crate::input::{InputEvents, InputState};
 use crate::light::AmbientLight;
 use crate::line::{Line, LineSegment};
-use crate::lit::{InstanceColor, InstanceCutoff, InstanceHullWidth};
+use crate::lit::{
+    InstanceColor, InstanceCutoff, InstanceHullWidth, LitModelAnimation, LitModelNodeState,
+};
 
 inventory::submit! { ComponentEntry::new::<Transform>() }
 inventory::submit! { ComponentEntry::new::<Camera>() }
@@ -32,6 +34,8 @@ inventory::submit! { ComponentEntry::new::<MorphBinding>() }
 inventory::submit! { ComponentEntry::new::<InstanceColor>() }
 inventory::submit! { ComponentEntry::new::<InstanceCutoff>() }
 inventory::submit! { ComponentEntry::new::<InstanceHullWidth>() }
+inventory::submit! { ComponentEntry::new::<LitModelAnimation>() }
+inventory::submit! { ComponentEntry::new::<LitModelNodeState>() }
 inventory::submit! { ComponentEntry::new::<AmbientLight>() }
 inventory::submit! { ComponentEntry::new::<InputEvents>() }
 inventory::submit! { ComponentEntry::new::<InputState>() }

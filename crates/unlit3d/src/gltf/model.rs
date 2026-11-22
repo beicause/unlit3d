@@ -112,7 +112,7 @@ impl LitGltf {
     }
 
     fn clip_model(&self, animation: AnimationId, remap: &[Option<usize>]) -> LitModelClip {
-        let channels = self
+        let channels: Vec<_> = self
             .clip(animation)
             .iter()
             .filter_map(|channel| {
@@ -122,9 +122,13 @@ impl LitGltf {
                 })
             })
             .collect();
+        let duration = channels
+            .iter()
+            .filter_map(|channel| channel.times.last().copied())
+            .fold(0.0, f32::max);
         LitModelClip {
             name: self.animation_name(animation).map(str::to_owned),
-            duration: self.animation_duration(animation),
+            duration,
             channels,
         }
     }

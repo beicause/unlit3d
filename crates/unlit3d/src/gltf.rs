@@ -237,8 +237,8 @@ pub enum Error {
         /// The primitive that samples the texture.
         primitive: usize,
     },
-    /// The document declares no default scene, so
-    /// [`LitGltf::spawn_default_scene`] has nothing to spawn.
+    /// The document declares no default scene, so [`LitGltf::spawn_default_scene`]
+    /// and [`LitGltf::to_model`] have no root nodes to instantiate.
     #[error("the glTF document declares no default scene")]
     NoDefaultScene,
     /// A material samples its base-color texture, but the image the texture
