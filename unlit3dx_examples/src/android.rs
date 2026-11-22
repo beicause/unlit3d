@@ -33,13 +33,21 @@ use winit::platform::android::activity::AndroidApp;
 pub fn android_main(app: AndroidApp) {
     unlit3dx::app::init_logging();
 
-    let event_loop = EventLoop::<()>::with_user_event()
+    let event_loop = match EventLoop::<()>::with_user_event()
         .with_android_app(app)
         .build()
-        .expect("an event loop");
-    windowed(
+    {
+        Ok(event_loop) => event_loop,
+        Err(error) => {
+            log::error!("the Android event loop could not be created: {error}");
+            return;
+        }
+    };
+    if let Err(error) = windowed(
         crate::demo::Demo::default(),
         WindowOptions::for_app::<crate::demo::Demo>(),
         event_loop,
-    );
+    ) {
+        log::error!("the Android run failed: {error}");
+    }
 }

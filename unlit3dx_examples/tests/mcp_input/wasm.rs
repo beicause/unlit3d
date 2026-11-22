@@ -31,13 +31,19 @@ const FRAME_TOLERANCE: Tolerance = Tolerance {
 pub async fn run() {
     let ctx = Ctx::headless().await;
     let soundfont = shared::soundfont_bytes().to_vec().into();
-    let (host, mut interactive) = interactive_run(Demo { soundfont }, ctx.render_device());
+    let (host, mut interactive) = interactive_run(Demo { soundfont }, ctx.render_device())
+        .expect("the interactive scene starts");
 
     // A recording before anything plays captures silence. Its frames also
     // give the panel time to lay out and the synthesizer install to answer,
     // exactly as the native driver's opening recording does.
-    interactive.start_recording(&host, shared::RECORDING_SECONDS);
-    interactive.step(&host, shared::WARMUP_FRAMES);
+    interactive
+        .start_recording(&host, shared::RECORDING_SECONDS)
+        .expect("the recording starts");
+    assert_eq!(
+        interactive.step(&host, shared::WARMUP_FRAMES).unwrap(),
+        unlit3dx::world::StepOutcome::Ran
+    );
     let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 0, "a fresh scene holds no balls");
     assert_eq!(
@@ -47,6 +53,7 @@ pub async fn run() {
     );
     let silent = interactive
         .stop_recording(&host)
+        .expect("recording can be stopped")
         .expect("the idle recording stops");
     assert!(
         silent.samples.iter().all(|sample| sample.abs() == 0.0),
@@ -55,7 +62,10 @@ pub async fn run() {
 
     // One ball, one frame set.
     shared::click(&host, &mut interactive, "Drop the next ball");
-    interactive.step(&host, shared::SETTLE_FRAMES);
+    assert_eq!(
+        interactive.step(&host, shared::SETTLE_FRAMES).unwrap(),
+        unlit3dx::world::StepOutcome::Ran
+    );
     let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 1, "one drop lands one ball");
     assert_eq!(
@@ -63,7 +73,10 @@ pub async fn run() {
         Some(true),
         "dropping does not play the sequence"
     );
-    let first = interactive.render_frame(&host).await;
+    let first = interactive
+        .render_frame(&host)
+        .await
+        .expect("the frame is readable");
     assert_image_snapshot_with_tolerance(
         snapshot!("unlit3dx/mcp_input_1.webp"),
         &first,
@@ -73,11 +86,16 @@ pub async fn run() {
     );
 
     // Two more balls and the one-shot sequence, recorded while playing.
-    interactive.start_recording(&host, shared::RECORDING_SECONDS);
+    interactive
+        .start_recording(&host, shared::RECORDING_SECONDS)
+        .expect("the recording starts");
     shared::click(&host, &mut interactive, "Drop the next ball");
     shared::click(&host, &mut interactive, "Drop the next ball");
     shared::click(&host, &mut interactive, "Play");
-    interactive.step(&host, shared::PLAY_FRAMES);
+    assert_eq!(
+        interactive.step(&host, shared::PLAY_FRAMES).unwrap(),
+        unlit3dx::world::StepOutcome::Ran
+    );
     let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 3, "three drops land three balls");
     assert_eq!(
@@ -85,7 +103,10 @@ pub async fn run() {
         Some(false),
         "the sequence plays"
     );
-    let second = interactive.render_frame(&host).await;
+    let second = interactive
+        .render_frame(&host)
+        .await
+        .expect("the frame is readable");
     assert_image_snapshot_with_tolerance(
         snapshot!("unlit3dx/mcp_input_2.webp"),
         &second,
@@ -95,6 +116,7 @@ pub async fn run() {
     );
     let playing = interactive
         .stop_recording(&host)
+        .expect("recording can be stopped")
         .expect("the playing recording stops");
     assert_eq!(
         playing.format.sample_rate, AUDIO_SAMPLE_RATE,
@@ -115,7 +137,10 @@ pub async fn run() {
     // Cleared and paused, the panel is back where it started.
     shared::click(&host, &mut interactive, "Clear the balls");
     shared::click(&host, &mut interactive, "Pause");
-    interactive.step(&host, shared::RELEASE_FRAMES);
+    assert_eq!(
+        interactive.step(&host, shared::RELEASE_FRAMES).unwrap(),
+        unlit3dx::world::StepOutcome::Ran
+    );
     let status = scene::scene_status(&host, interactive.worlds());
     assert_eq!(status.balls, 0, "the clear takes every ball back");
     assert_eq!(
@@ -123,16 +148,25 @@ pub async fn run() {
         Some(true),
         "the pause holds"
     );
-    interactive.start_recording(&host, shared::RECORDING_SECONDS);
-    interactive.step(&host, shared::WARMUP_FRAMES);
+    interactive
+        .start_recording(&host, shared::RECORDING_SECONDS)
+        .expect("the recording starts");
+    assert_eq!(
+        interactive.step(&host, shared::WARMUP_FRAMES).unwrap(),
+        unlit3dx::world::StepOutcome::Ran
+    );
     let paused = interactive
         .stop_recording(&host)
+        .expect("recording can be stopped")
         .expect("the paused recording stops");
     assert!(
         paused.samples.iter().all(|sample| sample.abs() == 0.0),
         "a paused sequence records silence",
     );
-    let third = interactive.render_frame(&host).await;
+    let third = interactive
+        .render_frame(&host)
+        .await
+        .expect("the frame is readable");
     assert_image_snapshot_with_tolerance(
         snapshot!("unlit3dx/mcp_input_3.webp"),
         &third,

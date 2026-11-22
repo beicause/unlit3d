@@ -201,7 +201,7 @@ tick body has to know which one it is under.
   stops its thread and waits at most a few seconds (`STOP_TIMEOUT`) for it; a tick that will not
   stop is left detached rather than hanging the dropper. The handle reports on
   the world — `is_finished`, and `state`, a `SnapshotReader<WorldState>` that
-  reads `Running`, `Stopped` or `Panicked(message)` — and `stop` asks it to
+  reads `Running`, `Stopped` or `Failed(message)` — and `stop` asks it to
   end; `join_timeout` and `detach` are on the `WorldThread` itself, for
   callers that own one directly.
 - **`Stepped`** keeps the world where it was spawned.
@@ -209,7 +209,7 @@ tick body has to know which one it is under.
   component on the host entity, and
   `step_stepped_world` runs one iteration on the caller's thread: drain the
   queue, then tick, each under `catch_unwind` — the threaded loop's order.
-  It answers a `StepOutcome` (`Ran`, `Finished`, `Stopped` or `Panicked`)
+  It answers a `StepOutcome` (`Ran`, `Finished`, `Stopped` or `Failed`)
   so a caller can tell what the step did, and a `StepError` when the entity
   names no stepped world — stepping a threaded world is refused rather than
   silently doing nothing. `with_stepped_world` lends the nested `World` out
@@ -441,6 +441,9 @@ blocks, wasm-safe:
 ```rust,ignore
 world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
     // ... build the scene where the request started ...
+}, |world, message| {
+    log::error!("GPU setup failed: {message}");
+    // The runtime requests exit after the failed callback returns.
 })]);
 ```
 
@@ -460,7 +463,7 @@ pass in the same world that copies it over the surface, which keeps the frame
 long enough to read back, so screenshots and snapshot tests ask for it. Both
 paths take a `SurfaceOptions`: the present mode and how many frames may be in
 flight, which decide whether the swap chain waits for the display.
-`draw_presented` is the per-frame behaviour that ticks the sub-world —
+`draw_presented` is the simple per-frame behaviour that ticks the sub-world —
 drains its jobs, folds the input it has been fed, runs its tasks, dispatches
 the frame — and presents it; a sub-world has no turn of its own, so the
 behaviour that drives its frame is also what keeps its input queue from

@@ -176,6 +176,9 @@ jobs:
       - name: Clippy (default features)
         run: cargo clippy --workspace --all-targets -- -Dwarnings
 
+      - name: Clippy unlit3dx render feature
+        run: cargo clippy -p unlit3dx --no-default-features --features render
+
       - name: Clippy (all features)
         id: clippy
         run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings

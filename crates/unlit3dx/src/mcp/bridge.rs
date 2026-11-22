@@ -12,13 +12,34 @@ use std::time::Duration;
 #[cfg(feature = "mcp-http")]
 use std::net::SocketAddr;
 
-use async_channel::{Receiver, unbounded};
+use async_channel::{Receiver, Sender, TrySendError, bounded};
+
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldRef};
 use unlit_ecs::sync;
 use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
 
 use crate::world::{WorldName, WorldSender, drain_all_stepped_worlds};
+
+const MCP_COMMAND_CAPACITY: usize = 256;
+const MCP_COMMANDS_PER_TURN: usize = 64;
+
+fn command_sink(sender: Sender<McpCommand>, wake: InboxWake) -> impl Fn(McpCommand) -> bool {
+    move |command| match sender.try_send(command) {
+        Ok(()) => {
+            wake.wake();
+            true
+        }
+        Err(TrySendError::Full(command)) => {
+            command.fail("the MCP host command queue is full; retry later".to_owned());
+            true
+        }
+        Err(TrySendError::Closed(command)) => {
+            command.fail("the MCP host has stopped".to_owned());
+            false
+        }
+    }
+}
 
 /// Knocks the host awake when a transport posts a command.
 ///
@@ -107,7 +128,8 @@ pub(crate) fn inbox_wake(world: &World) -> Option<InboxWake> {
 /// and is never read, and a drain behaviour without one has nothing to read.
 #[derive(Clone)]
 struct McpInbox {
-    receiver: Arc<Receiver<McpCommand>>,
+    receiver: Receiver<McpCommand>,
+    wake: InboxWake,
 }
 
 impl Bundle for McpInbox {
@@ -120,39 +142,23 @@ impl Bundle for McpInbox {
 ///
 /// The transport thread lives as long as its peer stays connected; the
 /// inbox behaviour drains whatever arrives every turn of the event loop.
-pub fn serve_mcp(world: &mut World) {
-    let (sender, receiver) = unbounded::<McpCommand>();
+///
+/// # Errors
+///
+/// Returns an error if the transport thread cannot start.
+pub fn serve_mcp(world: &mut World) -> std::io::Result<()> {
+    let (sender, receiver) = bounded::<McpCommand>(MCP_COMMAND_CAPACITY);
     let wake = host_wake(world);
-    let ring = wake.clone();
-    let started = std::thread::Builder::new()
+    let sink = command_sink(sender, wake.clone());
+    std::thread::Builder::new()
         .name("unlit3dx-mcp-transport".to_owned())
         .spawn(move || {
-            // An unbounded inbox refuses a command only once its receiver
-            // is gone, which is to say once nothing drains the world any
-            // more; the pump treats a refused command as the end of the
-            // transport, so say why there is no one left to answer.
-            let sink = move |command| match sender.try_send(command) {
-                Ok(()) => {
-                    ring.wake();
-                    true
-                }
-                Err(error) => {
-                    log::warn!("the MCP inbox is gone: {error}");
-                    false
-                }
-            };
             if let Err(error) = unlit_ecs::mcp::serve_stdio_with(sink) {
                 log::error!("the MCP server stopped: {error}");
             }
-        });
-    match started {
-        Ok(_) => {
-            world.root_scope_mut().spawn(McpInbox {
-                receiver: Arc::new(receiver),
-            });
-        }
-        Err(error) => log::error!("the MCP transport thread failed to start: {error}"),
-    }
+        })?;
+    world.root_scope_mut().spawn(McpInbox { receiver, wake });
+    Ok(())
 }
 
 /// Serve the MCP streamable-HTTP transport against `world` on `addr`.
@@ -169,24 +175,12 @@ pub fn serve_mcp(world: &mut World) {
 /// Fails when the port cannot be bound, carrying the underlying message.
 #[cfg(feature = "mcp-http")]
 pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr, String> {
-    let (sender, receiver) = unbounded::<McpCommand>();
+    let (sender, receiver) = bounded::<McpCommand>(MCP_COMMAND_CAPACITY);
     let wake = host_wake(world);
-    let ring = wake.clone();
-    let sink = move |command| match sender.try_send(command) {
-        Ok(()) => {
-            ring.wake();
-            true
-        }
-        Err(error) => {
-            log::warn!("the MCP inbox is gone: {error}");
-            false
-        }
-    };
+    let sink = command_sink(sender, wake.clone());
     let server = unlit_ecs::mcp::serve_http_with(sink, addr).map_err(|error| error.to_string())?;
     let bound = server.local_addr();
-    world.root_scope_mut().spawn(McpInbox {
-        receiver: Arc::new(receiver),
-    });
+    world.root_scope_mut().spawn(McpInbox { receiver, wake });
     // The handle is the component that keeps the server alive: the world
     // dropping it stops the transport.
     world.root_scope_mut().spawn(bundle![server]);
@@ -200,22 +194,22 @@ pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr,
 /// itself: it is the only one that knows which entities carry a world —
 /// a nested one, or a sender to one that runs apart from it.
 fn drain_mcp() -> OnAboutToWait {
-    OnAboutToWait::new(move |world, _entity, ()| drain(world))
+    OnAboutToWait::new(|world, entity, ()| {
+        if let Ok(mut row) = world.root_scope().try_query_one::<&McpInbox>(entity) {
+            drain(world, row.get());
+        }
+    })
 }
 
-/// Drain the commands every transport posted.
-///
-/// Each `serve_mcp` call spawns its own inbox, so a world served twice -- over
-/// stdio and, say, a test's stream pair -- has two. Draining one and leaving
-/// the other unread would hold that transport's clients waiting for answers
-/// that never come.
-fn drain(world: &World) {
-    let mut mcp_inbox_rows = world.root_scope().query::<&McpInbox>();
-
-    for inbox in mcp_inbox_rows.iter() {
-        while let Ok(command) = inbox.receiver.try_recv() {
-            dispatch_command(world, command);
-        }
+fn drain(world: &World, inbox: &McpInbox) {
+    for _ in 0..MCP_COMMANDS_PER_TURN {
+        let Ok(command) = inbox.receiver.try_recv() else {
+            return;
+        };
+        dispatch_command(world, command);
+    }
+    if !inbox.receiver.is_empty() {
+        inbox.wake.wake();
     }
 }
 
@@ -230,9 +224,21 @@ fn drain(world: &World) {
 /// Returns the names of the stepped worlds whose queued jobs panicked during
 /// the turn — see [`drain_all_stepped_worlds`].
 pub fn pump_mcp(world: &mut World) -> Result<Vec<&'static str>, EntityAccessError> {
-    drain(world);
+    for inbox in world.root_scope().query::<&McpInbox>().iter() {
+        drain(world, inbox);
+    }
     world.apply()?;
-    Ok(drain_all_stepped_worlds(world))
+    let mut failed = drain_all_stepped_worlds(world);
+    for (nested, name, _) in world
+        .root_scope()
+        .query::<(&mut World, &WorldName, &WorldSender)>()
+        .iter()
+    {
+        if crate::host::drain_sub_world(nested) == crate::world::StepOutcome::Failed {
+            failed.push(name.0);
+        }
+    }
+    Ok(failed)
 }
 
 /// Run one MCP command against the world it names.
@@ -308,18 +314,11 @@ struct RunInWorld {
 }
 
 impl Command for RunInWorld {
-    /// A nested world is a component here, so its commands run on this
-    /// thread. A world the host only sends to — one on a thread of its own,
-    /// or one the host steps — is reached by posting the command as a job
-    /// instead: its queue is shared with the handle its spawn returned, so
-    /// the sender beside the proxy is enough. The reply rides the command's
-    /// own channel, so nothing here waits for the other world to answer.
+    /// Managed worlds receive the command through their job queue, including
+    /// nested worlds driven by the host. Bare World components have no driver
+    /// or mailbox, so their commands run on the host thread immediately.
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let RunInWorld { entity, command } = *self;
-        if let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(entity) {
-            command.dispatch(&mut *nested.get());
-            return Ok(());
-        }
         let Ok(sender) = world
             .root_scope()
             .try_query_one::<&WorldSender>(entity)
@@ -328,7 +327,11 @@ impl Command for RunInWorld {
                 sender.clone()
             })
         else {
-            command.fail(format!("entity {entity:?} carries no world"));
+            if let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(entity) {
+                command.dispatch(nested.get());
+            } else {
+                command.fail(format!("entity {entity:?} carries no world"));
+            }
             return Ok(());
         };
         if sender.is_finished() {
@@ -341,7 +344,7 @@ impl Command for RunInWorld {
         let job_slot = Arc::clone(&pending);
         let job = Box::new(move |world: &mut World| {
             if let Some(command) = sync::lock(&job_slot).take() {
-                command.dispatch(world);
+                command.dispatch_managed(world);
             }
         });
         if let Err(error) = sender.send(job)
@@ -379,10 +382,11 @@ mod tests {
     /// The same wiring, with the handle the host waits on.
     fn host_with_wake() -> (World, async_channel::Sender<McpCommand>, InboxWake) {
         let mut host = World::new();
-        let (sender, receiver) = unbounded::<McpCommand>();
+        let (sender, receiver) = bounded::<McpCommand>(MCP_COMMAND_CAPACITY);
         let wake = host_wake(&mut host);
         host.root_scope_mut().spawn(McpInbox {
-            receiver: Arc::new(receiver),
+            receiver,
+            wake: wake.clone(),
         });
         (host, sender, wake)
     }
@@ -396,7 +400,7 @@ mod tests {
         let second = host_wake(&mut host);
         let waiter = std::thread::spawn(move || {
             let start = Instant::now();
-            second.wait(Duration::from_secs(30));
+            second.wait(Duration::from_secs(5));
             start.elapsed()
         });
         std::thread::sleep(Duration::from_millis(50));
@@ -418,7 +422,7 @@ mod tests {
             let wake = wake.clone();
             std::thread::spawn(move || {
                 let start = Instant::now();
-                wake.wait(Duration::from_secs(30));
+                wake.wait(Duration::from_secs(5));
                 start.elapsed()
             })
         };
@@ -456,7 +460,7 @@ mod tests {
         let (_host, _transport, wake) = host_with_wake();
         wake.wake();
         let start = Instant::now();
-        wake.wait(Duration::from_secs(30));
+        wake.wait(Duration::from_secs(5));
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "a ringed wait returns rather than sleeping"
@@ -474,10 +478,31 @@ mod tests {
     /// whatever the transport posted and queues it, then the queued
     /// commands apply — the order the real loop runs them in.
     fn run_turn(host: &mut World) {
-        for on_about_to_wait in host.root_scope().query::<&mut OnAboutToWait>().iter() {
-            on_about_to_wait.run(host, Entity::from_bits(0), &());
+        for (on_about_to_wait, entity) in host
+            .root_scope()
+            .query::<(&mut OnAboutToWait, Entity)>()
+            .iter()
+        {
+            on_about_to_wait.run(host, entity, &());
         }
         host.apply().unwrap();
+    }
+
+    /// Receive a test reply without allowing a broken dispatch to hang the suite.
+    fn receive(reply: Receiver<Result<Output, String>>) -> Result<Output, String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match reply.try_recv() {
+                Ok(answer) => return answer,
+                Err(async_channel::TryRecvError::Closed) => panic!("the reply channel closed"),
+                Err(async_channel::TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(async_channel::TryRecvError::Empty) => {
+                    panic!("the MCP command did not answer within five seconds")
+                }
+            }
+        }
     }
 
     /// The host answers a world list with itself and every entity that
@@ -493,7 +518,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("a world list answers with JSON")
         };
@@ -517,7 +542,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("a world list answers with JSON")
         };
@@ -540,7 +565,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Err(message) = answer else {
             panic!("the command fails")
         };
@@ -567,7 +592,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("the job answers with JSON")
         };
@@ -587,7 +612,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("the job answers with JSON")
         };
@@ -607,7 +632,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("a world list answers with JSON")
         };
@@ -651,7 +676,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("the job answers with JSON")
         };
@@ -682,11 +707,59 @@ mod tests {
         run_turn(&mut host);
         step_stepped_world(&host, stepped.entity, FRAME_SECONDS).expect("the stepped world starts");
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
             panic!("the job answers with JSON")
         };
         assert_eq!(value.as_u64(), Some(1), "the stepped world was seen");
+    }
+
+    /// A managed-world tool panic reaches the world turn, which records the
+    /// failure while the command still receives the error before the unwind.
+    #[test]
+    fn a_panicking_command_fails_the_managed_world() {
+        let (mut host, transport) = host_with_inbox();
+        let stepped = spawn_stepped_world_with_init(
+            &mut host,
+            "panic",
+            8,
+            |_: &mut World| (),
+            |_, _: &ThreadControl, (), _: f32| true,
+        );
+
+        let (command, reply) = McpCommand::new(|_| {
+            panic!("the managed command failed");
+        });
+        let command = command.with_world(WorldRef::handle(stepped.entity));
+        transport.try_send(command).expect("the inbox takes it");
+        let (queued, cancelled) = McpCommand::new(|_| panic!("queued command must not run"));
+        transport
+            .try_send(queued.with_world(WorldRef::handle(stepped.entity)))
+            .expect("the inbox takes the second command");
+        run_turn(&mut host);
+        let outcome = step_stepped_world(&host, stepped.entity, FRAME_SECONDS)
+            .expect("the stepped world can run its first turn");
+
+        assert_eq!(outcome, crate::world::StepOutcome::Failed);
+        assert_eq!(
+            step_stepped_world(&host, stepped.entity, FRAME_SECONDS),
+            Ok(crate::world::StepOutcome::Failed),
+        );
+        let Err(message) = reply.try_recv().expect("the command was answered") else {
+            panic!("the panicking command answers with an error");
+        };
+        assert!(message.contains("the managed command failed"), "{message}");
+        let Err(message) = cancelled
+            .try_recv()
+            .expect("the queued command was cancelled")
+        else {
+            panic!("a cancelled command answers with an error");
+        };
+        assert_eq!(message, "the MCP command was cancelled before it ran");
+        assert!(matches!(
+            stepped.state.latest().as_deref(),
+            Some(&crate::thread::WorldState::Failed(_))
+        ));
     }
 
     /// A world that has stopped answers nothing, so the host explains why
@@ -709,7 +782,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Err(message) = answer else {
             panic!("the command fails")
         };
@@ -741,7 +814,7 @@ mod tests {
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
-        let answer = reply.recv_blocking().expect("the command was answered");
+        let answer = receive(reply);
         let Err(message) = answer else {
             panic!("the command fails")
         };

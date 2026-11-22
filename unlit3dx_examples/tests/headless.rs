@@ -152,7 +152,8 @@ async fn frames_match_the_baselines() {
         &config(FRAMES, CAPTURE.to_vec()),
         ctx.render_device(),
     )
-    .await;
+    .await
+    .expect("the headless scene renders");
     assert_eq!(output.frames.len(), CAPTURE.len());
     assert_eq!(
         output
@@ -205,13 +206,15 @@ async fn an_undrawn_frame_matches_a_drawn_one() {
         &config(frames, vec![last]),
         ctx.render_device(),
     )
-    .await;
+    .await
+    .expect("the headless scene renders");
     let surrounded = headless_run(
         Demo { soundfont },
         &config(frames, captured.to_vec()),
         ctx.render_device(),
     )
-    .await;
+    .await
+    .expect("the headless scene renders");
     assert_eq!(alone.frames.len(), 1);
     assert_eq!(surrounded.frames.len(), captured.len());
     let drawn_late = &alone.frames[0].1;
@@ -251,7 +254,8 @@ async fn audio_matches_the_baseline() {
         &config(AUDIO_FRAMES, Vec::new()),
         ctx.render_device(),
     )
-    .await;
+    .await
+    .expect("the headless scene renders");
 
     let samples = support::to_samples(&output.audio);
     let loudest = samples

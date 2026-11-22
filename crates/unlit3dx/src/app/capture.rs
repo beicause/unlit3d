@@ -12,8 +12,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-use super::scene::RunFrames;
 use crate::audio::AudioFormat;
 
 /// The frames a run keeps, and the directory it writes them into.
@@ -201,83 +199,22 @@ pub(crate) enum CaptureError {
     Readback(#[from] unlit_wgpu::readback::ReadbackError),
 }
 
-/// Capture the frames a windowed run presents, reading them back after the
-/// frame has been drawn.
-///
-/// The behaviour runs one order past the presenter's, which is what draws
-/// the frame: it reads the target the presenter left behind rather than
-/// drawing the scene a second time. The target is the one labelled
-/// [`SCENE_COLOR_LABEL`](unlit3d::offscreen::SCENE_COLOR_LABEL), which is how
-/// the capture names the picture without depending on the presenter that drew
-/// it: a frame can be captured as soon as the target exists, whichever
-/// presentation path drew it, and a host that presents through more than one
-/// target names the one it means by its label rather than by the order the
-/// behaviours were spawned in.
-///
-/// `frames` is how the behaviour knows which frame it is looking at: the run
-/// advances the count once per frame it actually drew, so the frame a capture
-/// keeps is numbered the way the budget counts them, and a turn that drew
-/// nothing — a suspended app — is not mistaken for the frame it named.
-///
-/// Readback blocks the frame it captures: it is the frame the caller asked
-/// for, and nothing else in the run waits on it.
+/// Read back a requested frame immediately after it is presented.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub(crate) fn capture_presented(
+    world: &unlit_ecs::World,
     render: unlit_ecs::Entity,
-    capture: Capture,
-    frames: RunFrames,
-) -> unlit3d::frame::OnFrame {
-    use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
-    use unlit3d::winit::builtin::Resumed;
-    use unlit3d::winit::presenter::PRESENT_ORDER;
-
-    // The frame the last call looked at. A client-paced run draws the same
-    // frame on every turn until the client steps again, and reading a target
-    // back blocks the turn it runs in, so a frame is read once.
-    let mut seen: Option<u32> = None;
-    OnFrame::with_order(
-        FrameBehaviourOrder(PRESENT_ORDER + 1),
-        move |world, _entity, _frame| {
-            // A suspended host drew nothing this turn, so the target still
-            // holds the last frame that did: reading it back under this
-            // frame's number would write one picture twice, and a capture's
-            // whole worth is that its frame N is frame N.
-            let resumed = world
-                .root_scope()
-                .query::<&Resumed>()
-                .iter()
-                .next()
-                .is_none_or(|state| state.0);
-            if !resumed {
-                return;
-            }
-            let Some(index) = frames.current() else {
-                return;
-            };
-            if seen == Some(index) {
-                return;
-            }
-            seen = Some(index);
-            if !capture.wants(index) {
-                return;
-            }
-            let (size, pixels) = match read_presented(world, render) {
-                Ok(frame) => frame,
-                // A frame the run drew before its presentation path existed
-                // has no picture to read, so the capture names it rather
-                // than passing the shortfall off as a frame it kept.
-                Err(reason) => {
-                    log::warn!("the run could not capture frame {index}: {reason}");
-                    return;
-                }
-            };
-            match capture.write_frame(index, &pixels, size) {
-                Ok(Some(path)) => log::info!("the run wrote {}", path.display()),
-                Ok(None) => {}
-                Err(message) => log::error!("{message}"),
-            }
-        },
-    )
+    capture: &Capture,
+    index: u32,
+) -> Result<(), String> {
+    if capture.wants(index) {
+        let (size, pixels) = read_presented(world, render)
+            .map_err(|error| format!("the run could not capture frame {index}: {error}"))?;
+        if let Some(path) = capture.write_frame(index, &pixels, size)? {
+            log::info!("the run wrote {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 /// Read back the picture the frame just drew, from the render sub-world's

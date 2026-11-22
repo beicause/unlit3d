@@ -173,9 +173,9 @@
 | 自带线程 | `spawn_threaded_world` / `..._with_init`；tick 返回 bool 表示继续 | 同上 |
 | 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world`、`with_stepped_world` | 同上 |
 | 节拍 | `ThreadControl::self_driven` / `wait_timeout`、`FixedClock::new` / `set_step` / `wait`、`fixed_steps` 与 `MAX_CATCH_UP_STEPS = 4` | `crates/unlit3dx/src/thread.rs` |
-| 子 world | `spawn_sub_world`、`drain_sub_world`、`tick_sub_world`（drain + 折叠输入 + 本地任务 + `dispatch_frame`，驱动子 world 一帧就用它） | `crates/unlit3dx/src/host.rs` |
+| 子 world | `spawn_sub_world`、`drain_sub_world`、`tick_sub_world`（返回 `StepOutcome`；drain + 折叠输入 + 本地任务 + `dispatch_frame`，驱动子 world 一帧就用它） | `crates/unlit3dx/src/host.rs` |
 | 句柄 | `WorldHandle { entity, sender, state }` + `new` / `is_finished` / `stop` | `crates/unlit3dx/src/handle.rs` |
-| 名字与状态 | `WorldName(&'static str)`；`Threaded` / `Stepped` 标记；`WorldState` = `Running` / `Stopped` / `Panicked(Arc<str>)`——**带 panic 消息，`match` 时要绑定** | `crates/unlit3dx/src/world.rs`、`thread.rs` |
+| 名字与状态 | `WorldName(&'static str)`；`Threaded` / `Stepped` 标记；`WorldState` = `Running` / `Stopped` / `Failed(Arc<str>)`——**带失败消息，`match` 时要绑定** | `crates/unlit3dx/src/world.rs`、`thread.rs` |
 
 | 通信 | 是什么 | 语义 |
 | --- | --- | --- |
@@ -189,14 +189,14 @@
 
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
-| GPU | `Gpu` 就是 `unlit_wgpu::context::GpuContext`：`GpuContext::headless(tier, power_preference, label)` 自建 instance，`GpuContext::present_to(instance, window, tier, power_preference, label)` 用窗口 surface 探测适配器后丢弃它；`label` 是设备在校验信息里的名字，两者都 async 返回 `Result<GpuContext, GpuRequestError>`。`request_gpu(app, ready)` 返回 `OnFrame`，把请求驱动成帧任务并在就绪回调里交给调用者 | `crates/unlit_wgpu/src/context.rs`、`crates/unlit3dx/src/gpu.rs` |
+| GPU | `Gpu` 就是 `unlit_wgpu::context::GpuContext`：`GpuContext::headless(tier, power_preference, label)` 自建 instance，`GpuContext::present_to(instance, window, tier, power_preference, label)` 用窗口 surface 探测适配器后丢弃它；`label` 是设备在校验信息里的名字，两者都 async 返回 `Result<GpuContext, GpuRequestError>`。`request_gpu(app, ready, failed)` 返回 `OnFrame`，把请求驱动成帧任务；成功时调用 `ready(world, gpu)`，失败时调用 `failed(world, message)` 并请求退出 | `crates/unlit_wgpu/src/context.rs`、`crates/unlit3dx/src/gpu.rs` |
 | 常量 | `SCENE_PASS_ORDER = FramePassOrder(0)`、`BLIT_PASS_ORDER = FramePassOrder(1)`、`PRESENT_ORDER = 10` | `crates/unlit3d/src/winit/presenter.rs` |
 | 两条路径 | `PresentationPath`：`Surface { samples, with_depth }` 直画交换链；`Intermediate(TargetConfig)` 画进常驻纹理再加一个 blit pass 贴回交换链。默认 `Surface { samples: OFFSCREEN_SAMPLES, with_depth: true }` | 同上 |
 | 呈现模式 | `SurfaceOptions { present_mode, desired_maximum_frame_latency }`，默认 `Fifo` + 2 在途帧。表面缺所请求的模式时降级到 `Fifo`（连 `Fifo` 都没有才退回它列出的第一个）并打警告；`AutoVsync` / `AutoNoVsync` 原样交给 wgpu 解析 | `crates/unlit3d/src/winit/surface.rs` |
 | 装配（库） | `build_presenter(world, render, renderer, scene_pass, surface, instance, adapter, fallback_size, path, surface_options)` → `Presenter`；`setup_presenter(..)` 同参再 spawn 成组件并返回 `Entity`。`surface` 由调用方 `instance.create_surface(window)` 造 | 同上 |
 | 装配（dx） | `setup_presenter(world, render, renderer, scene_pass, gpu, fallback_size, offscreen: bool, surface_options)`，内部造 surface 并映射成 `Intermediate(TargetConfig::default())` / `Surface`，返回 `Result<(), PresenterError>`——**是 enum，不是 `String`** | `crates/unlit3dx/src/present.rs` |
-| 组件方法 | `Presenter::present(host)` / `resize(host, size)` / `release(host)`；三者都只借 `&mut self`，所以宿主可以直接把 `Presenter` 挂成组件、暂停时 `release` 而不必拆掉实体，恢复后继续 `present` 会自动重开交换链；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
-| 每帧行为（dx） | `draw_presented(render)`——它自己 `tick_sub_world`（drain + 折叠输入 + 本地任务 + 分发帧）再调 `Presenter::present`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn（内部就是 `pump_presented_with(Some(LocalTasks::pump))`）；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
+| 组件方法 | `Presenter::present(host)` / `present_with(host, prepare)` / `resize(host, size)` / `release(host)`；`present_with` 先取得交换链图像，再运行准备回调，成功呈现才返回 `Ok(true)`，没有图像时返回 `Ok(false)`；字段**全私有**，只能经由 `build_presenter` / `setup_presenter` 造 | `crates/unlit3d/src/winit/presenter.rs` |
+| 每帧行为（dx） | `draw_presented(render)`——它自己 `tick_sub_world`（drain + 折叠输入 + 本地任务 + 分发帧）再调 `Presenter::present`；需要把模拟推进与成功呈现绑成一个事务时用 `present_turn` / `Presenter::present_with`；`pump_presented()` 返回 `(OnAboutToWait, OnWindowEvent)` 两个要分别 spawn；`resize_presented` | 同上 / `crates/unlit3dx/src/present.rs` |
 | 每帧行为（单 world） | `present_frames()` / `pump_presented()` / `resize_presented()`：`present_frames` 跳过 `FrameSkip` 标记的帧、且 winit 宿主报告挂起时不呈现（无 `Resumed` 组件的 world 视为已恢复），所以设标志的行为要给更小的 order；它不懂示例的 `Scene`，重述 viewport、`Scene::end_frame` 要自己挂行为 | 同上 |
 | 宿主前置任务 | `pump_presented_with(Some(Box::new(pump)))`：`pump: HostPump = Box<dyn FnMut(&mut World)>`，每帧 dispatch 前在宿主 world 上跑一次，用来排空子 world 的 job、poll 宿主任务 | 同上 |
 | 纯离屏 | `PersistentTarget::bind(world, context, pass, &device, size, TargetConfig { format, samples, with_depth, size })` + `readback_texture`；`resize` 原地 `replace` 纹理与 view，节点 id 不变 | `crates/unlit3d/src/offscreen.rs` |

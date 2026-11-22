@@ -187,43 +187,60 @@ impl Presenter {
     /// # Errors
     ///
     /// Returns an error when the render world's renderer or its resources
-    /// are gone, or the window can no longer back a surface. A render
-    /// sub-world that is gone presents nothing and returns `Ok`.
-    pub fn present(&mut self, host: &World) -> Result<(), PresenterError> {
-        let mut nested = match self.render {
-            Some(render) => match host.root_scope().try_query_one::<&World>(render) {
-                Ok(nested) => Some(nested),
-                Err(_) => return Ok(()),
-            },
-            None => None,
-        };
-        let world = match nested.as_mut() {
-            Some(nested) => nested.get(),
-            None => host,
-        };
+    /// are gone, or the window can no longer back a surface. Returns
+    /// `Ok(false)` if the swap chain did not provide an image this turn.
+    pub fn present(&mut self, host: &World) -> Result<bool, PresenterError> {
+        self.present_with(host, || true)
+    }
+
+    /// Acquire an image, then prepare the scene and present it.
+    ///
+    /// The callback runs only when an image was acquired, with no borrow of
+    /// the render world held. A stepped driver can advance its simulation
+    /// here without spending a step on an unavailable surface. Returning
+    /// false discards the image without rendering or presenting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::present`].
+    pub fn present_with(
+        &mut self,
+        host: &World,
+        prepare: impl FnOnce() -> bool,
+    ) -> Result<bool, PresenterError> {
         let presenting = self.presenting();
-        if self.surface.is_released() {
-            let mut renderer_row = world
-                .root_scope()
-                .try_query_one::<&Renderer>(self.renderer)?;
-            self.surface
-                .build(world, renderer_row.get())
-                .map_err(PresenterError::Surface)?;
-        }
-        let Some(swap_frame) =
-            self.surface
-                .acquire_for(world, self.renderer, presenting, Some(&self.attachments))
+        let Some(frame) = with_render_world(host, self.render, |world| {
+            let scope = world.root_scope();
+            scope
+                .try_query_one::<&mut FramePass>(presenting)?
+                .get()
+                .park();
+            let mut renderer = scope.try_query_one::<&mut Renderer>(self.renderer)?;
+            let renderer = renderer.get();
+            if self.surface.is_released() {
+                self.surface.build(world, renderer)?;
+            }
+            Ok(self.surface.acquire(world, renderer))
+        })?
         else {
-            return Ok(());
+            return Ok(false);
         };
-        let mut renderer_row = world
-            .root_scope()
-            .try_query_one::<&mut Renderer>(self.renderer)?;
-        renderer_row.get().render(world);
-        let context = renderer_row.get().context();
-        let queue = context.queue(&world.root_scope())?;
-        swap_frame.present_and_park(world, &queue, presenting);
-        Ok(())
+        if !prepare() {
+            return Ok(false);
+        }
+        with_render_world(host, self.render, |world| {
+            let scope = world.root_scope();
+            let mut renderer = scope.try_query_one::<&mut Renderer>(self.renderer)?;
+            let renderer = renderer.get();
+            let queue = renderer.context().queue(&scope)?;
+            scope
+                .try_query_one::<&mut FramePass>(presenting)?
+                .get()
+                .set_attachments(&self.attachments, frame.color_view().clone());
+            renderer.render(world);
+            frame.present_and_park(world, &queue, presenting);
+            Ok(true)
+        })
     }
 
     /// Match the surface, the swap-chain attachments and the offscreen
@@ -312,6 +329,22 @@ impl Presenter {
             .try_query_one::<&mut Renderer>(self.renderer)?;
         self.surface.release(world, &mut *renderer_row.get());
         Ok(())
+    }
+}
+
+fn with_render_world<T>(
+    host: &World,
+    render: Option<Entity>,
+    f: impl FnOnce(&World) -> Result<T, PresenterError>,
+) -> Result<T, PresenterError> {
+    if let Some(render) = render {
+        let mut row = host
+            .root_scope()
+            .try_query_one::<&World>(render)
+            .map_err(PresenterError::NoRenderWorld)?;
+        f(row.get())
+    } else {
+        f(host)
     }
 }
 

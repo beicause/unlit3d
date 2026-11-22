@@ -88,10 +88,7 @@ fn a_panicking_job_ends_the_sub_world() {
     );
     assert!(proxy.is_finished(), "the panic ended the sub-world");
     assert!(
-        matches!(
-            proxy.state.latest().as_deref(),
-            Some(WorldState::Panicked(_))
-        ),
+        matches!(proxy.state.latest().as_deref(), Some(WorldState::Failed(_))),
         "the panic is the world's last state"
     );
     // The queue closed with the world: a later send is refused instead of

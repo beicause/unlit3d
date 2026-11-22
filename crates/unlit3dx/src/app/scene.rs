@@ -2,13 +2,7 @@
 //! scene hands back.
 
 use std::sync::Arc;
-#[cfg(all(
-    feature = "mcp",
-    not(target_arch = "wasm32"),
-    not(target_os = "android")
-))]
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
 use unlit_ecs::{Entity, RemoteEntity, World};
 use unlit_wgpu::context::RenderDevice;
@@ -16,9 +10,10 @@ use unlit3d::egui::EguiTarget;
 use unlit3d::input::InputWriter;
 use unlit3d::relay::Snapshot;
 
+pub use crate::frames::RunFrames;
 use crate::handle::WorldHandle;
 use crate::thread::fixed_steps;
-use crate::world::step_stepped_world;
+use crate::world::{StepOutcome, step_stepped_world};
 
 /// Which run is building the scene.
 ///
@@ -31,7 +26,7 @@ use crate::world::step_stepped_world;
 pub enum Mode {
     /// A window on the display.
     Windowed,
-    /// A run without a window that draws only the frames it captures.
+    /// A run without a window that only reads back the frames it captures.
     Headless,
     /// A run stepped one frame at a time by its caller.
     Interactive,
@@ -91,44 +86,6 @@ pub struct SceneWorlds {
 /// fill a buffer as long as the pause, which is neither wanted nor cheap; a
 /// quarter second is well past any jitter a running host shows.
 const MAX_AUDIO_CATCH_UP_SECONDS: f64 = 0.25;
-
-/// How many frames a run has advanced, shared between whoever advances them
-/// and whoever reads the count.
-///
-/// A run builds one before it starts and hands a clone to each driver: a
-/// stepped run's [`Stepping`] advances it once per step, and a threaded
-/// window's draw advances it once per frame it can show. The frame budget, the
-/// capture and the report of frames a capture never reached all read this one
-/// number, so they name the frames the run actually advanced instead of each
-/// counting its own way.
-///
-/// It is an atomic rather than a plain counter because a frame behaviour holds
-/// only a shared reference to the world it runs in, and advancing the count is
-/// what the drivers do while the readers hold their own clones.
-#[derive(Clone, Debug, Default)]
-pub struct RunFrames(Arc<AtomicU32>);
-
-impl RunFrames {
-    /// How many frames the run has advanced.
-    #[must_use]
-    pub fn advanced(&self) -> u32 {
-        self.0.load(Ordering::Relaxed)
-    }
-
-    /// The frame the run stood on when it last advanced one, or [None]
-    /// before its first frame.
-    #[must_use]
-    pub fn current(&self) -> Option<u32> {
-        self.advanced().checked_sub(1)
-    }
-
-    /// Count one more frame as advanced.
-    pub(crate) fn advance(&self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// The pacing a host uses to step a scene's worlds frame by frame.
 ///
 /// The frame's own duration is what drives the worlds, and none of their
 /// rates is an integer multiple of the display's, so each frame carries the
@@ -147,8 +104,6 @@ pub struct Stepping {
     physics_period: f32,
     /// How long one audio frame lasts, or none when the host pulls no audio.
     sample_period: Option<f64>,
-    /// The run's frame count, advanced once per [`Self::step`].
-    frames: RunFrames,
 }
 
 impl Stepping {
@@ -158,37 +113,26 @@ impl Stepping {
     /// Gameplay has no rate here: its world ticks once per frame, with the
     /// frame's own duration.
     ///
-    /// `frames` is the run's shared frame count: the stepper advances it once
-    /// per step, so a host that reads it knows how many frames the run has
-    /// advanced rather than how many turns its loop has taken.
-    ///
-    /// The rate is turned into a period once, so a rate that is not a positive
-    /// finite number has no period to carry: it would divide the frame's
-    /// duration into an infinity or a NaN of steps. `sample_rate` is trusted
-    /// as given, being an integer the caller cannot make non-positive without
-    /// saying so.
-    ///
     /// # Panics
     ///
-    /// Panics when `physics_hz` is not a positive finite number.
+    /// Panics if a rate does not give a positive, finite period.
     #[must_use]
-    pub fn new(
-        worlds: SceneWorlds,
-        physics_hz: f64,
-        sample_rate: Option<u32>,
-        frames: RunFrames,
-    ) -> Self {
+    pub fn new(worlds: SceneWorlds, physics_hz: f64, sample_rate: Option<u32>) -> Self {
+        let physics_period = (1.0 / physics_hz) as f32;
         assert!(
-            physics_hz.is_finite() && physics_hz > 0.0,
+            physics_period.is_finite() && physics_period > 0.0,
             "a physics rate must be a positive finite number, not {physics_hz}"
+        );
+        assert!(
+            sample_rate.is_none_or(|rate| rate > 0),
+            "an audio sample rate must be positive"
         );
         Self {
             worlds,
             physics_debt: 0.0,
             audio_debt: 0.0,
-            physics_period: 1.0 / physics_hz as f32,
+            physics_period,
             sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
-            frames,
         }
     }
 
@@ -198,39 +142,58 @@ impl Stepping {
         &self.worlds
     }
 
-    /// The run's frame count, which this stepper advances.
-    #[must_use]
-    pub fn frames(&self) -> &RunFrames {
-        &self.frames
-    }
-
     /// Step the scene once for `delta_seconds`: gameplay ticks, physics steps
     /// as its rate comes due, and the audio world drains the note jobs those
     /// ticks sent.
     ///
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.
-    ///
-    /// The count the stepper shares advances here, once every tick has run, so
-    /// the frame this step produced is the one it is named by.
-    pub fn step(&mut self, host: &World, delta_seconds: f64) {
+    /// The caller accounts for the frame after drawing it.
+    pub fn step(&mut self, host: &World, delta_seconds: f64) -> StepOutcome {
         // Gameplay runs once per host frame with its measured duration: its
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
-        step_stepped_world(host, self.worlds.gameplay.entity, delta_seconds as f32)
-            .expect("the stepped world starts");
+        let outcome =
+            match step_stepped_world(host, self.worlds.gameplay.entity, delta_seconds as f32) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    log::error!("the gameplay world could not be stepped: {error}");
+                    return StepOutcome::Failed;
+                }
+            };
+        if outcome != StepOutcome::Ran {
+            return outcome;
+        }
         let steps = fixed_steps(
             &mut self.physics_debt,
             delta_seconds as f32,
             self.physics_period,
         );
         for _ in 0..steps {
-            step_stepped_world(host, self.worlds.physics.entity, self.physics_period)
-                .expect("the stepped world starts");
+            let outcome =
+                match step_stepped_world(host, self.worlds.physics.entity, self.physics_period) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        log::error!("the physics world could not be stepped: {error}");
+                        return StepOutcome::Failed;
+                    }
+                };
+            if outcome != StepOutcome::Ran {
+                return outcome;
+            }
         }
-        step_stepped_world(host, self.worlds.audio.entity, delta_seconds as f32)
-            .expect("the stepped world starts");
-        self.frames.advance();
+        let outcome = match step_stepped_world(host, self.worlds.audio.entity, delta_seconds as f32)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                log::error!("the audio world could not be stepped: {error}");
+                return StepOutcome::Failed;
+            }
+        };
+        if outcome != StepOutcome::Ran {
+            return outcome;
+        }
+        StepOutcome::Ran
     }
 
     /// The audio frames this frame's duration asks for, carrying the fraction
@@ -253,28 +216,6 @@ impl Stepping {
         frames
     }
 }
-
-/// The stepper a client-paced host parks in its world.
-///
-/// Spawning one is what declares a host client-paced: the `step_frames` tool
-/// advances the scene through the stepper it finds here, and reports the host
-/// as pacing its own frames when it finds none. The worlds stay stepped
-/// worlds either way, because a world on a thread of its own would step
-/// behind the client's back.
-///
-/// A self-paced host keeps its stepper inside the frame behaviour that drives
-/// it, which no tool can reach — that is what stops a client from advancing
-/// the scene a second way beside the host's own loop.
-///
-/// Only a build with the tools has a client to hand the state to, so the type
-/// exists only there.
-#[cfg(all(
-    feature = "mcp",
-    not(target_arch = "wasm32"),
-    not(target_os = "android")
-))]
-#[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
-pub struct ClientPacing(pub Arc<Mutex<Stepping>>);
 
 #[cfg(test)]
 mod tests {

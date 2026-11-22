@@ -37,13 +37,13 @@ use crate::thread::WorldState;
 
 /// Whether the world behind a reader of its state has ended.
 ///
-/// A question asked of a world that panicked is never answered, and neither is
+/// A question asked of a world that failed is never answered, and neither is
 /// one asked of a world that stopped: the job is gone with the turn it ran in.
 /// A caller that asked waits on this instead of waiting forever.
 fn ended(state: &SnapshotReader<WorldState>) -> bool {
     matches!(
         state.latest().as_deref(),
-        Some(WorldState::Stopped | WorldState::Panicked(_))
+        Some(WorldState::Stopped | WorldState::Failed(_))
     )
 }
 
@@ -62,6 +62,14 @@ pub enum Settled<T> {
     Expired,
 }
 
+type RequestId = u64;
+
+struct Outstanding<K> {
+    key: K,
+    id: RequestId,
+    remaining: Option<f32>,
+}
+
 /// The requests one world owes a caller, and the answers that have come back.
 ///
 /// One [Pending] serves one world: it is built with the state that world
@@ -71,17 +79,16 @@ pub enum Settled<T> {
 /// `K` is what the caller names a request by, and `T` what the world answers
 /// with.
 pub struct Pending<K, T> {
-    /// What a job publishes its answer through. Cloned into every request.
-    answerer: Sender<(K, T)>,
-    /// Where the answers land, in the order they were published.
-    answers: Receiver<(K, T)>,
+    answerer: Sender<(RequestId, T)>,
+    answers: Receiver<(RequestId, T)>,
+    next_id: RequestId,
     /// The state of the world that owes the answers.
     state: SnapshotReader<WorldState>,
     /// How many seconds a request may go unanswered; `None` waits for as long
     /// as the world owes it.
     timeout: Option<f32>,
     /// The requests still outstanding, and how many seconds each has left.
-    outstanding: Vec<(K, Option<f32>)>,
+    outstanding: Vec<Outstanding<K>>,
 }
 
 impl<K, T> Pending<K, T>
@@ -98,6 +105,7 @@ where
         Self {
             answerer,
             answers,
+            next_id: 0,
             state,
             timeout,
             outstanding: Vec::new(),
@@ -112,25 +120,27 @@ where
     /// is full or it has stopped, and then no request is outstanding: the
     /// caller decides whether to ask again on a later tick.
     ///
-    /// A request already outstanding under `key` is sent again without
-    /// lengthening its wait: the answer already owed is the one that arrives,
-    /// and the tick the first was asked on is the one the wait is measured
-    /// from.
+    /// A request already outstanding under `key` is coalesced: no second job
+    /// is queued, and the first request keeps ownership of the answer and its
+    /// timeout.
     pub fn request<F>(&mut self, sender: &JobSender, key: K, make: F) -> Result<(), SendError>
     where
         F: FnOnce(&mut World) -> T + Send + 'static,
     {
-        let answerer = self.answerer.clone();
-        let asked = key.clone();
-        sender.send(Box::new(move |world: &mut World| {
-            // The receiver outlives this job: the queue is unbounded and never
-            // closes while a Pending holds it, and an answer nobody waits for
-            // is dropped on the next advance rather than held.
-            let _ = answerer.try_send((asked, make(world)));
-        }))?;
-        if !self.outstanding.iter().any(|(asked, _)| *asked == key) {
-            self.outstanding.push((key, self.timeout));
+        if self.outstanding.iter().any(|request| request.key == key) {
+            return Ok(());
         }
+        let answerer = self.answerer.clone();
+        let id = self.next_id;
+        sender.send(Box::new(move |world: &mut World| {
+            let _ = answerer.try_send((id, make(world)));
+        }))?;
+        self.next_id += 1;
+        self.outstanding.push(Outstanding {
+            key,
+            id,
+            remaining: self.timeout,
+        });
         Ok(())
     }
 
@@ -155,14 +165,15 @@ where
     /// nothing per tick but what the answers themselves weigh.
     pub fn advance(&mut self, delta_seconds: f32, settled: &mut Vec<(K, Settled<T>)>) {
         settled.clear();
-        while let Ok((key, value)) = self.answers.try_recv() {
-            if self.take_outstanding(&key) {
-                settled.push((key, Settled::Answered(value)));
+        while let Ok((id, value)) = self.answers.try_recv() {
+            if let Some(at) = self.outstanding.iter().position(|request| request.id == id) {
+                let request = self.outstanding.remove(at);
+                settled.push((request.key, Settled::Answered(value)));
             }
         }
         let ended = ended(&self.state);
         let mut outstanding = std::mem::take(&mut self.outstanding);
-        outstanding.retain_mut(|(key, remaining)| {
+        outstanding.retain_mut(|Outstanding { key, remaining, .. }| {
             if ended {
                 settled.push((key.clone(), Settled::Expired));
                 return false;
@@ -178,15 +189,6 @@ where
             true
         });
         self.outstanding = outstanding;
-    }
-
-    /// Whether a request named `key` is still owed, taking it out if it is.
-    fn take_outstanding(&mut self, key: &K) -> bool {
-        let Some(at) = self.outstanding.iter().position(|(asked, _)| asked == key) else {
-            return false;
-        };
-        self.outstanding.remove(at);
-        true
     }
 }
 
@@ -295,6 +297,19 @@ mod tests {
         drain(&receiver, &mut world);
 
         assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Answered(7))]);
+    }
+
+    #[test]
+    fn a_late_answer_does_not_settle_a_retry_under_the_same_key() {
+        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
+        let mut world = World::new();
+        pending.request(&jobs, 1, |_| 7).unwrap();
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
+        pending.request(&jobs, 1, |_| 8).unwrap();
+        receiver.try_recv().unwrap()(&mut world);
+        assert!(settled(&mut pending, 0.0).is_empty());
+        receiver.try_recv().unwrap()(&mut world);
+        assert_eq!(settled(&mut pending, 0.0), vec![(1, Settled::Answered(8))]);
     }
 
     /// An answer that arrived for a request already given up on is dropped

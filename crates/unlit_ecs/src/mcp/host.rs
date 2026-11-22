@@ -138,7 +138,9 @@ enum Request {
 /// A request together with the channel its result is sent back on.
 pub struct McpCommand {
     request: Request,
-    reply: async_channel::Sender<Result<Output, String>>,
+    /// The single reply slot. Taking it marks the command as answered, so a
+    /// command dropped before dispatch can still fail its waiting caller.
+    reply: Option<async_channel::Sender<Result<Output, String>>>,
     /// The world a [`Request::Job`] runs against.
     world: WorldRef,
 }
@@ -169,7 +171,7 @@ impl McpCommand {
         (
             Self {
                 request,
-                reply,
+                reply: Some(reply),
                 world: WorldRef::Host,
             },
             receiver,
@@ -201,17 +203,24 @@ impl McpCommand {
     /// The host names every world a tool can reach — the host world itself and
     /// each world it routes commands to, including ones on other threads —
     /// each with the name it was spawned under.
-    pub fn answer_worlds(self, worlds: Vec<WorldEntry>) {
+    pub fn answer_worlds(mut self, worlds: Vec<WorldEntry>) {
         let result = to_value(&worlds).map(Output::from);
-        let _ = self.reply.send_blocking(result);
+        self.send_result(result);
     }
 
     /// Answer the command with an error without running it.
     ///
     /// The host calls this when the world cannot be resolved, so the tool call
     /// still gets a readable message rather than a dropped channel.
-    pub fn fail(self, message: String) {
-        let _ = self.reply.send_blocking(Err(message));
+    pub fn fail(mut self, message: String) {
+        self.send_result(Err(message));
+    }
+
+    /// Deliver one result without allowing a slow transport to block the world.
+    fn send_result(&mut self, result: Result<Output, String>) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.try_send(result);
+        }
     }
 
     /// Run the command's job against `world` and send its result back.
@@ -227,12 +236,50 @@ impl McpCommand {
     ///
     /// The send is best-effort: a tool call that has already been cancelled has
     /// no receiver left, and the result is simply dropped.
-    pub fn dispatch(self, world: &mut World) {
-        let result = match self.request {
+    pub fn dispatch(mut self, world: &mut World) {
+        let request = std::mem::replace(&mut self.request, Request::Worlds);
+        let result = match request {
             Request::Job(job) => catch_job(world, job),
             Request::Worlds => Err("the host did not answer list_worlds".to_owned()),
         };
-        let _ = self.reply.send_blocking(result);
+        self.send_result(result);
+    }
+
+    /// Run a managed-world job and preserve a panic for the world turn.
+    ///
+    /// The reply is sent before the panic resumes, so the client learns why its
+    /// command failed while the world driver still records the panic as a
+    /// failed turn. This is stricter than [`dispatch`](Self::dispatch), which
+    /// catches a panic because the host itself has no managed-world failure
+    /// state.
+    pub fn dispatch_managed(mut self, world: &mut World) {
+        let request = std::mem::replace(&mut self.request, Request::Worlds);
+        match request {
+            Request::Job(job) => {
+                match std::panic::catch_unwind(AssertUnwindSafe(move || job(world))) {
+                    Ok(result) => self.send_result(result),
+                    Err(payload) => {
+                        let message = format!(
+                            "the tool panicked and the world it ran in may be inconsistent: {}",
+                            panic_message(payload.as_ref())
+                        );
+                        self.send_result(Err(message));
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+            }
+            Request::Worlds => {
+                self.send_result(Err("the host did not answer list_worlds".to_owned()))
+            }
+        }
+    }
+}
+
+impl Drop for McpCommand {
+    fn drop(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.try_send(Err("the MCP command was cancelled before it ran".to_owned()));
+        }
     }
 }
 
@@ -459,6 +506,16 @@ mod tests {
             panic!("a job answers with JSON");
         };
         assert_eq!(value, serde_json::json!(0));
+    }
+
+    #[test]
+    fn dropping_a_command_answers_cancellation() {
+        let (command, receiver) = McpCommand::new(|_| Ok(Output::Json(Value::Null)));
+        drop(command);
+        let Err(message) = receiver.try_recv().expect("cancellation was sent") else {
+            panic!("a dropped command answers with an error");
+        };
+        assert_eq!(message, "the MCP command was cancelled before it ran");
     }
 
     #[test]

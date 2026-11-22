@@ -78,51 +78,54 @@ enum RequestStage {
 /// pump that opens each frame; this behaviour reads the answer on the frames
 /// that follow and runs the callback as a queued command with a mutable
 /// world, between two event callbacks. A failed request is logged and sets
-/// the app's [`ExitRequest`].
-pub fn request_gpu<F>(app: Entity, ready: F) -> OnFrame
+/// the app's [`ExitRequest`]. A failure callback runs before requesting exit.
+pub fn request_gpu<F, E>(app: Entity, ready: F, failed: E) -> OnFrame
 where
     F: FnOnce(&mut World, &Gpu) + 'static,
+    E: FnOnce(&World, String) + 'static,
 {
     // The request future runs among the world's own tasks, so the answer
     // slot needs no lock: the future and the behaviour that reads it run on
     // the same thread, and the world's pump drives the future for us.
-    let answer: Rc<RefCell<Option<GpuRequest>>> = Rc::default();
+    let mut answer: Rc<RefCell<Option<GpuRequest>>> = Rc::default();
+    let mut requested_window = None;
     let mut stage = RequestStage::WaitingForWindow;
-    let mut ready = Some(ready);
+    let mut callbacks = Some((ready, failed));
     OnFrame::with_order(
         FrameBehaviourOrder(REQUEST_GPU_ORDER),
         move |world, _entity, _frame| {
             if stage == RequestStage::Done {
                 return;
             }
-            if stage == RequestStage::Requesting {
-                // The request future was driven by the pump that opened
-                // this frame, and a wake from the wgpu callback thread is
-                // queued for the next one.
-                // One poll takes the answer out for good, so it is moved
-                // into the command even if the callback panics half-way.
-                let Some(request) = answer.borrow_mut().take() else {
-                    return;
-                };
-                stage = RequestStage::Done;
-                let Some(ready) = ready.take() else {
-                    return;
-                };
-                world.root_scope().queue().push(RunGpuReady {
-                    app,
-                    request,
-                    ready,
-                });
-                return;
-            }
             let Some(window) = window(world) else {
                 return;
             };
-            let mut resumed_rows = world.root_scope().query::<&Resumed>();
-
-            let resumed = resumed_rows.iter().next().is_some_and(|resumed| resumed.0);
-            if !resumed {
+            if !world
+                .root_scope()
+                .query::<&Resumed>()
+                .iter()
+                .any(|state| state.0)
+            {
                 return;
+            }
+            if stage == RequestStage::Requesting {
+                if requested_window == Some(window.id()) {
+                    let Some(request) = answer.borrow_mut().take() else {
+                        return;
+                    };
+                    let (ready, failed) = callbacks.take().expect("the GPU callbacks run once");
+                    stage = RequestStage::Done;
+                    world.root_scope().queue().push(RunGpuReady {
+                        app,
+                        request,
+                        ready,
+                        failed,
+                    });
+                    return;
+                }
+                // A previous request can still resolve, but writes only to
+                // its own slot and cannot be used for the replacement window.
+                answer = Rc::default();
             }
             let mut display_handle_rows = world.root_scope().query::<&DisplayHandle>();
 
@@ -134,6 +137,7 @@ where
                 return;
             };
             stage = RequestStage::Requesting;
+            requested_window = Some(window.id());
             let slot = Rc::clone(&answer);
             let spawned = LocalTasks::spawn(world, async move {
                 // The display handle is owned, not borrowed: the instance
@@ -154,15 +158,13 @@ where
                 // Report it the way a failed request is reported, rather
                 // than leave the app waiting for a renderer that never
                 // comes.
-                log::error!("the world has no task set to run the GPU request on");
-                let Some(ready) = ready.take() else {
-                    return;
-                };
+                let (ready, failed) = callbacks.take().expect("the GPU callbacks run once");
                 stage = RequestStage::Done;
                 world.root_scope().queue().push(RunGpuReady {
                     app,
                     request: GpuRequest::Unstartable,
                     ready,
+                    failed,
                 });
             }
         },
@@ -170,38 +172,38 @@ where
 }
 
 /// Run the GPU request's ready callback with a mutable world.
-struct RunGpuReady<F> {
+struct RunGpuReady<F, E> {
     /// The app entity the failure exit names.
     app: Entity,
     /// The request's answer.
     request: GpuRequest,
     /// The callback to run on success.
     ready: F,
+    failed: E,
 }
 
-impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
+impl<F, E> Command for RunGpuReady<F, E>
+where
+    F: FnOnce(&mut World, &Gpu) + 'static,
+    E: FnOnce(&World, String) + 'static,
+{
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        match self.request {
-            GpuRequest::Ready(gpu) => (self.ready)(world, &gpu),
-            GpuRequest::Failed(error) => {
-                log::error!("failed to start the renderer: {error}");
-                ask_to_exit(world, self.app);
+        let message = match self.request {
+            GpuRequest::Ready(gpu) => {
+                (self.ready)(world, &gpu);
+                return Ok(());
             }
-            // The failure was logged where it was found: there is no error
-            // value to report, only the app left without a renderer.
-            GpuRequest::Unstartable => ask_to_exit(world, self.app),
-        }
+            GpuRequest::Failed(error) => format!("failed to start the renderer: {error}"),
+            GpuRequest::Unstartable => {
+                "the world has no task set to run the GPU request on".to_owned()
+            }
+        };
+        (self.failed)(world, message);
+        world
+            .root_scope()
+            .try_query_one::<&mut ExitRequest>(self.app)?
+            .get()
+            .0 = true;
         Ok(())
     }
-}
-
-/// Ask the app on `app` to exit, for a renderer that could not be started.
-fn ask_to_exit(world: &mut World, app: Entity) {
-    let _ = world
-        .root_scope()
-        .try_query_one::<&mut ExitRequest>(app)
-        .map(|mut request| {
-            let request = request.get();
-            request.0 = true;
-        });
 }

@@ -401,7 +401,7 @@ fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
 pub(super) fn world_ended(state: &SnapshotReader<WorldState>) -> bool {
     matches!(
         state.latest().as_deref(),
-        Some(WorldState::Stopped | WorldState::Panicked(_))
+        Some(WorldState::Stopped | WorldState::Failed(_))
     )
 }
 

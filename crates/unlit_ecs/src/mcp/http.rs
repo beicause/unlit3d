@@ -117,7 +117,10 @@ pub fn serve_http_with(
                             }
                             // A failed accept ends the server: the socket is
                             // broken, so there is nothing left to serve.
-                            Err(_) => break,
+                            Err(error) => {
+                                log::error!("the MCP HTTP server could not accept a connection: {error}");
+                                break;
+                            },
                         },
                     }
                 }

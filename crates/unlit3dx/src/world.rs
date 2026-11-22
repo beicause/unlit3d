@@ -5,20 +5,23 @@
 //! world carries the same data either way. What differs is who drives the
 //! world: a thread of its own, or the host's own frames.
 //!
-//! Whoever drives a world commits and publishes its turn: a turn of the loop
-//! drains the queue, runs the tick, applies the commands the tick queued, and
-//! then publishes what the world's collectors returned. A tick body therefore
-//! collects nothing by hand and cannot publish twice.
+//! Whoever drives a world commits and publishes its turn: a turn drains the
+//! queue, runs the tick, applies the commands the tick queued, and then
+//! publishes what the world's collectors returned. [`crate::turn`] owns that
+//! order for every driver, so a tick body collects nothing by hand and cannot
+//! publish twice.
 
 use async_channel::{Receiver, bounded};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::frame::FrameClock;
 
-use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender, SendError};
-use crate::thread::{ThreadControl, ThreadStatus, WorldThread, panic_message, stepped_control};
+use crate::thread::{ThreadControl, ThreadStatus, WorldThread, stepped_control};
+use crate::turn::{Link, close_inbox, drain_jobs, run_turn};
+
+pub use crate::turn::StepOutcome;
 
 /// The proxy component a spawned world leaves on the host.
 ///
@@ -67,8 +70,18 @@ pub struct WorldSender {
 }
 
 impl WorldSender {
+    pub(crate) fn new(sender: JobSender, status: ThreadStatus) -> Self {
+        Self { sender, status }
+    }
+
     /// Post a job to the world this component belongs to.
+    ///
+    /// A finished world is rejected before touching the queue, so callers do
+    /// not enqueue work that cannot ever run.
     pub fn send(&self, job: Job) -> Result<(), SendError> {
+        if self.status.is_finished() {
+            return Err(SendError::Closed);
+        }
         self.sender.send(job)
     }
 
@@ -110,7 +123,7 @@ impl Drop for SteppedWorld {
         // closes so a later send is refused instead of landing in a queue no
         // step will ever drain.
         self.status.finish();
-        self.inbox.close();
+        close_inbox(&self.inbox);
     }
 }
 
@@ -187,12 +200,12 @@ impl WorldRunner for Stepped {
 
 /// Spawn a threaded world on a fresh thread, driven by `tick`.
 ///
-/// The thread's loop drains the jobs queued for the world, then runs
-/// `tick` once, then publishes what the world's subscriptions collected;
-/// a tick that returns `false` ends the thread. A job that
-/// panics is a tick panic: it is reported and ends the thread. The handle
-/// returned carries the handle every later job goes through, and
-/// dropping the host entity it names stops the thread.
+/// The thread's loop runs a turn per iteration: the jobs queued for the world,
+/// then `tick`, then the commit and the publish. A tick that returns `false`
+/// ends the thread. A panic in a job, in the tick or in a collector is
+/// contained, recorded as the world's state, and ends the thread. The handle
+/// returned carries the handle every later job goes through, and dropping the
+/// host entity it names stops the thread.
 ///
 /// `tick` takes the whole seconds since the previous tick, so a tick body
 /// can advance by the time that really passed rather than assume the
@@ -200,6 +213,12 @@ impl WorldRunner for Stepped {
 ///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
+///
+/// # Panics
+///
+/// Panics when `command_capacity` is zero: a rendezvous queue can never
+/// hold a job, so a send would only land if it happened to coincide with
+/// a drain.
 pub fn spawn_threaded_world<T>(
     host: &mut World,
     name: &'static str,
@@ -243,13 +262,10 @@ where
     T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
-    let thread = WorldThread::spawn_with(name, init, move |world, control, state| {
-        while let Ok(job) = inbox.try_recv() {
-            job(world);
-        }
-        let running = tick(world, control, state, control.elapsed_seconds());
-        finish_turn(world);
-        running
+    // The thread's loop runs the turn, so the queue and the status travel with
+    // it: the driver owns what happens between two ticks.
+    let thread = WorldThread::spawn_with(name, inbox, init, move |world, control, state| {
+        tick(world, control, state, control.elapsed_seconds())
     });
     let status: ThreadStatus = thread.status();
     let sender = JobSender::new(queue);
@@ -326,7 +342,6 @@ where
     });
     WorldHandle::with_status(entity, sender, status)
 }
-
 /// The entity a spawned world lives on: what drives it, the name it answers
 /// to, and the queue its jobs are posted through.
 struct WorldEntity {
@@ -362,32 +377,18 @@ pub enum StepError {
     /// The entity names a threaded world, which drives itself.
     #[error("the world is threaded and drives itself")]
     NotStepped,
+    /// The stepped world has stopped or is stopping and cannot be accessed.
+    #[error("the stepped world is no longer available")]
+    Unavailable,
 }
 
-/// What one turn of a stepped world did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum StepOutcome {
-    /// The tick, or the queued jobs, ran and the world carries on.
-    Ran,
-    /// The tick ended the world.
-    Finished,
-    /// A stop request ended the world before it ticked.
-    Stopped,
-    /// A job or the tick panicked, and the world ended.
-    Panicked,
-}
-
-/// Drain a stepped world's jobs and run its tick once with `delta_seconds`.
+/// Run one turn of a stepped world with `delta_seconds`.
 ///
-/// A tick that returns `false` stops the world; a panic, in a job or in the
-/// tick, is caught, logged and published as the world's state, and ends the
-/// world too. Both are reported through [StepOutcome] rather than left for the
-/// caller to guess.
-///
-/// The step applies the commands the tick queued and publishes what the
-/// world's subscriptions collected, the same as a threaded world's loop does,
-/// so a tick body never does either by hand.
+/// The turn is the one every driver runs: the queued jobs, then the tick, then
+/// the commit and the publish. A tick that returns `false` stops the world; a
+/// panic, in a job, in the tick or in a collector, is contained, logged and
+/// published as the world's state, and ends the world too. A world that has
+/// already ended runs nothing.
 ///
 /// # Errors
 ///
@@ -403,69 +404,23 @@ pub fn step_stepped_world(
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
-    if stepped.status.is_finished() {
-        return Ok(StepOutcome::Finished);
-    }
-    if stepped.control.stop_requested() {
-        // A stop is not a panic, so the world collects one last time: the
-        // state it had reached is the last its readers ever get.
-        publish_collected(&stepped.world);
-        stepped.status.finish();
-        stepped.inbox.close();
-        return Ok(StepOutcome::Stopped);
-    }
-    if !run_queued_jobs(&mut *stepped) {
-        return Ok(StepOutcome::Panicked);
-    }
     let SteppedWorld {
         world,
         inbox,
         control,
-        tick,
         status,
+        tick,
         name,
     } = &mut **stepped;
-    LocalTasks::pump(world);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let link = Link {
+        name,
+        inbox,
+        status,
+    };
+    Ok(run_turn(world, link, |world| {
+        LocalTasks::pump(world);
         tick(world, control, delta_seconds)
-    }));
-    match outcome {
-        Ok(true) => {}
-        Ok(false) => {
-            // A tick that ends the world still commits and publishes: the state
-            // it leaves is the last one its readers ever get.
-            finish_turn(world);
-            status.finish();
-            inbox.close();
-            return Ok(StepOutcome::Finished);
-        }
-        Err(payload) => {
-            let message = panic_message(payload.as_ref());
-            log::error!("the stepped world {name} panicked: {message}");
-            status.record_panic(message);
-            // A collector is arbitrary code: running one now would hand its
-            // panic to the host, so the world stops collecting here.
-            inbox.close();
-            return Ok(StepOutcome::Panicked);
-        }
-    }
-    finish_turn(world);
-    Ok(StepOutcome::Ran)
-}
-
-/// Commit and publish one turn of a world.
-///
-/// A tick body runs against a shared world, so every structural change it
-/// makes goes through the scope's queue. Nobody else applies that queue for a
-/// world the host steps or one on a thread of its own, so the driver does it
-/// here rather than leaving the change to a host that may never apply it.
-/// Applying before publishing matters: a reader must see the state the tick
-/// left, not the one before its last spawn.
-fn finish_turn(world: &mut World) {
-    if let Err(error) = world.apply() {
-        log::error!("a command queued by a world's tick failed: {error}");
-    }
-    publish_collected(world);
+    }))
 }
 
 /// Drain the queued jobs of every world the host steps.
@@ -474,46 +429,32 @@ fn finish_turn(world: &mut World) {
 /// command before its next frame does not need to gather entities into
 /// a separate buffer first.
 ///
-/// Returns the names of the worlds whose queued jobs panicked during this
-/// drain. A panicked world is already over — its state records the panic,
-/// its queue is closed — so the names are for the caller's report, not for
-/// deciding whether to keep stepping.
+/// Returns the names of failed worlds, including any that failed on an earlier
+/// turn. Their queues are closed and their collectors no longer run.
 pub fn drain_all_stepped_worlds(host: &World) -> Vec<&'static str> {
     let mut proxies = host.root_scope().query::<&mut WorldProxy>();
-    let mut panicked = Vec::new();
+    let mut failed = Vec::new();
     for proxy in proxies.iter() {
         let WorldKind::Stepped(stepped) = &mut proxy.kind else {
             continue;
         };
-        if stepped.status.is_finished() || stepped.control.stop_requested() {
-            continue;
-        }
-        if !run_queued_jobs(stepped) {
-            panicked.push(stepped.name);
-        }
-    }
-    panicked
-}
-
-/// Run the jobs a stepped world has queued, stopping at the first panic.
-fn run_queued_jobs(stepped: &mut SteppedWorld) -> bool {
-    loop {
-        let Ok(job) = stepped.inbox.try_recv() else {
-            return true;
+        let SteppedWorld {
+            world,
+            inbox,
+            status,
+            name,
+            ..
+        } = &mut **stepped;
+        let link = Link {
+            name,
+            inbox,
+            status,
         };
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut stepped.world)));
-        if let Err(payload) = outcome {
-            let message = panic_message(payload.as_ref());
-            log::error!("the stepped world {} panicked: {message}", stepped.name);
-            stepped.status.record_panic(message);
-            // The world is over. Close the queue so a sender learns it from
-            // the send, as a threaded world's departed receiver already
-            // taught it.
-            stepped.inbox.close();
-            return false;
+        if drain_jobs(world, link) == StepOutcome::Failed {
+            failed.push(*name);
         }
     }
+    failed
 }
 
 /// Run `f` against a stepped world's world.
@@ -525,7 +466,9 @@ fn run_queued_jobs(stepped: &mut SteppedWorld) -> bool {
 /// # Errors
 ///
 /// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
-/// and [StepError::NotStepped] when it names a threaded world.
+/// [StepError::NotStepped] when it names a threaded world, and
+/// [StepError::Unavailable] after the stepped world has stopped or received a
+/// stop request.
 pub fn with_stepped_world<R>(
     host: &World,
     entity: Entity,
@@ -535,6 +478,9 @@ pub fn with_stepped_world<R>(
     let WorldKind::Stepped(stepped) = &proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
+    if stepped.status.is_finished() || stepped.status.stop_requested() {
+        return Err(StepError::Unavailable);
+    }
     Ok(f(&stepped.world))
 }
 
@@ -546,7 +492,9 @@ pub fn with_stepped_world<R>(
 /// # Errors
 ///
 /// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
-/// and [StepError::NotStepped] when it names a threaded world.
+/// [StepError::NotStepped] when it names a threaded world, and
+/// [StepError::Unavailable] after the stepped world has stopped or received a
+/// stop request.
 pub fn with_stepped_world_mut<R>(
     host: &World,
     entity: Entity,
@@ -556,6 +504,9 @@ pub fn with_stepped_world_mut<R>(
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
+    if stepped.status.is_finished() || stepped.status.stop_requested() {
+        return Err(StepError::Unavailable);
+    }
     Ok(f(&mut stepped.world))
 }
 
@@ -652,7 +603,8 @@ mod tests {
     #[test]
     fn a_full_queue_fails_the_send() {
         let mut host = World::new();
-        let handle = spawn_threaded_world(&mut host, "test", 1, |_, _, _| true);
+        let handle =
+            spawn_stepped_world_with_init(&mut host, "test", 1, |_| (), |_, _, (), _| true);
         let mut results = Vec::new();
         for _ in 0..64 {
             results.push(handle.sender.send(Box::new(|_| {})));
@@ -779,6 +731,18 @@ mod tests {
             Ok(StepOutcome::Finished)
         );
         assert!(handle.is_finished(), "a false tick ends a stepped world");
+        assert_eq!(
+            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
+            Ok(StepOutcome::Finished)
+        );
+        assert_eq!(
+            with_stepped_world(&host, handle.entity, |_| panic!("world ended")),
+            Err::<(), _>(StepError::Unavailable),
+        );
+        assert_eq!(
+            with_stepped_world_mut(&host, handle.entity, |_| panic!("world ended")),
+            Err::<(), _>(StepError::Unavailable),
+        );
     }
 
     /// An entity that names no world proxy is refused, not silently skipped.

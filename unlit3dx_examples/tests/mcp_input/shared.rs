@@ -43,8 +43,11 @@ pub fn click(host: &World, interactive: &mut Interactive, label: &str) {
         .into_iter()
         .find_map(|(name, rect)| (name == label).then_some(rect.center()))
         .unwrap_or_else(|| panic!("the panel has a {label} button"));
-    interactive.click(host, [at.x, at.y]);
-    interactive.step(host, 1);
+    interactive.click([at.x, at.y]);
+    assert_eq!(
+        interactive.step(host, 1).unwrap(),
+        unlit3dx::world::StepOutcome::Ran
+    );
 }
 
 /// Compare a mixed recording against the stored FLAC baseline, sample for

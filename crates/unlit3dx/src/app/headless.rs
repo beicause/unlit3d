@@ -3,24 +3,22 @@
 //! Every world lives in one place and the run drives them in a fixed order —
 //! gameplay ticks, physics steps as its rate comes due, the audio world fills
 //! the mix the frame asks for, then the render world drains its commands and
-//! draws the frames the capture names. With every world stepped at a fixed
+//! draws every frame. With every world stepped at a fixed
 //! rate, a run is reproducible down to the captured frames and audio samples.
 
 use unlit_ecs::World;
 use unlit_wgpu::context::RenderDevice;
-use unlit_wgpu::readback::try_readback_texture;
 use unlit3d::frame::Frame;
 use unlit3d::input::{InputFeed, InputWriter, refresh_input};
-use unlit3d::offscreen::{PersistentTarget, TargetConfig};
-use unlit3d::renderer::Renderer;
 
 use super::App;
 use super::capture::Capture;
+use super::offscreen;
 use super::pace::Pacing;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
 use crate::audio::dispatch_audio_fill;
 use crate::host::{spawn_sub_world, tick_sub_world};
-use crate::world::{Stepped, with_stepped_world_mut};
+use crate::world::{StepOutcome, Stepped, with_stepped_world_mut};
 
 /// The audio sample rate a run renders at when its configuration names no
 /// other, in hertz.
@@ -60,9 +58,7 @@ pub struct HeadlessConfig {
     pub pacing: Pacing,
     /// Which frames to keep, and where to write them.
     ///
-    /// The run draws a frame only when the capture names it. A capture that
-    /// names nothing leaves the run audio-only: the render world still
-    /// drains its commands and dispatches its frames, but none is drawn.
+    /// Every frame is drawn; only the named frames are read back.
     pub capture: Capture,
     /// The rate the mix is pulled at. The synthesizer takes it from the stream
     /// it renders into.
@@ -97,9 +93,8 @@ pub struct HeadlessOutput {
 
 /// Run an application's scene headless and answer the captured frames and mix.
 ///
-/// The device is injected, so a caller picks the tier it asks for. A headless
-/// run has no way to recover a world that failed to come up, so a broken setup
-/// panics instead of returning a hole in the capture.
+/// The device is injected, so a caller picks the tier it asks for.
+/// Already written captures remain available if a later frame fails.
 ///
 /// A run bounded by nothing steps frames until the process is stopped, which
 /// is why it reads as a capture the caller drives: the frames it keeps are
@@ -108,7 +103,10 @@ pub async fn headless<A: App>(
     mut app: A,
     config: &HeadlessConfig,
     device: RenderDevice,
-) -> HeadlessOutput {
+) -> Result<HeadlessOutput, String> {
+    if config.audio_sample_rate == 0 {
+        return Err("the audio sample rate must be positive".to_owned());
+    }
     let mut host = World::new();
     let render = spawn_sub_world(&mut host, "render", config.render_capacity);
     // A run with no window draws no pointer of its own, but its client injects
@@ -138,23 +136,12 @@ pub async fn headless<A: App>(
             panel: None,
         },
     );
-    let offscreen = {
-        let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
-        let world = nested.get();
-        let context = world
+    let (renderer, target) = {
+        let mut nested = host
             .root_scope()
-            .query_one::<&Renderer>(setup.renderer.entity)
-            .get()
-            .context();
-        PersistentTarget::bind(
-            world,
-            context,
-            setup.pass.entity,
-            &device.device,
-            config.size,
-            TargetConfig::default(),
-        )
-        .expect("the offscreen target binds")
+            .try_query_one::<&World>(render.entity)
+            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+        offscreen::bind(nested.get(), setup, &device, config.size)?
     };
 
     let mut output = HeadlessOutput {
@@ -170,17 +157,8 @@ pub async fn headless<A: App>(
     // and the synthesizer at the sample rate, neither necessarily an integer
     // multiple of the frame rate, so both accumulate their fractional steps
     // across frames.
-    //
-    // The count every reader of the run's length shares: the stepper advances
-    // it once per frame, so which frame the loop is on comes from there rather
-    // than from a counter beside it.
     let frames = RunFrames::default();
-    let mut stepper = Stepping::new(
-        worlds,
-        A::PHYSICS_HZ,
-        Some(config.audio_sample_rate),
-        frames.clone(),
-    );
+    let mut stepper = Stepping::new(worlds, A::PHYSICS_HZ, Some(config.audio_sample_rate));
     // The interleaved sample buffer, reused across frames so the audio loop
     // does not allocate one per frame.
     let mut samples_out: Vec<f32> = Vec::new();
@@ -208,22 +186,26 @@ pub async fn headless<A: App>(
         // The worlds step once for this frame: gameplay first, so the notes
         // its sequences play reach the audio world before it steps, then
         // physics as its rate comes due and audio for the jobs booked.
-        stepper.step(&host, 1.0 / HEADLESS_HZ);
+        match stepper.step(&host, 1.0 / HEADLESS_HZ) {
+            StepOutcome::Ran => {}
+            StepOutcome::Finished | StepOutcome::Stopped => break,
+            StepOutcome::Failed => return Err(format!("the scene failed before frame {index}")),
+        }
 
         // Audio: render whatever samples the frame's duration asks for.
         let fill = stepper.audio_frames(1.0 / HEADLESS_HZ);
         if fill > 0 {
             samples_out.clear();
             samples_out.resize(fill * AUDIO_CHANNELS, 0.0);
-            let filled = with_stepped_world_mut(&host, stepper.worlds().audio.entity, |audio| {
+            with_stepped_world_mut(&host, stepper.worlds().audio.entity, |audio| {
                 dispatch_audio_fill(
                     audio,
                     &mut samples_out,
                     config.audio_sample_rate,
                     AUDIO_CHANNELS as u16,
                 );
-            });
-            assert!(filled.is_ok(), "the audio world is a stepped world");
+            })
+            .map_err(|error| format!("the audio world could not fill the mix: {error}"))?;
             let room = mix_limit.saturating_sub(output.audio.len());
             if room < samples_out.len() && !mix_capped {
                 mix_capped = true;
@@ -235,56 +217,36 @@ pub async fn headless<A: App>(
             output.audio.extend_from_slice(&samples_out[..take]);
         }
 
-        // Render: drain the sub-world's commands — the scene build rides on
-        // that drain — then dispatch the frame. The dispatch happens every
-        // frame, an audio-only run included: it is what advances the frame's
-        // behaviours, so the path a capture freezes is the path the run walked.
-        // Only the frames a capture names are drawn.
-        //
-        // Drawing every captured frame is enough because a draw does not
-        // advance the scene: it reads what the steps left behind, and the state
-        // it writes is only what a frame publishes for its readers — the target
-        // a panel lays itself out against and the URLs its widgets opened —
-        // which the next frame overwrites anyway. A scene that accumulates
-        // across draws — a ping-pong target, a temporal filter — would have to
-        // draw every frame.
-        let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
-        let world = nested.get();
-        tick_sub_world(world, &mut frame);
-        if config.capture.wants(index) {
-            let context = {
-                let mut renderer_row = world
-                    .root_scope()
-                    .query_one::<&mut Renderer>(setup.renderer.entity);
-                renderer_row.get().render(&*world);
-                renderer_row.get().context()
-            };
-            let texture = {
-                let mut graph = context
-                    .try_graph(&world.root_scope())
-                    .expect("the frame's resource graph exists");
-                graph
-                    .get()
-                    .get(&offscreen.texture)
-                    .cloned()
-                    .expect("the target texture is a resource node")
-            };
-            // A frame that cannot be read back is reported rather than
-            // taking the run down: the frames around it are still pictures
-            // worth having, and the missing one is named below.
-            match try_readback_texture(&device.device, &device.queue, &texture).await {
-                Ok(pixels) => {
-                    if let Err(message) = config.capture.write_frame(index, &pixels, config.size) {
-                        log::error!("{message}");
-                    }
-                    output.frames.push((index, pixels));
+        // The render world advances and renders every frame. Readback remains
+        // conditional, so an uncaptured frame still updates temporal targets.
+        let texture = {
+            let mut nested = host
+                .root_scope()
+                .try_query_one::<&mut World>(render.entity)
+                .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            let world = nested.get();
+            match tick_sub_world(world, &mut frame) {
+                StepOutcome::Ran => {}
+                StepOutcome::Finished | StepOutcome::Stopped => break,
+                StepOutcome::Failed => {
+                    return Err(format!("the render world failed before frame {index}"));
                 }
-                Err(error) => log::warn!("the run could not capture frame {index}: {error}"),
             }
+            offscreen::render(world, renderer)?;
+            config
+                .capture
+                .wants(index)
+                .then(|| offscreen::texture(world, renderer, &target.texture))
+                .transpose()?
+        };
+        frames.advance();
+        if let Some(texture) = texture {
+            let (_, _, pixels) = offscreen::read(&device.device, &device.queue, &texture).await?;
+            config.capture.write_frame(index, &pixels, config.size)?;
+            output.frames.push((index, pixels));
         }
-        drop(nested);
     }
 
     output.advanced = frames.advanced();
-    output
+    Ok(output)
 }

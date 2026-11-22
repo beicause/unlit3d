@@ -8,22 +8,20 @@
 //! and how it is paced; the scene is the same either way.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
-use unlit3d::winit::presenter::PRESENT_ORDER;
-
-use unlit_ecs::{Entity, bundle};
+use unlit_ecs::bundle;
 use unlit_wgpu::context::RenderDevice;
 use unlit3d::egui::EguiTarget;
-use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
+use unlit3d::frame::OnFrame;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::input::{InputFeed, InputWriter, refresh_input};
 use unlit3d::relay::Snapshot;
 use unlit3d::winit::SurfaceOptions;
 use unlit3d::winit::builtin::{
-    ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, request_redraw_while_foreground,
-    window, winit_input_behaviour,
+    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground, window,
+    winit_input_behaviour,
 };
 use unlit3d::winit::event::WinitHost;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -31,20 +29,13 @@ use winit::window::Window;
 
 use super::App;
 use super::capture::Capture;
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-use super::capture::capture_presented;
 use super::headless::RENDER_COMMAND_CAPACITY;
 use super::pace::Pacing;
-#[cfg(all(
-    feature = "mcp",
-    not(target_arch = "wasm32"),
-    not(target_os = "android")
-))]
-use super::scene::ClientPacing;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
+use super::window_frame::{RunFailure, WindowFrames, drive_window};
 use crate::gpu::request_gpu;
 use crate::host::spawn_sub_world;
-use crate::present::{draw_presented, pump_presented, setup_presenter};
+use crate::present::{pump_presented, setup_presenter};
 use crate::world::{Stepped, Threaded};
 
 /// A windowed run's settings.
@@ -121,11 +112,15 @@ impl Default for WindowOptions {
 /// Run an application's scene in a window until the window closes or Escape
 /// is pressed.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics when the event loop fails, which is fatal for a windowed run:
-/// there is nothing to fall back to.
-pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoop<()>) {
+/// Returns the first fatal initialization or frame error on native targets,
+/// or an error starting the event loop. Asynchronous browser failures are logged.
+pub fn windowed<A: App>(
+    mut app: A,
+    options: WindowOptions,
+    event_loop: EventLoop<()>,
+) -> Result<(), String> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = WinitHost::<()>::new();
     let world = host.world_mut();
@@ -180,74 +175,21 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     } else {
         app.spawn_scene::<Threaded>(world, ports)
     };
-    // The frames the run has advanced, built before anything reads it so the
-    // behaviours that spend a budget and keep a capture count the same frames
-    // the scene does.
     let frames = RunFrames::default();
-    // The host carries the count as a component as well as handing clones to
-    // the behaviours: the MCP tools read it out of the host world, which is
-    // the only world they see.
-    world.root_scope_mut().spawn(bundle![frames.clone()]);
-    // Whether a client paces the run. Parking the stepper is what lets one
-    // step the scene, and only a build with the tools has a client to hand
-    // it to: without one the switch would park the run with nothing left to
-    // unpark it, so the frame behaviour paces the run instead.
-    let parked = options.interactive
-        && cfg!(all(
-            feature = "mcp",
-            not(target_arch = "wasm32"),
-            not(target_os = "android")
-        ))
-        && (options.mcp_stdio || options.mcp_http_addr.is_some());
-    // The pacing is a component of the host rather than an argument of the
-    // frame loop, because the stepping tool reads it to answer how far the
-    // run may still go: a client that asks for more frames than the budget
-    // has left is served up to the end of the run, not past it.
-    world.root_scope_mut().spawn(bundle![Pacing {
-        client: parked,
-        frames: options.max_frames,
-    }]);
-    // The stepped worlds run before the draw, so the transforms they publish
-    // are the ones this frame shows. The two pacing paths are exclusive: a
-    // client-paced run parks its stepper in the host world, where the MCP
-    // tools reach it and no frame behaviour steps behind their back; a
-    // self-paced run keeps the stepper in its frame behaviour, and no tool
-    // can reach it to advance the scene a second way.
-    if stepped {
-        let stepper = Stepping::new(worlds, A::PHYSICS_HZ, None, frames.clone());
-        let stepper = Arc::new(Mutex::new(stepper));
-        if parked {
-            #[cfg(all(
+    let pacing = Pacing {
+        client: options.interactive
+            && cfg!(all(
                 feature = "mcp",
-                not(target_arch = "wasm32"),
-                not(target_os = "android")
-            ))]
-            world
-                .root_scope_mut()
-                .spawn(bundle![ClientPacing(Arc::clone(&stepper))]);
-        } else {
-            world
-                .root_scope_mut()
-                .spawn(bundle![OnFrame::new(move |world, _entity, frame| {
-                    // A suspended host shows nothing, so the frame it would
-                    // advance is not one the run advanced: stepping through
-                    // the suspension would spend the budget on frames nobody
-                    // ever saw.
-                    let resumed = world
-                        .root_scope()
-                        .query::<&Resumed>()
-                        .iter()
-                        .next()
-                        .is_none_or(|state| state.0);
-                    if !resumed {
-                        return;
-                    }
-                    if let Ok(mut stepper) = stepper.lock() {
-                        stepper.step(world, f64::from(frame.delta_time));
-                    }
-                },)]);
-        }
-    }
+                not(any(target_arch = "wasm32", target_os = "android"))
+            ))
+            && (options.mcp_stdio
+                || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some())),
+        frames: options.max_frames,
+    };
+    world
+        .root_scope_mut()
+        .spawn(bundle![frames.clone(), pacing]);
+    let stepper = stepped.then(|| Stepping::new(worlds, A::PHYSICS_HZ, None));
     world
         .root_scope_mut()
         .spawn(bundle![display_refresh_rate(refresh_millihertz)]);
@@ -270,9 +212,24 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
     let mcp = options.mcp_stdio;
     let capture = options.capture.clone();
     let captured = capture.is_some();
-    world
-        .root_scope_mut()
-        .spawn(bundle![request_gpu(app_entity, {
+    let failure = RunFailure::default();
+    world.root_scope_mut().spawn(bundle![
+        drive_window(),
+        WindowFrames {
+            render: render_entity,
+            app: app_entity,
+            stepper,
+            frames: frames.clone(),
+            pacing,
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            capture: capture.clone(),
+            failure: failure.clone(),
+        }
+    ]);
+    world.root_scope_mut().spawn(bundle![request_gpu(
+        app_entity,
+        {
+            let failure = failure.clone();
             move |world, gpu| {
                 let setup = app.setup_render(
                     world,
@@ -289,28 +246,55 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                 let offscreen = mcp
                     || captured
                     || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some());
-                let outcome = setup_presenter(
-                    world,
-                    render.entity,
-                    setup.renderer.entity,
-                    setup.pass.entity,
-                    gpu,
-                    options.size,
-                    offscreen,
-                    options.surface,
-                );
+                let outcome = (|| {
+                    let (renderer, pass) = {
+                        let mut nested = world
+                            .root_scope()
+                            .try_query_one::<&unlit_ecs::World>(render.entity)
+                            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                        let nested = nested.get();
+                        (
+                            nested
+                                .resolve(setup.renderer)
+                                .map_err(|error| error.to_string())?,
+                            nested
+                                .resolve(setup.pass)
+                                .map_err(|error| error.to_string())?,
+                        )
+                    };
+                    setup_presenter(
+                        world,
+                        render.entity,
+                        renderer,
+                        pass,
+                        gpu,
+                        options.size,
+                        offscreen,
+                        options.surface,
+                    )
+                    .map_err(|error| error.to_string())
+                })();
                 if let Err(error) = outcome {
-                    log::error!("failed to build the presentation path: {error}");
-                } else {
-                    log::info!("the scene is set up");
+                    failure.report(
+                        world,
+                        app_entity,
+                        format!("failed to build the presentation path: {error}"),
+                    );
+                    return;
                 }
+                log::info!("the scene is set up");
                 #[cfg(all(
                     feature = "mcp",
                     not(target_arch = "wasm32"),
                     not(target_os = "android")
                 ))]
-                if mcp {
-                    crate::mcp::serve_mcp(world);
+                if mcp && let Err(error) = crate::mcp::serve_mcp(world) {
+                    failure.report(
+                        world,
+                        app_entity,
+                        format!("the MCP stdio server failed to start: {error}"),
+                    );
+                    return;
                 }
                 #[cfg(all(
                     feature = "mcp-http",
@@ -323,47 +307,21 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
                             log::info!("the MCP HTTP server is listening on http://{bound}/");
                         }
                         Err(message) => {
-                            log::error!("the MCP HTTP server failed to start: {message}");
+                            failure.report(
+                                world,
+                                app_entity,
+                                format!("the MCP HTTP server failed to start: {message}"),
+                            );
                         }
                     }
                 }
             }
-        }),]);
-    // A stepped run has its stepper advance the count as it steps; a
-    // threaded one has no stepper, so the draw counts its own frames.
-    let drawn = if stepped { None } else { Some(frames.clone()) };
-    world
-        .root_scope_mut()
-        .spawn(bundle![draw_presented(render_entity, drawn)]);
-    // A capture reads the target the presenter just drew into, so it runs
-    // one order after it rather than drawing the scene a second time. Reading
-    // a frame back needs a filesystem to write it to, which this target has
-    // not.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    let reported = capture.clone();
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    let capturing = reported.is_some();
-    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    let capturing = false;
-    // Only a bounded run or one that captures ends itself: a plain window has
-    // neither a length to spend nor a shortfall to report.
-    if options.max_frames.is_some() || capturing {
-        world.root_scope_mut().spawn(bundle![end_after_frames(
-            app_entity,
-            options.max_frames,
-            frames.clone()
-        )]);
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    if let Some(capture) = capture {
-        world.root_scope_mut().spawn(bundle![capture_presented(
-            render_entity,
-            capture,
-            frames.clone()
-        )]);
-    }
-    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    let _ = &capture;
+        },
+        {
+            let failure = failure.clone();
+            move |world, message| failure.report(world, app_entity, message)
+        }
+    ),]);
     let (pump, redraw) = pump_presented();
     world.root_scope_mut().spawn(bundle![pump]);
     world.root_scope_mut().spawn(bundle![redraw]);
@@ -371,12 +329,13 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
         .root_scope_mut()
         .spawn(bundle![unlit3d::winit::presenter::resize_presented()]);
 
-    host.run(event_loop).expect("the event loop runs");
+    host.run(event_loop)
+        .map_err(|error| format!("the event loop failed: {error}"))?;
 
     // A capture that ended short says so: its frames ran out before the run
     // reached the last one it named, or the window closed first.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    if let Some(capture) = reported {
+    if let Some(capture) = capture {
         let advanced = frames.advanced();
         if let Some(frame) = capture.missing(advanced) {
             log::warn!(
@@ -384,29 +343,7 @@ pub fn windowed<A: App>(mut app: A, options: WindowOptions, event_loop: EventLoo
             );
         }
     }
-}
-
-/// Close the window once the run has advanced as many frames as it was given.
-///
-/// It counts the frames the scene advanced, not the turns the event loop took:
-/// a turn that suspended the app or found no presentation path drew nothing
-/// and advanced nothing, and spending a budget on it would end a client-paced
-/// run while the client is still stepping it. The frame the budget names is
-/// the one the run draws last, since the request lands after the presenter and
-/// the capture have seen it.
-fn end_after_frames(app: Entity, budget: Option<u32>, frames: RunFrames) -> OnFrame {
-    OnFrame::with_order(
-        FrameBehaviourOrder(PRESENT_ORDER + 2),
-        move |world, _entity, _frame| {
-            let spent = budget.is_some_and(|budget| frames.advanced() >= budget);
-            if !spent {
-                return;
-            }
-            if let Ok(mut request) = world.root_scope().try_query_one::<&mut ExitRequest>(app) {
-                request.get().0 = true;
-            }
-        },
-    )
+    failure.take().map_or(Ok(()), Err)
 }
 
 /// Watch the display the window is on and publish its refresh rate.

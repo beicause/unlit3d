@@ -7,23 +7,21 @@
 
 use unlit_ecs::{Entity, World, bundle};
 use unlit_wgpu::context::RenderDevice;
-use unlit_wgpu::readback::try_readback_texture;
 use unlit_wgpu::resources::ResHandle;
 use unlit3d::egui::EguiTarget;
 use unlit3d::frame::Frame;
 use unlit3d::input::{InputEvent, InputFeed, InputWriter, MouseButton, MouseEvent, refresh_input};
-use unlit3d::offscreen::{PersistentTarget, TargetConfig};
 use unlit3d::relay::Snapshot;
-use unlit3d::renderer::Renderer;
 
 use super::App;
 use super::capture::Capture;
 use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, RENDER_COMMAND_CAPACITY};
+use super::offscreen;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds, Stepping};
 use crate::audio::{AudioFormat, dispatch_audio_fill};
 use crate::host::{drain_sub_world, spawn_sub_world, tick_sub_world};
 use crate::record::{RecordedAudio, RecordingHandle, start_recording};
-use crate::world::{Stepped, with_stepped_world_mut};
+use crate::world::{StepOutcome, Stepped, with_stepped_world_mut};
 
 /// An interactive scene stepping inline: one frame per call, no pacing of
 /// its own.
@@ -31,6 +29,7 @@ pub struct Interactive {
     worlds: SceneWorlds,
     /// The render sub-world the frames are drawn in.
     render: Entity,
+    input: InputWriter,
     renderer: Entity,
     /// The texture the offscreen pass draws into. Its resource id is what a
     /// caller reads frames back through.
@@ -40,6 +39,7 @@ pub struct Interactive {
     /// — its own pacing, or a client stepping it — captures the same frames.
     pub capture: Capture,
     stepper: Stepping,
+    frames: RunFrames,
     frame: Frame,
     samples: Vec<f32>,
     recording: Option<RecordingHandle>,
@@ -51,55 +51,54 @@ impl Interactive {
     /// Step `frames` frames: advance every world and pull the mix the frames
     /// would have played.
     ///
-    /// Nothing is drawn here, so a run that only reads the state back rather
-    /// than the picture costs no draw calls. [`Interactive::draw`] draws the
-    /// frame where the scene then stands, which is the same frame a step
-    /// would have drawn: a draw does not advance the scene, and what it does
-    /// write is only what a frame publishes for its readers, which the next
-    /// frame replaces anyway.
+    /// Every step renders, even when no capture is requested, so temporal
+    /// render targets see the same frame sequence whether or not it is read back.
     ///
     /// The render sub-world dispatches the frame here; the worlds the stepper
     /// drives dispatch theirs in their own ticks. The host world carries no
     /// scene of its own, so it takes no frame: what it would clock is the
     /// stepper's fixed rate, which a reader already knows.
-    pub fn step(&mut self, host: &World, frames: u32) {
+    pub fn step(&mut self, host: &World, frames: u32) -> Result<StepOutcome, String> {
         for _ in 0..frames {
             // The host has no behaviour of its own to route input to, but it
             // holds a buffer so a caller can feed and read one, and a buffer
             // no one folds keeps every event it is fed. Folding it is the
             // whole of what this world needs on a tick.
             refresh_input(host);
-            self.stepper.step(host, 1.0 / HEADLESS_HZ);
-            // The stepper advanced the run's frame count as it stepped, so
-            // the frame it just produced is the one that count names: the
-            // tick, the capture and the frame a reader asks for all agree on
-            // which frame this is.
-            self.frame.index = self.stepper.frames().current().unwrap_or_default();
+            let outcome = self.stepper.step(host, 1.0 / HEADLESS_HZ);
+            if outcome != StepOutcome::Ran {
+                return Ok(outcome);
+            }
+            self.frame.index = self.frames.advanced();
             let frames = self.stepper.audio_frames(1.0 / HEADLESS_HZ);
             if frames > 0 {
                 self.samples.clear();
                 self.samples.resize(frames * AUDIO_CHANNELS, 0.0);
-                let filled = with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
+                with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
                     dispatch_audio_fill(
                         audio,
                         &mut self.samples,
                         AUDIO_SAMPLE_RATE,
                         AUDIO_CHANNELS as u16,
                     );
-                });
-                assert!(filled.is_ok(), "the audio world is a stepped world");
+                })
+                .map_err(|error| format!("the audio world could not fill the mix: {error}"))?;
             }
             {
-                let mut nested = host.root_scope().query_one::<&mut World>(self.render);
-                tick_sub_world(nested.get(), &mut self.frame);
+                let mut nested = host
+                    .root_scope()
+                    .try_query_one::<&mut World>(self.render)
+                    .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                let outcome = tick_sub_world(nested.get(), &mut self.frame);
+                if outcome != StepOutcome::Ran {
+                    return Ok(outcome);
+                }
+                offscreen::render(nested.get(), self.renderer)?;
             }
-            // The frame is drawn exactly when the capture names it: a frame
-            // drawn and not read is a wasted draw, and a frame the capture
-            // names and the run does not draw is a picture missing from it.
-            // The sub-world's borrow is released first, since drawing takes
-            // it again.
-            self.capture_frame(host, self.frame.index);
+            self.frames.advance();
+            self.capture_frame(host, self.frame.index)?;
         }
+        Ok(StepOutcome::Ran)
     }
 
     /// Write out the frame `index` the run has just drawn, when the capture
@@ -109,38 +108,29 @@ impl Interactive {
     /// to the end: a run with no length of its own keeps what it got to when
     /// the process is killed.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    fn capture_frame(&self, host: &World, index: u32) {
-        if !self.capture.wants(index) {
-            return;
-        }
-        self.draw(host);
-        // A frame that cannot be read back is one the capture has to name as
-        // missing: taking the run down would lose the frames after it too.
-        let (size, pixels) = match pollster::block_on(self.try_read_frame(host)) {
-            Ok(frame) => ((frame.0, frame.1), frame.2),
-            Err(reason) => {
-                log::warn!("the run could not capture frame {index}: {reason}");
-                return;
+    fn capture_frame(&self, host: &World, index: u32) -> Result<(), String> {
+        if self.capture.wants(index) {
+            let (width, height, pixels) = pollster::block_on(self.read_frame(host))?;
+            if let Some(path) = self.capture.write_frame(index, &pixels, (width, height))? {
+                log::info!("the run wrote {}", path.display());
             }
-        };
-        match self.capture.write_frame(index, &pixels, size) {
-            Ok(Some(path)) => log::info!("the run wrote {}", path.display()),
-            Ok(None) => {}
-            Err(message) => log::error!("{message}"),
         }
+        Ok(())
     }
 
     /// Nothing is captured on a target with no filesystem: the frames a run
     /// writes are the caller's to read back through
     /// [`Interactive::render_frame`] instead.
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    fn capture_frame(&self, _host: &World, _index: u32) {}
+    fn capture_frame(&self, _host: &World, _index: u32) -> Result<(), String> {
+        Ok(())
+    }
 
     /// How many frames the run has advanced, which is also the number the
     /// next step draws as.
     #[must_use]
     pub fn frame(&self) -> u32 {
-        self.stepper.frames().advanced()
+        self.frames.advanced()
     }
 
     /// The handles the scene's worlds were spawned under.
@@ -158,79 +148,42 @@ impl Interactive {
         self.render
     }
 
-    /// Draw the frame where the scene stands and read its pixels back.
-    ///
-    /// The await is the readback: the pixels cannot exist before the copy
-    /// lands. Drawing is what publishes the target the panels lay out
-    /// against, so nothing is laid out until one frame has been drawn.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the target cannot be read back. A caller that drives the
-    /// run itself is holding the device and the format it bound the target
-    /// with, so an unreadable target is a mistake in its own setup rather
-    /// than a device that went away mid-run.
-    pub async fn render_frame(&self, host: &World) -> Vec<u8> {
-        self.draw(host);
-        let (_, _, pixels) = self.read_frame(host).await;
-        pixels
+    /// Draw the current scene without stepping, then read back its pixels.
+    pub async fn render_frame(&self, host: &World) -> Result<Vec<u8>, String> {
+        self.draw(host)?;
+        let (_, _, pixels) = self.read_frame(host).await?;
+        Ok(pixels)
     }
 
-    /// Read the target's pixels back without drawing first.
-    ///
-    /// The size comes from the texture, which is the size the target was
-    /// bound at.
-    async fn read_frame(&self, host: &World) -> (u32, u32, Vec<u8>) {
-        self.try_read_frame(host)
-            .await
-            .unwrap_or_else(|error| panic!("the frame's target could not be read back: {error}"))
-    }
-
-    /// Read the target's pixels back, reporting why when it cannot.
-    async fn try_read_frame(
-        &self,
-        host: &World,
-    ) -> Result<(u32, u32, Vec<u8>), unlit_wgpu::readback::ReadbackError> {
+    /// Read the rendered frame without drawing or advancing it.
+    async fn read_frame(&self, host: &World) -> Result<(u32, u32, Vec<u8>), String> {
         let texture = {
-            let mut nested = host.root_scope().query_one::<&World>(self.render);
-            let world = nested.get();
-            let context = world
+            let mut nested = host
                 .root_scope()
-                .query_one::<&Renderer>(self.renderer)
-                .get()
-                .context();
-            let mut graph = context
-                .try_graph(&world.root_scope())
-                .expect("the frame's resource graph exists");
-            graph
-                .get()
-                .get(&self.target)
-                .cloned()
-                .expect("the target texture is a resource node")
+                .try_query_one::<&World>(self.render)
+                .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            offscreen::texture(nested.get(), self.renderer, &self.target)?
         };
-        let size = (texture.width(), texture.height());
-        let pixels = try_readback_texture(&self.device, &self.queue, &texture).await?;
-        Ok((size.0, size.1, pixels))
+        offscreen::read(&self.device, &self.queue, &texture).await
     }
 
-    /// Draw the frame where the scene stands, into the offscreen texture.
-    ///
-    /// The render sub-world catches up on the jobs queued for it first, so
-    /// the frame draws the scene as the steps left it rather than as the jobs
-    /// found it.
-    pub fn draw(&self, host: &World) {
-        let mut nested = host.root_scope().query_one::<&mut World>(self.render);
-        let world = nested.get();
-        drain_sub_world(world);
-        let _ = world
+    /// Drain the render world's queued jobs and draw without stepping.
+    pub fn draw(&self, host: &World) -> Result<(), String> {
+        let mut nested = host
             .root_scope()
-            .try_query_one::<&mut Renderer>(self.renderer)
-            .map(|mut renderer| renderer.get().render(&*world));
+            .try_query_one::<&mut World>(self.render)
+            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+        let world = nested.get();
+        let outcome = drain_sub_world(world);
+        if outcome != StepOutcome::Ran {
+            return Err(format!("the render world cannot draw: {outcome:?}"));
+        }
+        offscreen::render(world, self.renderer)
     }
 
     /// Click at `position`: move the pointer there, then press and release
     /// before the next frame, the sequence an input tool sends.
-    pub fn click(&mut self, host: &World, position: [f32; 2]) {
+    pub fn click(&self, position: [f32; 2]) {
         let button = |pressed| {
             InputEvent::Mouse(MouseEvent::Button {
                 position: Some(position),
@@ -239,40 +192,40 @@ impl Interactive {
                 modifiers: Default::default(),
             })
         };
-        host.root_scope()
-            .query::<&InputWriter>()
-            .iter()
-            .next()
-            .expect("the interactive run carries an input writer")
-            .push_all([
-                InputEvent::Mouse(MouseEvent::Moved { position }),
-                button(true),
-                button(false),
-            ]);
+        self.input.push_all([
+            InputEvent::Mouse(MouseEvent::Moved { position }),
+            button(true),
+            button(false),
+        ]);
     }
 
     /// Start recording the mix the audio world fills.
     ///
     /// The recording lives on the audio world, so its fills are counted even
     /// though the world is stepped from here.
-    pub fn start_recording(&mut self, host: &World, max_seconds: f32) {
-        let mut handle = None;
-        with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
-            handle = Some(start_recording(audio, max_seconds));
-        })
-        .expect("the audio world is a stepped world");
-        self.recording = handle;
+    pub fn start_recording(&mut self, host: &World, max_seconds: f32) -> Result<(), String> {
+        if self.recording.is_some() {
+            return Err("the audio world is already recording".to_owned());
+        }
+        self.recording = Some(
+            with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
+                start_recording(audio, max_seconds)
+            })
+            .map_err(|error| format!("recording could not start: {error}"))?,
+        );
+        Ok(())
     }
 
     /// Stop the recording and take the samples it captured.
-    pub fn stop_recording(&mut self, host: &World) -> Option<Recording> {
-        let recording = self.recording.take()?;
-        let mut audio = None;
+    pub fn stop_recording(&mut self, host: &World) -> Result<Option<Recording>, String> {
+        let Some(recording) = self.recording.take() else {
+            return Ok(None);
+        };
         with_stepped_world_mut(host, self.worlds.audio.entity, |world| {
-            audio = recording.stop(world);
+            recording.stop(world)
         })
-        .expect("the audio world is a stepped world");
-        audio.map(Recording::from)
+        .map(|audio| audio.map(Recording::from))
+        .map_err(|error| format!("recording could not stop: {error}"))
     }
 }
 
@@ -299,7 +252,10 @@ impl From<RecordedAudio> for Recording {
 /// The host owns everything, the input writer included; the caller steps it
 /// through the returned [`Interactive`] and draws nothing to any window. The
 /// offscreen target draws at [`App::SIZE`].
-pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interactive) {
+pub fn interactive<A: App>(
+    mut app: A,
+    device: RenderDevice,
+) -> Result<(World, Interactive), String> {
     let mut host = World::new();
     let input = InputWriter::new();
     host.root_scope_mut().spawn(InputFeed(input.clone()));
@@ -323,41 +279,23 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interact
             panel: Some(panel),
         },
     );
-    let target = {
-        let mut nested = host.root_scope().query_one::<&mut World>(render.entity);
-        let world = nested.get();
-        let context = world
+    let (renderer, target) = {
+        let mut nested = host
             .root_scope()
-            .query_one::<&Renderer>(setup.renderer.entity)
-            .get()
-            .context();
-        PersistentTarget::bind(
-            world,
-            context,
-            setup.pass.entity,
-            &device.device,
-            A::SIZE,
-            TargetConfig::default(),
-        )
-        .expect("the offscreen target binds")
+            .try_query_one::<&World>(render.entity)
+            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+        offscreen::bind(nested.get(), setup, &device, A::SIZE)?
     };
-    // The count the run's length is read from. Nothing else advances it
-    // here: the stepper is this run's only driver. It is spawned into the
-    // host world as well as held by the stepper, because the tools that read
-    // it — the budget, the capture, the report of frames a capture never
-    // reached — see the host world, not the stepper.
+    // The MCP tools read the same frame count from the host.
     let frames = RunFrames::default();
     host.root_scope_mut().spawn(bundle![frames.clone()]);
     let interactive = Interactive {
-        stepper: Stepping::new(
-            worlds.clone(),
-            A::PHYSICS_HZ,
-            Some(AUDIO_SAMPLE_RATE),
-            frames,
-        ),
+        stepper: Stepping::new(worlds.clone(), A::PHYSICS_HZ, Some(AUDIO_SAMPLE_RATE)),
+        frames,
         worlds,
         render: render.entity,
-        renderer: setup.renderer.entity,
+        input,
+        renderer,
         target: target.texture,
         frame: Frame {
             delta_time: (1.0 / HEADLESS_HZ) as f32,
@@ -375,6 +313,6 @@ pub fn interactive<A: App>(mut app: A, device: RenderDevice) -> (World, Interact
     // layout pass, not a frame the run advanced: nothing was stepped for it,
     // so the run still stands on no frame and a capture of frame 0 is the
     // first step's.
-    interactive.draw(&host);
-    (host, interactive)
+    interactive.draw(&host)?;
+    Ok((host, interactive))
 }

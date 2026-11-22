@@ -5,6 +5,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
+use async_channel::Receiver;
 use unlit_ecs::sync;
 use unlit_ecs::{World, bundle};
 use unlit3d::frame::FrameClock;
@@ -12,6 +13,8 @@ use web_time::Instant;
 
 use crate::channel::{Snapshot, SnapshotReader};
 use crate::executor::LocalTasks;
+use crate::job::Job;
+use crate::turn::{Link, StepOutcome, close_inbox, run_turn};
 
 /// How long a dropped thread waits for its tick to notice the stop before it
 /// is left detached instead of blocking the dropper.
@@ -157,8 +160,10 @@ pub enum WorldState {
     Running,
     /// The world ended: its tick asked to stop, or its owner stopped it.
     Stopped,
-    /// The world died with a panic, and this is the message it carried.
-    Panicked(Arc<str>),
+    /// The world failed: a job, a tick, a queued command or a collector
+    /// panicked, or a queued command could not be applied, and this is the
+    /// message it carried.
+    Failed(Arc<str>),
 }
 
 /// A cloneable view of a world's state.
@@ -217,10 +222,11 @@ impl ThreadStatus {
     /// meaningful after [`WorldThread::detach`].
     #[must_use]
     pub(crate) fn is_finished(&self) -> bool {
-        !matches!(
-            self.own.latest().as_deref(),
-            None | Some(WorldState::Running)
-        )
+        !matches!(self.current().as_deref(), None | Some(WorldState::Running))
+    }
+
+    pub(crate) fn current(&self) -> Option<Arc<WorldState>> {
+        self.own.latest()
     }
 
     /// Ask the world to stop, without waiting for it to finish.
@@ -249,18 +255,21 @@ impl ThreadStatus {
         self.state.publish(WorldState::Stopped);
     }
 
-    /// Record the panic that ended the world, message and all.
-    pub(crate) fn record_panic(&self, message: String) {
-        self.state.publish(WorldState::Panicked(message.into()));
+    /// Record the failure that ended the world, message and all.
+    ///
+    /// A failure is the last word: a world that failed reads as failed even
+    /// after the driver that noticed it marks the world finished.
+    pub(crate) fn record_failure(&self, message: String) {
+        self.state.publish(WorldState::Failed(message.into()));
     }
 }
 
 /// One thread owning one `World`.
 ///
-/// Dropping the thread asks it to stop and waits for it to finish, so a
-/// threaded world's lifetime is exactly the proxy's. A tick that ignores the
-/// stop cannot hang the dropper: after a short grace period the thread is
-/// detached and the drop returns.
+/// Dropping the driver requests a cooperative stop and waits for up to two
+/// seconds. If a job or tick does not return in time, the thread is detached
+/// and may outlive its proxy. Call [`stop`](Self::stop) and then
+/// [`join_timeout`](Self::join_timeout) when teardown must be confirmed.
 pub struct WorldThread {
     /// The shared state a handle reports.
     status: ThreadStatus,
@@ -271,27 +280,38 @@ pub struct WorldThread {
 impl WorldThread {
     /// Spawn a thread that owns a fresh `World` and ticks it forever.
     ///
-    /// The tick runs once per loop iteration and returns whether to keep
-    /// running; a `false` return ends the thread as cleanly as a stop. A
-    /// tick panic is caught, logged and published as the world's state, and
-    /// ends the thread: a world whose tick has panicked is not worth
-    /// restarting blindly.
+    /// The tick runs once per turn and returns whether to keep running; a
+    /// `false` return ends the thread as cleanly as a stop. Nothing posts
+    /// jobs to a world spawned this way, so the turn only runs the tick;
+    /// [`spawn_with`](Self::spawn_with) is the one that takes a queue.
     pub fn spawn<T>(name: &str, mut tick: T) -> Self
     where
         T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
     {
-        Self::spawn_with(name, |_| (), move |world, control, ()| tick(world, control))
+        // The queue is closed from the start: no producer holds its sender,
+        // so a turn finds nothing queued and the tick alone drives the world.
+        let (_sender, inbox) = async_channel::bounded(1);
+        Self::spawn_with(
+            name,
+            inbox,
+            |_| (),
+            move |world, control, ()| tick(world, control),
+        )
     }
 
-    /// Like [`spawn`](Self::spawn), with a setup step and the state it
-    /// produces.
+    /// Like [`spawn`](Self::spawn), with the queue jobs arrive in and a setup
+    /// step whose state every tick sees.
     ///
     /// `init` runs once on the thread, against the fresh world, before the
-    /// first job is drained; whatever it returns is handed to every tick.
-    /// That ordering is what lets a bridge create the components its jobs
-    /// assume exist - the physics world with its configured gravity, say -
-    /// so a job sent immediately after spawning already finds them.
-    pub fn spawn_with<S, I, T>(name: &str, init: I, mut tick: T) -> Self
+    /// first turn; whatever it returns is handed to every tick. That ordering
+    /// is what lets a bridge create the components its jobs assume exist - the
+    /// physics world with its configured gravity, say - so a job sent
+    /// immediately after spawning already finds them.
+    ///
+    /// The loop runs one [`run_turn`] per iteration, the same turn a stepped
+    /// world and a sub-world run, so the order in which jobs, the tick and the
+    /// commit happen cannot differ between drivers.
+    pub fn spawn_with<S, I, T>(name: &str, inbox: Receiver<Job>, init: I, mut tick: T) -> Self
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
@@ -310,33 +330,44 @@ impl WorldThread {
                     self_driven: true,
                     last_tick: Mutex::new(None),
                 };
-                let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    let mut world = World::new();
-                    // A world is born with its frame state, so a behaviour
-                    // subscribed to the first turn already reads a clock
-                    // rather than finding none.
-                    world
-                        .root_scope_mut()
-                        .spawn_named("frame_clock", bundle![FrameClock::default()]);
-                    // The world's async tasks are its own from here on: the
-                    // setup may spawn one, and every tick drives them.
-                    LocalTasks::install(&mut world);
-                    let mut state = init(&mut world);
-                    while !control.stop_requested() {
-                        LocalTasks::pump(&mut world);
-                        if !tick(&mut world, &control, &mut state) {
-                            break;
-                        }
-                    }
-                }));
-                match outcome {
-                    Ok(()) => thread_status.finish(),
+                let mut world = World::new();
+                // A world is born with its frame state, so a behaviour
+                // subscribed to the first turn already reads a clock rather
+                // than finding none.
+                world
+                    .root_scope_mut()
+                    .spawn_named("frame_clock", bundle![FrameClock::default()]);
+                // The world's async tasks are its own from here on: the setup
+                // may spawn one, and every turn drives them.
+                LocalTasks::install(&mut world);
+                // The setup is the one stage no turn runs, so it is contained
+                // here rather than left to reach the thread and unwind it.
+                let setup = std::panic::catch_unwind(AssertUnwindSafe(|| init(&mut world)));
+                let mut state = match setup {
+                    Ok(state) => state,
                     Err(payload) => {
-                        let message = panic_message(&*payload);
-                        log::error!("the world thread {thread_name} panicked: {message}");
-                        thread_status.record_panic(message);
+                        let message = panic_message(payload.as_ref());
+                        log::error!("the world thread {thread_name} failed: {message}");
+                        thread_status.record_failure(message);
+                        close_inbox(&inbox);
+                        thread_stop.finish();
+                        return;
                     }
-                }
+                };
+                let link = Link {
+                    name: &thread_name,
+                    inbox: &inbox,
+                    status: &thread_status,
+                };
+                // One turn per iteration, the same one a stepped world and a
+                // sub-world run: the queued jobs, the tick, then the commit
+                // and the publish. Any outcome but `Ran` ends the loop, and
+                // the turn has already recorded why.
+                while run_turn(&mut world, link, |world| {
+                    LocalTasks::pump(world);
+                    tick(world, &control, &mut state)
+                }) == StepOutcome::Ran
+                {}
                 // The state is the last word on how the world ended, so it is
                 // published before whoever waits on the thread is woken.
                 thread_stop.finish();
@@ -575,15 +606,17 @@ mod tests {
         );
         assert_eq!(
             state.latest().as_deref(),
-            Some(&WorldState::Panicked("the tick died".into()))
+            Some(&WorldState::Failed("the tick died".into()))
         );
     }
 
     /// A panic in the setup step is reported like a tick panic.
     #[test]
     fn a_setup_panic_is_reported() {
+        let (_sender, inbox) = async_channel::bounded(1);
         let thread = WorldThread::spawn_with(
             "test",
+            inbox,
             |_| -> () { panic!("the setup died") },
             |_, _, ()| false,
         );
@@ -594,7 +627,7 @@ mod tests {
         );
         assert_eq!(
             state.latest().as_deref(),
-            Some(&WorldState::Panicked("the setup died".into()))
+            Some(&WorldState::Failed("the setup died".into()))
         );
     }
 
@@ -633,8 +666,10 @@ mod tests {
     fn setup_runs_before_the_first_tick() {
         let ran = Arc::new(AtomicBool::new(false));
         let saw = Arc::clone(&ran);
+        let (_sender, inbox) = async_channel::bounded(1);
         let mut thread = WorldThread::spawn_with(
             "test",
+            inbox,
             move |_| {
                 saw.store(true, Ordering::SeqCst);
                 7u32

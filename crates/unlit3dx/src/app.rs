@@ -47,7 +47,9 @@ pub mod options;
 pub mod windowed;
 
 mod logging;
+mod offscreen;
 mod scene;
+mod window_frame;
 
 pub mod capture;
 pub mod pace;
@@ -60,6 +62,7 @@ pub mod pace;
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub mod serve;
 
+pub use crate::frames::RunFrames;
 pub use capture::Capture;
 pub use headless::{
     AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, HeadlessConfig, HeadlessOutput, headless,
@@ -68,16 +71,9 @@ pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;
 pub use options::RunOptions;
 pub use pace::Pacing;
-pub use scene::{Mode, RenderPorts, RenderSetup, RunFrames, ScenePorts, SceneWorlds, Stepping};
+pub use scene::{Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
 pub use windowed::{WindowOptions, windowed};
 
-#[cfg(all(
-    feature = "mcp",
-    not(target_arch = "wasm32"),
-    not(target_os = "android")
-))]
-#[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
-pub use scene::ClientPacing;
 #[cfg(all(
     feature = "mcp",
     not(target_arch = "wasm32"),
@@ -278,9 +274,13 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let event_loop = EventLoop::<()>::with_user_event()
-        .build()
-        .expect("the platform builds an event loop");
+    let event_loop = match EventLoop::<()>::with_user_event().build() {
+        Ok(event_loop) => event_loop,
+        Err(error) => {
+            log::error!("the event loop could not be created: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let window = WindowOptions {
         stepped: options.stepped || cfg!(target_arch = "wasm32"),
         interactive: options.interactive,
@@ -290,8 +290,13 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         capture: options.capture(),
         ..WindowOptions::for_app::<A>()
     };
-    windowed(app, window, event_loop);
-    std::process::ExitCode::SUCCESS
+    match windowed(app, window, event_loop) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(message) => {
+            log::error!("{message}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 /// Warn that the switches pacing a run reach no client.
@@ -371,7 +376,7 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
         ..HeadlessConfig::default()
     };
     let output = pollster::block_on(headless::headless(app, &config, device));
-    match write_mix(&config, &output) {
+    match output.and_then(|output| write_mix(&config, &output)) {
         Ok(written) => {
             for path in written {
                 log::info!("the headless run wrote {}", path.display());

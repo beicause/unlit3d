@@ -166,12 +166,12 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
   实体会请求停止其线程并至多等几秒（`STOP_TIMEOUT`）；拒绝停止的 tick 会被遗弃
   （detach），而不是把销毁方挂住。句柄负责汇报 world 的状态——`is_finished`，以及 `state`（一个
   `SnapshotReader<WorldState>`，读到 `Running`、`Stopped` 或
-  `Panicked(message)`）——`stop` 则请求它结束；`join_timeout` 与 `detach` 在
+  `Failed(message)`）——`stop` 则请求它结束；`join_timeout` 与 `detach` 在
   `WorldThread` 本身之上，留给直接持有它的调用方。
 - **`Stepped`** 让 world 留在它被生成的地方。`spawn_stepped_world_with_init` 把嵌套的
   `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
   迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。
-  它返回 `StepOutcome`（`Ran`、`Finished`、`Stopped` 或 `Panicked`），让调用方知道
+  它返回 `StepOutcome`（`Ran`、`Finished`、`Stopped` 或 `Failed`），让调用方知道
   这一趟做了什么；实体指向的并非 stepped world 时返回 `StepError`——步进一个
   threaded world 会被明确拒绝，而不是静默地什么都不做。`with_stepped_world` 把嵌套
   `World` 借出来，供需要直接触达它的工作使用，例如从绘制 world 读回一帧，并以同样
@@ -330,6 +330,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
 ```rust,ignore
 world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
     // ... 在请求发起处搭建场景 ...
+}, |world, message| {
+    log::error!("GPU setup failed: {message}");
+    // failed 回调返回后，运行时会请求退出。
 })]);
 ```
 
@@ -344,7 +347,7 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 打开离屏路径后改建 `PresentationPath::Intermediate`，即一张常驻目标加同一个 world 里
 的第二个 pass，把目标拷到表面——这让帧存活得足够久、可以读回，截图与快照测试就走
 这条路。两条路都收一个 `SurfaceOptions`：呈现模式与允许在途的帧数，它们决定交换链是否
-等显示器。`draw_presented` 是每帧驱动子 world 再呈现它的行为：排空它的 job、折叠它收到的输入、
+等显示器。`draw_presented` 是简单的每帧驱动子 world 再呈现它的行为：排空它的 job、折叠它收到的输入、
 跑它的本地任务、分发帧。子 world 没有自己的回合，所以驱动它那一帧的地方也是让它输入队列
 不堆满的地方。`pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随
 窗口变化。绘制 world 所需的 render

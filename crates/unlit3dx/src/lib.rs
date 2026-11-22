@@ -51,6 +51,8 @@ pub mod channel;
 pub mod egui;
 /// A single-threaded executor for a world's async tasks.
 pub mod executor;
+/// Frame progress shared by render drivers and application loops.
+pub mod frames;
 #[cfg(feature = "render")]
 #[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod gpu;
@@ -94,6 +96,8 @@ pub mod record;
 pub mod synth;
 /// World threads and their pacing.
 pub mod thread;
+/// The turn every world runs, whichever driver runs it.
+pub mod turn;
 /// Threaded worlds, which run on their own thread.
 pub mod world;
 

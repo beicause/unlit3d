@@ -19,17 +19,18 @@ pub use unlit3d::winit::presenter::{
     BLIT_PASS_ORDER, Presenter, PresenterError, SCENE_PASS_ORDER, resize_presented,
 };
 
-use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
+use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
 use unlit3d::offscreen::{OFFSCREEN_SAMPLES, TargetConfig};
 use unlit3d::winit::SurfaceOptions;
-use unlit3d::winit::builtin::{Resumed, window};
+use unlit3d::winit::builtin::{ExitRequest, Resumed, window};
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
 use unlit3d::winit::presenter::{PRESENT_ORDER, PresentationPath, pump_presented_with};
 
-use crate::app::RunFrames;
 use crate::executor::LocalTasks;
+use crate::frames::RunFrames;
 use crate::gpu::Gpu;
 use crate::host::tick_sub_world;
+use crate::world::StepOutcome;
 
 /// Build the presentation path and spawn its [`Presenter`] in the host
 /// world.
@@ -91,65 +92,73 @@ pub fn setup_presenter(
     .map(|_| ())
 }
 
-/// The draw behaviour: drive one frame of the render sub-world, then present
-/// the result.
+/// Drive the render sub-world and present its result when a surface image is
+/// available. Suspended or not-yet-initialized hosts skip the frame.
 ///
-/// `render` names the render sub-world the presenter presents from.
-/// Draining is what makes the sub-world a server: clients' requests land
-/// as jobs here, on the main thread, between one frame's render and the
-/// next. The same call folds the input the sub-world has been fed, which
-/// nothing else would do for it: it has no turn of its own, so the
-/// behaviour that drives its frame is the one that keeps its event queue
-/// from filling.
-///
-/// The renderer walks every pass of the sub-world here, so the scene's own
-/// pass -- and the offscreen path's copying pass, when there is one -- both
-/// record on this one call.
-///
-/// While the winit host reports the app suspended, the behaviour does
-/// nothing; a host with no winit loop counts as resumed. A frame that draws
-/// nothing — suspended, or before the presentation path exists — is not a
-/// frame the run advanced, so it neither spends a budget nor reaches a
-/// capture. When the host carries more than one presenter, the first one the
-/// query yields presents.
-///
-/// `frames` is the run's frame count, advanced here once per frame actually
-/// drawn. A run whose scene a stepper drives passes [None] instead: its
-/// stepper advances the count as it steps the worlds, and the draw would
-/// count the same frame twice.
+/// If supplied, the frame count advances only after successful presentation.
+/// The host must carry at most one presenter for this behaviour.
 pub fn draw_presented(render: Entity, frames: Option<RunFrames>) -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER),
-        move |world, _entity, frame| {
-            // A suspended host has no display worth drawing into.
-            let resumed = world
-                .root_scope()
-                .query::<&Resumed>()
-                .iter()
-                .next()
-                .is_none_or(|state| state.0);
-            if !resumed {
-                return;
+        move |world, _, frame| match present_turn(world, render, frame, || Ok(())) {
+            Ok(true) => {
+                if let Some(frames) = &frames {
+                    frames.advance();
+                }
             }
-            let mut presenter_rows = world.root_scope().query::<(Entity, &mut Presenter)>();
-
-            let Some(presenter) = presenter_rows.iter().next().map(|(_, p)| p) else {
-                return;
-            };
-            let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(render) else {
-                return;
-            };
-            tick_sub_world(&mut *nested.get(), frame);
-            drop(nested);
-            if let Err(error) = presenter.present(world) {
-                log::error!("failed to present a frame: {error}");
-                return;
-            }
-            if let Some(frames) = &frames {
-                frames.advance();
+            Ok(false) => {}
+            Err(error) => {
+                log::error!("{error}");
+                for request in world.root_scope().query::<&mut ExitRequest>().iter() {
+                    request.0 = true;
+                }
             }
         },
     )
+}
+
+/// Drive a render turn only after acquiring an image. The preparation callback
+/// can advance a simulation, and no render-world borrow is held while it runs.
+pub(crate) fn present_turn(
+    world: &World,
+    render: Entity,
+    frame: &mut Frame,
+    prepare: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    if world
+        .root_scope()
+        .query::<&Resumed>()
+        .iter()
+        .any(|state| !state.0)
+    {
+        return Ok(false);
+    }
+    let mut presenters = world.root_scope().query::<&mut Presenter>();
+    let mut rows = presenters.iter();
+    let Some(presenter) = rows.next() else {
+        return Ok(false);
+    };
+    if rows.next().is_some() {
+        return Err("the host has more than one presenter".to_owned());
+    }
+    let mut prepared = Ok(());
+    let presented = presenter.present_with(world, || {
+        prepared = prepare().and_then(|()| {
+            let mut nested = world
+                .root_scope()
+                .try_query_one::<&mut World>(render)
+                .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            let outcome = tick_sub_world(nested.get(), frame);
+            if outcome == StepOutcome::Ran {
+                Ok(())
+            } else {
+                Err(format!("the render world stopped: {outcome:?}"))
+            }
+        });
+        prepared.is_ok()
+    });
+    prepared?;
+    presented.map_err(|error| format!("failed to present a frame: {error}"))
 }
 
 /// The behaviours that keep frames coming: one per turn of the event loop,
