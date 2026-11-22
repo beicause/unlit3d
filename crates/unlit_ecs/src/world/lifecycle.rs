@@ -34,8 +34,9 @@ impl World {
             return;
         };
         // `Held` puts the callback back on the way out, including when the
-        // callback panics: the row holds a no-op placeholder meanwhile, and an
-        // entity that lost its callback for good would never run one again.
+        // callback panics: the row holds `None` while the callback is out of
+        // it, and an entity that lost its callback for good would never run
+        // one again.
         struct Held {
             world: *mut World,
             entity: Entity,

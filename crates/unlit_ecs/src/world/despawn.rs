@@ -67,8 +67,7 @@ impl World {
     /// `called` holds the entities that have already run their callback in this
     /// cascade, so coming back for a held-back row does not run it a second
     /// time. Re-entry from inside a callback needs no such guard: the callback
-    /// is out of the row while it runs, so the row it would find holds the
-    /// placeholder.
+    /// is out of the row while it runs, so the row it would find holds none.
     fn remove_entity(&mut self, entity: Entity, called: &mut EntityHashSet) {
         if self.location(entity).is_err() {
             return;
