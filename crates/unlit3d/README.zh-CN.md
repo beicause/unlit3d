@@ -87,10 +87,11 @@ Godot 的场景树轻松可以拆分和组合；API 可以非常高层（如 God
 ```text
 world root                              根 scope 看得见所有实体
 ├── shared                              每个 scope 都看得见这棵子树
-│   ├── wgpu::Device        + RenderContext
-│   ├── wgpu::Queue         + RenderContext
-│   ├── ResourceGraph       + RenderContext    所有纹理、缓冲、bind group
-│   ├── DeviceCapabilities  + RenderContext
+│   ├── wgpu::Device
+│   ├── wgpu::Queue
+│   ├── ResourceGraph                          所有纹理、缓冲、bind group
+│   ├── DeviceCapabilities
+│   ├── RenderContext                          指名上面这几行；每个 world 一份
 │   ├── FrameClock                             每帧推进一次，先于任何行为
 │   ├── OpenUrls
 │   └── ... 面板读写的应用状态
@@ -151,8 +152,9 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 - GPU 状态——`wgpu::Device`、`wgpu::Queue`、`ResourceGraph` 以及设备的那些事实——
   作为资源组件存在于 world 中，通过 `RenderContext` 寻址。`spawn_context` 把它们当作
   一个 `RenderDevice`（device、queue、`DeviceCapabilities` 与 `DeviceHealth` 一起）
-  接收，生成后返回地址；`RenderContext::of` 可以从它四个实体中的任意一个反查回整个
-  上下文。能力随帧一起传递，因为调用者是拿适配器推导出来的：设备无法自述的信息不该让
+  接收，把每个地址各自生成在一行上，并返回指名这些行的上下文。上下文本身也生成一行，
+  挂在 `RenderContext` 单例键下：于是 `RenderContext::of` 只凭 world 就能拿到它，同一个
+  world 上再生成一份会 panic，而不是留下互相矛盾的地址。能力随帧一起传递，因为调用者是拿适配器推导出来的：设备无法自述的信息不该让
   每个源各自重新发现。
 - **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制
   阶段只读取已经产出的场景。合并两者就必须在场景产出之前读资源图，只剩内部可变性把

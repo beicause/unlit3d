@@ -89,10 +89,10 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 | 工具                     | 作用                                     | 关键参数                                  |
 | ------------------------ | ---------------------------------------- | ----------------------------------------- |
-| `graph_summary`           | 按种类统计节点数、脏的与可重建的         | `context`                                 |
-| `list_resources`          | 每个资源槽的 handle、种类、脏否、可重建否 | `context`                                 |
+| `graph_summary`           | 按种类统计节点数、脏的与可重建的         | —                                         |
+| `list_resources`          | 每个资源槽的 handle、种类、脏否、可重建否 | —                                         |
 | `resource_dependencies`   | 一个资源依赖的 handle                    | `id`                                      |
-| `graph_maintain`          | 丢掉无引用资源、重建脏资源               | `context`                                 |
+| `graph_maintain`          | 丢掉无引用资源、重建脏资源               | —                                         |
 | `read_buffer`             | 读 buffer 为 base64（不推荐）             | `id`、`offset`、`size`                    |
 | `save_buffer`             | 读 buffer 写到文件（推荐）               | `id`、`directory`、`file_name`            |
 | `read_texture_as_image`   | 读纹理为内联 base64 编码的图片（不推荐） | `id`、`format`                            |
@@ -116,12 +116,12 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 | 工具              | 作用                                   | 关键参数                                               |
 | ----------------- | -------------------------------------- | ------------------------------------------------------ |
 | `spawn_gltf`      | 从路径或内联文档 spawn glTF 的默认场景 | `path` 与 `document` 二选一、`source`                  |
-| `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `target`（必填）、`context`、`renderer`、`format`     |
-| `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `target`（必填）、`directory`（必填）、`file_name`、`context`、`renderer` |
+| `read_screenshot` | 渲染一帧并内联返回图像（不推荐）       | `target`（必填）、`renderer`、`format`     |
+| `save_screenshot` | 渲染一帧并保存图像为文件（推荐）       | `target`（必填）、`directory`（必填）、`file_name`、`renderer` |
 
 `spawn_gltf` 的 `document` 可以是 glTF JSON 文本，也可以是把 GLB 的字节 base64 编码后的字符串——JSON 参数装不下裸二进制；与 `path` 只能给其中一个。工具返回模型根和全部后代实体；删除根实体即可通过 ECS 子树清理整份场景，绘制 mesh 由 source 下一次 `maintain` 回收。
 
-`context` / `renderer` / `source` 分别是携带渲染上下文 / `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体时应删除返回句柄中的根实体；ECS 会清理整棵模型子树，mesh 由 source 下一次 `maintain` 回收。
+`renderer` / `source` 分别是携带 `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；渲染上下文不是工具参数——它由 `spawn_context` 落在世界的唯一一行上，GPU 工具自己找它；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体时应删除返回句柄中的根实体；ECS 会清理整棵模型子树，mesh 由 source 下一次 `maintain` 回收。
 
 ### 帧与时序
 

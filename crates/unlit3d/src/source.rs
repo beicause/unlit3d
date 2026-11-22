@@ -23,9 +23,7 @@
 use core::any::Any;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{
-    Bundle, DynamicBundle, Entity, EntityAccessError, QueryOne, Scope, ScopeMut, World,
-};
+use unlit_ecs::{Entity, EntityAccessError, QueryOne, Scope, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::context::{DeviceHealth, RenderDevice};
 use unlit_wgpu::resources::ResourceGraph;
@@ -88,10 +86,11 @@ impl OrderKey for FrameSourceOrder {
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
 ///
-/// The context is itself a component: [`spawn_context`] stores a copy on the
-/// entity carrying the [`ResourceGraph`], so a reader that was handed one of
-/// the addresses can query its way back to the whole context instead of
-/// assuming the world holds exactly one.
+/// The context is itself a component, spawned once by [`spawn_context`] on a
+/// row of its own under the [`RenderContext`] singleton key. A caller that
+/// knows only the world asks the root scope for that key to reach the whole
+/// context; no resource row carries a copy, so the addresses cannot disagree
+/// with one another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderContext {
     /// The [`wgpu::Device`] the frame is drawn with, as a resource entity.
@@ -252,21 +251,16 @@ impl RenderContext {
         scope.query_one::<&mut GlobalUniforms>(self.uniforms)
     }
 
-    /// The context the world holds, found from any one of its addresses.
+    /// The context the world holds, if it has one.
     ///
-    /// The resource entities all carry the whole [`RenderContext`], so a
-    /// caller that was handed a device, queue, graph, capabilities or clock
-    /// address gets the rest without assuming the world holds exactly one
-    /// context. [`EntityAccessError`] when `anchor` carries no context, which
-    /// also covers an entity that is not alive or not visible from the root.
-    pub fn of(world: &World, anchor: Entity) -> Result<Self, EntityAccessError> {
-        world
-            .root_scope()
-            .try_query_one::<&RenderContext>(anchor)
-            .map(|mut context| {
-                let context = context.get();
-                *context
-            })
+    /// [`spawn_context`] spawns the context on a row of its own under the
+    /// [`RenderContext`] singleton key, so a caller that knows only the world
+    /// reaches it here. `None` for a world that was never given a device.
+    pub fn of(world: &World) -> Option<Self> {
+        let scope = world.root_scope();
+        let entity = scope.singleton::<RenderContext>()?;
+        let mut context = scope.try_query_one::<&RenderContext>(entity).ok()?;
+        Some(*context.get())
     }
 }
 
@@ -509,42 +503,14 @@ impl core::fmt::Debug for Source {
     }
 }
 
-/// One of the frame's GPU resources, together with the context that addresses
-/// the rest.
-///
-/// Every entity the context names carries the whole context, so a reader handed
-/// any single address can query the rest back instead of assuming the world
-/// holds exactly one context. A resource without it would be reachable only by
-/// guessing which entity holds what.
-struct ContextRow<T> {
-    resource: T,
-    context: RenderContext,
-}
-
-impl<T: 'static> Bundle for ContextRow<T> {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![self.resource, self.context]
-    }
-}
-
-/// Spawn one resource on the handle reserved for it, with the context that
-/// addresses the rest.
-fn spawn_row<T: 'static>(
-    shared: &mut ScopeMut<'_>,
-    entity: Entity,
-    resource: T,
-    context: RenderContext,
-) {
-    shared
-        .spawn_at(entity, ContextRow { resource, context })
-        .expect("the handle was just reserved");
-}
-
 /// Spawn the frame's GPU state as resources and return its addresses.
 ///
 /// The device and queue are `Clone` handles on a shared context, so the world
 /// holds its own reference to each; the graph is not `Sync` and moves into the
-/// world whole. Call this once per world.
+/// world whole. Each address gets a row of its own in the shared subtree, and
+/// the returned [`RenderContext`] names them; the context itself is spawned
+/// under its own singleton key, so a second call panics rather than leaving two
+/// contexts that disagree about which rows belong to the frame.
 ///
 /// `render_device` carries the device and what a frame reads about it: the
 /// capabilities it was requested with, and whether it is still alive. Build one
@@ -562,20 +528,6 @@ pub fn spawn_context(
         capabilities,
         health,
     } = render_device;
-    // The graph entity is reserved first because the context names it, and
-    // every one of the four entities carries the whole context: a reader handed
-    // any single address can query the rest back instead of assuming the world
-    // holds exactly one context.
-    let graph = world.reserve_entity("render_graph");
-    let context = RenderContext {
-        device: world.reserve_entity("gpu_device"),
-        queue: world.reserve_entity("gpu_queue"),
-        graph,
-        capabilities: world.reserve_entity("device_capabilities"),
-        health: world.reserve_entity("device_health"),
-        clock: world.reserve_entity("frame_clock"),
-        uniforms: world.reserve_entity("global_uniforms"),
-    };
     // The frame's uniform registry is built against the graph it registers
     // its buffers in, so the graph is taken before either is spawned.
     let mut graph_component = graph_component;
@@ -585,30 +537,36 @@ pub fn spawn_context(
     // depends on.
     let shared = world.shared();
     let mut shared_view = world.scope_mut(shared);
-    spawn_row(&mut shared_view, context.device, device, context);
-    spawn_row(&mut shared_view, context.queue, queue, context);
-    spawn_row(
-        &mut shared_view,
-        context.capabilities,
-        capabilities,
-        context,
-    );
-    spawn_row(&mut shared_view, context.health, health, context);
-    spawn_row(&mut shared_view, graph, graph_component, context);
-    spawn_row(&mut shared_view, context.uniforms, uniforms, context);
-    // The URLs the frame's sources asked to open, drained by the host after
-    // the frame. The queue is a singleton: one world opens one set of tabs,
-    // and every producer appends to the same queue.
-    shared_view.spawn(bundle![OpenUrls::default()].singleton::<OpenUrls>());
+    let device = shared_view.spawn_named("gpu_device", bundle![device]);
+    let queue = shared_view.spawn_named("gpu_queue", bundle![queue]);
+    let graph = shared_view.spawn_named("render_graph", bundle![graph_component]);
+    let capabilities = shared_view.spawn_named("device_capabilities", bundle![capabilities]);
+    let health = shared_view.spawn_named("device_health", bundle![health]);
+    let uniforms = shared_view.spawn_named("global_uniforms", bundle![uniforms]);
     // How much time has passed, advanced once per frame by the frame loop. It
     // belongs to the world rather than to a source because a source may be
     // built once per pass: a clock each source counted for itself would run
     // faster on a frame with more passes.
-    spawn_row(
-        &mut shared_view,
-        context.clock,
-        FrameClock::default(),
-        context,
+    let clock = shared_view.spawn_named("frame_clock", bundle![FrameClock::default()]);
+    // The URLs the frame's sources asked to open, drained by the host after
+    // the frame. The queue is a singleton: one world opens one set of tabs,
+    // and every producer appends to the same queue.
+    shared_view.spawn(bundle![OpenUrls::default()].singleton::<OpenUrls>());
+    let context = RenderContext {
+        device,
+        queue,
+        graph,
+        capabilities,
+        health,
+        clock,
+        uniforms,
+    };
+    // The context names the rows above, so it is spawned once they exist. It is
+    // a singleton: a world draws its frames through one context, and a second
+    // one would leave every address ambiguous.
+    shared_view.spawn_named(
+        "render_context",
+        bundle![context].singleton::<RenderContext>(),
     );
     context
 }

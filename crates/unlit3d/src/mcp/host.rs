@@ -26,31 +26,12 @@ use crate::gltf::LitGltf;
 use crate::prelude::*;
 use crate::reflect;
 
-/// The render context the world holds, found from `handle` or by query.
+/// The render context the world holds.
 ///
-/// `handle` names any one of the entities the context is stored on — its
-/// device, queue, graph or capabilities. Without one the world must hold
-/// exactly one context: several are ambiguous, and none is an error rather than
-/// an assumption.
-fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext, String> {
-    if let Some(entity) = handle {
-        return RenderContext::of(world, entity)
-            .map_err(|_| format!("entity {entity:?} carries no render context"));
-    }
-    let mut found: Option<RenderContext> = None;
-    for render_context in world.root_scope().query::<&RenderContext>().iter() {
-        let context = *render_context;
-        match found {
-            None => found = Some(context),
-            Some(existing) if existing == context => {}
-            Some(_) => {
-                return Err(
-                    "the world has more than one render context; pass `context`".to_string()
-                );
-            }
-        }
-    }
-    found.ok_or_else(|| "the world has no render context".to_string())
+/// The context is a singleton, spawned by [`spawn_context`](crate::source::spawn_context)
+/// when the world was given a device; a world without one has no graph to read.
+fn render_context(world: &World) -> Result<RenderContext, String> {
+    RenderContext::of(world).ok_or_else(|| "the world has no render context".to_string())
 }
 
 /// The entity carrying the world's renderer, from `handle` or by query.
@@ -184,8 +165,8 @@ struct BufferRead {
     data: String,
 }
 
-pub(crate) fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, String> {
-    let context = render_context(world, context)?;
+pub(crate) fn graph_summary(world: &World) -> Result<Value, String> {
+    let context = render_context(world)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
     let info: ResourceGraphInfo = graph.info();
@@ -193,20 +174,16 @@ pub(crate) fn graph_summary(world: &World, context: Option<Entity>) -> Result<Va
 }
 
 /// Every resource slot in the graph.
-pub(crate) fn list_resources(world: &World, context: Option<Entity>) -> Result<Value, String> {
-    let context = render_context(world, context)?;
+pub(crate) fn list_resources(world: &World) -> Result<Value, String> {
+    let context = render_context(world)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
     to_value(&graph.resource_infos())
 }
 
 /// The resources a resource depends on, as handles.
-pub(crate) fn resource_dependencies(
-    world: &World,
-    context: Option<Entity>,
-    id: ResId,
-) -> Result<Value, String> {
-    let context = render_context(world, context)?;
+pub(crate) fn resource_dependencies(world: &World, id: ResId) -> Result<Value, String> {
+    let context = render_context(world)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
     let handle = graph
@@ -220,8 +197,8 @@ pub(crate) fn resource_dependencies(
 }
 
 /// Drop unreferenced resources and rebuild dirty ones.
-pub(crate) fn graph_maintain(world: &World, context: Option<Entity>) -> Result<Value, String> {
-    let context = render_context(world, context)?;
+pub(crate) fn graph_maintain(world: &World) -> Result<Value, String> {
+    let context = render_context(world)?;
     let mut graph_row = graph_of_mut(world, context)?;
     let graph = graph_row.get();
     let before = graph.len();
@@ -234,12 +211,11 @@ pub(crate) fn graph_maintain(world: &World, context: Option<Entity>) -> Result<V
 /// The bytes a buffer read produced, with the offset it started at.
 fn read_buffer_bytes(
     world: &World,
-    context: Option<Entity>,
     id: ResId,
     offset: u64,
     size: Option<u64>,
 ) -> Result<(u64, Vec<u8>), String> {
-    let context = render_context(world, context)?;
+    let context = render_context(world)?;
     let buffer = {
         let mut graph_row = graph_of(world, context)?;
         let graph = graph_row.get();
@@ -295,12 +271,11 @@ fn read_buffer_bytes(
 /// Read bytes out of a buffer resource.
 pub(crate) fn read_buffer(
     world: &World,
-    context: Option<Entity>,
     id: ResId,
     offset: u64,
     size: Option<u64>,
 ) -> Result<Value, String> {
-    let (offset, bytes) = read_buffer_bytes(world, context, id, offset, size)?;
+    let (offset, bytes) = read_buffer_bytes(world, id, offset, size)?;
     to_value(&BufferRead {
         offset,
         size: bytes.len(),
@@ -311,14 +286,13 @@ pub(crate) fn read_buffer(
 /// Read bytes out of a buffer resource and write them to a file.
 pub(crate) fn save_buffer(
     world: &World,
-    context: Option<Entity>,
     id: ResId,
     offset: u64,
     size: Option<u64>,
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {
-    let (_, bytes) = read_buffer_bytes(world, context, id, offset, size)?;
+    let (_, bytes) = read_buffer_bytes(world, id, offset, size)?;
     let file_name = saved_name(file_name, "buffer", "bin");
     to_value(&write_file(directory, &file_name, &bytes)?)
 }
@@ -439,8 +413,8 @@ fn save_image(directory: &str, file_name: &str, frame: &Frame) -> Result<SavedFi
 }
 
 /// The frame a texture read produced.
-fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Result<Frame, String> {
-    let context = render_context(world, context)?;
+fn read_texture_frame(world: &World, id: ResId) -> Result<Frame, String> {
+    let context = render_context(world)?;
     let texture = {
         let mut graph_row = graph_of(world, context)?;
         let graph = graph_row.get();
@@ -474,7 +448,6 @@ fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Resu
 /// Read a texture resource and encode it as an inline image.
 pub(crate) fn read_texture_as_image(
     world: &World,
-    context: Option<Entity>,
     id: ResId,
     format: Option<&str>,
 ) -> Result<Output, String> {
@@ -482,19 +455,18 @@ pub(crate) fn read_texture_as_image(
         Some(name) => ImageFormat::from_name(name)?,
         None => ImageFormat::DEFAULT,
     };
-    let frame = read_texture_frame(world, context, id)?;
+    let frame = read_texture_frame(world, id)?;
     image_value(&format.encode(&frame)?, frame.width, frame.height, format)
 }
 
 /// Read a texture resource and write it to a file as an image.
 pub(crate) fn save_texture_as_image(
     world: &World,
-    context: Option<Entity>,
     id: ResId,
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {
-    let frame = read_texture_frame(world, context, id)?;
+    let frame = read_texture_frame(world, id)?;
     let file_name = saved_name(file_name, "texture", "webp");
     to_value(&save_image(directory, &file_name, &frame)?)
 }
@@ -598,11 +570,10 @@ fn screenshot_target(
 /// Render one frame and read the offscreen target back.
 fn screenshot_frame(
     world: &mut World,
-    context: Option<Entity>,
     renderer: Option<Entity>,
     target: ResId,
 ) -> Result<Frame, String> {
-    let context = render_context(world, context)?;
+    let context = render_context(world)?;
     let texture = screenshot_target(world, context, target)?;
     render_frame(world, renderer)?;
     let device = device_of(world, context)?;
@@ -620,7 +591,6 @@ fn screenshot_frame(
 /// Render one frame and read the offscreen target back as an inline image.
 pub(crate) fn read_screenshot(
     world: &mut World,
-    context: Option<Entity>,
     renderer: Option<Entity>,
     target: ResId,
     format: Option<&str>,
@@ -629,20 +599,19 @@ pub(crate) fn read_screenshot(
         Some(name) => ImageFormat::from_name(name)?,
         None => ImageFormat::DEFAULT,
     };
-    let frame = screenshot_frame(world, context, renderer, target)?;
+    let frame = screenshot_frame(world, renderer, target)?;
     image_value(&format.encode(&frame)?, frame.width, frame.height, format)
 }
 
 /// Render one frame and write the offscreen target to a file as an image.
 pub(crate) fn save_screenshot(
     world: &mut World,
-    context: Option<Entity>,
     renderer: Option<Entity>,
     target: ResId,
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {
-    let frame = screenshot_frame(world, context, renderer, target)?;
+    let frame = screenshot_frame(world, renderer, target)?;
     let file_name = saved_name(file_name, "screenshot", "webp");
     to_value(&save_image(directory, &file_name, &frame)?)
 }

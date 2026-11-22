@@ -10,8 +10,8 @@ mod args;
 mod host;
 
 use args::{
-    ContextArg, HandleArg, InputArg, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture,
-    Screenshot, SendInput, SpawnGltf,
+    GraphArg, HandleArg, InputArg, ReadBuffer, SaveBuffer, SaveScreenshot, SaveTexture, Screenshot,
+    SendInput, SpawnGltf,
 };
 use host::FrameClockReport;
 
@@ -24,17 +24,17 @@ use unlit_ecs::mcp::{
 use unlit_wgpu::resources::ResId;
 
 /// A summary of the resource graph.
-async fn graph_summary(commands: CommandSender, args: ContextArg) -> ToolResult {
+async fn graph_summary(commands: CommandSender, args: GraphArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::graph_summary(world, args.context.map(Entity::from_bits))
+        host::graph_summary(world)
     })
     .await
 }
 
 /// Every resource slot in the graph.
-async fn list_resources(commands: CommandSender, args: ContextArg) -> ToolResult {
+async fn list_resources(commands: CommandSender, args: GraphArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::list_resources(world, args.context.map(Entity::from_bits))
+        host::list_resources(world)
     })
     .await
 }
@@ -42,19 +42,15 @@ async fn list_resources(commands: CommandSender, args: ContextArg) -> ToolResult
 /// The resources a resource depends on.
 async fn resource_dependencies(commands: CommandSender, args: HandleArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::resource_dependencies(
-            world,
-            args.context.map(Entity::from_bits),
-            ResId::from_bits(args.id),
-        )
+        host::resource_dependencies(world, ResId::from_bits(args.id))
     })
     .await
 }
 
 /// Drop unreferenced resources and rebuild dirty ones.
-async fn graph_maintain(commands: CommandSender, args: ContextArg) -> ToolResult {
+async fn graph_maintain(commands: CommandSender, args: GraphArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::graph_maintain(world, args.context.map(Entity::from_bits))
+        host::graph_maintain(world)
     })
     .await
 }
@@ -62,13 +58,7 @@ async fn graph_maintain(commands: CommandSender, args: ContextArg) -> ToolResult
 /// Read bytes out of a buffer resource.
 async fn read_buffer(commands: CommandSender, args: ReadBuffer) -> ToolResult {
     command(&commands, args.world, move |world| {
-        host::read_buffer(
-            world,
-            args.context.map(Entity::from_bits),
-            ResId::from_bits(args.id),
-            args.offset,
-            args.size,
-        )
+        host::read_buffer(world, ResId::from_bits(args.id), args.offset, args.size)
     })
     .await
 }
@@ -78,7 +68,6 @@ async fn save_buffer(commands: CommandSender, args: SaveBuffer) -> ToolResult {
     command(&commands, args.world, move |world| {
         host::save_buffer(
             world,
-            args.context.map(Entity::from_bits),
             ResId::from_bits(args.id),
             args.offset,
             args.size,
@@ -92,12 +81,7 @@ async fn save_buffer(commands: CommandSender, args: SaveBuffer) -> ToolResult {
 /// Read a texture resource as an inline image.
 async fn read_texture_as_image(commands: CommandSender, args: HandleArg) -> ToolResult {
     run(&commands, args.world, move |world| {
-        host::read_texture_as_image(
-            world,
-            args.context.map(Entity::from_bits),
-            ResId::from_bits(args.id),
-            args.format.as_deref(),
-        )
+        host::read_texture_as_image(world, ResId::from_bits(args.id), args.format.as_deref())
     })
     .await
 }
@@ -107,7 +91,6 @@ async fn save_texture_as_image(commands: CommandSender, args: SaveTexture) -> To
     command(&commands, args.world, move |world| {
         host::save_texture_as_image(
             world,
-            args.context.map(Entity::from_bits),
             ResId::from_bits(args.id),
             &args.directory,
             args.file_name.as_deref(),
@@ -222,7 +205,6 @@ async fn read_screenshot(commands: CommandSender, args: Screenshot) -> ToolResul
     run(&commands, args.world, move |world| {
         host::read_screenshot(
             world,
-            args.context.map(Entity::from_bits),
             args.renderer.map(Entity::from_bits),
             ResId::from_bits(args.target),
             args.format.as_deref(),
@@ -236,7 +218,6 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
     command(&commands, args.world, move |world| {
         host::save_screenshot(
             world,
-            args.context.map(Entity::from_bits),
             args.renderer.map(Entity::from_bits),
             ResId::from_bits(args.target),
             &args.directory,
@@ -269,7 +250,7 @@ inventory::submit! {
 fn register(router: &mut ToolRouter<McpServer>) {
     router.add_route(tool(
         "graph_summary",
-        "Count a world's resource graph nodes by kind, and how many are dirty or rebuildable. Pass the render context entity whose graph to inspect, or omit for the world's only context.",
+        "Count a world's resource graph nodes by kind, and how many are dirty or rebuildable.",
         graph_summary,
     ));
     router.add_route(tool(

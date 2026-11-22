@@ -11,18 +11,13 @@ use serde::Deserialize;
 use unlit_ecs::mcp::WorldRef;
 use unlit_ecs::mcp::serde_json::Value;
 
-/// Which world and render context a GPU tool runs against.
+/// Which world a graph tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ContextArg {
+pub struct GraphArg {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits —
-    /// its device, queue, graph or capabilities. Omit when the world holds
-    /// exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
 }
 
 /// Which world and resource a handle tool runs against.
@@ -32,10 +27,6 @@ pub struct HandleArg {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
     /// The resource's id, as `list_resources` reports it. A texture view is
     /// read through the texture it views.
     pub id: u64,
@@ -52,10 +43,6 @@ pub struct ReadBuffer {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
     /// The buffer's id, as `list_resources` reports it.
     pub id: u64,
     /// The byte offset to read from.
@@ -73,10 +60,6 @@ pub struct SaveBuffer {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
     /// The buffer's id, as `list_resources` reports it.
     pub id: u64,
     /// The byte offset to read from.
@@ -100,10 +83,6 @@ pub struct SaveTexture {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
     /// The resource's id, as `list_resources` reports it. A texture view is
     /// read through the texture it views.
     pub id: u64,
@@ -122,10 +101,6 @@ pub struct SaveScreenshot {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -180,10 +155,6 @@ pub struct Screenshot {
     /// The world to drive, as a world reference names it.
     #[serde(default)]
     pub world: WorldRef,
-    /// Any entity carrying the world's render context, as its `u64` bits.
-    /// Omit when the world holds exactly one.
-    #[serde(default)]
-    pub context: Option<u64>,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]

@@ -120,10 +120,11 @@ subtree, but never its ancestors or its siblings.
 ```text
 world root                              the root scope sees every entity
 ├── shared                              every scope sees this subtree
-│   ├── wgpu::Device        + RenderContext
-│   ├── wgpu::Queue         + RenderContext
-│   ├── ResourceGraph       + RenderContext    every texture, buffer, bind group
-│   ├── DeviceCapabilities  + RenderContext
+│   ├── wgpu::Device
+│   ├── wgpu::Queue
+│   ├── ResourceGraph                          every texture, buffer, bind group
+│   ├── DeviceCapabilities
+│   ├── RenderContext                          names the rows above; one per world
 │   ├── FrameClock                             advanced once per frame, before any behaviour
 │   ├── OpenUrls
 │   └── ... application state a panel reads and writes
@@ -216,9 +217,12 @@ without the tree changing.
   [`spawn_context`](source::spawn_context) takes that state as one
   [`RenderDevice`](unlit_wgpu::context::RenderDevice) — device, queue,
   [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities) and
-  [`DeviceHealth`](unlit_wgpu::context::DeviceHealth) together — spawns it and
-  returns the addresses; [`RenderContext::of`](source::RenderContext::of)
-  resolves the context back from any one of its four entities.
+  [`DeviceHealth`](unlit_wgpu::context::DeviceHealth) together — spawns each
+  address on a row of its own and returns the context naming them. The context
+  is spawned too, under the [`RenderContext`](source::RenderContext) singleton
+  key, so [`RenderContext::of`](source::RenderContext::of) reaches it from the
+  world alone and a second context on one world panics rather than leaving
+  every address ambiguous.
   The capabilities travel with the frame because the caller derives them from
   the adapter: what the device cannot report about itself is not rediscovered
   per source.
