@@ -308,7 +308,7 @@ impl WorldThread {
     /// physics world with its configured gravity, say - so a job sent
     /// immediately after spawning already finds them.
     ///
-    /// The loop runs one [`run_turn`] per iteration, the same turn a stepped
+    /// The loop runs one turn per iteration, the same turn a stepped
     /// world and a sub-world run, so the order in which jobs, the tick and the
     /// commit happen cannot differ between drivers.
     pub fn spawn_with<S, I, T>(name: &str, inbox: Receiver<Job>, init: I, mut tick: T) -> Self

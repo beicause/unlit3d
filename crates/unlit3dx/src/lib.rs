@@ -137,7 +137,7 @@ pub mod prelude {
         step_once,
     };
     #[cfg(feature = "render")]
-    pub use crate::present::{draw_presented, pump_presented, setup_presenter};
+    pub use crate::present::{pump_presented, setup_presenter};
     #[cfg(feature = "audio")]
     pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]

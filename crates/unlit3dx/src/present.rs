@@ -19,15 +19,14 @@ pub use unlit3d::winit::presenter::{
     BLIT_PASS_ORDER, Presenter, PresenterError, SCENE_PASS_ORDER, resize_presented,
 };
 
-use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
+use unlit3d::frame::Frame;
 use unlit3d::offscreen::{OFFSCREEN_SAMPLES, TargetConfig};
 use unlit3d::winit::SurfaceOptions;
-use unlit3d::winit::builtin::{ExitRequest, Resumed, window};
+use unlit3d::winit::builtin::{Resumed, window};
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
-use unlit3d::winit::presenter::{PRESENT_ORDER, PresentationPath, pump_presented_with};
+use unlit3d::winit::presenter::{PresentationPath, pump_presented_with};
 
 use crate::executor::LocalTasks;
-use crate::frames::RunFrames;
 use crate::gpu::Gpu;
 use crate::host::tick_sub_world;
 use crate::world::StepOutcome;
@@ -90,31 +89,6 @@ pub fn setup_presenter(
         surface_options,
     )
     .map(|_| ())
-}
-
-/// Drive the render sub-world and present its result when a surface image is
-/// available. Suspended or not-yet-initialized hosts skip the frame.
-///
-/// If supplied, the frame count advances only after successful presentation.
-/// The host must carry at most one presenter for this behaviour.
-pub fn draw_presented(render: Entity, frames: Option<RunFrames>) -> OnFrame {
-    OnFrame::with_order(
-        FrameBehaviourOrder(PRESENT_ORDER),
-        move |world, _, frame| match present_turn(world, render, frame, || Ok(())) {
-            Ok(true) => {
-                if let Some(frames) = &frames {
-                    frames.advance();
-                }
-            }
-            Ok(false) => {}
-            Err(error) => {
-                log::error!("{error}");
-                for request in world.root_scope().query::<&mut ExitRequest>().iter() {
-                    request.0 = true;
-                }
-            }
-        },
-    )
 }
 
 /// Drive a render turn only after acquiring an image. The preparation callback

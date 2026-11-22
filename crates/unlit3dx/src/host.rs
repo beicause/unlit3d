@@ -67,11 +67,6 @@ impl Bundle for HostWorld {
 /// Queued jobs run when the host calls [`drain_sub_world`] or [`tick_sub_world`],
 /// and the world itself is reached with a [`World`] query on the entity the
 /// returned handle names.
-///
-/// # Panics
-///
-/// Panics when `command_capacity` is zero: a rendezvous queue can never hold a
-/// job, so a send would only land if it happened to coincide with a drain.
 #[must_use]
 pub fn spawn_sub_world(
     host: &mut World,

@@ -213,12 +213,6 @@ impl WorldRunner for Stepped {
 ///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
-///
-/// # Panics
-///
-/// Panics when `command_capacity` is zero: a rendezvous queue can never
-/// hold a job, so a send would only land if it happened to coincide with
-/// a drain.
 pub fn spawn_threaded_world<T>(
     host: &mut World,
     name: &'static str,
@@ -243,12 +237,6 @@ where
 /// a world can create the components its jobs assume exist - its physics
 /// world, say - and hand any state they need to the tick. The state it
 /// returns is passed to every tick.
-///
-/// # Panics
-///
-/// Panics when `command_capacity` is zero: a rendezvous queue can never
-/// hold a job, so a send would only land if it happened to coincide with
-/// a drain.
 pub fn spawn_threaded_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,
