@@ -13,7 +13,7 @@
 | 建渲染上下文 | `spawn_context(&mut world, RenderDevice, ResourceGraph)` 每 world 调一次，GPU 状态进 shared 子树；`RenderDevice` 收 device/queue/capabilities/health | `crates/unlit3d/src/source.rs` |
 | 上下文句柄 | `RenderContext`，Copy。**它的字段都是 `pub(crate) Entity`，不是 GPU 句柄**，要从外部用只能走它的访问函数（`device` / `queue` / `capabilities` / `clock` / `try_graph` / `graph` / `uniforms` / `maintain_scope`，都吃 `Scope`）；只有 `of(world, anchor)` 是 pub | 同上，搜 `pub fn device` |
 | 根作用域 | `World` 的 `root_scope` / `root_scope_mut` / `scope` / `scope_mut` / `shared` / `is_shared`；前两组里按句柄开 scope 的两个直接交出 `Scope` / `ScopeMut`，失败即 panic，要 `Result` 就用 `try_scope` / `try_scope_mut` | `crates/unlit_ecs/src/world/scopes.rs`、`tree.rs` |
-| 作用域只读 | `Scope`：`entity` / `query` / `query_one` / `archetype_of` / `children` / `queue` 等；`query_one` 找不到那一行即 panic，预料缺席用 `try_query_one` | `crates/unlit_ecs/src/view.rs` |
+| 作用域只读 | `Scope`：`entity` / `query` / `query_one` / `query_many` / `archetype_of` / `children` / `queue` 等；`query_one` 找不到那一行即 panic，预料缺席用 `try_query_one`；已知实体列表批量取用 `query_many`（先整体校验，任一被拒则不交出任何项，同一实体不可重复） | `crates/unlit_ecs/src/view.rs`、`query/many.rs` |
 | 作用域可写 | `ScopeMut`：`spawn` / `spawn_named` / `spawn_at` / `despawn` / `link` / `unlink` / `apply` 等 | 同上 |
 | 落地排队命令 | `World::apply`：按序应用，期间新排的也应用，失败不中断 | `crates/unlit_ecs/src/world/commands.rs` |
 | 单例 | `bundle![...].singleton::<T>()` 声明「这个 world 至多一份」；`Scope::singleton::<T>()` 交出持有者 `Entity`（键被占但持有者不可见时也返回 `None`）。再 spawn 一份即 panic（`spawn_at` 则返回 `EntityAccessError::SingletonTaken`），持有者 despawn 后键随之释放。渲染侧已用它标记 `Presenter` / `WinitWindow` / `Resumed` / `OpenUrls` / `Pacing` / `Interactive` / `LocalTasks` / `GlobalAudioGain` / `InputEvents` | `crates/unlit_ecs/src/bundle.rs`、`crates/unlit_ecs/src/view.rs` |

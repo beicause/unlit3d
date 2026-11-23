@@ -42,7 +42,8 @@ pub use identity::{RemoteEntity, WorldId};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
 pub use query::{
-    ArchetypeFilter, Col, ColMut, Has, PlanBuilder, Query, QueryBorrow, QueryIter, QueryOne,
+    ArchetypeFilter, Col, ColMut, Has, PlanBuilder, Query, QueryBorrow, QueryIter, QueryMany,
+    QueryOne,
 };
 pub use view::{Scope, ScopeMut};
 pub use world::World;

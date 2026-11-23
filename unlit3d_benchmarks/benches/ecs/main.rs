@@ -234,6 +234,15 @@ fn query(world: &World) -> u64 {
     sum
 }
 
+/// [`Scope::query_many`] over the candidate list: the list is checked and grouped
+/// once, then each archetype's columns are resolved once for all of its rows.
+fn query_many_three(world: &World, candidates: &[Entity]) -> u64 {
+    let mut sum = 0u64;
+    let mut holder = world.root_scope().query_many::<Resolve>(candidates);
+    holder.for_each(|(pipeline, mesh, material)| sum += read(pipeline, mesh, material));
+    sum
+}
+
 /// The access shapes, side by side, over worlds of several sizes.
 fn access(c: &mut Criterion) {
     let mut group = c.benchmark_group("ecs access");
@@ -244,10 +253,11 @@ fn access(c: &mut Criterion) {
         // to compare across sizes.
         group.throughput(Throughput::Elements(u64::from(count)));
 
-        let shapes: [(&str, Shape); 5] = [
+        let shapes: [(&str, Shape); 6] = [
             ("location", location),
             ("matched_per_entity", matched_per_entity),
             ("query_one_three", query_one_three),
+            ("query_many_three", query_many_three),
             ("get_one", get_one),
             ("get_three", get_three),
         ];
@@ -279,6 +289,13 @@ fn grouping(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("interleaved"), &(), |b, ()| {
         b.iter(|| black_box(query_one_three(&fixture.world, &fixture.interleaved)));
     });
+    group.bench_with_input(
+        BenchmarkId::new("query_many_interleaved", count),
+        &(),
+        |b, ()| {
+            b.iter(|| black_box(query_many_three(&fixture.world, &fixture.interleaved)));
+        },
+    );
     group.bench_with_input(
         BenchmarkId::from_parameter("archetype_major"),
         &(),

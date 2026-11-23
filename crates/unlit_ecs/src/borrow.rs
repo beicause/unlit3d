@@ -103,8 +103,9 @@ impl BorrowLedger {
 
     /// Register a claim, or panic when it overlaps one held by another holder.
     ///
-    /// A holder asking again for a component it already holds over the same rows
-    /// is not a conflict: that is what a second pass over one archetype does.
+    /// A holder asking again for a component it already holds over the same
+    /// archetype is not a conflict: that is what a second pass over one archetype
+    /// does.
     pub(crate) fn claim(
         &mut self,
         group: u64,
@@ -118,7 +119,15 @@ impl BorrowLedger {
             if lease.type_id != type_id || !lease.rows.overlaps(rows) {
                 continue;
             }
-            if lease.group == group && lease.rows == rows && lease.mode == mode {
+            // Only an archetype claim may repeat within one holder: a second pass
+            // over the archetype asks for it again. A row claimed twice by one
+            // holder is kept as its own lease, so that a write to it still
+            // conflicts with the first instead of being absorbed.
+            if lease.group == group
+                && lease.rows == rows
+                && lease.mode == mode
+                && matches!(rows, Rows::Archetype(_))
+            {
                 return;
             }
             if lease.mode == Mode::Write || mode == Mode::Write {

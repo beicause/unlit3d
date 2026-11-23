@@ -55,6 +55,16 @@ pub enum EntityAccessError {
         entity: Entity,
     },
 
+    /// The entity is named more than once in a list it was looked up with.
+    ///
+    /// Two items of the list would reach the same row, so the list is refused
+    /// whole rather than yielding the row twice.
+    #[error("{entity:?} is named more than once")]
+    Repeated {
+        /// The handle that was named twice.
+        entity: Entity,
+    },
+
     /// The handle was not reserved, so there is no row to spawn on.
     ///
     /// A handle from [`crate::World::reserve_entity`] can be spawned on once.

@@ -52,12 +52,17 @@ Criterion 把报告写在 `target/criterion` 下，并把每次运行与上一�
 `get_one` 与 `get_three` 是逐实体一次和三次 `Scope::query_one`，`query` 则是
 对整个 world 的遍历，它按 archetype 只解析一次各组件的列，而不是逐实体解析一次。
 
+`query_many_three` 对候选列表通过 `Scope::query_many` 做同样的解析：列表整体校验并按
+archetype 分组一次，于是每个 archetype 的列只为它的全部行解析一次。
+
 `ecs grouping` 组把逐实体形态与「同样的工作但顺序打乱、使实体表的缓存失效」以及按
-archetype 的遍历对比，因此被测量的是顺序本身，而不是形态。
+archetype 的遍历对比，因此被测量的是顺序本身，而不是形态。同一个交错顺序也跑一遍
+`query_many`。
 
 在 100000 个实体时，这条阶梯读作 `location` 743 µs、`matched_per_entity` 1.51 ms、
 `query_one_three` 9.96 ms，而 `query` 只要 579 µs：开销落在逐实体的认领上，按 archetype
-的遍历比逐个实体单独查找便宜约 17 倍。
+的遍历比逐个实体单独查找便宜约 17 倍。`query_many_three` 在同一列表上为 1.96 ms，约为 `query_one_three` 的五分之一。（`query_many_three`
+是本次单独运行的数字；阶梯各级的数字来自之前的运行。）
 
 ```text
 cargo bench -p unlit3d_benchmarks --bench ecs

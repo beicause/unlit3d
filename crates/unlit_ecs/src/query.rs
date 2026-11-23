@@ -106,8 +106,10 @@ use crate::world::World;
 #[macro_use]
 mod macros;
 mod iter;
+mod many;
 
 pub use iter::QueryIter;
+pub use many::QueryMany;
 
 /// Whether a component is reached shared or exclusive.
 ///

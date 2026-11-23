@@ -11,6 +11,7 @@ mod errors;
 mod lifecycle;
 mod names;
 mod query;
+mod query_many;
 mod scope;
 mod singleton;
 mod world;

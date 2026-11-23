@@ -175,6 +175,8 @@ impl From<&Vec<Entity>> for EntityVecProxy {
 /// archetype share the archetype, so a caller holding many locations can group
 /// them by [`Location::archetype`] and resolve that archetype's columns once,
 /// then reach each row through [`Scope::query_one`](crate::Scope::query_one).
+/// [`Scope::query_many`](crate::Scope::query_many) does that grouping for a
+/// whole list at once.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Location {
     pub(crate) archetype: u32,

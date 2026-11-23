@@ -377,6 +377,9 @@ without claiming the column. [`Scope::location`] and [`Scope::archetype`] expose
 the same shape to a caller that holds many entities — for instance one that
 culled a scene into a list — so it can group them by archetype and resolve each
 archetype's columns once for all of them instead of re-looking up every entity.
+[`Scope::query_many`] is that grouping done for a whole list: it checks every
+entity first, so a list with one refused entity hands out nothing, and it
+refuses an entity named twice, since two items would reach the same row.
 
 A [`Commands`] queue exists because structural changes need `&mut World`: a
 caller holding only a read-only scope queues a spawn or despawn instead, and

@@ -18,7 +18,7 @@ use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::error::{ArchetypeAccessError, EntityAccessError};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
-use crate::query::{PlanBuilder, Query, QueryBorrow, QueryOne};
+use crate::query::{PlanBuilder, Query, QueryBorrow, QueryMany, QueryOne};
 use crate::world::World;
 
 /// A read-only scope: one entity and everything below it.
@@ -189,6 +189,35 @@ impl<'w> Scope<'w> {
             origin,
         );
         Ok(QueryOne::new(plan, location.row(), claims))
+    }
+
+    /// What `Q` yields for each of `entities`, in the order they are given.
+    ///
+    /// The batch form of [`Scope::query_one`]. The list is checked as a whole
+    /// and each archetype it touches is resolved once, so a long list pays the
+    /// per-lookup bookkeeping once per archetype instead of once per entity. See
+    /// [`QueryMany`] for what the holder claims and how it is visited.
+    ///
+    /// # Panics
+    ///
+    /// When the list is turned down, with the reason the first refused entity
+    /// was refused. [`Scope::try_query_many`] answers the same as a `Result`.
+    #[track_caller]
+    pub fn query_many<Q: Query>(&self, entities: &[Entity]) -> QueryMany<'w, Q> {
+        self.try_query_many(entities)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// The fallible form of [`Scope::query_many`].
+    ///
+    /// Answers with the error of the first entity in `entities` that is turned
+    /// down. No claim is kept and no item is handed out in that case.
+    #[track_caller]
+    pub fn try_query_many<Q: Query>(
+        &self,
+        entities: &[Entity],
+    ) -> Result<QueryMany<'w, Q>, EntityAccessError> {
+        QueryMany::new(self, entities, core::panic::Location::caller())
     }
 
     /// The archetype with this id, when this scope sees every row of it.
@@ -450,7 +479,7 @@ impl<'w> Scope<'w> {
     }
 
     /// Whether row `row` of `archetype` is visible.
-    fn row_visible(&self, archetype: &Archetype, row: usize) -> bool {
+    pub(crate) fn row_visible(&self, archetype: &Archetype, row: usize) -> bool {
         archetype
             .scope_summary()
             .row_visible(archetype, self.world, self.scope, row)

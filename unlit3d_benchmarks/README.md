@@ -61,20 +61,28 @@ apart:
 entity, and `query` is a walk over the whole world, which resolves each
 component's column once per archetype instead of once per entity.
 
+`query_many_three` is the same resolve over the candidate list through
+`Scope::query_many`: the list is checked and grouped by archetype once, so each
+archetype's columns are resolved once for all of its rows.
+
 The `ecs grouping` group then runs the per-entity shape against the same work
 in an order that defeats the entity table's cache and against the archetype-major
 walk, which is what makes the order, rather than the shape, the thing being
-measured.
+measured. The same interleaved order is also run through `query_many`.
 
 At 100,000 entities the ladder reads `location` 743 µs, `matched_per_entity`
 1.51 ms and `query_one_three` 9.96 ms, against `query`'s 579 µs: the claim per
 entity is what costs, and an archetype-major walk comes out about 17 times
-cheaper than looking each entity up on its own.
+cheaper than looking each entity up on its own. `query_many_three` reads
+1.96 ms over the same list, about 5 times cheaper than `query_one_three`
+(`query_many_three` is from a separate run this time; the ladder rungs are from
+the earlier run).
 
 ```text
 cargo bench -p unlit3d_benchmarks --bench ecs
 cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/query_one_three/100000'
 ```
+
 
 ## `profile` — where it went
 
