@@ -53,15 +53,36 @@ fn a_single_component_query_visits_every_holder() {
 }
 
 #[test]
-fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
+fn the_worlds_own_rows_get_an_archetype_of_their_own() {
     let mut world = World::new();
-    // Bare entities land in the same archetype as the two scaffolding roots, so
-    // a query that visits it has to step over them without a per-row test.
+    // A bare entity names no component, so it lands in the empty archetype. The
+    // root and the shared scope carry the internal marker, so the two of them
+    // are one archetype apart from it: a bare entity never joins them.
     let first = world.root_scope_mut().spawn(bundle![]);
     let second = world
         .root_scope_mut()
         .spawn(bundle![Position { x: 1.0, y: 2.0 }]);
     let third = world.root_scope_mut().spawn(bundle![]);
+
+    let own = world
+        .root_scope()
+        .location(world.root())
+        .unwrap()
+        .archetype();
+    let bare = world.root_scope().location(first).unwrap().archetype();
+    assert_ne!(own, bare, "the world's own rows are their own archetype");
+    assert_eq!(
+        world
+            .root_scope()
+            .location(world.shared())
+            .unwrap()
+            .archetype(),
+        own,
+    );
+    assert_eq!(
+        world.root_scope().location(third).unwrap().archetype(),
+        bare,
+    );
 
     let mut found: Vec<Entity> = world.root_scope().query::<Entity>().iter().collect();
     found.sort();
@@ -70,7 +91,7 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
     assert_eq!(found, expected);
     assert_eq!(world.root_scope().len(), 3);
 
-    // The same archetype keeps the roots at the front while its content churns.
+    // The archetype churns like any other while the world's own rows stay put.
     assert!(world.root_scope_mut().despawn(first).is_ok());
     assert_eq!(world.root_scope().query::<Entity>().iter().count(), 2);
     assert_eq!(world.root_scope().len(), 2);
@@ -87,6 +108,45 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
             .count(),
         1,
     );
+}
+
+#[test]
+fn the_worlds_own_archetype_is_skipped_whole() {
+    let mut world = World::new();
+    let root = world.root();
+    let shared = world.shared();
+    let scene = world.root_scope_mut().spawn(bundle![Visible]);
+    let child = world
+        .scope_mut(scene)
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
+    let scope = world.root_scope();
+
+    let own = scope.location(root).unwrap().archetype();
+    assert!(
+        world.archetypes().get(own).unwrap().is_internal(),
+        "the marker is what the archetype reports",
+    );
+    assert!(!scope.archetypes().any(|archetype| archetype.is_internal()));
+    assert!(
+        !scope.archetype_infos().iter().any(|info| info.index == own),
+        "the reports leave the world's own archetype out",
+    );
+    let listed: Vec<Entity> = scope
+        .entity_infos(usize::MAX)
+        .iter()
+        .map(|i| i.entity)
+        .collect();
+    assert!(!listed.contains(&root), "the root is not content");
+    assert!(!listed.contains(&shared), "the shared scope is not content");
+    assert!(listed.contains(&scene));
+    assert!(listed.contains(&child));
+
+    // A row of it is still reached by handle, which is how a resource on the
+    // shared scope is read.
+    assert!(scope.try_query_one::<Entity>(shared).is_ok());
+    let child_scope = world.scope(scene);
+    assert!(child_scope.try_query_one::<Entity>(shared).is_ok());
+    assert!(child_scope.try_query_one::<Entity>(root).is_err());
 }
 
 #[test]

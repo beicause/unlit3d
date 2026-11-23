@@ -212,8 +212,8 @@ pub struct Despawn {
 impl Command for Despawn {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         // The scope is what the queue saw at queue time; an entity that has
-        // moved out of it since, or that turned out to be scaffolding, is not
-        // this command's to remove.
+        // moved out of it since, or that turned out to be the world's own row,
+        // is not this command's to remove.
         world.despawn_in(self.entity, self.scope)
     }
 }

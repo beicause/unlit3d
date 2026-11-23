@@ -23,11 +23,11 @@ impl World {
         parent: Entity,
         caller: Entity,
     ) -> Result<(), EntityAccessError> {
-        if self.is_scaffolding(child) {
-            return Err(EntityAccessError::Scaffolding { entity: child });
+        if self.is_internal(child) {
+            return Err(EntityAccessError::Internal { entity: child });
         }
-        if self.is_scaffolding(parent) {
-            return Err(EntityAccessError::Scaffolding { entity: parent });
+        if self.is_internal(parent) {
+            return Err(EntityAccessError::Internal { entity: parent });
         }
         self.location(child)?;
         self.location(parent)?;
@@ -44,7 +44,7 @@ impl World {
     /// `caller`.
     ///
     /// `child` may not be the scope itself: that would make it its own parent,
-    /// which is how the tree says "this is a root". Scaffolding does not move,
+    /// which is how the tree says "this is a root". The world's own rows do not move,
     /// and only a root caller may take an entity out of the shared subtree.
     pub(crate) fn unlink_in(
         &mut self,
@@ -52,8 +52,8 @@ impl World {
         scope: Entity,
         caller: Entity,
     ) -> Result<(), EntityAccessError> {
-        if self.is_scaffolding(child) {
-            return Err(EntityAccessError::Scaffolding { entity: child });
+        if self.is_internal(child) {
+            return Err(EntityAccessError::Internal { entity: child });
         }
         if child == scope {
             // Its own parent is how the tree says "this is a root".

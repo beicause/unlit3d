@@ -62,7 +62,7 @@ impl<'q, 'w, Q: Query> QueryIter<'q, 'w, Q> {
             scope,
             filter,
             archetype: 0,
-            row: world.content_start(0),
+            row: 0,
             plan: None,
             resolved: false,
             uniform_visible: None,
@@ -79,7 +79,10 @@ impl<'q, 'w, Q: Query> QueryIter<'q, 'w, Q> {
     /// archetype is resolved. Resolving here as well would reach the columns
     /// twice per archetype.
     fn archetype_matches(&self, archetype: &Archetype) -> bool {
-        self.filter.accept(archetype)
+        // The world's own rows are one archetype apart from the content, so the
+        // test is paid once per archetype rather than once per row.
+        !archetype.is_internal()
+            && self.filter.accept(archetype)
             && archetype
                 .scope_summary()
                 .any_visible(self.world, self.scope)
@@ -109,10 +112,9 @@ impl<'q, 'w: 'q, Q: Query + 'q> Iterator for QueryIter<'q, 'w, Q> {
             let archetype = archetypes.get(self.archetype)?;
             if self.row >= archetype.len() {
                 // Done with this archetype; move to the next and decide it
-                // lazily. Its scaffolding, if any, is skipped the same way: by
-                // starting the scan past it rather than testing every row.
+                // lazily.
                 self.archetype += 1;
-                self.row = self.world.content_start(self.archetype as u32);
+                self.row = 0;
                 self.plan = None;
                 self.resolved = false;
                 self.uniform_visible = None;
@@ -121,7 +123,7 @@ impl<'q, 'w: 'q, Q: Query + 'q> Iterator for QueryIter<'q, 'w, Q> {
             if !self.resolved {
                 if !self.archetype_matches(archetype) {
                     self.archetype += 1;
-                    self.row = self.world.content_start(self.archetype as u32);
+                    self.row = 0;
                     continue;
                 }
                 // The buffer is the holder's, so every archetype visited after
@@ -135,7 +137,7 @@ impl<'q, 'w: 'q, Q: Query + 'q> Iterator for QueryIter<'q, 'w, Q> {
                 *self.asks = builder.into_asks();
                 let Some(plan) = plan else {
                     self.archetype += 1;
-                    self.row = self.world.content_start(self.archetype as u32);
+                    self.row = 0;
                     continue;
                 };
                 self.claims.claim_archetype(

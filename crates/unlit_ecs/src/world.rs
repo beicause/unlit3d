@@ -107,12 +107,6 @@ pub struct World {
     root: Entity,
     /// The entity whose subtree every scope sees.
     shared: Entity,
-    /// The archetype holding the two scaffolding entities.
-    ///
-    /// They are the only entities that exist without being content, so a scope
-    /// that counts rows has to know where they are. They take the first
-    /// [`World::SCAFFOLDING_ROWS`] rows of it.
-    scaffolding: u32,
     /// The live entity holding each singleton key.
     ///
     /// World-wide: a scope's visibility does not narrow a key. A key is claimed
@@ -133,19 +127,14 @@ impl Default for World {
 }
 
 impl World {
-    /// How many rows the two scaffolding entities take.
-    ///
-    /// [`World::new`] pushes both before any caller can spawn, and a removal only
-    /// ever moves the last row of an archetype into the hole it leaves, so the
-    /// pair stays at the front for the world's whole life.
-    const SCAFFOLDING_ROWS: usize = 2;
-
     /// A world holding its root and shared scope, and nothing else.
     ///
     /// Both are ordinary entities: they are addressable, carry components and
     /// can be opened as scopes, and they are what a shared resource hangs from.
-    /// Neither is counted, queried, despawned or linked; see [`crate::Scope::len`],
-    /// which reports the entities a scope sees with the pair left out.
+    /// Neither is counted, queried, despawned or linked: both are marked
+    /// internal, which is what puts them in an archetype of their own. See
+    /// [`crate::Archetype::is_internal`] and [`crate::Scope::len`], which
+    /// reports the entities a scope sees with the pair left out.
     pub fn new() -> Self {
         let mut world = Self {
             entities: RefCell::new(Entities::default()),
@@ -159,7 +148,6 @@ impl World {
             // function and anything can read them.
             root: Entity::from_raw(0, 0),
             shared: Entity::from_raw(0, 0),
-            scaffolding: 0,
             singleton_holders: TypeIdHashMap::default(),
             singleton_keys: EntityHashMap::default(),
             id: WorldId::next(),
@@ -170,18 +158,13 @@ impl World {
         // root that is being written here.
         let root = world.entities_write().alloc("root");
         world.root = root;
-        world.insert_row(root, root, crate::DynamicBundle::new().finish());
+        world.insert_row(root, root, crate::DynamicBundle::new().internal().finish());
         let shared = world.entities_write().alloc("shared");
         world.shared = shared;
-        world.insert_row(shared, root, crate::DynamicBundle::new().finish());
-        world.scaffolding = world
-            .location(root)
-            .expect("the root has a row")
-            .archetype();
-        debug_assert_eq!(
-            world.archetypes().as_slice()[world.scaffolding as usize].entities(),
-            &[root, shared][..],
-            "the scaffolding takes the first rows of its archetype",
+        world.insert_row(
+            shared,
+            root,
+            crate::DynamicBundle::new().internal().finish(),
         );
         world
     }
@@ -198,7 +181,6 @@ impl core::fmt::Debug for World {
         f.debug_struct("World")
             .field("root", &self.root)
             .field("shared", &self.shared)
-            .field("scaffolding", &self.scaffolding)
             .field("archetypes", &self.archetypes)
             .finish_non_exhaustive()
     }

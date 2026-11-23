@@ -50,7 +50,8 @@
 //!
 //! A query visits archetypes in creation order and rows in storage order, so
 //! iteration is deterministic. It skips the rows the scope cannot see and the
-//! tree's two scaffolding entities.
+//! rows the world holds for itself, the latter by skipping their archetype
+//! whole; see [`Archetype::is_internal`](crate::Archetype::is_internal).
 //!
 //! Narrowing which archetypes a query visits, including by a component set only
 //! known at run time, is [`crate::QueryBorrow::by`].

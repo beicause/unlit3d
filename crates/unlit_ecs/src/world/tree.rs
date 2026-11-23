@@ -30,16 +30,6 @@ impl World {
         entity == self.shared || self.is_descendant(self.shared, entity)
     }
 
-    /// Whether `entity` is one of the tree's two scaffolding entities.
-    ///
-    /// This is narrower than [`World::is_shared`], which covers the whole
-    /// shared subtree: the entities a caller spawns there are content, and a
-    /// scope counts and queries them like any other.
-    #[must_use]
-    pub fn is_scaffolding(&self, entity: Entity) -> bool {
-        entity == self.root || entity == self.shared
-    }
-
     /// Whether `entity` is strictly below `ancestor` in the tree.
     #[must_use]
     pub fn is_descendant(&self, ancestor: Entity, entity: Entity) -> bool {
@@ -114,22 +104,5 @@ impl World {
     pub fn children(&self, entity: Entity) -> Result<Vec<Entity>, EntityAccessError> {
         self.location(entity)?;
         Ok(self.tree.children(entity).to_vec())
-    }
-
-    /// The first row of `archetype` that holds content rather than scaffolding.
-    ///
-    /// This is where a query starts scanning an archetype, and what a count
-    /// leaves out. It is a row boundary rather than a per-row test so that
-    /// walking a row costs no identity check: the two roots share their
-    /// archetype with every entity spawned bare, which would otherwise need one
-    /// comparison per row.
-    #[inline]
-    #[must_use]
-    pub(crate) fn content_start(&self, archetype: u32) -> usize {
-        if archetype == self.scaffolding {
-            Self::SCAFFOLDING_ROWS
-        } else {
-            0
-        }
     }
 }

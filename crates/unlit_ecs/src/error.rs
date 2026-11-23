@@ -16,9 +16,9 @@
 //!
 //! A structural change keeps the `Result` form throughout. Despawning and
 //! relinking are turned down for reasons of their own - the entity is out of the
-//! subtree, it is shared, it is scaffolding - and a caller that was refused has
-//! to know which it was: the answer to "not yours" is to ask the scope that owns
-//! it, and the answer to "scaffolding" is to stop asking.
+//! subtree, it is shared, the world holds it for itself - and a caller that was
+//! refused has to know which it was: the answer to "not yours" is to ask the
+//! scope that owns it, and the answer to "internal" is to stop asking.
 //!
 //! A borrow conflict is deliberately not one of these. It says nothing about the
 //! handle, only that another holder has already claimed the component, and it
@@ -128,12 +128,13 @@ pub enum EntityAccessError {
         scope: Entity,
     },
 
-    /// The entity is one of the tree's two scaffolding entities.
+    /// The entity is one of the rows the world holds for itself.
     ///
     /// The root and the shared scope are what the tree hangs from: they are
-    /// neither counted nor queried, and they do not move or go.
-    #[error("{entity:?} is scaffolding: it neither moves nor goes")]
-    Scaffolding {
+    /// neither counted nor queried, and they do not move or go. See
+    /// [`Archetype::is_internal`](crate::Archetype::is_internal).
+    #[error("{entity:?} is internal: it neither moves nor goes")]
+    Internal {
         /// The handle that was moved or removed.
         entity: Entity,
     },

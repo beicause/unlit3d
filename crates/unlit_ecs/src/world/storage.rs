@@ -49,6 +49,21 @@ impl World {
         self.entities_read().location(entity)
     }
 
+    /// Whether `entity` is one of the rows the world holds for itself.
+    ///
+    /// The root and the shared scope are such rows: they are addressable and
+    /// they can carry components, but they are neither counted, queried, moved
+    /// nor despawned. A handle that names nothing is not internal — asking
+    /// about a dead row is how a caller finds out it is dead.
+    pub(crate) fn is_internal(&self, entity: Entity) -> bool {
+        let Ok(location) = self.location(entity) else {
+            return false;
+        };
+        self.archetypes
+            .get(location.archetype())
+            .is_ok_and(|archetype| archetype.is_internal())
+    }
+
     /// What a live entity is called, read from the row that stores it.
     ///
     /// This is the only durable copy of the label: the allocator keeps no name,

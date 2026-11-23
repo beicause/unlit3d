@@ -97,9 +97,10 @@ It is at an **early stage of development** and its API changes freely.
   handle may have gone, when it comes from elsewhere, or when a missing row is an
   answer rather than a fault. The cost of the shortcut is that a caller which
   should have branched compiles, and finds the reason at run time instead.
-- **Two entities are scaffolding.** [`World::root`] and [`World::shared`]
-  belong to the tree, not to its content: neither is counted, queried, despawned
-  or relinked. [Scopes](#scopes) says what they are and what they cost.
+- **Two entities belong to the world, not to its content.** [`World::root`] and
+  [`World::shared`] carry the internal marker: neither is counted, queried,
+  despawned or relinked. [Scopes](#scopes) says what they are and what they
+  cost.
 
 ## Scopes
 
@@ -128,13 +129,14 @@ assert!(seen.iter().any(|(_, entity)| entity == cube));
 assert_eq!(world.root_scope().len(), 3);
 ```
 
-Two entities are scaffolding rather than content. [`World::root`] is the scope
-the root scope opens, and lives in itself; [`World::shared`] is its child, and
-every scope reaches that subtree. Both can carry components and be opened as
-scopes, so a resource belongs on either one — but neither is counted, queried,
-despawned or relinked, which is why an empty world counts zero rather than two.
-They keep the first two rows of their archetype, so a query steps over them once
-per archetype instead of testing the identity of every row.
+Two entities belong to the world rather than to its content. [`World::root`] is
+the scope the root scope opens, and lives in itself; [`World::shared`] is its
+child, and every scope reaches that subtree. Both can carry components and be
+opened as scopes, so a resource belongs on either one — but neither is counted,
+queried, despawned or relinked, which is why an empty world counts zero rather
+than two. An internal marker component says so: it puts the two of them in an
+archetype of their own, which counting, querying and reporting skip with one
+test — see [`Archetype::is_internal`]. A row of it is still reached by handle.
 
 **What a scope sees.** A scope of `caller` sees `candidate` when `candidate`
 is alive and one of these holds:
@@ -186,10 +188,10 @@ already been removed is refused with
 applied after its scope is gone. [`ScopeMut::link`]
 and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
-scaffolding; they are pure structure changes and run no lifecycle callback.
+world's own rows; they are pure structure changes and run no lifecycle callback.
 Each of the three answers [`Result`], and the error it fails with says which
 of the reasons it was: the entity has gone, it is outside the scope, it is
-shared so only the root may move it, it is scaffolding, or the move would cut
+shared so only the root may move it, the world holds it, or the move would cut
 the tree in two. A caller that holds a handle from somewhere else can ask the
 scope that owns it instead of guessing which of those it was. A
 read-only scope queues the same changes through [`Scope::queue`], and the

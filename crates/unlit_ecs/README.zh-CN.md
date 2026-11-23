@@ -57,9 +57,9 @@
   `World::try_scope`、`Scope::try_query_one` 及同族——句柄可能已经没了、句柄来自别处、
   或者「没有这一行」本身就是答案时用它。快捷方式的代价是本该分支的调用点也能编过，
   要到运行时才知道原因。
-- **有两个实体是脚手架。** `World::root` 与 `World::shared` 属于树而不是树的内容：
-  两者都不被计数、不被查询、不可 despawn、不可重挂。[scope](#scope) 一节说明它们是什么、
-  代价落在哪里。
+- **有两个实体属于 world 本身，而不是它的内容。** `World::root` 与 `World::shared` 带有
+  内部标记：两者都不被计数、不被查询、不可 despawn、不可重挂。[scope](#scope) 一节说明
+  它们是什么、代价落在哪里。
 
 ## scope
 
@@ -87,11 +87,12 @@ assert!(seen.iter().any(|(_, entity)| entity == cube));
 assert_eq!(world.root_scope().len(), 3);
 ```
 
-有两个实体是脚手架而不是内容。`World::root` 是根 scope 所打开的 scope，它就在自己的
-scope 里；`World::shared` 是它的子实体，每个 scope 都看得见那棵子树。两者都能携带组件、
-都能被当作 scope 指名，所以资源挂在哪一个上都行——但它们都不被计数、不被查询、不可
-despawn、不可重挂，正因如此空 world 计数是零而不是二。它们占据所在 archetype 的最前两行，
-于是查询每个 archetype 只跨过一次，不必逐行判断身份。
+有两个实体属于 world 本身而不是它的内容。`World::root` 是根 scope 所打开的 scope，它就在
+自己的 scope 里；`World::shared` 是它的子实体，每个 scope 都看得见那棵子树。两者都能携带
+组件、都能被当作 scope 指名，所以资源挂在哪一个上都行——但它们都不被计数、不被查询、
+不可 despawn、不可重挂，正因如此空 world 计数是零而不是二。区分靠一个内部标记组件：
+它让这两行独占一个 archetype，计数、查询与报告对这个 archetype 一次判定就整条跳过——
+见 `Archetype::is_internal`；其中的行仍可按句柄取到。
 
 **scope 看得见什么。** 当 `candidate` 存活，且满足下列之一时，`caller` 的 scope 看得见它：
 
@@ -128,10 +129,10 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 又排一条的命令一直拖住 `apply` 是同一种情形。往已被删除的 scope 里
 spawn 会被拒绝为 `EntityAccessError::NotAlive`，排队的 spawn 在其 scope 已消失之后落盘时
 遇到的正是这一条。`ScopeMut::link` 与
-`ScopeMut::unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
+`ScopeMut::unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰 world 自有的行；
 它们是纯结构变更，不跑任何生命周期回调。三者都回答 `Result`，失败时给出的错误指明
 是哪一种原因：实体已不在、它在 scope 之外、它在 shared 子树里因而只有根能动、它是
-脚手架、或者这次搬动会把树切成两半。于是手里握着别处句柄的调用者不必猜，可以直接去问
+它是 world 自有的行、或者这次搬动会把树切成两半。于是手里握着别处句柄的调用者不必猜，可以直接去问
 真正拥有它的那个 scope。只读 scope 通过 `Scope::queue` 排队做同样的
 变更，再由驱动器调用 `World::apply` 落盘；后者报告第一个失败的命令，并把其余命令照常跑完。
 

@@ -17,6 +17,7 @@
 use core::any::{Any, TypeId};
 
 use crate::column::{AnyColumn, Column};
+use crate::internal::Internal;
 
 /// The key a bundle declares with [`DynamicBundle::singleton`]: the type that
 /// names the singleton, and the name the world reports it under.
@@ -158,6 +159,17 @@ impl DynamicBundle {
             key.name,
         );
         self.singleton_key = Some(key);
+    }
+
+    /// Mark the entity as one the world holds for itself rather than as
+    /// content.
+    ///
+    /// This is how [`crate::World::new`] puts its root and shared scope where
+    /// counting, querying and reporting do not reach them. The marker is a
+    /// component, so the rows carrying it get an archetype of their own.
+    pub(crate) fn internal(mut self) -> Self {
+        self.push_component(Internal);
+        self
     }
 
     /// The components in type order.

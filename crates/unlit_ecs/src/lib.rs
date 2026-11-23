@@ -12,6 +12,7 @@ mod error;
 mod hash;
 mod identity;
 mod info;
+mod internal;
 mod lifecycle;
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "mcp", not(target_arch = "wasm32")))))]

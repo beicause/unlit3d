@@ -279,26 +279,26 @@ fn a_shared_row_answers_that_only_the_root_may_move_it() {
 /// The roots hold the tree up, so they are neither moved nor removed, and the
 /// reason is their own rather than a missing owner.
 #[test]
-fn a_root_answers_that_it_is_scaffolding() {
+fn a_root_answers_that_it_is_internal() {
     let mut world = World::new();
     let root = world.root();
     let shared = world.shared();
     assert_eq!(
         world.root_scope_mut().despawn(root).unwrap_err(),
-        EntityAccessError::Scaffolding { entity: root },
+        EntityAccessError::Internal { entity: root },
     );
     assert_eq!(
         world.root_scope_mut().despawn(shared).unwrap_err(),
-        EntityAccessError::Scaffolding { entity: shared },
+        EntityAccessError::Internal { entity: shared },
     );
     assert_eq!(
         world.root_scope_mut().link(root, shared).unwrap_err(),
-        EntityAccessError::Scaffolding { entity: root },
-        "the first end that is scaffolding is the one named"
+        EntityAccessError::Internal { entity: root },
+        "the first end that is internal is the one named"
     );
     assert_eq!(
         world.root_scope_mut().unlink(root).unwrap_err(),
-        EntityAccessError::Scaffolding { entity: root },
+        EntityAccessError::Internal { entity: root },
     );
 }
 
@@ -381,7 +381,7 @@ fn every_structural_message_names_its_reason() {
     let error = scope.despawn(root).unwrap_err();
     assert_eq!(
         error.to_string(),
-        format!("{root:?} is scaffolding: it neither moves nor goes"),
+        format!("{root:?} is internal: it neither moves nor goes"),
     );
     let mut scope = world.root_scope_mut();
     let error = scope.link(scene, child).unwrap_err();
@@ -391,24 +391,34 @@ fn every_structural_message_names_its_reason() {
     );
 }
 
-/// The shared entity is reachable by handle from every scope, whether its
-/// archetype holds only scaffolding (uniform) or also holds a bare child of
-/// some scope (mixed). Both answers must agree.
+/// The shared entity is reachable by handle from every scope, while the root is
+/// reached only from the root scope: a scope does not see its ancestors.
 #[test]
 fn the_shared_entity_is_reachable_by_handle_from_any_scope() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
     let shared = world.shared();
-    let scope = world.scope(scene);
-    assert!(scope.try_query_one::<Entity>(shared).is_ok(), "uniform");
-    assert!(scope.try_query_many::<Entity>(&[shared]).is_ok(), "uniform");
+    let root = world.root();
 
-    // A bare child of the scene joins the scaffolding's archetype, making it mixed.
-    let bare = world.scope_mut(scene).spawn(bundle![]);
     let scope = world.scope(scene);
-    assert!(scope.try_query_one::<Entity>(shared).is_ok(), "mixed");
+    assert!(scope.try_query_one::<Entity>(shared).is_ok());
+    assert!(scope.try_query_many::<Entity>(&[shared]).is_ok());
+    assert_eq!(
+        scope.try_query_one::<Entity>(root).unwrap_err(),
+        EntityAccessError::NotVisible {
+            entity: root,
+            scope: scene
+        },
+    );
+
+    // Whatever else the scene spawns, the world's own rows keep an archetype of
+    // their own, so the answer cannot change with the shape of the scene.
+    world.scope_mut(scene).spawn(bundle![]);
+    let bare = world.scope_mut(scene).spawn(bundle![Name("bare")]);
+    let scope = world.scope(scene);
+    assert!(scope.try_query_one::<Entity>(shared).is_ok());
     assert!(
         scope.try_query_many::<Entity>(&[shared, bare]).is_ok(),
-        "mixed"
+        "a list of a shared row and a scene row"
     );
 }

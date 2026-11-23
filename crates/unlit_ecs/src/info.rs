@@ -9,9 +9,9 @@
 //! world costs an allocation per archetype, not one per row.
 //!
 //! Every count here is what one scope sees, not what the world holds: a scope of a
-//! scene reports that scene. The two scaffolding entities are left out of every
-//! count and reported by handle instead, so a caller that reaches them by handle
-//! can still name what the counts do not include.
+//! scene reports that scene. The rows the world holds for itself are left out of
+//! every count and reported by handle instead, so a caller that reaches them by
+//! handle can still name what the counts do not include.
 //!
 //! They are deliberately shallow. Nothing here reaches into a component's own
 //! fields -- that is the caller's business, and a caller that wants it derives
@@ -87,8 +87,8 @@ pub struct ArchetypeInfo<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct WorldInfo {
-    /// The number of live entities visible from the scope, the two scaffolding
-    /// entities excluded, which is what [`Scope::len`](crate::Scope::len)
+    /// The number of live entities visible from the scope, the rows the world
+    /// holds for itself excluded, which is what [`Scope::len`](crate::Scope::len)
     /// reports.
     pub entities: usize,
     /// The number of archetypes with at least one visible row.

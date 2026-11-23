@@ -251,7 +251,7 @@ fn a_view_does_not_see_a_dead_handle() {
 }
 
 #[test]
-fn counting_is_per_view_and_excludes_the_scaffolding() {
+fn counting_is_per_view_and_excludes_the_worlds_own_rows() {
     let (world, scene, _, sibling) = fixture();
     assert_eq!(world.root_scope().len(), 3, "two scenes and one child");
     assert_eq!(world.scope(scene).len(), 2, "the scene and its child");
@@ -337,8 +337,8 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
     let mut world = World::new();
     let shared = world.shared();
     // A resource spawned in the shared subtree reaches every scope, and a
-    // scope counts it: only the two scaffolding entities themselves are
-    // excluded, not what a caller puts under them.
+    // scope counts it: only the world's own two rows are excluded, not what a
+    // caller puts under them.
     let resource = world.scope_mut(shared).spawn(bundle![Marker(1)]);
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
     world.scope_mut(scene).spawn(bundle![Marker(2)]);
@@ -416,7 +416,7 @@ fn a_queued_despawn_of_something_the_scope_does_not_own_is_dropped() {
 }
 
 #[test]
-fn a_queued_despawn_cannot_remove_the_scaffolding() {
+fn a_queued_despawn_cannot_remove_the_worlds_own_rows() {
     let (mut world, _, _, _) = fixture();
     let root = world.root();
     let shared = world.shared();
@@ -425,7 +425,7 @@ fn a_queued_despawn_cannot_remove_the_scaffolding() {
     queue.despawn(shared);
     assert_eq!(
         world.apply(),
-        Err(EntityAccessError::Scaffolding { entity: root }),
+        Err(EntityAccessError::Internal { entity: root }),
         "the queue reports the one it refused and drops the rest"
     );
     assert_eq!(
@@ -506,7 +506,7 @@ fn a_shared_resource_is_the_root_s_to_move() {
     world.apply().unwrap();
     assert_eq!(world.parent_scope(resource), Ok(root));
 
-    // The shared scope itself is scaffolding: it neither moves nor goes.
+    // The shared scope itself is the world's own row: it neither moves nor goes.
     assert!(world.root_scope_mut().link(shared, scene).is_err());
     assert!(world.root_scope_mut().unlink(shared).is_err());
     assert!(world.root_scope_mut().despawn(shared).is_err());
@@ -558,7 +558,7 @@ fn an_exclusive_borrow_does_not_block_a_query_reading_the_scope_tree() {
 }
 
 #[test]
-fn a_shared_resource_is_counted_but_the_scaffolding_is_not() {
+fn a_shared_resource_is_counted_but_the_worlds_own_rows_are_not() {
     let mut world = World::new();
     let shared = world.shared();
     world.scope_mut(shared).spawn(bundle![Marker(1)]);
@@ -572,7 +572,7 @@ fn a_shared_resource_is_counted_but_the_scaffolding_is_not() {
     );
     let scope = world.scope(scene);
     // The resource reaches the scope through the shared subtree, so it is
-    // counted here too: what the scaffolding excludes is only the two root
+    // counted here too: what the count excludes is only the world's own rows
     // entities themselves.
     assert_eq!(scope.len(), 3, "the scene, its child, the shared resource");
     // The archetype lengths are what the count is summed from, so they have to

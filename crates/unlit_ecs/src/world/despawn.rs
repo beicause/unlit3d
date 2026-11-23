@@ -37,8 +37,8 @@ impl World {
         entity: Entity,
         caller: Entity,
     ) -> Result<(), EntityAccessError> {
-        if self.is_scaffolding(entity) {
-            return Err(EntityAccessError::Scaffolding { entity });
+        if self.is_internal(entity) {
+            return Err(EntityAccessError::Internal { entity });
         }
         self.location(entity)?;
         self.check_owns(caller, entity)?;

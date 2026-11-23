@@ -15,6 +15,7 @@ use hashbrown::HashMap;
 use crate::column::{AnyColumn, Column};
 use crate::entity::Entity;
 use crate::error::ArchetypeAccessError;
+use crate::internal::Internal;
 use crate::world::World;
 
 /// Which scopes an archetype's rows live in, as far as a whole-archetype gate
@@ -69,6 +70,11 @@ impl ScopeSummary {
     /// The per-row answer for a summary a whole-archetype gate could not
     /// decide. The caller's own row is always visible: a scope sees the entity
     /// it is rooted at, and that entity lives in the scope's parent.
+    ///
+    /// The world's own rows are answered elsewhere: they live one archetype
+    /// apart, and their visibility is decided per row from the tree rather than
+    /// from a scope they mostly do not share. See
+    /// [`crate::Scope::row_visible`].
     pub(crate) fn row_visible(
         self,
         archetype: &Archetype,
@@ -80,21 +86,15 @@ impl ScopeSummary {
             Self::Empty => false,
             Self::Uniform(scope) => {
                 // Every row of a uniform archetype lives in `scope`, so the
-                // stored scope answers for all of them but one: the shared
-                // entity's own row sits in the root's scope while reaching every
-                // scope by handle, which is what a lookup of it has to agree
-                // with (`Scope::contains`, `World::visible`).
-                let entity = archetype.entities()[row];
-                entity == caller || entity == world.shared() || world.visible(caller, scope)
+                // stored scope answers for all of them but one: the caller's
+                // own row, which sits in its parent's archetype.
+                archetype.entities()[row] == caller || world.visible(caller, scope)
             }
             Self::Mixed => {
-                let entity = archetype.entities()[row];
                 // The row's own scope, stored beside it: a visibility test per
                 // row is the hot path, and walking the tree for the parent
-                // would be a second lookup for an answer already recorded. The
-                // shared entity is the exception, as in the uniform case above.
-                entity == caller
-                    || entity == world.shared()
+                // would be a second lookup for an answer already recorded.
+                archetype.entities()[row] == caller
                     || world.visible(caller, archetype.scopes()[row])
             }
         }
@@ -124,6 +124,14 @@ pub struct Archetype {
     /// go stale: an archetype whose rows all move out of one scope stops being
     /// `Mixed` the moment the last of them leaves.
     scope_counts: Vec<(Entity, u32)>,
+    /// Whether the rows are the world's own rather than its content.
+    ///
+    /// Derived from the component set: [`crate::internal::Internal`] is a
+    /// component, so the rows carrying it land in an archetype that nothing
+    /// else shares. Reading the flag is what lets a query, a count and an
+    /// archetype report skip the world's own rows with one test per archetype
+    /// instead of one per row.
+    internal: bool,
 }
 
 impl Archetype {
@@ -142,6 +150,7 @@ impl Archetype {
         debug_assert_eq!(types.len(), names.len());
         debug_assert_eq!(types.len(), columns.len());
         debug_assert!(types.windows(2).all(|pair| pair[0] < pair[1]));
+        let internal = types.contains(&TypeId::of::<Internal>());
         Self {
             types,
             names,
@@ -149,7 +158,19 @@ impl Archetype {
             entities: Vec::new(),
             scopes: Vec::new(),
             scope_counts: Vec::new(),
+            internal,
         }
+    }
+
+    /// Whether the rows are the world's own rather than its content.
+    ///
+    /// The root and the shared scope are the entities a world holds for itself.
+    /// They are ordinary entities — addressable, scoped, able to carry
+    /// components — but they are left out of every count and every query, and
+    /// they neither move nor go. One archetype holds all of them and nothing
+    /// else, so the answer is a property of the archetype rather than of a row.
+    pub fn is_internal(&self) -> bool {
+        self.internal
     }
 
     /// The component types, sorted.
@@ -548,6 +569,28 @@ mod tests {
         // archetype is uniform again.
         archetype.swap_remove(2);
         assert_eq!(archetype.scope_summary(), ScopeSummary::Uniform(first));
+    }
+
+    #[test]
+    fn the_internal_flag_follows_the_component_set() {
+        let plain = scoped_archetype();
+        assert!(!plain.is_internal(), "a u32 column is content");
+
+        let mut types = [TypeId::of::<u32>(), TypeId::of::<Internal>()];
+        types.sort_unstable();
+        let columns: Vec<Box<dyn AnyColumn>> = vec![
+            Column::<u32>::new().erase(),
+            Column::<Internal>::new().erase(),
+        ];
+        let internal: Archetype = Archetype::new(
+            types.into(),
+            Box::new([
+                core::any::type_name::<u32>(),
+                core::any::type_name::<Internal>(),
+            ]),
+            columns.into_boxed_slice(),
+        );
+        assert!(internal.is_internal(), "the marker is what decides it");
     }
 
     #[test]

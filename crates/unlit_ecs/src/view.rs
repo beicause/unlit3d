@@ -122,12 +122,13 @@ impl<'w> Scope<'w> {
     /// A lookup that finds nothing is a failure, not a missing row: the entity
     /// is not alive, out of this scope's reach, or its archetype does not
     /// satisfy the query. The shared entity is reachable from every scope by
-    /// handle; iterating leaves it out, as it leaves out all scaffolding.
+    /// handle; iterating leaves it out, as it leaves out every row the world
+    /// holds for itself.
     ///
-    /// A lookup by handle does not filter the scaffolding: the root and the
-    /// shared scope answer like any other entity, which is what lets the
-    /// resources they carry be read. Iterating and counting go through a scope
-    /// and leave the pair out; see [`Scope::len`].
+    /// A lookup by handle does not filter those rows: the root and the shared
+    /// scope answer like any other entity, which is what lets the resources
+    /// they carry be read. Iterating and counting go through a scope and leave
+    /// the pair out; see [`Scope::len`].
     ///
     /// ````rust
     /// # use unlit_ecs::{Has, World, bundle};
@@ -267,18 +268,19 @@ impl<'w> Scope<'w> {
             .map_err(EntityAccessError::from)
     }
 
-    /// Every archetype this scope sees in full, in id order.
+    /// Every archetype of content this scope sees in full, in id order.
     ///
     /// Empty archetypes are skipped: they hold no row, so there is nothing to
-    /// iterate. The one archetype holding the tree's scaffolding is included,
-    /// since its rows do exist; [`Scope::len`] is what leaves them out of the
-    /// count.
+    /// iterate. The archetype holding the world's own rows is skipped too; see
+    /// [`Archetype::is_internal`]. A row of it is still reachable by handle.
     pub fn archetypes(&self) -> impl Iterator<Item = &'w Archetype> {
         self.world
             .archetypes()
             .as_slice()
             .iter()
-            .filter(|archetype| !archetype.is_empty() && self.fully_visible(archetype))
+            .filter(|archetype| {
+                !archetype.is_empty() && !archetype.is_internal() && self.fully_visible(archetype)
+            })
     }
 
     // -- the tree ----------------------------------------------------------
@@ -326,14 +328,14 @@ impl<'w> Scope<'w> {
 
     /// The number of visible entities, the two roots excluded.
     ///
-    /// An empty world is empty; the root and the shared scope are scaffolding
-    /// and are reported by [`WorldInfo::root`] and [`WorldInfo::shared`]
-    /// instead of being counted.
+    /// An empty world is empty; the root and the shared scope are the world's
+    /// own rows and are reported by [`WorldInfo::root`] and
+    /// [`WorldInfo::shared`] instead of being counted.
     #[must_use]
     pub fn len(&self) -> usize {
-        // The query already skips the scaffolding and applies the visibility
-        // rules, so counting this way keeps the number and the iteration in
-        // agreement for every scope, the root included.
+        // The query already skips the world's own rows and applies the
+        // visibility rules, so counting this way keeps the number and the
+        // iteration in agreement for every scope, the root included.
         self.query::<Entity>().iter().count()
     }
 
@@ -349,11 +351,11 @@ impl<'w> Scope<'w> {
     pub fn info(&self) -> WorldInfo {
         let mut components: Vec<&'static str> = Vec::new();
         let mut archetypes = 0;
-        for (index, archetype) in self.world.archetypes().as_slice().iter().enumerate() {
+        for archetype in self.world.archetypes().as_slice() {
             // Only an archetype with a row this scope can see has a shape to
             // report: an empty one, or one whose rows all live elsewhere,
             // would name components that nothing here carries.
-            if self.visible_len(index as u32, archetype) == 0 {
+            if self.visible_len(archetype) == 0 {
                 continue;
             }
             archetypes += 1;
@@ -379,7 +381,7 @@ impl<'w> Scope<'w> {
             .iter()
             .enumerate()
             .filter_map(|(index, archetype)| {
-                let len = self.visible_len(index as u32, archetype);
+                let len = self.visible_len(archetype);
                 (len > 0).then(|| ArchetypeInfo {
                     index: index as u32,
                     len,
@@ -429,9 +431,7 @@ impl<'w> Scope<'w> {
                 continue;
             }
             let components = archetype.names();
-            let start = self.world.content_start(index as u32);
-            for (row, &entity) in archetype.entities()[start..].iter().enumerate() {
-                let row = start + row;
+            for (row, &entity) in archetype.entities().iter().enumerate() {
                 if !self.row_visible(archetype, row) {
                     continue;
                 }
@@ -468,11 +468,15 @@ impl<'w> Scope<'w> {
 
     // -- visibility --------------------------------------------------------
 
-    /// Whether an archetype has any row this scope can see.
+    /// Whether an archetype has any row of content this scope can see.
+    ///
+    /// The world's own rows are not content: their archetype answers no, and a
+    /// row of it is reached by handle.
     fn archetype_visible(&self, archetype: &Archetype) -> bool {
-        archetype
-            .scope_summary()
-            .any_visible(self.world, self.scope)
+        !archetype.is_internal()
+            && archetype
+                .scope_summary()
+                .any_visible(self.world, self.scope)
     }
 
     /// Whether every row of `archetype` is visible from this scope.
@@ -483,39 +487,41 @@ impl<'w> Scope<'w> {
     }
 
     /// Whether row `row` of `archetype` is visible.
+    ///
+    /// A row of the world's own archetype is answered from the tree, not from
+    /// the scope summary: the root lives in its own scope while the shared
+    /// scope reaches every scope by handle, so neither the stored scope of the
+    /// row nor the scope the archetype is uniform in tells the whole story.
     pub(crate) fn row_visible(&self, archetype: &Archetype, row: usize) -> bool {
+        if archetype.is_internal() {
+            return self.world.visible(self.scope, archetype.entities()[row]);
+        }
         archetype
             .scope_summary()
             .row_visible(archetype, self.world, self.scope, row)
     }
 
     /// The number of rows of `archetype` this scope can see, its own content
-    /// only: the scaffolding is never counted.
-    fn visible_len(&self, index: u32, archetype: &Archetype) -> usize {
-        // The scaffolding shares an archetype with every bare entity, so its
-        // rows are removed rather than the whole archetype: a caller's own bare
-        // entity may sit in it too. It takes the first rows of that archetype,
-        // which is what makes the subtraction a boundary rather than a filter.
-        let scaffold = self.world.content_start(index);
+    /// only: the world's own rows are never counted.
+    fn visible_len(&self, archetype: &Archetype) -> usize {
+        // The world's own rows are one archetype apart, so they are dropped
+        // whole rather than filtered row by row. A row of theirs is still
+        // readable by handle; see [`Scope::row_visible`].
+        if archetype.is_internal() {
+            return 0;
+        }
         match archetype.scope_summary() {
             ScopeSummary::Empty => 0,
             ScopeSummary::Uniform(_) => {
                 if self.fully_visible(archetype) {
-                    // The whole archetype is this one scope, so its rows are
-                    // the scope's — except a shared row, which reaches the scope
-                    // from outside it and so belongs to no other archetype.
-                    archetype.len() - scaffold
+                    archetype.len()
                 } else {
                     // A scope lives in its parent, which is above it, so the
-                    // only row of that archetype it can see is its own -- and
-                    // the scaffolding's own row is not content.
-                    usize::from(
-                        archetype.entities()[scaffold..].contains(&self.scope)
-                            && !self.world.is_scaffolding(self.scope),
-                    )
+                    // only row of that archetype it can see is its own.
+                    usize::from(archetype.entities().contains(&self.scope))
                 }
             }
-            ScopeSummary::Mixed => (scaffold..archetype.len())
+            ScopeSummary::Mixed => (0..archetype.len())
                 .filter(|&row| self.row_visible(archetype, row))
                 .count(),
         }
@@ -601,8 +607,8 @@ impl<'w> ScopeMut<'w> {
     /// Answers [`EntityAccessError::NotAlive`] for a handle that names no live
     /// entity, `NotOwned` for one outside this scope's subtree, `NotMovable`
     /// for one the shared subtree only lends this scope - the root is the
-    /// scope that may remove it - and `Scaffolding` for the root and the
-    /// shared scope themselves.
+    /// scope that may remove it - and `Internal` for the root and the shared
+    /// scope themselves.
     pub fn despawn(&mut self, entity: Entity) -> Result<(), EntityAccessError> {
         self.world.despawn_in(entity, self.scope)
     }
