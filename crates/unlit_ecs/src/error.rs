@@ -78,6 +78,19 @@ pub enum EntityAccessError {
         key: &'static str,
     },
 
+    /// A cascade despawn kept finding entities to remove past its pass bound.
+    ///
+    /// Callbacks that keep adding entities under the subtree being removed
+    /// never let it empty. The entities already removed stay removed; the rest
+    /// of the subtree, `entity` included, stays standing.
+    #[error("the despawn of {entity:?} did not finish within {passes} passes")]
+    CascadeOverflow {
+        /// The entity whose despawn was requested.
+        entity: Entity,
+        /// The number of passes the cascade was allowed.
+        passes: usize,
+    },
+
     /// The entity is alive, but this scope's subtree does not reach it, so it
     /// is not the scope's to remove or move.
     ///

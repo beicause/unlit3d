@@ -314,6 +314,35 @@ fn a_callback_that_spawns_into_a_dying_scope_takes_the_child_with_it() {
     crate::scope::assert_invariants(&world);
 }
 
+/// A behaviour that puts one more child under its own entity each time it is
+/// despawned, so every pass of a cascade finds one new level to sweep.
+fn sprouting() -> OnDespawn {
+    OnDespawn::new(|scope, doomed| {
+        scope.scope_mut(doomed).spawn(bundle![sprouting()]);
+    })
+}
+
+#[test]
+fn a_cascade_that_never_empties_stops_with_an_error() {
+    let mut world = World::new();
+    let scene = world.root_scope_mut().spawn(bundle![sprouting()]);
+    let result = world.root_scope_mut().despawn(scene);
+    assert!(
+        matches!(
+            result,
+            Err(unlit_ecs::EntityAccessError::CascadeOverflow { entity, .. }) if entity == scene
+        ),
+        "the cascade should stop at its pass bound, not loop, got {result:?}"
+    );
+    // Nothing the cascade could not finish has been dropped: the scene still
+    // has the chain it sprouted under it.
+    assert!(
+        !world.scope(scene).is_empty(),
+        "the unfinished subtree stands"
+    );
+    crate::scope::assert_invariants(&world);
+}
+
 #[test]
 fn a_queued_spawn_into_a_scope_that_is_gone_is_refused() {
     let mut world = World::new();

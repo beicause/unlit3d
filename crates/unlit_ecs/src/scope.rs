@@ -96,13 +96,14 @@ impl ScopeTree {
         false
     }
 
-    /// The subtree rooted at `root`, deepest first.
+    /// The subtree rooted at `root`, deepest first, written into `ordered`.
     ///
     /// Post-order is what a cascade despawn needs: a child is removed before
     /// the parent it lived in, so a child's callback still sees living
-    /// ancestors.
-    pub(crate) fn subtree_post_order(&self, root: Entity) -> Vec<Entity> {
-        let mut ordered = Vec::new();
+    /// ancestors. `ordered` is cleared first, so a caller that sweeps pass
+    /// after pass reuses one buffer.
+    pub(crate) fn subtree_post_order(&self, root: Entity, ordered: &mut Vec<Entity>) {
+        ordered.clear();
         let mut stack = vec![(root, false)];
         while let Some((entity, expanded)) = stack.pop() {
             if expanded {
@@ -114,6 +115,5 @@ impl ScopeTree {
                 stack.push((child, false));
             }
         }
-        ordered
     }
 }

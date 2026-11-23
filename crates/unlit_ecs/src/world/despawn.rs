@@ -10,6 +10,14 @@ use crate::hash::EntityHashSet;
 
 use super::World;
 
+/// How many passes a cascade may take before it gives up.
+///
+/// Each entity runs its callback at most once per cascade, so an ordinary
+/// cascade finishes in one pass, or two when a callback puts a child under an
+/// entity the first pass had to leave standing. Hitting this bound therefore
+/// means the callbacks keep finding new children, not that the cascade is slow.
+const MAX_CASCADE_PASSES: usize = 64;
+
 impl World {
     /// Despawn `entity` and its whole subtree, on behalf of `caller`.
     ///
@@ -20,9 +28,10 @@ impl World {
     /// while the tree is still its to change: whatever it puts back in is taken
     /// too, instead of being left in a scope whose row is about to go. Each
     /// entity runs its callback once per cascade, so a callback that adds a
-    /// child does not hold its own row back. A callback that adds a fresh
-    /// entity on every pass keeps the cascade going the way a command that
-    /// queues another keeps [`World::apply`] going: neither is bounded.
+    /// child does not hold its own row back. A cascade that has not emptied the
+    /// subtree after [`MAX_CASCADE_PASSES`] passes stops with
+    /// [`EntityAccessError::CascadeOverflow`]: the entities it removed stay
+    /// removed, and the rest of the subtree, `entity` included, stands.
     pub(crate) fn despawn_in(
         &mut self,
         entity: Entity,
@@ -40,10 +49,11 @@ impl World {
         // the cascade finish. The set is this call's own, so a panic drops it
         // with the stack rather than leaving a world marked as dying.
         let mut called = EntityHashSet::default();
-        loop {
+        let mut doomed = Vec::new();
+        for _ in 0..MAX_CASCADE_PASSES {
             // Read the subtree every pass: it is the callbacks' to change, and
             // a pass that had to leave a parent standing leaves work behind.
-            let doomed = self.tree.subtree_post_order(entity);
+            self.tree.subtree_post_order(entity, &mut doomed);
             for victim in &doomed {
                 self.remove_entity(*victim, &mut called);
             }
@@ -55,6 +65,10 @@ impl World {
                 return Ok(());
             }
         }
+        Err(EntityAccessError::CascadeOverflow {
+            entity,
+            passes: MAX_CASCADE_PASSES,
+        })
     }
 
     /// Run the despawn callback of `entity` and drop its row and handle.
