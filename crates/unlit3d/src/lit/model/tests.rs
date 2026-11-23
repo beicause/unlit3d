@@ -322,3 +322,59 @@ fn a_manual_clock_leaves_the_stored_time_alone() {
         Vec3::new(0.5, 0.0, 0.0)
     );
 }
+
+#[test]
+fn a_base_edit_reaches_a_clip_held_still() {
+    // A manual clock whose time does not move leaves sampling with nothing new
+    // to read, so the pass may reuse its locals. An edit to the node's base
+    // transform is the one change that must still get through.
+    let model = LitModel::new(
+        vec![node(None, Vec3::ZERO)],
+        vec![LitModelClip {
+            name: None,
+            duration: 1.0,
+            channels: vec![LitModelChannel {
+                node: 0,
+                interpolation: LitModelInterpolation::Linear,
+                times: vec![0.0, 1.0],
+                values: LitModelOutput::Translation(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            }],
+        }],
+    )
+    .expect("the model is well formed");
+    let mut world = World::new();
+    let root = world.root_scope_mut().spawn(LitModelBundle {
+        transform: Transform::default(),
+        model,
+        animation: LitModelAnimation {
+            clip: Some(0),
+            time: 0.5,
+            clock: LitModelClock::Manual,
+        },
+    });
+    let child = world
+        .root_scope()
+        .query_one::<&LitModelInstance>(root)
+        .get()
+        .nodes()[0];
+    // The edit changes the scale, which the translation channel does not drive,
+    // so the new scale must survive the resample that the channel forces.
+    let point = |world: &World| {
+        let scope = world.root_scope();
+        let mut query = scope.query_one::<&LitModelInstance>(root);
+        query.get().matrices()[0].transform_point3(Vec3::X)
+    };
+    assert_eq!(point(&world), Vec3::new(1.5, 0.0, 0.0));
+    world
+        .root_scope()
+        .query_one::<&mut LitModelNodeState>(child)
+        .get()
+        .local = Transform {
+        scale: Vec3::splat(2.0),
+        ..Transform::default()
+    };
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    assert_eq!(point(&world), Vec3::new(2.5, 0.0, 0.0));
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    assert_eq!(point(&world), Vec3::new(2.5, 0.0, 0.0));
+}

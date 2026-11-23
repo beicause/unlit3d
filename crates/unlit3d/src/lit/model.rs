@@ -377,10 +377,26 @@ pub struct LitModelInstance {
     draws: Vec<Vec<Entity>>,
     poses: Vec<Option<Entity>>,
     weights: Vec<Option<Entity>>,
+    /// The world matrix each node was last written through, kept to skip the
+    /// writes a node whose pose has not changed would repeat.
     matrices: Vec<glam::Mat4>,
     order: Vec<(usize, Option<usize>)>,
     locals: Vec<Transform>,
     morphs: Vec<Vec<f32>>,
+    /// Which nodes' matrices ended the last pass different from the pass
+    /// before. Scratch, overwritten for every node on each evaluation.
+    moved: Vec<bool>,
+    /// Which nodes' morph weights still owe their entity a write: set whenever a
+    /// resample rebuilds the node's weights, cleared when the write lands. Starts
+    /// all true, so the defaults reach their entities on the first evaluation.
+    morph_stale: Vec<bool>,
+    /// The base local transform each node was last read with from its
+    /// [`LitModelNodeState`]. A change here calls for a resample.
+    bases: Vec<Transform>,
+    /// The clip and sample time the locals and morphs were last resampled at,
+    /// `None` before the first pass. While these and the bases are unchanged the
+    /// locals stand as they are, so a paused clock skips the keyframe search.
+    sampled: Option<(Option<usize>, Option<f32>)>,
 }
 
 impl LitModelInstance {
@@ -463,7 +479,7 @@ impl LitModelBundle {
 enum Step {
     /// Advance by this many seconds first, when the clock is playing.
     Advance(f32),
-    /// Sample the stored time as it stands.
+    /// Sample the stored time as written.
     Sample,
 }
 
@@ -505,6 +521,10 @@ fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModelData) {
         order,
         locals: vec![Transform::default(); count],
         morphs: vec![Vec::new(); count],
+        moved: vec![true; count],
+        morph_stale: vec![true; count],
+        bases: vec![Transform::default(); count],
+        sampled: None,
     };
     let mut scope = scope.scope_mut(root);
     for &(index, parent) in &instance.order {
@@ -572,6 +592,10 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
         order,
         locals,
         morphs,
+        moved,
+        morph_stale,
+        bases,
+        sampled,
     } = instance;
     debug_assert_eq!(
         order.len(),
@@ -611,40 +635,84 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
             animation.time
         }
     });
-    for (i, node) in model.nodes.iter().enumerate() {
+    // Reading the bases is the one input that cannot be skipped: it is the
+    // entity state that a change to the base transform arrives through.
+    let key = (animation.clip, sample_time);
+    let mut resample = *sampled != Some(key);
+    let first = sampled.is_none();
+    for (i, base) in bases.iter_mut().enumerate() {
         if let Some(&entity) = nodes.get(i)
             && let Ok(mut query) = scope.try_query_one::<&LitModelNodeState>(entity)
+            && query.get().local != *base
         {
-            locals[i].clone_from(&query.get().local);
-        }
-        match &node.morph {
-            Some(morph) => morphs[i].clone_from(&morph.weights),
-            None => morphs[i].clear(),
+            base.clone_from(&query.get().local);
+            resample = true;
         }
     }
-    if let (Some(clip), Some(sample_time)) = (clip, sample_time) {
-        for channel in &clip.channels {
-            sample_channel(
-                channel,
-                sample_time,
-                &mut locals[channel.node],
-                &mut morphs[channel.node],
-            );
+    // A resample rebuilds every node from its base before the channels run, so
+    // a clip that stops driving a node hands back the base, not its last sample.
+    if resample {
+        *sampled = Some(key);
+        for (i, node) in model.nodes.iter().enumerate() {
+            locals[i].clone_from(&bases[i]);
+            morphs[i].clear();
+            if let Some(morph) = &node.morph {
+                morphs[i].extend_from_slice(&morph.weights);
+                morph_stale[i] = true;
+            }
+        }
+        if let (Some(clip), Some(sample_time)) = (clip, sample_time) {
+            for channel in &clip.channels {
+                if matches!(channel.values, LitModelOutput::Weights { .. }) {
+                    morph_stale[channel.node] = true;
+                }
+                sample_channel(
+                    channel,
+                    sample_time,
+                    &mut locals[channel.node],
+                    &mut morphs[channel.node],
+                );
+            }
         }
     }
     let root_matrix = glam::Mat4::from(root_transform.compute_matrix());
+    // The matrices start as the previous frame's pose, so a node whose matrix
+    // ends the pass unchanged needs no write through its entities. A parent
+    // moving marks every descendant through the product, which falls out of the
+    // parent-first order the walk follows.
     for &(i, parent) in order.iter() {
         let local = glam::Mat4::from(locals[i].compute_matrix());
-        matrices[i] = parent.map_or(root_matrix, |p| matrices[p]) * local;
+        let matrix = parent.map_or(root_matrix, |p| matrices[p]) * local;
+        moved[i] = matrix != matrices[i];
+        matrices[i] = matrix;
+    }
+    if first {
+        // Without a previous pass the matrices are all identity, so a node at
+        // rest would compare equal and owe no write. The first evaluation puts
+        // every entity at its evaluated state whatever it holds.
+        moved.fill(true);
+        morph_stale.fill(true);
     }
     for (i, node) in model.nodes.iter().enumerate() {
-        let transform = Transform::from_matrix(glam::Affine3A::from_mat4(matrices[i]));
-        for &entity in &draws[i] {
-            if let Ok(mut query) = scope.try_query_one::<&mut Transform>(entity) {
-                query.get().clone_from(&transform);
+        // A skin's pose is built from its joints' matrices, so any joint moving
+        // moves the pose, not just the skinned node moving itself.
+        let pose_moved = node
+            .skin
+            .as_ref()
+            .is_some_and(|skin| skin.joints.iter().any(|&joint| moved[joint]));
+        if !moved[i] && !pose_moved && !morph_stale[i] {
+            continue;
+        }
+        if moved[i] {
+            let transform = Transform::from_matrix(glam::Affine3A::from_mat4(matrices[i]));
+            for &entity in &draws[i] {
+                if let Ok(mut query) = scope.try_query_one::<&mut Transform>(entity) {
+                    query.get().clone_from(&transform);
+                }
             }
         }
-        if let Some(Some(entity)) = poses.get(i)
+        if pose_moved
+            && let Some(Some(entity)) = poses.get(i)
             && let Some(skin) = &node.skin
             && let Ok(mut query) = scope.try_query_one::<&mut SkinPose>(*entity)
         {
@@ -657,10 +725,12 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
                     .map(|(joint, &node)| matrices[node] * skin.inverse_bind[joint]),
             );
         }
-        if let Some(Some(entity)) = weights.get(i)
+        if morph_stale[i]
+            && let Some(Some(entity)) = weights.get(i)
             && let Ok(mut query) = scope.try_query_one::<&mut MorphWeights>(*entity)
         {
             query.get().weights.clone_from(&morphs[i]);
+            morph_stale[i] = false;
         }
     }
 }
