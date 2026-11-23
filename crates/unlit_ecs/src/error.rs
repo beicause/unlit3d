@@ -208,3 +208,15 @@ pub enum ArchetypeAccessError {
         scope: Entity,
     },
 }
+
+/// Every entry of a list that a query over the list turned down, in list order.
+///
+/// A list is refused whole, so this is the full account of why. Each failure
+/// names its own handle, and there is one failure for each refused position in
+/// the list.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} of the listed entities were turned down", .failures.len())]
+pub struct ListAccessError {
+    /// One failure for each refused position of the list, in list order.
+    pub failures: Vec<EntityAccessError>,
+}

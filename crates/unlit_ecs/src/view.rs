@@ -16,7 +16,7 @@ use crate::borrow::Claims;
 use crate::bundle::Bundle;
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
-use crate::error::{ArchetypeAccessError, EntityAccessError};
+use crate::error::{ArchetypeAccessError, EntityAccessError, ListAccessError};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
 use crate::query::{PlanBuilder, Query, QueryBorrow, QueryMany, QueryOne};
 use crate::world::World;
@@ -120,11 +120,9 @@ impl<'w> Scope<'w> {
     /// This is the one-entity form of [`Scope::query`]: the row the entity is
     /// stored at is looked up directly instead of the archetypes being walked.
     /// A lookup that finds nothing is a failure, not a missing row: the entity
-    /// is not alive, out of this scope's reach, or its row does not satisfy the
-    /// query. The last one covers two cases a caller answers the same way, so it
-    /// is one error: the archetype does not match `Q`, or the row sits outside
-    /// what this scope reaches. A shared row is reachable from every scope, the
-    /// same by handle as it is through [`Scope::query`].
+    /// is not alive, out of this scope's reach, or its archetype does not
+    /// satisfy the query. A shared row is reachable from every scope, the same
+    /// by handle as it is through [`Scope::query`].
     ///
     /// A lookup by handle does not filter the scaffolding: the root and the
     /// shared scope answer like any other entity, which is what lets the
@@ -168,8 +166,14 @@ impl<'w> Scope<'w> {
         let origin = core::panic::Location::caller();
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
+        // The row is out of this scope's reach. This branch is unreachable when
+        // location() requires the entity to be visible from the scope; it stays
+        // for defense against future changes to the visibility contract.
         if !self.row_visible(archetype, location.row()) {
-            return Err(EntityAccessError::NotMatched { entity });
+            return Err(EntityAccessError::NotVisible {
+                entity,
+                scope: self.scope,
+            });
         }
         // A query that cannot resolve its plan on this archetype does not
         // match it, which is the same answer as a row out of reach.
@@ -200,23 +204,23 @@ impl<'w> Scope<'w> {
     ///
     /// # Panics
     ///
-    /// When the list is turned down, with the reason the first refused entity
-    /// was refused. [`Scope::try_query_many`] answers the same as a `Result`.
+    /// When the list is turned down, with every refused entity listed.
+    /// [`Scope::try_query_many`] answers the same as a `Result`.
     #[track_caller]
     pub fn query_many<Q: Query>(&self, entities: &[Entity]) -> QueryMany<'w, Q> {
         self.try_query_many(entities)
-            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|error| panic!("{error}: {:?}", error.failures))
     }
 
     /// The fallible form of [`Scope::query_many`].
     ///
-    /// Answers with the error of the first entity in `entities` that is turned
-    /// down. No claim is kept and no item is handed out in that case.
+    /// Answers with every entity of `entities` that is turned down, in list
+    /// order. No claim is kept and no item is handed out in that case.
     #[track_caller]
     pub fn try_query_many<Q: Query>(
         &self,
         entities: &[Entity],
-    ) -> Result<QueryMany<'w, Q>, EntityAccessError> {
+    ) -> Result<QueryMany<'w, Q>, ListAccessError> {
         QueryMany::new(self, entities, core::panic::Location::caller())
     }
 

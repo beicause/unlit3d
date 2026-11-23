@@ -1,7 +1,7 @@
 //! `Scope::query_many`: a list of entities checked whole, then visited in the
 //! order it was given.
 
-use unlit_ecs::{Entity, EntityAccessError, World, bundle};
+use unlit_ecs::{Entity, EntityAccessError, ListAccessError, World, bundle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Value(u32);
@@ -36,6 +36,11 @@ fn collect_values(world: &World, entities: &[Entity]) -> Vec<u32> {
     values
 }
 
+/// The failures of a refused list, in list order.
+fn refusals<T>(result: Result<T, ListAccessError>) -> Vec<EntityAccessError> {
+    result.err().expect("the list is refused").failures
+}
+
 #[test]
 fn items_come_out_in_the_order_the_list_names_them() {
     let (world, entities) = fixture();
@@ -51,31 +56,35 @@ fn an_empty_list_visits_nothing() {
 }
 
 #[test]
-fn an_archetype_that_does_not_match_the_query_refuses_the_whole_list() {
+fn every_entity_that_does_not_match_the_query_is_reported() {
     let (world, entities) = fixture();
     // The `Tag` is only on the odd entities, so the even ones do not match.
     let result = world
         .root_scope()
         .try_query_many::<(&Value, &Tag)>(&entities);
-    assert!(matches!(
-        result,
-        Err(EntityAccessError::NotMatched { entity }) if entity == entities[0]
-    ));
+    assert_eq!(
+        refusals(result),
+        [0, 2, 4].map(|index| EntityAccessError::NotMatched {
+            entity: entities[index],
+        })
+    );
 }
 
 #[test]
-fn a_dead_entity_refuses_the_whole_list_before_anything_is_handed_out() {
+fn a_dead_entity_is_reported_and_the_list_writes_nothing() {
     let (mut world, entities) = fixture();
     world.root_scope_mut().despawn(entities[3]).unwrap();
     let result = world.root_scope().try_query_many::<&mut Value>(&entities);
-    assert!(matches!(
-        result,
-        Err(EntityAccessError::NotAlive { entity }) if entity == entities[3]
-    ));
+    assert_eq!(
+        refusals(result),
+        [EntityAccessError::NotAlive {
+            entity: entities[3],
+        }]
+    );
 }
 
 #[test]
-fn an_entity_outside_the_scope_refuses_the_list() {
+fn an_entity_outside_the_scope_is_reported() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Tag("scene")]);
     let inside = world.scope_mut(scene).spawn(bundle![Value(1)]);
@@ -83,23 +92,52 @@ fn an_entity_outside_the_scope_refuses_the_list() {
 
     let scope = world.scope(scene);
     assert!(scope.try_query_many::<&Value>(&[inside]).is_ok());
-    assert!(matches!(
-        scope.try_query_many::<&Value>(&[inside, outside]),
-        Err(EntityAccessError::NotVisible { entity, .. }) if entity == outside
-    ));
+    assert_eq!(
+        refusals(scope.try_query_many::<&Value>(&[inside, outside])),
+        [EntityAccessError::NotVisible {
+            entity: outside,
+            scope: scene,
+        }]
+    );
 }
 
 #[test]
-fn a_repeated_entity_refuses_the_list() {
+fn a_repeated_entity_is_reported() {
     let (world, entities) = fixture();
     let result =
         world
             .root_scope()
             .try_query_many::<&Value>(&[entities[1], entities[4], entities[1]]);
-    assert!(matches!(
-        result,
-        Err(EntityAccessError::Repeated { entity }) if entity == entities[1]
-    ));
+    assert_eq!(
+        refusals(result),
+        [EntityAccessError::Repeated {
+            entity: entities[1],
+        }]
+    );
+}
+
+#[test]
+fn every_refusal_is_reported_in_list_order() {
+    let (mut world, entities) = fixture();
+    world.root_scope_mut().despawn(entities[3]).unwrap();
+    // The even entities lack the `Tag`, entity 3 is dead, and entity 0 is named
+    // twice, so the list has three kinds of refusal at four positions.
+    let list = [entities[0], entities[3], entities[1], entities[0]];
+    let result = world.root_scope().try_query_many::<(&Value, &Tag)>(&list);
+    assert_eq!(
+        refusals(result),
+        [
+            EntityAccessError::NotMatched {
+                entity: entities[0],
+            },
+            EntityAccessError::NotAlive {
+                entity: entities[3],
+            },
+            EntityAccessError::NotMatched {
+                entity: entities[0],
+            },
+        ]
+    );
 }
 
 #[test]

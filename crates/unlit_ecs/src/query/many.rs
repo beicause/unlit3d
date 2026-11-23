@@ -5,7 +5,7 @@ use core::panic::Location;
 
 use crate::borrow::Claims;
 use crate::entity::Entity;
-use crate::error::EntityAccessError;
+use crate::error::{EntityAccessError, ListAccessError};
 use crate::query::{PlanBuilder, Query};
 use crate::view::Scope;
 
@@ -24,12 +24,26 @@ struct Visit {
     row: usize,
 }
 
+/// What the list has made of an archetype, as of the first entity of the list
+/// that lives in it.
+#[derive(Clone, Copy)]
+enum Resolved {
+    /// No entity of the list has reached this archetype yet.
+    Unseen,
+    /// The archetype does not satisfy the query, so none of its rows can be
+    /// visited.
+    Refused,
+    /// The archetype resolved to this group.
+    Group(usize),
+}
+
 /// What a scope hands out for a query over a list of entities.
 ///
 /// Built by [`crate::Scope::query_many`]. The whole list is checked when the
 /// holder is built: every entity must be alive, visible from the scope, and
-/// match the query. The first one that is not turns the whole list down before
-/// any item exists, so a failed list writes nothing.
+/// match the query. Every entity that fails one of these is reported in a
+/// [`ListAccessError`], and no item exists in that case, so a refused list
+/// writes nothing.
 ///
 /// Each archetype the list touches is resolved once and its components are
 /// claimed once for the whole list, however the entities are ordered. Items
@@ -48,53 +62,35 @@ pub struct QueryMany<'w, Q: Query> {
 }
 
 impl<'w, Q: Query> QueryMany<'w, Q> {
+    /// Checks every entry of the list and gathers each refusal, so the caller
+    /// sees the problems of the whole list at once.
     pub(crate) fn new(
         scope: &Scope<'w>,
         entities: &[Entity],
         origin: &'static Location<'static>,
-    ) -> Result<Self, EntityAccessError> {
-        let world = scope.world;
-        let mut claims = Claims::new(world);
+    ) -> Result<Self, ListAccessError> {
+        let mut claims = Claims::new(scope.world);
         let mut groups: Vec<Group<'w, Q>> = Vec::new();
-        // The group each archetype id resolved to, once the list has reached it.
-        let mut group_of: Vec<Option<usize>> = vec![None; world.archetypes().as_slice().len()];
+        let mut resolved = vec![Resolved::Unseen; scope.world.archetypes().as_slice().len()];
         let mut visits = Vec::with_capacity(entities.len());
+        let mut failures = Vec::new();
 
         for &entity in entities {
-            let location = scope.location(entity)?;
-            let archetype_id = location.archetype();
-            let archetype = world.archetypes().get(archetype_id)?;
-            let row = location.row();
-            if !scope.row_visible(archetype, row) {
-                return Err(EntityAccessError::NotMatched { entity });
+            match admit(
+                scope,
+                entity,
+                &mut claims,
+                &mut groups,
+                &mut resolved,
+                origin,
+            ) {
+                Ok(visit) => visits.push(visit),
+                Err(failure) => failures.push(failure),
             }
-
-            let group = match group_of[archetype_id as usize] {
-                Some(group) => group,
-                None => {
-                    let mut builder = PlanBuilder::new(archetype, Vec::new());
-                    let Some(plan) = Q::prepare(&mut builder) else {
-                        return Err(EntityAccessError::NotMatched { entity });
-                    };
-                    claims.claim_archetype(archetype_id, archetype, builder.asks(), origin);
-                    groups.push(Group {
-                        plan,
-                        named: vec![0; archetype.len().div_ceil(64)],
-                    });
-                    group_of[archetype_id as usize] = Some(groups.len() - 1);
-                    groups.len() - 1
-                }
-            };
-
-            let (word, bit) = (row / 64, 1u64 << (row % 64));
-            let named = &mut groups[group].named[word];
-            if *named & bit != 0 {
-                return Err(EntityAccessError::Repeated { entity });
-            }
-            *named |= bit;
-            visits.push(Visit { group, row });
         }
-
+        if !failures.is_empty() {
+            return Err(ListAccessError { failures });
+        }
         Ok(Self {
             groups,
             visits,
@@ -113,4 +109,58 @@ impl<'w, Q: Query> QueryMany<'w, Q> {
             visit(Q::read(&mut self.groups[group].plan, row));
         }
     }
+}
+
+/// Places one entry of the list, answering with its visit or with why it was
+/// refused.
+fn admit<'w, Q: Query>(
+    scope: &Scope<'w>,
+    entity: Entity,
+    claims: &mut Claims<'w>,
+    groups: &mut Vec<Group<'w, Q>>,
+    resolved: &mut [Resolved],
+    origin: &'static Location<'static>,
+) -> Result<Visit, EntityAccessError> {
+    let location = scope.location(entity)?;
+    let archetype_id = location.archetype();
+    let archetype = scope.world.archetypes().get(archetype_id)?;
+    let row = location.row();
+    if !scope.row_visible(archetype, row) {
+        return Err(EntityAccessError::NotVisible {
+            entity,
+            scope: scope.scope,
+        });
+    }
+
+    let slot = &mut resolved[archetype_id as usize];
+    let group = match *slot {
+        Resolved::Group(group) => group,
+        Resolved::Refused => return Err(EntityAccessError::NotMatched { entity }),
+        Resolved::Unseen => {
+            let mut builder = PlanBuilder::new(archetype, Vec::new());
+            match Q::prepare(&mut builder) {
+                Some(plan) => {
+                    claims.claim_archetype(archetype_id, archetype, builder.asks(), origin);
+                    groups.push(Group {
+                        plan,
+                        named: vec![0; archetype.len().div_ceil(64)],
+                    });
+                    *slot = Resolved::Group(groups.len() - 1);
+                    groups.len() - 1
+                }
+                None => {
+                    *slot = Resolved::Refused;
+                    return Err(EntityAccessError::NotMatched { entity });
+                }
+            }
+        }
+    };
+
+    let (word, bit) = (row / 64, 1u64 << (row % 64));
+    let named = &mut groups[group].named[word];
+    if *named & bit != 0 {
+        return Err(EntityAccessError::Repeated { entity });
+    }
+    *named |= bit;
+    Ok(Visit { group, row })
 }

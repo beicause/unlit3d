@@ -36,7 +36,7 @@ pub use entity::{Entity, Location};
 #[cfg(feature = "reflect")]
 #[cfg_attr(docsrs, doc(cfg(feature = "reflect")))]
 pub use entity::{EntityProxy, EntityVecProxy};
-pub use error::{ArchetypeAccessError, EntityAccessError, RemoteEntityError};
+pub use error::{ArchetypeAccessError, EntityAccessError, ListAccessError, RemoteEntityError};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use identity::{RemoteEntity, WorldId};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
