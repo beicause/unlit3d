@@ -30,7 +30,9 @@ use unlit_ecs::{Command, Entity, EntityAccessError};
 
 use crate::attachments::FrameAttachments;
 use crate::blit::BlitSource;
-use crate::frame::{Frame, FrameBehaviourOrder, FrameSkip, OnFrame, dispatch_frame};
+use crate::frame::{
+    Frame, FrameBehaviourOrder, FrameSkip, MAX_MEASURED_FRAME_SECONDS, OnFrame, dispatch_frame,
+};
 use crate::offscreen::{PersistentTarget, TargetConfig};
 use crate::pass::{FramePass, FramePassOrder, Pass};
 use crate::renderer::Renderer;
@@ -197,7 +199,9 @@ impl Presenter {
     ///
     /// The callback runs only when an image was acquired, with no borrow of
     /// the render world held. A stepped driver can advance its simulation
-    /// here without spending a step on an unavailable surface. Returning
+    /// here without spending a step on an unavailable surface: acquiring first
+    /// is what makes that the case, so the simulation never banks time that a
+    /// hidden or rebuilding window would then have to catch up on. Returning
     /// false discards the image without rendering or presenting it.
     ///
     /// # Errors
@@ -226,6 +230,10 @@ impl Presenter {
             return Ok(false);
         };
         if !prepare() {
+            // The image was taken for this frame and goes back unpresented:
+            // dropping the surface texture is how a swap-chain image is
+            // returned without being shown.
+            drop(frame);
             return Ok(false);
         }
         with_render_world(host, self.render, |world| {
@@ -611,9 +619,9 @@ type SharedHostPump = Rc<RefCell<HostPump>>;
 impl Command for DrawFrame {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let now = web_time::Instant::now();
-        let delta_time = sync::lock(&self.last)
-            .replace(now)
-            .map_or(0.0, |last| (now - last).as_secs_f32().min(0.1));
+        let delta_time = sync::lock(&self.last).replace(now).map_or(0.0, |last| {
+            (now - last).as_secs_f32().min(MAX_MEASURED_FRAME_SECONDS)
+        });
         let mut frame = Frame {
             delta_time,
             index: self.index.fetch_add(1, Ordering::Relaxed),
