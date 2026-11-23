@@ -125,6 +125,12 @@ impl Default for PresentationPath {
 /// The presenter is a component of its own entity, built by
 /// [`build_presenter`]: everything it holds arrives after the GPU request
 /// resolves, and a component set fixed at spawn has no room for that.
+///
+/// A world holds at most one presenter, and [`present_frames`] finds it
+/// through the [`Presenter`] singleton key. A caller that spawns the value
+/// itself must therefore claim the key --
+/// `bundle![presenter].singleton::<Presenter>()` -- or nothing presents;
+/// [`setup_presenter`] does both.
 pub struct Presenter {
     /// The render sub-world the frames are presented from; `None` when the
     /// renderer, the passes and the presenter share the host world itself.
@@ -367,6 +373,11 @@ fn with_render_world<T>(
 ///
 /// `path` chooses direct presentation or an intermediate texture plus blit,
 /// and `surface_options` configures the surface itself.
+///
+/// The value it answers is not spawned: a caller that puts it in the world
+/// must claim the [`Presenter`] singleton key as it does, which is what
+/// [`setup_presenter`] does for the callers that can spawn it where it is
+/// built.
 ///
 /// # Errors
 ///
@@ -650,7 +661,9 @@ impl Command for DrawFrame {
 /// app suspended for; a world with no winit host counts as resumed.
 ///
 /// A world holds at most one [`Presenter`] -- [`setup_presenter`] claims the
-/// singleton key -- so presenting finds either that one or none.
+/// singleton key -- so presenting finds either that one or none. A presenter
+/// the key was never claimed for is reported rather than passed over in
+/// silence: the run would otherwise draw nothing and give no reason.
 pub fn present_frames() -> OnFrame {
     OnFrame::with_order(
         FrameBehaviourOrder(PRESENT_ORDER),
@@ -665,6 +678,7 @@ pub fn present_frames() -> OnFrame {
                 return;
             }
             let Some(entity) = scope.singleton::<Presenter>() else {
+                warn_about_an_unclaimed_presenter(world);
                 return;
             };
             let Ok(mut presenter) = scope.try_query_one::<&mut Presenter>(entity) else {
@@ -675,6 +689,36 @@ pub fn present_frames() -> OnFrame {
             }
         },
     )
+}
+
+/// Report a [`Presenter`] the world holds without having claimed the key that
+/// lets a frame find it.
+///
+/// Spawning the value and claiming the key are one act in [`setup_presenter`]
+/// and two in a caller that spawns the built value itself, so the second is
+/// easy to leave out -- and the symptom is a run that draws nothing and never
+/// says why. It is said once, since a frame finds the same presenter missing
+/// every frame it runs.
+fn warn_about_an_unclaimed_presenter(world: &World) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.load(Ordering::Relaxed) {
+        return;
+    }
+    if world
+        .root_scope()
+        .query::<&Presenter>()
+        .iter()
+        .next()
+        .is_none()
+    {
+        return;
+    }
+    WARNED.store(true, Ordering::Relaxed);
+    log::error!(
+        "a world holds a Presenter but claims no Presenter singleton key, so no frame is \
+         presented through it: spawn it as bundle![presenter].singleton::<Presenter>(), which \
+         is what setup_presenter does"
+    );
 }
 
 /// The behaviours that keep frames coming: one per turn of the event loop,

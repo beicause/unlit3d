@@ -419,6 +419,11 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
                     return Err("the interactive scene failed".to_owned());
                 }
             }
+            // The frame is drawn as the steps leave it, so the frame a client
+            // reads back afterwards is the one the steps produced: readback
+            // does not draw, so the picture has to be brought up to date before
+            // a client asks for it.
+            interactive.draw(host)?;
             let frame = interactive.frame();
             return Ok(json!({ "frame": frame, "stepped": frame - before }));
         }

@@ -63,11 +63,21 @@ impl SteppedRun {
     }
 
     /// Advance one frame: fold the host's input, step the worlds, fill the mix
-    /// the frame asks for, then draw the render world and count the frame.
+    /// the frame asks for, then draw the render world when `draw` asks and
+    /// count the frame.
+    ///
+    /// Drawing is the caller's to ask for because a draw is not what advances
+    /// the scene: it reads what the steps left behind, and what it writes is
+    /// only what a frame publishes for its readers, which the next frame
+    /// replaces. A run that reads the state back rather than the picture
+    /// therefore skips the draw entirely, which on a software rasterizer is the
+    /// difference between a run that finishes and one that does not. A scene
+    /// that accumulates across draws -- a ping-pong target, a temporal filter --
+    /// needs every frame drawn, which is the caller's to ask for too.
     ///
     /// Anything but [`StepOutcome::Ran`] ends the frame where it stands and is
     /// returned as the outcome; the frame is not counted.
-    pub(super) fn advance(&mut self, host: &World) -> Result<StepOutcome, String> {
+    pub(super) fn advance(&mut self, host: &World, draw: bool) -> Result<StepOutcome, String> {
         refresh_input(host);
         let outcome = self.stepper.step(host, FIXED_FRAME_SECONDS);
         if outcome != StepOutcome::Ran {
@@ -93,7 +103,9 @@ impl SteppedRun {
             if outcome != StepOutcome::Ran {
                 return Ok(outcome);
             }
-            offscreen::render(world, self.renderer)?;
+            if draw {
+                offscreen::render(world, self.renderer)?;
+            }
         }
         self.frames.advance();
         Ok(StepOutcome::Ran)

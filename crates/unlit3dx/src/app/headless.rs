@@ -3,7 +3,7 @@
 //! Every world lives in one place and the run drives them in a fixed order —
 //! gameplay ticks, physics steps as its rate comes due, the audio world fills
 //! the mix the frame asks for, then the render world drains its commands and
-//! draws every frame. With every world stepped at a fixed
+//! draws the frames the capture names. With every world stepped at a fixed
 //! rate, a run is reproducible down to the captured frames and audio samples.
 
 use unlit_ecs::World;
@@ -61,7 +61,9 @@ pub struct HeadlessConfig {
     pub pacing: Pacing,
     /// Which frames to keep, and where to write them.
     ///
-    /// Every frame is drawn; only the named frames are read back.
+    /// The run draws a frame only when the capture names it, so a capture that
+    /// names nothing leaves the run audio-only: the render world still drains
+    /// its commands and dispatches its frames, but none is drawn.
     pub capture: Capture,
     /// The rate the mix is pulled at. The synthesizer takes it from the stream
     /// it renders into.
@@ -174,7 +176,11 @@ pub async fn headless<A: App>(
         if config.pacing.is_spent(index) {
             break;
         }
-        match run.advance(&host)? {
+        // The capture is what decides whether this frame is drawn: a drawn
+        // frame nobody reads is a wasted draw, and a frame the capture names
+        // and the run does not draw is a picture missing from it.
+        let draw = config.capture.wants(index);
+        match run.advance(&host, draw)? {
             StepOutcome::Ran => {}
             StepOutcome::Finished | StepOutcome::Stopped => break,
             StepOutcome::Failed => return Err(format!("the scene failed before frame {index}")),
@@ -193,9 +199,7 @@ pub async fn headless<A: App>(
             output.audio.extend_from_slice(&samples[..take]);
         }
 
-        // Readback remains conditional, so an uncaptured frame still updates
-        // temporal targets: it was drawn by `advance` either way.
-        if config.capture.wants(index) {
+        if draw {
             let texture = {
                 let mut nested = host
                     .root_scope()

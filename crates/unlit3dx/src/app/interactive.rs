@@ -45,8 +45,12 @@ impl Interactive {
     /// Step `frames` frames: advance every world and pull the mix the frames
     /// would have played.
     ///
-    /// Every step renders, even when no capture is requested, so temporal
-    /// render targets see the same frame sequence whether or not it is read back.
+    /// A frame is drawn exactly when the capture names it: a frame drawn and
+    /// not read is a wasted draw, and a frame the capture names and the run
+    /// does not draw is a picture missing from it. A caller that wants the
+    /// picture without a capture draws it with [`Interactive::draw`], which
+    /// draws where the scene then stands -- the same frame a step would have
+    /// drawn, since a draw does not advance the scene.
     ///
     /// The render sub-world dispatches the frame here; the worlds the stepper
     /// drives dispatch theirs in their own ticks. The host world carries no
@@ -54,7 +58,8 @@ impl Interactive {
     /// stepper's fixed rate, which a reader already knows.
     pub fn step(&mut self, host: &World, frames: u32) -> Result<StepOutcome, String> {
         for _ in 0..frames {
-            let outcome = self.run.advance(host)?;
+            let index = self.run.frames.advanced();
+            let outcome = self.run.advance(host, self.capture.wants(index))?;
             if outcome != StepOutcome::Ran {
                 return Ok(outcome);
             }

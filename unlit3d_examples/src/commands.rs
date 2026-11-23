@@ -1,7 +1,7 @@
 use super::{
     Bundle, Command, DynamicBundle, Entity, EntityAccessError, Frame, GpuState, PresentationPath,
     PresenterEntity, SceneAdvance, SceneFrame, SequenceClock, SequenceStep, SequenceStepped,
-    SurfaceOptions, World, build_presenter, bundle,
+    SurfaceOptions, World, bundle, setup_presenter,
 };
 use unlit_wgpu::context::GpuContext as Gpu;
 
@@ -118,7 +118,7 @@ pub(crate) struct BuildPresenter {
 
 impl Command for BuildPresenter {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        let presenter = match build_presenter(
+        let entity = match setup_presenter(
             world,
             Some(self.scene),
             self.renderer,
@@ -130,13 +130,12 @@ impl Command for BuildPresenter {
             self.path,
             self.surface_options,
         ) {
-            Ok(presenter) => presenter,
+            Ok(entity) => entity,
             Err(error) => {
                 log::error!("failed to build the presentation path: {error}");
                 return Ok(());
             }
         };
-        let entity = world.root_scope_mut().spawn(bundle![presenter]);
         world
             .root_scope()
             .try_query_one::<&mut PresenterEntity>(self.app)?
