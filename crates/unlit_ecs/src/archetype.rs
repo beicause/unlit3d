@@ -91,8 +91,11 @@ impl ScopeSummary {
                 let entity = archetype.entities()[row];
                 // The row's own scope, stored beside it: a visibility test per
                 // row is the hot path, and walking the tree for the parent
-                // would be a second lookup for an answer already recorded.
-                entity == caller || world.visible(caller, archetype.scopes()[row])
+                // would be a second lookup for an answer already recorded. The
+                // shared entity is the exception, as in the uniform case above.
+                entity == caller
+                    || entity == world.shared()
+                    || world.visible(caller, archetype.scopes()[row])
             }
         }
     }

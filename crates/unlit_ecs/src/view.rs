@@ -121,8 +121,8 @@ impl<'w> Scope<'w> {
     /// stored at is looked up directly instead of the archetypes being walked.
     /// A lookup that finds nothing is a failure, not a missing row: the entity
     /// is not alive, out of this scope's reach, or its archetype does not
-    /// satisfy the query. A shared row is reachable from every scope, the same
-    /// by handle as it is through [`Scope::query`].
+    /// satisfy the query. The shared entity is reachable from every scope by
+    /// handle; iterating leaves it out, as it leaves out all scaffolding.
     ///
     /// A lookup by handle does not filter the scaffolding: the root and the
     /// shared scope answer like any other entity, which is what lets the
@@ -166,9 +166,9 @@ impl<'w> Scope<'w> {
         let origin = core::panic::Location::caller();
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
-        // The row is out of this scope's reach. This branch is unreachable when
-        // location() requires the entity to be visible from the scope; it stays
-        // for defense against future changes to the visibility contract.
+        // location() admits only what this scope reaches, and row_visible agrees
+        // with it for every such entity. This check guards against the two
+        // drifting apart, and reports the mismatch as a visibility error.
         if !self.row_visible(archetype, location.row()) {
             return Err(EntityAccessError::NotVisible {
                 entity,

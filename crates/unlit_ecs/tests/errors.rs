@@ -390,3 +390,25 @@ fn every_structural_message_names_its_reason() {
         format!("{scene:?} cannot be moved under {child:?}, which it holds"),
     );
 }
+
+/// The shared entity is reachable by handle from every scope, whether its
+/// archetype holds only scaffolding (uniform) or also holds a bare child of
+/// some scope (mixed). Both answers must agree.
+#[test]
+fn the_shared_entity_is_reachable_by_handle_from_any_scope() {
+    let mut world = World::new();
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    let shared = world.shared();
+    let scope = world.scope(scene);
+    assert!(scope.try_query_one::<Entity>(shared).is_ok(), "uniform");
+    assert!(scope.try_query_many::<Entity>(&[shared]).is_ok(), "uniform");
+
+    // A bare child of the scene joins the scaffolding's archetype, making it mixed.
+    let bare = world.scope_mut(scene).spawn(bundle![]);
+    let scope = world.scope(scene);
+    assert!(scope.try_query_one::<Entity>(shared).is_ok(), "mixed");
+    assert!(
+        scope.try_query_many::<Entity>(&[shared, bare]).is_ok(),
+        "mixed"
+    );
+}
