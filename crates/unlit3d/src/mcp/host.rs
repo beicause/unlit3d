@@ -28,7 +28,7 @@ use crate::reflect;
 
 /// The render context the world holds.
 ///
-/// The context is a singleton, spawned by [`spawn_context`](crate::source::spawn_context)
+/// The context is a singleton, spawned by [`spawn_context`]
 /// when the world was given a device; a world without one has no graph to read.
 fn render_context(world: &World) -> Result<RenderContext, String> {
     RenderContext::of(world).ok_or_else(|| "the world has no render context".to_string())

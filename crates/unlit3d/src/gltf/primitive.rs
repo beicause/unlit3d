@@ -1,9 +1,10 @@
 //! Assembling the lit draw one glTF primitive names.
 //!
-//! A model node draws its mesh through [`LitMeshBundle`], the lit family's
-//! spawn shape: the uploaded mesh, the pipeline its key names, the material's
-//! bind group and the pose or weights it binds to. This module turns one
-//! primitive of a document into that draw, which is what
+//! A model node draws its mesh through
+//! [`LitMeshBundle`](crate::lit::LitMeshBundle), the lit family's spawn shape:
+//! the uploaded mesh, the pipeline its key names, the material's bind group and
+//! the pose or weights it binds to. This module turns one primitive of a
+//! document into that draw, which is what
 //! [`LitGltf::to_model`](super::LitGltf::to_model) hands to a model asset.
 
 use super::material::{alpha_cutoff, base_color_uv_set};

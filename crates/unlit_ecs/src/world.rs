@@ -14,8 +14,9 @@
 //! Every entity lives in a scope, and a scope is another entity: the one the
 //! world's tree says it lives in. The world therefore holds a tree, and the
 //! entry points that read or write it are scopes of a scope rather than
-//! methods on the world -- [`Scope`] and [`ScopeMut`]. A scope sees
-//! its own subtree and nothing beside it; only `&World` reaches the root.
+//! methods on the world -- [`Scope`](crate::Scope) and
+//! [`ScopeMut`](crate::ScopeMut). A scope sees its own subtree and nothing
+//! beside it; only `&World` reaches the root.
 //!
 //! An entity's components are fixed when it is spawned; there is no way to add
 //! or remove one later. To change the set of components, despawn the entity
