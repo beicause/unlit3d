@@ -635,20 +635,33 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
             animation.time
         }
     });
+    // Batch reads and writes resolve each archetype's columns once. A handle
+    // that is dead, out of view, or lacks the component is left out of its
+    // batch, so one lost handle does not stop the rest of the batch.
+    let mut indices = Vec::new();
+    let mut entities = Vec::new();
     // Reading the bases is the one input that cannot be skipped: it is the
     // entity state that a change to the base transform arrives through.
     let key = (animation.clip, sample_time);
     let mut resample = *sampled != Some(key);
     let first = sampled.is_none();
-    for (i, base) in bases.iter_mut().enumerate() {
-        if let Some(&entity) = nodes.get(i)
-            && let Ok(mut query) = scope.try_query_one::<&LitModelNodeState>(entity)
-            && query.get().local != *base
-        {
-            base.clone_from(&query.get().local);
-            resample = true;
-        }
-    }
+    reachable::<LitModelNodeState>(
+        scope,
+        nodes.iter().copied().enumerate(),
+        &mut indices,
+        &mut entities,
+    );
+    let mut slots = indices.iter().copied();
+    scope
+        .query_many::<&LitModelNodeState>(&entities)
+        .for_each(|state| {
+            let Some(i) = slots.next() else { return };
+            if state.local != bases[i] {
+                bases[i].clone_from(&state.local);
+                resample = true;
+            }
+        });
+
     // A resample rebuilds every node from its base before the channels run, so
     // a clip that stops driving a node hands back the base, not its last sample.
     if resample {
@@ -693,44 +706,80 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
         moved.fill(true);
         morph_stale.fill(true);
     }
-    for (i, node) in model.nodes.iter().enumerate() {
-        // A skin's pose is built from its joints' matrices, so any joint moving
-        // moves the pose, not just the skinned node moving itself.
-        let pose_moved = node
-            .skin
-            .as_ref()
-            .is_some_and(|skin| skin.joints.iter().any(|&joint| moved[joint]));
-        if !moved[i] && !pose_moved && !morph_stale[i] {
-            continue;
-        }
-        if moved[i] {
-            let transform = Transform::from_matrix(glam::Affine3A::from_mat4(matrices[i]));
-            for &entity in &draws[i] {
-                if let Ok(mut query) = scope.try_query_one::<&mut Transform>(entity) {
-                    query.get().clone_from(&transform);
-                }
-            }
-        }
-        if pose_moved
-            && let Some(Some(entity)) = poses.get(i)
-            && let Some(skin) = &node.skin
-            && let Ok(mut query) = scope.try_query_one::<&mut SkinPose>(*entity)
-        {
-            let pose = &mut query.get().matrices;
-            pose.clear();
-            pose.extend(
+
+    // The draws of every moved node take that node's matrix.
+    let moved_draws = (0..draws.len())
+        .filter(|&i| moved[i])
+        .flat_map(|i| draws[i].iter().map(move |&entity| (i, entity)));
+    reachable::<Transform>(scope, moved_draws, &mut indices, &mut entities);
+    let mut slots = indices.iter().copied();
+    scope
+        .query_many::<&mut Transform>(&entities)
+        .for_each(|transform| {
+            let Some(i) = slots.next() else { return };
+            let matrix = glam::Affine3A::from_mat4(matrices[i]);
+            transform.clone_from(&Transform::from_matrix(matrix));
+        });
+    // A skin's pose is built from its joints' matrices, so any joint moving
+    // moves the pose, not just the skinned node moving itself.
+    let posed = (0..model.nodes.len()).filter_map(|i| {
+        let skin = model.nodes[i].skin.as_ref()?;
+        let entity = (*poses.get(i)?)?;
+        skin.joints
+            .iter()
+            .any(|&joint| moved[joint])
+            .then_some((i, entity))
+    });
+    reachable::<SkinPose>(scope, posed, &mut indices, &mut entities);
+    let mut slots = indices.iter().copied();
+    scope
+        .query_many::<&mut SkinPose>(&entities)
+        .for_each(|pose| {
+            let Some(i) = slots.next() else { return };
+            let Some(skin) = &model.nodes[i].skin else {
+                return;
+            };
+            pose.matrices.clear();
+            pose.matrices.extend(
                 skin.joints
                     .iter()
                     .enumerate()
                     .map(|(joint, &node)| matrices[node] * skin.inverse_bind[joint]),
             );
-        }
-        if morph_stale[i]
-            && let Some(Some(entity)) = weights.get(i)
-            && let Ok(mut query) = scope.try_query_one::<&mut MorphWeights>(*entity)
-        {
-            query.get().weights.clone_from(&morphs[i]);
+        });
+    let morphing = (0..model.nodes.len()).filter_map(|i| {
+        let entity = (*weights.get(i)?)?;
+        morph_stale[i].then_some((i, entity))
+    });
+    reachable::<MorphWeights>(scope, morphing, &mut indices, &mut entities);
+    let mut slots = indices.iter().copied();
+    scope
+        .query_many::<&mut MorphWeights>(&entities)
+        .for_each(|morph| {
+            let Some(i) = slots.next() else { return };
+            morph.weights.clone_from(&morphs[i]);
             morph_stale[i] = false;
+        });
+}
+
+/// Keeps the slots whose entity is alive, visible from `scope`, and carries
+/// `T`, as the index and entity lists a batch query takes. A handle that fails
+/// any of these is left out, so the rest of the batch still goes through.
+fn reachable<T: 'static>(
+    scope: &Scope<'_>,
+    slots: impl IntoIterator<Item = (usize, Entity)>,
+    indices: &mut Vec<usize>,
+    entities: &mut Vec<Entity>,
+) {
+    indices.clear();
+    entities.clear();
+    for (index, entity) in slots {
+        if scope
+            .archetype_of(entity)
+            .is_ok_and(|archetype| archetype.has::<T>())
+        {
+            indices.push(index);
+            entities.push(entity);
         }
     }
 }

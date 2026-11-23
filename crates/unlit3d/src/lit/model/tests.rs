@@ -378,3 +378,54 @@ fn a_base_edit_reaches_a_clip_held_still() {
     LitModelBundle::evaluate(&world.root_scope(), root);
     assert_eq!(point(&world), Vec3::new(2.5, 0.0, 0.0));
 }
+
+#[test]
+fn a_dead_handle_does_not_hold_back_the_rest_of_its_batch() {
+    let morph = || {
+        Some(LitModelMorph {
+            weights: vec![0.25, 0.5],
+        })
+    };
+    let mut first = node(None, Vec3::ZERO);
+    first.morph = morph();
+    let mut second = node(None, Vec3::X);
+    second.morph = morph();
+    let model = LitModel::new(vec![first, second], Vec::new()).expect("the model is well formed");
+    let mut world = World::new();
+    let root = world.root_scope_mut().spawn(LitModelBundle::new(model));
+    let (nodes, weights) = {
+        let scope = world.root_scope();
+        let mut query = scope.query_one::<&LitModelInstance>(root);
+        let instance = query.get();
+        (
+            [instance.nodes()[0], instance.nodes()[1]],
+            [
+                instance.weights()[0].unwrap(),
+                instance.weights()[1].unwrap(),
+            ],
+        )
+    };
+    world.root_scope_mut().despawn(weights[0]).unwrap();
+    world
+        .root_scope()
+        .query_one::<&mut MorphWeights>(weights[1])
+        .get()
+        .weights = vec![9.0, 9.0];
+    // Moving the second node forces a resample, which marks every morph for writing.
+    world
+        .root_scope()
+        .query_one::<&mut LitModelNodeState>(nodes[1])
+        .get()
+        .local
+        .translation
+        .x = 3.0;
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&MorphWeights>(weights[1])
+            .get()
+            .weights,
+        [0.25, 0.5]
+    );
+}
