@@ -188,7 +188,10 @@ pub fn windowed<A: App>(
     };
     world
         .root_scope_mut()
-        .spawn(bundle![frames.clone(), pacing]);
+        .spawn(bundle![pacing].singleton::<Pacing>());
+    world
+        .root_scope_mut()
+        .spawn(bundle![frames.clone()].singleton::<RunFrames>());
     // A windowed run pulls no mix: whatever the scene's audio world does with
     // its samples, the device it opens fills its own ring from its own tick.
     // Only a run that consumes the samples itself holds an `AudioPull`.

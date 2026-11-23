@@ -243,9 +243,17 @@ fn read_presented(
         .map_err(|_| CaptureError::NoRenderWorld)?;
     let render_world = nested.get();
     let context = {
-        let mut renderers = render_world.root_scope().query::<&Renderer>();
-        let renderer = renderers.iter().next().ok_or(CaptureError::NoRenderer)?;
-        renderer.context()
+        let mut renderer = render_world
+            .root_scope()
+            .singleton::<Renderer>()
+            .and_then(|entity| {
+                render_world
+                    .root_scope()
+                    .try_query_one::<&Renderer>(entity)
+                    .ok()
+            })
+            .ok_or(CaptureError::NoRenderer)?;
+        renderer.get().context()
     };
     let device = context
         .device(&render_world.root_scope())

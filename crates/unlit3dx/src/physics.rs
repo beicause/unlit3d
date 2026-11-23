@@ -153,19 +153,22 @@ impl Physics {
 }
 
 impl Bundle for Physics {
+    /// The bundle claims the [`PhysicsWorld`] singleton key: a world holds one
+    /// physics world, and every reader finds its entity through the key.
     fn into_bundle(self) -> DynamicBundle {
-        bundle![self.world, self.events, self.contacts]
+        bundle![self.world, self.events, self.contacts].singleton::<PhysicsWorld>()
     }
+}
+
+/// The entity holding the world's physics world, found through its singleton
+/// key.
+fn physics_entity(world: &World) -> Option<Entity> {
+    world.root_scope().singleton::<PhysicsWorld>()
 }
 
 /// The event plumbing a physics world carries, if it has any.
 fn physics_events(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut PhysicsEvents>> {
-    let entity = world
-        .root_scope()
-        .query::<(Entity, &PhysicsEvents)>()
-        .iter()
-        .next()
-        .map(|(entity, _events)| entity)?;
+    let entity = physics_entity(world)?;
     world
         .root_scope()
         .try_query_one::<&mut PhysicsEvents>(entity)
@@ -174,12 +177,7 @@ fn physics_events(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut PhysicsE
 
 /// The contact buffer a physics world carries, if it has one.
 fn physics_contacts(world: &World) -> Option<unlit_ecs::QueryOne<'_, &mut PhysicsContacts>> {
-    let entity = world
-        .root_scope()
-        .query::<(Entity, &PhysicsContacts)>()
-        .iter()
-        .next()
-        .map(|(entity, _contacts)| entity)?;
+    let entity = physics_entity(world)?;
     world
         .root_scope()
         .try_query_one::<&mut PhysicsContacts>(entity)
@@ -292,13 +290,7 @@ pub fn spawn_fixed_cuboid(world: &mut World, position: Vec3, half_extents: Vec3,
 
 /// The physics world as a mutable guard, for jobs that build bodies.
 fn physics_world(world: &World) -> unlit_ecs::QueryOne<'_, &mut PhysicsWorld> {
-    let entity = world
-        .root_scope()
-        .query::<(Entity, &PhysicsWorld)>()
-        .iter()
-        .next()
-        .map(|(entity, _physics)| entity)
-        .expect("the physics world exists");
+    let entity = physics_entity(world).expect("the physics world exists");
     world.root_scope().query_one::<&mut PhysicsWorld>(entity)
 }
 
@@ -412,11 +404,16 @@ fn step_seconds(config: &PhysicsConfig) -> f32 {
 /// world's own tick calls this; thread-free callers — deterministic tests,
 /// offline rendering — drive the same simulation on a cadence of their own.
 pub fn step_once(world: &World) -> bool {
-    let mut physics_world_rows = world.root_scope().query::<&mut PhysicsWorld>();
-
-    let Some(physics) = physics_world_rows.iter().next() else {
+    let Some(entity) = physics_entity(world) else {
         return false;
     };
+    let Ok(mut physics_row) = world
+        .root_scope()
+        .try_query_one::<&mut PhysicsWorld>(entity)
+    else {
+        return false;
+    };
+    let physics = physics_row.get();
     // The contact events rapier reports this step describe contacts that
     // began during it, and by the time the step returns the solver has
     // already turned the approach into a bounce. Sampling the velocities

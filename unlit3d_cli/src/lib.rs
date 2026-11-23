@@ -146,9 +146,7 @@ pub fn build_world(
     // its own copy of it.
     let handle = device.device.clone();
     let context = spawn_context(&mut world, device, ResourceGraph::new());
-    let renderer = world
-        .root_scope_mut()
-        .spawn(bundle![Renderer::new(context)]);
+    let renderer = world.root_scope_mut().spawn(Renderer::new(context));
 
     let clear = config.output.clear;
     // The frame is one pass: it states what it clears and where it draws, and
@@ -250,9 +248,7 @@ pub fn offscreen_world(
     let mut world = World::new();
     let handle = device.device.clone();
     let context = spawn_context(&mut world, device, ResourceGraph::new());
-    let renderer = world
-        .root_scope_mut()
-        .spawn(bundle![Renderer::new(context)]);
+    let renderer = world.root_scope_mut().spawn(Renderer::new(context));
     // The frame is one pass, drawing into the offscreen target and clearing
     // with the defaults; the mesh source hangs under it.
     let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));

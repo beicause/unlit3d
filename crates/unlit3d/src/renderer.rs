@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 use unlit_wgpu::context::DeviceLost;
 use unlit_wgpu::globals::Globals;
 use unlit_wgpu::scene::{Scene, ViewportRect};
@@ -63,7 +63,7 @@ const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
 /// world
 ///     .scope_mut(pass)
 ///     .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
-/// let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
+/// let renderer = world.root_scope_mut().spawn(Renderer::new(ctx));
 /// ```
 pub struct Renderer {
     /// The world addresses of the frame's GPU state.
@@ -184,6 +184,14 @@ impl MissingCameraWarnings {
         self.reported.clear();
         self.reported.extend_from_slice(missing);
         reported
+    }
+}
+
+impl Bundle for Renderer {
+    /// The bundle claims the [`Renderer`] singleton key: a world drives its
+    /// frames through one renderer, and readers find it through the key.
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self].singleton::<Renderer>()
     }
 }
 

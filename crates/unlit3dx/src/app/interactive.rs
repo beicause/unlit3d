@@ -255,7 +255,8 @@ pub fn interactive<A: App>(
     };
     // The MCP tools read the same frame count from the host.
     let frames = RunFrames::default();
-    host.root_scope_mut().spawn(bundle![frames.clone()]);
+    host.root_scope_mut()
+        .spawn(bundle![frames.clone()].singleton::<RunFrames>());
     let interactive = Interactive {
         run: SteppedRun::new(
             worlds,

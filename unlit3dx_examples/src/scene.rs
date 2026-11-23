@@ -201,9 +201,7 @@ pub fn setup_render_world(
     };
     let world = nested.get();
     let context = spawn_context(world, device, ResourceGraph::new());
-    let renderer = world
-        .root_scope_mut()
-        .spawn(bundle![Renderer::new(context)]);
+    let renderer = world.root_scope_mut().spawn(Renderer::new(context));
     // The pass draws every source below it, so the scene's sources belong to
     // it rather than to the world's root.
     let pass = world.root_scope_mut().spawn(Pass::new(SCENE_PASS_ORDER));

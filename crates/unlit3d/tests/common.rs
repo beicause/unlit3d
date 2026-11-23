@@ -85,9 +85,7 @@ impl TestGpu {
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
-        let renderer = world
-            .root_scope_mut()
-            .spawn(bundle![Renderer::new(context)]);
+        let renderer = world.root_scope_mut().spawn(Renderer::new(context));
         Self {
             context,
             pass,

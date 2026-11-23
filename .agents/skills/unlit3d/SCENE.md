@@ -20,7 +20,7 @@ let ctx = spawn_context(&mut world, RenderDevice::unwatched(device, queue), Reso
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_lit_family(&world.root_scope());
 let key = LitPipelineKey::new(LitOptions::standard());
-let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
+let renderer = world.root_scope_mut().spawn(Renderer::new(ctx));
 
 // pass 是作用域：它录制挂在自己下面的 source。
 let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));

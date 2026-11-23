@@ -275,10 +275,9 @@ fn pump(host: &mut World) -> Result<(), String> {
 /// the first one.
 fn advanced(host: &World) -> u32 {
     host.root_scope()
-        .query::<&RunFrames>()
-        .iter()
-        .next()
-        .map_or(0, |frames| frames.advanced())
+        .singleton::<RunFrames>()
+        .and_then(|entity| host.root_scope().try_query_one::<&RunFrames>(entity).ok())
+        .map_or(0, |mut frames| frames.get().advanced())
 }
 
 /// How many of the `asked` frames the run may still advance before its
@@ -481,12 +480,12 @@ mod tests {
     fn host(pacing: Option<Pacing>) -> (World, RunFrames) {
         let mut host = World::new();
         let frames = RunFrames::default();
-        match pacing {
-            Some(pacing) => host
-                .root_scope_mut()
-                .spawn(bundle![frames.clone(), pacing].singleton::<Pacing>()),
-            None => host.root_scope_mut().spawn(bundle![frames.clone()]),
-        };
+        if let Some(pacing) = pacing {
+            host.root_scope_mut()
+                .spawn(bundle![pacing].singleton::<Pacing>());
+        }
+        host.root_scope_mut()
+            .spawn(bundle![frames.clone()].singleton::<RunFrames>());
         (host, frames)
     }
 

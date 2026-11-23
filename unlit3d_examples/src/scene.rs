@@ -96,9 +96,7 @@ impl Scene {
     ) -> (World, Self) {
         let mut world = World::new();
         let context = spawn_context(&mut world, device, ResourceGraph::new());
-        let renderer = world
-            .root_scope_mut()
-            .spawn(bundle![Renderer::new(context)]);
+        let renderer = world.root_scope_mut().spawn(Renderer::new(context));
         // The pass the scene draws in. Everything the scene builds hangs under
         // it — its sources, and the egui source mounted below — because a pass
         // records the sources in its own scope: the pass a source sits under is
