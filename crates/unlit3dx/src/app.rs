@@ -46,6 +46,7 @@ pub mod interactive;
 pub mod options;
 pub mod windowed;
 
+mod frames;
 mod logging;
 mod offscreen;
 mod scene;
@@ -63,8 +64,8 @@ pub mod pace;
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub mod serve;
 
-pub use crate::frames::RunFrames;
 pub use capture::Capture;
+pub use frames::RunFrames;
 pub use headless::{
     AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, HEADLESS_HZ, HeadlessConfig,
     HeadlessOutput, headless,

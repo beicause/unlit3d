@@ -97,7 +97,7 @@ pub fn setup_presenter(
 /// a run, so they are different variants: the caller decides on the variant,
 /// not on a message.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TurnError {
+pub enum TurnError {
     /// The host carries more than one presenter, so there is no one surface to
     /// present to.
     #[error("the host has more than one presenter")]
@@ -123,7 +123,7 @@ pub(crate) enum TurnError {
 /// advances a simulation and reports how that went: anything but
 /// [`StepOutcome::Ran`] stops the turn. No render-world borrow is held while
 /// the callback runs.
-pub(crate) fn present_turn(
+pub fn present_turn(
     world: &World,
     render: Entity,
     frame: &mut Frame,

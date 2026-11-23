@@ -51,8 +51,6 @@ pub mod channel;
 pub mod egui;
 /// A single-threaded executor for a world's async tasks.
 pub mod executor;
-/// Frame progress shared by render drivers and application loops.
-pub mod frames;
 #[cfg(feature = "render")]
 #[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod gpu;
@@ -137,7 +135,7 @@ pub mod prelude {
         step_once,
     };
     #[cfg(feature = "render")]
-    pub use crate::present::{pump_presented, setup_presenter};
+    pub use crate::present::{TurnError, present_turn, pump_presented, setup_presenter};
     #[cfg(feature = "audio")]
     pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]

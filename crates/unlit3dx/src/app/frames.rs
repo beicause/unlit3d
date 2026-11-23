@@ -1,12 +1,13 @@
-//! Frame progress shared by render drivers and application loops.
+//! Frame progress shared by the application's runs.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The number of frames a run has successfully advanced.
 ///
-/// This type lives below the application feature so a presenter can account
-/// for successful draws without depending on the application skeleton.
+/// A run advances it once per frame it actually drew, so a capture and a
+/// window pace their scenes against the same count. Clones share it, which is
+/// how a reader outside the run tells how far the scene has come.
 #[derive(Clone, Debug, Default)]
 pub struct RunFrames(Arc<AtomicU32>);
 
