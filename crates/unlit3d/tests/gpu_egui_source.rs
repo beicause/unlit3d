@@ -293,7 +293,7 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
     let events = input.subscribe();
     // Input is shared by every view, so it belongs to the shared subtree: a
     // source reads it from its own scope, which cannot see a sibling's.
-    world.scope_mut(world.shared()).spawn(InputPair(events));
+    world.scope_mut(world.shared()).spawn(events);
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
     });

@@ -111,8 +111,7 @@ mod tests {
     #[test]
     fn a_buffer_reflects_its_events_and_the_state_they_left() {
         use crate::input::{
-            InputEvent, InputEvents, InputPair, InputState, InputWriter, Key, KeyEvent,
-            KeyLocation, Modifiers,
+            InputEvent, InputEvents, InputState, InputWriter, Key, KeyEvent, KeyLocation, Modifiers,
         };
 
         let key = InputEvent::Key(KeyEvent {
@@ -124,7 +123,7 @@ mod tests {
         });
         let writer = InputWriter::new();
         let mut world = unlit_ecs::World::new();
-        let entity = world.root_scope_mut().spawn(InputPair(writer.subscribe()));
+        let entity = world.root_scope_mut().spawn(writer.subscribe());
         writer.push(key.clone());
         writer.push(InputEvent::FocusChanged(false));
         // The exclusive borrow ends before the encoding reads the components

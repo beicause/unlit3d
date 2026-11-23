@@ -131,7 +131,7 @@
 | 项 | 是什么 |
 | --- | --- |
 | 写端 | `InputWriter::new` + `push(event)` |
-| 订阅组件 | `InputFeed(InputWriter)`（带写端）与 `InputPair(InputEvents)`（只带缓冲，配 `InputState::default()` 一同落实体）；spawn 进世界才收事件 |
+| 订阅组件 | `InputFeed(InputWriter)`（带写端）与 `InputPair`（只带缓冲与 `InputState`，由 `InputWriter::subscribe()` 返回；每个世界至多一个，单例键 `InputEvents`）；spawn 进世界才收事件 |
 | 派发 | `dispatch_input(&World) -> bool`：取一个 batch、折进 `InputState`、跑行为；不 apply 结构变更 |
 | 读状态 | 直读 `InputState` 组件（与 buffer 同实体、由本 world 的 tick 独占写入）；批走 `InputEvents::with_batch` / `copy_events_into`，tick 用 `refresh`（把批折进同实体的 state） |
 | 行为 | `OnInput`（catch-all）/ `OnKey` / `OnPointer` / `OnMouse` / `OnTouch` / `OnText` / `OnIme` |

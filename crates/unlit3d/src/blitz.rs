@@ -221,11 +221,15 @@ impl FrameSource for BlitzSource {
         let mut buttons = MouseButtons::empty();
         let mut focused = true;
         {
-            // One query reads the buffer and the state beside it together, so
-            // a world with two buffers can never pair one's batch with the
-            // other's state.
-            let mut input = scope.query::<(&InputEvents, &InputState)>();
-            if let Some((events, state)) = input.iter().next() {
+            // The singleton key names the one entity holding the buffer and the
+            // state beside it, so both come from the same tick.
+            let input = scope.singleton::<InputEvents>().and_then(|entity| {
+                scope
+                    .try_query_one::<(&InputEvents, &InputState)>(entity)
+                    .ok()
+            });
+            if let Some(mut row) = input {
+                let (events, state) = row.get();
                 scale_factor = state.scale_factor;
                 cursor = state.cursor;
                 buttons = state.buttons;

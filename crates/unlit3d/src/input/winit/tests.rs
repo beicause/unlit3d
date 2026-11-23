@@ -40,7 +40,7 @@ impl Deref for TestInput {
 
 fn input() -> TestInput {
     let writer = InputWriter::new();
-    let buffer = writer.subscribe();
+    let buffer = writer.subscribe().0;
     let input = WinitInput::new(writer);
     TestInput {
         input,

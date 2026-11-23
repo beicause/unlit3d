@@ -227,22 +227,19 @@ impl InputWriter {
     /// The buffer lives as long as the component holding it: a world that drops
     /// it stops being fed on the next push.
     ///
-    /// The buffer must live beside an [`InputState`] on the same entity, which
-    /// each [`refresh`](InputEvents::refresh) folds the batch into: spawn the
-    /// two together with [`InputFeed`], as
-    /// `bundle![writer.subscribe(), InputState::default()]` does. A buffer
-    /// alone compiles, but nothing ever folds its batch out, so every event it
-    /// is fed piles up unread.
+    /// The buffer comes with the [`InputState`] it folds into, on the same
+    /// entity, so a world spawns the pair this returns. A buffer on its own is
+    /// never folded, and every event it is fed would pile up unread.
     ///
-    /// The buffer is a singleton keyed by [`InputEvents`]: a world dispatches
-    /// one batch per tick, so a second buffer on the same world would be fed
-    /// and never read.
-    pub fn subscribe(&self) -> InputEvents {
-        InputEvents {
+    /// The pair claims the [`InputEvents`] singleton key: a world dispatches
+    /// one batch per tick, so a second buffer in the same world would be fed
+    /// and never read, and its spawn is refused.
+    pub fn subscribe(&self) -> InputPair {
+        InputPair(InputEvents {
             events: self.0.subscribe(),
             touch_baseline: Arc::default(),
             ticks: Arc::default(),
-        }
+        })
     }
 }
 
@@ -258,8 +255,7 @@ pub struct InputFeed(pub InputWriter);
 
 impl Bundle for InputFeed {
     fn into_bundle(self) -> DynamicBundle {
-        bundle![self.0.clone(), self.0.subscribe(), InputState::default()]
-            .singleton::<InputEvents>()
+        bundle![self.0.clone(), ..self.0.subscribe()]
     }
 }
 
@@ -267,8 +263,7 @@ impl Bundle for InputFeed {
 /// writer hands out, in the pairing the world's tick requires.
 ///
 /// A buffer without its state beside it is never consumed by the tick, so
-/// this is the one way to spawn a subscription that cannot come out of pair:
-/// the state is created on the same entity, at the same moment.
+/// [`InputWriter::subscribe`] hands out this pair rather than the buffer alone.
 pub struct InputPair(pub InputEvents);
 
 impl Bundle for InputPair {
@@ -295,32 +290,16 @@ impl Bundle for InputPair {
 ///
 /// Returns whether the world has an input buffer at all.
 pub fn refresh_input(world: &World) -> bool {
-    let entities: Vec<_> = world
+    let Some(entity) = world.root_scope().singleton::<InputEvents>() else {
+        return false;
+    };
+    let mut row = world
         .root_scope()
-        .query::<(&InputEvents, Entity)>()
-        .iter()
-        .map(|(_input_events, entity)| entity)
-        .collect();
-    let present = !entities.is_empty();
-    for entity in entities {
-        if let Ok(mut row) = world
-            .root_scope()
-            .try_query_one::<(&InputEvents, &mut InputState)>(entity)
-        {
-            let (buffer, state) = row.get();
-            buffer.refresh(state);
-        } else {
-            // A buffer that was spawned without the state it folds into. The
-            // archetype is fixed once the entity exists, so there is nothing
-            // to repair here; warn so the pile-up is traced to its cause.
-            log::warn!(
-                "an input buffer on {entity:?} has no InputState beside it, so \
-                its events are never consumed; spawn InputEvents and InputState \
-                together, as InputFeed does"
-            );
-        }
-    }
-    present
+        .try_query_one::<(&InputEvents, &mut InputState)>(entity)
+        .expect("the input buffer's singleton holder carries its state");
+    let (buffer, state) = row.get();
+    buffer.refresh(state);
+    true
 }
 
 /// Give `world` an input buffer of its own.
@@ -351,7 +330,7 @@ pub fn subscribe_input(world: &mut World) -> bool {
     // The buffer belongs to the shared subtree: a source reads the world's
     // input from its own scope, and a sibling's component is out of reach.
     let shared = world.shared();
-    world.scope_mut(shared).spawn(InputPair(events));
+    world.scope_mut(shared).spawn(events);
     true
 }
 
@@ -501,16 +480,17 @@ pub fn dispatch_input(world: &World) -> bool {
     if !refresh_input(world) {
         return false;
     }
-    let mut input_events_rows = world.root_scope().query::<&InputEvents>();
-
+    let Some(entity) = world.root_scope().singleton::<InputEvents>() else {
+        return false;
+    };
     // The batch is copied out while the component is borrowed, so a callback
     // may read the world — including this component — freely.
-    let Some(events) = input_events_rows
-        .iter()
-        .next()
-        .map(|input_events| input_events.with_batch(|batch| batch.to_vec()))
-    else {
-        return false;
+    let events = {
+        let mut row = world
+            .root_scope()
+            .try_query_one::<&InputEvents>(entity)
+            .expect("the input buffer's singleton holder is in reach");
+        row.get().with_batch(|batch| batch.to_vec())
     };
 
     let delivered = !events.is_empty();

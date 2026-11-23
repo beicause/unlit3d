@@ -733,7 +733,7 @@ fn a_slow_consumer_reads_every_event() {
 #[test]
 fn every_reader_of_a_world_sees_the_same_batch() {
     let input = InputWriter::new();
-    let buffer = input.subscribe();
+    let buffer = input.subscribe().0;
     let mut state = InputState::default();
 
     input.push(key_event(Key::A));
@@ -759,8 +759,8 @@ fn every_reader_of_a_world_sees_the_same_batch() {
 #[test]
 fn each_world_builds_its_own_state() {
     let input = InputWriter::new();
-    let first = input.subscribe();
-    let second = input.subscribe();
+    let first = input.subscribe().0;
+    let second = input.subscribe().0;
     let mut first_state = InputState::default();
     let mut second_state = InputState::default();
 
@@ -786,7 +786,7 @@ fn each_world_builds_its_own_state() {
 #[test]
 fn a_slow_world_builds_the_state_its_events_describe() {
     let input = InputWriter::new();
-    let buffer = input.subscribe();
+    let buffer = input.subscribe().0;
     let mut state = InputState::default();
 
     input.push(InputEvent::ModifiersChanged(Modifiers {
@@ -815,7 +815,7 @@ fn a_slow_world_builds_the_state_its_events_describe() {
 #[test]
 fn the_touch_baseline_is_the_count_before_the_batch() {
     let input = InputWriter::new();
-    let buffer = input.subscribe();
+    let buffer = input.subscribe().0;
     let mut state = InputState::default();
 
     // One finger lands and is folded in by this tick.

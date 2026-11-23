@@ -190,10 +190,9 @@ fn build(
                     // the user is working in.
                     ui.separator();
                     let held = world
-                        .query::<(&InputEvents, &InputState)>()
-                        .iter()
-                        .next()
-                        .is_some_and(|(_, state)| state.pointer_down);
+                        .singleton::<InputEvents>()
+                        .and_then(|entity| world.try_query_one::<&InputState>(entity).ok())
+                        .is_some_and(|mut row| row.get().pointer_down);
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.try_query_one::<&CameraOrbit>(orbit) {
                         Ok(mut orbit) => {

@@ -497,7 +497,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 // This world is a sibling of the host, not a world nested in
                 // it, so the host's fan-out never reaches it: it takes its own
                 // buffer, once, before the first tick reads one.
-                world.root_scope_mut().spawn(InputPair(input.subscribe()));
+                world.root_scope_mut().spawn(input.subscribe());
                 world
                     .root_scope_mut()
                     .spawn(bundle![OnFrame::new(|world, _entity, _frame| {
@@ -808,10 +808,11 @@ mod tests {
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![EguiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
-                        if let Some((_, events)) =
-                            world.query::<(Entity, &InputEvents)>().iter().next()
+                        if let Some(mut row) = world
+                            .singleton::<InputEvents>()
+                            .and_then(|entity| world.try_query_one::<&InputEvents>(entity).ok())
                         {
-                            events.with_batch(|batch| {
+                            row.get().with_batch(|batch| {
                                 counted.fetch_add(batch.len(), Ordering::Relaxed);
                             });
                         }

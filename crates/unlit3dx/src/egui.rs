@@ -157,7 +157,17 @@ impl EguiPanelHost {
         let mut events = core::mem::take(&mut self.input_scratch);
         events.clear();
         let mut active_touches = 0;
-        if let Some(input_events) = world.root_scope().query::<&InputEvents>().iter().next() {
+        if let Some(mut row) = world
+            .root_scope()
+            .singleton::<InputEvents>()
+            .and_then(|entity| {
+                world
+                    .root_scope()
+                    .try_query_one::<&InputEvents>(entity)
+                    .ok()
+            })
+        {
+            let input_events = row.get();
             input_events.copy_events_into(&mut events);
             active_touches = input_events.touch_baseline();
         }
@@ -294,7 +304,7 @@ mod tests {
     use unlit_ecs::bundle;
     use unlit_wgpu::egui::ScreenDescriptor;
     use unlit3d::egui::EguiPanel;
-    use unlit3d::input::{InputPair, InputWriter, Modifiers, refresh_input};
+    use unlit3d::input::{InputWriter, Modifiers, refresh_input};
     use unlit3d::relay::Snapshot;
     use unlit3d::source::FrameSourceOrder;
 
@@ -457,7 +467,7 @@ mod tests {
         let (mut world, runs) = counting_world();
         let mut test = TestUi::new();
         let writer = InputWriter::new();
-        world.root_scope_mut().spawn(InputPair(writer.subscribe()));
+        world.root_scope_mut().spawn(writer.subscribe());
         settle(&mut test, &world);
 
         let settled = runs.get();
@@ -615,7 +625,7 @@ mod tests {
                 });
             }),]);
         let writer = InputWriter::new();
-        world.root_scope_mut().spawn(InputPair(writer.subscribe()));
+        world.root_scope_mut().spawn(writer.subscribe());
         let mut test = TestUi::with_capacity(1);
         test.target.publish(test_target());
 

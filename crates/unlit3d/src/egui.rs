@@ -329,22 +329,29 @@ impl FrameSource for EguiSource {
             .expect("the context's queue resource exists");
         // Input arrives as world components: the world's own [`InputEvents`]
         // holds what arrived this tick, and the [`InputState`] beside it
-        // holds what the ticks before it left behind. One query reads the two
-        // together, so a world with two buffers can never pair one's batch
-        // with the other's state. They are shared with everything else in the
+        // holds what the ticks before it left behind. The singleton key names
+        // the one entity that holds both, so the batch and the state always
+        // come from the same tick. They are shared with everything else in the
         // world — the overlay reads this tick's batch, it does not take it. A
         // world without a buffer is not an error: the overlay still lays out
         // at the target's own size, unfeed.
-        let mut input_rows = scope.query::<(&InputEvents, &InputState)>();
-        let input = input_rows.iter().next().map(|(input_events, state)| {
-            (
-                // The count the batch is translated from, not the state it has
-                // since folded into: the state already holds the batch, and
-                // counting it against itself would count every touch twice.
-                input_events.touch_baseline(),
-                (state.scale_factor, state.size_px, state.focused),
-            )
-        });
+        let input = scope
+            .singleton::<InputEvents>()
+            .and_then(|entity| {
+                scope
+                    .try_query_one::<(&InputEvents, &InputState)>(entity)
+                    .ok()
+            })
+            .map(|mut row| {
+                let (input_events, state) = row.get();
+                (
+                    // The count the batch is translated from, not the state it has
+                    // since folded into: the state already holds the batch, and
+                    // counting it against itself would count every touch twice.
+                    input_events.touch_baseline(),
+                    (state.scale_factor, state.size_px, state.focused),
+                )
+            });
         let (active_touches, state) = match input {
             Some((baseline, state)) => (baseline, Some(state)),
             None => (0, None),
@@ -371,9 +378,11 @@ impl FrameSource for EguiSource {
         // once the pass is over rather than allocated again.
         let mut event_scratch = core::mem::take(&mut self.event_scratch);
         event_scratch.clear();
-        if let Some((input_events, _state)) =
-            scope.query::<(&InputEvents, &InputState)>().iter().next()
+        if let Some(mut row) = scope
+            .singleton::<InputEvents>()
+            .and_then(|entity| scope.try_query_one::<&InputEvents>(entity).ok())
         {
+            let input_events = row.get();
             input_events.with_batch(|batch| {
                 convert::to_egui_events_into(
                     batch,
