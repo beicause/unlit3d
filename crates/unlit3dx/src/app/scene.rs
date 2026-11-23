@@ -129,6 +129,12 @@ impl AudioPull {
         }
     }
 
+    /// The samples the last pull filled.
+    #[must_use]
+    pub fn samples(&self) -> &[f32] {
+        &self.samples
+    }
+
     /// Fill the mix `delta_seconds` asks for and hand back the samples.
     ///
     /// The frames come out of `host`'s audio world at `world`, which must be

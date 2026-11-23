@@ -49,6 +49,7 @@ pub mod windowed;
 mod logging;
 mod offscreen;
 mod scene;
+mod stepped;
 mod window_frame;
 
 pub mod capture;
@@ -65,7 +66,8 @@ pub mod serve;
 pub use crate::frames::RunFrames;
 pub use capture::Capture;
 pub use headless::{
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, HeadlessConfig, HeadlessOutput, headless,
+    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, HEADLESS_HZ, HeadlessConfig,
+    HeadlessOutput, headless,
 };
 pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;

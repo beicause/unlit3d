@@ -9,28 +9,26 @@ use unlit_ecs::{Entity, World, bundle};
 use unlit_wgpu::context::RenderDevice;
 use unlit_wgpu::resources::ResHandle;
 use unlit3d::egui::EguiTarget;
-use unlit3d::frame::Frame;
-use unlit3d::input::{InputEvent, InputFeed, InputWriter, MouseButton, MouseEvent, refresh_input};
+use unlit3d::input::{InputEvent, InputFeed, InputWriter, MouseButton, MouseEvent};
 use unlit3d::relay::Snapshot;
 
 use super::App;
 use super::capture::Capture;
-use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, RENDER_COMMAND_CAPACITY};
+use super::headless::{AUDIO_SAMPLE_RATE, RENDER_COMMAND_CAPACITY};
 use super::offscreen;
-use super::scene::{AudioPull, Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds, Stepping};
+use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds};
+use super::stepped::SteppedRun;
 use crate::audio::AudioFormat;
-use crate::host::{drain_sub_world, spawn_sub_world, tick_sub_world};
+use crate::host::{drain_sub_world, spawn_sub_world};
 use crate::record::{RecordedAudio, RecordingHandle, start_recording};
 use crate::world::{StepOutcome, Stepped, with_stepped_world_mut};
 
 /// An interactive scene stepping inline: one frame per call, no pacing of
 /// its own.
 pub struct Interactive {
-    worlds: SceneWorlds,
-    /// The render sub-world the frames are drawn in.
-    render: Entity,
+    /// The stepped worlds, the render path, and the frame counter.
+    run: SteppedRun,
     input: InputWriter,
-    renderer: Entity,
     /// The texture the offscreen pass draws into. Its resource id is what a
     /// caller reads frames back through.
     pub target: ResHandle<wgpu::Texture>,
@@ -38,13 +36,6 @@ pub struct Interactive {
     /// than on the loop that advances it, so every way of advancing the run
     /// — its own pacing, or a client stepping it — captures the same frames.
     pub capture: Capture,
-    stepper: Stepping,
-    frames: RunFrames,
-    frame: Frame,
-    /// The mix's puller, and the format it fills at. A recording observes the
-    /// fills, so the run pulls even when no one reads the samples back.
-    mix: AudioPull,
-    format: AudioFormat,
     recording: Option<RecordingHandle>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -63,39 +54,11 @@ impl Interactive {
     /// stepper's fixed rate, which a reader already knows.
     pub fn step(&mut self, host: &World, frames: u32) -> Result<StepOutcome, String> {
         for _ in 0..frames {
-            // The host has no behaviour of its own to route input to, but it
-            // holds a buffer so a caller can feed and read one, and a buffer
-            // no one folds keeps every event it is fed. Folding it is the
-            // whole of what this world needs on a tick.
-            refresh_input(host);
-            let outcome = self.stepper.step(host, 1.0 / HEADLESS_HZ);
+            let outcome = self.run.advance(host)?;
             if outcome != StepOutcome::Ran {
                 return Ok(outcome);
             }
-            self.frame.index = self.frames.advanced();
-            // A recording observes the fills, so the frame has to fill even
-            // when nothing reads the samples back: the notes the frame booked
-            // only become recorded audio through a fill. Drawing without a
-            // recording fill would leave the mix ringing nothing at all.
-            self.mix.pull(
-                host,
-                self.worlds.audio.entity,
-                1.0 / HEADLESS_HZ,
-                self.format,
-            )?;
-            {
-                let mut nested = host
-                    .root_scope()
-                    .try_query_one::<&mut World>(self.render)
-                    .map_err(|error| format!("the render world is unavailable: {error}"))?;
-                let outcome = tick_sub_world(nested.get(), &mut self.frame);
-                if outcome != StepOutcome::Ran {
-                    return Ok(outcome);
-                }
-                offscreen::render(nested.get(), self.renderer)?;
-            }
-            self.frames.advance();
-            self.capture_frame(host, self.frame.index)?;
+            self.capture_frame(host, self.run.frame.index)?;
         }
         Ok(StepOutcome::Ran)
     }
@@ -129,13 +92,13 @@ impl Interactive {
     /// next step draws as.
     #[must_use]
     pub fn frame(&self) -> u32 {
-        self.frames.advanced()
+        self.run.frames.advanced()
     }
 
     /// The handles the scene's worlds were spawned under.
     #[must_use]
     pub fn worlds(&self) -> &SceneWorlds {
-        &self.worlds
+        self.run.stepper.worlds()
     }
 
     /// The entity the render sub-world is spawned under.
@@ -144,7 +107,7 @@ impl Interactive {
     /// through, so it stays part of what an interactive host offers.
     #[must_use]
     pub fn render_world(&self) -> Entity {
-        self.render
+        self.run.render
     }
 
     /// Draw the current scene without stepping, then read back its pixels.
@@ -159,9 +122,9 @@ impl Interactive {
         let texture = {
             let mut nested = host
                 .root_scope()
-                .try_query_one::<&World>(self.render)
+                .try_query_one::<&World>(self.run.render)
                 .map_err(|error| format!("the render world is unavailable: {error}"))?;
-            offscreen::texture(nested.get(), self.renderer, &self.target)?
+            offscreen::texture(nested.get(), self.run.renderer, &self.target)?
         };
         offscreen::read(&self.device, &self.queue, &texture).await
     }
@@ -170,14 +133,14 @@ impl Interactive {
     pub fn draw(&self, host: &World) -> Result<(), String> {
         let mut nested = host
             .root_scope()
-            .try_query_one::<&mut World>(self.render)
+            .try_query_one::<&mut World>(self.run.render)
             .map_err(|error| format!("the render world is unavailable: {error}"))?;
         let world = nested.get();
         let outcome = drain_sub_world(world);
         if outcome != StepOutcome::Ran {
             return Err(format!("the render world cannot draw: {outcome:?}"));
         }
-        offscreen::render(world, self.renderer)
+        offscreen::render(world, self.run.renderer)
     }
 
     /// Click at `position`: move the pointer there, then press and release
@@ -207,7 +170,7 @@ impl Interactive {
             return Err("the audio world is already recording".to_owned());
         }
         self.recording = Some(
-            with_stepped_world_mut(host, self.worlds.audio.entity, |audio| {
+            with_stepped_world_mut(host, self.worlds().audio.entity, |audio| {
                 start_recording(audio, max_seconds)
             })
             .map_err(|error| format!("recording could not start: {error}"))?,
@@ -220,7 +183,7 @@ impl Interactive {
         let Some(recording) = self.recording.take() else {
             return Ok(None);
         };
-        with_stepped_world_mut(host, self.worlds.audio.entity, |world| {
+        with_stepped_world_mut(host, self.worlds().audio.entity, |world| {
             recording.stop(world)
         })
         .map(|audio| audio.map(Recording::from))
@@ -289,22 +252,16 @@ pub fn interactive<A: App>(
     let frames = RunFrames::default();
     host.root_scope_mut().spawn(bundle![frames.clone()]);
     let interactive = Interactive {
-        stepper: Stepping::new(worlds.clone(), A::PHYSICS_HZ),
-        frames,
-        worlds,
-        render: render.entity,
+        run: SteppedRun::new(
+            worlds,
+            A::PHYSICS_HZ,
+            frames,
+            render.entity,
+            renderer,
+            AUDIO_SAMPLE_RATE,
+        ),
         input,
-        renderer,
         target: target.texture,
-        frame: Frame {
-            delta_time: (1.0 / HEADLESS_HZ) as f32,
-            index: 0,
-        },
-        mix: AudioPull::new(AUDIO_SAMPLE_RATE),
-        format: AudioFormat {
-            sample_rate: AUDIO_SAMPLE_RATE,
-            channels: AUDIO_CHANNELS as u16,
-        },
         recording: None,
         capture: Capture::default(),
         device: device.device,

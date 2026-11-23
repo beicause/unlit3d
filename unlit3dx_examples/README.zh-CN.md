@@ -56,7 +56,7 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
 宿主自己的 world，骨架的 `Stepping` 一帧一帧地推进它们：物理按它自己的频率
 （`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
-时长就是这个运行给定的 `HEADLESS_HZ`。`--max-frames` 让运行在走满这么多帧后结束，
+时长就是这个运行给定的 `FIXED_FRAME_SECONDS`（即 `HEADLESS_HZ` 的倒数）。`--max-frames` 让运行在走满这么多帧后结束，
 `--capture-frames` 点名要留哪几帧：每帧在 `--capture-out` 下写成
 `frame_<index>.png`，运行真的播放过东西时再写一段 `audio.flac`。两个开关在窗口运行上
 同样生效，只是窗口上的捕获还会把呈现切到离屏路径——交换链的图读不回来——而窗口只

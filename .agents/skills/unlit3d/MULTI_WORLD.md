@@ -51,7 +51,7 @@ windowed(
 // 示意骨架：render_world/pass/device 来自 setup_render_world 返回的装配（ctx 是它的
 // RenderContext），size 是你要的离屏尺寸；名字对应该文其它片段。捕获帧的进程给
 // setup_render_world 的 panel 参数传 None，pass 下就只有 mesh source。
-let step = 1.0 / HEADLESS_HZ;                                 // 每帧时长（秒）
+let step = FIXED_FRAME_SECONDS;                               // 每帧时长（秒）
 // 目标建在它在的那个 world 里；pass 由 setup_render_world 建好。
 let target = PersistentTarget::bind(&render_world, ctx, pass.0, &device, size, TargetConfig::default())
     .expect("the offscreen target is bound");

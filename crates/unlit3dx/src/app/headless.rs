@@ -8,16 +8,15 @@
 
 use unlit_ecs::World;
 use unlit_wgpu::context::RenderDevice;
-use unlit3d::frame::Frame;
-use unlit3d::input::{InputFeed, InputWriter, refresh_input};
+use unlit3d::input::{InputFeed, InputWriter};
 
 use super::App;
 use super::capture::Capture;
 use super::offscreen;
 use super::pace::Pacing;
-use super::scene::{AudioPull, Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
-use crate::audio::AudioFormat;
-use crate::host::{spawn_sub_world, tick_sub_world};
+use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts};
+use super::stepped::SteppedRun;
+use crate::host::spawn_sub_world;
 use crate::world::{StepOutcome, Stepped};
 
 /// The audio sample rate a run renders at when its configuration names no
@@ -33,6 +32,10 @@ pub const AUDIO_CHANNELS: usize = 2;
 /// Nothing measures it: it is the exact step each frame asks for, which is
 /// what makes a run reproducible.
 pub const HEADLESS_HZ: f64 = 60.0;
+
+/// The duration of one frame a run without a display steps at, in seconds:
+/// the single source of the fixed step every such run hands its frames.
+pub const FIXED_FRAME_SECONDS: f64 = 1.0 / HEADLESS_HZ;
 
 /// The capacity a render sub-world's mailbox gets when a configuration names
 /// no other.
@@ -149,20 +152,16 @@ pub async fn headless<A: App>(
         audio: Vec::new(),
         advanced: 0,
     };
-    let mut frame = Frame {
-        delta_time: (1.0 / HEADLESS_HZ) as f32,
-        index: 0,
-    };
-    // The stepper carries the physics remainder: physics runs at its own rate,
-    // not necessarily an integer multiple of the frame rate, so it accumulates
-    // the fractional steps across frames. The puller carries the mix's.
-    let frames = RunFrames::default();
-    let mut stepper = Stepping::new(worlds, A::PHYSICS_HZ);
-    let mut mix = AudioPull::new(config.audio_sample_rate);
-    let format = AudioFormat {
-        sample_rate: config.audio_sample_rate,
-        channels: AUDIO_CHANNELS as u16,
-    };
+    // The run keeps the physics remainder and the mix's across frames; see
+    // `SteppedRun`.
+    let mut run = SteppedRun::new(
+        worlds,
+        A::PHYSICS_HZ,
+        RunFrames::default(),
+        render.entity,
+        renderer,
+        config.audio_sample_rate,
+    );
     // An unbounded run keeps a bounded mix: see `UNBOUNDED_MIX_SECONDS`.
     let mix_limit = config.pacing.frames.map_or_else(
         || (UNBOUNDED_MIX_SECONDS * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS,
@@ -171,35 +170,17 @@ pub async fn headless<A: App>(
     let mut mix_capped = false;
 
     loop {
-        let index = frames.advanced();
+        let index = run.frames.advanced();
         if config.pacing.is_spent(index) {
             break;
         }
-        frame.index = index;
-
-        // The host's own buffer is folded every frame so the events a client
-        // injected are consumed rather than piling up: the scene's worlds
-        // subscribed to the same writer, and each folds its own copy on its
-        // own tick. The host has no behaviour reading it, so the result is
-        // dropped.
-        refresh_input(&host);
-
-        // The worlds step once for this frame: gameplay first, so the notes
-        // its sequences play reach the audio world before it steps, then
-        // physics as its rate comes due and audio for the jobs booked.
-        match stepper.step(&host, 1.0 / HEADLESS_HZ) {
+        match run.advance(&host)? {
             StepOutcome::Ran => {}
             StepOutcome::Finished | StepOutcome::Stopped => break,
             StepOutcome::Failed => return Err(format!("the scene failed before frame {index}")),
         }
 
-        // Audio: render whatever samples the frame's duration asks for.
-        let samples = mix.pull(
-            &host,
-            stepper.worlds().audio.entity,
-            1.0 / HEADLESS_HZ,
-            format,
-        )?;
+        let samples = run.mix.samples();
         if !samples.is_empty() {
             let room = mix_limit.saturating_sub(output.audio.len());
             if room < samples.len() && !mix_capped {
@@ -212,36 +193,22 @@ pub async fn headless<A: App>(
             output.audio.extend_from_slice(&samples[..take]);
         }
 
-        // The render world advances and renders every frame. Readback remains
-        // conditional, so an uncaptured frame still updates temporal targets.
-        let texture = {
-            let mut nested = host
-                .root_scope()
-                .try_query_one::<&mut World>(render.entity)
-                .map_err(|error| format!("the render world is unavailable: {error}"))?;
-            let world = nested.get();
-            match tick_sub_world(world, &mut frame) {
-                StepOutcome::Ran => {}
-                StepOutcome::Finished | StepOutcome::Stopped => break,
-                StepOutcome::Failed => {
-                    return Err(format!("the render world failed before frame {index}"));
-                }
-            }
-            offscreen::render(world, renderer)?;
-            config
-                .capture
-                .wants(index)
-                .then(|| offscreen::texture(world, renderer, &target.texture))
-                .transpose()?
-        };
-        frames.advance();
-        if let Some(texture) = texture {
+        // Readback remains conditional, so an uncaptured frame still updates
+        // temporal targets: it was drawn by `advance` either way.
+        if config.capture.wants(index) {
+            let texture = {
+                let mut nested = host
+                    .root_scope()
+                    .try_query_one::<&World>(run.render)
+                    .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                offscreen::texture(nested.get(), run.renderer, &target.texture)?
+            };
             let (_, _, pixels) = offscreen::read(&device.device, &device.queue, &texture).await?;
             config.capture.write_frame(index, &pixels, config.size)?;
             output.frames.push((index, pixels));
         }
     }
 
-    output.advanced = frames.advanced();
+    output.advanced = run.frames.advanced();
     Ok(output)
 }

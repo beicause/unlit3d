@@ -70,7 +70,7 @@ the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
 in the host's own world, and the skeleton's `Stepping` advances them one
 frame at a time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes
 due, the synth fills as its sample rate does, and gameplay ticks once per
-frame with the duration the run gives it (`HEADLESS_HZ`). `--max-frames`
+frame with the duration the run gives it (`FIXED_FRAME_SECONDS`, the inverse of `HEADLESS_HZ`). `--max-frames`
 ends the run once it has advanced that many frames, and `--capture-frames`
 names the frames to keep: each one lands in `--capture-out` as
 `frame_<index>.png`, and the run's whole audio mix as `audio.flac` when it

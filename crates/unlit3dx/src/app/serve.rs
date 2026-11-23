@@ -18,7 +18,9 @@ use unlit3d::winit::builtin::ExitRequest;
 
 use super::App;
 use super::capture::Capture;
-use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HEADLESS_HZ, UNBOUNDED_MIX_SECONDS};
+use super::headless::{
+    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, UNBOUNDED_MIX_SECONDS,
+};
 use super::interactive::{Interactive, interactive};
 use super::pace::Pacing;
 use super::scene::RunFrames;
@@ -101,7 +103,7 @@ pub fn serve<A: App>(
         {
             let interactive = interactive.get();
             let seconds = match pacing.frames {
-                Some(count) => count as f32 / HEADLESS_HZ as f32,
+                Some(count) => count as f32 * FIXED_FRAME_SECONDS as f32,
                 // A client-paced run has no length to read here, so what
                 // bounds the mix is the same cap an unbounded run uses.
                 None => UNBOUNDED_MIX_SECONDS,
@@ -216,7 +218,7 @@ fn pump_until_done(host: &mut World, pacing: Pacing) -> Result<(), String> {
 /// pace. The count ends the run, and so does a client's exit request; a
 /// host with no count runs until one of those happens.
 fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), String> {
-    let step = Duration::from_secs_f64(1.0 / HEADLESS_HZ);
+    let step = Duration::from_secs_f64(FIXED_FRAME_SECONDS);
     let mut next = Instant::now() + step;
     while !pacing.is_spent(advanced(host)) {
         {
@@ -426,7 +428,7 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         };
         let mut stepped = 0;
         while stepped < frames {
-            match window.submit(host, (1.0 / HEADLESS_HZ) as f32) {
+            match window.submit(host, FIXED_FRAME_SECONDS as f32) {
                 // A frame that drew, and one the surface had no image for,
                 // both count as stepped: the run moved on either way, and the
                 // client asked for frames of the run, not of the display.
