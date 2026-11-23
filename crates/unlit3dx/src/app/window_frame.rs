@@ -6,13 +6,13 @@ use std::rc::Rc;
 use unlit_ecs::{Entity, World};
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::ExitRequest;
-use unlit3d::winit::presenter::PRESENT_ORDER;
+use unlit3d::winit::presenter::{PRESENT_ORDER, Presenter};
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use super::Capture;
 use super::{Pacing, RunFrames, Stepping};
 use crate::host::drain_sub_world;
-use crate::present::{TurnError, present_turn};
+use crate::present::{TurnError, TurnOutcome, present_turn};
 use crate::world::{StepOutcome, drain_all_stepped_worlds};
 
 #[derive(Clone, Default)]
@@ -94,7 +94,7 @@ impl WindowFrames {
             }
         });
         match result {
-            Ok(true) => {
+            Ok(TurnOutcome::Presented) => {
                 self.frames.advance();
                 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
                 if let Some(capture) = &self.capture
@@ -109,7 +109,11 @@ impl WindowFrames {
                 }
                 FrameOutcome::Presented
             }
-            Ok(false) => match self.service_idle(world) {
+            // Nothing can be presented yet, or the host is suspended: the
+            // render world's clients may still be waiting on its setup, so
+            // nothing is drained.
+            Ok(TurnOutcome::Waiting) => FrameOutcome::Skipped,
+            Ok(TurnOutcome::Skipped) => match self.service_idle(world) {
                 Ok(()) => FrameOutcome::Skipped,
                 Err(error) => FrameOutcome::Failed(error.to_string()),
             },
@@ -127,6 +131,17 @@ impl WindowFrames {
     }
 
     fn service_idle(&self, world: &World) -> Result<(), TurnError> {
+        // Until the presentation path exists the render world's setup has not
+        // finished, and the jobs queued for it assume it has.
+        if world
+            .root_scope()
+            .query::<&Presenter>()
+            .iter()
+            .next()
+            .is_none()
+        {
+            return Ok(());
+        }
         let failed = drain_all_stepped_worlds(world);
         if !failed.is_empty() {
             return Err(TurnError::Jobs(failed));

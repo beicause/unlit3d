@@ -135,7 +135,9 @@ pub mod prelude {
         step_once,
     };
     #[cfg(feature = "render")]
-    pub use crate::present::{TurnError, present_turn, pump_presented, setup_presenter};
+    pub use crate::present::{
+        TurnError, TurnOutcome, present_turn, pump_presented, setup_presenter,
+    };
     #[cfg(feature = "audio")]
     pub use crate::record::RecordingFormat;
     #[cfg(feature = "synth")]

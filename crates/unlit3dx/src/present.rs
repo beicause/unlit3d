@@ -119,28 +119,53 @@ pub enum TurnError {
     Present(#[from] PresenterError),
 }
 
+/// What one render turn came to.
+///
+/// A turn that finds no image to draw into and one that has nothing to present
+/// through are told apart rather than folded into one "nothing happened":
+/// only the first leaves the worlds ready for the next turn to drive, and the
+/// second must not reach the render world at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// A frame was drawn and presented.
+    Presented,
+    /// The surface handed out no image, so nothing was drawn and no world
+    /// ticked.
+    Skipped,
+    /// Nothing presented, because the host is suspended or has no presentation
+    /// path yet.
+    Waiting,
+}
+
 /// Drive a render turn only after acquiring an image. The preparation callback
 /// advances a simulation and reports how that went: anything but
 /// [`StepOutcome::Ran`] stops the turn. No render-world borrow is held while
 /// the callback runs.
+///
+/// The render world is turned only when there is a presentation path to draw
+/// through. Its clients send jobs that assume its own setup has run -- the
+/// scene asks its render world for a camera and looks the mesh source up while
+/// answering -- and the path coming into being is what says that setup
+/// finished, so a turn that runs before it is a [`TurnOutcome::Waiting`] turn
+/// that touches nothing.
 pub fn present_turn(
     world: &World,
     render: Entity,
     frame: &mut Frame,
     prepare: impl FnOnce() -> Result<(), StepOutcome>,
-) -> Result<bool, TurnError> {
+) -> Result<TurnOutcome, TurnError> {
     if world
         .root_scope()
         .query::<&Resumed>()
         .iter()
         .any(|state| !state.0)
     {
-        return Ok(false);
+        return Ok(TurnOutcome::Waiting);
     }
     let mut presenters = world.root_scope().query::<&mut Presenter>();
     let mut rows = presenters.iter();
     let Some(presenter) = rows.next() else {
-        return Ok(false);
+        return Ok(TurnOutcome::Waiting);
     };
     if rows.next().is_some() {
         return Err(TurnError::MultiplePresenters);
@@ -160,7 +185,11 @@ pub fn present_turn(
         prepared.is_ok()
     });
     prepared?;
-    Ok(presented?)
+    Ok(if presented? {
+        TurnOutcome::Presented
+    } else {
+        TurnOutcome::Skipped
+    })
 }
 
 /// The behaviours that keep frames coming: one per turn of the event loop,
