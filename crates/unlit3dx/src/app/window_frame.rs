@@ -12,7 +12,7 @@ use unlit3d::winit::presenter::PRESENT_ORDER;
 use super::Capture;
 use super::{Pacing, RunFrames, Stepping};
 use crate::host::drain_sub_world;
-use crate::present::present_turn;
+use crate::present::{TurnError, present_turn};
 use crate::world::{StepOutcome, drain_all_stepped_worlds};
 
 #[derive(Clone, Default)]
@@ -84,28 +84,15 @@ impl WindowFrames {
         }
         let index = self.frames.advanced();
         let mut frame = Frame { delta_time, index };
-        // Why the worlds stopped, when they did: the stepper's outcome is the
-        // reason, so no separate flag has to carry it across the callback.
-        let mut stopped: Option<StepOutcome> = None;
         let result = present_turn(world, self.render, &mut frame, || {
             let outcome = self.stepper.as_mut().map_or(StepOutcome::Ran, |stepper| {
                 stepper.step(world, f64::from(delta_time))
             });
-            if outcome == StepOutcome::Ran {
-                Ok(())
-            } else {
-                stopped = Some(outcome);
-                Err(format!("a simulation world stopped ({outcome:?})"))
+            match outcome {
+                StepOutcome::Ran => Ok(()),
+                outcome => Err(outcome),
             }
         });
-        if let Some(outcome) = stopped {
-            exit(world, self.app);
-            return if outcome == StepOutcome::Failed {
-                FrameOutcome::Failed("a simulation world failed".to_owned())
-            } else {
-                FrameOutcome::Ended
-            };
-        }
         match result {
             Ok(true) => {
                 self.frames.advance();
@@ -124,28 +111,37 @@ impl WindowFrames {
             }
             Ok(false) => match self.service_idle(world) {
                 Ok(()) => FrameOutcome::Skipped,
-                Err(message) => FrameOutcome::Failed(message),
+                Err(error) => FrameOutcome::Failed(error.to_string()),
             },
-            Err(message) => FrameOutcome::Failed(message),
+            // A simulation that ended is the run ending, unless it failed.
+            Err(error @ TurnError::Simulation(outcome)) => {
+                exit(world, self.app);
+                if outcome == StepOutcome::Failed {
+                    FrameOutcome::Failed(error.to_string())
+                } else {
+                    FrameOutcome::Ended
+                }
+            }
+            Err(error) => FrameOutcome::Failed(error.to_string()),
         }
     }
 
-    fn service_idle(&self, world: &World) -> Result<(), String> {
+    fn service_idle(&self, world: &World) -> Result<(), TurnError> {
         let failed = drain_all_stepped_worlds(world);
         if !failed.is_empty() {
-            return Err(format!("world jobs failed: {}", failed.join(", ")));
+            return Err(TurnError::Jobs(failed));
         }
         let mut render = world
             .root_scope()
             .try_query_one::<&mut World>(self.render)
-            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            .map_err(TurnError::RenderWorld)?;
         match drain_sub_world(render.get()) {
             StepOutcome::Ran => Ok(()),
             StepOutcome::Finished | StepOutcome::Stopped => {
                 exit(world, self.app);
                 Ok(())
             }
-            StepOutcome::Failed => Err("render world jobs failed".to_owned()),
+            outcome => Err(TurnError::Render(outcome)),
         }
     }
 }
@@ -164,8 +160,8 @@ pub(super) fn drive_window() -> OnFrame {
             if state.pacing.is_spent(state.frames.advanced()) {
                 exit(world, state.app);
             } else if state.pacing.client {
-                if let Err(message) = state.service_idle(world) {
-                    state.failure.report(world, state.app, message);
+                if let Err(error) = state.service_idle(world) {
+                    state.failure.report(world, state.app, error.to_string());
                 }
             } else if let FrameOutcome::Failed(message) = state.submit(world, frame.delta_time) {
                 state.failure.report(world, state.app, message);

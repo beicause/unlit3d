@@ -13,7 +13,7 @@
 //! which is what makes the sub-world a server: clients' requests land as
 //! jobs here, on the main thread, between one frame's render and the next.
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, EntityAccessError, World};
 
 pub use unlit3d::winit::presenter::{
     BLIT_PASS_ORDER, Presenter, PresenterError, SCENE_PASS_ORDER, resize_presented,
@@ -91,14 +91,44 @@ pub fn setup_presenter(
     .map(|_| ())
 }
 
+/// Why a render turn did not draw and present a frame.
+///
+/// A world that stopped and a render world that stopped are different ends of
+/// a run, so they are different variants: the caller decides on the variant,
+/// not on a message.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TurnError {
+    /// The host carries more than one presenter, so there is no one surface to
+    /// present to.
+    #[error("the host has more than one presenter")]
+    MultiplePresenters,
+    /// The render sub-world is not reachable from the host.
+    #[error("the render world is unavailable: {0}")]
+    RenderWorld(#[from] EntityAccessError),
+    /// The simulation that the turn advances has stopped.
+    #[error("a simulation world stopped ({0:?})")]
+    Simulation(StepOutcome),
+    /// The render sub-world has stopped, so there is no frame to draw.
+    #[error("the render world stopped ({0:?})")]
+    Render(StepOutcome),
+    /// Jobs the worlds were asked to run failed, by the names of their worlds.
+    #[error("world jobs failed: {}", .0.join(", "))]
+    Jobs(Vec<&'static str>),
+    /// The frame was drawn but could not be presented.
+    #[error("failed to present a frame: {0}")]
+    Present(#[from] PresenterError),
+}
+
 /// Drive a render turn only after acquiring an image. The preparation callback
-/// can advance a simulation, and no render-world borrow is held while it runs.
+/// advances a simulation and reports how that went: anything but
+/// [`StepOutcome::Ran`] stops the turn. No render-world borrow is held while
+/// the callback runs.
 pub(crate) fn present_turn(
     world: &World,
     render: Entity,
     frame: &mut Frame,
-    prepare: impl FnOnce() -> Result<(), String>,
-) -> Result<bool, String> {
+    prepare: impl FnOnce() -> Result<(), StepOutcome>,
+) -> Result<bool, TurnError> {
     if world
         .root_scope()
         .query::<&Resumed>()
@@ -113,26 +143,24 @@ pub(crate) fn present_turn(
         return Ok(false);
     };
     if rows.next().is_some() {
-        return Err("the host has more than one presenter".to_owned());
+        return Err(TurnError::MultiplePresenters);
     }
     let mut prepared = Ok(());
     let presented = presenter.present_with(world, || {
-        prepared = prepare().and_then(|()| {
+        prepared = prepare().map_err(TurnError::Simulation).and_then(|()| {
             let mut nested = world
                 .root_scope()
                 .try_query_one::<&mut World>(render)
-                .map_err(|error| format!("the render world is unavailable: {error}"))?;
-            let outcome = tick_sub_world(nested.get(), frame);
-            if outcome == StepOutcome::Ran {
-                Ok(())
-            } else {
-                Err(format!("the render world stopped: {outcome:?}"))
+                .map_err(TurnError::RenderWorld)?;
+            match tick_sub_world(nested.get(), frame) {
+                StepOutcome::Ran => Ok(()),
+                outcome => Err(TurnError::Render(outcome)),
             }
         });
         prepared.is_ok()
     });
     prepared?;
-    presented.map_err(|error| format!("failed to present a frame: {error}"))
+    Ok(presented?)
 }
 
 /// The behaviours that keep frames coming: one per turn of the event loop,
