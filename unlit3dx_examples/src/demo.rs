@@ -59,9 +59,10 @@ impl App for Demo {
     ) -> SceneWorlds {
         let audio_setup = match ports.mode {
             // A windowed run leaves the mix to its audio world: the world opens
-            // the device and fills the device's ring from its own tick, so a
-            // stepped window plays exactly what a threaded one does. Whether
-            // the window is stepped is the runner's business, not audio's.
+            // the device once its page asks for it, and fills the device's ring
+            // from its own tick, so a stepped window plays what a threaded one
+            // does once the output is open. Whether the window is stepped is the
+            // runner's business, not audio's.
             Mode::Windowed => AudioSetup::Device,
             Mode::Headless => {
                 if self.soundfont.is_empty() {

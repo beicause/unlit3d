@@ -159,9 +159,9 @@ fn track_controls(
 pub fn mount_controls(world: &mut World) {
     // Whether the audio world has opened an output, watched from here so the
     // panel can say when the tracks are still locked. A world the host pulls
-    // the fills of is open by definition, and a self-driven one opens on its
-    // first tick, so only a page whose output waits for the user's first
-    // click ever shows the hint below.
+    // the fills of is open by definition, and an output the world opens itself
+    // opens once its page asks for it, so only a page whose output waits for
+    // the user's first click ever shows the hint below.
     let unlocked = (|| {
         let scene = world.root_scope().query::<&Scene>().iter().next()?.clone();
         scene

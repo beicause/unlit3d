@@ -33,6 +33,8 @@ const AUDIO_FILL_FRAMES: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioOutputMode {
     /// No device: the host pulls the fills with [`dispatch_audio_fill`].
+    /// The windowed entry pulls nothing, so a window run stays silent under
+    /// this mode unless the world's host pulls it some other way.
     Pulled,
     /// Open nothing until an [`AudioOutputRequest`] lands, then retry
     /// every tick until a device appears. A page asks from the handler of
@@ -474,10 +476,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
     // sample rate is known and then keeps its own cadence, so a slow tick
     // does not push every later wakeup out.
     let mut clock: Option<FixedClock> = None;
-    // A self-driven world never pulls its own fills, so a Pulled config
-    // leaves it silent until its host starts calling
-    // [`dispatch_audio_fill`]. The default config is Pulled, so a caller
-    // that wanted sound is told here instead of chasing a missing device.
+    // A threaded world's `World` is created on and owned by its thread, so
+    // its host cannot reach it to call [`dispatch_audio_fill`]: a Pulled
+    // config leaves it silent for good. The default config is Pulled, so a
+    // caller that wanted sound is told here instead of chasing a missing device.
     if R::SELF_DRIVEN && config.output == AudioOutputMode::Pulled {
         log::warn!(
             "the audio world is self-driven in the Pulled mode, so nothing \
@@ -592,10 +594,9 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                 } else {
                     control.wait_timeout(Duration::from_secs(1));
                 }
-            } else if control.self_driven() {
-                // A self-driven world with no device yet waits for one; a
-                // browser's context that failed to open is not worth
-                // retrying every frame, so a stepped world just returns.
+            } else {
+                // Without a device the world waits for one. A stepped world's
+                // wait returns at once, so it retries at its host's pace.
                 control.wait_timeout(Duration::from_secs(1));
             }
             // The tick is this world's frame: sources that pace themselves by
