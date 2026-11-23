@@ -7,7 +7,7 @@
 use super::{
     BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options,
 };
-use unlit_ecs::{Bundle, DynamicBundle, bundle};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -36,34 +36,6 @@ pub static SCENE: SceneDef = SceneDef {
     reproducible_egui: false,
     build,
 };
-
-/// The scene's one visible object: a cube bent by its own pose.
-///
-/// The mesh and the entity that carries the joint matrices are what a spawn
-/// has to name, so they are the fields; the transform and the tint belong to
-/// the scene, so they are the bundle's own. The transform also bounds the cube
-/// for culling; because skinned vertices ignore the mesh entity's transform,
-/// its scale is baked into the joint matrices to place the drawn geometry.
-struct SkinnedCube {
-    mesh: GpuMesh,
-    pipeline: GpuRenderPipeline,
-    pose: Entity,
-}
-
-impl Bundle for SkinnedCube {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![
-            Transform {
-                scale: glam::Vec3::splat(0.9),
-                ..Default::default()
-            },
-            InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
-            self.mesh,
-            self.pipeline,
-            SkinBinding { pose: self.pose },
-        ]
-    }
-}
 
 /// Build the skinned-cube scene's world content.
 fn build(
@@ -107,10 +79,20 @@ fn build(
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
     let pose_entity = world.scope_mut(source_entity).spawn(bundle![skin.pose()]);
-    world.scope_mut(source_entity).spawn(SkinnedCube {
-        mesh,
-        pipeline: GpuRenderPipeline::new(key),
-        pose: pose_entity,
+    // The transform bounds the cube for culling. Skinned vertices ignore the
+    // mesh entity's transform, so its scale is baked into the joint matrices
+    // to place the drawn geometry.
+    world.scope_mut(source_entity).spawn(LitMeshBundle {
+        transform: Transform {
+            scale: glam::Vec3::splat(0.9),
+            ..Default::default()
+        },
+        primitive: LitMeshPrimitive {
+            color: InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
+            ..LitMeshPrimitive::new(mesh, GpuRenderPipeline::new(key))
+        },
+        skin: Some(SkinBinding { pose: pose_entity }),
+        morph: None,
     });
 
     let mut skin = skin;

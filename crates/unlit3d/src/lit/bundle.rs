@@ -29,15 +29,7 @@ use unlit_ecs::{Bundle, DynamicBundle};
 /// # fn spawn(world: &mut unlit_ecs::World, mesh: GpuMesh, pipeline: GpuRenderPipeline) {
 /// world.root_scope_mut().spawn(LitMeshBundle {
 ///     transform: Transform::default(),
-///     primitive: LitMeshPrimitive {
-///         mesh,
-///         pipeline,
-///         color: InstanceColor::default(),
-///         cutoff: None,
-///         hull_width: None,
-///         material: None,
-///         z_sorted: None,
-///     },
+///     primitive: LitMeshPrimitive::new(mesh, pipeline),
 ///     skin: None,
 ///     morph: None,
 /// });
@@ -77,6 +69,22 @@ pub struct LitMeshPrimitive {
     /// The mark that draws this entity after the opaque geometry,
     /// back-to-front among its own kind; `None` draws it in the opaque pass.
     pub z_sorted: Option<ZSortedDrawing>,
+}
+
+impl LitMeshPrimitive {
+    /// A primitive that draws `mesh` through `pipeline` with the default
+    /// white tint and no cutoff, hull, material or z-sorting.
+    pub fn new(mesh: GpuMesh, pipeline: GpuRenderPipeline) -> Self {
+        Self {
+            mesh,
+            pipeline,
+            color: InstanceColor::default(),
+            cutoff: None,
+            hull_width: None,
+            material: None,
+            z_sorted: None,
+        }
+    }
 }
 
 impl Bundle for LitMeshBundle {

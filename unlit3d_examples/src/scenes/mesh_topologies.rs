@@ -21,7 +21,7 @@
 //! are what exercise the specializer that derives it from the mesh.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, default_options};
-use unlit_ecs::{Bundle, DynamicBundle, bundle};
+use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
@@ -115,21 +115,6 @@ const PATCH_HALF_HEIGHT: f32 = 0.62;
 /// in the `z = 0` plane, so they all project at the same scale and the grid
 /// stays even on screen.
 const CAMERA_DISTANCE: f32 = 3.0;
-
-/// One patch of the grid: a mesh and the pipeline that assembles it.
-///
-/// A patch drawn by another topology's pipeline is not the patch its vertices
-/// describe, so the two only mean anything together.
-struct Patch {
-    mesh: GpuMesh,
-    pipeline: GpuRenderPipeline,
-}
-
-impl Bundle for Patch {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![self.mesh, self.pipeline]
-    }
-}
 
 /// The scene: one patch per topology, indexed and non-indexed.
 pub static SCENE: SceneDef = SceneDef {
@@ -266,9 +251,11 @@ fn build(
     }
 
     for (column, mesh) in entities {
-        world.scope_mut(source_entity).spawn(Patch {
-            mesh,
-            pipeline: GpuRenderPipeline::new(keys[column].clone()),
+        world.scope_mut(source_entity).spawn(LitMeshBundle {
+            transform: Transform::default(),
+            primitive: LitMeshPrimitive::new(mesh, GpuRenderPipeline::new(keys[column].clone())),
+            skin: None,
+            morph: None,
         });
     }
 

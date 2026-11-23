@@ -43,7 +43,7 @@
 //! fallback unverified.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
-use unlit_ecs::{Bundle, DynamicBundle, bundle};
+use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
@@ -207,48 +207,6 @@ const BODIES: [(glam::Vec3, f32, glam::Vec4); 3] = [
     ),
 ];
 
-/// A body: the mesh both of its draws read, and the two pipelines they use.
-///
-/// The two entities spawned from it share the mesh handle, so the shell adds
-/// no memory to the body it surrounds — the pair is one buffer and two
-/// variants of one pipeline family.
-struct Outlined {
-    /// Where the body stands and how big it is.
-    transform: Transform,
-    /// The mesh both draws read.
-    mesh: GpuMesh,
-    /// The pipeline the body is drawn with.
-    body: GpuRenderPipeline,
-    /// The pipeline its shell is drawn with.
-    shell: GpuRenderPipeline,
-    /// The body's own tint, which the shell does not use.
-    tint: glam::Vec4,
-}
-
-impl Outlined {
-    /// The shell: the same mesh, spread and with the body's faces culled.
-    fn spawn_shell(&self, world: &mut World, scope: Entity) {
-        world.scope_mut(scope).spawn(bundle![
-            self.transform.clone(),
-            self.mesh.clone(),
-            self.shell.clone(),
-            InstanceColor::new(INK),
-            InstanceHullWidth::new(HULL_WIDTH),
-        ]);
-    }
-}
-
-impl Bundle for Outlined {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![
-            self.transform,
-            InstanceColor::new(self.tint),
-            self.mesh,
-            self.body,
-        ]
-    }
-}
-
 /// The scene: outlined bodies standing on an orbit drawn with strokes, on a
 /// single-sampled target.
 pub static SCENE: SceneDef = SceneDef {
@@ -383,38 +341,53 @@ fn built(
     });
 
     for (translation, radius, tint) in BODIES {
-        let outlined = Outlined {
-            transform: Transform {
-                translation,
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::splat(radius),
-            },
-            mesh: mesh.clone(),
-            body: GpuRenderPipeline::new(body_key.clone()),
-            shell: GpuRenderPipeline::new(shell_key.clone()),
-            tint,
+        let transform = Transform {
+            translation,
+            rotation: glam::Quat::IDENTITY,
+            scale: glam::Vec3::splat(radius),
         };
-        // The shell draws the faces the body culls, and at every pixel it is
-        // behind the body, so the body covers it wherever the two coincide
-        // whatever order they land in. The spawn order here is arbitrary.
-        outlined.spawn_shell(world, source_entity);
-        world.scope_mut(source_entity).spawn(outlined);
+        // The shell is the same mesh, spread and with the body's faces culled.
+        // It draws the faces the body culls, and at every pixel it is behind
+        // the body, so the body covers it wherever the two coincide whatever
+        // order they land in. The spawn order here is arbitrary.
+        world.scope_mut(source_entity).spawn(LitMeshBundle {
+            transform: transform.clone(),
+            primitive: LitMeshPrimitive {
+                color: InstanceColor::new(INK),
+                hull_width: Some(InstanceHullWidth::new(HULL_WIDTH)),
+                ..LitMeshPrimitive::new(mesh.clone(), GpuRenderPipeline::new(shell_key.clone()))
+            },
+            skin: None,
+            morph: None,
+        });
+        world.scope_mut(source_entity).spawn(LitMeshBundle {
+            transform,
+            primitive: LitMeshPrimitive {
+                color: InstanceColor::new(tint),
+                ..LitMeshPrimitive::new(mesh.clone(), GpuRenderPipeline::new(body_key.clone()))
+            },
+            skin: None,
+            morph: None,
+        });
     }
 
     // The bodies without normals. They have no shell — the shell is pushed along
     // the normals a mesh carries, and these carry none — so they are here for the
     // shading their own facets give them.
     for (translation, radius, tint) in FACETED {
-        world.scope_mut(source_entity).spawn(bundle![
-            Transform {
+        world.scope_mut(source_entity).spawn(LitMeshBundle {
+            transform: Transform {
                 translation,
                 rotation: glam::Quat::IDENTITY,
                 scale: glam::Vec3::splat(radius),
             },
-            InstanceColor::new(tint),
-            faceted.clone(),
-            GpuRenderPipeline::new(body_key.clone()),
-        ]);
+            primitive: LitMeshPrimitive {
+                color: InstanceColor::new(tint),
+                ..LitMeshPrimitive::new(faceted.clone(), GpuRenderPipeline::new(body_key.clone()))
+            },
+            skin: None,
+            morph: None,
+        });
     }
 
     world

@@ -287,7 +287,7 @@ integer.
 
 | The entity was spawned by | Its name |
 | --- | --- |
-| a type implementing `Bundle` | the type's own name, `unlit3d_examples::scenes::spin_cube::TexturedCube` |
+| a type implementing `Bundle` | the type's own name, such as `my_game::Enemy` |
 | `bundle!` | the source position of the macro — the `file!()`/`line!()` where it appears |
 | `DynamicBundle::named` | the label given there |
 | `spawn_named` | the label given there |

@@ -201,7 +201,7 @@ assert!(!cube.name().is_empty(), "bundle names the entity it builds");
 
 | 实体的来源 | 它的名字 |
 | --- | --- |
-| 实现了 `Bundle` 的自定义类型 | 该类型自己的名字，如 `unlit3d_examples::scenes::spin_cube::TexturedCube` |
+| 实现了 `Bundle` 的自定义类型 | 该类型自己的名字，如 `my_game::Enemy` |
 | `bundle!` | 宏所在的源码位置（`file!()`/`line!()`） |
 | `DynamicBundle::named` | 在那里给的标签 |
 | `spawn_named` | 在那里给的标签 |

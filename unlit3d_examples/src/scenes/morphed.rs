@@ -8,7 +8,7 @@
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options, morph_deltas,
 };
-use unlit_ecs::{Bundle, DynamicBundle, bundle};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -31,34 +31,6 @@ pub static SCENE: SceneDef = SceneDef {
     reproducible_egui: false,
     build,
 };
-
-/// The scene's one visible object: a cube blended by its own weights.
-///
-/// The mesh and the entity that carries the weights are what a spawn has to
-/// name, so they are the fields; the transform and the tint belong to the
-/// scene, so they are the bundle's own.
-struct MorphedCube {
-    mesh: GpuMesh,
-    pipeline: GpuRenderPipeline,
-    weights: Entity,
-}
-
-impl Bundle for MorphedCube {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![
-            Transform {
-                scale: glam::Vec3::splat(0.9),
-                ..Default::default()
-            },
-            InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
-            self.mesh,
-            self.pipeline,
-            MorphBinding {
-                weights: self.weights
-            },
-        ]
-    }
-}
 
 /// Build the morphed-cube scene's world content.
 fn build(
@@ -102,10 +74,19 @@ fn build(
     let weights_entity = world.scope_mut(source_entity).spawn(bundle![MorphWeights {
         weights: weights(0).to_vec()
     }]);
-    world.scope_mut(source_entity).spawn(MorphedCube {
-        mesh,
-        pipeline: GpuRenderPipeline::new(key),
-        weights: weights_entity,
+    world.scope_mut(source_entity).spawn(LitMeshBundle {
+        transform: Transform {
+            scale: glam::Vec3::splat(0.9),
+            ..Default::default()
+        },
+        primitive: LitMeshPrimitive {
+            color: InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
+            ..LitMeshPrimitive::new(mesh, GpuRenderPipeline::new(key))
+        },
+        skin: None,
+        morph: Some(MorphBinding {
+            weights: weights_entity,
+        }),
     });
 
     SceneControl {

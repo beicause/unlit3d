@@ -131,10 +131,14 @@ fn build(
     };
     // The cube is drawn by the mesh source, so it hangs in that source's scope
     // beside the camera.
-    world.scope_mut(source_entity).spawn(TexturedCube {
-        mesh,
-        material,
-        pipeline: GpuRenderPipeline::new(key),
+    world.scope_mut(source_entity).spawn(LitMeshBundle {
+        transform: Transform::default(),
+        primitive: LitMeshPrimitive {
+            material: Some(material),
+            ..LitMeshPrimitive::new(mesh, GpuRenderPipeline::new(key))
+        },
+        skin: None,
+        morph: None,
     });
 
     if panels {
@@ -373,28 +377,6 @@ fn build(
             }
         }),
         snapshot: Box::new(|frame| (frame == 29).then(|| "spin_cube.webp".to_owned())),
-    }
-}
-
-/// The scene's one visible object: a textured cube turned by the frame loop.
-///
-/// The mesh, the material bound to it and the pipeline that draws it are what
-/// a spawn has to name, so they are the fields; the transform is the bundle's
-/// own, because the frame loop writes the rotation into it.
-struct TexturedCube {
-    mesh: GpuMesh,
-    material: GpuMaterial,
-    pipeline: GpuRenderPipeline,
-}
-
-impl Bundle for TexturedCube {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![
-            Transform::default(),
-            self.mesh,
-            self.material,
-            self.pipeline,
-        ]
     }
 }
 

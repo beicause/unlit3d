@@ -23,7 +23,7 @@ use super::{
     BendSkin, PlacedLight, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE,
     aim_camera, camera_looking_at, cube_with_normals, default_options, with_mesh_source,
 };
-use unlit_ecs::{Bundle, DynamicBundle, bundle};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 const FRAMES: usize = 6;
@@ -44,24 +44,6 @@ pub static SCENE: SceneDef = SceneDef {
     reproducible_egui: false,
     build,
 };
-
-struct LitSkinnedCube {
-    mesh: GpuMesh,
-    pipeline: GpuRenderPipeline,
-    pose: Entity,
-}
-
-impl Bundle for LitSkinnedCube {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![
-            Transform::default(),
-            InstanceColor::default(),
-            self.mesh,
-            self.pipeline,
-            SkinBinding { pose: self.pose },
-        ]
-    }
-}
 
 fn build(
     world: &mut World,
@@ -114,10 +96,11 @@ fn build(
 
     let camera_entity = world.scope_mut(source_entity).spawn(bundle![camera(size)]);
     let pose_entity = world.scope_mut(source_entity).spawn(bundle![skin.pose()]);
-    world.scope_mut(source_entity).spawn(LitSkinnedCube {
-        mesh,
-        pipeline: GpuRenderPipeline::new(key),
-        pose: pose_entity,
+    world.scope_mut(source_entity).spawn(LitMeshBundle {
+        transform: Transform::default(),
+        primitive: LitMeshPrimitive::new(mesh, GpuRenderPipeline::new(key)),
+        skin: Some(SkinBinding { pose: pose_entity }),
+        morph: None,
     });
 
     world

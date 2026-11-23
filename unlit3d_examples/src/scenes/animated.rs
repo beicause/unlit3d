@@ -8,7 +8,7 @@
 //! from frame to frame.
 
 use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
-use unlit_ecs::{Bundle, DynamicBundle, bundle};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The grid of cells a cube can occupy, in the XZ plane.
@@ -95,28 +95,6 @@ pub static SCENE: SceneDef = SceneDef {
     build,
 };
 
-/// One cell of the grid: a cube placed at the cell this frame fills.
-///
-/// The transform and the tint change per allocation, so they are the fields;
-/// every cell draws the same way, so the pipeline is built here.
-struct CellCube {
-    transform: Transform,
-    tint: glam::Vec4,
-    mesh: GpuMesh,
-    pipeline: GpuRenderPipeline,
-}
-
-impl Bundle for CellCube {
-    fn into_bundle(self) -> DynamicBundle {
-        bundle![
-            self.transform,
-            InstanceColor::new(self.tint),
-            self.mesh,
-            self.pipeline,
-        ]
-    }
-}
-
 /// Build the animated-grid scene's world content.
 fn build(
     world: &mut World,
@@ -194,11 +172,14 @@ fn build(
                 // mesh draws different geometry even at the same transform.
                 let offset = glam::Vec3::splat(0.06 * allocated as f32);
                 let mesh = super::allocate_offset_cube_mesh(world, source_entity, &key, offset);
-                let entity = world.scope_mut(source_entity).spawn(CellCube {
+                let entity = world.scope_mut(source_entity).spawn(LitMeshBundle {
                     transform: cell_transform(cell, step_index),
-                    tint: TINTS[allocated % TINTS.len()],
-                    mesh: mesh.clone(),
-                    pipeline: GpuRenderPipeline::new(key.clone()),
+                    primitive: LitMeshPrimitive {
+                        color: InstanceColor::new(TINTS[allocated % TINTS.len()]),
+                        ..LitMeshPrimitive::new(mesh.clone(), GpuRenderPipeline::new(key.clone()))
+                    },
+                    skin: None,
+                    morph: None,
                 });
                 cells[cell] = Some((entity, mesh));
                 allocated += 1;
