@@ -292,9 +292,9 @@ fn cluster_grid() -> String {
         if grid_local_count > 8u { grid = vec3<f32>(0.95, 0.38, 0.035); }
         if grid_local_count >= lit_bindings::cluster.dims.w { grid = vec3<f32>(0.92, 0.025, 0.025); }
         // The cell borders: the product the lookup floors, so a border is where
-        // its floor changes. A border is measured in pixels, not in cells -- an
+        // its floor changes. A border is measured in pixels, not in cells — an
         // edge's distance to the nearest border divided by how much the lattice
-        // moves per pixel -- so it stays the same width wherever the floor's
+        // moves per pixel — so it stays the same width wherever the floor's
         // depth changes fastest and never thickens into a band.
         let grid_lattice = (grid_ndc * 0.5 + 0.5) * vec2<f32>(lit_bindings::cluster.dims.xy);
         let grid_fract = fract(grid_lattice);

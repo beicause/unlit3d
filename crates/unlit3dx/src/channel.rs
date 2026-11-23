@@ -184,7 +184,7 @@ where
 ///
 /// The first subscription to arrive creates it; it lives as long as the world
 /// does, and an entry is pruned once its reader is dropped. It claims the
-/// [`SnapshotOutlet`] singleton key, so a world carries at most one outlet --
+/// [`SnapshotOutlet`] singleton key, so a world carries at most one outlet —
 /// subscriptions from every producer share it.
 struct SnapshotOutlet {
     entries: Vec<Box<dyn Entry>>,

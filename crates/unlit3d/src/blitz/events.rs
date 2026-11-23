@@ -34,7 +34,7 @@
 //!
 //! The crate reports a key by its physical position, and a document names a key
 //! by the character it types. The two agree for an unshifted US layout and part
-//! way for a shifted one -- `Shift+1` is `!`, and a letter is upper-cased --
+//! way for a shifted one — `Shift+1` is `!`, and a letter is upper-cased —
 //! but a key that produces something else through the layout reaches the
 //! document only through its text, which is what a text field inserts from
 //! anyway. The event also carries the physical key as a code and the side of
@@ -115,7 +115,7 @@ pub struct BlitzEvent<'a> {
 impl BlitzEvent<'_> {
     /// The event's payload.
     ///
-    /// Its name -- `click`, `input`, `keydown` -- is
+    /// Its name — `click`, `input`, `keydown` — is
     /// [`DomEventData::name`], and that is what a callback filters on.
     ///
     /// A pointer action is reported as a pointer event and again as the mouse or

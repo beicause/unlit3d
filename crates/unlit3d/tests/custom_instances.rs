@@ -4,7 +4,7 @@
 //! source owns and binds at a fixed slot. This test registers a second family
 //! whose pipeline declares a different instance-step layout, at a different
 //! vertex-buffer slot, and whose records come from an ordinary world component
-//! -- proving the per-instance stream is a general mechanism a caller drives,
+//! — proving the per-instance stream is a general mechanism a caller drives,
 //! not a privilege of the built-in shader.
 
 use crate::common::{COLOR_FORMAT, Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view};

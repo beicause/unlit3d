@@ -940,9 +940,9 @@ too large for the device, or in a format the scene does not take, is drawn as
 nothing rather than failing the frame.
 
 CSS filters are drawn where the scene has the primitive: a graph of one flood,
-Gaussian blur, drop shadow or offset is applied, and anything else -- the colour
+Gaussian blur, drop shadow or offset is applied, and anything else — the colour
 matrices a `brightness`, `grayscale` or `sepia` becomes, and any graph of
-several primitives -- is drawn without the filter.
+several primitives — is drawn without the filter.
 
 A page is a whole document rather than an attachment laid over a scene, and it
 covers the target, so it records at [`FrameSourceOrder::BLITZ`](source::FrameSourceOrder::BLITZ) —
@@ -1382,9 +1382,9 @@ keeps frames coming, [`present_frames`](winit::presenter::present_frames) draws
 the world's passes into the swap chain, and
 [`resize_presented`](winit::presenter::resize_presented) follows the window.
 
-`present_frames` presents a frame only when the host did not skip it -- and
-not while the winit host reports the app suspended -- so the behaviour that
-decides that -- bringing the scene up, waiting for the GPU -- states an
+`present_frames` presents a frame only when the host did not skip it — and
+not while the winit host reports the app suspended — so the behaviour that
+decides that — bringing the scene up, waiting for the GPU — states an
 earlier order; the frame order is not stable within one value, so sharing
 `PRESENT_ORDER` with it would make the outcome depend on sort order.
 A runtime whose scene lives in a sub-world passes its own work to
@@ -1403,7 +1403,7 @@ Which way the picture reaches the window is
 `Surface` is the plain window: fewest passes, but the swap chain image is
 recycled on present and is not a resource-graph node, so nothing can read it
 back. `Intermediate` pays one blit to keep the frame in a texture that
-outlives the present -- what a screenshot, a snapshot test or a later
+outlives the present — what a screenshot, a snapshot test or a later
 post-processing chain needs. The target's size is its own
 [`IntermediateSize`](offscreen::IntermediateSize): a multiple of the window
 (`Scale(1.0)` follows it, `Scale(0.5)` renders at half the width and height)
@@ -1412,8 +1412,8 @@ or a fixed pixel size.
 How the swap chain itself waits for the display is
 [`SurfaceOptions`](winit::SurfaceOptions), passed to
 [`build_presenter`](winit::presenter::build_presenter) and
-[`setup_presenter`](winit::presenter::setup_presenter). Its default --
-`Fifo` with two frames in flight -- ties every frame to a refresh, which is
+[`setup_presenter`](winit::presenter::setup_presenter). Its default —
+`Fifo` with two frames in flight — ties every frame to a refresh, which is
 what a plain window wants. `Immediate` and `Mailbox` cut the wait at the
 cost of tearing or a frame of latency, and are how a game trades appearance
 for input lag. A surface does not offer every mode: WebGL2 and many mobile
@@ -1438,11 +1438,11 @@ do not, which is how the snapshot tests and the headless examples draw.
 
 A presenter takes `&mut self` for all three of its methods, so it lives as a
 component of its own entity: `release` drops the swap chain and keeps
-everything else, and the next `present` opens one again -- a host that
+everything else, and the next `present` opens one again — a host that
 suspends resumes by presenting, with no state to track on its side.
 
 An MCP screenshot reads a texture out of the resource graph by handle, so it
-sees the frame only under `Intermediate` -- a swap chain image is not a node.
+sees the frame only under `Intermediate` — a swap chain image is not a node.
 The tools take a `target` resource id — either the texture's own id or any view
 of it, since the pass that draws into an offscreen target usually holds only the
 view. It is required: a world with several readable textures has no way to say

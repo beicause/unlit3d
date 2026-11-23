@@ -89,7 +89,7 @@ pub struct SceneDef {
     pub size: (u32, u32),
     /// The aspect the windowed path keeps the scene's 3D content at, as a
     /// reference resolution, or `None` for a scene that draws no 3D content and
-    /// so has an aspect to keep.
+    /// so has no aspect to keep.
     ///
     /// A scene that declares one is drawn through the largest rectangle of that
     /// aspect that fits the window, so a wide window and a narrow one show the
@@ -617,7 +617,7 @@ impl BendSkin {
     /// The pose with an entity's world transform baked into its joint matrices.
     ///
     /// Skinned vertices are produced by the pose alone in world space, so the
-    /// transform a mesh entity carries no longer places them: a caller that
+    /// transform a mesh entity carries does not place them: a caller that
     /// wants its mesh placed composes that transform onto every joint here.
     pub fn pose_at(&self, mesh_world: glam::Mat4) -> SkinPose {
         let mut matrices = rest_pose(2);

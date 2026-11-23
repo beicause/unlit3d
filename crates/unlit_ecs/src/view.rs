@@ -6,7 +6,7 @@
 //! holding one is not a way to reach the rest.
 //!
 //! Reading and writing components needs only [`Scope`]. Structural
-//! changes -- spawning, despawning, relinking -- need [`ScopeMut`], whose
+//! changes — spawning, despawning, relinking — need [`ScopeMut`], whose
 //! operations are confined to the scope's own subtree.
 
 use core::any::TypeId;

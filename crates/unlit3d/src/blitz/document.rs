@@ -96,8 +96,8 @@ impl BlitzDocument {
 
     /// Replace the markup and lay the page out again from scratch.
     ///
-    /// Everything the page held -- its focus, its form state, its scroll
-    /// position -- goes with the old document.
+    /// Everything the page held — its focus, its form state, its scroll
+    /// position — goes with the old document.
     pub fn set_markup(&mut self, markup: impl Into<String>) {
         self.markup = markup.into();
         self.document = None;
@@ -242,7 +242,7 @@ impl NetProvider for BlitzResources {
 /// A page has one thing to ask of a frame source: another frame. The document
 /// reports that it scrolled, that a resource landed, or that a callback changed
 /// it, and the source paints again the next time it is built. The rest of a
-/// shell -- the cursor, the window title, the clipboard, the input method --
+/// shell — the cursor, the window title, the clipboard, the input method —
 /// has no counterpart here, so the defaults answer them.
 #[derive(Default)]
 pub(crate) struct BlitzShell {

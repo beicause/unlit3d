@@ -449,8 +449,8 @@ impl FrameSource for MeshSource {
             )
         };
 
-        // A pair the pipelines no longer draw -- a camera that is gone, a
-        // viewport no pass uses -- gives its global group back here, so a world
+        // A pair the pipelines no longer draw — a camera that is gone, a
+        // viewport no pass uses — gives its global group back here, so a world
         // that changes cameras holds one group rather than one per camera it
         // ever had. This runs before the visibility test below: a world whose
         // visible set is empty draws nothing, and would otherwise never release

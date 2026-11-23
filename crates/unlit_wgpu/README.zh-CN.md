@@ -561,8 +561,8 @@ for draw in scene.draws {
 值——并跳过目标已绑定的 `set_*`，因此当场景的条目排列得让相邻绘制状态相同时，每段
 状态只需一次切换而不是每条绘制一次。这个排列是更高层的职责，不属于本 crate：
 [`Scene::record`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L446) 只按给定顺序录制；
-[`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据) 再进一步——把多个场景
-合成进一个 pass，按每条绘制的 [`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据) 排序：按场景顺序先录
+[`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L473) 再进一步——把多个场景
+合成进一个 pass，按每条绘制的 [`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L267) 排序：按场景顺序先录
 顺次绘制，再合并所有场景的深度排序池从远到近，最后是压尾绘制。
 
 ### 管线特化：一个变体、一份蓝图、一条缓存的管线
@@ -664,7 +664,7 @@ egui 则用第一个目标组合出的模块画其余每个目标。缓存属于
 
 宽度是逐实例的——[`MeshInstance::hull_width`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/mesh.rs#L399)，上层若有 [`InstanceHullWidth`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/lit.rs) 组件就填它，没有就填零——因为带宽属于实体而不属于管线：一份网格被多个实体绘制时，管线仍是一条，宽度却各有各的。它是**世界单位**下的宽度，所以离相机更远的本体带子更细。如果带宽必须在像素上保持不变，那属于屏幕空间笔画，由 [`LineSource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/line.rs) 绘制；两者互补，示例的 [`outline`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/src/scenes/outline.rs) 场景把两者画在同一张图里。
 
-外扩变体需要网格的法线通道：顶点要沿法线推出，没有法线的网格根本推不动。这一点在组合变体时就断言，而不是留给它去画成别的样子，因为这里没有回退可言——受光绘制所回退到的屏幕空间导数是片元阶段的事，而推出发生在顶点变换之前。同一份无法线的网格做受光绘制则没有问题：它逐片元导出法线。
+外扩变体需要网格的法线通道：顶点要沿法线推出，没有法线的网格根本推不动。这一点在组合变体时就断言，而不是留给它去画成别的样子，因为这里没有回退可言——受光绘制所回退到的屏幕空间导数是片元阶段的事，而推出发生在顶点变换之前。同一份没有法线的网格做受光绘制则没有问题：它逐片元导出法线。
 
 ### 读取本帧的数组：storage buffer 还是 texel
 

@@ -4,7 +4,7 @@
 //! These are components, not hooks into a scheduler: the callbacks live in the
 //! entity's own row and the world runs them at the structural change that
 //! produced or is about to remove it. There is no change detection and no
-//! deferred pass -- an [`OnDespawn`] callback runs while the entity still has
+//! deferred pass — an [`OnDespawn`] callback runs while the entity still has
 //! its components, because afterwards there is nothing left to read.
 //!
 //! A callback gets a mutable scope over the entity's parent, so it changes the

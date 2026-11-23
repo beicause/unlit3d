@@ -5,7 +5,7 @@
 //!
 //! [`LitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each
-//! node's world-space transform — plus nothing else. It holds no
+//! node's world-space transform. It holds no
 //! [`World`](unlit_ecs::World), no [`MeshSource`](crate::mesh_source::MeshSource)
 //! and no GPU resources of its own. Everything GPU lives in
 //! the graph of the `MeshSource` the caller patches, so a document can be
@@ -15,7 +15,7 @@
 //! A primitive carrying `KHR_draco_mesh_compression` is decoded with
 //! `draco-core` while the document is loaded: its stream is written back as
 //! ordinary buffer views and accessors, so the document is validated normally
-//! and every later reader -- morph targets, skins and animations included --
+//! and every later reader — morph targets, skins and animations included —
 //! sees only accessors. A document without a compressed primitive keeps its
 //! original validation error. Decoding happens once at import rather than on
 //! each mesh insertion.

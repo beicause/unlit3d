@@ -414,7 +414,7 @@ impl RecordingHandle {
     /// Stop recording, despawn the source and take the captured samples.
     ///
     /// A recording that saw no fill has no format to write, so there is
-    /// nothing to hand back -- and neither has one whose handle was already
+    /// nothing to hand back — and neither has one whose handle was already
     /// finished, whether by another clone of this one or by the world
     /// despawning the source itself.
     #[must_use]

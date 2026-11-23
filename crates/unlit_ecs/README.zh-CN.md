@@ -131,7 +131,7 @@ spawn 会被拒绝为 `EntityAccessError::NotAlive`，排队的 spawn 在其 sco
 遇到的正是这一条。`ScopeMut::link` 与
 `ScopeMut::unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰 world 自有的行；
 它们是纯结构变更，不跑任何生命周期回调。三者都回答 `Result`，失败时给出的错误指明
-是哪一种原因：实体已不在、它在 scope 之外、它在 shared 子树里因而只有根能动、它是
+是哪一种原因：实体已不在、它在 scope 之外、它在 shared 子树里因而只有根能动、
 它是 world 自有的行、或者这次搬动会把树切成两半。于是手里握着别处句柄的调用者不必猜，可以直接去问
 真正拥有它的那个 scope。只读 scope 通过 `Scope::queue` 排队做同样的
 变更，再由驱动器调用 `World::apply` 落盘；后者报告第一个失败的命令，并把其余命令照常跑完。
@@ -213,7 +213,7 @@ assert!(!cube.name().is_empty(), "bundle names the entity it builds");
 
 ## 跨世界的身份
 
-`Entity` 是某个 world 存储里的索引加世代。每个 world 的实体编号都从 0 开始,
+`Entity` 是某个 world 存储里的索引加世代。每个 world 的实体编号都从 0 开始，
 于是同一个句柄在所有 world 里都存在，而每个 world 里指的是不同的东西：把句柄交给
 另一个 world，它就指到恰好 bits 相同的那个实体上。句柄只有在它由那个 world 产出时
 才指得到实体，而这条规则调用者会忘。
@@ -402,9 +402,8 @@ assert!(scope.query_one::<Has<f32>>(entity).get());
 world 的线程运行。桥接层不在这个边界上借用任何东西，也没有别的 crate 拥有传输所需的类型。
 
 本 crate 依旧保持「无条件依赖只有一个哈希器与 thiserror」的形态：该模块在 `wasm32`
-上被关掉（协议的
-传输在该目标上无法构建），它新增的每个依赖都是可选且按目标门控的，因此浏览器构建
-完全不带上它们。
+上被关掉（协议的传输在该目标上无法构建），它新增的每个依赖都是可选且按目标门控的，
+因此浏览器构建完全不带上它们。
 
 工具来自定义其作用对象的各个 crate，而不是来自本 crate。crate 把一个 `crate::mcp::ToolSource`
 提交到链接期表——与 `reflect` 注册表所用的同一套 `inventory` 机制——`McpServer::new`

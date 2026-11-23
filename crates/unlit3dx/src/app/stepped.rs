@@ -72,7 +72,7 @@ impl SteppedRun {
     /// replaces. A run that reads the state back rather than the picture
     /// therefore skips the draw entirely, which on a software rasterizer is the
     /// difference between a run that finishes and one that does not. A scene
-    /// that accumulates across draws -- a ping-pong target, a temporal filter --
+    /// that accumulates across draws — a ping-pong target, a temporal filter —
     /// needs every frame drawn, which is the caller's to ask for too.
     ///
     /// Anything but [`StepOutcome::Ran`] ends the frame where it stands and is

@@ -1,6 +1,6 @@
 //! Deferred structural changes.
 //!
-//! A caller with only a read-only scope cannot spawn or despawn directly --
+//! A caller with only a read-only scope cannot spawn or despawn directly —
 //! those need `&mut World`. Instead it queues the change on a [`Commands`]
 //! queue; the driver applies the queue with [`World::apply`] later. Lifecycle
 //! callbacks receive a mutable scope and change the tree directly, so they do
@@ -12,8 +12,8 @@
 //!
 //! A queued spawn still needs a handle right away, so [`Commands::spawn`]
 //! reserves one with [`World::reserve_entity`] and returns it. The handle is
-//! usable immediately -- it can be stored in a component or handed to another
-//! callback -- and refers to a live entity once the queue is applied.
+//! usable immediately — it can be stored in a component or handed to another
+//! callback — and refers to a live entity once the queue is applied.
 //!
 //! Commands run in the order they were queued. A command that acts on a
 //! reserved entity must therefore be queued after the `Spawn` that brings it

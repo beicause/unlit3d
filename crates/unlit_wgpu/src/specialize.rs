@@ -12,10 +12,10 @@
 //! A variant is the cache key, so it must be injective: equal variants build
 //! equal descriptors, and draws whose descriptors differ resolve to different
 //! variants. Because a variant carries everything its descriptor depends on,
-//! the cache is one map -- no canonical form, no second level.
+//! the cache is one map — no canonical form, no second level.
 //!
 //! There is no full-descriptor cache. A family has finitely many variants, and
-//! a lookup on a small key is cheaper than comparing whole descriptors -- a
+//! a lookup on a small key is cheaper than comparing whole descriptors — a
 //! variant that is equal is the case a lookup meets every frame, and it is the
 //! one where comparing the descriptor costs the most. A key therefore carries
 //! only the cheap inputs its descriptor is built from, and
@@ -56,7 +56,7 @@ use crate::util::Hashed;
 ///
 /// A [PipelineVariant] builds one of these and [Variants] caches the result.
 /// Not comparable or hashable: it may hold wgpu handles and `f64` constants,
-/// which is why the variant -- not the blueprint -- is the cache key.
+/// which is why the variant — not the blueprint — is the cache key.
 ///
 /// Deliberately not `Send`/`Sync`: a descriptor holds wgpu handles, which are
 /// not thread-safe on the web. A cache and the device it creates against live
@@ -107,7 +107,7 @@ impl<P, D: PipelineDescriptor<P>> SpecializedPipeline<P, D> {
 /// for its blueprint.
 ///
 /// This is the cache key, so it carries exactly the information the descriptor
-/// depends on -- no more, no less -- and must be injective: equal variants
+/// depends on — no more, no less — and must be injective: equal variants
 /// build equal descriptors, and draws whose descriptors differ resolve to
 /// different variants. Equal keys then share one compiled pipeline, which is
 /// why [Variants] needs only a single map.

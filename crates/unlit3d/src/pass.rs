@@ -41,7 +41,7 @@ use crate::source::RenderContext;
 ///
 /// Lower records first. Deliberately has no `Default`: a caller states the
 /// shape of its own frame, and a silent default would be a shape it never
-/// asked for. The presenter states its own -- the scene pass records first,
+/// asked for. The presenter states its own — the scene pass records first,
 /// and the blit that copies it into the window second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FramePassOrder(pub i32);

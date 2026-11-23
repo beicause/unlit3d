@@ -83,7 +83,6 @@ cargo bench -p unlit3d_benchmarks --bench ecs
 cargo bench -p unlit3d_benchmarks --bench ecs -- 'access/query_one_three/100000'
 ```
 
-
 ## `profile` — where it went
 
 The same worlds under the `profiling` scopes, printing one line per phase per

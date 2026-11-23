@@ -43,7 +43,7 @@
 | 注册管线族 | `register_family::<K, F, I>`；同一 key 类型重复注册会 panic | 同上，`families.rs` |
 | 自定义管线 key | `RenderPipelineKey` 只要求 `variant()`，变体须 `Clone + Hash + Eq`（每可见实体每帧查一次）。选项小且可哈希（如 `LitOptions`）就 `Hashed<选项>`；描述符较大时变体只装蓝图的**输入**（`wgpu::ShaderModule` 等句柄按身份 `Hash`/`Eq`，`VertexLayout`、`Option<IndexFormat>` 亦然），在 `PipelineVariant::descriptor` 里用这些输入构造 `RenderPipelineDesc`——未命中时才构造一次，变体可 `derive` 全套 | `crates/unlit_wgpu/src/specialize.rs`、`crates/unlit_wgpu/src/util.rs` |
 | 建 mesh | `allocate_mesh` + `MeshDesc { vertex_buffers, index_buffer, count, indexed, aabb, bind_group, morph_deltas }`（`MeshDesc` 定义在 `crates/unlit3d/src/mesh.rs`，与 `MorphDeltas` 同处） | 同上；`MeshDesc` 搜 `crates/unlit3d/src/mesh.rs` |
-| 建纹理 | `register_texture_and_default_view` 返回 (纹理, 视图) 两个句柄 | 同上 |
+| 建纹理 | `register_texture_and_default_view` 返回 (纹理、视图) 两个句柄 | 同上 |
 | 建采样器 | `register_sampler` | 同上 |
 | 建材质 | `allocate_material`，闭包拿到 `&ResourceGraph` 建 BindGroup | 同上 |
 | 释放 | drop 最后一个 `GpuMesh` 句柄即弃用 mesh；`maintain` 收集 root 并归还池区间与 metadata 槽 | 同上 |

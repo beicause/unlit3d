@@ -14,12 +14,12 @@
 //! For a component that derives [`facet::Facet`] the entry carries no field list
 //! at all: its own struct fields are the JSON shape, and [`ComponentEntry::new`]
 //! turns that reflection into the codec. A component whose fields cannot be
-//! reflected -- a GPU handle, a private field -- reflects through a proxy instead,
+//! reflected — a GPU handle, a private field — reflects through a proxy instead,
 //! and one that cannot be written makes its proxy's conversion fail, so a write
 //! reports why rather than inventing a value.
 //!
 //! Entries are collected from wherever they are written, so a crate that defines
-//! its own components registers them itself -- nothing has to be handed a
+//! its own components registers them itself — nothing has to be handed a
 //! registry. The table is link-time, so a crate whose entries are never
 //! reachable from the binary is not linked in either; a binary that wants a
 //! crate's entries has to name that crate.
@@ -37,8 +37,8 @@ use crate::{DynamicBundle, Entity, EntityAccessError, Scope};
 
 /// Why the registry could not address a component.
 ///
-/// A lookup fails for its own reason -- an unknown name, a handle the scope
-/// cannot reach, a value that will not fit its shape -- so each case keeps the
+/// A lookup fails for its own reason — an unknown name, a handle the scope
+/// cannot reach, a value that will not fit its shape — so each case keeps the
 /// handle, the component name and the underlying error rather than flattening
 /// them into one line of text.
 #[derive(Debug, thiserror::Error)]

@@ -14,7 +14,7 @@
 //! handle can still name what the counts do not include.
 //!
 //! They are deliberately shallow. Nothing here reaches into a component's own
-//! fields -- that is the caller's business, and a caller that wants it derives
+//! fields — that is the caller's business, and a caller that wants it derives
 //! its own reflection.
 //!
 //! [`TypeId`]: core::any::TypeId

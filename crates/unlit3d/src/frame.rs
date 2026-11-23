@@ -27,7 +27,7 @@ pub(crate) use unlit_ecs::{Entity, World};
 
 /// The longest frame a host that measures wall-clock time reports, in seconds.
 ///
-/// A stall -- a dragged window, a debugger pause, a suspended process -- would
+/// A stall — a dragged window, a debugger pause, a suspended process — would
 /// otherwise reach the simulation as one frame and step it past everything it
 /// should have passed on the way. Capping the frame lets the simulation fall
 /// behind the wall clock instead.

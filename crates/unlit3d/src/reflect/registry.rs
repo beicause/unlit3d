@@ -2,7 +2,7 @@
 //!
 //! The registry itself lives in [`unlit_ecs::reflect`]: it is a link-time table
 //! over the ECS's own types, and every crate that defines components submits its
-//! own entries. This module is what unlit3d adds -- the components whose fields
+//! own entries. This module is what unlit3d adds — the components whose fields
 //! cross a JSON boundary, each submitted with the reflection it derives or
 //! through a proxy from [`crate::reflect::proxies`].
 

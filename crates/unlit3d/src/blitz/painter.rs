@@ -443,7 +443,7 @@ impl PaintScene for Painter {
 ///
 /// The scene takes one primitive per layer, so a graph of several of them is
 /// drawn without the effect rather than with only its first step. That covers
-/// the CSS colour filters -- brightness, contrast, grayscale and the rest --
+/// the CSS colour filters — brightness, contrast, grayscale and the rest —
 /// which a filter graph states as one colour-matrix step: they are drawn
 /// without rather than wrongly, since Vello has no colour-matrix primitive.
 fn convert_filter(filter: Arc<filters::Filter>) -> Option<vello_gpu::filter_effects::Filter> {

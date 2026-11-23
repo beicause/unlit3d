@@ -49,7 +49,7 @@ impl Interactive {
     /// not read is a wasted draw, and a frame the capture names and the run
     /// does not draw is a picture missing from it. A caller that wants the
     /// picture without a capture draws it with [`Interactive::draw`], which
-    /// draws where the scene then stands -- the same frame a step would have
+    /// draws where the scene then stands — the same frame a step would have
     /// drawn, since a draw does not advance the scene.
     ///
     /// The render sub-world dispatches the frame here; the worlds the stepper

@@ -306,8 +306,8 @@ desktop has the OpenGL implementation, so only a bare CI image installs one.
 
 **Rule:** only a check that reads a canvas needs any of this, and the example
 check is the only one that does. A GPU test reads its frame from an offscreen
-texture — one that started reading the canvas would fail on any machine without a
-display.
+texture. One that read the canvas would fail on any machine without a display.
+
 ## DXC reads a shader module's label as a source file path
 
 **Where:** [`crates/unlit_wgpu/src/util.rs`](crates/unlit_wgpu/src/util.rs)

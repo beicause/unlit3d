@@ -7,14 +7,14 @@
 //! and adds a blit pass after it that copies the target over the swap
 //! chain. The target survives present, so a screenshot reads the last
 //! frame back from it, and the swap chain's format or size changes never
-//! touch the scene's pipeline -- which is why an MCP-driven scene asks for
+//! touch the scene's pipeline — which is why an MCP-driven scene asks for
 //! it.
 //!
 //! [`build_presenter`] constructs the [`Presenter`] component once the GPU
 //! context exists, and [`setup_presenter`] spawns it. A single-world
 //! application drives the result with [`present_frames`],
 //! [`pump_presented`] and [`resize_presented`]; a host that keeps the
-//! render world in a sub-world -- multi-world runtimes -- spawns its own
+//! render world in a sub-world — multi-world runtimes — spawns its own
 //! pump and calls [`Presenter::present`] itself.
 
 use std::cell::RefCell;
@@ -128,8 +128,8 @@ impl Default for PresentationPath {
 ///
 /// A world holds at most one presenter, and [`present_frames`] finds it
 /// through the [`Presenter`] singleton key. A caller that spawns the value
-/// itself must therefore claim the key --
-/// `bundle![presenter].singleton::<Presenter>()` -- or nothing presents;
+/// itself must therefore claim the key —
+/// `bundle![presenter].singleton::<Presenter>()` — or nothing presents;
 /// [`setup_presenter`] does both.
 pub struct Presenter {
     /// The render sub-world the frames are presented from; `None` when the
@@ -185,7 +185,7 @@ impl Presenter {
     /// The presenting pass parks first and takes the frame's view only
     /// after the swap chain image has been acquired. Between the two, and
     /// after the image has been presented and destroyed, the pass states
-    /// no attachment -- so a frame rendered by anything other than this
+    /// no attachment — so a frame rendered by anything other than this
     /// loop, an MCP tool's screenshot of the scene, skips the pass rather
     /// than recording into a dead swap-chain image.
     ///
@@ -263,7 +263,7 @@ impl Presenter {
     /// The surface resizes first and reports the size it ended up with; the
     /// swap chain's attachments follow it, and the offscreen target is
     /// rebuilt for that size. The target's texture and view are replaced in
-    /// place -- their resource nodes keep their ids -- so the blit reading
+    /// place — their resource nodes keep their ids — so the blit reading
     /// the view rebuilds its bind group through its own dependency, without
     /// the presenter touching the source.
     ///
@@ -312,7 +312,7 @@ impl Presenter {
     /// everything the scene drew from.
     ///
     /// The presenting pass parks first: it still names a view of the swap
-    /// chain, and that id is what keeps the view alive -- parking it drops
+    /// chain, and that id is what keeps the view alive — parking it drops
     /// the view, so the view goes with the surface this release collects.
     /// The scene keeps its state and presents again through a surface built
     /// from the same window.
@@ -486,7 +486,7 @@ fn build_in(
         .map(|mut row| row.get().context())?;
     // The presenting pass's swap-chain attachments: without the offscreen
     // path it is the scene's own pass, with the scene's sample count and
-    // depth; with it, the blit covers the target with one triangle -- one
+    // depth; with it, the blit covers the target with one triangle — one
     // sample and no depth.
     let (samples, with_depth) = match path {
         PresentationPath::Surface {
@@ -606,7 +606,7 @@ pub fn setup_presenter(
 /// One frame's dispatch, deferred to the command apply.
 ///
 /// The frame behaviours need a mutable world, and they run between two
-/// event callbacks -- so the pump and the redraw request queue this command
+/// event callbacks — so the pump and the redraw request queue this command
 /// instead of drawing inline.
 #[derive(Clone)]
 struct DrawFrame {
@@ -652,16 +652,16 @@ impl Command for DrawFrame {
 ///
 /// A single-world application spawns this once; the frame loop that
 /// dispatches frames is [`pump_presented`]. The renderer walks every pass
-/// of the world here, so the scene's own pass -- and the offscreen path's
-/// copying pass, when there is one -- both record on this one call.
+/// of the world here, so the scene's own pass — and the offscreen path's
+/// copying pass, when there is one — both record on this one call.
 ///
-/// A frame the host skipped -- because its scene or its presentation path is
-/// not up yet -- is not presented either, so the behaviour that decides
+/// A frame the host skipped — because its scene or its presentation path is
+/// not up yet — is not presented either, so the behaviour that decides
 /// states an earlier order. Neither is a frame the winit host reports the
 /// app suspended for; a world with no winit host counts as resumed.
 ///
-/// A world holds at most one [`Presenter`] -- [`setup_presenter`] claims the
-/// singleton key -- so presenting finds either that one or none. A presenter
+/// A world holds at most one [`Presenter`] — [`setup_presenter`] claims the
+/// singleton key — so presenting finds either that one or none. A presenter
 /// the key was never claimed for is reported rather than passed over in
 /// silence: the run would otherwise draw nothing and give no reason.
 pub fn present_frames() -> OnFrame {
@@ -696,7 +696,7 @@ pub fn present_frames() -> OnFrame {
 ///
 /// Spawning the value and claiming the key are one act in [`setup_presenter`]
 /// and two in a caller that spawns the built value itself, so the second is
-/// easy to leave out -- and the symptom is a run that draws nothing and never
+/// easy to leave out — and the symptom is a run that draws nothing and never
 /// says why. It is said once, since a frame finds the same presenter missing
 /// every frame it runs.
 fn warn_about_an_unclaimed_presenter(world: &World) {

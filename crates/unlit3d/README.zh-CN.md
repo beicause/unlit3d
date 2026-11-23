@@ -206,9 +206,9 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 单个场景之内，源产出的顺序（它的可见条目、它的实例 run）不变。源之间的
 顺序不是被 pass 级状态逼出来的硬约束——`Scene` 已携带必要的 pass 状态信息，在录制时
 都会重设 pass 状态——但「egui 要合成在 3D 之上」等类似语义不再只靠它：
-[`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据)
+[`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L473)
 把各源的场景合成每 pass 一份绘制清单，由各源以
-[`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据) 标注；排序规则本身见该节。
+[`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L267) 标注；排序规则本身见 [`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md)。
 
 </details>
 
@@ -309,7 +309,7 @@ z-sorted 绘制排序与透视相机完全一致。
 绘制顺序**就是**结果，合并后的 draw 会改为按记录顺序光栅化各实例。它们的顺序来自每个
 网格包围盒中心沿相机视线轴的深度，因此跟随网格实际绘制的几何体，而不是它的枢轴点或到
 眼睛的直线距离。源不再自行排序：条目携带
-[`DrawOrder::Sorted`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#绘制场景即数据)，由 pass 的合成把所有源共同贡献的池从
+[`DrawOrder::Sorted`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L280)，由 pass 的合成把所有源共同贡献的池从
 远到近排序（见[帧模型](#帧模型)）。
 
 </details>
@@ -669,7 +669,7 @@ world 约定好的方式跨越边界：它落进 `egui::EguiSource` 自己持有
 `egui::ExternalFrame` 槽位，槽位因此留在负责绘制的那条线程上；绘制侧量出的目标则通过
 `relay::Snapshot` 回来，面板所在的 world 在布局下一帧时读取它。两侧的 context 保持独立：共用会让两个 world 同时写同一份 memory 与字体图集，而 egui 把一次
 `run_ui` 当作一个完整帧。纹理 id 则完全不改写：帧保留它那个 context 分配的 id，GPU 集成按
-（来源, id）建键，于是两侧都从零分配也不会撞车；一帧在其槽位被更新之前一直由同一份三角化
+（来源、id）建键，于是两侧都从零分配也不会撞车；一帧在其槽位被更新之前一直由同一份三角化
 结果绘制。`unlit3dx` 就在这两块之上搭建跨 world 的管线——面板所在 world 里的
 `EguiPanelHost`，它在该 world 自己的 tick 上以 job 的形式发送帧。
 

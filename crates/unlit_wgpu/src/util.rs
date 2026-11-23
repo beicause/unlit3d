@@ -101,8 +101,8 @@ impl<V> Hash for Hashed<V> {
 /// modules in, so the source being build-time is no reason to skip them: those
 /// checks are what keeps a caller's shader inside its bindings.
 ///
-/// The label goes through `shader_label` first. See WORKAROUND.md, “DXC reads
-/// a shader module's label as a source file path”.
+/// The label goes through `shader_label` first. See the DXC entry in
+/// WORKAROUND.md for why a module's label is read as a source file path.
 pub fn shader_module(device: &wgpu::Device, wgsl: &str, label: &str) -> wgpu::ShaderModule {
     let label = shader_label(label);
     let desc = wgpu::ShaderModuleDescriptor {

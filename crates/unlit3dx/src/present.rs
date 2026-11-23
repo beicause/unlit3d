@@ -1,15 +1,15 @@
 //! The multi-world presentation path.
 //!
-//! The machinery a windowed scene presents with -- the [`Presenter`]
+//! The machinery a windowed scene presents with — the [`Presenter`]
 //! component, the window surface, the offscreen target and the behaviours
-//! that pump, resize and present -- lives in
+//! that pump, resize and present — lives in
 //! [`unlit3d::winit::presenter`]; this module re-exports it and adds the
 //! multi-world pacing. The host world owns the window and the presenter;
 //! the renderer and the passes live in a render sub-world. Frames are
 //! queued as a command rather than drawn inline, so the host's own async
 //! tasks are polled between the event callbacks, and the draw behaviour
-//! ticks the sub-world before drawing it -- drains its command queue, folds
-//! the input it has been fed, runs its tasks, then dispatches the frame --
+//! ticks the sub-world before drawing it — drains its command queue, folds
+//! the input it has been fed, runs its tasks, then dispatches the frame —
 //! which is what makes the sub-world a server: clients' requests land as
 //! jobs here, on the main thread, between one frame's render and the next.
 
@@ -42,7 +42,7 @@ use crate::world::StepOutcome;
 /// `offscreen` chooses the path. With it the scene's frames land in a
 /// persistent target that a screenshot reads back, and a pass added after
 /// the scene's copies that target over the swap chain; without it the
-/// scene's pass draws straight into the swap chain -- one pass and one
+/// scene's pass draws straight into the swap chain — one pass and one
 /// copy fewer, which is what a plain window wants.
 ///
 /// `surface_options` configures how the swap chain presents.
@@ -143,9 +143,9 @@ pub enum TurnOutcome {
 /// the callback runs.
 ///
 /// The render world is turned only when there is a presentation path to draw
-/// through. Its clients send jobs that assume its own setup has run -- the
+/// through. Its clients send jobs that assume its own setup has run — the
 /// scene asks its render world for a camera and looks the mesh source up while
-/// answering -- and the path coming into being is what says that setup
+/// answering — and the path coming into being is what says that setup
 /// finished, so a turn that runs before it is a [`TurnOutcome::Waiting`] turn
 /// that touches nothing.
 pub fn present_turn(

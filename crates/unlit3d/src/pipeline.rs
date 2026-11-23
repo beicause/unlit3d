@@ -7,7 +7,7 @@
 //!
 //! A [RegisteredRenderPipeline] is everything the renderer needs to draw with a
 //! wgpu render pipeline: the pipeline itself and, for a pipeline that binds a
-//! group of its own, a [GlobalRecipe] for that group -- built from the frame's
+//! group of its own, a [GlobalRecipe] for that group — built from the frame's
 //! uniforms, from the source's own arrays, or from both. Nothing here is specific
 //! to the built-in lit shader: its family is registered through the
 //! same [register_family](crate::mesh_source::MeshSource::register_family) a
@@ -28,7 +28,7 @@
 //! reuse it.
 //!
 //! The entity, not the renderer, chooses its variant: a [RenderPipelineKey]
-//! reports -- through [RenderPipelineKey::variant] -- the full, hashable
+//! reports — through [RenderPipelineKey::variant] — the full, hashable
 //! description of the pipeline its entity needs, derived from the entity's
 //! own options and from the [DrawContext] the frame hands it. The context is
 //! the frame's answer to everything an entity cannot know before it has a
@@ -89,7 +89,7 @@ const MAX_GLOBAL_BINDINGS: usize = 3 + 1 + 1 + 2 + 5;
 ///
 /// The arrays are [`ArrayHandle`]s rather than buffers because which resource
 /// holds them follows from the device: a device with storage buffers holds each
-/// in one, a device without them -- WebGL2 -- holds the same bytes in a texture.
+/// in one, a device without them — WebGL2 — holds the same bytes in a texture.
 /// A pipeline that binds them asks the handle for its binding resource and never
 /// has to know which it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +127,7 @@ impl GlobalResources {
     /// A global bind group reads all of them, so it depends on all of them.
     /// They are added one at a time because the arrays are different kinds.
     /// The camera, the frame globals and the view are declared by whoever
-    /// registers the group -- [GlobalRecipe::insert] does it -- because they
+    /// registers the group — [GlobalRecipe::insert] does it — because they
     /// reach the group as [FrameUniforms] rather than through this struct.
     pub(crate) fn declare_dependencies(
         &self,
@@ -286,8 +286,8 @@ impl GlobalResources {
 ///
 /// They come first because both [GlobalResources::bind_group] and the frame's
 /// own recipes name the same three, and a group's entries have to be in
-/// binding order. A source with no arrays of its own -- the line source, the
-/// egui -- builds its group from these alone.
+/// binding order. A source with no arrays of its own — the line source, the
+/// egui — builds its group from these alone.
 pub(crate) fn uniform_entries<'a>(
     graph: &'a ResourceGraph,
     uniforms: &FrameUniforms,
@@ -391,8 +391,8 @@ impl GlobalRecipe {
     /// [Self::insert] declares `inputs` and nothing else.
     ///
     /// `build` is still handed the draw's [FrameUniforms], so a shader that
-    /// reads one of them for its own purposes -- a ray direction derived from
-    /// the camera, say -- can; naming it in `inputs` is then what declares it.
+    /// reads one of them for its own purposes — a ray direction derived from
+    /// the camera, say — can; naming it in `inputs` is then what declares it.
     pub fn own(
         build: impl Fn(&wgpu::Device, &ResourceGraph, &FrameUniforms) -> wgpu::BindGroup + 'static,
         inputs: impl IntoIterator<Item = ResHandle<Resource>>,
@@ -415,7 +415,7 @@ impl GlobalRecipe {
     /// they are.
     ///
     /// The recipe is kept with the node, so the group is rebuilt when a buffer
-    /// it reads is replaced -- a grown array, say. A camera or view buffer
+    /// it reads is replaced — a grown array, say. A camera or view buffer
     /// itself is never replaced, but it is declared for a frame-bound group
     /// all the same: the group then holds the records it binds for as long as
     /// the graph holds the group.
@@ -468,7 +468,7 @@ pub struct RegisteredRenderPipeline {
     /// [GLOBAL_GROUP](unlit_wgpu::pipeline::GLOBAL_GROUP), for whichever camera
     /// and viewport a draw names.
     ///
-    /// None for a pipeline that binds nothing at that index -- a shader
+    /// None for a pipeline that binds nothing at that index — a shader
     /// with no uniform or storage inputs, say.
     pub global: Option<GlobalRecipe>,
 }
@@ -506,7 +506,7 @@ pub struct FamilyContext<'a> {
 /// The pipeline an entity draws with, as the entity's own key describes it.
 ///
 /// A [GpuRenderPipeline](crate::components::GpuRenderPipeline) component carries a key of this type. It selects the family
-/// the entity draws with -- the family registered for this key type -- and
+/// the entity draws with — the family registered for this key type — and
 /// derives, from the entity's options and the frame's [DrawContext], the full
 /// description of the variant it needs. Because the key derives that
 /// description rather than reporting a separate base descriptor, the variant
@@ -574,7 +574,7 @@ pub struct DrawContext<'a> {
     /// The device the pipeline is compiled on.
     pub device: &'a wgpu::Device,
     /// The view the entity is drawn through, for per-entity components a
-    /// variant depends on -- an alpha cutoff, say.
+    /// variant depends on — an alpha cutoff, say.
     pub world: Scope<'a>,
     /// The entity being drawn.
     pub entity: Entity,
@@ -601,7 +601,7 @@ pub struct DrawContext<'a> {
 /// means the family binds no instance stream at all.
 pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
 
-/// Everything a family may read -- and the frame arrays it may append to --
+/// Everything a family may read — and the frame arrays it may append to —
 /// while it writes one instance record.
 ///
 /// The record is the family's own: the built-in lit family builds a
@@ -737,7 +737,7 @@ impl<'a> InstanceContext<'a> {
 /// A family owns its own instance stream: every frame the source packs one
 /// record per visible instance into a buffer shaped by [Self::stream] and binds
 /// it at the declared slot. That is what lets a caller's family carry its own
-/// per-instance data -- a tint, a transform palette, a material parameter --
+/// per-instance data — a tint, a transform palette, a material parameter —
 /// without sharing a record layout or a buffer with the built-in lit family,
 /// and without the built-in family having any privilege over it.
 ///

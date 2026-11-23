@@ -114,7 +114,7 @@ fn aabb_of(vertices: &[Vertex]) -> Aabb {
 /// It names the inputs its descriptor is built from: the shader, and the
 /// material layout when the shader reads one. Both are wgpu handles, which
 /// [Hash](core::hash::Hash) and compare by identity, so a key costs a pointer
-/// comparison rather than a field-by-field walk of a [RenderPipelineDesc] --
+/// comparison rather than a field-by-field walk of a [RenderPipelineDesc] —
 /// which would not even be possible, since a descriptor carries an `f64`
 /// compilation constant.
 #[derive(Clone)]
@@ -138,8 +138,8 @@ impl RenderPipelineKey for CustomPipelineKey {
 
 /// The concrete pipeline a custom draw resolves to.
 ///
-/// It carries what the family itself decided to specialize on -- the shader,
-/// the layout and the mesh's vertex layout and index format -- so the framework
+/// It carries what the family itself decided to specialize on — the shader,
+/// the layout and the mesh's vertex layout and index format — so the framework
 /// never has to know what a custom family cares about. The mesh layout is
 /// already part of the descriptor's [RenderPipelineDesc] pipeline layout, and
 /// the mesh bind group is bound per draw, so neither is a field here.

@@ -14,7 +14,7 @@ use unlit3d::prelude::*;
 const FRAMES: usize = 6;
 
 /// The cube's placement, baked into the pose's joints so skinned vertices land
-/// where the entity transform used to put them.
+/// at the intended world position.
 const MESH_WORLD: glam::Mat4 = glam::Mat4::from_diagonal(glam::Vec4::new(0.9, 0.9, 0.9, 1.0));
 
 /// Where the camera sits, close enough that a deformation moves many pixels.

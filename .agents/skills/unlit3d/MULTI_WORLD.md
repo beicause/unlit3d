@@ -11,7 +11,7 @@
 
 ## 两种骨架
 
-**窗口 / 离屏 / 交互 / MCP 四种运行**——骨架已在库里，模块 `unlit3dx::app`：应用实现 [`App`] trait（`spawn_scene` 装世界、`setup_render` 装管线，`Args` 关联类型声明自己的参数结构），骨架提供 `windowed` / `headless` / `interactive` / `serve` 四个入口；运行开关（`--mcp-stdio` / `--mcp-http` / `--stepped` / `--max-frames` / `--capture-frames` / `--capture-out` 等）与应用参数由一个 clap 解析器合并读入，解析好的 `App::Args` 结构体交给 `App::configure`，无参数应用用 `NoArgs`。步进节奏用库的 `Stepping`（只含物理 60 Hz 的攒步），音频拉取由 `AudioPull` 单独负责——只有真正消费样本的入口（离屏、交互、录音）才持有它，窗口运行把混音留给音频 world 自己的 tick。应用不再自己写步进器。窗口与管线级别的原语（`setup_presenter` / `request_gpu` / `Pass` / `Renderer`）仍然导出，不想用骨架的应用直接拼它们；GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
+**窗口 / 离屏 / 交互 / MCP 四种运行**——骨架已在库里，模块 `unlit3dx::app`：应用实现 `App` trait（`spawn_scene` 装世界、`setup_render` 装管线，`Args` 关联类型声明自己的参数结构），骨架提供 `windowed` / `headless` / `interactive` / `serve` 四个入口；运行开关（`--mcp-stdio` / `--mcp-http` / `--stepped` / `--max-frames` / `--capture-frames` / `--capture-out` 等）与应用参数由一个 clap 解析器合并读入，解析好的 `App::Args` 结构体交给 `App::configure`，无参数应用用 `NoArgs`。步进节奏用库的 `Stepping`（只含物理 60 Hz 的攒步），音频拉取由 `AudioPull` 单独负责——只有真正消费样本的入口（离屏、交互、录音）才持有它，窗口运行把混音留给音频 world 自己的 tick。应用不再自己写步进器。窗口与管线级别的原语（`setup_presenter` / `request_gpu` / `Pass` / `Renderer`）仍然导出，不想用骨架的应用直接拼它们；GPU 就绪前先把渲染 world 空着建出来，玩法从第一帧就握着它的 handle。
 
 边界：**场景内容由玩法 world 发 job**（相机在 `spawn_scene` 里就排在渲染 world 的收件箱，网格、材质、实例、姿态同理）；**管线由宿主在 GPU 回调里同步建**（资源图、renderer、mesh source、pass、绘制面板的 `EguiSource`）。后者必须同步，因为 pass 在 GPU 应答那一刻才存在，而 job 要等那一帧的 `tick_sub_world` 才会执行——那时帧已经画完了。
 

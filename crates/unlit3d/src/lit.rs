@@ -14,8 +14,8 @@
 //! is a flag of the caller's options, and a variant that does not set it
 //! multiplies its base colour by the frame's lights while an unlit one draws
 //! the colour unchanged and declares none of the lighting bindings. The two are
-//! one family rather than two because everything else is shared -- the vertex
-//! channels, the material group, the instance stream -- so a mesh allocated for
+//! one family rather than two because everything else is shared — the vertex
+//! channels, the material group, the instance stream — so a mesh allocated for
 //! either draws with both, and a scene that adds a light re-keys nothing.
 //!
 //! The lights themselves, and the clustering a frame does of them, live in

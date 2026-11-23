@@ -451,7 +451,7 @@ impl FrameSource for LineSource {
 
         // The camera and the view are the frame's records: two passes through
         // one camera, or into one viewport, read the same two buffers, and the
-        // frame globals -- which this shader does not read -- are the
+        // frame globals — which this shader does not read — are the
         // renderer's to advance.
         let record = Camera::new(
             camera.view_from_world,

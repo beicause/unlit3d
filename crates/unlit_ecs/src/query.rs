@@ -515,8 +515,8 @@ impl_tuple!(
 ///
 /// A filter is answered from the archetype alone, before any row is fetched and
 /// before any value is reached. Deciding there rather than skipping rows in the
-/// loop is both faster -- a rejected archetype costs one test instead of one per
-/// row -- and correct when the rows it rejects carry a component the caller
+/// loop is both faster — a rejected archetype costs one test instead of one per
+/// row — and correct when the rows it rejects carry a component the caller
 /// reaches exclusively.
 ///
 /// Implemented for `()`, which accepts everything, and for any

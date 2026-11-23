@@ -506,7 +506,7 @@ fn screen_cells(
         // directions on each screen axis: `(axis * depth -+ radius * s) /
         // (depth^2 - radius^2)`, where `s` is the tangent length. The pair is
         // already ordered, because the radius term is non-negative, so it does
-        // not depend on which side of the axis the center is on -- a sign taken
+        // not depend on which side of the axis the center is on — a sign taken
         // from the axis would swap the ends for every light left of or below
         // the camera and leave its cells empty.
         let depth_squared = depth * depth - radius * radius;

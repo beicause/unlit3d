@@ -215,8 +215,8 @@ for them.
 The callback is off the row while it runs, so a callback that reaches for its
 own lifecycle component reads a row without one rather than one its own run
 holds open. What the row carries afterwards is what the run left there: a
-replacement the callback wrote stays, and a callback that wrote nothing -- or
-wrote `None`, which reads the same as having no callback -- gets its own back,
+replacement the callback wrote stays, and a callback that wrote nothing — or
+wrote `None`, which reads the same as having no callback — gets its own back,
 so the next structural change on that entity still runs it.
 
 **Cost.** Whether a query row is visible costs one array read: an archetype
@@ -341,6 +341,7 @@ making it fatter would cost the storage the ECS exists to pack. A boundary — a
 job, a channel, a thread — is where the pair takes over. `RemoteEntity` is
 `Copy`, its fields are public, and it has no world in it, so a message can be
 built and taken apart without a world at hand.
+
 ## What is in the box
 
 [`World`], [`Entity`], [`Location`], [`WorldId`], [`RemoteEntity`], [`Bundle`] / [`DynamicBundle`] (and the

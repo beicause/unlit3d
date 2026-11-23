@@ -148,10 +148,11 @@ fn track_controls(
 /// The background loop starts once the audio world's output is up — with the
 /// scene, or on the user's first click where the output waits for one; the
 /// one-shot sequence waits for its row's Play button and plays once per
-/// press, and pressing it is also what unlocks a locked output. Each track then pauses, resumes and rewinds on its own, and the
-/// balls drop or clear without touching the music. A scene with no
-/// synthesizer has no [`SceneTracks`] and nothing to transport, so its panel
-/// shows the balls alone.
+/// press, and pressing it is also what unlocks a locked output. Each track
+/// then pauses, resumes and rewinds on its own, and the balls drop or clear
+/// without touching the music. A scene with no synthesizer has no
+/// [`SceneTracks`] and nothing to transport, so its panel shows the balls
+/// alone.
 ///
 /// The panel owns no state: a row reads the sequence it draws, and pressing a
 /// button writes it. egui may run a panel more than once in a frame, and every

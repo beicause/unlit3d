@@ -8,9 +8,9 @@ English | [简体中文](README.zh-CN.md)
 [![Documentation](https://docs.rs/unlit3d/badge.svg)](https://docs.rs/unlit3d)
 
 A compact, extensible, opinionated 3D renderer on `wgpu`, plus the ECS layer
-built on top of it. It ships a built-in **Lambert** pipeline — simple
-diffuse lighting from directional, point, spot and polygon lights — is
-mobile-first, and runs on WebGPU as well as on the WebGL2 baseline. It uses
+built on top of it. It ships a built-in **Lambert** pipeline providing simple
+diffuse lighting from directional, point, spot and polygon lights. It is
+mobile-first and runs on WebGPU as well as on the WebGL2 baseline. It uses
 and exposes `wgpu` resources directly, allowing low-level control and
 extension, with very little high-level CPU-side abstraction.
 

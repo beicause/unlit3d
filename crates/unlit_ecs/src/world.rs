@@ -6,15 +6,15 @@
 //! is therefore `!Send`: it stays on the thread that created it, which is where
 //! a renderer or any other `!Send` state lives.
 //!
-//! Reading and writing components needs only `&World`. Structural changes --
-//! spawning and despawning -- need `&mut World`. A caller with only a read-only
+//! Reading and writing components needs only `&World`. Structural changes —
+//! spawning and despawning — need `&mut World`. A caller with only a read-only
 //! scope can queue those changes instead with [`crate::Commands`] and apply them
 //! later with [`World::apply`].
 //!
 //! Every entity lives in a scope, and a scope is another entity: the one the
 //! world's tree says it lives in. The world therefore holds a tree, and the
 //! entry points that read or write it are scopes of a scope rather than
-//! methods on the world -- [`Scope`](crate::Scope) and
+//! methods on the world — [`Scope`](crate::Scope) and
 //! [`ScopeMut`](crate::ScopeMut). A scope sees its own subtree and nothing
 //! beside it; only `&World` reaches the root.
 //!
@@ -24,7 +24,7 @@
 //!
 //! A borrow conflict is a panic, not a compile error: two claims the ledger
 //! cannot share — a shared claim still held while a write asks for the same
-//! component, or the same component fetched as `&mut` twice in one query --
+//! component, or the same component fetched as `&mut` twice in one query —
 //! report the component's name and both claim sites, then stop. This is the
 //! trade for not doing access analysis. An optional component is optional only
 //! about the component being absent: a conflict over one the row does carry

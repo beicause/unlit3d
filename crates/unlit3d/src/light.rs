@@ -1,7 +1,7 @@
 //! The frame's lights, and how a frame clusters them.
 //!
-//! A light is one component -- [`LightSource`](crate::light::LightSource),
-//! holding a boxed [`Light`](crate::light::Light) -- so a
+//! A light is one component — [`LightSource`](crate::light::LightSource),
+//! holding a boxed [`Light`](crate::light::Light) — so a
 //! scene keeps every kind it has in one column and the frame collects them all
 //! with one query. Which kind a light is decides which lanes of
 //! [`unlit_wgpu::light::LightGpu`] it fills and which term the fragment adds; the
@@ -18,7 +18,7 @@
 //!
 //! A light's `intensity` carries no unit. The shader modulates a surface's base
 //! colour by the sum of the lights' colours times their intensities and
-//! normalises nothing -- there is no exposure and no energy conservation -- so a
+//! normalises nothing — there is no exposure and no energy conservation — so a
 //! caller picks numbers that look right rather than physical values.
 
 use glam::{Affine3A, UVec4, Vec2, Vec3, Vec4};
@@ -30,7 +30,7 @@ use unlit_wgpu::light::{
 
 use crate::components::Transform;
 
-/// A light's shape, as a description rather than the shader cares.
+/// A light's shape in a caller's terms, rather than the shader's lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LightKind {
     /// A light at infinity: one direction, no falloff, no bounds.
@@ -502,7 +502,7 @@ fn keep_directional(slots: &mut [DirectionalGpu; MAX_DIRECTIONAL_LIGHTS], gpu: L
         color_intensity: gpu.color_intensity,
     };
     // An empty slot holds no colour at all, so nothing it does can change the
-    // frame -- not even being displaced by a light that shines nothing. A light
+    // frame — not even being displaced by a light that shines nothing. A light
     // darker than the weakest kept one is dropped from either side, keeping the
     // slot count the frame's lights, not the frame's slots.
     if light.color_intensity.w <= 0.0 {
@@ -593,7 +593,7 @@ mod tests {
         let (gpu, _) = pack(&light, Affine3A::IDENTITY);
         // The ramp these angles describe would be brightest where the light
         // reaches nothing. The inner cone is narrowed to the outer one, so the
-        // light steps at it -- the hard edge, not a silent inversion.
+        // light steps at it — the hard edge, not a silent inversion.
         assert_eq!(gpu.cones.x, 0.0);
         assert_eq!(gpu.direction_outer.w, (0.2_f32).cos());
         assert_eq!(gpu.color_intensity.w, 1.0);

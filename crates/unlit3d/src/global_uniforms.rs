@@ -16,9 +16,9 @@
 //!
 //! * the frame globals, one for the whole frame, advanced by the renderer
 //!   before any source builds;
-//! * a camera per [`CameraKey`](crate::global_uniforms::CameraKey) -- the entity
+//! * a camera per [`CameraKey`](crate::global_uniforms::CameraKey) — the entity
 //!   a camera hangs off, or the screen mapping a source synthesises for itself;
-//! * a view per [`ViewKey`](crate::global_uniforms::ViewKey) -- the viewport a pass draws through.
+//! * a view per [`ViewKey`](crate::global_uniforms::ViewKey) — the viewport a pass draws through.
 //!
 //! A slot keeps its buffer for as long as the slot lives, so a bind group built
 //! from one stays valid from frame to frame, and a slot whose bytes did not
@@ -168,7 +168,7 @@ struct Slot<T> {
     /// The staging buffers this slot's bytes travel through.
     staging: StagingBuffer,
     /// What the buffer holds. `None` until the first upload, which leaves the
-    /// zeroes the device hands out -- the same bytes as the record's
+    /// zeroes the device hands out — the same bytes as the record's
     /// [`Default`] for all three records.
     uploaded: Option<T>,
     /// Whether the frame being built asked for this slot.
@@ -356,8 +356,8 @@ struct StampedGroup {
 ///
 /// A group binds the buffers themselves, so a pipeline drawn through two
 /// cameras or into two viewports needs two groups even though it is one
-/// pipeline. A source keeps one of these per pipeline -- or per target, when
-/// the pipeline itself is specialized per target -- and asks it for the group
+/// pipeline. A source keeps one of these per pipeline — or per target, when
+/// the pipeline itself is specialized per target — and asks it for the group
 /// of the key the frame draws with.
 #[derive(Default)]
 pub struct UniformGroups {

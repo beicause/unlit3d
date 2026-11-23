@@ -31,7 +31,7 @@ bitflags::bitflags! {
     pub struct SecondaryFlags: u16 {
         /// The stream carries a per-vertex UV.
         const UV = 1 << 0;
-        /// The UV is written full precision -- `Float32x2` -- rather than
+        /// The UV is written full precision — `Float32x2` — rather than
         /// compressed to `Snorm16x2`.
         ///
         /// An uncompressed UV needs no decode parameters, so writing it

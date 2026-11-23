@@ -4,7 +4,7 @@
 
 ## 服务器与驱动
 
-MCP 服务器住在 `unlit_ecs`（`crates/unlit_ecs/src/mcp/`）里，让 agent 读写一个**正在运行**的 world。它没有特权通道：每个工具都写在公开 API（`World`、`Renderer`、`MeshSource`、`ResourceGraph`）之上，且服务器本身不认识引擎——工具由定义其作用对象的 crate 各自用 `inventory::submit!` 注册（`unlit_ecs` 注册 world 与实体工具、`unlit3d` 注册渲染工具、`unlit3dx` 注册音频录音与宿主控制工具）。传输有两种：stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有 `.mcp.json`；以及 `mcp-http` feature 的 streamable HTTP——`--mcp-http` 让宿主在 TCP 端口（默认 `127.0.0.1:0`，OS 选）上服务同一组工具，适合窗口宿主或跨机调试，连接地址以启动日志里形如 `http://127.0.0.1:…` 的地址行为准（窗口宿主打「listening on」，无头宿主打「is ready on」）。示例程序还能注册自己的工具：`unlit3dx_examples --headless --interactive --mcp-stdio` 就多两个按帧驱动的工具。
+MCP 服务器住在 `unlit_ecs`（`crates/unlit_ecs/src/mcp/`）里，让 agent 读写一个**正在运行**的 world。它没有特权通道：每个工具都写在公开 API（`World`、`Renderer`、`MeshSource`、`ResourceGraph`）之上，且服务器本身不认识引擎——工具由定义其作用对象的 crate 各自用 `inventory::submit!` 注册（`unlit_ecs` 注册 world 与实体工具、`unlit3d` 注册渲染工具、`unlit3dx` 注册音频录音与宿主控制工具）。传输有两种：stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有 `.mcp.json`；以及 `mcp-http` feature 的 streamable HTTP——`--mcp-http` 让宿主在 TCP 端口（默认 `127.0.0.1:0`，OS 选）上服务同一组工具，适合窗口宿主或跨机调试，连接地址以启动日志里形如 `http://127.0.0.1:…` 的地址为准（窗口宿主打「listening on」，无头宿主打「is ready on」）。示例程序还能注册自己的工具：`unlit3dx_examples --headless --interactive --mcp-stdio` 就多两个按帧驱动的工具。
 
 客户端用 **mcpdo**（MCP Inspector 的连接 CLI，随 `@modelcontextprotocol/inspector` 一起装）：它起一个常驻 daemon，`connect` 一次之后，后续每条命令都打到**同一个宿主进程**——world 的状态跨命令持续，这是它比「每次调用都重新启动宿主」的一次性客户端（`mcp-inspector --cli`）更合适的根本原因。`@modelcontextprotocol/inspector` 已全局安装就直接调 `mcpdo`（下文命令都这么写）；没装就在每条命令前加免安装前缀（首次要下载，慢）：
 
@@ -89,10 +89,10 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 | 工具                     | 作用                                     | 关键参数                                  |
 | ------------------------ | ---------------------------------------- | ----------------------------------------- |
-| `graph_summary`           | 按种类统计节点数、脏的与可重建的         | —                                         |
-| `list_resources`          | 每个资源槽的 handle、种类、脏否、可重建否 | —                                         |
+| `graph_summary`           | 按种类统计节点数、脏的与可重建的         | 无                                        |
+| `list_resources`          | 每个资源槽的 handle、种类、脏否、可重建否 | 无                                        |
 | `resource_dependencies`   | 一个资源依赖的 handle                    | `id`                                      |
-| `graph_maintain`          | 丢掉无引用资源、重建脏资源               | —                                         |
+| `graph_maintain`          | 丢掉无引用资源、重建脏资源               | 无                                        |
 | `read_buffer`             | 读 buffer 为 base64（不推荐）             | `id`、`offset`、`size`                    |
 | `save_buffer`             | 读 buffer 写到文件（推荐）               | `id`、`directory`、`file_name`            |
 | `read_texture_as_image`   | 读纹理为内联 base64 编码的图片（不推荐） | `id`、`format`                            |
@@ -121,7 +121,7 @@ mcpdo disconnect './target/debug/unlit3dx-examples'
 
 `spawn_gltf` 的 `document` 可以是 glTF JSON 文本，也可以是把 GLB 的字节 base64 编码后的字符串——JSON 参数装不下裸二进制；与 `path` 只能给其中一个。工具返回模型根和全部后代实体；删除根实体即可通过 ECS 子树清理整份场景，绘制 mesh 由 source 下一次 `maintain` 回收。
 
-`renderer` / `source` 分别是携带 `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；渲染上下文不是工具参数——它由 `spawn_context` 落在世界的唯一一行上，GPU 工具自己找它；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。删除绘制实体时应删除返回句柄中的根实体；ECS 会清理整棵模型子树，mesh 由 source 下一次 `maintain` 回收。
+`renderer` / `source` 分别是携带 `Renderer` / `MeshSource` 的实体 bits，省略时服务器取「该 world 唯一的一个」；渲染上下文不是工具参数——它由 `spawn_context` 落在世界的唯一一行上，GPU 工具自己找它；`target` 是纹理资源 id，**必须给**，没有「唯一可读纹理」这种默认。**优先用 `save_*` 而不是 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、也可以不读。
 
 ### 帧与时序
 

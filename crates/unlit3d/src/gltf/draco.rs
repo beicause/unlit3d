@@ -6,8 +6,8 @@
 //! without buffer views because the stream, not a buffer, holds their data.
 //! [`fill_accessors`] decodes every such stream and writes the decompressed
 //! values back as real buffer views and accessors. The document is then
-//! validated normally, so every later reader -- including morph targets, skins
-//! and animations -- sees only ordinary accessors and the loader never has to
+//! validated normally, so every later reader — including morph targets, skins
+//! and animations — sees only ordinary accessors and the loader never has to
 //! trust an unvalidated document.
 
 use draco_core::decoder_buffer::DecoderBuffer;
