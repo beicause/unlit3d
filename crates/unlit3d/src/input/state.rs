@@ -118,6 +118,68 @@ impl Default for InputState {
     }
 }
 
+/// The input state a batch was queued against.
+///
+/// A batch is a sequence of changes, so what it is read against is what stood
+/// before its first event, not the [`InputState`] beside it: that state already
+/// holds the batch, so replaying from it reports each change twice — a release
+/// in a batch that lifted nothing, a move against a position the batch has not
+/// reached yet, a press that arrives before the move it followed.
+///
+/// A world's own tick captures this immediately before it folds a batch in, and
+/// a reader of the batch replays from it, letting the batch's own events correct
+/// it one at a time. Window geometry is not here: the size and scale factor
+/// describe the window now, and a batch's own resize is what a frame lays out
+/// for rather than what it replays against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputBaseline {
+    /// The modifier keys held.
+    pub modifiers: Modifiers,
+    /// Where the pointer was, or `None` while it was outside the window.
+    pub pointer: Option<[f32; 2]>,
+    /// Where the mouse was, or `None` while it was outside the window.
+    pub cursor: Option<[f32; 2]>,
+    /// The mouse buttons held.
+    pub buttons: MouseButtons,
+    /// Every pointer that was down, in the order they went down.
+    pub pointers: Vec<PointerContact>,
+    /// The touches that were active, as `(touch id, position)` pairs.
+    pub touches: Vec<(u64, [f32; 2])>,
+    /// Whether the window had focus. Input that arrives after it is lost ends
+    /// the pointer lifecycles the batch was queued with.
+    pub focused: bool,
+}
+
+impl Default for InputBaseline {
+    fn default() -> Self {
+        Self {
+            modifiers: Modifiers::default(),
+            pointer: None,
+            cursor: None,
+            buttons: MouseButtons::empty(),
+            pointers: Vec::new(),
+            touches: Vec::new(),
+            // A batch queued before any event arrives is replayed against a
+            // window that is focused, which is what a world starts with.
+            focused: true,
+        }
+    }
+}
+
+impl InputBaseline {
+    /// Capture the replay-relevant part of `state`, reusing this baseline's
+    /// buffers.
+    pub(super) fn capture(&mut self, state: &InputState) {
+        self.modifiers = state.modifiers;
+        self.pointer = state.pointer;
+        self.cursor = state.cursor;
+        self.buttons = state.buttons;
+        self.focused = state.focused;
+        self.pointers.clone_from(&state.pointers);
+        self.touches.clone_from(&state.touches);
+    }
+}
+
 #[cfg(test)]
 impl InputState {
     /// Apply `event` without a world to hand it to.

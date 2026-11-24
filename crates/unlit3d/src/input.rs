@@ -73,11 +73,11 @@
 //! State a callback needs across events belongs in a sibling component. Two
 //! different behaviour types on the same entity are fine: they are different
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::relay::{Stream, StreamReader};
-use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle, sync};
 
 use crate::behaviour::behaviour;
 
@@ -89,7 +89,7 @@ pub use event::{
     MouseButtons, MouseEvent, PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent,
     TouchEvent, TouchPhase, WheelUnit,
 };
-pub use state::InputState;
+pub use state::{InputBaseline, InputState};
 
 #[cfg(feature = "winit")]
 pub mod winit;
@@ -117,10 +117,9 @@ pub mod winit;
 pub struct InputEvents {
     /// The events fed since the last refresh, queued for this world alone.
     events: StreamReader<InputEvent>,
-    /// How many touches the state held when the current batch was queued: the
-    /// count a translation of the batch starts from, before the batch's own
-    /// events correct it.
-    touch_baseline: Arc<AtomicU64>,
+    /// The state that stood when the current batch was queued: what a replay of
+    /// the batch starts from, before the batch's own events correct it.
+    baseline: Arc<Mutex<InputBaseline>>,
     /// How many ticks this world has taken.
     ticks: Arc<AtomicU64>,
 }
@@ -150,6 +149,21 @@ impl InputEvents {
         self.ticks.load(Ordering::Relaxed)
     }
 
+    /// Fill `out` with the state that stood when the current batch was queued.
+    ///
+    /// A replay of the batch starts from this and corrects it with the batch's
+    /// own events, in order. The [`InputState`] beside the buffer is the wrong
+    /// start: it already includes the batch, so replaying from it reports each
+    /// change twice — the position a move left behind before its own move, the
+    /// buttons a release lifted before its own release.
+    ///
+    /// A reader fills the buffer it keeps across ticks, rather than allocating
+    /// one per tick.
+    pub fn copy_baseline_into(&self, out: &mut InputBaseline) {
+        let baseline = sync::lock(&self.baseline);
+        out.clone_from(&baseline);
+    }
+
     /// How many touches the state held when the current batch was queued.
     ///
     /// A translation of the batch starts from this count and corrects it with
@@ -157,7 +171,7 @@ impl InputEvents {
     /// already includes the batch, so counting the batch against it would
     /// count every touch the batch carries twice.
     pub fn touch_baseline(&self) -> usize {
-        self.touch_baseline.load(Ordering::Relaxed) as usize
+        sync::lock(&self.baseline).touches.len()
     }
 
     /// Start this world's input tick: take everything queued as the batch, and
@@ -170,13 +184,13 @@ impl InputEvents {
     /// same entity holds, which the tick alone writes.
     pub fn refresh(&self, state: &mut InputState) {
         self.ticks.fetch_add(1, Ordering::Relaxed);
-        // The baseline is the count `state` held before this batch folds in:
-        // the state only ever changes when a batch folds into it, so what
-        // stands now is what stood when the batch was queued. A translation
-        // of the batch starts from it and corrects it event by event; reading
-        // the state after the fold would count the batch's touches twice.
-        self.touch_baseline
-            .store(state.touches.len() as u64, Ordering::Relaxed);
+        // The baseline is the state before this batch folds in: the state only
+        // ever changes when a batch folds into it, so what stands now is what
+        // stood when the batch was queued. A replay of the batch starts from it
+        // and corrects it event by event; reading the state after the fold
+        // would report every change the batch carries as one the replay already
+        // knew.
+        sync::lock(&self.baseline).capture(state);
         self.events.pump();
         self.events.with_batch(|batch| {
             for event in batch {
@@ -237,7 +251,7 @@ impl InputWriter {
     pub fn subscribe(&self) -> InputPair {
         InputPair(InputEvents {
             events: self.0.subscribe(),
-            touch_baseline: Arc::default(),
+            baseline: Arc::default(),
             ticks: Arc::default(),
         })
     }

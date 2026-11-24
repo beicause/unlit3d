@@ -641,6 +641,13 @@ CSS 滤镜只在画场有对应图元时才画：单原语图里的 flood、高�
 [`OnBlitzEvent`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/events.rs) 就是做决定的地方——一个行为组件，对 Blitz 派发的
 每个 DOM 事件运行，拿到它将要冒泡经过的节点链与它指向的文档。
 
+一批事件是从它开始时的状态重放的，而不是按它结束时的状态去读。一批事件开始时的指针位置与
+按键、修饰键与触摸，就是它排队时所立的状态，也就是 `InputEvents::copy_baseline_into` 交给读者的
+那份快照；批里每个事件都相对排在它之前的事件来解释。因此排在本批自身松开之前的移动仍然按着
+键；滚轮报的是它转动时指针所在的位置，而不是同批里更晚那次移动留下的位置；本帧没看到的那次
+按下依然算按着。读到的是更早一批的源，从那一批留下的状态重放；手势进行中被换掉的页面，从
+世界持有的状态开始，而不是从它自己上一批的状态开始。
+
 字节来自页面自己：网络够不到它。`data:` URL 当场解码，其余的由
 [`BlitzDocument::insert_resource`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/blitz/document.rs) 用实体为该路径
 登记的字节提供。路径在页面加载它时按页面基准解析，所以

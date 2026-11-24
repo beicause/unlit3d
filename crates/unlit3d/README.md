@@ -975,6 +975,17 @@ script, though: what a page should do about an event is Rust's decision, and
 component that runs for every DOM event Blitz dispatches, with the node chain it
 would bubble through and the document it targets.
 
+A batch is replayed from where it began, not read at where it ended. The
+pointer's position and buttons, the modifiers and the touches a batch opens
+with are the state that stood when it was queued — what
+`InputEvents::copy_baseline_into` hands a reader — and each of its events is
+reported against the ones before it. A move that comes before the batch's own
+release still holds the button; a wheel names the place the pointer stood when
+it turned, not where a later move in the same batch took it; a press the frame
+never saw is still held. A source that read an older batch replays from the
+state that one left, and a page replaced mid-gesture starts from what the world
+holds rather than from its own last batch.
+
 Bytes come from the page itself: nothing reaches the network. A `data:` URL is
 decoded on the spot, and anything else is served by
 `BlitzDocument::insert_resource` from

@@ -14,6 +14,36 @@ use keyboard_types::{Code, Location};
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
+mod input;
+mod page;
+mod replay;
+
+use self::{
+    input::{
+        a_callback_can_cancel_the_default_action, a_click_toggles_a_checkbox,
+        a_key_reaches_the_page_as_a_code_and_a_side, a_key_release_reaches_the_page,
+        a_pen_click_toggles_a_checkbox, a_wheel_scrolls_the_page,
+        an_ime_commit_reaches_a_text_field, input_is_dispatched_once,
+        leaving_the_page_is_reported_to_it, losing_focus_leaves_the_text_field,
+        one_tick_reaches_a_shared_page_once, typing_reaches_a_text_field,
+    },
+    page::{
+        a_new_base_still_serves_the_registered_bytes, a_page_draws_an_image_from_a_data_url,
+        a_page_draws_an_image_from_a_registered_path, a_page_draws_its_content,
+        a_page_loads_a_stylesheet_it_serves, a_page_loads_a_stylesheet_nobody_serves,
+        a_page_paints_its_own_colours, a_replaced_page_is_not_drawn_from_the_old_pixels,
+        a_transparent_page_leaves_the_frame_alone, new_markup_replaces_the_page,
+    },
+    replay::{
+        a_batch_replays_from_the_state_that_stood_before_it,
+        a_batch_that_skips_one_still_replays_from_the_state_left,
+        a_first_frame_replays_from_an_empty_baseline,
+        a_frame_without_events_keeps_the_pointer_state,
+        a_move_before_a_press_reports_the_button_that_still_stood,
+        a_replaced_page_replays_from_the_world_state, a_wheel_is_reported_where_the_pointer_stood,
+    },
+};
+
 /// The grey the test pages paint their background with.
 const GREY: u8 = 128;
 
@@ -49,6 +79,12 @@ struct Seen {
     code: Option<Code>,
     /// The side of the keyboard that key sits on, beside `code`.
     location: Option<Location>,
+    /// The buttons a pointer or wheel event named, as the DOM bitmask.
+    buttons: Option<u8>,
+    /// The client position a pointer or wheel event named, in CSS pixels.
+    client: Option<[f32; 2]>,
+    /// Whether a pointer event named its pointer as the primary one.
+    primary: Option<bool>,
 }
 
 /// The pixel at `x`, `y` of the rendered target, as RGBA.
@@ -90,6 +126,33 @@ fn render_page(ctx: &Ctx, html: &str) -> (World, TestGpu, wgpu::Texture, Entity,
     (world, gpu, target, source, page)
 }
 
+/// What a pointer or wheel event states about the pointer, for the log.
+///
+/// `None` for a `Seen` entry that is not one of those events: a DOM name alone
+/// says which event happened, not what it claimed about the devices.
+fn pointer_payload(
+    data: &blitz_traits::events::DomEventData,
+) -> (Option<u8>, Option<[f32; 2]>, Option<bool>) {
+    use blitz_traits::events::DomEventData;
+    match data {
+        DomEventData::PointerMove(event)
+        | DomEventData::PointerDown(event)
+        | DomEventData::PointerUp(event)
+        | DomEventData::PointerCancel(event)
+        | DomEventData::PointerLeave(event) => (
+            Some(event.buttons.bits()),
+            Some([event.coords.client_x, event.coords.client_y]),
+            Some(event.is_primary),
+        ),
+        DomEventData::Wheel(event) => (
+            Some(event.buttons.bits()),
+            Some([event.coords.client_x, event.coords.client_y]),
+            None,
+        ),
+        _ => (None, None, None),
+    }
+}
+
 /// A page, the frame it draws into and everything needed to feed and watch it.
 type WatchedPage = (
     World,
@@ -125,12 +188,16 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 .and_then(|id| event.document_mut().get_node(id))
                 .and_then(|node| node.element_data())
                 .and_then(|element| element.checkbox_input_checked());
+            let (buttons, client, primary) = pointer_payload(event.data());
             log.lock().expect("the log is not poisoned").push(Seen {
                 name: event.data().name().to_owned(),
                 value,
                 checked,
                 code,
                 location,
+                buttons,
+                client,
+                primary,
             });
         })]);
     let input = spawn_input(&mut world);
@@ -200,708 +267,6 @@ fn bind_target(gpu: &TestGpu, world: &World, pass: Entity) -> wgpu::Texture {
     color
 }
 
-/// A page is rasterized in sRGB and composited into an sRGB target, so its own
-/// colours survive: the two conversions cancel instead of compounding.
-async fn a_page_paints_its_own_colours() {
-    let ctx = Ctx::headless().await;
-    let (world, gpu, target, _source, _page) = render_page(&ctx, GREY_PAGE);
-
-    gpu.render(&world);
-
-    let centre = centre_pixel(&ctx.device, &ctx.queue, &target).await;
-    for (channel, &value) in centre[..3].iter().enumerate() {
-        assert!(
-            value.abs_diff(GREY) <= 2,
-            "channel {channel} should be the page's grey {GREY}, not {value}"
-        );
-    }
-    assert_eq!(centre[3], 255, "an opaque page covers the target");
-}
-
-/// The page's boxes land where its layout puts them, so the frame shows the
-/// document rather than one background colour.
-async fn a_page_draws_its_content() {
-    let ctx = Ctx::headless().await;
-    const RED: [u8; 4] = [255, 0, 0, 255];
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div style="width: 64px; height: 64px; background: #ff0000"></div>
-    </body></html>"#;
-    let (world, gpu, target, _source, _page) = render_page(&ctx, html);
-
-    gpu.render(&world);
-
-    let inside = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
-    assert!(
-        inside[0].abs_diff(RED[0]) <= 2 && inside[1] <= 2 && inside[2] <= 2,
-        "the red box should be at the page's top left corner, got {inside:?}"
-    );
-    let outside = pixel(&ctx.device, &ctx.queue, &target, 200, 150).await;
-    for &value in &outside[..3] {
-        assert!(
-            value.abs_diff(GREY) <= 2,
-            "the page's background should surround the box, got {outside:?}"
-        );
-    }
-}
-
-/// A page whose canvas is transparent leaves the frame exactly as it was: the
-/// composite is premultiplied source-over rather than a copy.
-///
-/// The empty frame is rendered by a world of its own, so the comparison covers
-/// every pixel rather than the centre one.
-async fn a_transparent_page_leaves_the_frame_alone() {
-    let ctx = Ctx::headless().await;
-    let mut empty = World::new();
-    let empty_gpu = TestGpu::frame_only(&mut empty, &ctx);
-    let empty_target = empty_gpu.bind_offscreen_target_with(&empty, 1, false);
-    empty_gpu.render(&empty);
-    let without_page =
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &empty_target).await;
-
-    let html = r##"<html><body style="margin: 0"></body></html>"##;
-    let (world, gpu, target, _source, _page) = render_page(&ctx, html);
-    gpu.render(&world);
-    let with_page = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
-
-    assert_eq!(
-        with_page, without_page,
-        "a transparent page should composite nothing onto the frame"
-    );
-}
-
-/// Replacing the markup rebuilds and repaints the document, which is what makes
-/// the page a live document rather than a fixed picture.
-async fn new_markup_replaces_the_page() {
-    let ctx = Ctx::headless().await;
-    let (world, gpu, target, _source, page) = render_page(&ctx, GREY_PAGE);
-
-    gpu.render(&world);
-    let grey = centre_pixel(&ctx.device, &ctx.queue, &target).await;
-    assert!(grey[0].abs_diff(GREY) <= 2, "the grey page should paint");
-
-    // A page that changed nothing above it is not repainted, so only the new
-    // markup can turn the centre red.
-    {
-        let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
-        row.get().set_markup(RED_PAGE);
-    }
-    gpu.render(&world);
-
-    let red = centre_pixel(&ctx.device, &ctx.queue, &target).await;
-    assert!(
-        red[0].abs_diff(255) <= 2 && red[1] <= 2 && red[2] <= 2,
-        "the replacement page should paint, got {red:?}"
-    );
-}
-
-/// A page draws an image it references by path from the bytes the document
-/// serves for it: nothing reaches the network, and the host's assets are not
-/// looked up.
-async fn a_page_draws_an_image_from_a_registered_path() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <img src="solid.png" style="display: block; width: 64px; height: 64px">
-    </body></html>"#;
-    let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    {
-        let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
-        row.get().insert_resource("solid.png", RED_PNG);
-    }
-
-    gpu.render_frames(&world, 2);
-
-    let inside = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
-    assert!(
-        inside[0].abs_diff(255) <= 2 && inside[1] <= 2 && inside[2] <= 2,
-        "the served image should paint its own colours, got {inside:?}"
-    );
-}
-
-/// A page draws an inline `data:` image without anything serving it.
-async fn a_page_draws_an_image_from_a_data_url() {
-    let ctx = Ctx::headless().await;
-    let html = format!(
-        r#"<html style="background: #808080"><body style="margin: 0">
-        <img src="data:image/png;base64,{RED_PNG_BASE64}"
-             style="display: block; width: 64px; height: 64px">
-    </body></html>"#
-    );
-    let (world, gpu, target, _source, _page) = render_page(&ctx, &html);
-
-    gpu.render_frames(&world, 2);
-
-    let inside = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
-    assert!(
-        inside[0].abs_diff(255) <= 2 && inside[1] <= 2 && inside[2] <= 2,
-        "the inline image should paint its own colours, got {inside:?}"
-    );
-}
-
-/// A click reaches the document, toggles the control it lands on, and is
-/// reported to the callbacks that watch the page.
-async fn a_click_toggles_a_checkbox() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <input type="checkbox" id="box"
-               style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([20.0, 20.0]));
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    assert!(
-        seen.iter().any(|event| event.name == "click"),
-        "the click should reach the page's callbacks, got {seen:?}"
-    );
-    let toggled = seen
-        .iter()
-        .rev()
-        .find(|event| event.name == "input")
-        .expect("toggling the control dispatches an input event");
-    assert_eq!(
-        toggled.checked,
-        Some(true),
-        "the control should be checked when its input event is dispatched"
-    );
-}
-
-/// A page blocks on a stylesheet until the answer to it arrives, so a request
-/// nothing serves has to be answered too: the page then loads it as an empty
-/// sheet and paints, instead of waiting for a reply that never comes.
-async fn a_page_loads_a_stylesheet_nobody_serves() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html><head><link rel="stylesheet" href="missing.css"></head>
-        <body style="margin: 0; background: #808080"></body></html>"#;
-    let (world, gpu, target, _source, _page) = render_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-
-    let centre = centre_pixel(&ctx.device, &ctx.queue, &target).await;
-    assert!(
-        centre[0].abs_diff(GREY) <= 2,
-        "a page whose stylesheet nobody serves should still paint, got {centre:?}"
-    );
-}
-
-/// A page that asks for a stylesheet the host serves loads it: the sheet is one
-/// of the bytes the document answers with, not something it reaches for.
-async fn a_page_loads_a_stylesheet_it_serves() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html><head><link rel="stylesheet" href="page.css"></head>
-        <body style="margin: 0"></body></html>"#;
-    let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    {
-        let mut row = world.root_scope().query_one::<&BlitzDocument>(page);
-        row.get()
-            .insert_resource("page.css", "html { background: #808080 }");
-    }
-
-    gpu.render_frames(&world, 2);
-
-    let centre = centre_pixel(&ctx.device, &ctx.queue, &target).await;
-    assert!(
-        centre[0].abs_diff(GREY) <= 2 && centre[1].abs_diff(GREY) <= 2,
-        "the served stylesheet should paint the page grey, got {centre:?}"
-    );
-}
-
-/// A path is served at the address the base gives it, so changing the base
-/// serves the same bytes where the new markup looks for them.
-async fn a_new_base_still_serves_the_registered_bytes() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <img src="solid.png" style="display: block; width: 64px; height: 64px">
-    </body></html>"#;
-    let (world, gpu, target, _source, page) = render_page(&ctx, html);
-    {
-        let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
-        let page = row.get();
-        page.insert_resource("solid.png", RED_PNG);
-        page.set_base_url("https://example.test/images/")
-            .expect("the base is an absolute URL");
-    }
-
-    gpu.render_frames(&world, 2);
-
-    let inside = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
-    assert!(
-        inside[0].abs_diff(255) <= 2 && inside[1] <= 2 && inside[2] <= 2,
-        "the image should load at its address under the new base, got {inside:?}"
-    );
-}
-
-/// A page that replaced its markup does not keep showing the one it replaced:
-/// the older document does not paint the newer page.
-async fn a_replaced_page_is_not_drawn_from_the_old_pixels() {
-    let ctx = Ctx::headless().await;
-    let mut empty = World::new();
-    let empty_gpu = TestGpu::frame_only(&mut empty, &ctx);
-    let empty_target = empty_gpu.bind_offscreen_target_with(&empty, 1, false);
-    empty_gpu.render(&empty);
-    let without_page =
-        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &empty_target).await;
-
-    let (world, gpu, target, _source, page) = render_page(&ctx, GREY_PAGE);
-    gpu.render_frames(&world, 2);
-    {
-        let mut row = world.root_scope().query_one::<&mut BlitzDocument>(page);
-        row.get()
-            .set_markup(r#"<html><head><link rel="stylesheet" href="later.css"></head></html>"#);
-    }
-
-    gpu.render_frames(&world, 2);
-
-    let with_page = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target).await;
-    assert_eq!(
-        with_page, without_page,
-        "a page that has replaced its markup should leave nothing of the old one"
-    );
-}
-
-/// One tick's input reaches a page once, however many passes draw that page:
-/// every pass builds the page's source, and every build reads the same batch.
-async fn one_tick_reaches_a_shared_page_once() {
-    let ctx = Ctx::headless().await;
-    let mut world = World::new();
-    let gpu = TestGpu::frame_only(&mut world, &ctx);
-    let outer = gpu.pass();
-    // A pass inside the outer one, so both of them reach the page's source.
-    let nested = world.scope_mut(outer).spawn(Pass::new(FramePassOrder(1)));
-
-    // Both passes draw, so both reach the source under the nested one.
-    gpu.bind_offscreen_target_with(&world, 1, false);
-    bind_target(&gpu, &world, nested);
-
-    let input = spawn_input(&mut world);
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = Arc::clone(&seen);
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
-        </div>
-    </body></html>"#;
-    let source = world.scope_mut(nested).spawn(bundle![Source::new(
-        FrameSourceOrder::BLITZ,
-        BlitzSource::new()
-    )]);
-    world.scope_mut(source).spawn(bundle![
-        BlitzDocument::new(html),
-        OnBlitzEvent::new(move |_scope, _entity, event| {
-            log.lock().expect("the log is not poisoned").push(Seen {
-                name: event.data().name().to_owned(),
-                value: String::new(),
-                checked: None,
-                code: None,
-                location: None,
-            });
-        }),
-    ]);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([20.0, 20.0]));
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    let clicks = seen.iter().filter(|event| event.name == "click").count();
-    assert_eq!(
-        clicks, 1,
-        "two passes drawing one page should dispatch the click once, got {seen:?}"
-    );
-}
-
-/// A window that loses focus takes the page's focus with it, so a field the user
-/// left stops taking text.
-async fn losing_focus_leaves_the_text_field() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <input type="text" id="box"
-               style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([40.0, 20.0]));
-    gpu.render(&world);
-    feed(&world, &input, [InputEvent::FocusChanged(false)]);
-    gpu.render(&world);
-    feed(
-        &world,
-        &input,
-        [InputEvent::Text(TextEvent("no".to_owned()))],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    assert!(
-        !seen.iter().any(|event| event.value == "no"),
-        "a field in a window that lost focus should not take text, got {seen:?}"
-    );
-}
-
-/// A key press that a shortcut does not consume reports its release too, so a
-/// page that watches one sees the key go up.
-async fn a_key_release_reaches_the_page() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
-        </div>
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(
-        &world,
-        &input,
-        [
-            InputEvent::Key(KeyEvent {
-                key: Key::Enter,
-                location: KeyLocation::Standard,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers::default(),
-            }),
-            InputEvent::Key(KeyEvent {
-                key: Key::Enter,
-                location: KeyLocation::Standard,
-                pressed: false,
-                repeat: false,
-                modifiers: Modifiers::default(),
-            }),
-        ],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    assert!(
-        seen.iter().any(|event| event.name == "keyup"),
-        "the key's release should reach the page, got {seen:?}"
-    );
-}
-
-/// A wheel turns the page under the pointer, so a document taller than the
-/// target is read by scrolling rather than only by what fits.
-async fn a_wheel_scrolls_the_page() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div style="height: 64px; background: #ff0000"></div>
-        <div style="height: 400px; background: #0000ff"></div>
-    </body></html>"#;
-    let (mut world, gpu, target, _source, _page) = render_page(&ctx, html);
-    let input = spawn_input(&mut world);
-    gpu.render_frames(&world, 2);
-
-    let before = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
-    assert!(
-        before[0].abs_diff(255) <= 2 && before[2] <= 2,
-        "the page should start at its first block, got {before:?}"
-    );
-
-    feed(
-        &world,
-        &input,
-        [
-            // The pointer has to be over the page for it to be the one
-            // scrolled, and a wheel reports where it is used.
-            InputEvent::Mouse(MouseEvent::Moved {
-                position: [32.0, 32.0],
-            }),
-            InputEvent::Mouse(MouseEvent::Wheel {
-                delta: [0.0, -64.0],
-                unit: WheelUnit::Pixel,
-                phase: TouchPhase::Moved,
-                modifiers: Modifiers::default(),
-            }),
-        ],
-    );
-    gpu.render(&world);
-
-    let after = pixel(&ctx.device, &ctx.queue, &target, 32, 32).await;
-    assert!(
-        after[2].abs_diff(255) <= 2 && after[0] <= 2,
-        "the wheel should have scrolled the first block out of view, got {after:?}"
-    );
-}
-
-/// A pointer that leaves the page is reported to it, which is what ends a hover.
-async fn leaving_the_page_is_reported_to_it() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div id="left" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
-        </div>
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(
-        &world,
-        &input,
-        [
-            InputEvent::Mouse(MouseEvent::Moved {
-                position: [20.0, 20.0],
-            }),
-            InputEvent::Mouse(MouseEvent::Left),
-        ],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    assert!(
-        seen.iter().any(|event| event.name == "pointerleave"),
-        "the pointer's departure should reach the page, got {seen:?}"
-    );
-}
-
-/// A callback that cancels an event stops Blitz's own reaction to it: the box
-/// the click landed on stays as it was, because Rust decided the click meant
-/// something else.
-async fn a_callback_can_cancel_the_default_action() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <input type="checkbox" id="box"
-               style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
-    </body></html>"#;
-    let (mut world, gpu, target, source, seen, input) = render_watched_page(&ctx, html);
-    world
-        .scope_mut(source)
-        .spawn(bundle![OnBlitzEvent::new(|_scope, _entity, event| {
-            if event.data().name() == "click" {
-                event.prevent_default();
-            }
-        })]);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([20.0, 20.0]));
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    assert!(
-        seen.iter().any(|event| event.name == "click"),
-        "the click should still reach the callbacks, got {seen:?}"
-    );
-    assert!(
-        !seen.iter().any(|event| event.name == "input"),
-        "a cancelled click should not toggle the box, got {seen:?}"
-    );
-    // The box is white inside while it is unchecked and filled with the accent
-    // colour once it is checked.
-    let inside = pixel(&ctx.device, &ctx.queue, &target, 20, 20).await;
-    assert!(
-        inside[..3].iter().all(|&channel| channel == 255),
-        "a cancelled click should leave the box unchecked, got {inside:?}"
-    );
-}
-
-/// Input belongs to the frame that read it: a click dispatched once is not
-/// dispatched again by the frames that follow it.
-async fn input_is_dispatched_once() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
-        </div>
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([20.0, 20.0]));
-    gpu.render(&world);
-    // The frames after it tick the world, which is what hands the source a
-    // batch with nothing in it.
-    for _ in 0..3 {
-        refresh_input(&world);
-        gpu.render(&world);
-    }
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    let clicks = seen.iter().filter(|event| event.name == "click").count();
-    assert_eq!(
-        clicks, 1,
-        "the click should be dispatched by one frame only, got {seen:?}"
-    );
-}
-
-/// Text a key produced reaches the focused field, which is what makes the page
-/// an editable document rather than a picture of one.
-async fn typing_reaches_a_text_field() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <input type="text" id="box"
-               style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([40.0, 20.0]));
-    gpu.render(&world);
-    feed(
-        &world,
-        &input,
-        [InputEvent::Text(TextEvent("hi".to_owned()))],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    assert!(
-        seen.iter()
-            .any(|event| event.name == "input" && event.value == "hi"),
-        "the typed text should reach the field, got {seen:?}"
-    );
-}
-
-// This file's share of the suite's registry: the suite root concatenates
-// it with its siblings', and `gpu_test_main!` there runs the result under
-// `cargo nextest` natively and in a browser through the wasm export it adds.
-/// A pen is a pointer of its own, so a page that reads only the mouse
-/// would miss it: the pen press and lift reach the control as a pointer
-/// click and toggle it.
-async fn a_pen_click_toggles_a_checkbox() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <input type="checkbox" id="box"
-               style="position: absolute; left: 8px; top: 8px; width: 24px; height: 24px">
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    let pen = |action: PointerAction| {
-        InputEvent::Pointer(PointerEvent {
-            kind: PointerKind::Pen,
-            id: 0,
-            action,
-            position: Some([20.0, 20.0]),
-            modifiers: Modifiers::default(),
-        })
-    };
-    feed(
-        &world,
-        &input,
-        [
-            pen(PointerAction::Pressed),
-            pen(PointerAction::Released { cancelled: false }),
-        ],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    let toggled = seen
-        .iter()
-        .rev()
-        .find(|event| event.name == "input")
-        .expect("a pen click on the control dispatches an input event");
-    assert_eq!(
-        toggled.checked,
-        Some(true),
-        "the control should be checked when a pen toggles it"
-    );
-}
-
-/// A composed character arrives as a preedit and then as a commit, and
-/// the commit is what the field inserts: a page that dropped the IME
-/// events would show an empty field.
-async fn an_ime_commit_reaches_a_text_field() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <input type="text" id="box"
-               style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    feed(&world, &input, click([40.0, 20.0]));
-    gpu.render(&world);
-    feed(
-        &world,
-        &input,
-        [
-            InputEvent::Ime(ImeEvent {
-                kind: ImeKind::Preedit {
-                    text: "ni".to_owned(),
-                    active_range: None,
-                },
-            }),
-            InputEvent::Ime(ImeEvent {
-                kind: ImeKind::Commit(CHINESE.to_owned()),
-            }),
-        ],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    // Blitz keeps the undecided preedit in the field's value and replaces it
-    // when the commit arrives, so the value holds the composed text beside the
-    // preedit that was still showing.
-    assert!(
-        seen.iter()
-            .any(|event| event.name == "input" && event.value.contains(CHINESE)),
-        "the committed text should reach the field, got {seen:?}"
-    );
-    assert!(
-        seen.iter().any(|event| event.name == "composition"),
-        "the preedit should be reported as a composition, got {seen:?}"
-    );
-}
-
-/// The character the input-method test commits.
-const CHINESE: &str = "你";
-/// A key reaches a page as the code and the side of the keyboard it
-/// sits on, not only as the character it types: a shortcut matches the
-/// physical key, and the left and right shift are two of them.
-async fn a_key_reaches_the_page_as_a_code_and_a_side() {
-    let ctx = Ctx::headless().await;
-    let html = r#"<html style="background: #808080"><body style="margin: 0">
-        <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
-        </div>
-    </body></html>"#;
-    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
-
-    gpu.render_frames(&world, 2);
-    // A character key is dropped while it types nothing but text, so the two
-    // keys here are ones a page reads as keys: an arrow, and a key the crate
-    // only carries the platform code of, on the numeric keypad.
-    feed(
-        &world,
-        &input,
-        [
-            InputEvent::Key(KeyEvent {
-                key: Key::ArrowLeft,
-                location: KeyLocation::Standard,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers::default(),
-            }),
-            InputEvent::Key(KeyEvent {
-                key: Key::Other(37),
-                location: KeyLocation::Numpad,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers::default(),
-            }),
-        ],
-    );
-    gpu.render(&world);
-
-    let seen = seen.lock().expect("the log is not poisoned").clone();
-    let keys: Vec<_> = seen
-        .iter()
-        .filter(|event| event.name == "keydown")
-        .collect();
-    assert_eq!(
-        keys.first().and_then(|event| event.code),
-        Some(Code::ArrowLeft),
-        "a key reaches the page as its physical code, got {keys:?}"
-    );
-    assert_eq!(
-        keys.first().and_then(|event| event.location),
-        Some(Location::Standard),
-        "and with the side of the keyboard it is on, got {keys:?}"
-    );
-    assert_eq!(
-        keys.last().and_then(|event| event.location),
-        Some(Location::Numpad),
-        "a keypad key says it is on the keypad, got {keys:?}"
-    );
-}
 gpu_tests! {
     a_page_paints_its_own_colours,
     a_page_draws_its_content,
@@ -925,4 +290,11 @@ gpu_tests! {
     a_pen_click_toggles_a_checkbox,
     an_ime_commit_reaches_a_text_field,
     a_key_reaches_the_page_as_a_code_and_a_side,
+    a_batch_replays_from_the_state_that_stood_before_it,
+    a_move_before_a_press_reports_the_button_that_still_stood,
+    a_wheel_is_reported_where_the_pointer_stood,
+    a_frame_without_events_keeps_the_pointer_state,
+    a_first_frame_replays_from_an_empty_baseline,
+    a_batch_that_skips_one_still_replays_from_the_state_left,
+    a_replaced_page_replays_from_the_world_state,
 }

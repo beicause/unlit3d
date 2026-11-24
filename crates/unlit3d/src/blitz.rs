@@ -52,7 +52,7 @@ use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawOrder, Scene};
 use unlit_wgpu::specialize::SurfaceKey;
 
-use crate::input::{InputEvent, InputEvents, InputState, MouseButtons};
+use crate::input::{InputBaseline, InputEvent, InputEvents, InputState};
 use crate::pass::PassInfo;
 use crate::screen::ScreenBlit;
 use crate::source::{FrameSource, RenderContext};
@@ -96,6 +96,9 @@ pub struct BlitzSource {
     /// borrowed while the document it feeds is. Kept between frames to be
     /// reused.
     batch: Vec<InputEvent>,
+    /// The state the copied batch was queued against, copied out beside it for
+    /// the same reason. Kept between frames to be reused.
+    start: InputBaseline,
     /// One uploaded texture and one rasterizer per surface and size the page is
     /// drawn at.
     targets: Vec<TextureTarget>,
@@ -152,6 +155,7 @@ impl BlitzSource {
         Self {
             translator: Translator::default(),
             batch: Vec::new(),
+            start: InputBaseline::default(),
             targets: Vec::new(),
             frame: 0,
             focused: true,
@@ -217,8 +221,6 @@ impl FrameSource for BlitzSource {
         batch.clear();
         // One physical pixel per logical point until the world says otherwise.
         let mut scale_factor = 1.0;
-        let mut cursor = None;
-        let mut buttons = MouseButtons::empty();
         let mut focused = true;
         {
             // The singleton key names the one entity holding the buffer and the
@@ -230,14 +232,19 @@ impl FrameSource for BlitzSource {
             });
             if let Some(mut row) = input {
                 let (events, state) = row.get();
+                // The size and scale factor are the window now, and a batch's
+                // own resize is what this frame lays out for. The pointer state
+                // is not: it is what the batch has already folded into, so it
+                // is the wrong thing to replay the batch against.
                 scale_factor = state.scale_factor;
-                cursor = state.cursor;
-                buttons = state.buttons;
                 focused = state.focused;
                 // A page is built by every source and pass that see it, and each
                 // of them reads the same batch, so the page takes a tick's events
                 // once: a click is one click however many times the frame draws
-                // what it changed.
+                // what it changed. A source the page has already been given this
+                // tick still replays from the same start, so it stays in step
+                // with the one that dispatched.
+                events.copy_baseline_into(&mut self.start);
                 if page.feeds_input(events.tick()) {
                     events.with_batch(|events| batch.extend_from_slice(events));
                 }
@@ -280,8 +287,7 @@ impl FrameSource for BlitzSource {
         let events = self.translator.translate(Frame {
             batch: &batch,
             scale: scale_factor,
-            cursor,
-            buttons,
+            start: &self.start,
             scroll: [scroll.x, scroll.y],
             viewport: [logical_size.0, logical_size.1],
         });

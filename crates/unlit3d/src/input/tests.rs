@@ -878,6 +878,56 @@ fn the_touch_baseline_is_the_count_before_the_batch() {
     assert_eq!(buffer.touch_baseline(), 2);
 }
 
+/// The baseline is the whole replay state the batch was queued against, not
+/// only its touch count: the buttons, the modifiers and the pointer position
+/// the batch has since changed are all read from before its first event.
+#[test]
+fn the_baseline_is_the_state_before_the_batch() {
+    let input = InputWriter::new();
+    let buffer = input.subscribe().0;
+    let mut state = InputState::default();
+    let mut baseline = InputBaseline::default();
+
+    input.push_all([
+        InputEvent::Mouse(MouseEvent::Moved { position: CURSOR }),
+        InputEvent::Mouse(MouseEvent::Button {
+            position: Some(CURSOR),
+            button: MouseButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    ]);
+    buffer.refresh(&mut state);
+    buffer.copy_baseline_into(&mut baseline);
+    assert_eq!(
+        baseline.cursor, None,
+        "the batch was queued before any pointer position stood, so its own move is not part of the state it is replayed against"
+    );
+    assert_eq!(
+        baseline.buttons,
+        MouseButtons::empty(),
+        "the batch's own press is not part of the state it is replayed against"
+    );
+
+    // A refresh that brings nothing still captures what the last fold left:
+    // the next batch is queued while the button is already down.
+    buffer.refresh(&mut state);
+    buffer.copy_baseline_into(&mut baseline);
+    assert_eq!(baseline.cursor, Some(CURSOR));
+    assert_ne!(
+        baseline.buttons,
+        MouseButtons::empty(),
+        "a batch queued after the press is replayed with the button held"
+    );
+
+    // The buffer is filled in place, so a reader that keeps one does not
+    // allocate per tick.
+    let mut reused = baseline.clone();
+    reused.modifiers = Modifiers::default();
+    buffer.copy_baseline_into(&mut reused);
+    assert_eq!(reused, baseline);
+}
+
 #[test]
 #[should_panic(expected = "already borrowed")]
 fn a_behaviour_cannot_reborrow_its_own_component() {

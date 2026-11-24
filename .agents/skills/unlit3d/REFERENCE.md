@@ -133,7 +133,7 @@
 | 写端 | `InputWriter::new` + `push(event)` |
 | 订阅组件 | `InputFeed(InputWriter)`（带写端）与 `InputPair`（只带缓冲与 `InputState`，由 `InputWriter::subscribe()` 返回；每个世界至多一个，单例键 `InputEvents`）；spawn 进世界才收事件 |
 | 派发 | `dispatch_input(&World) -> bool`：取一个 batch、折进 `InputState`、跑行为；不 apply 结构变更 |
-| 读状态 | 直读 `InputState` 组件（与 buffer 同实体、由本 world 的 tick 独占写入）；批走 `InputEvents::with_batch` / `copy_events_into`，tick 用 `refresh`（把批折进同实体的 state） |
+| 读状态 | 直读 `InputState` 组件（与 buffer 同实体、由本 world 的 tick 独占写入）；批走 `InputEvents::with_batch` / `copy_events_into`，tick 用 `refresh`（把批折进同实体的 state）。要按批重放就得用批初状态 `InputEvents::copy_baseline_into`——`InputState` 已含本批，拿它当起点会把每处改动算两遍 |
 | 行为 | `OnInput`（catch-all）/ `OnKey` / `OnPointer` / `OnMouse` / `OnTouch` / `OnText` / `OnIme` |
 | 分发 | `subscribe_input(&mut World)`（给 world 自己的缓冲登记订阅）、`distribute_input(&World)`（把根 world 的 writer 复制进每个嵌套 world 并登记订阅） |
 
@@ -152,7 +152,7 @@
 | source | `BlitzSource::new()`——无参；绘制自己作用域里携带的第一个 `BlitzDocument`，没有就不画 |
 | 页面 | `BlitzDocument::new(markup)`、`set_markup(markup)`、`set_base_url(base)`、`insert_resource(path, bytes)`——**挂在 source 实体之下**，否则 source 看不见 |
 | 回调 | `OnBlitzEvent::new(f)`，`f` 是 `FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)`；`BlitzEvent` 给 `data()`（其 `.name()` 是 "click"/"input"/"keydown" 等 DOM 事件名）、`target()`、`chain()`（事件指向的节点及其元素祖先，回调对整条链只跑一次）、`document_mut()`、`prevent_default()` / `request_redraw()`。一次物理动作可能派发多个事件（pointer 与 mouse/touch 兼容事件各一遍），按 `data().name()` 过滤 |
-| 输入 | 帧输入自动驱动文档：指针（含笔）、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。键盘事件带 `Key` 推出的 `Code` 与 `KeyLocation` 推出的左右位置，二者只在回调里可见。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次 |
+| 输入 | 帧输入自动驱动文档：指针（含笔）、滚轮、键盘、文本（`InputEvent::Text` 合成 Character 按键）、IME；坐标换算成 CSS 像素。键盘事件带 `Key` 推出的 `Code` 与 `KeyLocation` 推出的左右位置，二者只在回调里可见。悬停、焦点、滚动、文本编辑与 checkbox/radio 勾选状态都由 Blitz 维持。被多个 pass 够到的源只取一个 tick 的输入，一次点击只派发一次。一批事件从它排队时的状态（`InputEvents::copy_baseline_into`）重放，逐个事件推进，因此批内先移动后松开时报的是移动时按着键、滚轮报的是它转动时的位置；读到更早一批或页面中途被换掉的源，也从世界持有的状态重放，不沿用自己上一批的状态 |
 | 字节 | 无网络。`data:` URL 当场解码；其余由 `insert_resource` 按路径提供，路径在加载时按当前基准解析；没人提供的路径收到空字节（样式表读成空表、图片读成加载失败），页面照常画 |
 | 布局与绘制 | 用 Blitz 布局、Vello 的 GPU 后端在帧的构建阶段光栅化进一张与 pass 同尺寸的 `Rgba8Unorm` 纹理（命令录进本帧编码器），再由共享的全屏合成贴上目标；页面图片各上传成自有纹理并按图片缓存；重绘时机 = 标记/视口/尺寸变化、输入或回调要求、文档有动画 |
 | 字体 | 默认字体是 egui 的 `epaint_default_fonts::HACK_REGULAR`（`blitz_epaint_fonts` 特性），`blitz_sc_fonts` 另加 Noto Sans SC 一级+二级子集承载汉字（四个通用族里排在默认字体之后，并挂上汉字回退表），系统字体默认关闭（`blitz_system_fonts` 才加载），各平台字形一致 |

@@ -17,6 +17,16 @@
 //! in CSS pixels, so every position here is divided by the scale factor and is
 //! already in the space Blitz expects.
 //!
+//! # Replay
+//!
+//! A batch is a sequence of changes, so what it is read against is what stood
+//! before its first event, not the state it has since folded into. That state
+//! is [`InputBaseline`], captured beside the batch when the batch was queued;
+//! the translator starts each batch from it and advances event by event. A move
+//! that comes before the batch's own release still holds the button, a wheel
+//! names the place the pointer stood when it turned, and a press the frame never
+//! saw is still held.
+//!
 //! # Duplicates
 //!
 //! One physical action arrives more than once. The crate reports a mouse as
@@ -52,8 +62,9 @@ use keyboard_types::{Code, Key as DomKey, Location, Modifiers, NamedKey};
 use unlit_ecs::{Entity, Scope};
 
 use crate::input::{
-    ImeEvent, ImeKind, InputEvent, Key, KeyEvent, KeyLocation, MouseButton, MouseEvent,
-    PointerAction, PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit,
+    ImeEvent, ImeKind, InputBaseline, InputEvent, Key, KeyEvent, KeyLocation, MouseButton,
+    MouseEvent, PointerAction, PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase,
+    WheelUnit,
 };
 
 use super::document::BlitzShell;
@@ -250,10 +261,9 @@ pub(crate) struct Frame<'a> {
     pub(crate) batch: &'a [InputEvent],
     /// Physical pixels per CSS pixel.
     pub(crate) scale: f32,
-    /// Where the pointer was at the end of the frame before.
-    pub(crate) cursor: Option<[f32; 2]>,
-    /// The buttons held at the end of the frame before.
-    pub(crate) buttons: crate::input::MouseButtons,
+    /// The state that stood when the batch was queued: what its replay starts
+    /// from.
+    pub(crate) start: &'a InputBaseline,
     /// How far the document is scrolled, which turns a client position into the
     /// page position a document hovers with.
     pub(crate) scroll: [f64; 2],
@@ -271,15 +281,33 @@ impl Translator {
     /// position is divided by changes without an event of its own.
     pub(crate) fn translate(&mut self, frame: Frame<'_>) -> &[UiEvent] {
         self.scale = if frame.scale > 0.0 { frame.scale } else { 1.0 };
-        if let Some(cursor) = frame.cursor {
-            self.position = cursor;
-        }
-        self.buttons = buttons_of(frame.buttons);
+        self.replay_from(frame.start);
         self.pending.clear();
         for event in frame.batch {
             self.event(event, frame);
         }
         &self.pending
+    }
+
+    /// Put the pointer state back to what `start` states, before the batch's
+    /// own events move it on.
+    ///
+    /// This is what makes a replay a replay: the batch says what changed, not
+    /// what stood, so reading it against the state it has since folded into
+    /// reports every change twice and every earlier position too late.
+    fn replay_from(&mut self, start: &InputBaseline) {
+        // A window that had no pointer position keeps the last one this
+        // translator saw: a document hovers where the pointer last was.
+        if let Some(cursor) = start.cursor.or(start.pointer) {
+            self.position = cursor;
+        }
+        self.modifiers = start.modifiers;
+        self.buttons = buttons_of(start.buttons);
+        self.contacts.clear();
+        // A mouse contact is not a finger: the page's primary pointer is a
+        // finger only when the touch screen states one.
+        self.contacts
+            .extend(start.touches.iter().map(|(id, _)| *id));
     }
 
     /// Translate one event, appending what it stands for.
