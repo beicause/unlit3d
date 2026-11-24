@@ -626,7 +626,8 @@ mod tests {
         let threaded = spawn_threaded_world(&mut host, "listed", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
-        });
+        })
+        .expect("the world thread starts");
 
         let (command, reply) = McpCommand::list_worlds();
         transport.try_send(command).expect("the inbox takes it");
@@ -651,7 +652,8 @@ mod tests {
         let threaded = spawn_threaded_world(&mut host, "counted", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
-        });
+        })
+        .expect("the world thread starts");
         let seeded = crate::channel::Snapshot::new();
         let reader = seeded.reader();
         let publish = seeded.clone();
@@ -741,9 +743,11 @@ mod tests {
             .expect("the stepped world can run its first turn");
 
         assert_eq!(outcome, crate::world::StepOutcome::Failed);
+        // The failed world ended with that turn, so a later call finds
+        // nothing left to step.
         assert_eq!(
             step_stepped_world(&host, stepped.entity, FRAME_SECONDS),
-            Ok(crate::world::StepOutcome::Failed),
+            Err(crate::world::StepError::Unavailable),
         );
         let Err(message) = reply.try_recv().expect("the command was answered") else {
             panic!("the panicking command answers with an error");
@@ -822,5 +826,67 @@ mod tests {
             message.contains("refused the command"),
             "the failure says why: {message}"
         );
+    }
+
+    /// A command accepted into a world's queue that the world never runs —
+    /// because it stopped first — is answered as cancelled rather than left
+    /// waiting for a reply that will not come.
+    #[test]
+    fn a_command_queued_into_a_stopping_world_is_cancelled() {
+        let (mut host, transport) = host_with_inbox();
+        let stepped = spawn_stepped_world_with_init(
+            &mut host,
+            "short",
+            8,
+            |_: &mut World| (),
+            |_, _: &ThreadControl, (), _: f32| true,
+        );
+
+        let (command, reply) = McpCommand::new(|_| panic!("a cancelled command must not run"));
+        let command = command.with_world(WorldRef::handle(stepped.entity));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+        // The host has handed the command to the world's queue; the
+        // receiver is dropped with the entity, so the queue is closed with
+        // the command still in it.
+        host.root_scope_mut()
+            .despawn(stepped.entity)
+            .expect("the proxy despawns");
+
+        let answer = receive(reply);
+        let Err(message) = answer else {
+            panic!("the cancelled command answers with an error")
+        };
+        assert_eq!(message, "the MCP command was cancelled before it ran");
+    }
+
+    /// A caller that gave up before the answer arrives does not take the
+    /// world down with it: the job runs, and its result is dropped.
+    #[test]
+    fn a_dropped_reply_leaves_the_world_running() {
+        let (mut host, transport) = host_with_inbox();
+        let stepped = spawn_stepped_world_with_init(
+            &mut host,
+            "answered",
+            8,
+            |_: &mut World| (),
+            |_, _: &ThreadControl, (), _: f32| true,
+        );
+        let answered = Arc::new(Mutex::new(false));
+        let seen = Arc::clone(&answered);
+        let (command, reply) = McpCommand::new(move |_| {
+            *sync::lock(&seen) = true;
+            Ok(Output::Json(serde_json::Value::Null))
+        });
+        transport
+            .try_send(command.with_world(WorldRef::handle(stepped.entity)))
+            .expect("the inbox takes it");
+        run_turn(&mut host);
+        drop(reply);
+
+        let outcome = step_stepped_world(&host, stepped.entity, FRAME_SECONDS)
+            .expect("the stepped world runs the queued command");
+        assert_eq!(outcome, crate::world::StepOutcome::Ran);
+        assert!(*sync::lock(&answered), "the job ran with nobody listening");
     }
 }

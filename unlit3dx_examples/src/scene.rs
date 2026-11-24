@@ -436,7 +436,8 @@ pub fn spawn_scene<R: WorldRunner>(
 ) -> SceneWorlds {
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
-    let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default());
+    let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default())
+        .expect("the physics world starts");
     // The demo asks for the poses it needs; the library collects nothing on
     // its own. The subscription lives in the physics world, so it runs
     // between that world's steps whatever drives it.
@@ -445,16 +446,18 @@ pub fn spawn_scene<R: WorldRunner>(
     // The audio world: one synthesizer voice, mixed into the output stream.
     // The voice builds its synthesizer on the first fill it renders, so it
     // needs no rate here: whatever opens the stream says what that rate is.
-    // Only the setup that opens a device asks a stepped world for one; a
-    // world the host pulls the fills of opens nothing.
+    // A world with a thread of its own cannot be pulled — its host cannot
+    // reach it — so the scene asks for the device instead of pulling.
     let config = AudioConfig {
         output: match audio_setup {
             AudioSetup::Device => AudioOutputMode::OnRequest,
+            _ if R::SELF_DRIVEN => AudioOutputMode::OnRequest,
             _ => AudioOutputMode::Pulled,
         },
         ..AudioConfig::default()
     };
-    let audio = spawn_audio_world_with::<R>(host, config);
+    let audio = spawn_audio_world_with::<R>(host, config)
+        .expect("the scene picks an output mode its runner can drive");
     // The voice is installed from the gameplay world, as a job whose answer
     // is the entity the scenes' sequences address. The soundfont is kept for
     // that job rather than loaded here, so the decode runs where the job
@@ -585,7 +588,8 @@ pub fn spawn_scene<R: WorldRunner>(
                 true
             }
         },
-    );
+    )
+    .expect("the gameplay world starts");
 
     SceneWorlds {
         physics,

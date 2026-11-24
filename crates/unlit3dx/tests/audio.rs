@@ -64,7 +64,8 @@ fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
 #[test]
 fn an_audio_tick_dispatches_its_frame() {
     let mut host = World::new();
-    let world = spawn_audio_world_with::<Stepped>(&mut host, AudioConfig::default());
+    let world = spawn_audio_world_with::<Stepped>(&mut host, AudioConfig::default())
+        .expect("the audio world starts");
     let seen: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
     let record = Arc::clone(&seen);
     world
@@ -213,7 +214,8 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
             output: AudioOutputMode::OnRequest,
             ..AudioConfig::default()
         },
-    );
+    )
+    .expect("a threaded audio world is asked for its output");
     // The world sounds only once asked, whatever drives it: a threaded run
     // that wants a device sends the same request a page's click does.
     request_audio_output(&world.sender).expect("the audio world takes the output request");
@@ -278,7 +280,8 @@ fn the_audio_world_reports_its_output_opening() {
             output: AudioOutputMode::OnRequest,
             ..AudioConfig::default()
         },
-    );
+    )
+    .expect("a threaded audio world is asked for its output");
     let sender = world.sender.clone();
     // Asked up front: a threaded world opens nothing on its own either.
     request_audio_output(&sender).expect("the audio world takes the output request");
@@ -333,7 +336,8 @@ fn a_stepped_world_opens_nothing_until_asked() {
             output: AudioOutputMode::OnRequest,
             ..AudioConfig::default()
         },
-    );
+    )
+    .expect("the audio world starts");
     let sender = world.sender.clone();
     let opened = sender
         .watch(|world: &World| {
@@ -385,7 +389,8 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
             output: AudioOutputMode::OnRequest,
             ..AudioConfig::default()
         },
-    );
+    )
+    .expect("the audio world starts");
     let sender = world.sender.clone();
     let opened = sender
         .watch(|world: &World| {

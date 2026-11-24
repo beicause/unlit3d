@@ -30,11 +30,18 @@ use crate::world::WorldRunner;
 const AUDIO_FILL_FRAMES: usize = 256;
 
 /// How an audio world gets its output, whichever way it is driven.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AudioOutputMode {
     /// No device: the host pulls the fills with [`dispatch_audio_fill`].
     /// The windowed entry pulls nothing, so a window run stays silent under
     /// this mode unless the world's host pulls it some other way.
+    ///
+    /// Only a [`Stepped`](crate::world::Stepped) world can be pulled: a
+    /// threaded one owns its `World` on its own thread, which the host
+    /// cannot reach. [`spawn_audio_world_with`] answers
+    /// [`AudioError::Unpullable`] for that combination rather than leaving
+    /// the world permanently silent.
+    #[default]
     Pulled,
     /// Open nothing until an [`AudioOutputRequest`] lands, then retry
     /// every tick until a device appears. A page asks from the handler of
@@ -73,9 +80,35 @@ impl Default for AudioConfig {
             buffer_frames: 4096,
             preferred_sample_rate: 48000,
             command_capacity: 256,
-            output: AudioOutputMode::Pulled,
+            output: AudioOutputMode::default(),
         }
     }
+}
+
+/// Why an audio world was not spawned.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AudioError {
+    /// The ring is too small to hold the fill chunks the world writes.
+    #[error(
+        "a ring of {buffer_frames} frames cannot hold two fill chunks of {minimum} frames each"
+    )]
+    BufferTooSmall {
+        /// The length the config asked for, in frames per channel.
+        buffer_frames: usize,
+        /// The shortest ring the filler can work with.
+        minimum: usize,
+    },
+    /// A threaded world was asked to be pulled by its host.
+    #[error(
+        "a threaded audio world cannot be pulled by its host, which cannot reach the \
+         world's thread; ask for AudioOutputMode::OnRequest instead"
+    )]
+    Unpullable,
+    /// The runner needed a thread and the operating system refused to create
+    /// one.
+    #[error(transparent)]
+    Thread(#[from] crate::thread::ThreadError),
 }
 
 /// Where a fill behaviour runs among the world's other sources.
@@ -412,6 +445,39 @@ pub fn request_audio_output(sender: &JobSender) -> Result<(), SendError> {
     }))
 }
 
+/// Why an audio world is not sounding, as far as opening its device goes.
+///
+/// The stages are separate so a caller can tell a machine with no output at
+/// all from one whose device refused the stream this crate asked for: the
+/// first is a reason to stay silent, the second is a bug worth reporting.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AudioOpenError {
+    /// The host has no default output device.
+    #[error("the host has no default output device")]
+    NoDevice,
+    /// The device could not enumerate its output configurations.
+    #[error("the device could not list its output configurations: {0}")]
+    Configs(#[source] cpal::Error),
+    /// The device offers no f32 output configuration.
+    #[error("the device offers no f32 output configuration")]
+    NoFloatConfig,
+    /// The device refused the stream this crate built.
+    #[error("the device refused a {channels}-channel stream at {sample_rate} Hz: {error}")]
+    Build {
+        /// What went wrong.
+        #[source]
+        error: cpal::Error,
+        /// The rate the stream asked for.
+        sample_rate: u32,
+        /// The channel count the stream asked for.
+        channels: u16,
+    },
+    /// The device built the stream but would not start it.
+    #[error("the device would not start the stream: {0}")]
+    Play(#[source] cpal::Error),
+}
+
 /// Everything the open output stream needs to keep running.
 struct OpenOutput {
     /// The stream, kept alive by being held.
@@ -446,22 +512,36 @@ struct OpenOutput {
 /// [`AudioOutputMode`] exactly as a threaded one does; the only difference is
 /// that its host calls [`crate::world::step_stepped_world`] once per frame
 /// instead of a thread pacing itself. A Pulled one therefore sounds only
-/// while its host keeps pulling, whatever drives it.
+/// while its host keeps pulling, which only a stepped world can be: a
+/// threaded world's `World` lives on its own thread, where its host cannot
+/// reach it to pull anything.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics when `buffer_frames` cannot hold two fill chunks.
+/// Errors when `buffer_frames` cannot hold two fill chunks, or when a
+/// threaded world is asked to be [`AudioOutputMode::Pulled`]. Both are
+/// configurations the world could never sound under, so they are refused
+/// here rather than left to a silent world nobody can diagnose.
 pub fn spawn_audio_world_with<R: WorldRunner>(
     host: &mut World,
     config: AudioConfig,
-) -> WorldHandle {
+) -> Result<WorldHandle, AudioError> {
     // The filler writes in chunks of AUDIO_FILL_FRAMES frames, so a ring smaller
     // than one chunk would never see room and the stream would stay silent
     // forever. Two chunks leave room to top the ring up between wakeups.
-    assert!(
-        config.buffer_frames >= AUDIO_FILL_FRAMES * 2,
-        "buffer_frames must hold at least two fill chunks of {AUDIO_FILL_FRAMES} frames"
-    );
+    let minimum = AUDIO_FILL_FRAMES * 2;
+    if config.buffer_frames < minimum {
+        return Err(AudioError::BufferTooSmall {
+            buffer_frames: config.buffer_frames,
+            minimum,
+        });
+    }
+    // A threaded world's `World` is created on and owned by its thread, so
+    // its host cannot reach it to call [`dispatch_audio_fill`]: a Pulled
+    // config leaves it silent for good, with no way for either side to tell.
+    if R::SELF_DRIVEN && config.output == AudioOutputMode::Pulled {
+        return Err(AudioError::Unpullable);
+    }
     let mut output: Option<OpenOutput> = None;
     // Whether an [`AudioOutputRequest`] has landed: once true, a world in
     // [`AudioOutputMode::OnRequest`] keeps trying to open a device every
@@ -476,17 +556,6 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
     // sample rate is known and then keeps its own cadence, so a slow tick
     // does not push every later wakeup out.
     let mut clock: Option<FixedClock> = None;
-    // A threaded world's `World` is created on and owned by its thread, so
-    // its host cannot reach it to call [`dispatch_audio_fill`]: a Pulled
-    // config leaves it silent for good. The default config is Pulled, so a
-    // caller that wanted sound is told here instead of chasing a missing device.
-    if R::SELF_DRIVEN && config.output == AudioOutputMode::Pulled {
-        log::warn!(
-            "the audio world is self-driven in the Pulled mode, so nothing \
-             fills it; the host calls dispatch_audio_fill, or the config asks \
-             for OnRequest"
-        );
-    }
     // The world's own frame ordinal. The tick is the world's frame: one fill
     // of the ring is one turn, so the pacing a reader sees is the rate the
     // device really consumes samples at.
@@ -519,7 +588,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             };
             if wants_output && output.is_none() {
                 match open_output(&config) {
-                    Some(opened) => {
+                    Ok(opened) => {
                         log::info!(
                             "the audio output opened at {} Hz, {} channels",
                             opened.sample_rate,
@@ -538,11 +607,14 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                         clock = Some(FixedClock::new(Duration::from_secs_f64(pace)));
                         output = Some(opened);
                     }
-                    None => {
+                    Err(error) => {
                         // A page's request can arrive before a device the
                         // system is ready to grant exists; retrying is the
-                        // world's whole strategy, so this stays quiet.
-                        log::debug!("no audio output device is available yet");
+                        // world's whole strategy, so this stays quiet. The
+                        // stage that failed is named, so a device that keeps
+                        // refusing the stream is distinguishable from one
+                        // that is simply not there yet.
+                        log::debug!("the audio output is still closed: {error}");
                     }
                 }
             }
@@ -610,13 +682,21 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             true
         },
     )
+    .map_err(AudioError::from)
 }
 
 /// Open the default output stream and the ring feeding it, preferring a
 /// stereo f32 stream at the configured rate.
-fn open_output(config: &AudioConfig) -> Option<OpenOutput> {
-    let device = cpal::default_host().default_output_device()?;
-    let supported = device.supported_output_configs().ok()?;
+///
+/// Each stage that can fail reports itself, so a machine with no output is
+/// told apart from a device that refused the stream this crate asked for.
+fn open_output(config: &AudioConfig) -> Result<OpenOutput, AudioOpenError> {
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or(AudioOpenError::NoDevice)?;
+    let supported = device
+        .supported_output_configs()
+        .map_err(AudioOpenError::Configs)?;
     let best = supported
         .filter(|range| range.sample_format() == cpal::SampleFormat::F32)
         .map(|range| {
@@ -631,7 +711,8 @@ fn open_output(config: &AudioConfig) -> Option<OpenOutput> {
                 // The closer to the requested rate, the better.
                 u32::MAX - stream.sample_rate().abs_diff(config.preferred_sample_rate),
             )
-        })?;
+        })
+        .ok_or(AudioOpenError::NoFloatConfig)?;
     let stream_config: cpal::StreamConfig = best.into();
     let channels = stream_config.channels;
     let sample_rate = stream_config.sample_rate;
@@ -648,9 +729,13 @@ fn open_output(config: &AudioConfig) -> Option<OpenOutput> {
             |error| log::error!("the audio output stream failed ({error})"),
             None,
         )
-        .ok()?;
-    stream.play().ok()?;
-    Some(OpenOutput {
+        .map_err(|error| AudioOpenError::Build {
+            error,
+            sample_rate,
+            channels,
+        })?;
+    stream.play().map_err(AudioOpenError::Play)?;
+    Ok(OpenOutput {
         _stream: stream,
         producer,
         sample_rate,

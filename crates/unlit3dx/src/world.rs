@@ -18,7 +18,7 @@ use unlit3d::frame::FrameClock;
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender, SendError};
-use crate::thread::{ThreadControl, ThreadStatus, WorldThread, stepped_control};
+use crate::thread::{ThreadControl, ThreadError, ThreadStatus, WorldThread, stepped_control};
 use crate::turn::{Link, close_inbox, drain_jobs, run_turn};
 
 pub use crate::turn::StepOutcome;
@@ -141,13 +141,19 @@ pub trait WorldRunner: 'static {
     const SELF_DRIVEN: bool;
 
     /// Spawn a world driven this way.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThreadError::Spawn`] when the runner needs a thread and the
+    /// operating system refuses to create one. A runner that needs no thread
+    /// never fails.
     fn spawn<I, S, T>(
         host: &mut World,
         name: &'static str,
         command_capacity: usize,
         init: I,
         tick: T,
-    ) -> WorldHandle
+    ) -> Result<WorldHandle, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
@@ -169,7 +175,7 @@ impl WorldRunner for Threaded {
         command_capacity: usize,
         init: I,
         tick: T,
-    ) -> WorldHandle
+    ) -> Result<WorldHandle, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
@@ -188,13 +194,19 @@ impl WorldRunner for Stepped {
         command_capacity: usize,
         init: I,
         tick: T,
-    ) -> WorldHandle
+    ) -> Result<WorldHandle, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
         T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
     {
-        spawn_stepped_world_with_init(host, name, command_capacity, init, tick)
+        Ok(spawn_stepped_world_with_init(
+            host,
+            name,
+            command_capacity,
+            init,
+            tick,
+        ))
     }
 }
 
@@ -213,12 +225,16 @@ impl WorldRunner for Stepped {
 ///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
+/// # Errors
+///
+/// Returns [`ThreadError::Spawn`] when the operating system refuses to create
+/// the thread.
 pub fn spawn_threaded_world<T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
     mut tick: T,
-) -> WorldHandle
+) -> Result<WorldHandle, ThreadError>
 where
     T: FnMut(&mut World, &ThreadControl, f32) -> bool + Send + 'static,
 {
@@ -237,13 +253,17 @@ where
 /// a world can create the components its jobs assume exist - its physics
 /// world, say - and hand any state they need to the tick. The state it
 /// returns is passed to every tick.
+/// # Errors
+///
+/// Returns [`ThreadError::Spawn`] when the operating system refuses to create
+/// the thread.
 pub fn spawn_threaded_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
     init: I,
     mut tick: T,
-) -> WorldHandle
+) -> Result<WorldHandle, ThreadError>
 where
     I: FnOnce(&mut World) -> S + Send + 'static,
     S: 'static,
@@ -254,7 +274,7 @@ where
     // it: the driver owns what happens between two ticks.
     let thread = WorldThread::spawn_with(name, inbox, init, move |world, control, state| {
         tick(world, control, state, control.elapsed_seconds())
-    });
+    })?;
     let status: ThreadStatus = thread.status();
     let sender = JobSender::new(queue);
     let port = WorldSender {
@@ -266,7 +286,7 @@ where
         name,
         sender: port,
     });
-    WorldHandle::with_status(entity, sender, status)
+    Ok(WorldHandle::with_status(entity, sender, status))
 }
 
 /// Spawn a world the host steps, with a one-time setup step.
@@ -520,7 +540,8 @@ mod tests {
         let handle = spawn_threaded_world(&mut host, "test", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
-        });
+        })
+        .expect("the world thread starts");
         handle
             .sender
             .send(Box::new(|world: &mut World| {
@@ -572,7 +593,8 @@ mod tests {
                 control.wait_timeout(Duration::from_millis(1));
                 true
             },
-        );
+        )
+        .expect("the world thread starts");
         let seeded = crate::channel::Snapshot::new();
         let reader = seeded.reader();
         let publish = seeded.clone();
@@ -759,7 +781,8 @@ mod tests {
         let handle = spawn_threaded_world(&mut host, "threaded", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
             true
-        });
+        })
+        .expect("the world thread starts");
         assert_eq!(
             step_stepped_world(&host, handle.entity, FRAME_SECONDS),
             Err(StepError::NotStepped)
@@ -811,7 +834,8 @@ mod tests {
             }
             control.wait_timeout(Duration::from_millis(1));
             true
-        });
+        })
+        .expect("the world thread starts");
         let counted = crate::channel::Snapshot::new();
         let reader = counted.reader();
         let mut answer = None;

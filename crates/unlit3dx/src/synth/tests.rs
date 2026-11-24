@@ -263,10 +263,11 @@ fn a_sequencer_without_a_loop_marker_returns_to_zero() {
     assert!(!sequencer.finished, "a looping sequence never finishes");
 }
 
-/// A loop body that spans time comes back to its own start and stops
-/// there: one wrap per frame is all a file asks for.
+/// A loop body that spans time comes back to its own start and plays on from
+/// there for the rest of the frame, so the frame's remaining time is not spent
+/// standing at the seam.
 #[test]
-fn a_loop_body_across_zero_does_not_spin() {
+fn a_loop_body_across_zero_plays_on_from_its_marker() {
     let mut world = World::new();
     let source = voice(&mut world);
     let (audio, receiver) = channel();
@@ -278,11 +279,18 @@ fn a_loop_body_across_zero_does_not_spin() {
     ]));
     sequencer.loop_play = true;
     sequencer.advance(5.0, source, &audio);
-    assert_eq!(sequencer.time, 0.0, "the pass restarted at the marker");
+    assert_eq!(
+        sequencer.time, 3.0,
+        "the frame wrapped at 2.0 and spent its last three seconds on the new pass"
+    );
     assert_eq!(
         drain(&mut world, &receiver),
-        2,
-        "the note and the reset at the seam"
+        3,
+        "the note, its release at the seam, and the note the new pass reached"
+    );
+    assert_eq!(
+        sequencer.index, 2,
+        "the new pass reached its own loop end and stopped there"
     );
 }
 
@@ -505,5 +513,256 @@ fn a_rewind_leaves_the_other_sequences_notes_alone() {
         second.held,
         vec![(0, 67)],
         "the other sequence still holds its note"
+    );
+}
+
+/// A frame that arrives late sends everything it owes with the offsets those
+/// events had, so a backlog is spread across the fill instead of piling up at
+/// its first sample.
+#[test]
+fn a_backlog_keeps_the_offsets_its_events_had() {
+    let mut world = World::new();
+    let source = voice(&mut world);
+    let (audio, receiver) = channel();
+    let mut sequencer = MidiSequencer::new(
+        midi_file([note_at(1.0, 60), note_at(2.0, 62), note_at(3.0, 64)])
+            .expect("the sequence is well formed"),
+    );
+    // One frame covering all three events: the clock was held up, so the
+    // events are owed rather than early.
+    sequencer.advance(3.5, source, &audio);
+    assert_eq!(
+        drain(&mut world, &receiver),
+        6,
+        "the three events and the three releases the end of the pass owes"
+    );
+    let delays: Vec<f64> = queued(&world, source)
+        .into_iter()
+        .take(3)
+        .map(|(delay, _)| delay)
+        .collect();
+    assert_eq!(
+        delays,
+        vec![1.0, 2.0, 3.0],
+        "each event kept its distance from the start of the frame"
+    );
+}
+
+/// A note released while the sustain pedal is down is not sent a note-off of
+/// its own: the pedal holds it. The message the file wrote still reaches the
+/// synthesizer, and the pedal lifting is what silences it.
+#[test]
+fn a_sustain_pedal_holds_a_released_note() {
+    let mut world = World::new();
+    let source = voice(&mut world);
+    let (audio, receiver) = channel();
+    let mut sequencer = MidiSequencer::new(
+        midi_file([
+            (
+                0.0,
+                MidiEventKind::ControlChange {
+                    channel: 0,
+                    controller: 64,
+                    value: 127,
+                },
+            ),
+            note_at(1.0, 60),
+            (
+                2.0,
+                MidiEventKind::NoteOff {
+                    channel: 0,
+                    key: 60,
+                },
+            ),
+            // Far enough away that the pass is still running at the release.
+            note_at(10.0, 62),
+        ])
+        .expect("the sequence is well formed"),
+    );
+    sequencer.advance(2.5, source, &audio);
+    assert_eq!(
+        drain(&mut world, &receiver),
+        3,
+        "the pedal, the note and the release the file wrote"
+    );
+    assert_eq!(
+        kinds(&world, source),
+        vec![
+            MidiEventKind::ControlChange {
+                channel: 0,
+                controller: 64,
+                value: 127,
+            },
+            MidiEventKind::NoteOn {
+                channel: 0,
+                key: 60,
+                velocity: 100,
+            },
+            MidiEventKind::NoteOff {
+                channel: 0,
+                key: 60
+            },
+        ],
+        "the release the file wrote is the only one sent"
+    );
+    assert!(
+        sequencer.held.is_empty(),
+        "the key itself is no longer held down"
+    );
+    assert_eq!(
+        sequencer.sustained,
+        vec![(0, 60)],
+        "the pedal is what holds the note now"
+    );
+    assert_eq!(
+        sequencer.sustain_down & 1,
+        1,
+        "the pedal is still down, so the pass holds the note"
+    );
+}
+
+/// The end of a pass lifts the pedal before the note-offs, or the synthesizer
+/// would swallow them and the note would ring into the silence.
+#[test]
+fn the_end_of_a_pass_lifts_the_pedal_first() {
+    let mut world = World::new();
+    let source = voice(&mut world);
+    let (audio, receiver) = channel();
+    let mut sequencer = MidiSequencer::new(
+        midi_file([
+            (
+                0.0,
+                MidiEventKind::ControlChange {
+                    channel: 0,
+                    controller: 64,
+                    value: 127,
+                },
+            ),
+            note_at(0.5, 60),
+            (
+                1.0,
+                MidiEventKind::NoteOff {
+                    channel: 0,
+                    key: 60,
+                },
+            ),
+        ])
+        .expect("the sequence is well formed"),
+    );
+    sequencer.advance(2.0, source, &audio);
+    let _ = drain(&mut world, &receiver);
+    assert_eq!(
+        kinds(&world, source),
+        vec![
+            MidiEventKind::ControlChange {
+                channel: 0,
+                controller: 64,
+                value: 127,
+            },
+            MidiEventKind::NoteOn {
+                channel: 0,
+                key: 60,
+                velocity: 100,
+            },
+            MidiEventKind::NoteOff {
+                channel: 0,
+                key: 60
+            },
+            MidiEventKind::ControlChange {
+                channel: 0,
+                controller: 64,
+                value: 0,
+            },
+            MidiEventKind::NoteOff {
+                channel: 0,
+                key: 60
+            },
+        ],
+        "the pedal lifts before the note it was holding is let go"
+    );
+    assert!(sequencer.sustained.is_empty());
+    assert_eq!(sequencer.sustain_down, 0);
+}
+
+/// A rewind cuts the pass short, so the pedal it pressed down has to lift and
+/// the notes that pedal holds have to be let go.
+#[test]
+fn a_rewind_lifts_the_pedal_of_the_pass_it_cuts() {
+    let mut world = World::new();
+    let source = voice(&mut world);
+    let (audio, receiver) = channel();
+    let mut sequencer = MidiSequencer::new(
+        midi_file([
+            (
+                0.0,
+                MidiEventKind::ControlChange {
+                    channel: 0,
+                    controller: 64,
+                    value: 127,
+                },
+            ),
+            note_at(0.5, 60),
+            (
+                1.0,
+                MidiEventKind::NoteOff {
+                    channel: 0,
+                    key: 60,
+                },
+            ),
+            note_at(20.0, 62),
+        ])
+        .expect("the sequence is well formed"),
+    );
+    sequencer.advance(1.5, source, &audio);
+    let _ = drain(&mut world, &receiver);
+    assert_eq!(sequencer.sustained, vec![(0, 60)], "the pedal holds it");
+    sequencer.rewind();
+    // The next frame's silence is what sends the releases.
+    sequencer.advance(0.0, source, &audio);
+    let _ = drain(&mut world, &receiver);
+    assert!(sequencer.sustained.is_empty(), "the held note came with it");
+    assert_eq!(
+        sequencer.sustain_down & 1,
+        1,
+        "the new pass pressed the pedal again at its own start"
+    );
+    let kinds = kinds(&world, source);
+    assert_eq!(
+        &kinds[..5],
+        &[
+            MidiEventKind::ControlChange {
+                channel: 0,
+                controller: 64,
+                value: 127,
+            },
+            MidiEventKind::NoteOn {
+                channel: 0,
+                key: 60,
+                velocity: 100,
+            },
+            MidiEventKind::NoteOff {
+                channel: 0,
+                key: 60
+            },
+            MidiEventKind::ControlChange {
+                channel: 0,
+                controller: 64,
+                value: 0,
+            },
+            MidiEventKind::NoteOff {
+                channel: 0,
+                key: 60
+            },
+        ],
+        "the pedal and the note it held were let go, once"
+    );
+    assert_eq!(
+        kinds.get(5),
+        Some(&MidiEventKind::ControlChange {
+            channel: 0,
+            controller: 64,
+            value: 127,
+        }),
+        "the new pass presses the pedal again at its own start"
     );
 }

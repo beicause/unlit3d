@@ -46,7 +46,8 @@ fn collect_poses(world: &World) -> Option<Poses> {
 /// queued and a pose subscription on the host.
 fn floored_host<R: WorldRunner>() -> (World, WorldHandle, SnapshotReader<Poses>) {
     let mut host = World::new();
-    let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default())
+        .expect("the world thread starts");
     let reader = world
         .sender
         .clone()
@@ -148,7 +149,8 @@ fn a_threaded_world_steps_what_a_job_builds() {
 #[test]
 fn a_physics_tick_dispatches_its_frame() {
     let mut host = World::new();
-    let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default())
+        .expect("a stepped world needs no thread");
     let seen: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
     let record = Arc::clone(&seen);
     world
@@ -196,7 +198,8 @@ fn ball_desc() -> BodyDesc {
 #[test]
 fn a_collector_sees_contacts_from_every_step() {
     let mut host = World::new();
-    let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default())
+        .expect("a stepped world needs no thread");
     let sender = world.sender.clone();
     let (queue, contacts) = std::sync::mpsc::channel();
     // The collector queues what it sees and publishes nothing: the
@@ -359,7 +362,8 @@ fn a_landing_reports_the_closing_speed() {
 #[test]
 fn an_empty_world_publishes_empty_contacts() {
     let mut host = World::new();
-    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default())
+        .expect("the world thread starts");
     let reader = world
         .sender
         .clone()
@@ -391,7 +395,8 @@ fn the_configured_gravity_reaches_the_world() {
             gravity,
             ..PhysicsConfig::default()
         },
-    );
+    )
+    .expect("the world thread starts");
     // Sent before any snapshot has been published: the setup phase must
     // already have created the world, so this answers without waiting.
     let probed = Snapshot::new();

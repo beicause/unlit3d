@@ -110,9 +110,9 @@ pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
 pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
-        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioMix, AudioOutputMode,
-        AudioOutputOpen, AudioOutputRequest, GlobalAudioGain, OnAudioFill, OnAudioPostFill,
-        dispatch_audio_fill, request_audio_output, spawn_audio_world_with,
+        AudioChunk, AudioConfig, AudioError, AudioFillOrder, AudioFormat, AudioMix, AudioOpenError,
+        AudioOutputMode, AudioOutputOpen, AudioOutputRequest, GlobalAudioGain, OnAudioFill,
+        OnAudioPostFill, dispatch_audio_fill, request_audio_output, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
@@ -154,7 +154,8 @@ pub mod prelude {
         job::{Job, JobSender, SendError},
         request::{Pending, Settled},
         thread::{
-            FixedClock, MAX_CATCH_UP_STEPS, ThreadControl, WorldState, WorldThread, fixed_steps,
+            FixedClock, JoinOutcome, MAX_CATCH_UP_STEPS, ThreadControl, ThreadError, WorldState,
+            WorldThread, fixed_steps,
         },
         world::{
             StepError, StepOutcome, Stepped, Threaded, WorldName, WorldRunner,

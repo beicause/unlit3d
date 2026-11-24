@@ -77,13 +77,23 @@ impl SteppedRun {
     ///
     /// Anything but [`StepOutcome::Ran`] ends the frame where it stands and is
     /// returned as the outcome; the frame is not counted.
-    pub(super) fn advance(&mut self, host: &World, draw: bool) -> Result<StepOutcome, String> {
+    ///
+    /// `index` is the frame's own number, which the caller reads from
+    /// [`RunFrames`] before the frame is counted. It is a parameter rather than
+    /// something this method works out, so a caller that has already named the
+    /// frame — to capture it, say — captures the frame it stepped.
+    pub(super) fn advance(
+        &mut self,
+        host: &World,
+        index: u32,
+        draw: bool,
+    ) -> Result<StepOutcome, String> {
         refresh_input(host);
         let outcome = self.stepper.step(host, FIXED_FRAME_SECONDS);
         if outcome != StepOutcome::Ran {
             return Ok(outcome);
         }
-        self.frame.index = self.frames.advanced();
+        self.frame.index = index;
         // A recording observes the fills, so the frame has to fill even when
         // nothing reads the samples back: the notes the frame booked only become
         // recorded audio through a fill.

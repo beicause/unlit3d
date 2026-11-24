@@ -59,11 +59,11 @@ impl Interactive {
     pub fn step(&mut self, host: &World, frames: u32) -> Result<StepOutcome, String> {
         for _ in 0..frames {
             let index = self.run.frames.advanced();
-            let outcome = self.run.advance(host, self.capture.wants(index))?;
+            let outcome = self.run.advance(host, index, self.capture.wants(index))?;
             if outcome != StepOutcome::Ran {
                 return Ok(outcome);
             }
-            self.capture_frame(host, self.run.frame.index)?;
+            self.capture_frame(host, index)?;
         }
         Ok(StepOutcome::Ran)
     }

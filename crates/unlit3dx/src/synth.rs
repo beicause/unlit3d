@@ -358,6 +358,14 @@ pub struct MidiSequencer {
     /// silenced wholesale: an all-notes-off would cut another sequence's
     /// music too.
     held: Vec<(u8, u8)>,
+    /// Notes whose key was released while the sustain pedal was down, by
+    /// channel and key. The pedal keeps them sounding, so they are let go
+    /// once it lifts or the pass is cut short.
+    sustained: Vec<(u8, u8)>,
+    /// Which channels' sustain pedals this sequence pressed down, one bit per
+    /// channel. The synthesizer holds the pedal per channel, so lifting it is
+    /// the only way to silence a note the pedal is holding.
+    sustain_down: u16,
     /// Whether the next advance has to release those notes before it plays
     /// anything, because a rewind cut a pass short since the last one.
     silent: bool,
@@ -375,6 +383,8 @@ impl MidiSequencer {
             paused: false,
             finished: false,
             held: Vec::new(),
+            sustained: Vec::new(),
+            sustain_down: 0,
             silent: false,
         }
     }
@@ -382,14 +392,16 @@ impl MidiSequencer {
     /// Puts the sequence back at its start, playing.
     ///
     /// `loop_point` is left alone, because a hand-written one has no marker to
-    /// be restored from. The notes the pass left sounding are released on the
-    /// next [`MidiSequencer::advance`]: a rewind has no sender to reach the
-    /// voice with, and they must not ring into the new pass.
+    /// be restored from. The notes the pass left sounding — pressed keys and
+    /// the ones a sustain pedal holds — are released on the next
+    /// [`MidiSequencer::advance`]: a rewind has no sender to reach the voice
+    /// with, and they must not ring into the new pass.
     pub fn rewind(&mut self) {
         self.time = 0.0;
         self.index = 0;
         self.finished = false;
-        self.silent |= !self.held.is_empty();
+        self.silent |=
+            !self.held.is_empty() || !self.sustained.is_empty() || self.sustain_down != 0;
     }
 
     /// Sends every event that came due in the last `delta` seconds to `voice`,
@@ -417,14 +429,19 @@ impl MidiSequencer {
         if self.silent {
             self.release(voice, audio);
         }
-        self.time += delta;
-        let mut wraps = 0;
-        while let Some((time, message)) = self.due() {
+        // The pass time this frame starts at and the one it ends at. A wrap
+        // moves both: the pass restarts at its marker and spends the rest of
+        // the frame there, so the events of the new pass keep their distances
+        // from the marker instead of all landing at the instant it restarts.
+        let mut start = self.time;
+        let mut end = self.time + delta.max(0.0);
+        let mut wrapped = false;
+        while let Some((time, message)) = self.due(end) {
             match message {
                 MidiMessage::Normal { .. } => {
                     if let Some(kind) = MidiEventKind::from_message(message) {
                         self.pressed(kind);
-                        let delay = (time - (self.time - delta)).max(0.0);
+                        let delay = (time - start).max(0.0);
                         if let Err(error) = audio.send(midi_job(voice, kind, delay)) {
                             log::warn!("the audio world dropped a MIDI command: {error}");
                         }
@@ -434,23 +451,29 @@ impl MidiSequencer {
                     self.loop_point = Some((time, self.index));
                 }
                 MidiMessage::LoopEnd if self.loop_play => {
-                    self.release(voice, audio);
-                    let (time, index) = self.loop_point.unwrap_or((0.0, 0));
-                    self.time = time;
-                    self.index = index;
-                    // A loop body of no length would keep coming due at the
-                    // same instant; one wrap per frame is all a real file
-                    // asks for.
-                    wraps += 1;
-                    if wraps > 1 {
+                    // One wrap per frame, so a frame that covers several passes
+                    // cannot dump them all into a single fill: after the wrap
+                    // the frame plays on from the marker and ends at the next
+                    // one. The clock keeps moving even for a loop body of no
+                    // length, which would otherwise stall it here for good.
+                    if wrapped {
                         break;
                     }
+                    self.release(voice, audio);
+                    let (loop_time, loop_index) = self.loop_point.unwrap_or((0.0, 0));
+                    let remaining = (end - time).max(0.0);
+                    start = loop_time;
+                    end = loop_time + remaining;
+                    self.index = loop_index;
+                    wrapped = true;
+                    continue;
                 }
                 _ => {}
             }
             self.index += 1;
         }
-        if self.index == self.file.get_messages().len() {
+        self.time = end;
+        if self.index >= self.file.get_messages().len() {
             self.release(voice, audio);
             if !self.loop_play {
                 self.finished = true;
@@ -462,20 +485,27 @@ impl MidiSequencer {
         }
     }
 
-    /// The event at the cursor, once the clock has reached it.
+    /// The event at the cursor, once the clock has reached it, measured
+    /// against `end` — the instant this frame stops at.
     ///
     /// Read through a borrow that ends with the call, so the advance is free
     /// to change the sequence between two events.
-    fn due(&self) -> Option<(f64, MidiMessage)> {
+    fn due(&self, end: f64) -> Option<(f64, MidiMessage)> {
         let times = self.file.get_times();
         let messages = self.file.get_messages();
-        if self.index >= messages.len() || times[self.index] > self.time {
+        if self.index >= messages.len() || times[self.index] > end {
             return None;
         }
         Some((times[self.index], messages[self.index]))
     }
 
     /// Records what `kind` does to the notes this sequence holds sounding.
+    ///
+    /// This only tracks state: the message itself reaches the synthesizer
+    /// through the advance that made it due, so sending anything from here
+    /// would say it twice. Tracking is still needed, because the notes a pass
+    /// leaves sounding are released by name when the pass is cut short, and the
+    /// ones a sustain pedal holds are not the ones the file released.
     fn pressed(&mut self, kind: MidiEventKind) {
         match kind {
             MidiEventKind::NoteOn {
@@ -483,6 +513,8 @@ impl MidiSequencer {
                 key,
                 velocity,
             } if velocity > 0 => {
+                // A fresh press takes the key back from the pedal.
+                self.sustained.retain(|held| *held != (channel, key));
                 if !self.held.contains(&(channel, key)) {
                     self.held.push((channel, key));
                 }
@@ -490,25 +522,71 @@ impl MidiSequencer {
             MidiEventKind::NoteOn { channel, key, .. }
             | MidiEventKind::NoteOff { channel, key } => {
                 self.held.retain(|held| *held != (channel, key));
+                if self.sustain_down & (1 << channel) != 0
+                    && !self.sustained.contains(&(channel, key))
+                {
+                    self.sustained.push((channel, key));
+                }
             }
             MidiEventKind::ControlChange {
                 channel,
                 controller: 120 | 123,
                 ..
-            } => self.held.retain(|held| held.0 != channel),
+            } => {
+                self.held.retain(|held| held.0 != channel);
+                // The synthesizer holds these until the pedal lifts, so the
+                // pedal has to lift for them to be silenced at all; a real
+                // all-notes-off lifts it itself, so only the tracking drops.
+                self.sustained.retain(|held| held.0 != channel);
+            }
+            MidiEventKind::ControlChange {
+                channel,
+                controller: 64,
+                value,
+            } => {
+                if value >= 64 {
+                    self.sustain_down |= 1 << channel;
+                } else {
+                    self.sustain_down &= !(1 << channel);
+                    self.sustained.retain(|held| held.0 != channel);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Tells the voice to release one key.
+    fn send_note_off(&self, channel: u8, key: u8, voice: Entity, audio: &JobSender) {
+        let kind = MidiEventKind::NoteOff { channel, key };
+        if let Err(error) = audio.send(midi_job(voice, kind, 0.0)) {
+            log::warn!("the audio world dropped a MIDI note-off: {error}");
         }
     }
 
     /// Releases the notes this sequence pressed, and only those: the voice is
     /// shared, and an all-notes-off would cut another sequence's music.
+    ///
+    /// The pedal lifts first: a sustain pedal holds every released note of its
+    /// channel, so its note-offs would be swallowed until it does.
     fn release(&mut self, voice: Entity, audio: &JobSender) {
         self.silent = false;
-        for (channel, key) in std::mem::take(&mut self.held) {
-            let kind = MidiEventKind::NoteOff { channel, key };
-            if let Err(error) = audio.send(midi_job(voice, kind, 0.0)) {
-                log::warn!("the audio world dropped a MIDI note-off: {error}");
+        let pedals = std::mem::take(&mut self.sustain_down);
+        for channel in 0..u16::BITS as u8 {
+            if pedals & (1 << channel) == 0 {
+                continue;
             }
+            let kind = MidiEventKind::ControlChange {
+                channel,
+                controller: 64,
+                value: 0,
+            };
+            if let Err(error) = audio.send(midi_job(voice, kind, 0.0)) {
+                log::warn!("the audio world dropped a MIDI pedal-off: {error}");
+            }
+        }
+        let sustained = std::mem::take(&mut self.sustained);
+        for (channel, key) in std::mem::take(&mut self.held).into_iter().chain(sustained) {
+            self.send_note_off(channel, key, voice, audio);
         }
     }
 }

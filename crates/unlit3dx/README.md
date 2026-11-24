@@ -205,8 +205,12 @@ tick body has to know which one it is under.
   stop is left detached rather than hanging the dropper. The handle reports on
   the world — `is_finished`, and `state`, a `SnapshotReader<WorldState>` that
   reads `Running`, `Stopped` or `Failed(message)` — and `stop` asks it to
-  end; `join_timeout` and `detach` are on the `WorldThread` itself, for
-  callers that own one directly.
+  end. `join_timeout` and `detach` are on the `WorldThread` itself, for
+  callers that own one directly: a wait answers `JoinOutcome` (`Joined`,
+  `TimedOut`, `Detached` or `AlreadyJoined`) rather than a bare `bool`, so a
+  handle that was given up is never reported as a thread that exited. The
+  operating system refusing to create the thread is a
+  `ThreadError::Spawn`, returned by the spawn rather than panicking.
 - **`Stepped`** keeps the world where it was spawned.
   `spawn_stepped_world_with_init` puts the nested `World` inside the proxy
   component on the host entity, and

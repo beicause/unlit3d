@@ -168,8 +168,11 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
   实体会请求停止其线程并至多等几秒（`STOP_TIMEOUT`）；拒绝停止的 tick 会被遗弃
   （detach），而不是把销毁方挂住。句柄负责汇报 world 的状态——`is_finished`，以及 `state`（一个
   `SnapshotReader<WorldState>`，读到 `Running`、`Stopped` 或
-  `Failed(message)`）——`stop` 则请求它结束；`join_timeout` 与 `detach` 在
-  `WorldThread` 本身之上，留给直接持有它的调用方。
+  `Failed(message)`）——`stop` 则请求它结束。`join_timeout` 与 `detach` 在
+  `WorldThread` 本身之上，留给直接持有它的调用方：等待返回 `JoinOutcome`
+  （`Joined`、`TimedOut`、`Detached` 或 `AlreadyJoined`）而不是裸 `bool`，于是
+  已经交出去的句柄永远不会被当作已退出的线程。操作系统拒绝创建线程时，生成会返回
+  `ThreadError::Spawn`，而不是 panic。
 - **`Stepped`** 让 world 留在它被生成的地方。`spawn_stepped_world_with_init` 把嵌套的
   `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
   迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。

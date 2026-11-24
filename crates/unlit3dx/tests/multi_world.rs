@@ -20,7 +20,8 @@ fn idle_host() -> (World, WorldHandle) {
     let world = spawn_threaded_world(&mut host, "test", 64, |_, control, _| {
         control.wait_timeout(Duration::from_millis(1));
         true
-    });
+    })
+    .expect("the world thread starts");
     (host, world)
 }
 
@@ -307,7 +308,8 @@ fn threaded_world_state_persists_between_jobs() {
 #[test]
 fn a_finished_world_drops_jobs_quietly() {
     let mut host = World::new();
-    let world = spawn_threaded_world(&mut host, "test", 8, |_, _, _| false);
+    let world = spawn_threaded_world(&mut host, "test", 8, |_, _, _| false)
+        .expect("the world thread starts");
 
     assert!(
         wait_for(|| world.is_finished()),
@@ -330,7 +332,8 @@ fn despawning_the_proxy_stops_the_world() {
     let world = spawn_threaded_world(&mut host, "test", 8, |_, control, _| {
         control.wait_timeout(Duration::from_millis(1));
         true
-    });
+    })
+    .expect("the world thread starts");
     let sender = world.sender.clone();
     assert!(
         host.root_scope_mut().despawn(world.entity).is_ok(),
@@ -359,7 +362,8 @@ fn subscriptions_flow_from_thread_to_host() {
     let world = spawn_threaded_world(&mut host, "test", 8, |_world, control, _| {
         control.wait_timeout(Duration::from_millis(1));
         true
-    });
+    })
+    .expect("the world thread starts");
     // The collector owns its own counter: it runs inside the world's tick,
     // so it sees a fresh value on every one.
     let mut tick: u32 = 0;

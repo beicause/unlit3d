@@ -164,11 +164,16 @@ pub async fn headless<A: App>(
         renderer,
         config.audio_sample_rate,
     );
-    // An unbounded run keeps a bounded mix: see `UNBOUNDED_MIX_SECONDS`.
-    let mix_limit = config.pacing.frames.map_or_else(
-        || (UNBOUNDED_MIX_SECONDS * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS,
-        |_| usize::MAX,
-    );
+    // Every run keeps a bounded mix: as long as the run itself when it names a
+    // length, at most `UNBOUNDED_MIX_SECONDS` when it plays until killed. The
+    // bound is whole interleaved frames, so a cut never lands mid-frame.
+    let mix_seconds = config
+        .pacing
+        .frames
+        .map_or(UNBOUNDED_MIX_SECONDS, |frames| {
+            frames as f32 * FIXED_FRAME_SECONDS as f32
+        });
+    let mix_limit = (mix_seconds * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS;
     let mut mix_capped = false;
 
     loop {
@@ -180,7 +185,7 @@ pub async fn headless<A: App>(
         // frame nobody reads is a wasted draw, and a frame the capture names
         // and the run does not draw is a picture missing from it.
         let draw = config.capture.wants(index);
-        match run.advance(&host, draw)? {
+        match run.advance(&host, index, draw)? {
             StepOutcome::Ran => {}
             StepOutcome::Finished | StepOutcome::Stopped => break,
             StepOutcome::Failed => return Err(format!("the scene failed before frame {index}")),
@@ -188,14 +193,18 @@ pub async fn headless<A: App>(
 
         let samples = run.mix.samples();
         if !samples.is_empty() {
-            let room = mix_limit.saturating_sub(output.audio.len());
-            if room < samples.len() && !mix_capped {
+            // The samples are interleaved, so the cut is a whole number of
+            // channel frames: a run that stops at its bound hands back a mix
+            // whose frames are all complete.
+            let room = mix_limit.saturating_sub(output.audio.len()) / AUDIO_CHANNELS;
+            let wanted = samples.len() / AUDIO_CHANNELS;
+            if room < wanted && !mix_capped {
                 mix_capped = true;
                 log::warn!(
-                    "the run has no length, so its mix stops at {UNBOUNDED_MIX_SECONDS} seconds; name --max-frames to record a longer one"
+                    "the mix stops at {mix_seconds} seconds, which is this run's bound; a longer run needs a longer --max-frames"
                 );
             }
-            let take = room.min(samples.len());
+            let take = room.min(wanted) * AUDIO_CHANNELS;
             output.audio.extend_from_slice(&samples[..take]);
         }
 

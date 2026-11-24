@@ -61,17 +61,54 @@ pub struct RecordingHandle {
     state: Arc<Mutex<RecordingState>>,
 }
 
+/// What the first fill told the recording: the format every later fill is
+/// taken to share, and how many interleaved samples the time limit comes to in
+/// it.
+///
+/// A recording has no limit and counts nothing until a fill names the format,
+/// so one field carries both facts and neither can be true of a recording that
+/// has not started.
+#[derive(Clone, Copy, Debug)]
+struct Limit {
+    format: AudioFormat,
+    samples: usize,
+}
+
 /// What a recording has captured so far.
 #[derive(Debug)]
 struct RecordingState {
-    /// The format of the first fill the recording saw, which every later fill
-    /// is taken to share.
-    format: Option<AudioFormat>,
+    limit: Option<Limit>,
     samples: Vec<f32>,
-    /// How many samples the recording keeps before it stops capturing.
-    max_samples: usize,
     /// How many seconds of audio the recording keeps at most.
     max_seconds: f32,
+}
+
+impl RecordingState {
+    /// How many whole channel frames are captured. A recording that has not
+    /// started has captured none: no channels are known to divide by yet.
+    fn frames(&self) -> usize {
+        let Some(limit) = self.limit else {
+            return 0;
+        };
+        self.samples.len() / usize::from(limit.format.channels).max(1)
+    }
+
+    /// How many seconds of audio are captured, measured in whole frames so it
+    /// always agrees with [`Self::frames`].
+    fn seconds(&self) -> f64 {
+        let Some(limit) = self.limit else {
+            return 0.0;
+        };
+        self.frames() as f64 / f64::from(limit.format.sample_rate.max(1))
+    }
+
+    /// Whether the recording reached its limit and stopped capturing.
+    fn is_full(&self) -> bool {
+        let Some(limit) = self.limit else {
+            return false;
+        };
+        self.samples.len() >= limit.samples
+    }
 }
 
 /// The samples a finished recording captured.
@@ -110,28 +147,32 @@ impl RecordedAudio {
 /// [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
 pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let state = Arc::new(Mutex::new(RecordingState {
-        format: None,
+        limit: None,
         samples: Vec::new(),
-        // Nothing is kept until a fill names the format the limit is measured
-        // in; the first fill replaces this with the real bound.
-        max_samples: usize::MAX,
         max_seconds: max_seconds.max(0.0),
     }));
     let recorder = Arc::clone(&state);
     let entity = world.root_scope_mut().spawn(bundle![OnAudioPostFill::new(
         move |_world: &World, _entity: Entity, mix: &AudioMix| {
             let mut state = sync::lock(&recorder);
-            if state.format.is_none() {
+            if state.limit.is_none() {
                 let format = AudioFormat {
                     sample_rate: mix.sample_rate,
                     channels: mix.channels,
                 };
                 let frames =
                     (f64::from(format.sample_rate) * f64::from(state.max_seconds)) as usize;
-                state.max_samples = frames.saturating_mul(usize::from(format.channels).max(1));
-                state.format = Some(format);
+                state.limit = Some(Limit {
+                    format,
+                    samples: frames.saturating_mul(usize::from(format.channels).max(1)),
+                });
             }
-            let room = state.max_samples.saturating_sub(state.samples.len());
+            // The limit is a whole number of frames and every fill holds whole
+            // frames, so the room left is too: a recording never stops halfway
+            // through one.
+            let room = state
+                .limit
+                .map_or(0, |limit| limit.samples.saturating_sub(state.samples.len()));
             state.samples.extend(mix.samples.iter().take(room).copied());
         },
     ),]);
@@ -375,40 +416,31 @@ impl RecordingHandle {
     )]
     #[must_use]
     pub(crate) fn format(&self) -> Option<AudioFormat> {
-        sync::lock(&self.state).format
+        sync::lock(&self.state).limit.map(|limit| limit.format)
     }
 
     /// How many frames the recording has captured.
+    ///
+    /// A recording that has seen no fill has captured nothing: without a format
+    /// there are no channels to divide the samples by, and no samples either.
     #[must_use]
     pub fn frame_count(&self) -> usize {
-        let state = sync::lock(&self.state);
-        let channels = state
-            .format
-            .map_or(1, |format| usize::from(format.channels).max(1));
-        state.samples.len() / channels
+        sync::lock(&self.state).frames()
     }
 
-    /// How many seconds of audio the recording has captured.
+    /// How many seconds of audio the recording has captured, in whole frames.
     #[must_use]
     pub fn seconds(&self) -> f64 {
-        let state = sync::lock(&self.state);
-        match state.format {
-            Some(format) => {
-                let channels = usize::from(format.channels).max(1);
-                (state.samples.len() / channels) as f64 / f64::from(format.sample_rate.max(1))
-            }
-            None => 0.0,
-        }
+        sync::lock(&self.state).seconds()
     }
 
     /// Whether the recording reached its limit and stopped capturing.
     ///
-    /// A recording that has seen no fill yet is never full: its limit is not
-    /// known until the format is.
+    /// A recording that has seen no fill is never full: its limit is measured
+    /// in the format the first fill names.
     #[must_use]
     pub fn is_full(&self) -> bool {
-        let state = sync::lock(&self.state);
-        state.format.is_some() && state.samples.len() >= state.max_samples
+        sync::lock(&self.state).is_full()
     }
 
     /// Stop recording, despawn the source and take the captured samples.
@@ -421,9 +453,9 @@ impl RecordingHandle {
     pub fn stop(self, world: &mut World) -> Option<RecordedAudio> {
         self.retire(world);
         let mut state = sync::lock(&self.state);
-        let format = state.format.take()?;
+        let limit = state.limit.take()?;
         Some(RecordedAudio {
-            format,
+            format: limit.format,
             samples: std::mem::take(&mut state.samples),
         })
     }
@@ -432,7 +464,7 @@ impl RecordingHandle {
     pub fn cancel(self, world: &mut World) {
         self.retire(world);
         let mut state = sync::lock(&self.state);
-        state.format = None;
+        state.limit = None;
         state.samples.clear();
     }
 
@@ -559,8 +591,12 @@ mod tests {
     fn a_recording_nobody_filled_hands_back_nothing() {
         let mut world = World::new();
         let handle = start_recording(&mut world, 1.0);
-        assert!(!handle.is_full());
+        // Every query answers from the one fact that the first fill has not
+        // named a format yet, so none of them can claim other than nothing.
+        assert_eq!(handle.frame_count(), 0);
         assert_eq!(handle.seconds(), 0.0);
+        assert!(!handle.is_full());
+        assert_eq!(handle.format(), None);
         assert_eq!(handle.stop(&mut world), None);
     }
 

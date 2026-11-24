@@ -24,7 +24,7 @@ use unlit_ecs::{Bundle, DynamicBundle, Entity, World};
 use unlit3d::frame::{Frame, dispatch_frame};
 
 use crate::handle::WorldHandle;
-use crate::thread::{FixedClock, fixed_steps};
+use crate::thread::{FixedClock, ThreadError, fixed_steps};
 use crate::world::WorldRunner;
 use unlit_ecs::bundle;
 
@@ -311,19 +311,30 @@ fn physics_world(world: &World) -> unlit_ecs::QueryOne<'_, &mut PhysicsWorld> {
 /// Both runners share one tick body, so a stepped world simulates exactly
 /// what a threaded one does: the only difference is that its host calls
 /// [`crate::world::step_stepped_world`] once per frame instead of a thread
-/// pacing itself.
+/// pacing itself. The steps a tick runs come from the same rule either way,
+/// so a host's frame rate never changes the rate the simulation runs at.
+///
 /// # Panics
 ///
 /// Panics when [`PhysicsConfig::hz`] is not a positive finite number: the
 /// step every clock and every rapier integration is measured in comes from
 /// dividing by it.
+///
+/// # Errors
+///
+/// Returns [`ThreadError::Spawn`] when the runner drives the world on its own
+/// thread and the operating system refuses to create it.
 pub fn spawn_physics_world_with<R: WorldRunner>(
     host: &mut World,
     config: PhysicsConfig,
-) -> WorldHandle {
+) -> Result<WorldHandle, ThreadError> {
     let step_seconds = step_seconds(&config);
     let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
-    let mut debt = 0.0;
+    // A self-driven tick runs before its clock's first wait, so one period is
+    // owed from the start: the first turn simulates, and every later turn
+    // spends exactly the debt its own delta accrued. A stepped world owes
+    // nothing until its host hands it a delta.
+    let mut debt = if R::SELF_DRIVEN { step_seconds } else { 0.0 };
     // The world's own frame ordinal. A tick is the world's frame — it steps
     // the simulation by whatever debt gathered — so a reader sees the pacing
     // the steps really ran at, not the host's frame rate.
@@ -337,22 +348,14 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
             if control.stop_requested() {
                 return false;
             }
+            // The one pacing rule, whichever driver calls it: the tick's delta
+            // accrues debt and a whole period of it is spent as one step.
+            let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
+            for _ in 0..steps {
+                step_once(world);
+            }
             if control.self_driven() {
-                let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
-                // The first turn steps immediately, before its first wait.
-                for _ in 0..steps.max(1) {
-                    step_once(world);
-                }
                 clock.wait(control);
-            } else {
-                // A stepped host paces the world the same way a threaded one
-                // paces itself: the tick's delta accrues debt and steps only
-                // when a whole step period has gathered, so a host's frame
-                // rate never changes the simulation's rate.
-                let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
-                for _ in 0..steps {
-                    step_once(world);
-                }
             }
             // The tick is this world's frame: a behaviour pacing itself by the
             // simulation reads a clock that matches the steps.

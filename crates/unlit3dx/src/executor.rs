@@ -75,27 +75,32 @@ impl LocalTasks {
     /// owner from its first pumped turn on.
     ///
     /// A task that panics unwinds out of the pump and takes the caller's
-    /// turn with it, exactly as a panicking job or tick would.
+    /// turn with it, exactly as a panicking job or tick would. The other
+    /// tasks keep their pool: the unwind drops the guard, and the guard puts
+    /// the pool back first.
     pub fn pump(world: &mut World) {
         Self::install(world);
         // The pool runs without the borrow held: a polled task that reaches
         // the world again — through a job it queued, for one — must not meet
-        // a claim the pump still holds. The pool comes back after the run; a
-        // task that panics takes the turn with it (documented above), which
-        // ends the pump before the restore.
+        // a claim the pump still holds. `Restore` puts it back whether the run
+        // returns or unwinds.
         let Some(entity) = Self::entity(world) else {
             return;
         };
-        let mut pool = {
+        let pool = {
             let Ok(mut local_tasks) = world.root_scope().try_query_one::<&mut LocalTasks>(entity)
             else {
                 return;
             };
             core::mem::take(&mut local_tasks.get().0)
         };
-        pool.run_until_stalled();
-        if let Ok(mut local_tasks) = world.root_scope().try_query_one::<&mut LocalTasks>(entity) {
-            local_tasks.get().0 = pool;
+        let mut running = Restore {
+            world,
+            entity,
+            pool: Some(pool),
+        };
+        if let Some(pool) = running.pool.as_mut() {
+            pool.run_until_stalled();
         }
     }
 
@@ -115,6 +120,36 @@ impl LocalTasks {
             return false;
         };
         local_tasks.get().0.spawner().spawn_local(future).is_ok()
+    }
+}
+
+/// Puts a running task set back into the world it came from.
+///
+/// The pump runs the pool outside the world, so the pool is absent while a
+/// task is polled. Dropping this guard returns it, which is what makes a
+/// panicking task take only its own turn: the unwind walks the guard, and the
+/// tasks that were still waiting are in the pool the next pump runs.
+struct Restore<'a> {
+    /// The world the pool belongs to.
+    world: &'a mut World,
+    /// The entity holding the task set.
+    entity: Entity,
+    /// The pool, until the guard puts it back.
+    pool: Option<LocalPool>,
+}
+
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        let Some(pool) = self.pool.take() else {
+            return;
+        };
+        if let Ok(mut local_tasks) = self
+            .world
+            .root_scope()
+            .try_query_one::<&mut LocalTasks>(self.entity)
+        {
+            local_tasks.get().0 = pool;
+        }
     }
 }
 
@@ -151,6 +186,33 @@ mod tests {
         assert!(!*seen.borrow(), "spawning does not poll");
         LocalTasks::pump(&mut world);
         assert!(*seen.borrow());
+    }
+
+    /// A task that panics leaves the pool behind, so the tasks it was
+    /// running beside still have an owner and the next pump drives them.
+    #[test]
+    fn a_panicking_task_leaves_the_pool_in_place() {
+        let mut world = World::new();
+        LocalTasks::pump(&mut world);
+        assert!(
+            LocalTasks::spawn(&world, async { panic!("the task died") }),
+            "the installed pool takes the task"
+        );
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            LocalTasks::pump(&mut world);
+        }));
+        assert!(panicked.is_err(), "the panic reached the caller");
+        // The pool came back with the unwind, so a later task still runs.
+        let seen: Rc<RefCell<bool>> = Rc::default();
+        let slot = Rc::clone(&seen);
+        assert!(
+            LocalTasks::spawn(&world, async move {
+                *slot.borrow_mut() = true;
+            }),
+            "the pool is still in the world"
+        );
+        LocalTasks::pump(&mut world);
+        assert!(*seen.borrow(), "the next pump ran the later task");
     }
 
     /// A spawned future waits for the pool and runs on its next poll.
