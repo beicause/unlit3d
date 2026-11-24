@@ -345,7 +345,7 @@ pub(super) async fn a_replaced_page_replays_from_the_world_state() {
     let page = world.scope_mut(source).spawn(bundle![
         BlitzDocument::new(html),
         OnBlitzEvent::new(move |_scope, _entity, event| {
-            let (buttons, client, primary) = pointer_payload(event.data());
+            let (buttons, client, primary, mods) = pointer_payload(event.data());
             log.lock().expect("the log is not poisoned").push(Seen {
                 name: event.data().name().to_owned(),
                 value: String::new(),
@@ -355,6 +355,7 @@ pub(super) async fn a_replaced_page_replays_from_the_world_state() {
                 buttons,
                 client,
                 primary,
+                mods,
             });
         }),
     ]);

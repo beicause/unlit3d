@@ -994,6 +994,19 @@ down lifts only the mouse. Contacts are ordered by when they arrived, so the
 first one is the primary contact and lifting it hands that role to the one
 still down.
 
+A pointer also ends where it was, and a window that loses focus ends every
+pointer it was holding. A platform states the end of a gesture without saying
+where it happened — a canvas cancels a touch, a tablet loses its stylus — and
+what the page is told is the place it last followed the pointer to, never a
+fabricated corner: a move or a press that names no position has nowhere to be
+placed and is dropped, while an ending is reported where the pointer already
+was. A window that loses focus is never told anything else, because the events
+that would end its pointers go to whatever window took the focus, so the loss
+itself cancels every pointer still down, oldest contact first, and lets go of
+the modifiers with them: a drag left open would otherwise be continued by the
+next event in a window that no longer sees it, and a key still down would be
+reported by a wheel the page has no reason to think is shifted.
+
 Bytes come from the page itself: nothing reaches the network. A `data:` URL is
 decoded on the spot, and anything else is served by
 `BlitzDocument::insert_resource` from

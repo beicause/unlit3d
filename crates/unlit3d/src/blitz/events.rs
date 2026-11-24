@@ -340,13 +340,69 @@ impl Translator {
             InputEvent::Ime(ImeEvent { kind }) => self.pending.push(UiEvent::Ime(ime_event(kind))),
             InputEvent::ModifiersChanged(modifiers) => self.modifiers = *modifiers,
             // A page has no window of its own: it is laid out at the size the
-            // source states, and it holds no focus besides the one its markup
-            // gives it, so neither a resize nor the window's focus is an event
+            // source states, so a resize and a change of density are not events
             // it can react to.
-            InputEvent::FocusChanged(_)
-            | InputEvent::Resized { .. }
-            | InputEvent::ScaleFactorChanged { .. } => {}
+            InputEvent::Resized { .. } | InputEvent::ScaleFactorChanged { .. } => {}
+            // A window that loses focus ends what its pointers were doing: a
+            // drag left open would be continued by the next event, in a window
+            // that no longer sees it.
+            InputEvent::FocusChanged(false) => self.cancel_pointers(frame.scroll),
+            InputEvent::FocusChanged(true) => {}
         }
+    }
+
+    /// End every pointer the page was told is down, where it last was.
+    ///
+    /// A window that loses focus never sees the events that would end them, so
+    /// a drag left open would be carried on by the next event the window does
+    /// see. Each pointer is cancelled in its own right, and the modifiers are
+    /// let go with them: the keys that held them went to whatever window took
+    /// the focus.
+    ///
+    /// The cancel is stated where the pointer last was rather than where the
+    /// window's corner is: a page that ends a drag reads the position it is
+    /// given, and a fabricated one would be a place the pointer never reached.
+    fn cancel_pointers(&mut self, scroll: [f64; 2]) {
+        let coords = self.coords(scroll);
+        if !self.buttons.is_empty() {
+            self.buttons = MouseEventButtons::None;
+            let pointer = self.pointer_event(
+                BlitzPointerId::Mouse,
+                MouseEventButton::Main,
+                coords,
+                true,
+                self.buttons,
+            );
+            self.pending.push(UiEvent::PointerCancel(pointer));
+        }
+        if self.pointer_down {
+            self.pointer_down = false;
+            let pointer = self.pointer_event(
+                BlitzPointerId::Pen,
+                MouseEventButton::Main,
+                coords,
+                true,
+                MouseEventButtons::None,
+            );
+            self.pending.push(UiEvent::PointerCancel(pointer));
+        }
+        // The fingers are cancelled oldest first, and each one after the first
+        // is told it was not the primary contact, so the page ends the drag the
+        // primary finger began before it hears about the rest.
+        let contacts = core::mem::take(&mut self.contacts);
+        let mut primary = true;
+        for id in contacts {
+            let pointer = self.pointer_event(
+                BlitzPointerId::Finger(id),
+                MouseEventButton::Main,
+                coords,
+                primary,
+                MouseEventButtons::None,
+            );
+            primary = false;
+            self.pending.push(UiEvent::PointerCancel(pointer));
+        }
+        self.modifiers = crate::input::Modifiers::default();
     }
 
     /// Translate a mouse event.
@@ -448,12 +504,20 @@ impl Translator {
         if !matches!(event.kind, PointerKind::Pen | PointerKind::Other) {
             return;
         }
-        // A pointer event states where it happened by stating the position it
-        // is at; one that names none carries no position to report.
-        let Some(position) = event.position else {
-            return;
-        };
-        self.position = position;
+        // A move and a press say where they happened by naming the position
+        // they are at, so one that names none cannot be placed at all. An
+        // ending does not need a position of its own: it is reported where the
+        // pointer last was, which is where the page was told it had got to, so
+        // a canvas that cancels a touch without coordinates still ends what the
+        // touch was doing.
+        match event.position {
+            Some(position) => self.position = position,
+            None => {
+                if matches!(event.action, PointerAction::Moved | PointerAction::Pressed) {
+                    return;
+                }
+            }
+        }
         self.modifiers = event.modifiers;
         // The press is taken before the event is described: the page is told
         // about a pointer that already carries the change this event states.

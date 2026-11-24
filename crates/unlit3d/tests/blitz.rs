@@ -14,12 +14,19 @@ use keyboard_types::{Code, Location};
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
+mod ending;
 mod input;
 mod page;
 mod pointer;
 mod replay;
 
 use self::{
+    ending::{
+        a_cancel_without_a_position_ends_the_pen,
+        a_leave_without_a_position_is_reported_where_the_pointer_left,
+        a_release_without_a_position_ends_where_the_pointer_was,
+        losing_focus_ends_the_contacts_it_held, losing_focus_lets_go_of_the_modifiers,
+    },
     input::{
         a_callback_can_cancel_the_default_action, a_click_toggles_a_checkbox,
         a_key_reaches_the_page_as_a_code_and_a_side, a_key_release_reaches_the_page,
@@ -90,6 +97,8 @@ struct Seen {
     client: Option<[f32; 2]>,
     /// Whether a pointer event named its pointer as the primary one.
     primary: Option<bool>,
+    /// The modifiers a pointer or wheel event named, as the DOM bitmask.
+    mods: Option<u32>,
 }
 
 /// The pixel at `x`, `y` of the rendered target, as RGBA.
@@ -137,7 +146,7 @@ fn render_page(ctx: &Ctx, html: &str) -> (World, TestGpu, wgpu::Texture, Entity,
 /// says which event happened, not what it claimed about the devices.
 fn pointer_payload(
     data: &blitz_traits::events::DomEventData,
-) -> (Option<u8>, Option<[f32; 2]>, Option<bool>) {
+) -> (Option<u8>, Option<[f32; 2]>, Option<bool>, Option<u32>) {
     use blitz_traits::events::DomEventData;
     match data {
         DomEventData::PointerMove(event)
@@ -148,13 +157,15 @@ fn pointer_payload(
             Some(event.buttons.bits()),
             Some([event.coords.client_x, event.coords.client_y]),
             Some(event.is_primary),
+            Some(event.mods.bits()),
         ),
         DomEventData::Wheel(event) => (
             Some(event.buttons.bits()),
             Some([event.coords.client_x, event.coords.client_y]),
             None,
+            Some(event.mods.bits()),
         ),
-        _ => (None, None, None),
+        _ => (None, None, None, None),
     }
 }
 
@@ -193,7 +204,7 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 .and_then(|id| event.document_mut().get_node(id))
                 .and_then(|node| node.element_data())
                 .and_then(|element| element.checkbox_input_checked());
-            let (buttons, client, primary) = pointer_payload(event.data());
+            let (buttons, client, primary, mods) = pointer_payload(event.data());
             log.lock().expect("the log is not poisoned").push(Seen {
                 name: event.data().name().to_owned(),
                 value,
@@ -203,6 +214,7 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 buttons,
                 client,
                 primary,
+                mods,
             });
         })]);
     let input = spawn_input(&mut world);
@@ -297,6 +309,11 @@ gpu_tests! {
     a_finger_that_stays_down_keeps_its_button,
     a_mouse_release_does_not_lift_the_pen,
     lifting_one_finger_leaves_the_other_down,
+    a_cancel_without_a_position_ends_the_pen,
+    a_release_without_a_position_ends_where_the_pointer_was,
+    a_leave_without_a_position_is_reported_where_the_pointer_left,
+    losing_focus_ends_the_contacts_it_held,
+    losing_focus_lets_go_of_the_modifiers,
     an_ime_commit_reaches_a_text_field,
     a_key_reaches_the_page_as_a_code_and_a_side,
     a_batch_replays_from_the_state_that_stood_before_it,
