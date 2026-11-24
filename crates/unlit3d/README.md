@@ -1038,6 +1038,13 @@ character the default font lacks still finds one. `blitz_system_fonts` adds
 the host's fonts behind both, at the cost of the painting depending on what the
 host installed.
 
+The bundled fonts are read once for the process, but each page is laid out with
+a font collection of its own: a `@font-face` rule registers into the collection
+of the document that loaded it, so a family one page names is one another page
+does not match, whether it was built before or after that page. The font bytes,
+the decoded faces and the host's font list are shared; only the family table a
+page extends is its own.
+
 A page is laid out at the target's pixel size and repainted when its markup, its
 viewport or that size changed, when its input or a callback asked for it — and
 otherwise only while the document animates. A static page is therefore

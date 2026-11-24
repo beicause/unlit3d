@@ -11,8 +11,11 @@
 //! carries more than one font: the default font covers the Latin text, the
 //! bundled Noto Sans SC subset covers the Chinese characters, and the second
 //! only reaches a glyph run through the fallback list the shaper consults. The
-//! result is cached for the process, because reading a font file and
-//! enumerating the host's fonts are work no second page needs to repeat.
+//! result is built once for the process, because reading a font file and
+//! enumerating the host's fonts are work no second page needs to repeat. What
+//! each page gets is a copy of that baseline with a font store of its own: a
+//! page registers the faces its `@font-face` rules name, and a family one page
+//! names must not be matched by another page built before or after it.
 
 #[cfg(feature = "blitz_epaint_fonts")]
 use std::sync::{Arc, OnceLock};
@@ -34,14 +37,25 @@ pub(crate) fn fonts() -> Option<blitz_dom::FontContext> {
     None
 }
 
-/// The fonts every page is laid out with, built once per process.
+/// The fonts a page is laid out with: the bundled baseline with a store of its
+/// own.
 ///
-/// The clone handed to a document shares the collection, which is what a
-/// collection built unshared has to be made into before it leaves here.
+/// The baseline is unshared, so the copy each page takes is where the page's own
+/// faces go: a `@font-face` rule registers into the collection of the document
+/// that loaded it, and a second page sees the families every page starts with
+/// and nothing else. Sharing one collection across pages instead would make a
+/// family one page names resolvable by another, which would leave the glyphs a
+/// page paints depending on which pages were built before it.
+///
+/// The store is created per copy rather than shared, which costs one walk of the
+/// baseline's families; the font bytes behind them, the host's font list and the
+/// decoded source cache are the baseline's and are shared.
 #[cfg(feature = "blitz_epaint_fonts")]
 pub(crate) fn fonts() -> Option<blitz_dom::FontContext> {
     static FONTS: OnceLock<FontContext> = OnceLock::new();
-    Some(FONTS.get_or_init(build).clone())
+    let mut fonts = FONTS.get_or_init(build).clone();
+    fonts.collection.make_shared();
+    Some(fonts)
 }
 
 #[cfg(feature = "blitz_epaint_fonts")]
@@ -80,7 +94,6 @@ fn build() -> FontContext {
     );
     #[cfg(feature = "blitz_system_fonts")]
     collection.load_system_fonts();
-    collection.make_shared();
     FontContext {
         collection,
         source_cache: SourceCache::new_shared(),
@@ -106,4 +119,97 @@ fn register(collection: &mut Collection, bytes: &[u8]) -> Vec<FamilyId> {
 #[inline(never)]
 fn sc_font() -> &'static [u8] {
     include_bytes!("../../assets/NotoSansSC-Regular-subset.woff2")
+}
+
+#[cfg(all(test, feature = "blitz_epaint_fonts"))]
+mod tests {
+    use super::*;
+    use parley::fontique::FontInfoOverride;
+
+    /// Register a face under a family name of its own, which is what a
+    /// `@font-face` rule does for the document that loaded it.
+    fn register_under(fonts: &mut FontContext, family: &str, bytes: &[u8]) {
+        let decoded = decode_font_bytes(bytes).into_owned();
+        fonts.collection.register_fonts(
+            Blob::new(Arc::new(decoded) as _),
+            Some(FontInfoOverride {
+                family_name: Some(family),
+                ..Default::default()
+            }),
+        );
+    }
+
+    /// A family one page names is one only that page matches: a page built
+    /// before the face was loaded and one built after both lay out with the
+    /// families every page starts with.
+    #[test]
+    fn a_family_one_page_registers_is_not_one_another_page_matches() {
+        let mut before = fonts().expect("the bundled fonts build");
+        let baseline = before.collection.family_names().count();
+        let mut loader = fonts().expect("the bundled fonts build");
+        register_under(
+            &mut loader,
+            "Only This Page",
+            epaint_default_fonts::HACK_REGULAR,
+        );
+        let mut after = fonts().expect("the bundled fonts build");
+
+        assert!(
+            loader.collection.family_by_name("Only This Page").is_some(),
+            "the page that registered the face should match its family"
+        );
+        assert!(
+            before.collection.family_by_name("Only This Page").is_none(),
+            "a page built before the face was loaded should not match its family"
+        );
+        assert!(
+            after.collection.family_by_name("Only This Page").is_none(),
+            "a page built after the face was loaded should not match its family"
+        );
+        assert_eq!(
+            before.collection.family_names().count(),
+            baseline,
+            "the baseline keeps the families every page starts with"
+        );
+        assert_eq!(
+            after.collection.family_names().count(),
+            baseline,
+            "a later page starts from the same baseline"
+        );
+    }
+
+    /// Two pages naming one family each match the face they registered, and
+    /// neither inherits the other's: the faces a page adds are held by the
+    /// collection of that page.
+    #[test]
+    fn two_pages_naming_one_family_each_keep_their_own_face() {
+        let mut page_a = fonts().expect("the bundled fonts build");
+        let mut page_b = fonts().expect("the bundled fonts build");
+        register_under(
+            &mut page_a,
+            "Shared Family",
+            epaint_default_fonts::HACK_REGULAR,
+        );
+        register_under(
+            &mut page_b,
+            "Shared Family",
+            epaint_default_fonts::UBUNTU_LIGHT,
+        );
+
+        let faces = |page: &mut FontContext| {
+            page.collection
+                .family_by_name("Shared Family")
+                .map_or(0, |family| family.fonts().len())
+        };
+        assert_eq!(faces(&mut page_a), 1, "a page holds the one face it added");
+        assert_eq!(faces(&mut page_b), 1, "a page holds the one face it added");
+        assert!(
+            fonts()
+                .expect("the bundled fonts build")
+                .collection
+                .family_by_name("Shared Family")
+                .is_none(),
+            "a page built afterwards starts without either face"
+        );
+    }
 }
