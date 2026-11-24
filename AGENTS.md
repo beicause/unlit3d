@@ -63,6 +63,7 @@
 - **快照不匹配的帧写在 `target/` 下，每一趟各占一个目录**：`cargo xtask test` 的默认档位在 `target/snapshot-mismatches`，`UNLIT3D_DEVICE_TIER=webgl2` 那趟在 `target/snapshot-mismatches-webgl2`，`cargo xtask test-wasm` 的 WebGPU 那趟在 `target/snapshot-mismatches-wasm`、WebGL2 那趟在 `target/snapshot-mismatches-wasm-webgl2`。单独跑测试时，目录由 `UNLIT3D_SNAPSHOT_MISMATCH_DIR` 指定，未设置则用 `target/snapshot-mismatches`。
 - **调试 examples 时，可以用 unlit3d 技能里的 MCP 宿主，绝不用截屏软件**。
 - **跑测试用 `cargo nextest run`，不用 `cargo test`**。`nextest` 比 `test` 更快，输出格式更友好。唯一例外是 `cargo test --doc`，因为 `nextest` 不跑 doctest。`cargo xtask test` 快捷命令会跑 nextest 和 doctest 两者。
+- **只支持最新稳定版 Rust，不考虑 MSRV**：不设 `rust-version`，不为旧版编译器保留兼容性，可以直接使用当前 stable 的工具链特性与标准库 API，CI 也只用 `stable`。
 - **本地跑 cargo 时，不用设 RUSTFLAGS**，遵循本地 cargo 配置即可，不要照抄 CI 设置 RUSTFLAGS `debuginfo=0`，设置它会让编译缓存失效。
 - **常用命令见 `cargo xtask --help`**，以及 `xtask` 包目录的 [`README.md`](./xtask/README.md)。
 - **优化二进制程序编译/链接的时间和空间**：本库为编译时间和产物磁盘占用做以下优化：
