@@ -79,6 +79,9 @@ pub(super) async fn one_tick_reaches_a_shared_page_once() {
                 client,
                 primary,
                 mods,
+                key: None,
+                text: None,
+                repeat: None,
             });
         }),
     ]);
@@ -440,9 +443,10 @@ pub(super) async fn a_key_reaches_the_page_as_a_code_and_a_side() {
     let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, html);
 
     gpu.render_frames(&world, 2);
-    // A character key is dropped while it types nothing but text, so the two
-    // keys here are ones a page reads as keys: an arrow, and a key the crate
-    // only carries the platform code of, on the numeric keypad.
+    // A key is stated with the code of the physical position it sits at and the
+    // side of the keyboard that position is on, which is what a shortcut
+    // matches against: an arrow, and a key the crate only carries the platform
+    // code of, on the numeric keypad.
     feed(
         &world,
         &input,
@@ -485,4 +489,274 @@ pub(super) async fn a_key_reaches_the_page_as_a_code_and_a_side() {
         Some(Location::Numpad),
         "a keypad key says it is on the keypad, got {keys:?}"
     );
+}
+
+/// A field's page, which is what an insertion is read from.
+const FIELD_PAGE: &str = r#"<html style="background: #808080"><body style="margin: 0">
+        <input type="text" id="box"
+               style="position: absolute; left: 8px; top: 8px; width: 200px; height: 24px">
+    </body></html>"#;
+
+/// A character key is stated once, with the text its layout produced, and its
+/// release names the character its press named.
+///
+/// The character a document reads a key by is the one the layout in front of the
+/// user produced, which the physical position does not state: the press is
+/// stated with the text beside it, and the release under the name the press had.
+pub(super) async fn a_typed_key_is_stated_once_with_its_text() {
+    let ctx = Ctx::headless().await;
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, FIELD_PAGE);
+
+    gpu.render_frames(&world, 2);
+    feed(&world, &input, click([40.0, 20.0]));
+    gpu.render(&world);
+    feed(
+        &world,
+        &input,
+        [
+            typed(Key::A, true, false, Modifiers::default()),
+            InputEvent::Text(TextEvent("a".to_owned())),
+            typed(Key::A, false, false, Modifiers::default()),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let presses: Vec<_> = seen
+        .iter()
+        .filter(|event| event.name == "keydown")
+        .collect();
+    assert_eq!(
+        presses.len(),
+        1,
+        "one press of one key is stated once, got {seen:?}"
+    );
+    let press = presses[0];
+    assert_eq!(
+        press.key.as_deref(),
+        Some("a"),
+        "the press names the character the layout produced, got {seen:?}"
+    );
+    assert_eq!(
+        press.text.as_deref(),
+        Some("a"),
+        "and carries that text rather than a second press beside it, got {seen:?}"
+    );
+    assert_eq!(
+        press.code,
+        Some(Code::KeyA),
+        "the physical position is stated with it, got {seen:?}"
+    );
+    let releases: Vec<_> = seen.iter().filter(|event| event.name == "keyup").collect();
+    assert_eq!(
+        releases.first().and_then(|event| event.key.as_deref()),
+        Some("a"),
+        "the release names the character its press named, got {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|event| event.name == "input")
+            .map(|event| event.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a"],
+        "the character is inserted once, got {seen:?}"
+    );
+}
+
+/// A key that types nothing is still stated as a press of that key.
+///
+/// A dead key, or a key a layout has nothing at, produces no text: the press
+/// still reaches the document, without a character rather than under one it did
+/// not type.
+pub(super) async fn a_key_that_types_nothing_is_stated_as_a_press() {
+    let ctx = Ctx::headless().await;
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, FIELD_PAGE);
+
+    gpu.render_frames(&world, 2);
+    feed(
+        &world,
+        &input,
+        [
+            typed(Key::A, true, false, Modifiers::default()),
+            typed(Key::A, false, false, Modifiers::default()),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let presses: Vec<_> = seen
+        .iter()
+        .filter(|event| event.name == "keydown")
+        .collect();
+    assert_eq!(
+        presses.len(),
+        1,
+        "a press whose text never came is still stated, got {seen:?}"
+    );
+    assert_eq!(
+        presses[0].code,
+        Some(Code::KeyA),
+        "as the key it is, got {seen:?}"
+    );
+    assert_eq!(
+        presses[0].key.as_deref(),
+        Some("Unidentified"),
+        "without a character it did not type, got {seen:?}"
+    );
+    assert_eq!(presses[0].text, None, "and without text, got {seen:?}");
+    assert!(
+        !seen.iter().any(|event| event.name == "input"),
+        "nothing was inserted, got {seen:?}"
+    );
+}
+
+/// An auto-repeated press is stated with the text each repeat produced.
+pub(super) async fn a_repeated_key_states_each_repeat() {
+    let ctx = Ctx::headless().await;
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, FIELD_PAGE);
+
+    gpu.render_frames(&world, 2);
+    feed(&world, &input, click([40.0, 20.0]));
+    gpu.render(&world);
+    feed(
+        &world,
+        &input,
+        [
+            typed(Key::A, true, false, Modifiers::default()),
+            InputEvent::Text(TextEvent("a".to_owned())),
+            typed(Key::A, true, true, Modifiers::default()),
+            InputEvent::Text(TextEvent("a".to_owned())),
+            typed(Key::A, false, false, Modifiers::default()),
+        ],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let presses: Vec<_> = seen
+        .iter()
+        .filter(|event| event.name == "keydown")
+        .collect();
+    assert_eq!(
+        presses.len(),
+        2,
+        "a repeat is a press of its own, got {seen:?}"
+    );
+    assert_eq!(
+        presses[0].repeat,
+        Some(false),
+        "the first press is not a repeat, got {seen:?}"
+    );
+    assert_eq!(
+        presses[1].repeat,
+        Some(true),
+        "the second states the repeat, got {seen:?}"
+    );
+    assert_eq!(
+        presses[1].text.as_deref(),
+        Some("a"),
+        "and carries the text that repeat produced, got {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|event| event.name == "input")
+            .map(|event| event.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "aa"],
+        "each repeat inserts once, got {seen:?}"
+    );
+}
+
+/// A shortcut holding a command modifier is stated as itself, which is what a
+/// document reacts to.
+pub(super) async fn a_shortcut_is_stated_without_its_text() {
+    let ctx = Ctx::headless().await;
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, FIELD_PAGE);
+
+    gpu.render_frames(&world, 2);
+    feed(
+        &world,
+        &input,
+        [typed(
+            Key::A,
+            true,
+            false,
+            Modifiers {
+                command: true,
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        )],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let presses: Vec<_> = seen
+        .iter()
+        .filter(|event| event.name == "keydown")
+        .collect();
+    assert_eq!(
+        presses.len(),
+        1,
+        "a shortcut is stated at once, got {seen:?}"
+    );
+    assert_eq!(
+        presses[0].key.as_deref(),
+        Some("a"),
+        "under the character the layout produced, got {seen:?}"
+    );
+    assert_eq!(
+        presses[0].code,
+        Some(Code::KeyA),
+        "and its physical code, which is what a shortcut matches, got {seen:?}"
+    );
+    assert_eq!(
+        presses[0].text, None,
+        "the platform produced no text for it, got {seen:?}"
+    );
+}
+
+/// Pasted text reaches the field without naming a physical key.
+pub(super) async fn a_paste_names_no_physical_key() {
+    let ctx = Ctx::headless().await;
+    let (world, gpu, _target, _source, seen, input) = render_watched_page(&ctx, FIELD_PAGE);
+
+    gpu.render_frames(&world, 2);
+    feed(&world, &input, click([40.0, 20.0]));
+    gpu.render(&world);
+    feed(
+        &world,
+        &input,
+        [InputEvent::Text(TextEvent("pasted".to_owned()))],
+    );
+    gpu.render(&world);
+
+    let seen = seen.lock().expect("the log is not poisoned").clone();
+    let presses: Vec<_> = seen
+        .iter()
+        .filter(|event| event.name == "keydown")
+        .collect();
+    assert_eq!(
+        presses[0].code,
+        Some(Code::Unidentified),
+        "text with no press to pair with names no physical key, got {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|event| event.name == "input")
+            .map(|event| event.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pasted"],
+        "the pasted text is inserted, got {seen:?}"
+    );
+}
+
+/// A press or release of the physical key `key`, as the platform states it.
+fn typed(key: Key, pressed: bool, repeat: bool, modifiers: Modifiers) -> InputEvent {
+    InputEvent::Key(KeyEvent {
+        key,
+        location: KeyLocation::Standard,
+        pressed,
+        repeat,
+        modifiers,
+    })
 }

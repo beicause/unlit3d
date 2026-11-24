@@ -356,6 +356,9 @@ pub(super) async fn a_replaced_page_replays_from_the_world_state() {
                 client,
                 primary,
                 mods,
+                key: None,
+                text: None,
+                repeat: None,
             });
         }),
     ]);

@@ -44,11 +44,16 @@
 //!
 //! The crate reports a key by its physical position, and a document names a key
 //! by the character it types. The two agree for an unshifted US layout and part
-//! way for a shifted one — `Shift+1` is `!`, and a letter is upper-cased —
-//! but a key that produces something else through the layout reaches the
-//! document only through its text, which is what a text field inserts from
-//! anyway. The event also carries the physical key as a code and the side of
-//! the keyboard it sits on, which is what a shortcut matches against.
+//! way for a shifted one, so the character a document is told a key types is the
+//! one the layout in front of the user produced rather than the one the physical
+//! position types on a US layout: a press that types a character is stated once,
+//! together with the text it produced, and its release is stated under the same
+//! character, which is the only name a document can match it by. A press that
+//! produces no text — a dead key, a layout with nothing at that position, or a
+//! shortcut holding a command modifier — is stated without a character rather
+//! than under one it did not type. The event also carries the physical key as a
+//! code and the side of the keyboard it sits on, which is what a shortcut
+//! matches against.
 
 use blitz_dom::{BaseDocument, Document, EventDriver, EventHandler, NodeId};
 use blitz_traits::SmolStr;
@@ -58,7 +63,7 @@ use blitz_traits::events::{
     MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ShellProvider as _;
-use keyboard_types::{Code, Key as DomKey, Location, Modifiers};
+use keyboard_types::{Code, Key as DomKey, Location, Modifiers, NamedKey};
 use unlit_ecs::{Entity, Scope};
 
 use crate::input::{
@@ -262,8 +267,32 @@ pub(crate) struct Translator {
     /// A finger is one of several, so a page is told which contact is the
     /// primary one and holds a button until the last of them lifts.
     contacts: Vec<u64>,
+    /// The name each key that types a character was pressed under.
+    ///
+    /// A release is stated under the name its press had: the character the
+    /// layout produced, which the release's own physical position does not
+    /// state. Bounded by the number of keys a keyboard has.
+    held: Vec<(Code, String)>,
+    /// The character key press held until the text it produced arrives.
+    ///
+    /// The character a document names a key by is the one the user's layout
+    /// produced there, and that is stated by the text the press produced rather
+    /// than by the key's physical position, so the press is held until the text
+    /// beside it is in hand.
+    press: Option<Press>,
     /// The translated events, kept between frames.
     pending: Vec<UiEvent>,
+}
+
+/// A character key press waiting for the text it produced.
+#[derive(Clone, Copy, Debug)]
+struct Press {
+    /// The physical key's code, as a document reports it.
+    code: Code,
+    /// The side of the keyboard the key sits on.
+    location: Location,
+    /// Whether the platform reported the press as an auto-repeat.
+    repeat: bool,
 }
 
 /// What one frame states to a [`Translator`].
@@ -298,6 +327,7 @@ impl Translator {
         for event in frame.batch {
             self.event(event, frame);
         }
+        self.flush_press();
         &self.pending
     }
 
@@ -331,6 +361,11 @@ impl Translator {
 
     /// Translate one event, appending what it stands for.
     fn event(&mut self, event: &InputEvent, frame: Frame<'_>) {
+        // Only the text of a press may arrive after it, so anything else ends a
+        // press that is still held before it is translated.
+        if !matches!(event, InputEvent::Key(_) | InputEvent::Text(_)) {
+            self.flush_press();
+        }
         match event {
             InputEvent::Mouse(event) => self.mouse(event, frame),
             InputEvent::Pointer(event) => self.pointer(event, frame),
@@ -619,22 +654,40 @@ impl Translator {
 
     /// Translate a key event.
     ///
-    /// A character key arrives again as the [`InputEvent::Text`] it produced,
-    /// and that is the event a text field inserts from, so a character is only
-    /// dispatched as a key while a command modifier is held: that is the
-    /// shortcut a document reacts to, and the platform produces no text for it.
+    /// A press that types a character is held until the [`InputEvent::Text`]
+    /// beside it says which character the user's layout produced there, and is
+    /// then stated once, with that text. Its release is stated under the same
+    /// name, so a document sees one press and one release of one key rather than
+    /// a press of a key it does not know and a release it cannot match.
+    ///
+    /// A press that holds a command modifier reaches the document as itself: the
+    /// platform produces no text for it, and a document reads it as the shortcut
+    /// it is.
     fn key(&mut self, event: &KeyEvent) {
         self.modifiers = event.modifiers;
         let key = key_of(event.key, event.modifiers.shift);
-        // A character that is typed without a command modifier arrives again as
-        // the text it produced, and the text is what a field inserts. The press
-        // alone is dropped; the release still goes out, so a page that watches
-        // for one sees a key it saw pressed.
+        let code = code_of(event.key);
+        // A press whose text is still to come is the only one that may be
+        // paired, so anything decided before that pairing ends one that will
+        // never be paired.
+        self.flush_press();
         if event.pressed && !event.modifiers.command && matches!(key, DomKey::Character(_)) {
+            self.press = Some(Press {
+                code,
+                location: location_of(event.location),
+                repeat: event.repeat,
+            });
             return;
         }
+        // A release names the key its press named, which the physical position
+        // does not state under a layout that types something else there.
+        let key = if event.pressed {
+            key
+        } else {
+            self.taken(code).unwrap_or(key)
+        };
         self.pending.push(self.key_event(
-            code_of(event.key),
+            code,
             location_of(event.location),
             key,
             event.pressed,
@@ -644,20 +697,58 @@ impl Translator {
 
     /// Translate the text a key produced, or a paste, which inserts the same
     /// way.
+    ///
+    /// Text that pairs with the press before it is stated as that press, so the
+    /// document is told the physical key, its code and its side as well as the
+    /// character. Text with no press to pair with — a paste, or text a platform
+    /// states on its own — is stated as a press of no physical key.
     fn text(&mut self, event: &TextEvent) {
-        // Text carries no physical key of its own: it is what a key produced,
-        // not which key produced it.
+        let (code, location, repeat) = match self.press.take() {
+            Some(press) => (press.code, press.location, press.repeat),
+            None => (Code::Unidentified, Location::Standard, false),
+        };
         let mut key = self.key_event(
-            Code::Unidentified,
-            Location::Standard,
+            code,
+            location,
             DomKey::Character(event.0.clone()),
             true,
-            false,
+            repeat,
         );
         if let UiEvent::KeyDown(key) = &mut key {
             key.text = Some(SmolStr::new(event.0.as_str()));
         }
+        // The name is kept until the key is released, which may be a batch
+        // later: a release states where the key sits, not what it typed.
+        let name = event.0.clone();
+        self.held.retain(|(held, _)| *held != code);
+        self.held.push((code, name));
         self.pending.push(key);
+    }
+
+    /// State a press that is still waiting for its text as the key it is.
+    ///
+    /// A press whose text never arrived typed nothing a field could insert — a
+    /// dead key, or a layout that has nothing at that position — so it reaches
+    /// the document without a character rather than under one it did not type.
+    fn flush_press(&mut self) {
+        let Some(press) = self.press.take() else {
+            return;
+        };
+        self.pending.push(self.key_event(
+            press.code,
+            press.location,
+            DomKey::Named(NamedKey::Unidentified),
+            true,
+            press.repeat,
+        ));
+    }
+
+    /// Take the name a key was pressed under, if it was pressed by this
+    /// translator and has not been released yet.
+    fn taken(&mut self, code: Code) -> Option<DomKey> {
+        let index = self.held.iter().position(|(held, _)| *held == code)?;
+        let (_, name) = self.held.remove(index);
+        Some(DomKey::Character(name))
     }
 
     /// Wrap `key` as the event a document dispatches for it.

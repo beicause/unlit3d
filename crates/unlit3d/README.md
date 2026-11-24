@@ -1007,6 +1007,17 @@ the modifiers with them: a drag left open would otherwise be continued by the
 next event in a window that no longer sees it, and a key still down would be
 reported by a wheel the page has no reason to think is shifted.
 
+A key that types a character is stated once, with the character the user's
+layout produced there. The crate names a key by its physical position and a
+document by the character it types, and the two disagree under any layout but a
+US one, so the press is held until the text beside it arrives and then stated
+with that text, its code and its side together; the release is stated under the
+same name, which is the only way a document can match it to the press that made
+it. A press that produces no text — a dead key, an empty spot in the layout, or
+a shortcut holding a command modifier — is stated as the key it is, without a
+character it did not type. Text with no press before it, such as a paste, is
+stated as a press of no physical key rather than as one that never happened.
+
 Bytes come from the page itself: nothing reaches the network. A `data:` URL is
 decoded on the spot, and anything else is served by
 `BlitzDocument::insert_resource` from

@@ -30,8 +30,10 @@ use self::{
     input::{
         a_callback_can_cancel_the_default_action, a_click_toggles_a_checkbox,
         a_key_reaches_the_page_as_a_code_and_a_side, a_key_release_reaches_the_page,
-        a_pen_click_toggles_a_checkbox, a_wheel_scrolls_the_page,
-        an_ime_commit_reaches_a_text_field, input_is_dispatched_once,
+        a_key_that_types_nothing_is_stated_as_a_press, a_paste_names_no_physical_key,
+        a_pen_click_toggles_a_checkbox, a_repeated_key_states_each_repeat,
+        a_shortcut_is_stated_without_its_text, a_typed_key_is_stated_once_with_its_text,
+        a_wheel_scrolls_the_page, an_ime_commit_reaches_a_text_field, input_is_dispatched_once,
         leaving_the_page_is_reported_to_it, losing_focus_leaves_the_text_field,
         one_tick_reaches_a_shared_page_once, typing_reaches_a_text_field,
     },
@@ -99,6 +101,13 @@ struct Seen {
     primary: Option<bool>,
     /// The modifiers a pointer or wheel event named, as the DOM bitmask.
     mods: Option<u32>,
+    /// The name a key event gave the key, which is the character it types when
+    /// the layout types one there.
+    key: Option<String>,
+    /// The text a key event said the press produced.
+    text: Option<String>,
+    /// Whether a key event said the press was an auto-repeat.
+    repeat: Option<bool>,
 }
 
 /// The pixel at `x`, `y` of the rendered target, as RGBA.
@@ -191,12 +200,19 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 blitz_traits::events::DomEventData::Input(input) => input.value.clone(),
                 _ => String::new(),
             };
-            let (code, location) = match event.data() {
+            let (code, location, name, text, repeat) = match event.data() {
                 blitz_traits::events::DomEventData::KeyDown(key)
-                | blitz_traits::events::DomEventData::KeyUp(key) => {
-                    (Some(key.code), Some(key.location))
-                }
-                _ => (None, None),
+                | blitz_traits::events::DomEventData::KeyUp(key) => (
+                    Some(key.code),
+                    Some(key.location),
+                    Some(match &key.key {
+                        keyboard_types::Key::Character(typed) => typed.clone(),
+                        keyboard_types::Key::Named(named) => format!("{named:?}"),
+                    }),
+                    key.text.as_ref().map(|text| text.to_string()),
+                    Some(key.is_auto_repeating),
+                ),
+                _ => (None, None, None, None, None),
             };
             let checked = event
                 .document_mut()
@@ -215,6 +231,9 @@ fn render_watched_page(ctx: &Ctx, html: &str) -> WatchedPage {
                 client,
                 primary,
                 mods,
+                key: name,
+                text,
+                repeat,
             });
         })]);
     let input = spawn_input(&mut world);
@@ -323,4 +342,9 @@ gpu_tests! {
     a_first_frame_replays_from_an_empty_baseline,
     a_batch_that_skips_one_still_replays_from_the_state_left,
     a_replaced_page_replays_from_the_world_state,
+    a_typed_key_is_stated_once_with_its_text,
+    a_key_that_types_nothing_is_stated_as_a_press,
+    a_repeated_key_states_each_repeat,
+    a_shortcut_is_stated_without_its_text,
+    a_paste_names_no_physical_key,
 }
