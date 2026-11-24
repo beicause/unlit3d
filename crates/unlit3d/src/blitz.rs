@@ -60,6 +60,7 @@ use crate::source::{FrameSource, RenderContext};
 mod document;
 mod events;
 mod fonts;
+mod keys;
 mod painter;
 
 pub use document::BlitzDocument;

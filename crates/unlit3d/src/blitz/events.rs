@@ -58,16 +58,16 @@ use blitz_traits::events::{
     MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ShellProvider as _;
-use keyboard_types::{Code, Key as DomKey, Location, Modifiers, NamedKey};
+use keyboard_types::{Code, Key as DomKey, Location, Modifiers};
 use unlit_ecs::{Entity, Scope};
 
 use crate::input::{
-    ImeEvent, ImeKind, InputBaseline, InputEvent, Key, KeyEvent, KeyLocation, MouseButton,
-    MouseEvent, PointerAction, PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase,
-    WheelUnit,
+    ImeEvent, ImeKind, InputBaseline, InputEvent, KeyEvent, MouseButton, MouseEvent, PointerAction,
+    PointerEvent, PointerKind, TextEvent, TouchEvent, TouchPhase, WheelUnit,
 };
 
 use super::document::BlitzShell;
+use super::keys::{code_of, key_of, location_of};
 
 /// A callback that runs for every DOM event a page dispatches.
 type EventCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut BlitzEvent<'_>)>;
@@ -235,6 +235,11 @@ impl EventHandler for BlitzHandler<'_> {
 /// held, and the buffer the events are collected in all carry over, so a click
 /// whose press and release fall in different frames still names the button that
 /// is down.
+///
+/// What is held is held per pointer: the mouse's buttons, whether a pen is
+/// pressed, and the fingers down are three separate states, because a page
+/// reads a pointer event's buttons as that pointer's own and a device lifting
+/// says nothing about the others.
 #[derive(Default)]
 pub(crate) struct Translator {
     /// Physical pixels per CSS pixel.
@@ -243,8 +248,15 @@ pub(crate) struct Translator {
     position: [f32; 2],
     /// The modifier keys held.
     modifiers: crate::input::Modifiers,
-    /// The buttons held.
+    /// The mouse buttons held.
     buttons: MouseEventButtons,
+    /// Whether a pointer fed from [`Self::pointer`] is pressed.
+    ///
+    /// A pen and an unnamed device are their own pointer: their press is not a
+    /// mouse press, so a mouse released while the pen stays down does not lift
+    /// the pen, and a pen hovering over the page holds nothing while the mouse's
+    /// button is down.
+    pointer_down: bool,
     /// The fingers down, oldest first.
     ///
     /// A finger is one of several, so a page is told which contact is the
@@ -303,6 +315,13 @@ impl Translator {
         }
         self.modifiers = start.modifiers;
         self.buttons = buttons_of(start.buttons);
+        // A pen has no button of its own in the baseline: the crate states a
+        // pen's press as a pointer contact, and a baseline holding one is a
+        // pointer that was already down when the batch was queued.
+        self.pointer_down = start
+            .pointers
+            .iter()
+            .any(|contact| matches!(contact.kind, PointerKind::Pen | PointerKind::Other));
         self.contacts.clear();
         // A mouse contact is not a finger: the page's primary pointer is a
         // finger only when the touch screen states one.
@@ -337,8 +356,13 @@ impl Translator {
             MouseEvent::Moved { position } => {
                 self.position = *position;
                 let coords = self.coords(scroll);
-                let pointer =
-                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords, true);
+                let pointer = self.pointer_event(
+                    BlitzPointerId::Mouse,
+                    MouseEventButton::Main,
+                    coords,
+                    true,
+                    self.buttons,
+                );
                 self.pending.push(UiEvent::PointerMove(pointer));
             }
             MouseEvent::Button {
@@ -361,7 +385,8 @@ impl Translator {
                 };
                 self.buttons.set(MouseEventButtons::from(button), *pressed);
                 let coords = self.coords(scroll);
-                let pointer = self.pointer_event(BlitzPointerId::Mouse, button, coords, true);
+                let pointer =
+                    self.pointer_event(BlitzPointerId::Mouse, button, coords, true, self.buttons);
                 self.pending.push(if *pressed {
                     UiEvent::PointerDown(pointer)
                 } else {
@@ -370,8 +395,13 @@ impl Translator {
             }
             MouseEvent::Left => {
                 let coords = self.coords(scroll);
-                let pointer =
-                    self.pointer_event(BlitzPointerId::Mouse, MouseEventButton::Main, coords, true);
+                let pointer = self.pointer_event(
+                    BlitzPointerId::Mouse,
+                    MouseEventButton::Main,
+                    coords,
+                    true,
+                    self.buttons,
+                );
                 self.pending.push(UiEvent::PointerLeave(pointer));
             }
             // The wheel's phase is dropped: a page scrolls by the distance it is
@@ -407,34 +437,57 @@ impl Translator {
     /// Translate a pointer event.
     ///
     /// A mouse and a finger already report their actions as [`MouseEvent`]s and
-    /// [`TouchEvent`]s, which carry more than a pointer event does; only a pen,
-    /// which has no category of its own, is fed from here.
+    /// [`TouchEvent`]s, which carry more than a pointer event does; only a pen
+    /// and a device the crate cannot name are fed from here.
+    ///
+    /// Such a pointer is its own device: the button it reports is its own
+    /// press, not the mouse's, so a mouse released while the pen stays down
+    /// leaves the pen pressed and a pen hovering holds nothing while the
+    /// mouse's button is down.
     fn pointer(&mut self, event: &PointerEvent, frame: Frame<'_>) {
-        let scroll = frame.scroll;
         if !matches!(event.kind, PointerKind::Pen | PointerKind::Other) {
             return;
         }
+        // A pointer event states where it happened by stating the position it
+        // is at; one that names none carries no position to report.
         let Some(position) = event.position else {
             return;
         };
         self.position = position;
         self.modifiers = event.modifiers;
-        let coords = self.coords(scroll);
-        let pointer = self.pointer_event(BlitzPointerId::Pen, MouseEventButton::Main, coords, true);
+        // The press is taken before the event is described: the page is told
+        // about a pointer that already carries the change this event states.
+        // Leaving the window is not a release, which is what a drag out of it
+        // relies on: the mouse keeps its buttons for the same reason.
+        match event.action {
+            PointerAction::Pressed => self.pointer_down = true,
+            PointerAction::Released { .. } => self.pointer_down = false,
+            PointerAction::Moved
+            | PointerAction::Left
+            | PointerAction::Zoom(_)
+            | PointerAction::Rotate(_) => {}
+        }
+        let coords = self.coords(frame.scroll);
+        let buttons = if self.pointer_down {
+            MouseEventButtons::Primary
+        } else {
+            MouseEventButtons::None
+        };
+        let pointer = self.pointer_event(
+            BlitzPointerId::Pen,
+            MouseEventButton::Main,
+            coords,
+            true,
+            buttons,
+        );
         match event.action {
             PointerAction::Moved => self.pending.push(UiEvent::PointerMove(pointer)),
-            PointerAction::Pressed => {
-                self.buttons.insert(MouseEventButtons::Primary);
-                self.pending.push(UiEvent::PointerDown(pointer));
-            }
-            PointerAction::Released { cancelled } => {
-                self.buttons.remove(MouseEventButtons::Primary);
-                self.pending.push(if cancelled {
-                    UiEvent::PointerCancel(pointer)
-                } else {
-                    UiEvent::PointerUp(pointer)
-                });
-            }
+            PointerAction::Pressed => self.pending.push(UiEvent::PointerDown(pointer)),
+            PointerAction::Released { cancelled } => self.pending.push(if cancelled {
+                UiEvent::PointerCancel(pointer)
+            } else {
+                UiEvent::PointerUp(pointer)
+            }),
             PointerAction::Left => self.pending.push(UiEvent::PointerLeave(pointer)),
             // A pinch and a rotation are gestures a document has no use for:
             // it scrolls, but it does not zoom or turn.
@@ -450,16 +503,32 @@ impl Translator {
     /// contact that drags and hovers. The pointer a page reports a position with
     /// is the one of the contact the event came from, so lifting a second finger
     /// leaves the first where it was instead of jumping to the second.
+    ///
+    /// The contacts are advanced before the event is described, so the pointer
+    /// the page is told about carries what this event leaves behind: the finger
+    /// that presses is one of the fingers down, and the finger that lifts is
+    /// not. The buttons of the mouse are not touched: a finger and a mouse are
+    /// different pointers, and one lifting says nothing about the other.
     fn touch(&mut self, event: &TouchEvent, frame: Frame<'_>) {
-        let index = self.contacts.iter().position(|id| *id == event.id);
-        let started = match event.phase {
-            TouchPhase::Started => true,
-            TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => false,
-        };
-        if started && index.is_none() {
-            self.contacts.push(event.id);
+        match event.phase {
+            TouchPhase::Started => {
+                if !self.contacts.contains(&event.id) {
+                    self.contacts.push(event.id);
+                }
+            }
+            TouchPhase::Moved => {}
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                if let Some(index) = self.contacts.iter().position(|id| *id == event.id) {
+                    self.contacts.remove(index);
+                }
+            }
         }
         let primary = self.contacts.first() == Some(&event.id);
+        let buttons = if self.contacts.contains(&event.id) {
+            MouseEventButtons::Primary
+        } else {
+            MouseEventButtons::None
+        };
         self.position = event.position;
         let coords = self.coords(frame.scroll);
         let mut pointer = self.pointer_event(
@@ -467,24 +536,13 @@ impl Translator {
             MouseEventButton::Main,
             coords,
             primary,
+            buttons,
         );
         pointer.details.pressure = f64::from(event.force.unwrap_or(0.0));
-        if !self.contacts.is_empty() {
-            self.buttons.insert(MouseEventButtons::Primary);
-        }
         match event.phase {
             TouchPhase::Started => self.pending.push(UiEvent::PointerDown(pointer)),
             TouchPhase::Moved => self.pending.push(UiEvent::PointerMove(pointer)),
             TouchPhase::Ended | TouchPhase::Cancelled => {
-                // The contact is over whichever way it ended, so it leaves the
-                // list before the page is told: the last finger down is the one
-                // that decides whether a button is still held.
-                if let Some(index) = self.contacts.iter().position(|id| *id == event.id) {
-                    self.contacts.remove(index);
-                }
-                if self.contacts.is_empty() {
-                    self.buttons.remove(MouseEventButtons::Primary);
-                }
                 self.pending
                     .push(if matches!(event.phase, TouchPhase::Cancelled) {
                         UiEvent::PointerCancel(pointer)
@@ -590,20 +648,24 @@ impl Translator {
     ///
     /// `is_primary` says whether this is the contact the page drags and
     /// hovers with, which for a mouse and a pen is always this one and for a
-    /// finger is the oldest one still down.
+    /// finger is the oldest one still down. `buttons` is what the pointer named
+    /// by `id` holds, not what every device together holds: a page dragging with
+    /// a finger reads this to decide whether the drag continues, and the mouse's
+    /// button being down says nothing about a pen or a finger.
     fn pointer_event(
         &self,
         id: BlitzPointerId,
         button: MouseEventButton,
         coords: PointerCoords,
         is_primary: bool,
+        buttons: MouseEventButtons,
     ) -> BlitzPointerEvent {
         BlitzPointerEvent {
             id,
             is_primary,
             coords,
             button,
-            buttons: self.buttons,
+            buttons,
             mods: modifiers_of(self.modifiers),
             details: PointerDetails::default(),
             element: Point::default(),
@@ -665,268 +727,6 @@ fn modifiers_of(modifiers: crate::input::Modifiers) -> Modifiers {
     event.set(Modifiers::SHIFT, modifiers.shift);
     event.set(Modifiers::META, modifiers.mac_cmd);
     event
-}
-
-/// The key a document names the crate's key by.
-fn key_of(key: Key, shift: bool) -> DomKey {
-    match character_of(key, shift) {
-        Some(character) => DomKey::Character(character.to_owned()),
-        None => DomKey::Named(named_key_of(key)),
-    }
-}
-
-/// The physical key a crate key names, as a document reports it.
-///
-/// The crate names a key by where it sits on the keyboard and a document
-/// names the same key by a code, so the two agree variant for variant. A key
-/// the crate only carries the platform code of has no code of its own.
-fn code_of(key: Key) -> Code {
-    match key {
-        Key::A => Code::KeyA,
-        Key::B => Code::KeyB,
-        Key::C => Code::KeyC,
-        Key::D => Code::KeyD,
-        Key::E => Code::KeyE,
-        Key::F => Code::KeyF,
-        Key::G => Code::KeyG,
-        Key::H => Code::KeyH,
-        Key::I => Code::KeyI,
-        Key::J => Code::KeyJ,
-        Key::K => Code::KeyK,
-        Key::L => Code::KeyL,
-        Key::M => Code::KeyM,
-        Key::N => Code::KeyN,
-        Key::O => Code::KeyO,
-        Key::P => Code::KeyP,
-        Key::Q => Code::KeyQ,
-        Key::R => Code::KeyR,
-        Key::S => Code::KeyS,
-        Key::T => Code::KeyT,
-        Key::U => Code::KeyU,
-        Key::V => Code::KeyV,
-        Key::W => Code::KeyW,
-        Key::X => Code::KeyX,
-        Key::Y => Code::KeyY,
-        Key::Z => Code::KeyZ,
-        Key::Escape => Code::Escape,
-        Key::Space => Code::Space,
-        Key::Enter => Code::Enter,
-        Key::Tab => Code::Tab,
-        Key::Backspace => Code::Backspace,
-        Key::Delete => Code::Delete,
-        Key::ArrowUp => Code::ArrowUp,
-        Key::ArrowDown => Code::ArrowDown,
-        Key::ArrowLeft => Code::ArrowLeft,
-        Key::ArrowRight => Code::ArrowRight,
-        Key::Home => Code::Home,
-        Key::End => Code::End,
-        Key::PageUp => Code::PageUp,
-        Key::PageDown => Code::PageDown,
-        Key::Num0 => Code::Digit0,
-        Key::Num1 => Code::Digit1,
-        Key::Num2 => Code::Digit2,
-        Key::Num3 => Code::Digit3,
-        Key::Num4 => Code::Digit4,
-        Key::Num5 => Code::Digit5,
-        Key::Num6 => Code::Digit6,
-        Key::Num7 => Code::Digit7,
-        Key::Num8 => Code::Digit8,
-        Key::Num9 => Code::Digit9,
-        Key::F1 => Code::F1,
-        Key::F2 => Code::F2,
-        Key::F3 => Code::F3,
-        Key::F4 => Code::F4,
-        Key::F5 => Code::F5,
-        Key::F6 => Code::F6,
-        Key::F7 => Code::F7,
-        Key::F8 => Code::F8,
-        Key::F9 => Code::F9,
-        Key::F10 => Code::F10,
-        Key::F11 => Code::F11,
-        Key::F12 => Code::F12,
-        Key::F13 => Code::F13,
-        Key::F14 => Code::F14,
-        Key::F15 => Code::F15,
-        Key::F16 => Code::F16,
-        Key::F17 => Code::F17,
-        Key::F18 => Code::F18,
-        Key::F19 => Code::F19,
-        Key::F20 => Code::F20,
-        Key::F21 => Code::F21,
-        Key::F22 => Code::F22,
-        Key::F23 => Code::F23,
-        Key::F24 => Code::F24,
-        Key::F25 => Code::F25,
-        Key::F26 => Code::F26,
-        Key::F27 => Code::F27,
-        Key::F28 => Code::F28,
-        Key::F29 => Code::F29,
-        Key::F30 => Code::F30,
-        Key::F31 => Code::F31,
-        Key::F32 => Code::F32,
-        Key::F33 => Code::F33,
-        Key::F34 => Code::F34,
-        Key::F35 => Code::F35,
-        Key::Other(_) => Code::Unidentified,
-    }
-}
-
-/// The side of the keyboard a key is on, as a document reports it.
-///
-/// A document tells the left shift from the right one and names the numeric
-/// keypad as its own side, which is the same set of places the crate states.
-fn location_of(location: KeyLocation) -> Location {
-    match location {
-        KeyLocation::Standard => Location::Standard,
-        KeyLocation::Left => Location::Left,
-        KeyLocation::Right => Location::Right,
-        KeyLocation::Numpad => Location::Numpad,
-    }
-}
-/// The character the crate's key types, if it types one.
-///
-/// The character is what the key types on a US layout, which is what a document
-/// matches a shortcut against; a text field inserts from the text event
-/// instead, so the two never disagree about the text a press produced. A layout
-/// that types something else for the key still reaches the document through
-/// that text: the key's physical position says nothing about what it means on
-/// the keyboard in front of the user.
-fn character_of(key: Key, shift: bool) -> Option<&'static str> {
-    Some(match (key, shift) {
-        (Key::Space, _) => " ",
-        (Key::A, false) => "a",
-        (Key::A, true) => "A",
-        (Key::B, false) => "b",
-        (Key::B, true) => "B",
-        (Key::C, false) => "c",
-        (Key::C, true) => "C",
-        (Key::D, false) => "d",
-        (Key::D, true) => "D",
-        (Key::E, false) => "e",
-        (Key::E, true) => "E",
-        (Key::F, false) => "f",
-        (Key::F, true) => "F",
-        (Key::G, false) => "g",
-        (Key::G, true) => "G",
-        (Key::H, false) => "h",
-        (Key::H, true) => "H",
-        (Key::I, false) => "i",
-        (Key::I, true) => "I",
-        (Key::J, false) => "j",
-        (Key::J, true) => "J",
-        (Key::K, false) => "k",
-        (Key::K, true) => "K",
-        (Key::L, false) => "l",
-        (Key::L, true) => "L",
-        (Key::M, false) => "m",
-        (Key::M, true) => "M",
-        (Key::N, false) => "n",
-        (Key::N, true) => "N",
-        (Key::O, false) => "o",
-        (Key::O, true) => "O",
-        (Key::P, false) => "p",
-        (Key::P, true) => "P",
-        (Key::Q, false) => "q",
-        (Key::Q, true) => "Q",
-        (Key::R, false) => "r",
-        (Key::R, true) => "R",
-        (Key::S, false) => "s",
-        (Key::S, true) => "S",
-        (Key::T, false) => "t",
-        (Key::T, true) => "T",
-        (Key::U, false) => "u",
-        (Key::U, true) => "U",
-        (Key::V, false) => "v",
-        (Key::V, true) => "V",
-        (Key::W, false) => "w",
-        (Key::W, true) => "W",
-        (Key::X, false) => "x",
-        (Key::X, true) => "X",
-        (Key::Y, false) => "y",
-        (Key::Y, true) => "Y",
-        (Key::Z, false) => "z",
-        (Key::Z, true) => "Z",
-        (Key::Num0, false) => "0",
-        (Key::Num0, true) => ")",
-        (Key::Num1, false) => "1",
-        (Key::Num1, true) => "!",
-        (Key::Num2, false) => "2",
-        (Key::Num2, true) => "@",
-        (Key::Num3, false) => "3",
-        (Key::Num3, true) => "#",
-        (Key::Num4, false) => "4",
-        (Key::Num4, true) => "$",
-        (Key::Num5, false) => "5",
-        (Key::Num5, true) => "%",
-        (Key::Num6, false) => "6",
-        (Key::Num6, true) => "^",
-        (Key::Num7, false) => "7",
-        (Key::Num7, true) => "&",
-        (Key::Num8, false) => "8",
-        (Key::Num8, true) => "*",
-        (Key::Num9, false) => "9",
-        (Key::Num9, true) => "(",
-        _ => return None,
-    })
-}
-
-/// The name a document knows the crate's key by.
-///
-/// A key the crate has no name of its own for is still dispatched, unnamed,
-/// rather than dropped: a page can react to the press even if neither side
-/// knows what the key is called.
-fn named_key_of(key: Key) -> NamedKey {
-    match key {
-        Key::Enter => NamedKey::Enter,
-        Key::Tab => NamedKey::Tab,
-        Key::Backspace => NamedKey::Backspace,
-        Key::Delete => NamedKey::Delete,
-        Key::Escape => NamedKey::Escape,
-        Key::ArrowUp => NamedKey::ArrowUp,
-        Key::ArrowDown => NamedKey::ArrowDown,
-        Key::ArrowLeft => NamedKey::ArrowLeft,
-        Key::ArrowRight => NamedKey::ArrowRight,
-        Key::Home => NamedKey::Home,
-        Key::End => NamedKey::End,
-        Key::PageUp => NamedKey::PageUp,
-        Key::PageDown => NamedKey::PageDown,
-        Key::F1 => NamedKey::F1,
-        Key::F2 => NamedKey::F2,
-        Key::F3 => NamedKey::F3,
-        Key::F4 => NamedKey::F4,
-        Key::F5 => NamedKey::F5,
-        Key::F6 => NamedKey::F6,
-        Key::F7 => NamedKey::F7,
-        Key::F8 => NamedKey::F8,
-        Key::F9 => NamedKey::F9,
-        Key::F10 => NamedKey::F10,
-        Key::F11 => NamedKey::F11,
-        Key::F12 => NamedKey::F12,
-        Key::F13 => NamedKey::F13,
-        Key::F14 => NamedKey::F14,
-        Key::F15 => NamedKey::F15,
-        Key::F16 => NamedKey::F16,
-        Key::F17 => NamedKey::F17,
-        Key::F18 => NamedKey::F18,
-        Key::F19 => NamedKey::F19,
-        Key::F20 => NamedKey::F20,
-        Key::F21 => NamedKey::F21,
-        Key::F22 => NamedKey::F22,
-        Key::F23 => NamedKey::F23,
-        Key::F24 => NamedKey::F24,
-        Key::F25 => NamedKey::F25,
-        Key::F26 => NamedKey::F26,
-        Key::F27 => NamedKey::F27,
-        Key::F28 => NamedKey::F28,
-        Key::F29 => NamedKey::F29,
-        Key::F30 => NamedKey::F30,
-        Key::F31 => NamedKey::F31,
-        Key::F32 => NamedKey::F32,
-        Key::F33 => NamedKey::F33,
-        Key::F34 => NamedKey::F34,
-        Key::F35 => NamedKey::F35,
-        _ => NamedKey::Unidentified,
-    }
 }
 
 /// The input-method event a document dispatches for the crate's.

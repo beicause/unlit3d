@@ -16,6 +16,7 @@ use unlit3d::prelude::*;
 
 mod input;
 mod page;
+mod pointer;
 mod replay;
 
 use self::{
@@ -33,6 +34,10 @@ use self::{
         a_page_loads_a_stylesheet_it_serves, a_page_loads_a_stylesheet_nobody_serves,
         a_page_paints_its_own_colours, a_replaced_page_is_not_drawn_from_the_old_pixels,
         a_transparent_page_leaves_the_frame_alone, new_markup_replaces_the_page,
+    },
+    pointer::{
+        a_finger_that_stays_down_keeps_its_button, a_mouse_release_does_not_lift_the_pen,
+        a_pen_press_states_the_press_it_makes, lifting_one_finger_leaves_the_other_down,
     },
     replay::{
         a_batch_replays_from_the_state_that_stood_before_it,
@@ -288,6 +293,10 @@ gpu_tests! {
     leaving_the_page_is_reported_to_it,
     a_callback_can_cancel_the_default_action,
     a_pen_click_toggles_a_checkbox,
+    a_pen_press_states_the_press_it_makes,
+    a_finger_that_stays_down_keeps_its_button,
+    a_mouse_release_does_not_lift_the_pen,
+    lifting_one_finger_leaves_the_other_down,
     an_ime_commit_reaches_a_text_field,
     a_key_reaches_the_page_as_a_code_and_a_side,
     a_batch_replays_from_the_state_that_stood_before_it,

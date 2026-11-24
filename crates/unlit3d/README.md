@@ -986,6 +986,14 @@ never saw is still held. A source that read an older batch replays from the
 state that one left, and a page replaced mid-gesture starts from what the world
 holds rather than from its own last batch.
 
+Each pointer states its own buttons. What the page is told a pointer holds is
+what that pointer holds, not what every device together holds: a pen that
+presses states the press in the event that makes it, a finger that stays down
+keeps its button into the next frame, and a mouse released while a pen stays
+down lifts only the mouse. Contacts are ordered by when they arrived, so the
+first one is the primary contact and lifting it hands that role to the one
+still down.
+
 Bytes come from the page itself: nothing reaches the network. A `data:` URL is
 decoded on the spot, and anything else is served by
 `BlitzDocument::insert_resource` from
