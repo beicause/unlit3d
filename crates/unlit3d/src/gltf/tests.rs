@@ -9,5 +9,6 @@ mod builders;
 pub(super) mod documents;
 mod primitives;
 mod scene;
+mod validation;
 
 use self::builders::*;

@@ -8,11 +8,13 @@ use gltf::animation::util::ReadOutputs;
 /// Every channel of `animation` that can be sampled, with its keyframes decoded.
 ///
 /// A channel the document states incompletely is dropped here rather than on
-/// every frame that plays the animation: one whose inputs are missing or name a
-/// single keyframe has no interval to interpolate over, and the spec requires
-/// two anyway, and one whose outputs cover fewer keyframes than its inputs
-/// name cannot be sampled at all. A weights channel is checked against the
-/// target count of the mesh its node carries, which `morph_targets` states.
+/// every frame that plays the animation: one whose inputs are missing, or whose
+/// outputs cover fewer keyframes than its inputs name, cannot be sampled at
+/// all. A channel that states a single keyframe is kept: it has no interval to
+/// interpolate over, so it holds the one value it names for the whole clip,
+/// which is what a document means by a constant. A weights channel is checked
+/// against the target count of the mesh its node carries, which `morph_targets`
+/// states.
 ///
 /// `matrix_nodes` marks the nodes whose transform the document states as a
 /// matrix. Such a node has no animatable translation, rotation or scale — the
@@ -32,7 +34,7 @@ pub(super) fn channels(
             continue;
         };
         let times: Vec<f32> = inputs.collect();
-        if times.len() < 2 {
+        if times.is_empty() {
             continue;
         }
         let Some(outputs) = reader.read_outputs() else {

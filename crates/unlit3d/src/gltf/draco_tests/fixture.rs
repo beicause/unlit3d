@@ -332,7 +332,8 @@ pub(super) fn streams_of(gltf: &LitGltf) -> MeshStreams {
         .next()
         .expect("the document has a mesh");
     let primitive = mesh.primitives().next().expect("the mesh has a primitive");
-    streams::from_reader(&gltf.buffers, &primitive)
+    streams::from_reader(&gltf.buffers, 0, 0, &primitive, gltf.mesh_targets[0])
+        .expect("the decoded primitive's streams read")
 }
 
 pub(super) fn decoded(textured: bool, color_components: u8, method: i32) -> MeshStreams {

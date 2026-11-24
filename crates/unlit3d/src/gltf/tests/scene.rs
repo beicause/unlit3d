@@ -10,13 +10,12 @@ use unlit_wgpu::resources::ResourceGraph;
 
 #[test]
 fn a_double_sided_material_culls_nothing() {
-    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-
     let single =
         LitGltf::from_bytes(&sided_document(false)).expect("the single-sided document parses");
     assert_eq!(
         single
-            .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
+            .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+            .expect("the sided document samples no image")
             .options
             .primitive
             .cull_mode,
@@ -27,7 +26,8 @@ fn a_double_sided_material_culls_nothing() {
     let double = LitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
     assert_eq!(
         double
-            .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
+            .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+            .expect("the sided document samples no image")
             .options
             .primitive
             .cull_mode,
@@ -38,13 +38,14 @@ fn a_double_sided_material_culls_nothing() {
 
 #[test]
 fn culling_alone_distinguishes_the_two_sided_variants() {
-    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let single = LitGltf::from_bytes(&sided_document(false))
         .expect("the single-sided document parses")
-        .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0));
+        .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+        .expect("the sided document samples no image");
     let double = LitGltf::from_bytes(&sided_document(true))
         .expect("the double-sided document parses")
-        .pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0));
+        .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+        .expect("the sided document samples no image");
     assert_ne!(
         single, double,
         "the two sides must be separate variants so each keeps its own pipeline"
@@ -102,7 +103,14 @@ fn a_weight_lands_on_the_target_its_slot_names() {
     ))
     .expect("the morphed document parses");
     assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.0, 1.0]);
-    let streams = super::streams::from_reader(&gltf.buffers, &gltf.primitive(0, 0));
+    let streams = super::streams::from_reader(
+        &gltf.buffers,
+        0,
+        0,
+        &gltf.primitive(0, 0),
+        gltf.mesh_targets[0],
+    )
+    .expect("the primitive's streams read");
     let morph = streams
         .morph_deltas
         .expect("the mesh carries displacements");

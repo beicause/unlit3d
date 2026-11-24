@@ -195,7 +195,11 @@ fn two_primitives_sharing_one_stream_both_decode() {
     );
     let streams: Vec<MeshStreams> = primitives
         .iter()
-        .map(|primitive| streams::from_reader(&gltf.buffers, primitive))
+        .enumerate()
+        .map(|(index, primitive)| {
+            streams::from_reader(&gltf.buffers, 0, index, primitive, gltf.mesh_targets[0])
+                .expect("each primitive of the shared stream reads")
+        })
         .collect();
     assert_eq!(
         streams[0].positions, streams[1].positions,

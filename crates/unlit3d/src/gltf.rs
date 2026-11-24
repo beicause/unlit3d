@@ -85,6 +85,13 @@
 //! asks of a base-color texture. The float formats are linear data, which the
 //! spec asks no transfer function of, and they upload without one.
 //!
+//! `Rgba8UnormSrgb` holds `0..=1`, so a sample outside it is clamped into that
+//! range. The two float formats keep the range their samples state, so a
+//! highlight above one reaches the shader as a highlight; only a NaN folds to
+//! zero. A decoded image carries exactly one pixel per texel of the size it
+//! states, and a document whose pixel buffer cannot fill that size is refused
+//! at load, where the image's own index is still known.
+//!
 //! Every upload carries a mip chain by default, averaged at load time rather
 //! than sampled from a texture that has only its base level: a minified
 //! texture with one level aliases whatever the sampler is set to. Each level
@@ -99,9 +106,11 @@
 //! `Rgba32Float` is also the only upload a device may refuse to filter: it is
 //! `unfilterable-float` without `Features::FLOAT32_FILTERABLE`, and then the
 //! material that samples it binds a non-filtering sampler — a different
-//! bind-group layout from the filtering one. Every handle carries the answer
-//! in [`GltfImage::filtering`], and the two derive it the same way, so a
-//! material always fits the pipeline its primitive drew with.
+//! bind-group layout from the filtering one. The answer is decided once, when
+//! the image is uploaded, and carried in [`GltfImage::filtering`]: both the
+//! material's bind-group layout and the pipeline key its primitive uploads
+//! with read that one flag, so a material always fits the pipeline its
+//! primitive drew with.
 //!
 //! # Supported subset
 //!
@@ -125,6 +134,10 @@
 //! target's slot in the primitive's `targets` array, which is the index the
 //! shader reads, so a target that displaces only normals keeps its slot and
 //! morphs nothing rather than shifting the weights of the targets after it.
+//! One count describes a whole mesh: a document whose primitives declare
+//! different numbers of targets states no single length for a weights channel,
+//! so it is refused at load rather than letting the channel and the geometry
+//! disagree.
 //! A `doubleSided` material rasterizes its back faces instead of culling them,
 //! so its geometry draws from either side.
 //! A document's animations become clips of the model [`LitGltf::to_model`]
@@ -133,7 +146,10 @@
 //! model samples them into its own subtree when its playback state asks for
 //! one. Nothing plays by itself; the caller selects a clip and either lets the
 //! frame dispatcher advance it or writes the time itself — see
-//! [`LitModelAnimation`](crate::lit::LitModelAnimation).
+//! [`LitModelAnimation`](crate::lit::LitModelAnimation). A channel that states
+//! a single keyframe is kept as a constant: it has no interval to interpolate
+//! over, so it holds the one value it names for the whole clip, which is what
+//! a document means by writing only one.
 //! A primitive that carries normals uploads them, so a lit surface is shaded by
 //! the normals the document gives it rather than by the ones screen-space
 //! derivatives infer from its positions. A primitive compressed with
@@ -163,6 +179,15 @@
 //! Everything else a glTF document can carry is ignored. A mesh whose
 //! primitive uses techniques outside this subset still uploads and spawns — it
 //! just renders without them.
+//!
+//! A document that describes something undrawable is refused at load or at
+//! upload rather than drawn as something else: a primitive too short for its
+//! own `mode`, an index past the vertices the primitive carries, a mesh whose
+//! primitives disagree about their morph targets, an image short of the pixels
+//! its size needs, and a Draco stream that names an attribute, an accessor or a
+//! morph target it cannot serve. Each [`Error`] names the document's own
+//! indices — the mesh, primitive, image or accessor — so a caller can point at
+//! what the file got wrong.
 //!
 //! Every handle returned here keeps what it names alive: the next
 //! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
@@ -201,8 +226,8 @@ mod topology;
 mod upload;
 
 use self::scene::{
-    first_primitives, node_children, node_locals, node_order, node_parents, node_world_matrices,
-    nodes_morph_targets,
+    first_primitives, mesh_morph_targets, node_children, node_locals, node_order, node_parents,
+    node_world_matrices, nodes_morph_targets,
 };
 
 /// Everything that can stop a load, a spawn or an animation of a glTF document.
@@ -269,6 +294,212 @@ pub enum Error {
         material: usize,
         /// The document image the material names.
         image: usize,
+    },
+    /// One mesh declares different morph target counts across its primitives.
+    ///
+    /// A weights channel slices one value per target per keyframe, so the count
+    /// has to be the same for every primitive of a mesh. The specification
+    /// requires it; a document that disagrees with itself cannot be read
+    /// consistently and is refused rather than resolved to one of the counts.
+    #[error(
+        "the primitive {primitive} of mesh {mesh} declares {targets} morph targets, \
+         but the mesh's first primitive declares {expected}"
+    )]
+    MorphTargetCountMismatch {
+        /// The mesh whose primitives disagree.
+        mesh: usize,
+        /// The primitive that declares the other count.
+        primitive: usize,
+        /// The number of targets that primitive declares.
+        targets: usize,
+        /// The number of targets the mesh's first primitive declares.
+        expected: usize,
+    },
+    /// A line loop or a triangle fan holds too few vertices to draw one
+    /// primitive, so its index stream cannot be expanded.
+    #[error(
+        "the primitive {primitive} of mesh {mesh} is a {mode} of {vertices} vertices, \
+         which is too short to draw"
+    )]
+    PrimitiveTooShort {
+        /// The mesh the primitive belongs to.
+        mesh: usize,
+        /// The primitive that is too short.
+        primitive: usize,
+        /// The glTF mode name the primitive declares.
+        mode: &'static str,
+        /// The number of vertices in the primitive's index stream.
+        vertices: usize,
+    },
+    /// A primitive's index stream names a vertex its vertex streams do not
+    /// carry.
+    #[error(
+        "the primitive {primitive} of mesh {mesh} indexes vertex {index}, \
+         but the primitive carries {vertices} vertices"
+    )]
+    IndexOutOfRange {
+        /// The mesh the primitive belongs to.
+        mesh: usize,
+        /// The primitive whose index stream overruns its vertices.
+        primitive: usize,
+        /// The first index past the end of the vertex streams.
+        index: u32,
+        /// The number of vertices the primitive carries.
+        vertices: usize,
+    },
+    /// An image's pixel buffer is too short for the dimensions it states.
+    #[error(
+        "image {image} states {width} by {height} pixels of {texel} bytes, \
+         which needs {expected} bytes of pixels, but it carries {actual}"
+    )]
+    ImagePixelsShort {
+        /// The image whose pixel buffer is short.
+        image: usize,
+        /// The width the image states.
+        width: u32,
+        /// The height the image states.
+        height: u32,
+        /// The bytes one texel of the image's format occupies.
+        texel: usize,
+        /// The bytes the stated dimensions need.
+        expected: usize,
+        /// The bytes the image actually carries.
+        actual: usize,
+    },
+    /// A decoded Draco stream could not be turned back into accessors.
+    ///
+    /// The document is malformed in a way the extension's own reader reports,
+    /// so the Draco error itself is carried: its kind and detail stay readable
+    /// rather than being restated as a glTF validation failure with no context.
+    #[error(
+        "the Draco stream of the primitive {primitive} of mesh {mesh} cannot be read: {source}"
+    )]
+    Draco {
+        /// The mesh the compressed primitive belongs to.
+        mesh: usize,
+        /// The compressed primitive.
+        primitive: usize,
+        /// The Draco reader's own report.
+        #[source]
+        source: draco_core::DracoError,
+    },
+    /// A Draco primitive states something the extension cannot express.
+    ///
+    /// The extension compresses a triangle primitive's attributes and indices
+    /// only, so a document that asks for anything else is refused rather than
+    /// silently decoded into the nearest supported shape.
+    #[error("the Draco primitive {primitive} of mesh {mesh}: {detail}")]
+    DracoPrimitive {
+        /// The mesh the compressed primitive belongs to.
+        mesh: usize,
+        /// The compressed primitive.
+        primitive: usize,
+        /// What the extension cannot express about it.
+        detail: DracoPrimitiveError,
+    },
+    /// A primitive carries no vertex positions.
+    ///
+    /// glTF validation rejects such a primitive, so a document that reaches this
+    /// error came through a path that skipped validation.
+    #[error("the primitive {primitive} of mesh {mesh} carries no POSITION attribute")]
+    PositionsMissing {
+        /// The mesh the primitive belongs to.
+        mesh: usize,
+        /// The primitive without positions.
+        primitive: usize,
+    },
+}
+
+/// What a Draco primitive states that the extension cannot express.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DracoPrimitiveError {
+    /// The primitive's mode is neither a triangle list nor a triangle strip.
+    #[error("its mode is not a triangle primitive")]
+    NotTriangles,
+    /// Its extension names no buffer view to decode.
+    #[error("its extension names no buffer view")]
+    ExtensionNamesNoStream,
+    /// Its extension maps no semantic to a stream attribute.
+    #[error("its extension maps no semantic to a stream attribute")]
+    ExtensionMapsNoAttributes,
+    /// The buffer view the extension names is absent from the document.
+    #[error("its extension names buffer view {view}, which is missing")]
+    MissingStream {
+        /// The buffer view the extension names.
+        view: usize,
+    },
+    /// The buffer view the extension names reads a buffer the document lacks.
+    #[error("buffer view {view} reads buffer {buffer}, which is missing")]
+    MissingStreamBuffer {
+        /// The buffer view the extension names.
+        view: usize,
+        /// The buffer that view reads.
+        buffer: usize,
+    },
+    /// The stream's byte range overflows the address space.
+    #[error("the byte range of buffer view {view} overflows")]
+    StreamOverflowsBuffer {
+        /// The buffer view the extension names.
+        view: usize,
+    },
+    /// The stream's byte range extends past the buffer that holds it.
+    #[error("buffer view {view} extends past the buffer it reads")]
+    StreamPastBuffer {
+        /// The buffer view the extension names.
+        view: usize,
+    },
+    /// The extension compresses a semantic the primitive does not declare.
+    #[error("its stream supplies {semantic}, which the primitive does not declare")]
+    AttributeNotDeclared {
+        /// The semantic the extension supplies.
+        semantic: String,
+    },
+    /// An attribute id the extension names does not fit the stream's id space.
+    #[error("the attribute id {id} is too large")]
+    AttributeIdTooLarge {
+        /// The attribute id the extension names.
+        id: u64,
+    },
+    /// A morph target reads an accessor the extension also compresses, which
+    /// would leave the target with no data of its own.
+    #[error("morph target {target} names the accessor {accessor}, which is in the stream")]
+    MorphTargetInStream {
+        /// The morph target's position in the primitive's target list.
+        target: usize,
+        /// The accessor the target names.
+        accessor: usize,
+    },
+    /// Its accessor states a component type no accessor type names.
+    #[error("its accessor states no type the document can name")]
+    InvalidAccessorType,
+    /// Its accessor is missing from the document.
+    #[error("its accessor {accessor} is missing from the document")]
+    MissingAccessor {
+        /// The accessor id the primitive names.
+        accessor: usize,
+    },
+    /// The stream carries fewer components than its accessor declares.
+    #[error("it carries fewer components than its accessor declares")]
+    TooFewComponents,
+    /// An attribute id it names is absent from the stream.
+    #[error("the attribute id {id} is absent from the stream")]
+    MissingAttribute {
+        /// The attribute id the extension maps a semantic to.
+        id: u32,
+    },
+    /// A joint index does not fit the 16-bit joint stream.
+    #[error("it names joint {joint}, which the 16-bit joint stream cannot hold")]
+    JointOutOfRange {
+        /// The joint index the stream states.
+        joint: f32,
+    },
+    /// A normalized attribute's integer type cannot be normalized without
+    /// losing precision in the 32-bit float the accessor holds.
+    #[error("its {data_type} integers cannot be normalized without losing precision")]
+    NormalizationTooWide {
+        /// The component type the attribute holds.
+        data_type: &'static str,
     },
 }
 
@@ -344,9 +575,14 @@ pub struct LitGltf {
     images: Vec<gltf::image::Data>,
     /// World-space matrix of every node, indexed by node index.
     ///
-    /// A spawn reads one into an entity's [`Transform`],
-    /// and animation recomposes them from the node's own local transform and
-    /// its parents, so a shear in that chain has to survive both.
+    /// These are the document's own matrices, multiplied down the parent chain
+    /// without decomposing anything, so a node whose transform a document
+    /// states as a matrix keeps its shear here — including the shear of every
+    /// ancestor it inherits. Decomposition happens only where a `Transform` is
+    /// needed: [`Self::skin_pose`] reads these matrices directly, while
+    /// [`Self::to_model`] states each node's local transform as a
+    /// [`Transform`], so a sheared chain reaches skinned geometry intact and a
+    /// spawned node loses its own shear (see [`Transform::from_matrix`]).
     node_matrices: Vec<glam::Mat4>,
     /// The parent of every node, indexed by node index; `None` at a root.
     ///
@@ -366,6 +602,13 @@ pub struct LitGltf {
     /// to slice its values; keeping the count is what lets it read a node's
     /// targets without building the node's weight vector.
     morph_targets: Vec<usize>,
+    /// How many morph targets each mesh declares, indexed by mesh index.
+    ///
+    /// This is the count both uploads and channels are built from: the
+    /// primitive's displacement slots on one side, the weights a channel
+    /// states on the other. [`mesh_morph_targets`] refuses a mesh whose
+    /// primitives disagree, so one number describes the whole mesh.
+    mesh_targets: Vec<usize>,
     /// Where each mesh's first primitive sits in a document-mesh-major
     /// primitive list, indexed by mesh index; one past the last primitive for
     /// the last mesh.
@@ -504,8 +747,9 @@ impl LitGltf {
     /// buffer or image cannot be decoded.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let imported = gltf::import(path).or_else(|error| {
-            Self::import_draco(
+        let imported = match gltf::import(path) {
+            Ok(imported) => imported,
+            Err(error) => Self::import_draco(
                 error,
                 || {
                     gltf::Gltf::from_reader_without_validation(std::io::BufReader::new(
@@ -513,9 +757,9 @@ impl LitGltf {
                     ))
                 },
                 path.parent(),
-            )
-        })?;
-        Ok(Self::from_parts(imported.0, imported.1, imported.2))
+            )?,
+        };
+        Self::from_parts(imported.0, imported.1, imported.2)
     }
 
     /// Parse a glTF document from `bytes`.
@@ -525,14 +769,15 @@ impl LitGltf {
     /// must be embedded too (as data URIs or buffer views), because there is
     /// no base URI to resolve external references against.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let (document, buffers, images) = gltf::import_slice(bytes).or_else(|error| {
-            Self::import_draco(
+        let (document, buffers, images) = match gltf::import_slice(bytes) {
+            Ok(imported) => imported,
+            Err(error) => Self::import_draco(
                 error,
                 || gltf::Gltf::from_slice_without_validation(bytes),
                 None,
-            )
-        })?;
-        Ok(Self::from_parts(document, buffers, images))
+            )?,
+        };
+        Self::from_parts(document, buffers, images)
     }
 
     /// Try to repair a document that failed validation by decoding its Draco
@@ -542,8 +787,9 @@ impl LitGltf {
     /// lives only in the compressed stream. Re-parsing without validation,
     /// decoding each stream into real buffer views and validating again lets
     /// the rest of the loader read one uniform document. A document with no
-    /// compressed primitive keeps the original error; a failure to decode is
-    /// reported as a validation error naming the extension.
+    /// compressed primitive keeps the original error; a stream that cannot be
+    /// decoded is reported as [`Error::Draco`], carrying the reader's own
+    /// report rather than restating it as a glTF validation failure.
     fn import_draco(
         error: gltf::Error,
         parse: impl FnOnce() -> Result<gltf::Gltf, gltf::Error>,
@@ -554,16 +800,16 @@ impl LitGltf {
             Vec<gltf::buffer::Data>,
             Vec<gltf::image::Data>,
         ),
-        gltf::Error,
+        Error,
     > {
         if !matches!(error, gltf::Error::Validation(_)) {
-            return Err(error);
+            return Err(error.into());
         }
         let gltf::Gltf { document, blob } = parse()?;
         let mut buffers = gltf::import_buffers(&document, base, blob)?;
         let mut root = document.into_json();
         if !draco::fill_accessors(&mut root, &mut buffers)? {
-            return Err(error);
+            return Err(error.into());
         }
         let document = gltf::Document::from_json(root)?;
         let images = gltf::import_images(&document, base, &buffers)?;
@@ -574,13 +820,14 @@ impl LitGltf {
         document: gltf::Document,
         buffers: Vec<gltf::buffer::Data>,
         images: Vec<gltf::image::Data>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        let mesh_targets = mesh_morph_targets(&document)?;
         let parents = node_parents(&document);
         let locals = node_locals(&document);
         let children = node_children(&document);
         let order = node_order(&children, &parents);
         let node_matrices = node_world_matrices(&document, &parents, &order);
-        let morph_targets = nodes_morph_targets(&document);
+        let morph_targets = nodes_morph_targets(&document, &mesh_targets);
         let first_primitive = first_primitives(&document);
         let matrix_nodes = document
             .nodes()
@@ -589,7 +836,23 @@ impl LitGltf {
         let clips = std::iter::repeat_with(OnceLock::new)
             .take(document.animations().count())
             .collect();
-        Self {
+        for (index, data) in images.iter().enumerate() {
+            // A short pixel buffer would be read past its end while the image
+            // is encoded, so the document is refused here, where the image's
+            // own index is still known.
+            let (texel, expected) = image::pixel_bytes(data);
+            if data.pixels.len() != expected {
+                return Err(Error::ImagePixelsShort {
+                    image: index,
+                    width: data.width,
+                    height: data.height,
+                    texel,
+                    expected,
+                    actual: data.pixels.len(),
+                });
+            }
+        }
+        Ok(Self {
             document,
             buffers,
             images,
@@ -597,11 +860,12 @@ impl LitGltf {
             parents,
             locals,
             morph_targets,
+            mesh_targets,
             first_primitive,
             matrix_nodes,
             clips,
             mips: MipChain::default(),
-        }
+        })
     }
 
     /// The ids of every image in the document, in document order.

@@ -83,3 +83,31 @@ fn a_matrix_node_ignores_the_channels_it_cannot_animate() {
         }
     );
 }
+
+#[test]
+fn a_single_keyframe_channel_holds_its_one_value() {
+    // A document may state a channel with a single input: it has no interval to
+    // interpolate over, so it holds the value it names for the whole clip. That
+    // is the only thing a constant channel can mean, and dropping it would
+    // leave the node at rest instead.
+    let gltf = LitGltf::from_bytes(&parented_animated_document(
+        "LINEAR",
+        &[0.0],
+        &[[2.0, 0.0, 0.0]],
+        &[[0.0, 0.0, 0.0, 1.0]],
+    ))
+    .expect("the single-keyframe document parses");
+    let clip = gltf.clip(AnimationId::new(0));
+    assert_eq!(clip.len(), 2, "both constant channels survive");
+    assert_eq!(clip[0].times, [0.0]);
+    assert_eq!(
+        clip[0].values,
+        LitModelOutput::Translation(vec![[2.0, 0.0, 0.0]]),
+        "the one keyframe states the translation the clip holds"
+    );
+    assert_eq!(
+        clip[1].values,
+        LitModelOutput::Rotation(vec![[0.0, 0.0, 0.0, 1.0]]),
+        "a constant rotation channel holds its quaternion"
+    );
+}

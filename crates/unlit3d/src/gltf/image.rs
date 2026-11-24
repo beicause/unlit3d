@@ -118,6 +118,12 @@ impl EncodedMip {
 
     /// Pad `texels`, the tightly packed `width` by `height` image, to the copy
     /// stride a buffer-to-texture copy asks for.
+    ///
+    /// # Panics
+    ///
+    /// If `texels` does not hold exactly one texel per pixel: padding rows of a
+    /// level that is short of texels would upload the missing ones as zeroes,
+    /// which is a black image rather than the error its source is.
     fn new(width: u32, height: u32, texel: usize, texels: &[u8]) -> Self {
         let bytes_per_row = align_up(
             width as usize * texel,
@@ -125,12 +131,14 @@ impl EncodedMip {
         ) as u32;
         let row_bytes = width as usize * texel;
         let stride = bytes_per_row as usize;
+        assert_eq!(
+            texels.len(),
+            row_bytes * height as usize,
+            "a mip level holds one texel per pixel"
+        );
         let mut rows = vec![0u8; stride * height as usize];
-        for (packed, row) in texels
-            .chunks_exact(row_bytes)
-            .zip(rows.chunks_exact_mut(stride))
-        {
-            row[..row_bytes].copy_from_slice(packed);
+        for (index, row) in rows.chunks_exact_mut(stride).enumerate() {
+            row[..row_bytes].copy_from_slice(&texels[index * row_bytes..][..row_bytes]);
         }
         Self {
             width,
@@ -231,8 +239,15 @@ pub(super) fn encode_mip_chain(
 /// another, with no row padding.
 ///
 /// A channel the source does not carry — the alpha of a three-channel image,
-/// say — is filled with an opaque one, and every value is clamped to `0..=1`
-/// on the way in, which is all the wider float formats need.
+/// say — is filled with an opaque one. A normalized upload format clamps its
+/// channels to `0..=1`, which is all it can hold; the float formats keep the
+/// values they are given, so a high-dynamic-range image keeps the range above
+/// one that its samples are shaded with, and only NaN folds to zero. See
+/// [`write_channel`].
+///
+/// The pixel buffer holds exactly one pixel per texel of the stated size:
+/// [`pixel_bytes`] says how many bytes that is, and the document is refused at
+/// load when it carries fewer, while the image's own index is still known.
 fn encode_compact(data: &gltf::image::Data, format: wgpu::TextureFormat) -> Vec<u8> {
     let (width, height) = (data.width as usize, data.height as usize);
     let pixel_bytes = source_channel_bytes(data.format) * source_channels(data.format);
@@ -241,10 +256,18 @@ fn encode_compact(data: &gltf::image::Data, format: wgpu::TextureFormat) -> Vec<
     let mut scratch = [0u8; MAX_TEXEL_BYTES];
 
     for (index, out) in texels.chunks_exact_mut(texel).enumerate() {
-        let pixel = &data.pixels[index * pixel_bytes..];
+        let pixel = &data.pixels[index * pixel_bytes..][..pixel_bytes];
         out.copy_from_slice(encode_texel(data.format, format, pixel, &mut scratch));
     }
     texels
+}
+
+/// The bytes one pixel of `data`'s source format occupies, and the bytes a
+/// decoded image must carry for its stated size.
+pub(super) fn pixel_bytes(data: &gltf::image::Data) -> (usize, usize) {
+    let texel = source_channel_bytes(data.format) * source_channels(data.format);
+    let expected = data.width as usize * data.height as usize * texel;
+    (texel, expected)
 }
 
 /// The pixel type a format's levels are averaged in.
@@ -485,32 +508,32 @@ fn read_channel(format: gltf::image::Format, bytes: &[u8]) -> f32 {
     }
 }
 
-/// Write one `0..=1` channel of `format`'s `slot` into `scratch`.
+/// Write one channel of `format`'s `slot` into `scratch`.
+///
+/// A normalized format holds `0..=1` and clamps into it. A float format holds
+/// whatever its source states, so a high-dynamic-range texel keeps the range
+/// above one that its samples are shaded with; only NaN folds to zero, because
+/// a NaN texel would poison every sample it reaches.
 fn write_channel(
     format: wgpu::TextureFormat,
     slot: usize,
     value: f32,
     scratch: &mut [u8; MAX_TEXEL_BYTES],
 ) {
-    // `f32::clamp` leaves NaN alone, and a NaN texel would poison every sample
-    // it reaches, so fold it to the bottom of the range instead.
-    let clamped = if value.is_nan() {
-        0.0
-    } else {
-        value.clamp(0.0, 1.0)
-    };
+    let value = if value.is_nan() { 0.0 } else { value };
     match format {
         wgpu::TextureFormat::Rgba8UnormSrgb => {
-            scratch[slot] = (clamped * f32::from(u8::MAX)).round() as u8;
+            let normalized = value.clamp(0.0, 1.0);
+            scratch[slot] = (normalized * f32::from(u8::MAX)).round() as u8;
         }
         wgpu::TextureFormat::Rgba16Float => {
-            let bits = half::f16::from_f32(clamped).to_bits();
+            let bits = half::f16::from_f32(value).to_bits();
             scratch[slot * size_of::<u16>()..][..size_of::<u16>()]
                 .copy_from_slice(U16::new(bits).as_bytes());
         }
         wgpu::TextureFormat::Rgba32Float => {
             scratch[slot * size_of::<f32>()..][..size_of::<f32>()]
-                .copy_from_slice(F32::new(clamped).as_bytes());
+                .copy_from_slice(F32::new(value).as_bytes());
         }
         _ => unreachable!("a glTF image uploads in one of the formats above"),
     }
@@ -676,8 +699,12 @@ mod tests {
         assert_eq!(&channels[4..], &[1.0, 0.0, 0.0, 1.0], "{channels:?}");
     }
     #[test]
-    fn a_float_image_out_of_range_clamps() {
+    fn a_float_image_keeps_its_high_dynamic_range() {
         use gltf::image::Format as F;
+        // A 32-bit float texture is linear data a shader may shade with, so a
+        // value above one is a highlight rather than an error. Only NaN is
+        // folded, and negative light goes to zero because a texture holds no
+        // such sample.
         let data = image(F::R32G32B32A32FLOAT, {
             let mut pixels = Vec::new();
             pixels.extend_from_slice(&(-1.0f32).to_le_bytes());
@@ -693,7 +720,19 @@ mod tests {
             .iter()
             .map(|bytes| f32::from_le_bytes(*bytes))
             .collect::<Vec<_>>();
-        assert_eq!(channels, vec![0.0, 0.5, 1.0, 0.0]);
+        assert_eq!(channels, vec![-1.0, 0.5, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn a_normalized_image_clamps_into_its_range() {
+        use gltf::image::Format as F;
+        // The 8-bit upload has nowhere to put a value outside `0..=1`, so the
+        // clamp is the format's own rather than the loader's.
+        let data = image(F::R8G8B8, vec![0, 128, 255]);
+        assert_eq!(
+            encode(wgpu::TextureFormat::Rgba8UnormSrgb, &data),
+            vec![0, 128, 255, 255]
+        );
     }
 
     #[test]

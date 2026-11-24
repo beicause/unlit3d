@@ -98,27 +98,52 @@ pub(super) fn node_order(children: &[Vec<usize>], parents: &[Option<usize>]) -> 
     order
 }
 
+/// How many morph targets each mesh declares, indexed by mesh index.
+///
+/// The count is the length of a primitive's `targets` array, not the number of
+/// targets this loader reads displacements for: a target that displaces only
+/// normals still owns a slot, and counting it out would shift every later
+/// target's weight.
+///
+/// The specification requires every primitive of one mesh to declare the same
+/// number of targets, so a document that disagrees with itself is refused here
+/// rather than read differently by the vertex streams and the weights channel.
+pub(super) fn mesh_morph_targets(document: &gltf::Document) -> Result<Vec<usize>, super::Error> {
+    document
+        .meshes()
+        .map(|mesh| {
+            let mut primitives = mesh.primitives();
+            let Some(first) = primitives.next() else {
+                return Ok(0);
+            };
+            let expected = super::material::morph_target_count(&first);
+            for primitive in primitives {
+                let targets = super::material::morph_target_count(&primitive);
+                if targets != expected {
+                    return Err(super::Error::MorphTargetCountMismatch {
+                        mesh: mesh.index(),
+                        primitive: primitive.index(),
+                        targets,
+                        expected,
+                    });
+                }
+            }
+            Ok(expected)
+        })
+        .collect()
+}
+
 /// How many morph targets each node's mesh declares, indexed by node index.
 ///
 /// A weights channel states one value per target per keyframe, so the count is
-/// what slices a keyframe's values out of the channel. It is the length of the
-/// primitive's `targets` array, not the number of targets this loader reads
-/// displacements for: a target that displaces only normals still owns a slot,
-/// and counting it out would shift every later target's weight. A node with no
-/// mesh counts as zero. The specification requires every primitive of one mesh
-/// to declare the same number of targets, so the widest primitive's count is
-/// the mesh's.
-pub(super) fn nodes_morph_targets(document: &gltf::Document) -> Vec<usize> {
+/// what slices a keyframe's values out of the channel, and a frame needs it to
+/// read a node's weights without building the node's weight vector. A node with
+/// no mesh counts as zero. [`mesh_morph_targets`] is the only place the count
+/// is read from the document.
+pub(super) fn nodes_morph_targets(document: &gltf::Document, meshes: &[usize]) -> Vec<usize> {
     document
         .nodes()
-        .map(|node| {
-            node.mesh().map_or(0, |mesh| {
-                mesh.primitives()
-                    .map(|primitive| super::material::morph_target_count(&primitive))
-                    .max()
-                    .unwrap_or(0)
-            })
-        })
+        .map(|node| node.mesh().map_or(0, |mesh| meshes[mesh.index()]))
         .collect()
 }
 

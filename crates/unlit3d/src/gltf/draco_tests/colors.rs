@@ -1,9 +1,7 @@
 //! COLOR_0 across the widths an exporter may store it in.
 
 use super::fixture::*;
-use crate::gltf::Error;
-use crate::gltf::LitGltf;
-use crate::gltf::draco;
+use crate::gltf::{DracoPrimitiveError, Error, LitGltf};
 use serde_json::json;
 
 #[test]
@@ -90,15 +88,16 @@ fn a_short_draco_attribute_is_rejected_instead_of_zero_filled() {
         Err(error) => error,
         Ok(_) => panic!("a Draco attribute with too few components is rejected"),
     };
-    let Error::Parse(gltf::Error::Validation(errors)) = &error else {
-        panic!("the malformed stream is reported as a validation error");
+    let Error::DracoPrimitive {
+        mesh,
+        primitive,
+        detail,
+    } = &error
+    else {
+        panic!("the malformed stream is reported against its primitive: {error:?}");
     };
-    assert!(
-        errors
-            .iter()
-            .any(|(path, _)| path.as_str().contains(draco::EXTENSION)),
-        "the error names the extension: {errors:?}"
-    );
+    assert_eq!((*mesh, *primitive), (0, 0));
+    assert_eq!(*detail, DracoPrimitiveError::TooFewComponents);
 }
 
 #[test]

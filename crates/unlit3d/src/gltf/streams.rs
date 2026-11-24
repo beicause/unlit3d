@@ -5,7 +5,7 @@
 //! from glTF's accessor reader, and [`MeshStreams::desc`] hands its streams to
 //! the allocator as a [`LitMeshDesc`].
 
-use super::material::{base_color_uv_set, morph_target_count};
+use super::material::base_color_uv_set;
 use super::topology;
 use crate::lit::LitMeshDesc;
 use crate::mesh::MorphDeltas;
@@ -48,16 +48,73 @@ impl MeshStreams {
 }
 
 /// Read a primitive's streams through glTF's accessor reader.
+///
+/// `mesh` and `primitive` are the primitive's document position and `targets`
+/// the number of morph targets its mesh declares — the count
+/// [`mesh_morph_targets`](super::scene::mesh_morph_targets) validated, so the
+/// slots here and the weights a channel slices always agree.
+///
+/// A topology `wgpu` cannot assemble is reshaped here, which is also where a
+/// primitive that states too few vertices, or indices past its own vertices, is
+/// refused: uploading either would draw something the document never stated.
 pub(super) fn from_reader(
     buffers: &[gltf::buffer::Data],
+    mesh: usize,
+    primitive_index: usize,
     primitive: &gltf::Primitive<'_>,
-) -> MeshStreams {
+    targets: usize,
+) -> Result<MeshStreams, super::Error> {
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
     let positions: Vec<[f32; 3]> = reader
         .read_positions()
-        .expect("validation rejects a primitive with no POSITION attribute")
+        .ok_or(super::Error::PositionsMissing {
+            mesh,
+            primitive: primitive_index,
+        })?
         .collect();
+    let vertices = positions.len();
+    let mode = primitive.mode();
+
+    // The stream a draw reads: the primitive's own index accessor, or the
+    // implicit `0..vertex_count` a non-indexed one states. Both are checked
+    // the same way, so a document is refused for the same reasons either way.
+    let explicit: Option<Vec<u32>> = reader
+        .read_indices()
+        .map(|indices| indices.into_u32().collect());
+    let stated = explicit.as_ref().map_or(vertices, Vec::len);
+    if stated < topology::minimum_vertices(mode) {
+        return Err(super::Error::PrimitiveTooShort {
+            mesh,
+            primitive: primitive_index,
+            mode: topology::name(mode),
+            vertices: stated,
+        });
+    }
+    if let Some(indices) = &explicit
+        && let Some(&index) = indices.iter().find(|&&index| index as usize >= vertices)
+    {
+        return Err(super::Error::IndexOutOfRange {
+            mesh,
+            primitive: primitive_index,
+            index,
+            vertices,
+        });
+    }
+    let indices = if topology::needs_expansion(mode) {
+        let implicit;
+        let stream: &[u32] = match &explicit {
+            Some(indices) => indices,
+            None => {
+                implicit = (0..vertices as u32).collect::<Vec<u32>>();
+                &implicit
+            }
+        };
+        Some(topology::expand(mode, stream))
+    } else {
+        explicit
+    };
+
     // Read only the streams the primitive declares: an attribute it does
     // not carry is not uploaded, so decoding it would be wasted work.
     // A texture is sampled through the UV set its material names, which is not
@@ -85,19 +142,6 @@ pub(super) fn from_reader(
     // smoother than the one screen-space derivatives infer from the
     // positions; one without them falls back to those derivatives.
     let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|normals| normals.collect());
-    let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
-    // A mode the device cannot assemble is expanded into a list of the same
-    // topology, which needs an index stream even when the document carries
-    // none: a non-indexed primitive states its vertices implicitly as
-    // `0..count`, and that sequence is what gets expanded.
-    let mode = primitive.mode();
-    let indices = match topology::needs_expansion(mode) {
-        true => Some(topology::expand(
-            mode,
-            &indices.unwrap_or_else(|| (0..positions.len() as u32).collect()),
-        )),
-        false => indices,
-    };
     let skinned = primitive.get(&gltf::Semantic::Joints(0)).is_some()
         && primitive.get(&gltf::Semantic::Weights(0)).is_some();
     let joints: Option<Vec<[u16; 4]>> = skinned.then(|| {
@@ -122,29 +166,26 @@ pub(super) fn from_reader(
     // after it one slot down. A conformant document writes the displacements in
     // the decoded vertex order; displacements past the vertex count are ignored
     // rather than panicking on a malformed one.
-    let morph_deltas = {
-        let target_count = morph_target_count(primitive);
-        (target_count > 0).then(|| {
-            let mut deltas = vec![0.0; positions.len() * target_count * 3];
-            for (target, (displacements, _, _)) in reader.read_morph_targets().enumerate() {
-                let Some(displacements) = displacements else {
-                    continue;
-                };
-                for (vertex, displacement) in displacements.enumerate() {
-                    let start = (vertex * target_count + target) * 3;
-                    if let Some(slot) = deltas.get_mut(start..start + 3) {
-                        slot.copy_from_slice(&displacement);
-                    }
+    let morph_deltas = (targets > 0).then(|| {
+        let mut deltas = vec![0.0; vertices * targets * 3];
+        for (target, (displacements, _, _)) in reader.read_morph_targets().enumerate() {
+            let Some(displacements) = displacements else {
+                continue;
+            };
+            for (vertex, displacement) in displacements.enumerate() {
+                let start = (vertex * targets + target) * 3;
+                if let Some(slot) = deltas.get_mut(start..start + 3) {
+                    slot.copy_from_slice(&displacement);
                 }
             }
-            MorphDeltas {
-                deltas,
-                target_count: target_count as u32,
-            }
-        })
-    };
+        }
+        MorphDeltas {
+            deltas,
+            target_count: targets as u32,
+        }
+    });
 
-    MeshStreams {
+    Ok(MeshStreams {
         positions,
         uvs,
         colors,
@@ -153,5 +194,5 @@ pub(super) fn from_reader(
         joints,
         weights,
         morph_deltas,
-    }
+    })
 }

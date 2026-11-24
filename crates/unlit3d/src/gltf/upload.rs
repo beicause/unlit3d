@@ -36,12 +36,19 @@ impl LitGltf {
     /// from the mesh it draws. A `doubleSided` material turns back-face
     /// culling off, so its geometry is drawn from either side; everything
     /// else follows [`LitOptions::standard`].
+    ///
+    /// # Errors
+    ///
+    /// If the primitive samples a base-color texture through an image that is
+    /// not in `images`. The filtering that decides the bind-group layout is
+    /// read off that uploaded handle rather than recomputed from the document,
+    /// so a key and the group a material builds always agree on one image.
     pub fn pipeline_key(
         &self,
-        device: &wgpu::Device,
+        images: &[GltfImage],
         mesh: MeshId,
         primitive: PrimitiveId,
-    ) -> LitPipelineKey {
+    ) -> Result<LitPipelineKey, super::Error> {
         let primitive = self.primitive(mesh.index(), primitive.index());
         let material = primitive.material();
         // A material carrying `KHR_materials_unlit` is drawn unlit, its base
@@ -58,9 +65,15 @@ impl LitGltf {
         let texture = material.pbr_metallic_roughness().base_color_texture();
         if base_color_uv_set(&primitive).is_some()
             && let Some(info) = &texture
+            && let Some(material_index) = material.index()
         {
-            let image = info.texture().source().index();
-            options.texture_filtering = self.image_filtering(image, device);
+            let filtering = uploaded_image(images, info.texture().source().index())
+                .map_err(|image| super::Error::ImageNotInserted {
+                    material: material_index,
+                    image,
+                })?
+                .filtering;
+            options.texture_filtering = filtering;
         }
         // glTF base colors and textures are straight (non-premultiplied)
         // alpha, which is exactly what `ALPHA_BLENDING` composites. A blended
@@ -96,7 +109,7 @@ impl LitGltf {
         // pipeline, which is the point of expanding rather than of drawing
         // them as something else.
         options.primitive.topology = super::topology::topology(primitive.mode());
-        LitPipelineKey::new(options)
+        Ok(LitPipelineKey::new(options))
     }
 
     /// Upload `image` into `source`'s resource graph and return its handle.
@@ -220,15 +233,12 @@ impl LitGltf {
         // here is a call made in the wrong order rather than a document that
         // says something it cannot mean.
         let source_index = info.texture().source().index();
-        let Some(image) = images
-            .iter()
-            .find(|image| image.image == ImageId::new(source_index))
-        else {
-            return Err(super::Error::ImageNotInserted {
+        let image = uploaded_image(images, source_index).map_err(|image| {
+            super::Error::ImageNotInserted {
                 material: material.index(),
-                image: source_index,
-            });
-        };
+                image,
+            }
+        })?;
 
         // A material group exists only for a variant that samples a base-color
         // texture; build the bind group against exactly that variant. Its
@@ -304,35 +314,60 @@ impl LitGltf {
     /// A mode the device has no topology for is expanded into the list that
     /// draws the same primitives, so its index stream is not the document's.
     ///
-    /// # Panics
+    /// The morph-target count the displacement stream is packed with is the
+    /// one [`mesh_morph_targets`](super::scene::mesh_morph_targets) validated
+    /// for the whole mesh, so every primitive of a mesh uploads the same
+    /// slots.
     ///
-    /// If the primitive carries no `POSITION` attribute.
+    /// # Errors
+    ///
+    /// If the primitive carries no `POSITION` attribute, states fewer vertices
+    /// than its topology needs, indexes a vertex it does not carry, or samples
+    /// a base-color texture whose image is not in `images`.
     pub fn insert_mesh(
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
+        images: &[GltfImage],
         mesh: MeshId,
         primitive: PrimitiveId,
-    ) -> GltfMesh {
-        let key = self.pipeline_key(&source.device(world), mesh, primitive);
+    ) -> Result<GltfMesh, super::Error> {
+        let key = self.pipeline_key(images, mesh, primitive)?;
         let primitive_id = primitive;
         let primitive = self.primitive(mesh.index(), primitive_id.index());
-        let mut streams = from_reader(&self.buffers, &primitive);
+        let targets = self.mesh_targets[mesh.index()];
+        let mut streams = from_reader(
+            &self.buffers,
+            mesh.index(),
+            primitive_id.index(),
+            &primitive,
+            targets,
+        )?;
         let gpu_mesh = source.allocate_lit_mesh(world, &key.options, streams.desc());
 
-        GltfMesh {
+        Ok(GltfMesh {
             mesh_index: mesh,
             primitive_index: primitive_id,
             key,
             mesh: gpu_mesh,
-        }
+        })
     }
 
     /// Upload every primitive of every mesh of the document.
     ///
     /// The vector is ordered document-mesh-major, then primitive-minor: first
     /// all of mesh 0's primitives, then mesh 1's, and so on.
-    pub fn insert_meshes(&self, source: &mut MeshSource, world: &Scope<'_>) -> Vec<GltfMesh> {
+    ///
+    /// # Errors
+    ///
+    /// If a primitive of the document cannot be uploaded; see
+    /// [`Self::insert_mesh`].
+    pub fn insert_meshes(
+        &self,
+        source: &mut MeshSource,
+        world: &Scope<'_>,
+        images: &[GltfImage],
+    ) -> Result<Vec<GltfMesh>, super::Error> {
         let count: usize = self
             .document
             .meshes()
@@ -341,10 +376,10 @@ impl LitGltf {
         let mut meshes = Vec::with_capacity(count);
         for mesh in self.meshes() {
             for primitive in self.primitives(mesh) {
-                meshes.push(self.insert_mesh(source, world, mesh, primitive));
+                meshes.push(self.insert_mesh(source, world, images, mesh, primitive)?);
             }
         }
-        meshes
+        Ok(meshes)
     }
 
     /// Insert the whole document and return every handle that keeps it alive.
@@ -358,12 +393,15 @@ impl LitGltf {
     /// A caller that inserts the pieces itself — to share a texture between
     /// documents, say — can call [`Self::insert_images`],
     /// [`Self::insert_materials`] and [`Self::insert_meshes`] instead and
-    /// build a [`GltfResources`] of its own.
+    /// build a [`GltfResources`] of its own. The meshes read their texture
+    /// filtering off the image handles, so they are inserted after the images
+    /// they sample.
     ///
     /// # Errors
     ///
     /// If a material's base-color texture names an image the document does
-    /// not declare, which the images just inserted cannot contain.
+    /// not declare, which the images just inserted cannot contain, or if a
+    /// primitive cannot be uploaded; see [`Self::insert_mesh`].
     pub fn insert_resources(
         &self,
         source: &mut MeshSource,
@@ -371,17 +409,25 @@ impl LitGltf {
     ) -> Result<GltfResources, super::Error> {
         let images = self.insert_images(source, world);
         let materials = self.insert_materials(source, world, &images)?;
-        let meshes = self.insert_meshes(source, world);
+        let meshes = self.insert_meshes(source, world, &images)?;
         Ok(GltfResources {
             images,
             materials,
             meshes,
         })
     }
+}
 
-    /// Whether image `image` uploads as a texture a filtering sampler can
-    /// sample — the same answer [`Self::insert_image`] bakes into the handle.
-    fn image_filtering(&self, image: usize, device: &wgpu::Device) -> bool {
-        image_format(&self.images[image], device).filtering
-    }
+/// The uploaded handle of document image `index` among `images`.
+///
+/// The filtering a pipeline key needs is a property of the uploaded texture —
+/// whether the device may filter its format — so it is read off the handle the
+/// material samples rather than recomputed from the document; one image, one
+/// answer, whichever caller asks.
+fn uploaded_image(images: &[GltfImage], index: usize) -> Result<&GltfImage, usize> {
+    let image = ImageId::new(index);
+    images
+        .iter()
+        .find(|uploaded| uploaded.image == image)
+        .ok_or(index)
 }

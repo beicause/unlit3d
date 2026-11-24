@@ -15,6 +15,33 @@ pub(super) fn needs_expansion(mode: Mode) -> bool {
     matches!(mode, Mode::LineLoop | Mode::TriangleFan)
 }
 
+/// The fewest vertices a primitive of `mode` has to state to draw anything.
+///
+/// The specification states one minimum per mode: a point is one vertex, a line
+/// two, a triangle three, and a strip or a loop needs one primitive's worth of
+/// them. A stream shorter than that cannot be drawn at all, so the loader
+/// refuses it instead of uploading geometry the device would draw as nothing.
+pub(super) fn minimum_vertices(mode: Mode) -> usize {
+    match mode {
+        Mode::Points => 1,
+        Mode::Lines | Mode::LineStrip | Mode::LineLoop => 2,
+        Mode::Triangles | Mode::TriangleStrip | Mode::TriangleFan => 3,
+    }
+}
+
+/// The name glTF gives `mode`, as an error states it.
+pub(super) fn name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Points => "POINTS",
+        Mode::Lines => "LINES",
+        Mode::LineStrip => "LINE_STRIP",
+        Mode::LineLoop => "LINE_LOOP",
+        Mode::Triangles => "TRIANGLES",
+        Mode::TriangleStrip => "TRIANGLE_STRIP",
+        Mode::TriangleFan => "TRIANGLE_FAN",
+    }
+}
+
 /// The `wgpu` topology a primitive of `mode` draws with.
 ///
 /// A mode [`needs_expansion`] draws as the list its indices are expanded into,
@@ -46,25 +73,24 @@ pub(super) fn topology(mode: Mode) -> wgpu::PrimitiveTopology {
 /// which the caller passes in as such: the expansion never has to tell the two
 /// apart, and the result is an index buffer either way.
 ///
-/// A stream too short to hold one primitive of `mode` — the specification asks
-/// for at least two vertices in a loop and at least three in a fan — expands
-/// into an empty list, which draws nothing: the count a document states is the
-/// only place that minimum lives, and an empty list is drawn harmlessly rather
-/// than failing the whole load.
+/// The caller checks [`minimum_vertices`] first, so the stream always holds one
+/// primitive of the mode.
 ///
 /// # Panics
 ///
-/// If `mode` is not a mode [`needs_expansion`].
+/// If `mode` is not a mode [`needs_expansion`], or `indices` is shorter than
+/// [`minimum_vertices`] of it. Both are the caller's own checks: a primitive
+/// that reaches here with a shorter stream is a loader bug, not a document one.
 pub(super) fn expand(mode: Mode, indices: &[u32]) -> Vec<u32> {
     match mode {
-        Mode::TriangleFan if indices.len() >= 3 => {
+        Mode::TriangleFan => {
             let mut triangles = Vec::with_capacity((indices.len() - 2) * 3);
             for pair in indices[1..].windows(2) {
                 triangles.extend_from_slice(&[pair[0], pair[1], indices[0]]);
             }
             triangles
         }
-        Mode::LineLoop if indices.len() >= 2 => {
+        Mode::LineLoop => {
             let mut lines = Vec::with_capacity(indices.len() * 2);
             for pair in indices.windows(2) {
                 lines.extend_from_slice(pair);
@@ -72,7 +98,6 @@ pub(super) fn expand(mode: Mode, indices: &[u32]) -> Vec<u32> {
             lines.extend_from_slice(&[indices[indices.len() - 1], indices[0]]);
             lines
         }
-        Mode::TriangleFan | Mode::LineLoop => Vec::new(),
-        _ => panic!("only a line loop or a triangle fan primitive is expanded"),
+        _ => unreachable!("only a line loop or a triangle fan primitive is expanded"),
     }
 }

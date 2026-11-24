@@ -25,7 +25,14 @@ pub(super) async fn a_double_sided_material_draws_back_faces() {
             let gltf = LitGltf::from_bytes(&reversed_document(double_sided))
                 .expect("the embedded document parses");
 
-            let key = gltf.pipeline_key(&ctx.device, MeshId::new(0), PrimitiveId::new(0));
+            let resources = gpu.with_mesh_source(&world, |source, world| {
+                gltf.insert_resources(source, world)
+                    .expect("the embedded document uploads")
+            });
+
+            let key = gltf
+                .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+                .expect("the quad's material samples the document's only image");
             if double_sided {
                 assert_eq!(
                     key.options.primitive.cull_mode, None,
@@ -39,10 +46,6 @@ pub(super) async fn a_double_sided_material_draws_back_faces() {
                 );
             }
 
-            let resources = gpu.with_mesh_source(&world, |source, world| {
-                gltf.insert_resources(source, world)
-                    .expect("the embedded document uploads")
-            });
             spawn_scene(&gpu, &mut world, &gltf, &resources);
             gpu.spawn(&mut world, bundle![camera()]);
 
@@ -86,18 +89,18 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
     .expect("the embedded document parses");
 
     // The primitive's key carries the blend state...
-    let key = gpu.with_mesh_source(&world, |source, world| {
-        gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
     });
+    let key = gltf
+        .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+        .expect("the quad's material samples no image it lacks");
     assert!(
         key.options.blend.is_some(),
         "an alphaMode BLEND material blends"
     );
 
-    let resources = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_resources(source, world)
-            .expect("the embedded document uploads")
-    });
     let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
 
     // ...and the spawned entity is marked for back-to-front compositing.
@@ -161,9 +164,13 @@ pub(super) async fn a_blended_material_writes_no_depth() {
     // The key turns blending on and depth writes off together: a blended
     // fragment covers its surface only partly, so the depth it would write is
     // no measurement of where that surface is.
-    let key = gpu.with_mesh_source(&world, |source, world| {
-        gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
+    let resources = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_resources(source, world)
+            .expect("the embedded document uploads")
     });
+    let key = gltf
+        .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+        .expect("the quad's material samples no image it lacks");
     assert!(
         key.options.blend.is_some(),
         "an alphaMode BLEND material blends"
@@ -173,10 +180,6 @@ pub(super) async fn a_blended_material_writes_no_depth() {
         "a blended material writes no depth"
     );
 
-    let resources = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_resources(source, world)
-            .expect("the embedded document uploads")
-    });
     spawn_scene(&gpu, &mut world, &gltf, &resources);
     gpu.spawn(&mut world, bundle![camera()]);
     let single = gpu.bind_offscreen_target(&world, "test::gltf_blend_single");
@@ -222,9 +225,13 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
         // The cutoff is per-instance state the spawned entity carries, not a
         // uniform the material binds: the key only declares that fragments are
         // cut off, and the model writes each instance's own value.
-        let key = gpu.with_mesh_source(&world, |source, world| {
-            gltf.pipeline_key(&source.device(world), MeshId::new(0), PrimitiveId::new(0))
+        let resources = gpu.with_mesh_source(&world, |source, world| {
+            gltf.insert_resources(source, world)
+                .expect("the embedded document uploads")
         });
+        let key = gltf
+            .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+            .expect("the quad's material samples the document's only image");
         assert!(
             key.options.alpha_cutoff,
             "an alphaMode MASK material cuts its fragments off"
@@ -234,10 +241,6 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
             "a cut-off material does not blend"
         );
 
-        let resources = gpu.with_mesh_source(&world, |source, world| {
-            gltf.insert_resources(source, world)
-                .expect("the embedded document uploads")
-        });
         let root = spawn_scene(&gpu, &mut world, &gltf, &resources);
         assert!(
             world

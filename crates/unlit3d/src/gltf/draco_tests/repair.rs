@@ -157,9 +157,10 @@ fn a_triangle_strip_primitive_is_normalized_to_triangles() {
 }
 
 #[test]
-fn a_corrupt_draco_stream_returns_an_error() {
+fn a_corrupt_draco_stream_reports_the_decoder_error() {
     // Truncate the stream's buffer view: decoding must fail with a returned
-    // error naming the extension, not panic on the unvalidated document.
+    // error carrying Draco's own diagnosis, not panic on the unvalidated
+    // document and not a bare "does not decode".
     let (mut root, bin) = build_parts(true, 4, 0, false);
     root["bufferViews"][0]["byteLength"] = json!(4);
     let bytes = glb(root.to_string(), &bin);
@@ -167,13 +168,53 @@ fn a_corrupt_draco_stream_returns_an_error() {
         Err(error) => error,
         Ok(_) => panic!("a truncated Draco stream is rejected"),
     };
-    let Error::Parse(gltf::Error::Validation(errors)) = &error else {
-        panic!("the decode failure is reported as a validation error");
+    let Error::Draco {
+        mesh,
+        primitive,
+        source,
+    } = &error
+    else {
+        panic!("the decode failure names the primitive it came from: {error:?}");
     };
+    assert_eq!((*mesh, *primitive), (0, 0));
     assert!(
-        errors
-            .iter()
-            .any(|(path, _)| path.as_str().contains(draco::EXTENSION)),
-        "the error names the extension that failed to decode: {errors:?}"
+        !source.message().is_empty(),
+        "the reported message is the decoder's own"
+    );
+}
+
+#[test]
+fn a_morph_target_outside_the_stream_keeps_its_accessor() {
+    // The extension compresses a primitive's attributes and indices only. A
+    // morph target's accessor stays an ordinary one, and the repair must leave
+    // its buffer view alone: rewriting it to the decoded stream would make the
+    // displacements unreadable.
+    let (root, bin) = build_parts(true, 4, 0, true);
+    let bytes = glb(root.to_string(), &bin);
+    let gltf = LitGltf::from_bytes(&bytes).expect("a Draco GLB with a morph target imports");
+    let primitive = gltf
+        .document
+        .meshes()
+        .next()
+        .unwrap()
+        .primitives()
+        .next()
+        .unwrap();
+    let target = primitive
+        .morph_targets()
+        .next()
+        .expect("the target survives");
+    let accessor = target.positions().expect("the target displaces positions");
+    assert_ne!(
+        accessor.view().map(|view| view.index()),
+        Some(0),
+        "the target's accessor still points at the document's own buffer view"
+    );
+    assert_eq!(
+        streams_of(&gltf)
+            .morph_deltas
+            .expect("the displacements upload")
+            .target_count,
+        1
     );
 }

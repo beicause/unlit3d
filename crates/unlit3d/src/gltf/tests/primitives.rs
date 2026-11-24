@@ -39,7 +39,6 @@ fn every_mode_reaches_the_topology_that_draws_it() {
 
 #[test]
 fn the_uploaded_primitive_draws_the_topology_its_mode_names() {
-    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let positions = [
         [0.0, 0.0, 0.0],
         [1.0, 0.0, 0.0],
@@ -58,7 +57,8 @@ fn the_uploaded_primitive_draws_the_topology_its_mode_names() {
         let gltf = LitGltf::from_bytes(&mode_document(mode, &positions, Some(&[0, 1, 2, 3])))
             .expect("the mode document parses");
         assert_eq!(
-            gltf.pipeline_key(&device, MeshId::new(0), PrimitiveId::new(0))
+            gltf.pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+                .expect("the mode document samples no image")
                 .options
                 .primitive
                 .topology,
@@ -85,7 +85,14 @@ fn a_triangle_fan_is_expanded_with_the_centre_last() {
         Some(&[0, 1, 2, 3]),
     ))
     .expect("the fan document parses");
-    let streams = super::streams::from_reader(&gltf.buffers, &gltf.primitive(0, 0));
+    let streams = super::streams::from_reader(
+        &gltf.buffers,
+        0,
+        0,
+        &gltf.primitive(0, 0),
+        gltf.mesh_targets[0],
+    )
+    .expect("the primitive's streams read");
     assert_eq!(
         streams.indices.expect("the fan expands into a list"),
         vec![1, 2, 0, 2, 3, 0]
@@ -102,7 +109,14 @@ fn a_fan_without_indices_expands_its_implicit_stream() {
     ];
     let gltf = LitGltf::from_bytes(&mode_document(Mode::TriangleFan, &positions, None))
         .expect("the fan document parses");
-    let streams = super::streams::from_reader(&gltf.buffers, &gltf.primitive(0, 0));
+    let streams = super::streams::from_reader(
+        &gltf.buffers,
+        0,
+        0,
+        &gltf.primitive(0, 0),
+        gltf.mesh_targets[0],
+    )
+    .expect("the primitive's streams read");
     assert_eq!(
         streams.indices.expect("the fan expands into a list"),
         vec![1, 2, 0, 2, 3, 0]
@@ -117,7 +131,14 @@ fn a_line_loop_is_expanded_back_to_its_first_vertex() {
         Some(&[0, 1, 2]),
     ))
     .expect("the loop document parses");
-    let streams = super::streams::from_reader(&gltf.buffers, &gltf.primitive(0, 0));
+    let streams = super::streams::from_reader(
+        &gltf.buffers,
+        0,
+        0,
+        &gltf.primitive(0, 0),
+        gltf.mesh_targets[0],
+    )
+    .expect("the primitive's streams read");
     assert_eq!(
         streams.indices.expect("the loop expands into a list"),
         vec![0, 1, 1, 2, 2, 0],
@@ -133,7 +154,14 @@ fn a_strip_reaches_the_draw_untouched() {
     for mode in [Mode::TriangleStrip, Mode::LineStrip] {
         let gltf = LitGltf::from_bytes(&mode_document(mode, &TRIANGLE_POSITIONS, Some(&[0, 1, 2])))
             .expect("the strip document parses");
-        let streams = super::streams::from_reader(&gltf.buffers, &gltf.primitive(0, 0));
+        let streams = super::streams::from_reader(
+            &gltf.buffers,
+            0,
+            0,
+            &gltf.primitive(0, 0),
+            gltf.mesh_targets[0],
+        )
+        .expect("the primitive's streams read");
         assert_eq!(
             streams.indices.expect("the strip keeps its indices"),
             vec![0, 1, 2],
@@ -150,7 +178,9 @@ fn a_primitive_samples_the_uv_set_its_material_names() {
     let gltf = LitGltf::from_bytes(&uv_document(1, &[0, 1])).expect("the UV document parses");
     let primitive = gltf.primitive(0, 0);
     assert_eq!(base_color_uv_set(&primitive), Some(1));
-    let streams = super::streams::from_reader(&gltf.buffers, &primitive);
+    let streams =
+        super::streams::from_reader(&gltf.buffers, 0, 0, &primitive, gltf.mesh_targets[0])
+            .expect("the primitive's streams read");
     let uvs = streams
         .uvs
         .expect("the primitive carries the set it samples");
@@ -169,6 +199,8 @@ fn a_primitive_missing_the_set_its_material_names_draws_untextured() {
     let gltf = LitGltf::from_bytes(&uv_document(2, &[0, 1])).expect("the UV document parses");
     let primitive = gltf.primitive(0, 0);
     assert_eq!(base_color_uv_set(&primitive), None);
-    let streams = super::streams::from_reader(&gltf.buffers, &primitive);
+    let streams =
+        super::streams::from_reader(&gltf.buffers, 0, 0, &primitive, gltf.mesh_targets[0])
+            .expect("the primitive's streams read");
     assert!(streams.uvs.is_none(), "no UV stream is uploaded");
 }

@@ -854,7 +854,9 @@ model that cannot draw.
   length the renderer requires. Weights are indexed by a target's slot in that
   array, so a target that displaces only normals keeps its slot and morphs
   nothing; counting it out would shift every later target's weight one slot
-  down and deform the mesh into a shape the document never states.
+  down and deform the mesh into a shape the document never states. One count
+  describes a whole mesh, so the loader checks the primitives of each mesh
+  against each other and refuses a document whose primitives disagree.
 - A primitive whose material is `doubleSided` is drawn from either side: the
   pipeline variant drops its cull mode, so the back faces the single-sided
   variant would discard are rasterized instead. Nothing else about the variant
@@ -892,18 +894,29 @@ model that cannot draw.
   steadier than a position a re-export could shuffle. A clip's `duration` is
   the length it was authored at even when the model leaves out a node the clip
   drives, so playback runs as long as the document says rather than stopping
-  short.
+  short. A channel that states a single keyframe is kept as a constant: it has
+  no interval to interpolate over, so the clip holds the one value it names.
 
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `LitGltf::pipeline_key`), so the variant it draws with never
 asks for a stream the mesh does not have. The full list of what the loader reads
-and what it ignores is the `gltf` module's supported subset.
+and what it ignores is the `gltf` module's supported subset; a document that
+states something undrawable — a primitive too short for its `mode`, an index
+past its own vertices, a mesh whose primitives disagree about their morph
+targets, an image short of the pixels its size needs, a Draco stream that
+cannot serve what it names — is refused with an `Error` naming the document's
+own indices rather than drawn as something else.
 
 An image is uploaded in the four-channel GPU format of its bit depth, widened
 where the source carries fewer channels — which is what lets an 8-bit grayscale
 texture decode its sRGB encoding in the sampler, the way an RGB one already
-could. The mapping, and the one format a device may refuse to filter
-(`Rgba32Float`), are in the `gltf` module.
+could. The normalized format clamps a sample into `0..=1`; the two float
+formats keep the range their samples state, so a highlight above one survives
+the upload and only a NaN folds to zero. The mapping, and the one format a
+device may refuse to filter (`Rgba32Float`), are in the `gltf` module. That
+filtering answer is decided once, when the image is uploaded, and carried in
+`GltfImage::filtering`: the material's bind-group layout and the pipeline key
+its primitive uploads with read that one flag, so they cannot disagree.
 
 Every upload comes with a mip chain, averaged at load time rather than left
 to a sampler reading a texture that has only its base level: a minified texture

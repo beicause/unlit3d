@@ -9,14 +9,22 @@
 //! validated normally, so every later reader — including morph targets, skins
 //! and animations — sees only ordinary accessors and the loader never has to
 //! trust an unvalidated document.
+//!
+//! The extension compresses a triangle primitive's attributes and indices and
+//! nothing else, so a morph target keeps its own accessors: this module checks
+//! that no target reads an accessor the stream also supplies, which would
+//! leave the target with values the decoder never wrote. A stream that cannot
+//! be decoded reports Draco's own error rather than a glTF validation failure,
+//! because the bitstream is what is malformed and its reader is what says so.
 
+use super::{DracoPrimitiveError, Error};
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::PointAttribute;
 use draco_core::mesh::Mesh as DracoMesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use gltf::json::validation::{Checked, USize64};
-use gltf::json::{self, Index, Path, Value, accessor, buffer, mesh};
+use gltf::json::{self, Index, Value, accessor, buffer, mesh};
 use hashbrown::HashMap;
 use hashbrown::hash_map::Entry;
 use std::mem::size_of;
@@ -49,7 +57,7 @@ struct Compressed {
 pub(super) fn fill_accessors(
     root: &mut json::Root,
     buffers: &mut Vec<gltf::buffer::Data>,
-) -> Result<bool, gltf::Error> {
+) -> Result<bool, Error> {
     let compressed = collect(root)?;
     if compressed.is_empty() {
         return Ok(false);
@@ -61,29 +69,40 @@ pub(super) fn fill_accessors(
     for compressed in &compressed {
         let geometry = match decoded.entry(compressed.stream_view) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                entry.insert(decode_stream(root, buffers, compressed.stream_view)?)
-            }
+            Entry::Vacant(entry) => entry.insert(decode_stream(
+                root,
+                buffers,
+                compressed.mesh_index,
+                compressed.primitive_index,
+                compressed.stream_view,
+            )?),
         };
         let points = geometry.num_points();
 
         for (semantic, unique_id, accessor_index) in &compressed.attributes {
+            let detail = |detail| Error::DracoPrimitive {
+                mesh: compressed.mesh_index,
+                primitive: compressed.primitive_index,
+                detail,
+            };
             let attribute = geometry
                 .attribute_by_unique_id(*unique_id)
-                .ok_or_else(|| invalid("a Draco attribute id is missing from the stream"))?;
+                .ok_or_else(|| detail(DracoPrimitiveError::MissingAttribute { id: *unique_id }))?;
             let (components, accessor_normalized) = match root.accessors.get(*accessor_index) {
                 Some(accessor) => match &accessor.type_ {
                     Checked::Valid(kind) => (kind.multiplicity(), accessor.normalized),
                     Checked::Invalid => {
-                        return Err(invalid("a Draco accessor has an invalid type"));
+                        return Err(detail(DracoPrimitiveError::InvalidAccessorType));
                     }
                 },
-                None => return Err(invalid("a Draco primitive names a missing accessor")),
+                None => {
+                    return Err(detail(DracoPrimitiveError::MissingAccessor {
+                        accessor: *accessor_index,
+                    }));
+                }
             };
             if (attribute.num_components() as usize) < components {
-                return Err(invalid(
-                    "a Draco attribute has fewer components than its accessor declares",
-                ));
+                return Err(detail(DracoPrimitiveError::TooFewComponents));
             }
             let joints = semantic.starts_with("JOINTS_");
             // The accessor declaration decides normalization; the bitstream flag is
@@ -91,8 +110,9 @@ pub(super) fn fill_accessors(
             // Joint indices are written back as integers, so they are never rescaled
             // into 0..1.
             let normalize = !joints && (accessor_normalized || attribute.normalized());
-            let values = read_attribute(attribute, points, components, normalize);
-            let bytes = encode(&values, joints);
+            let values =
+                read_attribute(attribute, points, components, normalize).map_err(detail)?;
+            let bytes = encode(&values, joints).map_err(detail)?;
             let view = push_view(root, buffer_index, &mut blob, bytes);
 
             let accessor = &mut root.accessors[*accessor_index];
@@ -124,10 +144,16 @@ pub(super) fn fill_accessors(
                 .collect();
             let view = push_view(root, buffer_index, &mut blob, bytes);
 
-            let accessor = root
-                .accessors
-                .get_mut(accessor_index)
-                .ok_or_else(|| invalid("a Draco primitive names a missing indices accessor"))?;
+            let accessor =
+                root.accessors
+                    .get_mut(accessor_index)
+                    .ok_or_else(|| Error::DracoPrimitive {
+                        mesh: compressed.mesh_index,
+                        primitive: compressed.primitive_index,
+                        detail: DracoPrimitiveError::MissingAccessor {
+                            accessor: accessor_index,
+                        },
+                    })?;
             accessor.buffer_view = Some(view);
             accessor.byte_offset = None;
             accessor.count = USize64(indices.len() as u64);
@@ -196,157 +222,266 @@ fn push_view(
 }
 
 /// Encode decoded floats the way the rewritten accessor declares them.
-fn encode(values: &[f32], joints: bool) -> Vec<u8> {
-    // Joint indices name a joint, not a quantity: they are never normalized,
-    // and glTF only allows unsigned integers for them.
-    let mut bytes = Vec::with_capacity(
-        values.len()
-            * if joints {
-                size_of::<U16>()
-            } else {
-                size_of::<F32>()
-            },
-    );
+///
+/// Joint indices name a joint, not a quantity: they are never normalized, and
+/// the rewritten accessor states them as 16-bit integers. A value the joint
+/// stream cannot hold is refused here rather than truncated into a different
+/// joint.
+fn encode(values: &[f32], joints: bool) -> Result<Vec<u8>, DracoPrimitiveError> {
+    let width = if joints {
+        size_of::<u16>()
+    } else {
+        size_of::<f32>()
+    };
+    let mut bytes = Vec::with_capacity(values.len() * width);
     for value in values {
         if joints {
+            if *value < 0.0 || *value > f32::from(u16::MAX) || value.fract() != 0.0 {
+                return Err(DracoPrimitiveError::JointOutOfRange { joint: *value });
+            }
             bytes.extend_from_slice(U16::new(*value as u16).as_bytes());
         } else {
             bytes.extend_from_slice(F32::new(*value).as_bytes());
         }
     }
-    bytes
+    Ok(bytes)
 }
 
-/// Widen a decoded attribute into f32 rows, rescaling normalized integers.
+/// Read a decoded attribute as the floats its accessor declares.
 ///
-/// Draco's reader widens integers without rescaling, and the rewritten
-/// accessor is a float, so the normalization has to be baked into the values.
-/// `normalize` comes from the accessor declaration (or the bitstream flag),
-/// not from the bitstream alone: most exporters leave that flag clear.
+/// A normalized integer attribute is rescaled into `0..=1`. The 16-bit and
+/// 8-bit integers are exactly representable in the 32-bit float the accessor
+/// holds, so the scale is exact; a 32-bit integer is not, and is refused rather
+/// than normalized into values that differ from what the document states.
 fn read_attribute(
     attribute: &PointAttribute,
     points: usize,
     components: usize,
     normalize: bool,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, DracoPrimitiveError> {
     let mut values = attribute.read_f32s(points, components);
-    if normalize && let Some(max) = integral_max(attribute.data_type()) {
-        let signed = matches!(
-            attribute.data_type(),
-            DataType::Int8 | DataType::Int16 | DataType::Int32
-        );
-        for value in &mut values {
-            *value = if signed {
-                (*value / max).max(-1.0)
-            } else {
-                *value / max
-            };
-        }
+    if !normalize {
+        return Ok(values);
     }
-    values
+    let max = match integral_max(attribute.data_type()) {
+        IntegralMax::NotAnInteger => return Ok(values),
+        IntegralMax::Exact(max) => max,
+        IntegralMax::TooWide => {
+            return Err(DracoPrimitiveError::NormalizationTooWide {
+                data_type: data_type_name(attribute.data_type()),
+            });
+        }
+    };
+    let signed = matches!(
+        attribute.data_type(),
+        DataType::Int8 | DataType::Int16 | DataType::Int32
+    );
+    for value in &mut values {
+        *value = if signed {
+            (*value / max).max(-1.0)
+        } else {
+            *value / max
+        };
+    }
+    Ok(values)
 }
 
-/// The largest scalar a normalized integer attribute can hold. Draco's reader
-/// only materialises the types listed here; the others need no rescale.
-fn integral_max(data_type: DataType) -> Option<f32> {
-    Some(match data_type {
-        DataType::Int8 => i8::MAX as f32,
-        DataType::Uint8 => u8::MAX as f32,
-        DataType::Int16 => i16::MAX as f32,
-        DataType::Uint16 => u16::MAX as f32,
-        DataType::Int32 => i32::MAX as f32,
-        DataType::Uint32 => u32::MAX as f32,
-        _ => return None,
-    })
+/// How far an integer component type has to be divided to reach `0..=1`.
+enum IntegralMax {
+    /// The type is already a float.
+    NotAnInteger,
+    /// The type's range maps onto `0..=1` exactly.
+    Exact(f32),
+    /// The type's range exceeds what a 32-bit float states exactly.
+    TooWide,
 }
 
-/// Decode one primitive's bitstream out of the document's buffers.
+/// The divisor a normalized integer component type uses.
+fn integral_max(data_type: DataType) -> IntegralMax {
+    match data_type {
+        DataType::Int8 => IntegralMax::Exact(f32::from(i8::MAX)),
+        DataType::Uint8 => IntegralMax::Exact(f32::from(u8::MAX)),
+        DataType::Int16 => IntegralMax::Exact(f32::from(i16::MAX)),
+        DataType::Uint16 => IntegralMax::Exact(f32::from(u16::MAX)),
+        DataType::Int32 | DataType::Uint32 => IntegralMax::TooWide,
+        _ => IntegralMax::NotAnInteger,
+    }
+}
+
+/// The name a component type goes by in an error.
+fn data_type_name(data_type: DataType) -> &'static str {
+    match data_type {
+        DataType::Int8 => "Int8",
+        DataType::Uint8 => "Uint8",
+        DataType::Int16 => "Int16",
+        DataType::Uint16 => "Uint16",
+        DataType::Int32 => "Int32",
+        DataType::Uint32 => "Uint32",
+        _ => "non-integer",
+    }
+}
+
+/// Decode one bitstream out of the buffers it lives in.
 fn decode_stream(
     root: &json::Root,
     buffers: &[gltf::buffer::Data],
+    mesh: usize,
+    primitive: usize,
     view_index: usize,
-) -> Result<DracoMesh, gltf::Error> {
+) -> Result<DracoMesh, Error> {
+    let detail = |detail| Error::DracoPrimitive {
+        mesh,
+        primitive,
+        detail,
+    };
     let view = root
         .buffer_views
         .get(view_index)
-        .ok_or_else(|| invalid("the Draco bufferView does not exist"))?;
-    let data = buffers
-        .get(view.buffer.value())
-        .ok_or_else(|| invalid("the Draco bufferView names a missing buffer"))?;
-    let offset = view
-        .byte_offset
-        .as_ref()
-        .map_or(0, |value| value.0 as usize);
-    let end = offset
+        .ok_or_else(|| detail(DracoPrimitiveError::MissingStream { view: view_index }))?;
+    let buffer_index = view.buffer.value();
+    let buffer = buffers.get(buffer_index).ok_or_else(|| {
+        detail(DracoPrimitiveError::MissingStreamBuffer {
+            view: view_index,
+            buffer: buffer_index,
+        })
+    })?;
+    let start = view.byte_offset.map_or(0, |offset| offset.0) as usize;
+    let end = start
         .checked_add(view.byte_length.0 as usize)
-        .ok_or_else(|| invalid("the Draco stream overflows its buffer"))?;
-    let bytes = data
-        .get(offset..end)
-        .ok_or_else(|| invalid("the Draco stream extends past its buffer"))?;
+        .ok_or_else(|| detail(DracoPrimitiveError::StreamOverflowsBuffer { view: view_index }))?;
+    let bytes = buffer
+        .0
+        .get(start..end)
+        .ok_or_else(|| detail(DracoPrimitiveError::StreamPastBuffer { view: view_index }))?;
 
     let mut input = DecoderBuffer::new(bytes);
     let mut geometry = DracoMesh::new();
     MeshDecoder::new()
         .decode(&mut input, &mut geometry)
-        .map_err(|_| invalid("the Draco bitstream does not decode"))?;
+        .map_err(|source| Error::Draco {
+            mesh,
+            primitive,
+            source,
+        })?;
     Ok(geometry)
 }
 
-/// Find every compressed primitive and the accessors its stream supplies.
-fn collect(root: &json::Root) -> Result<Vec<Compressed>, gltf::Error> {
+/// Collect every compressed primitive the document carries.
+///
+/// Nothing is rewritten here: a document the extension cannot express is
+/// refused before any accessor is touched, so a failed repair never leaves a
+/// half-decoded document behind.
+fn collect(root: &json::Root) -> Result<Vec<Compressed>, Error> {
     let mut compressed = Vec::new();
-    for (mesh_index, model) in root.meshes.iter().enumerate() {
-        for (primitive_index, primitive) in model.primitives.iter().enumerate() {
+    for (mesh_index, mesh) in root.meshes.iter().enumerate() {
+        for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
             let Some(extensions) = &primitive.extensions else {
                 continue;
             };
             let Some(extension) = extensions.others.get(EXTENSION) else {
                 continue;
             };
-            let stream_view = usize::try_from(
-                extension
-                    .get("bufferView")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| invalid("a Draco extension names its bufferView"))?,
-            )
-            .map_err(|_| invalid("the Draco bufferView index is too large"))?;
+            let detail = |detail| Error::DracoPrimitive {
+                mesh: mesh_index,
+                primitive: primitive_index,
+                detail,
+            };
+
+            // The extension compresses a triangle primitive only, and the
+            // decoder always yields a triangle list. A strip is accepted and
+            // rewritten as a list; anything else has no decoded geometry to
+            // become.
+            match primitive.mode {
+                Checked::Valid(mesh::Mode::Triangles | mesh::Mode::TriangleStrip) => {}
+                _ => return Err(detail(DracoPrimitiveError::NotTriangles)),
+            }
+
+            let stream_view = extension
+                .get("bufferView")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| detail(DracoPrimitiveError::ExtensionNamesNoStream))?
+                as usize;
             let ids = extension
                 .get("attributes")
                 .and_then(Value::as_object)
-                .ok_or_else(|| invalid("a Draco extension maps semantics to attribute ids"))?;
+                .ok_or_else(|| detail(DracoPrimitiveError::ExtensionMapsNoAttributes))?;
 
-            let mut attributes = Vec::new();
+            // The extension must map a subset of the semantics the primitive
+            // declares: a semantic only the extension names has no accessor to
+            // rewrite, and the values it decodes to would have nowhere to go.
+            let mut declared: Vec<String> = Vec::with_capacity(primitive.attributes.len());
+            for semantic in primitive.attributes.keys() {
+                if let Checked::Valid(semantic) = semantic {
+                    declared.push(semantic.to_string());
+                }
+            }
+            for semantic in ids.keys() {
+                if !declared.iter().any(|name| name == semantic) {
+                    return Err(detail(DracoPrimitiveError::AttributeNotDeclared {
+                        semantic: semantic.clone(),
+                    }));
+                }
+            }
+
+            let mut attributes = Vec::with_capacity(declared.len());
             for (semantic, accessor) in &primitive.attributes {
-                // An invalid semantic cannot name a stream attribute; glTF's
-                // own validation reports it, so leave it alone here.
                 let Checked::Valid(semantic) = semantic else {
                     continue;
                 };
                 let name = semantic.to_string();
+                // An attribute outside the stream is processed as usual.
                 let Some(unique_id) = ids.get(&name).and_then(Value::as_u64) else {
-                    // An attribute outside the stream is processed as usual.
                     continue;
                 };
-                let unique_id = u32::try_from(unique_id)
-                    .map_err(|_| invalid("a Draco attribute id is too large"))?;
+                let unique_id = u32::try_from(unique_id).map_err(|_| {
+                    detail(DracoPrimitiveError::AttributeIdTooLarge { id: unique_id })
+                })?;
                 attributes.push((name, unique_id, accessor.value()));
             }
+
+            let indices = primitive.indices.as_ref().map(|index| index.value());
+
+            // A morph target keeps its own accessors, because the extension
+            // compresses a primitive's geometry and not its displacements. A
+            // target naming an accessor the stream supplies would state
+            // displacements the decoded geometry overwrites.
+            for (target, morph_target) in primitive
+                .targets
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+            {
+                for accessor in [
+                    morph_target.positions,
+                    morph_target.normals,
+                    morph_target.tangents,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let accessor = accessor.value();
+                    let in_stream = attributes
+                        .iter()
+                        .any(|(_, _, in_stream)| *in_stream == accessor)
+                        || indices == Some(accessor);
+                    if in_stream {
+                        return Err(detail(DracoPrimitiveError::MorphTargetInStream {
+                            target,
+                            accessor,
+                        }));
+                    }
+                }
+            }
+
             compressed.push(Compressed {
                 mesh_index,
                 primitive_index,
                 stream_view,
                 attributes,
-                indices: primitive.indices.as_ref().map(|index| index.value()),
+                indices,
             });
         }
     }
     Ok(compressed)
-}
-
-/// Report a malformed Draco extension through glTF's own validation error.
-fn invalid(detail: &str) -> gltf::Error {
-    gltf::Error::Validation(vec![(
-        Path::new().field(EXTENSION).value_str(detail),
-        gltf::json::validation::Error::Invalid,
-    )])
 }
