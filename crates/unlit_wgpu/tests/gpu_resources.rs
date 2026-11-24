@@ -477,6 +477,229 @@ fn actual_all(frame: &Frame, index: u32) -> [u8; 4] {
     frame.pixel_u8(index, 0)
 }
 
+/// Bytes per element of the packed-row test: twelve `f32` lanes, so three
+/// `Rgba32Float` texels. 48 does not divide the copy alignment — it goes 5
+/// times into 256 with 16 left over — so a row needs 16 of them, 768 bytes,
+/// to be one a staged copy accepts.
+const PACKED: u64 = 48;
+
+/// Elements the packed-row test uploads. Few enough to keep the frame small:
+/// with a 16-element row these span three rows, so the readback crosses a row
+/// boundary rather than sitting inside one.
+const PACKED_ELEMENTS: u32 = 40;
+
+/// `f32` lanes one element holds, and the texels they fill.
+const LANES: usize = 12;
+const PACKED_TEXELS: u32 = 3;
+
+/// The shader the packed-row test draws with: one texel per pixel, flat in
+/// element order, so a frame `PACKED_ELEMENTS * PACKED_TEXELS` wide reads every
+/// element back, lane by lane.
+const PACKED_SHADER: &str = r#"
+@group(0) @binding(0) var elements: texture_2d<f32>;
+
+const TEXELS: i32 = 120;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let x = f32((vertex << 1u) & 2u);
+    let y = f32(vertex & 2u);
+    out.position = vec4<f32>(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
+    out.uv = vec2<f32>(x, y);
+    return out;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let width = i32(textureDimensions(elements).x);
+    let texel = min(i32(floor(input.uv.x * f32(TEXELS))), TEXELS - 1);
+    return textureLoad(elements, vec2<i32>(texel % width, texel / width), 0);
+}
+"#;
+
+/// Upload the packed elements with `staged` true through the reusable staging
+/// buffer, and with it false through the queue, and return the frame each path
+/// renders.
+///
+/// Both write the same elements, so the two frames are the property under test:
+/// the staged path records a copy whose row is a whole number of alignment
+/// units, while the queue path lets wgpu re-align the rows itself.
+async fn packed_frames(ctx: &Ctx, elements: &[u8]) -> (Frame, Frame) {
+    let max_dimension = ctx.device.limits().max_texture_dimension_2d;
+    let mut frames = Vec::with_capacity(2);
+    for staged in [true, false] {
+        let mut array = Array::new(
+            &ctx.device,
+            Some("test::texel::packed"),
+            PACKED,
+            u64::from(PACKED_ELEMENTS),
+            Some(max_dimension),
+        );
+        assert!(array.is_texel(), "the array took the texture path");
+        if staged {
+            let mut encoder = ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test::texel::packed::encoder"),
+                });
+            array.upload(&ctx.device, &mut encoder, elements);
+            ctx.queue.submit([encoder.finish()]);
+        } else {
+            array.write(&ctx.queue, elements);
+        }
+        frames.push((array, PACKED_SHADER, PACKED_ELEMENTS * PACKED_TEXELS));
+    }
+
+    let mut rendered = Vec::with_capacity(frames.len());
+    for (array, shader_source, width) in frames {
+        rendered.push(render_texel_array(ctx, &array, shader_source, width).await);
+    }
+    let queue = rendered.pop().expect("the queue path rendered");
+    let staged = rendered.pop().expect("the staged path rendered");
+    (staged, queue)
+}
+
+/// Draw `array` through `shader_source` into a `width`-wide frame and read it
+/// back.
+async fn render_texel_array(ctx: &Ctx, array: &Array, shader_source: &str, width: u32) -> Frame {
+    let handle = array.handle();
+    let entry = handle.layout_entry(0, wgpu::ShaderStages::FRAGMENT, array.element_size());
+    let bind_group_layout = ctx
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("test::texel::packed::layout"),
+            entries: &[entry],
+        });
+    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test::texel::packed::bind_group"),
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: handle.binding_resource(),
+        }],
+    });
+    let shader =
+        unlit_wgpu::util::shader_module(&ctx.device, shader_source, "test::texel::packed::shader");
+    let pipeline_layout = ctx
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("test::texel::packed::pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+    let pipeline = ctx
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("test::texel::packed::pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+    let target = create_color_target(&ctx.device, COLOR_FORMAT, width, 1);
+    let attachments = RenderAttachments::from_views(
+        Some(TextureExt::create_view(
+            &target,
+            &wgpu::TextureViewDescriptor::default(),
+        )),
+        None,
+        None,
+    );
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::texel::packed::draw"),
+        });
+    {
+        let mut pass = attachments.begin_pass(
+            &mut encoder,
+            "packed pass",
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            depth_clear(),
+            stencil_clear(),
+        );
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    ctx.queue.submit([encoder.finish()]);
+
+    Frame {
+        rgba: readback_texture(&ctx.device, &ctx.queue, &target).await,
+        width,
+        height: 1,
+    }
+}
+
+/// A 48-byte element's row is long enough to reach the copy alignment, so a
+/// staged upload reaches the texture exactly as the queue path does: the same
+/// elements, lane for lane, across a row boundary.
+async fn a_texel_array_stages_a_row_reaching_the_copy_alignment() {
+    let ctx = Ctx::headless().await;
+    // Values stay inside `[0, 1]` so the linear 8-bit target round-trips them;
+    // each lane gets its own value, so a byte out of place cannot pass for a
+    // neighbour.
+    let elements: Vec<[f32; LANES]> = (0..PACKED_ELEMENTS as usize)
+        .map(|index| core::array::from_fn(|lane| ((index * LANES + lane) % 251) as f32 / 251.0))
+        .collect();
+    let bytes: Vec<u8> = elements
+        .iter()
+        .flat_map(|element| element.as_bytes().to_vec())
+        .collect();
+
+    let (staged, queue) = packed_frames(&ctx, &bytes).await;
+    for (texel, element) in (0..PACKED_ELEMENTS)
+        .flat_map(|element| (0..PACKED_TEXELS).map(move |texel| (texel, element)))
+    {
+        let pixel = element * PACKED_TEXELS + texel;
+        let wanted = &elements[element as usize][texel as usize * 4..texel as usize * 4 + 4];
+        let wanted: [u8; 4] = core::array::from_fn(|channel| byte(wanted[channel]));
+        for (path, frame) in [("staged", &staged), ("queue", &queue)] {
+            let actual = frame.pixel_u8(pixel, 0);
+            for (channel, (&actual, &wanted)) in actual.iter().zip(&wanted).enumerate() {
+                assert!(
+                    i32::from(actual).abs_diff(i32::from(wanted)) <= 1,
+                    "{path}: element {element} texel {texel} channel {channel} read back \
+                     as {actual}, expected {wanted}"
+                );
+            }
+        }
+    }
+}
+
+/// One element past the widest aligned capacity has no row that both fits the
+/// texture and stays aligned, so the layout refuses it rather than handing an
+/// unaligned row to the upload.
+async fn a_texel_array_past_its_widest_aligned_capacity_is_refused() {
+    // 2048 texels hold 682 48-byte elements, but only 672 of them make up
+    // whole alignment units.
+    let _ = unlit_wgpu::texel_array::TexelArrayLayout::new(PACKED, 672 * 2048 + 1, 2048);
+}
+
 // This file's share of the suite's registry: the suite root concatenates it
 // with its siblings', and `gpu_test_main!` there runs the result under
 // `cargo nextest` natively and in a browser through the wasm export it adds.
@@ -490,4 +713,7 @@ gpu_tests! {
     a_vertex_pool_writes_each_element_at_its_stride,
     growing_a_vertex_stream_keeps_its_elements,
     a_texel_array_reads_back_the_elements_it_was_given,
+    a_texel_array_stages_a_row_reaching_the_copy_alignment,
+    #[should_panic(expected = "do not fit in a")]
+    a_texel_array_past_its_widest_aligned_capacity_is_refused,
 }

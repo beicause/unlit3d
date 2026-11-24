@@ -55,6 +55,15 @@
 //! exactly `elements_per_row * element_size` bytes, so the only padding is the
 //! unused tail of the last populated row. An element never straddles a row, so
 //! growing the row width never splits one.
+//!
+//! Because every row is a whole number of alignment units, the widest row a
+//! texture can hold is the widest one that is also a multiple of the unit — not
+//! the row of every texel its width allows. A 48-byte element, for instance,
+//! takes 16 elements per alignment unit, so a 2048-texel texture tops out at a
+//! 672-element row (2016 texels) rather than the 682 elements 2048 texels could
+//! otherwise hold. The capacity follows from the row width and the height
+//! together, so a texture holds its widest aligned row times its height — the
+//! last row may be left partly empty, never shortened.
 
 use crate::resources::{TextureExt, TextureView};
 use crate::staging::StagingBuffer;
@@ -353,6 +362,13 @@ impl TexelArrayLayout {
     /// `max_dimension` is the device's
     /// [`wgpu::Limits::max_texture_dimension_2d`].
     ///
+    /// The capacity a layout holds is at least the one asked for: when the
+    /// request does not fill the texture exactly, the last row is left partly
+    /// empty rather than shortened, so a caller may write up to
+    /// [`Self::capacity`] elements. It is bounded by the widest *aligned* row
+    /// times `max_dimension`, which can be less than the number of elements
+    /// `max_dimension` texels would hold — see the [module docs](self).
+    ///
     /// # Panics
     ///
     /// If `element_size` is not a whole number of `f32` lanes, or if `capacity`
@@ -485,6 +501,12 @@ impl TexelArrayLayout {
 
 /// The number of elements a row holds: enough for a row to reach the copy
 /// alignment, then doubled until the elements fit within `max_dimension` rows.
+///
+/// Every candidate is a whole number of alignment units, so [`TexelArrayLayout::row_bytes`] is
+/// always a multiple of [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`] and a
+/// buffer-to-texture copy accepts the packed image as it stands. That rules out
+/// the widest row a texture could hold: the width is bounded by the widest
+/// aligned row, not by the texture's own limit.
 fn row_elements(
     element_size: u64,
     texels_per_element: u64,
@@ -505,16 +527,23 @@ fn row_elements(
          {max_dimension}-texel texture limit",
         base * texels_per_element
     );
+    // The widest row the texture limit still leaves aligned. Clamping to
+    // `max_elements_per_row` instead would give a row whose bytes are not a
+    // whole number of alignment units, which a staged copy rejects.
+    let widest = (max_elements_per_row / base) * base;
 
     let mut elements_per_row = base;
     while capacity.div_ceil(elements_per_row) > u64::from(max_dimension) {
         assert!(
-            elements_per_row < max_elements_per_row,
+            elements_per_row < widest,
             "{capacity} elements of {element_size} bytes do not fit in a \
-             {max_dimension}x{max_dimension} texture"
+             {max_dimension}x{max_dimension} texture: the widest aligned row \
+             holds {widest} of them, room for {}",
+            widest * u64::from(max_dimension)
         );
-        // Doubling keeps the row a whole number of alignment units.
-        elements_per_row = (elements_per_row * 2).min(max_elements_per_row);
+        // Doubling keeps the row a whole number of alignment units, and
+        // `widest` does too, so the clamp lands on an aligned row.
+        elements_per_row = (elements_per_row * 2).min(widest);
     }
     u32::try_from(elements_per_row).expect("a row within `max_dimension` fits a `u32`")
 }

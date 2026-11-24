@@ -885,6 +885,16 @@ shader recovers the width with `textureDimensions`. The shader then depends on
 neither the element size nor the device's resolution limit, and an element never
 straddles a row, so growing the array never splits one.
 
+Both conditions bound the row width: it has to be a multiple of the alignment
+unit, so the widest row the texture limit leaves is the widest such multiple,
+not the row of every texel the limit allows. A 48-byte element needs 16 per unit
+and so tops out at a 672-element row on a 2048-texel texture, 2016 texels wide
+rather than 2048. Capacity follows from the row width and the height together —
+the widest aligned row times `max_dimension` texels — so an array can hold less
+than the limit squared would suggest, and a request past that is refused rather
+than given a row a staged copy would reject. The last row may be left partly
+empty; a row is never shortened.
+
 </details>
 
 ### Per-frame uploads: pooled staging buffers

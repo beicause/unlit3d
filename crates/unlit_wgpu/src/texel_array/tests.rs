@@ -71,6 +71,104 @@ fn every_element_size_produces_an_aligned_row() {
     }
 }
 
+/// The widest row a 48-byte element can have within `ROOMY`: 2048 texels
+/// hold 682 elements, but only a whole number of 16-element alignment units
+/// fits, so the row stops at 672 of them.
+const WIDEST_STRUCT_ROW: u64 = 672;
+
+#[test]
+fn a_row_stops_at_the_widest_aligned_width_not_the_texture_limit() {
+    // 682 elements would use every texel the width allows, but a row of 682
+    // is 32736 bytes — 224 past a 256-byte boundary — and a staged copy
+    // rejects it. The row backs off to the last aligned width instead.
+    let layout = TexelArrayLayout::new(STRUCT_ELEMENT, WIDEST_STRUCT_ROW * u64::from(ROOMY), ROOMY);
+
+    assert_eq!(layout.elements_per_row, 672);
+    assert_eq!(layout.row_bytes(), 32_256);
+    assert!(
+        layout
+            .row_bytes()
+            .is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64),
+        "a staged copy accepts the row as it stands"
+    );
+    assert_eq!(layout.width, 2016, "672 elements of three texels each");
+    assert!(layout.width <= ROOMY);
+    assert_eq!(layout.height, ROOMY, "the capacity fills the texture");
+    assert_eq!(layout.capacity(), 672 * u64::from(ROOMY));
+}
+
+#[test]
+fn the_widest_aligned_capacity_is_the_most_a_texture_holds() {
+    let room = WIDEST_STRUCT_ROW * u64::from(ROOMY);
+    assert!(
+        std::panic::catch_unwind(|| TexelArrayLayout::new(STRUCT_ELEMENT, room, ROOMY)).is_ok()
+    );
+
+    let result =
+        std::panic::catch_unwind(|| TexelArrayLayout::new(STRUCT_ELEMENT, room + 1, ROOMY));
+
+    assert!(
+        result.is_err(),
+        "one element past the widest aligned capacity has no row that fits"
+    );
+}
+
+#[test]
+fn a_row_that_would_be_truncated_by_the_texture_limit_stays_aligned() {
+    // 80 and 96 bytes both land in the same trap as 48: a row of every texel
+    // the width allows is not a whole number of alignment units, so the
+    // widest row that both fits and aligns is one unit less. Each case is
+    // given the capacity that fills the texture at that width, which is the
+    // only capacity that reaches it.
+    for (element_size, texels, widest) in [(80u64, 5u64, 400u64), (96, 6, 336)] {
+        let room = widest * u64::from(ROOMY);
+        let layout = TexelArrayLayout::new(element_size, room, ROOMY);
+        assert_eq!(
+            layout.elements_per_row as u64, widest,
+            "a {element_size}-byte element stops at its widest aligned row"
+        );
+        assert_eq!(layout.width as u64, widest * texels);
+        assert!(
+            layout
+                .row_bytes()
+                .is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64),
+            "a {element_size}-byte element gave a {}-byte row",
+            layout.row_bytes()
+        );
+        assert!(layout.width <= ROOMY && layout.height <= ROOMY);
+        assert!(
+            std::panic::catch_unwind(|| TexelArrayLayout::new(element_size, room + 1, ROOMY))
+                .is_err(),
+            "a {element_size}-byte element past {room} has no row that fits"
+        );
+    }
+}
+
+#[test]
+fn every_successful_layout_is_aligned_and_roomy_enough() {
+    let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+    for element_size in [4u64, 8, 12, 16, 20, 32, 36, 48, 64, 80, 96, 128, 256] {
+        for capacity in [0u64, 1, 7, 1000, 1_100_000, 4_000_000] {
+            let Ok(layout) =
+                std::panic::catch_unwind(|| TexelArrayLayout::new(element_size, capacity, ROOMY))
+            else {
+                continue;
+            };
+            assert!(
+                layout.row_bytes().is_multiple_of(alignment),
+                "a {element_size}-byte element × {capacity} gave a {}-byte row",
+                layout.row_bytes()
+            );
+            assert!(layout.width <= ROOMY && layout.height <= ROOMY);
+            assert!(
+                layout.capacity() >= capacity.max(1),
+                "a {element_size}-byte element × {capacity} holds only {}",
+                layout.capacity()
+            );
+        }
+    }
+}
+
 #[test]
 fn an_element_that_is_not_a_whole_number_of_lanes_panics() {
     let result = std::panic::catch_unwind(|| TexelArrayLayout::new(6, 1, ROOMY));
