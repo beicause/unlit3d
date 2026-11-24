@@ -169,6 +169,7 @@ impl Bundle for App {
             WinitProxy(self.proxy),
             FrameSkip::default(),
         ]
+        .singleton::<FrameSkip>()
     }
 }
 

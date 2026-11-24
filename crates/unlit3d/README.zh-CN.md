@@ -869,7 +869,9 @@ tick 频率低于输入到达频率的世界依然按顺序读到每一条，之
 `distribute_input` 把 `InputWriter` 复制进每个嵌套世界并在那里订阅，一条流即可供给
 全部世界，而每个世界各建自己的状态；不在这个层级里的世界——由 runner 作为兄弟世界
 启动的那个——则在自己的初始化里自行订阅。只读输入而完全不分发的世界改为每 tick 调用
-一次 `refresh_input`，在任何读者读批次之前。来自窗口库的事件转换位于相应 feature 之后：
+一次 `refresh_input`，在任何读者读批次之前。两个调用对「world 里没有缓冲」以及「缓冲所在
+实体丢了 `InputState`」都返回 `false`：后一种情况只记一条警告并跳过这一趟，不让 tick
+panic——缺的那一半是 spawn 时的错误，不该在某一帧里变成崩溃。来自窗口库的事件转换位于相应 feature 之后：
 `input::winit::WinitInput` 转发 `WindowEvent`，`egui::convert` 把本 crate 的事件转成
 egui 的事件。
 

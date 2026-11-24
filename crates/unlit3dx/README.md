@@ -100,7 +100,10 @@ publishes what the subscriptions collected. A tick body holds a shared
 goes through the queue and is committed by the driver after that tick, never
 by the tick itself. A world whose host only steps it gets the same deal:
 `step_stepped_world` applies as well as publishes, so a change a tick queues
-lands by the time the step returns.
+lands by the time the step returns. A world that has already ended runs
+nothing: every entry point — that step included — answers
+`StepError::Unavailable`, so a caller that switches between stepping a world
+and borrowing it cannot read a finished world as still alive.
 
 ## Jobs
 

@@ -19,7 +19,9 @@
 //! structural change goes through [`unlit_ecs::Scope::queue`] and lands when the driver
 //! applies after the dispatch. A behaviour that needs the rest of the frame
 //! skipped sets [FrameSkip], which its siblings read; [dispatch_frame] clears it
-//! before the first behaviour runs, so every frame starts whole.
+//! before the first behaviour runs, so every frame starts whole. One flag per
+//! world is enough, and the type is spawned through the singleton key to keep
+//! it that way.
 
 use std::cell::RefCell;
 
@@ -99,6 +101,11 @@ pub type FrameCallback = Box<dyn FnMut(&World, Entity, &mut Frame)>;
 /// same order would leave the two to chance.
 ///
 /// Spawn one to take part; a world without one has nothing to skip.
+///
+/// A world holds one flag, so it is spawned through the singleton key:
+/// `bundle![FrameSkip::default()].singleton::<FrameSkip>()`. Without the key a
+/// second flag would take part too, and [`FrameSkip::skip`] would set both
+/// while a reader looked at only one of them.
 #[derive(Debug, Default)]
 pub struct FrameSkip(pub bool);
 
@@ -113,11 +120,13 @@ impl FrameSkip {
     /// Whether the frame has been skipped.
     #[must_use]
     pub fn is_skipped(world: &World) -> bool {
+        let Some(entity) = world.root_scope().singleton::<Self>() else {
+            return false;
+        };
         world
             .root_scope()
-            .query::<&FrameSkip>()
-            .iter()
-            .any(|frame_skip| frame_skip.0)
+            .try_query_one::<&Self>(entity)
+            .is_ok_and(|mut skip| skip.get().0)
     }
 
     /// Clear the flag, readying the frame for its behaviours.
@@ -125,13 +134,14 @@ impl FrameSkip {
         Self::set(world, false);
     }
 
-    /// Set the flag on every [FrameSkip] in the world.
+    /// Set the world's one flag.
     fn set(world: &World, value: bool) {
-        world
-            .root_scope()
-            .query::<&mut FrameSkip>()
-            .iter()
-            .for_each(|skip| skip.0 = value);
+        let Some(entity) = world.root_scope().singleton::<Self>() else {
+            return;
+        };
+        if let Ok(mut skip) = world.root_scope().try_query_one::<&mut Self>(entity) {
+            skip.get().0 = value;
+        }
     }
 }
 
@@ -504,7 +514,9 @@ mod tests {
     #[test]
     fn skip_marks_the_frame_and_is_skipped_reads_it() {
         let mut world = World::new();
-        world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![FrameSkip::default()].singleton::<FrameSkip>());
         assert!(!FrameSkip::is_skipped(&world));
         FrameSkip::skip(&world);
         assert!(FrameSkip::is_skipped(&world));
@@ -517,13 +529,43 @@ mod tests {
         assert!(!FrameSkip::is_skipped(&world));
     }
 
+    /// The flag is one per world: a second spawn through the same key is
+    /// refused, so no pair of flags can disagree about one frame.
+    #[test]
+    fn a_world_holds_one_skip_flag() {
+        let mut world = World::new();
+        world
+            .root_scope_mut()
+            .spawn(bundle![FrameSkip::default()].singleton::<FrameSkip>());
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            world
+                .root_scope_mut()
+                .spawn(bundle![FrameSkip::default()].singleton::<FrameSkip>());
+        }));
+        assert!(second.is_err(), "a second flag is refused");
+        FrameSkip::skip(&world);
+        assert!(FrameSkip::is_skipped(&world));
+    }
+
+    /// A flag spawned without the singleton key is still the one flag
+    /// [`FrameSkip::is_skipped`] reads, because the lookup goes through the
+    /// key rather than through every component of the type.
+    #[test]
+    fn a_flag_outside_the_key_is_not_read() {
+        let mut world = World::new();
+        world.root_scope_mut().spawn(bundle![FrameSkip(true)]);
+        assert!(!FrameSkip::is_skipped(&world));
+    }
+
     /// A frame that short-circuited does not leave the next one short-circuited:
     /// the dispatch clears the flag before the first behaviour runs.
     #[test]
     fn dispatch_clears_a_skip_left_by_the_previous_frame() {
         let mut world = World::new();
         let first = Rc::new(Cell::new(true));
-        world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![FrameSkip::default()].singleton::<FrameSkip>());
         {
             let first = first.clone();
             world

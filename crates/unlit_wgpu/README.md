@@ -635,7 +635,10 @@ for draw in scene.draws {
 Recording tracks the pass state — pipeline, bind groups, vertex buffers, index
 buffer, scissor and stencil reference — and skips a `set_*` whose target is
 already bound, so a scene whose entries are ordered to keep neighbouring draws
-alike costs one state change per run rather than one per draw. That ordering is
+alike costs one state change per run rather than one per draw. The stencil
+reference starts out unstated rather than at zero: a render pass starts at
+whatever reference its creator gave it, so the first draw writes its own value
+even when that value is zero, and only a repeat of the same value is skipped. That ordering is
 the higher layer's job, not this crate's: [`Scene::record`](scene::Scene::record)
 records what it is given, and [`Scene::record_composited`](scene::Scene::record_composited)
 is the one step further it offers — compositing several scenes into one pass

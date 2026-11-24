@@ -195,12 +195,16 @@ fn install(world: &mut World, entry: Box<dyn Entry>) {
     let existing = world.root_scope().singleton::<SnapshotOutlet>();
     match existing {
         Some(entity) => {
-            let Ok(mut outlet) = world
+            // The key answers only for a holder whose row is still there, and
+            // the outlet lives in the root scope, which is the scope that
+            // found it — so the row is in reach. Losing the entry here would
+            // leave a reader that never receives anything, and nothing on the
+            // reading side could tell that apart from a world that has not
+            // ticked yet.
+            let mut outlet = world
                 .root_scope()
                 .try_query_one::<&mut SnapshotOutlet>(entity)
-            else {
-                return;
-            };
+                .expect("the subscription outlet is in reach of the scope holding its key");
             outlet.get().entries.push(entry);
         }
         None => {
@@ -230,6 +234,31 @@ mod tests {
         let reader = snapshot.reader();
         install(world, Box::new(SnapshotCollector { collect, snapshot }));
         reader
+    }
+
+    /// The outlet a world carries can be removed, and the next subscription
+    /// then finds no key to join: it claims the key again rather than failing,
+    /// so a reader never waits on an outlet nobody will run.
+    #[test]
+    fn an_outlet_that_was_removed_is_claimed_again() {
+        let mut world = World::new();
+        let first = subscribe_in(&mut world, |_| Some(1));
+        let outlet = world
+            .root_scope()
+            .singleton::<SnapshotOutlet>()
+            .expect("the first subscription spawned an outlet");
+        world
+            .root_scope_mut()
+            .despawn(outlet)
+            .expect("the outlet despawns");
+
+        let second = subscribe_in(&mut world, |_| Some(2));
+        assert_eq!(publish_collected(&world), 1);
+        assert_eq!(*second.latest().expect("a snapshot"), 2);
+        assert!(
+            first.latest().is_none(),
+            "the reader of the removed outlet gets nothing, as it carries no collector",
+        );
     }
 
     /// A world with no subscription has nothing to run.

@@ -122,7 +122,7 @@
 | 派发 | `dispatch_frame`：先 reset `FrameSkip`、推进所有 `FrameClock`，再把 `OnFrame` 按 order 跑一遍（只按 order 排序，实体不参与比较），最后 `world.apply()`——**apply 失败只 `log::error!`，不返回错误** |
 | 行为 | `OnFrame::new(f)` 不带顺序、`OnFrame::with_order(order, f)` 带顺序。回调是 `FnMut(&World, Entity, &mut Frame) + 'static`——**是 `&mut Frame`，不是 `&Frame`** |
 | 顺序 | `FrameBehaviourOrder(pub i32)`，低者先跑，**同序无序**；dispatch 期间不得增删行为 |
-| 跳过 | `FrameSkip`（放在兄弟实体上，由声明了顺序的行为去读） |
+| 跳过 | `FrameSkip`：**必须用单例键 spawn**（`bundle![FrameSkip::default()].singleton::<FrameSkip>()`），`skip`/`is_skipped`/reset 都只认那把键，不带键的实例读不到也写不到；由声明了更晚顺序的行为去读 |
 
 ## 输入
 

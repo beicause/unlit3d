@@ -558,7 +558,9 @@ for draw in scene.draws {
 ```
 
 录制过程会追踪 pass 状态——管线、绑定组、顶点缓冲、索引缓冲、scissor 与模板参考
-值——并跳过目标已绑定的 `set_*`，因此当场景的条目排列得让相邻绘制状态相同时，每段
+值——并跳过目标已绑定的 `set_*`（模板参考值的缓存初值是「未写入」而不是 0：render pass
+的起始值由创建者决定，所以第一条绘制无论如何都会写出自己的值，值为 0 时也一样，只有
+重复同一个值才被跳过），因此当场景的条目排列得让相邻绘制状态相同时，每段
 状态只需一次切换而不是每条绘制一次。这个排列是更高层的职责，不属于本 crate：
 [`Scene::record`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L446) 只按给定顺序录制；
 [`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L473) 再进一步——把多个场景

@@ -620,11 +620,21 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
         bases,
         sampled,
     } = instance;
-    debug_assert_eq!(
-        order.len(),
-        model.nodes.len(),
-        "a model instance is built against the asset it came from",
-    );
+    // An instance is spawned against one asset and then evaluated against
+    // whatever model its entity holds, which a caller may swap for another
+    // asset. The lists below are indexed by the node indices this instance was
+    // built with, so a model of another shape would read past them. A frame
+    // that cannot be evaluated is skipped and reported rather than written
+    // through a stale instance; the next evaluation of a matching model
+    // rebuilds whatever the skipped one left behind.
+    if order.len() != model.nodes.len() {
+        log::error!(
+            "the model instance {root:?} was built for {} nodes but its model states {}; the frame is skipped",
+            order.len(),
+            model.nodes.len(),
+        );
+        return;
+    }
     let clip = animation.clip.and_then(|index| model.animations.get(index));
     let sample_time = clip.map(|clip| match (animation.clock, step) {
         (LitModelClock::Playing { speed, looping }, Step::Advance(delta)) => {

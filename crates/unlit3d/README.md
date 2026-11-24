@@ -1254,7 +1254,10 @@ builds its own state; a world spawned outside that hierarchy — one a runner
 started as a sibling — subscribes itself from its own setup. A world that
 reads input without dispatching anything calls
 [`refresh_input`](input::refresh_input) once per tick instead, before
-anything reads the batch. Translation
+anything reads the batch. Both calls report `false` for a world that holds no
+buffer, and for a buffer row that has lost its `InputState`: that row is
+skipped with a warning rather than making the tick panic, because the missing
+half is a spawning mistake that one frame should not turn into a crash. Translation
 from a windowing library's events lives behind the corresponding feature:
 `input::winit::WinitInput` forwards `WindowEvent`s, and `egui::convert` turns the
 crate's events into egui's.

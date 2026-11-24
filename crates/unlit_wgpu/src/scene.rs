@@ -35,7 +35,10 @@
 //! same kind of pass state, but it is set on every draw (from
 //! [`DrawEntry::stencil_reference`]), so it never leaks from one draw to the
 //! next. Both are per-[`Scene`] state: [`Scene::record`] starts from the pass's
-//! own defaults, so nothing a scene leaves behind is seen by the next one.
+//! own defaults, so nothing a scene leaves behind is seen by the next one. A
+//! scene's recorded stencil reference starts out unstated rather than at zero,
+//! because the pass's own starting reference is whatever its creator set — so
+//! the first draw always writes its value, even when that value is zero.
 //!
 //! The viewport is pass state of the same kind — wgpu has no call that resets
 //! it either — but it covers a whole scene rather than one draw, so a scene
@@ -719,7 +722,7 @@ struct PassState<'a> {
     index_buffer: Option<(&'a wgpu::Buffer, Range<u64>, wgpu::IndexFormat)>,
     scissor: Option<ScissorRect>,
     viewport: Option<ViewportRect>,
-    stencil_reference: u32,
+    stencil_reference: Option<u32>,
 }
 
 impl<'a> PassState<'a> {
@@ -817,11 +820,18 @@ impl<'a> PassState<'a> {
 
     /// Set the stencil reference, skipping the call when the pass already
     /// holds it.
+    ///
+    /// Stencil state is per pass, and its starting reference is 0 only when the
+    /// caller created the pass with the render pass's default stencil state.
+    /// The set below therefore starts empty rather than at 0, so the first draw
+    /// writes its own reference even when that reference is 0. A pass the
+    /// caller set up with a different reference still gets one call from the
+    /// first draw, which overwrites the value that draw means to replace.
     fn set_stencil_reference(&mut self, pass: &mut impl RenderPassInterface<'a>, reference: u32) {
-        if self.stencil_reference == reference {
+        if self.stencil_reference == Some(reference) {
             return;
         }
-        self.stencil_reference = reference;
+        self.stencil_reference = Some(reference);
         pass.set_stencil_reference(reference);
     }
 }

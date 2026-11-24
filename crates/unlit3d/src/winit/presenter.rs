@@ -627,8 +627,24 @@ pub type HostPump = Box<dyn FnMut(&mut World)>;
 /// The same work, shared by the two producers that queue a frame.
 type SharedHostPump = Rc<RefCell<HostPump>>;
 
+/// Clears the "a draw is queued" flag when the apply ends, however it ends.
+///
+/// A frame callback may panic, and a frame that panicked must not leave the
+/// flag set: the next redraw request would coalesce into that dead frame and
+/// the window would never draw again.
+struct DrawQueued(Arc<AtomicBool>);
+
+impl Drop for DrawQueued {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 impl Command for DrawFrame {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
+        // Cleared on the way out, whether the dispatch below returns or
+        // unwinds: the next producer may queue a frame in either case.
+        let _queued = DrawQueued(Arc::clone(&self.pending));
         let now = web_time::Instant::now();
         let delta_time = sync::lock(&self.last).replace(now).map_or(0.0, |last| {
             (now - last).as_secs_f32().min(MAX_MEASURED_FRAME_SECONDS)
@@ -641,8 +657,6 @@ impl Command for DrawFrame {
             (pre_dispatch.borrow_mut())(world);
         }
         dispatch_frame(world, &mut frame);
-        // A frame has been dispatched, so the next producer may queue one.
-        self.pending.store(false, Ordering::Release);
         Ok(())
     }
 }
@@ -805,4 +819,61 @@ pub fn resize_presented() -> OnWindowEvent {
             log::error!("failed to resize the presentation path: {error}");
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::OnFrame;
+
+    /// A frame that panics must not leave the "a draw is queued" flag set: the
+    /// next producer would coalesce into the frame that died and the window
+    /// would stop drawing. The guard in [`DrawFrame::apply`] is what clears it,
+    /// so the test drives an apply that unwinds and then queues again.
+    #[test]
+    fn a_frame_that_panicked_leaves_the_next_one_free_to_queue() {
+        let mut world = World::new();
+        world
+            .root_scope_mut()
+            .spawn(bundle![OnFrame::new(|_, _, _| panic!(
+                "a frame callback failure"
+            ),)]);
+        let last: Arc<Mutex<Option<web_time::Instant>>> = Arc::default();
+        let index: Arc<AtomicU32> = Arc::default();
+        let pending: Arc<AtomicBool> = Arc::default();
+        queue_draw(&world, &last, &index, &pending, &None);
+        assert!(pending.load(Ordering::Acquire));
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world.apply();
+        }));
+        assert!(panicked.is_err(), "the frame callback unwinds the apply");
+        assert!(
+            !pending.load(Ordering::Acquire),
+            "a frame that unwound still clears its queued flag",
+        );
+
+        // The behaviour is taken out so the second apply can finish: what is
+        // being checked is that it dispatched at all.
+        let behaviour = world
+            .root_scope()
+            .query::<(Entity, &OnFrame)>()
+            .iter()
+            .next()
+            .map(|(entity, _)| entity);
+        world
+            .root_scope_mut()
+            .despawn(behaviour.expect("the panicking behaviour is still there"))
+            .expect("the behaviour despawns");
+        let dispatched = index.load(Ordering::Acquire);
+        queue_draw(&world, &last, &index, &pending, &None);
+        world
+            .apply()
+            .expect("the recovered frame applies without a failing behaviour");
+        assert_eq!(
+            index.load(Ordering::Acquire),
+            dispatched + 1,
+            "the next producer queues a frame of its own",
+        );
+    }
 }

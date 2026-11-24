@@ -376,13 +376,16 @@ pub enum StepError {
 /// the commit and the publish. A tick that returns `false` stops the world; a
 /// panic, in a job, in the tick or in a collector, is contained, logged and
 /// published as the world's state, and ends the world too. A world that has
-/// already ended runs nothing.
+/// already ended runs nothing, and answers [StepError::Unavailable] the way
+/// [with_stepped_world] does: every entry point reports a stopped world the
+/// same way, so a caller that switches between them cannot read one as alive.
 ///
 /// # Errors
 ///
 /// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
-/// and [StepError::NotStepped] when it names a threaded world, which drives
-/// itself and must not be stepped from here.
+/// [StepError::NotStepped] when it names a threaded world, which drives itself
+/// and must not be stepped from here, and [StepError::Unavailable] after the
+/// stepped world has stopped or received a stop request.
 pub fn step_stepped_world(
     host: &World,
     entity: Entity,
@@ -392,6 +395,9 @@ pub fn step_stepped_world(
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
+    if stepped.status.is_finished() || stepped.status.stop_requested() {
+        return Err(StepError::Unavailable);
+    }
     let SteppedWorld {
         world,
         inbox,
@@ -721,7 +727,8 @@ mod tests {
         assert!(handle.is_finished(), "a false tick ends a stepped world");
         assert_eq!(
             step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Ok(StepOutcome::Finished)
+            Err(StepError::Unavailable),
+            "a stopped world is reported the same way by every entry point",
         );
         assert_eq!(
             with_stepped_world(&host, handle.entity, |_| panic!("world ended")),

@@ -429,3 +429,43 @@ fn a_dead_handle_does_not_hold_back_the_rest_of_its_batch() {
         [0.25, 0.5]
     );
 }
+
+#[test]
+fn a_model_of_another_shape_is_reported_rather_than_written_through() {
+    // An instance is spawned against one asset, and a caller may then put
+    // another model on the same entity. The evaluation indexes the instance by
+    // the node count it was built with, so a shorter model has to be refused
+    // before any pass writes through it — in a release build too, where a
+    // debug assertion would be gone.
+    let spawned = LitModel::new(
+        vec![node(None, Vec3::ZERO), node(Some(0), Vec3::X)],
+        Vec::new(),
+    )
+    .expect("the model is well formed");
+    let shorter =
+        LitModel::new(vec![node(None, Vec3::ZERO)], Vec::new()).expect("the model is well formed");
+    let mut world = World::new();
+    let root = world.root_scope_mut().spawn(LitModelBundle::new(spawned));
+    let read = |world: &World| {
+        let scope = world.root_scope();
+        let mut query = scope.query_one::<&LitModelInstance>(root);
+        query.get().matrices().to_vec()
+    };
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    let before = read(&world);
+    assert_eq!(before.len(), 2);
+    *world.root_scope().query_one::<&mut LitModel>(root).get() = shorter;
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    dispatch_frame(
+        &mut world,
+        &mut Frame {
+            delta_time: 0.25,
+            index: 0,
+        },
+    );
+    assert_eq!(
+        read(&world),
+        before,
+        "a model of another shape leaves the instance it cannot fill alone",
+    );
+}

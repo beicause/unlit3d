@@ -288,15 +288,22 @@ impl Bundle for InputPair {
 /// because a buffer alone has nothing to fold its batch into and every event
 /// it is fed piles up unread.
 ///
-/// Returns whether the world has an input buffer at all.
+/// Returns whether a buffer was refreshed: a world with no buffer, and a
+/// buffer that holds no [`InputState`], both report `false`.
 pub fn refresh_input(world: &World) -> bool {
     let Some(entity) = world.root_scope().singleton::<InputEvents>() else {
         return false;
     };
-    let mut row = world
+    let Ok(mut row) = world
         .root_scope()
         .try_query_one::<(&InputEvents, &mut InputState)>(entity)
-        .expect("the input buffer's singleton holder carries its state");
+    else {
+        log::warn!(
+            "the input buffer {entity:?} holds no InputState, so its batch is left unread; \
+             spawn the two together, as InputFeed and subscribe_input do"
+        );
+        return false;
+    };
     let (buffer, state) = row.get();
     buffer.refresh(state);
     true
@@ -486,10 +493,10 @@ pub fn dispatch_input(world: &World) -> bool {
     // The batch is copied out while the component is borrowed, so a callback
     // may read the world — including this component — freely.
     let events = {
-        let mut row = world
-            .root_scope()
-            .try_query_one::<&InputEvents>(entity)
-            .expect("the input buffer's singleton holder is in reach");
+        let Ok(mut row) = world.root_scope().try_query_one::<&InputEvents>(entity) else {
+            log::warn!("the input buffer {entity:?} went out of reach during the tick");
+            return false;
+        };
         row.get().with_batch(|batch| batch.to_vec())
     };
 

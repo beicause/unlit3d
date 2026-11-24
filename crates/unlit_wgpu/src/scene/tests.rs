@@ -352,7 +352,36 @@ fn stencil_reference_calls_are_deduplicated() {
     state.set_stencil_reference(&mut pass, 0);
 
     assert_eq!(pass.stencil_references, vec![3, 0]);
-    assert_eq!(state.stencil_reference, 0);
+    assert_eq!(state.stencil_reference, Some(0));
+}
+
+/// The first draw writes its reference even when it is zero: the pass's own
+/// starting reference is the caller's, not this state's, so skipping the
+/// first zero would leave whatever the caller set behind.
+#[test]
+fn the_first_stencil_reference_reaches_a_pass_that_starts_at_zero() {
+    let mut pass = MockPass::default();
+    let mut state = PassState::default();
+
+    state.set_stencil_reference(&mut pass, 0);
+    state.set_stencil_reference(&mut pass, 0);
+
+    assert_eq!(pass.stencil_references, vec![0]);
+    assert_eq!(state.stencil_reference, Some(0));
+}
+
+/// A pass the caller already set up is corrected by the first draw, because
+/// this state starts empty rather than assuming the pass's reference.
+#[test]
+fn the_first_stencil_reference_overwrites_one_the_caller_set() {
+    let mut pass = MockPass::default();
+    pass.set_stencil_reference(7);
+    let mut state = PassState::default();
+
+    state.set_stencil_reference(&mut pass, 0);
+
+    assert_eq!(pass.stencil_references, vec![7, 0]);
+    assert_eq!(state.stencil_reference, Some(0));
 }
 
 /// Bind groups, vertex buffers and index buffers are recorded once per

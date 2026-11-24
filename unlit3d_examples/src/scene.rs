@@ -196,7 +196,9 @@ impl Scene {
             .spawn(bundle![run_scene_advance(frame_entity)]);
         // A scene world has no window: it starts whole and nothing short-
         // circuits it. Spawning the flag lets a scene behaviour do so.
-        world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
+        world
+            .root_scope_mut()
+            .spawn(bundle![FrameSkip::default()].singleton::<FrameSkip>());
 
         if let Some(ui) = ui
             && options.selector

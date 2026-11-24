@@ -344,6 +344,23 @@ fn no_input_state_resource_is_not_an_error() {
 }
 
 #[test]
+fn a_buffer_without_its_state_is_skipped_rather_than_raising() {
+    // The pair is what a world is meant to spawn, but a world may build its
+    // buffer by hand. The tick then has nothing to fold the batch into, and it
+    // says so instead of taking the caller down with it.
+    let mut world = World::new();
+    let input = InputWriter::new();
+    let buffer = input.subscribe().0;
+    world
+        .root_scope_mut()
+        .spawn(bundle![buffer].singleton::<InputEvents>());
+    input.push(key_event(Key::A));
+
+    assert!(!refresh_input(&world));
+    assert!(!dispatch_input(&world));
+}
+
+#[test]
 fn events_without_behaviours_are_delivered_to_nobody() {
     let mut world = World::new();
     let input = InputWriter::new();
