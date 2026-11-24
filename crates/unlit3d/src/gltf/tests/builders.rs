@@ -11,19 +11,22 @@ use super::documents::{PNG, TRIANGLE_INDICES, TRIANGLE_POSITIONS, add_view, byte
 /// The JSON is written out by hand rather than through a serializer,
 /// because the crate carries no JSON dependency beyond the loader's own.
 pub(super) fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
-    skinned_document_with(translation, 1, 1)
+    skinned_document_with(translation, 1, Some(1))
 }
 
 /// [`skinned_document`] with an explicit joint count and inverse bind matrix
 /// count.
 ///
-/// The specification asks for one inverse bind matrix per joint; a `binds`
-/// smaller than `joints` writes a skin whose list falls short of the joints
-/// it names, which the document JSON cannot express as invalid.
+/// The specification asks for one inverse bind matrix per joint, but the JSON
+/// cannot state a count as invalid: `inverse_binds` `None` writes a skin with
+/// no `inverseBindMatrices` at all, and a count other than `joints` writes a
+/// list that falls short of or runs past the joints it names. Matrix `i` scales
+/// by `i + 1`, so a list that was padded with identities or truncated at the
+/// last joint reads differently from one that was not.
 pub(super) fn skinned_document_with(
     translation: [f32; 3],
     joints: usize,
-    inverse_binds: usize,
+    inverse_binds: Option<usize>,
 ) -> Vec<u8> {
     // Joint `i` sits `i` units further along x, so the pose of each is
     // distinguishable from its neighbour.
@@ -41,9 +44,12 @@ pub(super) fn skinned_document_with(
 
 /// The skinned triangle every skin document draws, with the parts that differ
 /// between them passed in: the whole `nodes` array, the joints the skin names
-/// and how many inverse bind matrices it states. Node 0, which draws the mesh,
-/// roots the scene.
-fn skinned_glb(nodes: &str, joints: &str, inverse_binds: usize) -> Vec<u8> {
+/// and how many inverse bind matrices it states, `None` for a skin that states
+/// no accessor at all. Node 0, which draws the mesh, roots the scene.
+///
+/// Matrix `i` scales by `i + 1`, so a list the reader pads with identities or
+/// truncates after its last joint reads differently from one it copies whole.
+fn skinned_glb(nodes: &str, joints: &str, inverse_binds: Option<usize>) -> Vec<u8> {
     let mut bin = Vec::new();
     let mut views: Vec<String> = Vec::new();
 
@@ -57,27 +63,34 @@ fn skinned_glb(nodes: &str, joints: &str, inverse_binds: usize) -> Vec<u8> {
     let joint_view = add_view(&mut bin, &mut views, &joint_stream, Some(34962));
     let weights = bytes(&[[1.0f32, 0.0, 0.0, 0.0]; 3]);
     let weight_view = add_view(&mut bin, &mut views, &weights, Some(34962));
-    let identity = bytes(&vec![
-        glam::Mat4::IDENTITY.to_cols_array();
-        inverse_binds.max(1)
-    ]);
-    let bind_view = add_view(&mut bin, &mut views, &identity, None);
+    let stated = inverse_binds.unwrap_or(0);
+    let mut matrices: Vec<[f32; 16]> = (0..stated)
+        .map(|matrix| {
+            glam::Mat4::from_scale(glam::Vec3::splat(matrix as f32 + 1.0)).to_cols_array()
+        })
+        .collect();
+    // A skin that states no accessor still names one here, because the accessor
+    // list is what the JSON indexes into. An empty buffer view would state a
+    // zero byte length, which is not a document this reader accepts.
+    matrices.resize(stated.max(1), glam::Mat4::IDENTITY.to_cols_array());
+    let bind_view = add_view(&mut bin, &mut views, &bytes(&matrices), None);
     let index_view = add_view(&mut bin, &mut views, &bytes(&TRIANGLE_INDICES), Some(34963));
     pad(&mut bin);
 
+    let binds = inverse_binds.map_or(String::new(), |_| r#","inverseBindMatrices":3"#.to_owned());
     let json = format!(
         r#"{{"asset":{{"version":"2.0"}},
             "scene":0,
             "scenes":[{{"nodes":[0]}}],
             "nodes":[{nodes}],
-            "skins":[{{"joints":[{joints}],"inverseBindMatrices":3}}],
+            "skins":[{{"joints":[{joints}]{binds}}}],
             "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},
                                         "indices":4}}]}}],
             "accessors":[{{"bufferView":{position_view},"componentType":5126,"count":3,
                            "type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}},
                          {{"bufferView":{joint_view},"componentType":5123,"count":3,"type":"VEC4"}},
                          {{"bufferView":{weight_view},"componentType":5126,"count":3,"type":"VEC4"}},
-                         {{"bufferView":{bind_view},"componentType":5126,"count":{inverse_binds},"type":"MAT4"}},
+                         {{"bufferView":{bind_view},"componentType":5126,"count":{stated},"type":"MAT4"}},
                          {{"bufferView":{index_view},"componentType":5123,"count":3,"type":"SCALAR"}}],
             "bufferViews":[{}],
             "buffers":[{{"byteLength":{}}}]}}"#,

@@ -836,7 +836,12 @@ model that cannot draw.
   `LitGltf::skin_pose` builds the document's rest pose — one matrix per
   joint, from the joint nodes' world transforms and the skin's inverse bind
   matrices — as a starting point, and `LitGltf::skin_joint_count` reports how
-  many joints a node's skin has.
+  many joints a node's skin has. A skin whose `inverseBindMatrices` list falls
+  short of the joints it names binds the joints it leaves out at the identity,
+  and one that runs past them drops the extra matrices: the pose always states
+  one matrix per joint, both on the document and in the
+  [`LitModelSkin`](lit::LitModelSkin) a model import builds, because
+  `LitModelSkin::new` is what pairs the two lists.
 - A primitive whose mesh declares any morph target is uploaded with the
   positional displacements of the targets that state them and drawn morphed:
   the model creates a

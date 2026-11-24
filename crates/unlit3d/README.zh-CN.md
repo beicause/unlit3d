@@ -554,7 +554,9 @@ delta 推进，`Manual` 只采样调用方写下的时间。销毁根实体即�
   放置 `SkinBinding`，因此写入该 pose 的矩阵就是调用方驱动骨架的方式。
   `LitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
   pose（每个关节一个矩阵）作为起点，`LitGltf::skin_joint_count` 报告某节点的 skin 有几个
-  关节。
+  关节。`inverseBindMatrices` 列表短于其所命名关节时，余下关节按单位矩阵绑定；长于关节
+  时多出的矩阵被丢弃：不论在文档路径还是模型导入构建出的 `LitModelSkin` 里，pose 都
+  恰好为每个关节给出一个矩阵，因为配对两个列表的就是 `LitModelSkin::new`。
 - 网格只要声明了形变目标，该 primitive 就会连其中带位置的位移一起上传并按形变绘制：
   模型为该节点生成一个 `MorphWeights` 实体，并在网格上放置
   `MorphBinding`，因此写入该实体的权重就是调用方形变网格的方式。`LitGltf::morph_weights`

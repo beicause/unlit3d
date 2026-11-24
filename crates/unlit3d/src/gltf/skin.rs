@@ -9,8 +9,49 @@
 
 use super::{LitGltf, NodeId};
 use crate::components::SkinPose;
+use crate::lit::LitModelSkin;
+
+/// One skin as the document states it: its joints and whatever inverse bind
+/// matrices it lists.
+///
+/// This is the single decoder both readers of a skin take their data through —
+/// [`LitGltf::skin_pose`] for the document alone, and
+/// [`LitGltf::to_model`](LitGltf::to_model) for the node a model carries — so
+/// the two read a document whose matrix count disagrees with its joint count
+/// identically. The two lists are as the document states them;
+/// [`LitModelSkin::new`](crate::lit::LitModelSkin::new) is what pairs them,
+/// and it is the one place the rule for a short or long list lives.
+pub(super) struct DecodedSkin {
+    /// The document node index of each joint, in joint order.
+    pub(super) joints: Vec<usize>,
+    /// The inverse bind matrices the skin lists, in joint order.
+    pub(super) inverse_bind: Vec<glam::Mat4>,
+}
 
 impl LitGltf {
+    /// The joints `skin` names and the inverse bind matrices it lists, read
+    /// through the document's buffers.
+    pub(super) fn decode_skin(&self, skin: &gltf::Skin<'_>) -> DecodedSkin {
+        let reader = skin.reader(|buffer| {
+            self.buffers
+                .get(buffer.index())
+                .map(|data| data.0.as_slice())
+        });
+        let joints: Vec<usize> = skin.joints().map(|joint| joint.index()).collect();
+        let inverse_bind: Vec<glam::Mat4> = reader
+            .read_inverse_bind_matrices()
+            .map(|matrices| {
+                matrices
+                    .map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
+                    .collect()
+            })
+            .unwrap_or_default();
+        DecodedSkin {
+            joints,
+            inverse_bind,
+        }
+    }
+
     /// The [`SkinPose`] of a node's skin, at the node's rest transform.
     ///
     /// A document carries a skin as a list of joint nodes and one inverse bind
@@ -29,47 +70,30 @@ impl LitGltf {
     /// joint indices address.
     ///
     /// `node` is the node the mesh is attached to, whose skin the pose comes
-    /// from. A node with no skin, or a skin with no `inverseBindMatrices`, gets
-    /// matrices that deform nothing: the identity per joint, which is what a
-    /// skin bound at rest means.
+    /// from. A node with no skin gets an empty pose so a caller can walk a
+    /// document without asking first.
     ///
     /// The returned pose has one matrix per joint of the skin, in the order the
     /// mesh's joint indices address them. A skin that states fewer
     /// `inverseBindMatrices` than it has joints binds the joints beyond them
     /// at the identity, so each of those poses by its own world matrix.
     pub fn skin_pose(&self, node: NodeId) -> SkinPose {
-        let node_index = node.index();
-        let node_data = self.node(node_index);
-        let Some(skin) = node_data.skin() else {
+        let Some(skin) = self.node(node.index()).skin() else {
             return SkinPose::default();
         };
-        let reader = skin.reader(|buffer| Some(&self.buffers[buffer.index()]));
-        let inverse_bind: Option<Vec<glam::Mat4>> = reader.read_inverse_bind_matrices().map(|m| {
-            m.map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
-                .collect()
-        });
+        let skin = self.decode_skin(&skin);
+        let skin = LitModelSkin::new(skin.joints, skin.inverse_bind);
         // A skinned vertex is produced in world space by the joint matrices
         // alone: the mesh node's transform is inert under this scheme. The
         // caller places the mesh by premultiplying the pose, so the entity
         // transform the shader ignores does not also place it.
-        let poses: Vec<glam::Mat4> = skin
+        let matrices = skin
             .joints()
-            .enumerate()
-            .map(|(joint, joint_node)| {
-                let joint_world = self.node_matrices[joint_node.index()];
-                // The specification asks for one inverse bind matrix per
-                // joint, but nothing in the document JSON says so: a list
-                // shorter than the joint array is a document whose skin says
-                // less than it means, and the joints it leaves out bind at
-                // rest rather than failing every draw of the mesh.
-                let bind = inverse_bind
-                    .as_ref()
-                    .and_then(|matrices| matrices.get(joint).copied())
-                    .unwrap_or(glam::Mat4::IDENTITY);
-                joint_world * bind
-            })
+            .iter()
+            .zip(skin.inverse_bind())
+            .map(|(&joint, &bind)| self.node_matrices[joint] * bind)
             .collect();
-        SkinPose { matrices: poses }
+        SkinPose { matrices }
     }
 
     /// The number of joints a node's skin has.

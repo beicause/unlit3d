@@ -131,16 +131,6 @@ pub enum LitModelError {
         /// The joint it names.
         joint: usize,
     },
-    /// A skin's inverse bind matrices do not pair with its joints.
-    #[error("the skin of node {node} states {matrices} inverse bind matrices for {joints} joints")]
-    InverseBindCount {
-        /// The skinned node.
-        node: usize,
-        /// How many joints it states.
-        joints: usize,
-        /// How many inverse bind matrices it states.
-        matrices: usize,
-    },
     /// A clip states a duration that is not a finite, non-negative length.
     #[error("clip {clip} states the duration {duration}, which is not a length")]
     ClipDuration {
@@ -185,10 +175,10 @@ impl LitModel {
     /// Returns the first inconsistency it finds: see [`LitModelError`]. The
     /// rules a built model is held to, and the sampler relieves itself of, are
     /// that every parent index addresses a node, that no parent chain circles,
-    /// that every skin joints only nodes it names and states one inverse bind
-    /// matrix per joint, that every channel targets a node and states at least
-    /// one finite, ascending key time with every value its interpolation and
-    /// morph target count need, and that a clip's duration is a finite length.
+    /// that every skin joints only nodes it names, that every channel targets a
+    /// node and states at least one finite, ascending key time with every value
+    /// its interpolation and morph target count need, and that a clip's duration
+    /// is a finite length.
     pub fn new(
         nodes: Vec<LitModelNode>,
         animations: Vec<LitModelClip>,
@@ -232,13 +222,46 @@ pub struct LitModelNode {
     pub morph: Option<LitModelMorph>,
 }
 
-/// Skin joints and inverse bind matrices.
+/// Skin joints and the inverse bind matrix of each.
+///
+/// A joint and its matrix are one pair, so the two lists always have the same
+/// length: [`LitModelSkin::new`] is the only way to build one, and it pads or
+/// truncates the matrices to match the joints.
 #[derive(Clone, Debug)]
 pub struct LitModelSkin {
-    /// Node indices of the joints.
-    pub joints: Vec<usize>,
-    /// One inverse bind matrix per joint, in joint order.
-    pub inverse_bind: Vec<glam::Mat4>,
+    /// Node indices of the joints, in joint order.
+    joints: Vec<usize>,
+    /// The inverse bind matrix of each joint, in the same order.
+    inverse_bind: Vec<glam::Mat4>,
+}
+
+impl LitModelSkin {
+    /// Pair `joints` with one inverse bind matrix each.
+    ///
+    /// A document need not state a matrix per joint, so an `inverse_bind`
+    /// shorter than `joints` binds the joints past it at the identity — the
+    /// pose a joint was bound in, which deforms nothing — and one longer is
+    /// truncated, because the matrices past the last joint name no joint.
+    #[must_use]
+    pub fn new(joints: Vec<usize>, mut inverse_bind: Vec<glam::Mat4>) -> Self {
+        inverse_bind.resize(joints.len(), glam::Mat4::IDENTITY);
+        Self {
+            joints,
+            inverse_bind,
+        }
+    }
+
+    /// The node indices of the joints, in joint order.
+    #[must_use]
+    pub fn joints(&self) -> &[usize] {
+        &self.joints
+    }
+
+    /// The inverse bind matrix of each joint, in joint order.
+    #[must_use]
+    pub fn inverse_bind(&self) -> &[glam::Mat4] {
+        &self.inverse_bind
+    }
 }
 
 /// Morph target weights.
@@ -725,7 +748,7 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
     let posed = (0..model.nodes.len()).filter_map(|i| {
         let skin = model.nodes[i].skin.as_ref()?;
         let entity = (*poses.get(i)?)?;
-        skin.joints
+        skin.joints()
             .iter()
             .any(|&joint| moved[joint])
             .then_some((i, entity))
@@ -741,10 +764,10 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
             };
             pose.matrices.clear();
             pose.matrices.extend(
-                skin.joints
+                skin.joints()
                     .iter()
-                    .enumerate()
-                    .map(|(joint, &node)| matrices[node] * skin.inverse_bind[joint]),
+                    .zip(skin.inverse_bind())
+                    .map(|(&node, &bind)| matrices[node] * bind),
             );
         });
     let morphing = (0..model.nodes.len()).filter_map(|i| {
@@ -824,17 +847,10 @@ fn check_nodes(nodes: &[LitModelNode]) -> Result<(), LitModelError> {
     }
     for (node, entry) in nodes.iter().enumerate() {
         let Some(skin) = &entry.skin else { continue };
-        for &joint in &skin.joints {
+        for &joint in skin.joints() {
             if joint >= nodes.len() {
                 return Err(LitModelError::JointOutOfRange { node, joint });
             }
-        }
-        if !skin.inverse_bind.is_empty() && skin.inverse_bind.len() != skin.joints.len() {
-            return Err(LitModelError::InverseBindCount {
-                node,
-                joints: skin.joints.len(),
-                matrices: skin.inverse_bind.len(),
-            });
         }
     }
     Ok(())

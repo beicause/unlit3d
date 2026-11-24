@@ -19,10 +19,10 @@ fn node(parent: Option<usize>, translation: Vec3) -> LitModelNode {
 fn a_model_places_and_animates_its_own_subtree() {
     // The joint appears after its child to exercise parent-first evaluation.
     let mut child = node(Some(1), Vec3::Y);
-    child.skin = Some(LitModelSkin {
-        joints: vec![1],
-        inverse_bind: vec![Mat4::from_translation(-Vec3::X)],
-    });
+    child.skin = Some(LitModelSkin::new(
+        vec![1],
+        vec![Mat4::from_translation(-Vec3::X)],
+    ));
     child.morph = Some(LitModelMorph {
         weights: vec![0.25, 0.5],
     });

@@ -1,6 +1,12 @@
 //! What a loaded document puts in the world: culling, morph targets and skins.
 
 use super::*;
+use crate::lit::LitModel;
+use crate::mesh_source::MeshSource;
+use crate::source::spawn_context;
+use unlit_ecs::World;
+use unlit_wgpu::context::RenderDevice;
+use unlit_wgpu::resources::ResourceGraph;
 
 #[test]
 fn a_double_sided_material_culls_nothing() {
@@ -270,7 +276,7 @@ fn a_skin_short_of_inverse_bind_matrices_binds_the_rest_at_rest() {
     // fewer than it has joints. The joints it leaves out bind at the
     // identity, so their own world matrix poses them, rather than the query
     // failing the draw.
-    let gltf = LitGltf::from_bytes(&skinned_document_with([1.0, 0.0, 0.0], 2, 1))
+    let gltf = LitGltf::from_bytes(&skinned_document_with([1.0, 0.0, 0.0], 2, Some(1)))
         .expect("a skin whose list is short is still a valid document");
     let pose = gltf.skin_pose(NodeId::new(0));
     assert_eq!(pose.matrices.len(), 2, "the skin names two joints");
@@ -283,5 +289,123 @@ fn a_skin_short_of_inverse_bind_matrices_binds_the_rest_at_rest() {
         pose.matrices[1].abs_diff_eq(glam::Mat4::from_translation(glam::Vec3::X * 2.0), 1e-6),
         "the joint the list leaves out poses by its own world matrix: {}",
         pose.matrices[1]
+    );
+}
+
+/// Uploads a document's meshes and materials, the way an application does
+/// before converting it to a model: `to_model` names the uploaded meshes of
+/// its primitives, so it has nothing to point at without them.
+fn uploaded(gltf: &LitGltf) -> (GltfResources, World) {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut world = World::new();
+    let ctx = spawn_context(
+        &mut world,
+        RenderDevice::unwatched(device, queue),
+        ResourceGraph::new(),
+    );
+    let mut source = MeshSource::new(&world.root_scope(), ctx);
+    source.register_lit_family(&world.root_scope());
+    let resources = gltf
+        .insert_resources(&mut source, &world.root_scope())
+        .expect("every image, material and mesh the document names uploads");
+    (resources, world)
+}
+
+/// The pose a model states for the node it imported, as the matrices the
+/// document's own `skin_pose` multiplies out.
+fn model_pose(gltf: &LitGltf, model: &LitModel, node: usize) -> Vec<glam::Mat4> {
+    let skin = model.nodes[node]
+        .skin
+        .as_ref()
+        .expect("the node is skinned");
+    skin.joints()
+        .iter()
+        .zip(skin.inverse_bind())
+        .map(|(&joint, &bind)| gltf.node_matrices[joint] * bind)
+        .collect()
+}
+
+#[test]
+fn a_model_import_poses_a_skin_short_of_inverse_bind_matrices_the_same_way() {
+    // The document path and the model path read one skin through one decoder,
+    // so a list that falls short of the joints it names binds the joints it
+    // leaves out at the identity in both, rather than the model holding an
+    // empty list that the frame pass indexes past.
+    let gltf = LitGltf::from_bytes(&skinned_document_with([1.0, 0.0, 0.0], 2, Some(1)))
+        .expect("a skin whose list is short is still a valid document");
+    let (resources, _world) = uploaded(&gltf);
+    let model = gltf.to_model(&resources).expect("the model imports");
+    let pose = gltf.skin_pose(NodeId::new(0));
+    let imported = model_pose(&gltf, &model, 0);
+    assert_eq!(
+        imported.len(),
+        pose.matrices.len(),
+        "both paths pose one matrix per joint"
+    );
+    for (matrix, posed) in imported.iter().zip(&pose.matrices) {
+        assert!(
+            matrix.abs_diff_eq(*posed, 1e-6),
+            "the model poses the joint as the document does: {matrix} against {posed}"
+        );
+    }
+    let skin = model.nodes[0].skin.as_ref().unwrap();
+    assert_eq!(skin.joints(), [1, 2], "the skin names both joints");
+    assert_eq!(
+        skin.inverse_bind()[1],
+        glam::Mat4::IDENTITY,
+        "the joint the list leaves out binds at the identity"
+    );
+}
+
+#[test]
+fn a_model_import_binds_a_skin_without_inverse_bind_matrices_at_rest() {
+    // A skin that states no `inverseBindMatrices` is a valid document: every
+    // joint binds at the identity, so the joint nodes' own world transforms
+    // are the whole pose.
+    let gltf = LitGltf::from_bytes(&skinned_document_with([1.0, 0.0, 0.0], 2, None))
+        .expect("a skin without inverse bind matrices is still a valid document");
+    let (resources, _world) = uploaded(&gltf);
+    let model = gltf.to_model(&resources).expect("the model imports");
+    let skin = model.nodes[0].skin.as_ref().unwrap();
+    assert_eq!(skin.joints(), [1, 2]);
+    assert_eq!(
+        skin.inverse_bind(),
+        [glam::Mat4::IDENTITY, glam::Mat4::IDENTITY],
+        "every joint binds at the identity"
+    );
+    let pose = gltf.skin_pose(NodeId::new(0));
+    assert_eq!(pose.matrices.len(), 2);
+    assert!(
+        pose.matrices[1].abs_diff_eq(glam::Mat4::from_translation(glam::Vec3::X * 2.0), 1e-6),
+        "the second joint poses by its own world matrix: {}",
+        pose.matrices[1]
+    );
+}
+
+#[test]
+fn a_model_import_truncates_a_skin_with_more_inverse_bind_matrices_than_joints() {
+    // Nothing in the JSON ties the accessor's count to the joint list, so a
+    // document can state more matrices than it names joints. The extra
+    // matrices belong to joints the skin does not name and are dropped.
+    let gltf = LitGltf::from_bytes(&skinned_document_with([1.0, 0.0, 0.0], 2, Some(3)))
+        .expect("a skin whose list runs past its joints is still a valid document");
+    let (resources, _world) = uploaded(&gltf);
+    let model = gltf.to_model(&resources).expect("the model imports");
+    let skin = model.nodes[0].skin.as_ref().unwrap();
+    assert_eq!(skin.joints(), [1, 2]);
+    assert_eq!(
+        skin.inverse_bind().len(),
+        skin.joints().len(),
+        "the pose states one matrix per joint"
+    );
+    // Matrix `i` scales by `i + 1`, so the two kept are the only ones that can
+    // land here.
+    assert_eq!(
+        skin.inverse_bind()[0],
+        glam::Mat4::from_scale(glam::Vec3::splat(1.0))
+    );
+    assert_eq!(
+        skin.inverse_bind()[1],
+        glam::Mat4::from_scale(glam::Vec3::splat(2.0))
     );
 }

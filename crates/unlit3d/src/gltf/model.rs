@@ -146,27 +146,12 @@ impl LitGltf {
         let Some(skin) = node.skin().filter(|_| skinned) else {
             return Ok(None);
         };
-        let reader = skin.reader(|buffer| {
-            self.buffers
-                .get(buffer.index())
-                .map(|data| data.0.as_slice())
-        });
+        let skin = self.decode_skin(&skin);
         // Every joint was added to the included set above, and its ancestors
         // with it, so the remapped set covers them. A joint it missed would
         // leave a skin indexing a node the model does not carry, which is what
         // the error names.
-        let joints = remapped_joints(skin.joints().map(|joint| remap[joint.index()]), index)?;
-        let inverse_bind = reader
-            .read_inverse_bind_matrices()
-            .map(|values| {
-                values
-                    .map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(Some(LitModelSkin {
-            joints,
-            inverse_bind,
-        }))
+        let joints = remapped_joints(skin.joints.iter().copied().map(|joint| remap[joint]), index)?;
+        Ok(Some(LitModelSkin::new(joints, skin.inverse_bind)))
     }
 }
