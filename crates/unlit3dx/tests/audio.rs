@@ -92,7 +92,7 @@ fn an_audio_tick_dispatches_its_frame() {
     let seen: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
     let record = Arc::clone(&seen);
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             world.root_scope_mut().spawn(bundle![OnFrame::new(
                 move |_world, _entity, frame: &mut Frame| {
@@ -102,7 +102,7 @@ fn an_audio_tick_dispatches_its_frame() {
         }))
         .expect("the audio world accepts jobs");
     for _ in 0..3 {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     }
     assert_eq!(
         *seen.lock().unwrap(),
@@ -241,25 +241,25 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     .expect("a threaded audio world is asked for its output");
     // The world sounds only once asked, whatever drives it: a threaded run
     // that wants a device sends the same request a page's click does.
-    request_audio_output(&world.sender).expect("the audio world takes the output request");
+    request_audio_output(world.commands()).expect("the audio world takes the output request");
     // The source arrives the way a caller's would: an ordinary job. Jobs
     // are answered whether or not a device exists, so a device-less world
     // runs silently but stays alive.
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             counting_source(world, 0.25, &counted);
         }))
         .expect("the audio world takes its source");
     // A marker job and a probe that waits for it.
-    let _ = world.sender.send(Box::new(|world: &mut World| {
+    let _ = world.commands().send(Box::new(|world: &mut World| {
         world.root_scope_mut().spawn(bundle![Marker]);
     }));
     let marked = Snapshot::new();
     let reader = marked.reader();
     let publish = marked.clone();
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             publish.publish(
                 world
@@ -305,7 +305,7 @@ fn the_audio_world_reports_its_output_opening() {
         },
     )
     .expect("a threaded audio world is asked for its output");
-    let sender = world.sender.clone();
+    let sender = world.commands().clone();
     // Asked up front: a threaded world opens nothing on its own either.
     request_audio_output(&sender).expect("the audio world takes the output request");
     // Both subscriptions are made the way a caller installs sources: the
@@ -363,7 +363,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         },
     )
     .expect("the audio world starts");
-    let sender = world.sender.clone();
+    let sender = world.commands().clone();
     let opened = sender
         .watch(|world: &World| {
             world
@@ -375,7 +375,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         })
         .expect("the audio world accepts a subscription");
     for _ in 0..10 {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     }
     let opened = installed(&opened);
     assert!(
@@ -388,7 +388,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         // No device to grant: the request keeps being retried and the
         // world stays open-less, which is the answer to look for here.
         for _ in 0..10 {
-            step_stepped_world(&host, world.entity, FRAME_SECONDS)
+            step_stepped_world(&host, world.entity(), FRAME_SECONDS)
                 .expect("the stepped world starts");
         }
         assert!(
@@ -397,7 +397,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         );
         return;
     }
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     assert!(
         wait_for(|| opened.latest().is_some()),
         "the request landed but the output never opened"
@@ -417,7 +417,7 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
         },
     )
     .expect("the audio world starts");
-    let sender = world.sender.clone();
+    let sender = world.commands().clone();
     let opened = sender
         .watch(|world: &World| {
             world
@@ -428,14 +428,14 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
                 .map(|_audio_output_open| ())
         })
         .expect("the audio world accepts a subscription");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     let opened = installed(&opened);
     assert!(
         opened.latest().is_none(),
         "the world opened before being asked"
     );
     request_audio_output(&sender).expect("the audio world accepts a job");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     if !has_output_device() {
         return;
     }

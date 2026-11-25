@@ -44,17 +44,17 @@ fn collect_poses(world: &World) -> Option<Poses> {
 
 /// A physics world at the default rate, driven by `R`, with the floor already
 /// queued and a pose subscription on the host.
-fn floored_host<R: WorldRunner>() -> (World, WorldHandle, Subscription<SnapshotReader<Poses>>) {
+fn floored_host<R: WorldRunner>() -> (World, WorldEndpoint, Subscription<SnapshotReader<Poses>>) {
     let mut host = World::new();
     let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default())
         .expect("the world thread starts");
     let reader = world
-        .sender
+        .commands()
         .clone()
         .watch(collect_poses)
         .expect("the physics world accepts a subscription");
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
         }))
@@ -96,7 +96,7 @@ fn installed<R: Clone>(subscription: &Subscription<R>) -> R {
 fn a_dropped_ball_settles_in_its_snapshots() {
     let (host, world, poses) = floored_host::<Stepped>();
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
@@ -110,7 +110,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
     let mut poses_reader = None;
     let mut rested = false;
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
         let reader = poses_reader.get_or_insert_with(|| installed(&poses));
         rested = reader.latest().is_some_and(|poses| settled(&poses));
         if rested {
@@ -136,7 +136,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
 fn a_threaded_world_steps_what_a_job_builds() {
     let (_host, world, poses) = floored_host::<Threaded>();
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
@@ -177,7 +177,7 @@ fn a_physics_tick_dispatches_its_frame() {
     let seen: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
     let record = Arc::clone(&seen);
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             world.root_scope_mut().spawn(bundle![OnFrame::new(
                 move |_world, _entity, frame: &mut Frame| {
@@ -187,7 +187,7 @@ fn a_physics_tick_dispatches_its_frame() {
         }))
         .expect("the physics world accepts jobs");
     for _ in 0..3 {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     }
     assert_eq!(
         *seen.lock().unwrap(),
@@ -223,7 +223,7 @@ fn a_collector_sees_contacts_from_every_step() {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default())
         .expect("a stepped world needs no thread");
-    let sender = world.sender.clone();
+    let sender = world.commands().clone();
     let (queue, contacts) = std::sync::mpsc::channel();
     // The collector queues what it sees and publishes nothing: the
     // subscription's state is the queue, which is the app's to own. The
@@ -267,7 +267,7 @@ fn a_collector_sees_contacts_from_every_step() {
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
         while let Ok((one, two, _speed)) = contacts.try_recv() {
             for body in [one, two] {
                 if !landed.contains(&body) {
@@ -388,7 +388,7 @@ fn an_empty_world_publishes_empty_contacts() {
     let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default())
         .expect("the world thread starts");
     let reader = world
-        .sender
+        .commands()
         .clone()
         .watch(|world: &World| {
             let mut physics_contacts_rows_2 = world.root_scope().query::<&PhysicsContacts>();
@@ -438,7 +438,7 @@ fn the_configured_gravity_reaches_the_world() {
     let reader = probed.reader();
     let publish = probed.clone();
     world
-        .sender
+        .commands()
         .send(Box::new(move |world: &mut World| {
             publish.publish(
                 world

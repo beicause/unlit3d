@@ -341,7 +341,7 @@ fn status(interactive: &Interactive) -> Value {
     json!({
         "frame": interactive.frame(),
         "render_world": { "Handle": interactive.render_world().to_bits() },
-        "audio_world": { "Handle": interactive.worlds().audio.entity.to_bits() },
+        "audio_world": { "Handle": interactive.worlds().audio.entity().to_bits() },
         "target": interactive.target.id().to_bits(),
     })
 }

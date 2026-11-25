@@ -20,8 +20,8 @@ use unlit_ecs::World;
 let mut host = World::new();
 
 // A world on its own thread: a `World` plus a thread, ticked by this closure.
-// The spawn returns a `WorldHandle` — the entity the proxy lives on,
-// the command queue and the thread's status in one value.
+// The spawn returns a `WorldEndpoint` — the entity the proxy lives on,
+// the command queue, the state reader and the lifecycle in one value.
 // A clock paces the loop at 60 Hz: each wait sleeps until the next step is
 // due, keeping the schedule where a short tick does not shift it.
 let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / 60.0));
@@ -30,19 +30,19 @@ let simulation = spawn_threaded_world(&mut host, "simulation", 16, move |world, 
     // Whoever drives the world publishes to its subscribers once the
     // tick has run, so a tick body never publishes by hand.
     clock.wait(control);
-    !control.stop_requested()
+    if control.stop_requested() { TickOutcome::Finished } else { TickOutcome::Running }
 });
 
 // Jobs run on the world's thread between ticks and answer nothing. A job
 // whose result is worth keeping publishes it, or asks for it.
-simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle![0u8]))).expect("room in the queue");
+simulation.commands().send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle![0u8]))).expect("room in the queue");
 
 // A snapshot is one of the two ways data comes back (the other is a stream,
 // for events), and it is opt-in: the world runs the collector this
 // subscription carries once per tick and publishes whatever it returns. The payload is the caller's type — the
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
-let subscription = simulation.sender.watch(|world: &World| {
+let subscription = simulation.commands().watch(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
@@ -84,7 +84,7 @@ one world per concern, and never share one.
   same thread. A drawing world is one: it draws on the main thread, and the
   host reaches into it only between events. It keeps a job inbox too:
   `spawn_sub_world` wires one up, other threads post jobs through the
-  `WorldHandle` it returns, and the owner calls `drain_sub_world` between its
+  `WorldEndpoint` it returns, and the owner calls `drain_sub_world` between its
   own steps — the same protocol as a threaded world, minus the thread.
   `tick_sub_world` is that step when the owner drives the world's frame: it
   drains, folds the input the world has been fed, runs its tasks and dispatches
@@ -111,7 +111,7 @@ and borrowing it cannot read a finished world as still alive.
 
 ## Jobs
 
-`Job` is a boxed `FnOnce(&mut World)`. `WorldHandle::sender` queues one and
+`Job` is a boxed `FnOnce(&mut World)`. `WorldEndpoint::commands` queues one and
 never blocks: a full queue returns `Err(SendError::Full)` and a stopped
 world `Err(SendError::Closed)`, so a world thread that sends to its own queue
 cannot deadlock against itself. The world thread drains its queue before
@@ -226,20 +226,23 @@ tick body has to know which one it is under.
   `catch_unwind`, reporting a panic before the thread ends so the host learns
   why its world died rather than joining a corpse. Despawning the proxy entity
   stops its thread and waits at most a few seconds (`STOP_TIMEOUT`) for it; a tick that will not
-  stop is left detached rather than hanging the dropper. The handle reports on
+  stop is left detached rather than hanging the dropper. The endpoint reports on
   the world — `is_finished`, and `state`, a `SnapshotReader<WorldState>` that
   reads `Running`, `Stopped` or `Failed(error)` — and `stop` asks it to
-  end. `join_timeout` and `detach` are on the `WorldThread` itself, for
-  callers that own one directly: a wait answers `JoinOutcome` (`Joined`,
-  `TimedOut`, `Detached` or `AlreadyJoined`) rather than a bare `bool`, so a
-  handle that was given up is never reported as a thread that exited. The
-  operating system refusing to create the thread is a
-  `ThreadError::Spawn`, returned by the spawn rather than panicking.
+  end. `join_timeout` waits for the thread through any clone of the endpoint
+  and answers a `JoinOutcome` rather than a bare `bool`: `Joined`,
+  `TimedOut`, `Detached`, `AlreadyJoined`, or `NoHandle` for a world no thread
+  ever drove, so an endpoint of a sub-world and a stepped one say so instead of
+  reporting an end they never saw. `detach` gives the wait up for good. The
+  operating system refusing to create the thread is a `ThreadError::Spawn`,
+  returned by the spawn rather than panicking.
 - **`Stepped`** keeps the world where it was spawned.
   `spawn_stepped_world_with_init` puts the nested `World` inside the proxy
-  component on the host entity, and
-  `step_stepped_world` runs one iteration on the caller's thread: drain the
-  queue, then tick, each under `catch_unwind` — the threaded loop's order.
+  component on the host entity, and answers `ThreadError::Setup` when the
+  one-time setup panics: the failure belongs to the spawn, and nothing is left
+  behind to step. `step_stepped_world` runs one iteration on the caller's
+  thread: drain the queue, then tick, each under `catch_unwind` — the threaded
+  loop's order.
   It answers a `StepOutcome` (`Ran`, `Finished`, `Stopped` or
   `Failed(error)`) so a caller can tell what the step did and why a failed
   one failed, and a `StepError` when the entity names no stepped world —

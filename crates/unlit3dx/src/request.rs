@@ -32,7 +32,8 @@ use async_channel::{Receiver, Sender, unbounded};
 use unlit_ecs::World;
 
 use crate::channel::SnapshotReader;
-use crate::job::{JobSender, SendError};
+use crate::endpoint::WorldEndpoint;
+use crate::job::SendError;
 use crate::thread::WorldState;
 
 /// Whether the world behind a reader of its state has ended.
@@ -86,9 +87,9 @@ struct Outstanding<K> {
 
 /// The requests one world owes a caller, and the answers that have come back.
 ///
-/// One [Pending] serves one world: it is built with the state that world
-/// publishes, and every request made through it goes to it. A caller that asks
-/// two worlds for two things keeps two.
+/// One [Pending] serves one world: it is built with the endpoint of the world
+/// that owes the answers, and every request made through it goes to that
+/// world. A caller that asks two worlds for two things keeps two.
 ///
 /// `K` is what the caller names a request by, and `T` what the world answers
 /// with.
@@ -96,8 +97,9 @@ pub struct Pending<K, T> {
     answerer: Sender<(RequestId, T)>,
     answers: Receiver<(RequestId, T)>,
     next_id: RequestId,
-    /// The state of the world that owes the answers.
-    state: SnapshotReader<WorldState>,
+    /// The world that owes the answers: its queue and its state, together, so
+    /// a request cannot be sent to one world and waited on against another.
+    world: WorldEndpoint,
     /// How many seconds a request may go unanswered; `None` waits for as long
     /// as the world owes it.
     timeout: Option<f32>,
@@ -110,24 +112,23 @@ where
     K: Eq + Clone + Send + 'static,
     T: Send + 'static,
 {
-    /// Requests for the world `state` reports on, each allowed to go
-    /// unanswered for `timeout` seconds. `None` waits until the world answers
-    /// or ends.
+    /// Requests for the world `world` reaches, each allowed to go unanswered
+    /// for `timeout` seconds. `None` waits until the world answers or ends.
     #[must_use]
-    pub fn new(state: SnapshotReader<WorldState>, timeout: Option<f32>) -> Self {
+    pub fn new(world: WorldEndpoint, timeout: Option<f32>) -> Self {
         let (answerer, answers) = unbounded();
         Self {
             answerer,
             answers,
             next_id: 0,
-            state,
+            world,
             timeout,
             outstanding: Vec::new(),
         }
     }
 
-    /// Ask the world behind `sender` for what `make` returns, as the request
-    /// `key` names.
+    /// Ask the world behind this endpoint for what `make` returns, as the
+    /// request `key` names.
     ///
     /// `make` runs once, on the world's own thread, and whatever it returns is
     /// the answer `key` receives. The send is refused when that world's queue
@@ -140,7 +141,7 @@ where
     /// request keeps ownership of the answer and of the time it was given. A
     /// caller that asks once per tick therefore learns that the tick's work was
     /// not done rather than taking the silence for a lost registration.
-    pub fn request<F>(&mut self, sender: &JobSender, key: K, make: F) -> Result<Asked, SendError>
+    pub fn request<F>(&mut self, key: K, make: F) -> Result<Asked, SendError>
     where
         F: FnOnce(&mut World) -> T + Send + 'static,
     {
@@ -149,9 +150,11 @@ where
         }
         let answerer = self.answerer.clone();
         let id = self.next_id;
-        sender.send(Box::new(move |world: &mut World| {
-            let _ = answerer.try_send((id, make(world)));
-        }))?;
+        self.world
+            .commands()
+            .send(Box::new(move |world: &mut World| {
+                let _ = answerer.try_send((id, make(world)));
+            }))?;
         self.next_id += 1;
         self.outstanding.push(Outstanding {
             key,
@@ -188,7 +191,7 @@ where
                 settled.push((request.key, Settled::Answered(value)));
             }
         }
-        let ended = ended(&self.state);
+        let ended = ended(&self.world.state());
         let mut outstanding = std::mem::take(&mut self.outstanding);
         outstanding.retain_mut(|Outstanding { key, remaining, .. }| {
             if ended {
@@ -212,19 +215,38 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::Snapshot;
-    use crate::job::{Job, SendErrorKind};
+    use unlit_ecs::Entity;
 
-    /// Requests for a world in `state`, and the queue its requests go through.
+    use crate::endpoint::{WorldDriving, WorldOwnership};
+    use crate::job::{Job, JobSender, SendErrorKind};
+    use crate::thread::ThreadStatus;
+
+    /// The endpoint of a world that has already reached `state`, reached
+    /// through `commands`.
+    fn endpoint_for(state: WorldState, commands: JobSender) -> WorldEndpoint {
+        let status = ThreadStatus::detached();
+        match state {
+            WorldState::Failed(error) => status.record_failure(error),
+            WorldState::Stopped => status.finish(),
+            WorldState::Running => {}
+        }
+        WorldEndpoint::new(
+            Entity::from_bits(1),
+            commands,
+            status,
+            WorldOwnership::HostOwned,
+            WorldDriving::Stepped,
+        )
+    }
+
+    /// Requests for a world in `state`, and the queue its jobs land in.
     fn asking(
         state: WorldState,
         timeout: Option<f32>,
-    ) -> (Pending<u32, u32>, JobSender, async_channel::Receiver<Job>) {
-        let snapshot = Snapshot::new();
-        snapshot.publish(state);
-        let pending = Pending::new(snapshot.reader(), timeout);
+    ) -> (Pending<u32, u32>, async_channel::Receiver<Job>) {
         let (sender, receiver) = async_channel::unbounded();
-        (pending, JobSender::new(sender), receiver)
+        let endpoint = endpoint_for(state, JobSender::new(sender));
+        (Pending::new(endpoint, timeout), receiver)
     }
 
     /// Run every job queued so far.
@@ -245,11 +267,11 @@ mod tests {
     /// many were asked at once.
     #[test]
     fn an_answer_comes_back_under_its_key() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, None);
+        let (mut pending, receiver) = asking(WorldState::Running, None);
         let mut world = World::new();
         for key in 0..4u32 {
             pending
-                .request(&jobs, key, move |_: &mut World| key * 10)
+                .request(key, move |_: &mut World| key * 10)
                 .expect("the queue has room");
         }
         drain(&receiver, &mut world);
@@ -273,9 +295,9 @@ mod tests {
     /// and not before.
     #[test]
     fn a_request_is_given_up_on_after_its_time_runs_out() {
-        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2.0));
+        let (mut pending, _receiver) = asking(WorldState::Running, Some(2.0));
         pending
-            .request(&jobs, 1, |_: &mut World| 0)
+            .request(1, |_: &mut World| 0)
             .expect("the queue has room");
 
         assert!(
@@ -289,9 +311,9 @@ mod tests {
     /// given up on at once, without waiting for its time to run out.
     #[test]
     fn an_ended_world_answers_nothing() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Stopped, Some(100.0));
+        let (mut pending, receiver) = asking(WorldState::Stopped, Some(100.0));
         pending
-            .request(&jobs, 1, |_: &mut World| 0)
+            .request(1, |_: &mut World| 0)
             .expect("the queue has room");
 
         assert_eq!(
@@ -306,10 +328,10 @@ mod tests {
     /// world owed it and paid, and ending afterwards takes nothing back.
     #[test]
     fn an_answer_published_before_the_world_ended_is_delivered() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Stopped, Some(100.0));
+        let (mut pending, receiver) = asking(WorldState::Stopped, Some(100.0));
         let mut world = World::new();
         pending
-            .request(&jobs, 1, |_: &mut World| 7)
+            .request(1, |_: &mut World| 7)
             .expect("the queue has room");
         drain(&receiver, &mut world);
 
@@ -318,11 +340,11 @@ mod tests {
 
     #[test]
     fn a_late_answer_does_not_settle_a_retry_under_the_same_key() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
+        let (mut pending, receiver) = asking(WorldState::Running, Some(1.0));
         let mut world = World::new();
-        pending.request(&jobs, 1, |_| 7).unwrap();
+        pending.request(1, |_| 7).unwrap();
         assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
-        pending.request(&jobs, 1, |_| 8).unwrap();
+        pending.request(1, |_| 8).unwrap();
         receiver.try_recv().unwrap()(&mut world);
         assert!(settled(&mut pending, 0.0).is_empty());
         receiver.try_recv().unwrap()(&mut world);
@@ -333,10 +355,10 @@ mod tests {
     /// rather than delivered late.
     #[test]
     fn an_answer_for_a_request_given_up_on_is_dropped() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
+        let (mut pending, receiver) = asking(WorldState::Running, Some(1.0));
         let mut world = World::new();
         pending
-            .request(&jobs, 1, |_: &mut World| 7)
+            .request(1, |_: &mut World| 7)
             .expect("the queue has room");
 
         assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
@@ -354,11 +376,11 @@ mod tests {
     /// nothing and expires to nobody.
     #[test]
     fn a_refused_request_waits_for_nothing() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
+        let (mut pending, receiver) = asking(WorldState::Running, Some(1.0));
         drop(receiver);
         assert_eq!(
             pending
-                .request(&jobs, 1, |_: &mut World| 0)
+                .request(1, |_: &mut World| 0)
                 .expect_err("a stopped world refuses the request")
                 .kind(),
             SendErrorKind::Closed
@@ -374,13 +396,13 @@ mod tests {
     /// wait: the tick the first was asked on is the one that counts.
     #[test]
     fn asking_again_keeps_the_first_wait() {
-        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2.0));
+        let (mut pending, _receiver) = asking(WorldState::Running, Some(2.0));
         pending
-            .request(&jobs, 1, |_: &mut World| 0)
+            .request(1, |_: &mut World| 0)
             .expect("the queue has room");
         settled(&mut pending, 1.0);
         pending
-            .request(&jobs, 1, |_: &mut World| 0)
+            .request(1, |_: &mut World| 0)
             .expect("the queue has room");
 
         // One tick stood between the first ask and this one, so the wait the
@@ -393,17 +415,17 @@ mod tests {
     /// work it named never runs.
     #[test]
     fn a_coalesced_request_says_so_and_runs_nothing() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, None);
+        let (mut pending, receiver) = asking(WorldState::Running, None);
         let mut world = World::new();
         assert_eq!(
             pending
-                .request(&jobs, 1, |_: &mut World| 7)
+                .request(1, |_: &mut World| 7)
                 .expect("the queue has room"),
             Asked::Queued
         );
         assert_eq!(
             pending
-                .request(&jobs, 1, |_: &mut World| panic!("the coalesced work ran"))
+                .request(1, |_: &mut World| panic!("the coalesced work ran"))
                 .expect("a coalesced request is not a failure"),
             Asked::Coalesced
         );
@@ -421,15 +443,15 @@ mod tests {
     /// asked on is still the one that counts.
     #[test]
     fn a_coalesced_request_does_not_renew_the_first_wait() {
-        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2.0));
+        let (mut pending, _receiver) = asking(WorldState::Running, Some(2.0));
         pending
-            .request(&jobs, 1, |_: &mut World| 0)
+            .request(1, |_: &mut World| 0)
             .expect("the queue has room");
         assert!(settled(&mut pending, 1.0).is_empty(), "one tick of two");
 
         assert_eq!(
             pending
-                .request(&jobs, 1, |_: &mut World| 0)
+                .request(1, |_: &mut World| 0)
                 .expect("a coalesced request is not a failure"),
             Asked::Coalesced
         );
@@ -444,19 +466,20 @@ mod tests {
     /// asking again on a later tick asks the work the first one meant to.
     #[test]
     fn a_refused_request_hands_its_work_back() {
-        let (mut pending, jobs, receiver) = asking(WorldState::Running, None);
         // A queue with one place, taken, so the next request meets a full
         // queue rather than a stopped one.
         let (sender, crowded) = async_channel::bounded(1);
-        let full = JobSender::new(sender);
-        full.send(Box::new(|_: &mut World| {}))
+        let full = endpoint_for(WorldState::Running, JobSender::new(sender));
+        full.commands()
+            .send(Box::new(|_: &mut World| {}))
             .expect("the one place was free");
-        let refused = pending
-            .request(&full, 1, |_: &mut World| 7)
+        let mut crowded_pending = Pending::new(full, None);
+        let refused = crowded_pending
+            .request(1, |_: &mut World| 7)
             .expect_err("a full queue refuses the request");
         assert_eq!(refused.kind(), SendErrorKind::Full);
         assert!(
-            settled(&mut pending, 1.0).is_empty(),
+            settled(&mut crowded_pending, 1.0).is_empty(),
             "a request the queue never took waits for nothing"
         );
 
@@ -466,15 +489,16 @@ mod tests {
         let mut world = World::new();
         (refused.into_job())(&mut world);
         assert!(
-            settled(&mut pending, 1.0).is_empty(),
+            settled(&mut crowded_pending, 1.0).is_empty(),
             "an answer to a request that was never made settles nothing"
         );
         drop(crowded);
 
         // The same work, asked again now that the queue has room, answers.
+        let (mut pending, receiver) = asking(WorldState::Running, None);
         assert_eq!(
             pending
-                .request(&jobs, 1, |_: &mut World| 7)
+                .request(1, |_: &mut World| 7)
                 .expect("the queue has room"),
             Asked::Queued
         );
@@ -485,9 +509,9 @@ mod tests {
     /// A request with no timeout waits as long as the world owes it.
     #[test]
     fn a_request_with_no_timeout_waits_until_the_world_ends() {
-        let (mut pending, jobs, _receiver) = asking(WorldState::Running, None);
+        let (mut pending, _receiver) = asking(WorldState::Running, None);
         pending
-            .request(&jobs, 1, |_: &mut World| 0)
+            .request(1, |_: &mut World| 0)
             .expect("the queue has room");
 
         for _ in 0..10 {

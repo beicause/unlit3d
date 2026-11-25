@@ -14,7 +14,7 @@ use unlit3dx::prelude::*;
 /// steps it, so the order of a subscription and the tick that serves it is
 /// the test's to fix. The step publishes the subscriptions itself, so a
 /// world whose tick does nothing still answers them.
-fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
+fn subscribed_world(host: &mut World, capacity: usize) -> WorldEndpoint {
     spawn_stepped_world_with_init(
         host,
         "subscribed",
@@ -22,8 +22,9 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
         |world: &mut World| {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         },
-        |_world: &mut World, _control: &ThreadControl, (), _: f32| true,
+        |_world: &mut World, _control: &ThreadControl, (), _: f32| TickOutcome::Running,
     )
+    .expect("the stepped world starts")
 }
 
 /// The component the subscriptions read.
@@ -48,7 +49,7 @@ fn installed<R: Clone>(subscription: Subscription<R>) -> R {
 fn several_subscribers_each_get_their_own_snapshot() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    let sender = world.sender.clone();
+    let sender = world.commands().clone();
     let mut first = 0u32;
     let one = sender
         .watch(move |_| {
@@ -64,7 +65,7 @@ fn several_subscribers_each_get_their_own_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
 
     let one_reader = installed(one);
     let two_reader = installed(two);
@@ -78,10 +79,10 @@ fn several_subscribers_each_get_their_own_snapshot() {
 fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
 
     let reader = world
-        .sender
+        .commands()
         .clone()
         .watch(|world: &World| {
             world
@@ -97,7 +98,7 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
         "a queued subscription is not an installed one"
     );
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(0));
 }
@@ -111,28 +112,28 @@ fn dropping_the_reader_prunes_the_subscription() {
     let ran = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&ran);
     let reader = world
-        .sender
+        .commands()
         .clone()
         .watch(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Some(1u32)
         })
         .expect("the world accepts a subscription");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     let reader = installed(reader);
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the collector ran once");
 
     drop(reader);
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
         "a dropped reader must stop its collector"
     );
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
     let live =
-        with_stepped_world(&host, world.entity, publish_collected).expect("the world is stepped");
+        with_stepped_world(&host, world.entity(), publish_collected).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
 }
 
@@ -144,7 +145,7 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     let world = subscribed_world(&mut host, 8);
     let mut first = true;
     let reader = world
-        .sender
+        .commands()
         .clone()
         .watch(move |_| {
             let value = if first { Some(1u32) } else { None };
@@ -153,8 +154,8 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
-    step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
 
     let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(1));
@@ -167,7 +168,7 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
     let mut host = World::new();
     let proxy = spawn_sub_world(&mut host, "nested", 8);
     let reader = proxy
-        .sender
+        .commands()
         .clone()
         .watch(|world: &World| {
             world
@@ -186,12 +187,12 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
     // The sub-world gets its marker from a job: a nested world runs nothing
     // until its host drains it.
     proxy
-        .sender
+        .commands()
         .send(Box::new(|world: &mut World| {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         }))
         .expect("the sub-world accepts a job");
-    let mut world_row = host.root_scope().query_one::<&mut World>(proxy.entity);
+    let mut world_row = host.root_scope().query_one::<&mut World>(proxy.entity());
 
     let nested = world_row.get();
     drain_sub_world(nested);
@@ -210,11 +211,11 @@ fn a_full_queue_refuses_a_subscription() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 1);
     world
-        .sender
+        .commands()
         .send(Box::new(|_: &mut World| {}))
         .expect("the queue has room for one job");
 
-    let refused = world.sender.clone().watch(|_| Some(1u32));
+    let refused = world.commands().clone().watch(|_| Some(1u32));
 
     assert_eq!(
         match refused {

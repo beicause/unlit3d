@@ -167,6 +167,7 @@ pub fn mount_controls(world: &mut World) {
         let scene = world.root_scope().query::<&Scene>().iter().next()?.clone();
         scene
             .audio
+            .commands()
             .watch(|audio| {
                 audio
                     .root_scope()
@@ -215,7 +216,7 @@ pub fn mount_controls(world: &mut World) {
                             "Background music",
                             &mut track.get().midi,
                             None,
-                            &scene.audio,
+                            scene.audio.commands(),
                         );
                     }
                     if let (Some(scene), Ok(mut track)) = (
@@ -227,7 +228,7 @@ pub fn mount_controls(world: &mut World) {
                             "MIDI sequence",
                             &mut track.get().midi,
                             Some(layout),
-                            &scene.audio,
+                            scene.audio.commands(),
                         );
                     }
                     ui.separator();

@@ -101,7 +101,7 @@ impl SteppedRun {
         // recorded audio through a fill.
         self.mix.pull(
             host,
-            self.stepper.worlds().audio.entity,
+            self.stepper.worlds().audio.entity(),
             FIXED_FRAME_SECONDS,
             self.format,
         )?;

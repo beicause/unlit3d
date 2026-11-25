@@ -180,7 +180,7 @@ pub fn windowed<A: App>(
     // builds the presentation path; from then on the pump and the redraw
     // requests dispatch frames into it.
     let app_entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
-    let render_entity = render.entity;
+    let render_entity = render.entity();
     let offscreen = shape.offscreen;
     #[cfg(all(
         feature = "mcp",
@@ -215,7 +215,7 @@ pub fn windowed<A: App>(
                 let setup = app.setup_render(
                     world,
                     RenderPorts {
-                        world: render.entity,
+                        world: render.entity(),
                         device: &RenderDevice::from(gpu),
                         panel: Some(panel.clone()),
                     },
@@ -224,7 +224,7 @@ pub fn windowed<A: App>(
                     let (renderer, pass) = {
                         let mut nested = world
                             .root_scope()
-                            .try_query_one::<&unlit_ecs::World>(render.entity)
+                            .try_query_one::<&unlit_ecs::World>(render.entity())
                             .map_err(RunError::RenderWorld)?;
                         let nested = nested.get();
                         (
@@ -234,7 +234,7 @@ pub fn windowed<A: App>(
                     };
                     setup_presenter(
                         world,
-                        render.entity,
+                        render.entity(),
                         renderer,
                         pass,
                         gpu,

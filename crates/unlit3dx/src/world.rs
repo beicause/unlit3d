@@ -15,20 +15,22 @@ use async_channel::{Receiver, bounded};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::frame::FrameClock;
 
+use crate::endpoint::{WorldDriving, WorldEndpoint, WorldOwnership};
 use crate::executor::LocalTasks;
-use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender, SendError, SendErrorKind};
-use crate::thread::{ThreadControl, ThreadError, ThreadStatus, WorldThread, stepped_control};
+use crate::thread::{
+    ThreadControl, ThreadError, ThreadStatus, WorldThread, panic_message, stepped_control,
+};
 use crate::turn::{Link, close_inbox, drain_jobs, run_turn};
 
-pub use crate::turn::{StepOutcome, WorldError, WorldStage};
+pub use crate::turn::{StepOutcome, TickOutcome, WorldError, WorldStage};
 
 /// The proxy component a spawned world leaves on the host.
 ///
 /// It owns the world's state - a thread that drives it, or the world itself
 /// when the host steps it - so despawning the entity ends the world. It is
 /// an implementation detail: callers reach the world through the
-/// [`WorldHandle`] the spawn returns, never through this component.
+/// [`WorldEndpoint`] the spawn returns, never through this component.
 struct WorldProxy {
     /// What drives the world.
     kind: WorldKind,
@@ -55,8 +57,8 @@ pub struct WorldName(pub &'static str);
 
 /// The host-side view of a spawned world's command queue.
 ///
-/// A spawned world is reached through the [`WorldHandle`] its spawn
-/// returns, but that handle belongs to the caller. Every spawn also leaves
+/// A spawned world is reached through the [`WorldEndpoint`] its spawn
+/// returns, but that endpoint belongs to the caller. Every spawn also leaves
 /// this component on the proxy entity, so a bridge that only has the host
 /// world — the MCP transport, say — can reach the world the same way. A
 /// job posted here is picked up by whatever drives the world: its own
@@ -95,7 +97,7 @@ impl WorldSender {
 }
 
 /// The tick a world runs, with its one-time state already captured.
-type Tick = Box<dyn FnMut(&mut World, &ThreadControl, f32) -> bool>;
+type Tick = Box<dyn FnMut(&mut World, &ThreadControl, f32) -> TickOutcome>;
 
 /// A world the host steps: the world, its command queue and its tick.
 ///
@@ -153,11 +155,11 @@ pub trait WorldRunner: 'static {
         command_capacity: usize,
         init: I,
         tick: T,
-    ) -> Result<WorldHandle, ThreadError>
+    ) -> Result<WorldEndpoint, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static;
+        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static;
 }
 
 /// A world on its own thread.
@@ -175,11 +177,11 @@ impl WorldRunner for Threaded {
         command_capacity: usize,
         init: I,
         tick: T,
-    ) -> Result<WorldHandle, ThreadError>
+    ) -> Result<WorldEndpoint, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static,
     {
         spawn_threaded_world_with_init(host, name, command_capacity, init, tick)
     }
@@ -194,19 +196,13 @@ impl WorldRunner for Stepped {
         command_capacity: usize,
         init: I,
         tick: T,
-    ) -> Result<WorldHandle, ThreadError>
+    ) -> Result<WorldEndpoint, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static,
     {
-        Ok(spawn_stepped_world_with_init(
-            host,
-            name,
-            command_capacity,
-            init,
-            tick,
-        ))
+        spawn_stepped_world_with_init(host, name, command_capacity, init, tick)
     }
 }
 
@@ -234,9 +230,9 @@ pub fn spawn_threaded_world<T>(
     name: &'static str,
     command_capacity: usize,
     mut tick: T,
-) -> Result<WorldHandle, ThreadError>
+) -> Result<WorldEndpoint, ThreadError>
 where
-    T: FnMut(&mut World, &ThreadControl, f32) -> bool + Send + 'static,
+    T: FnMut(&mut World, &ThreadControl, f32) -> TickOutcome + Send + 'static,
 {
     spawn_threaded_world_with_init(
         host,
@@ -263,11 +259,11 @@ pub fn spawn_threaded_world_with_init<I, S, T>(
     command_capacity: usize,
     init: I,
     mut tick: T,
-) -> Result<WorldHandle, ThreadError>
+) -> Result<WorldEndpoint, ThreadError>
 where
     I: FnOnce(&mut World) -> S + Send + 'static,
     S: 'static,
-    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + Send + 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     // The thread's loop runs the turn, so the queue and the status travel with
@@ -286,7 +282,13 @@ where
         name,
         sender: port,
     });
-    Ok(WorldHandle::with_status(entity, sender, status))
+    Ok(WorldEndpoint::new(
+        entity,
+        sender,
+        status,
+        WorldOwnership::ThreadOwned,
+        WorldDriving::Continuous,
+    ))
 }
 
 /// Spawn a world the host steps, with a one-time setup step.
@@ -301,17 +303,23 @@ where
 ///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
+///
+/// # Errors
+///
+/// Returns [`ThreadError::Setup`] when `init` panics. Nothing is spawned in
+/// that case, so a caller that cannot set the world up does not have to
+/// remember which half of it exists.
 pub fn spawn_stepped_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
     init: I,
     mut tick: T,
-) -> WorldHandle
+) -> Result<WorldEndpoint, ThreadError>
 where
     I: FnOnce(&mut World) -> S + 'static,
     S: 'static,
-    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> bool + 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     let mut world = World::new();
@@ -323,7 +331,14 @@ where
     // The world's async tasks are its own from here on: the setup may spawn
     // one, and every step drives them.
     LocalTasks::install(&mut world);
-    let mut state = init(&mut world);
+    let mut state = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| init(&mut world)))
+        .map_err(|payload| ThreadError::Setup {
+            name,
+            source: WorldError::Panic {
+                stage: WorldStage::Setup,
+                message: panic_message(payload.as_ref()).into(),
+            },
+        })?;
     let (control, status) = stepped_control();
     let tick = Box::new(
         move |world: &mut World, control: &ThreadControl, delta_seconds: f32| {
@@ -348,7 +363,13 @@ where
         name,
         sender: port,
     });
-    WorldHandle::with_status(entity, sender, status)
+    Ok(WorldEndpoint::new(
+        entity,
+        sender,
+        status,
+        WorldOwnership::HostOwned,
+        WorldDriving::Stepped,
+    ))
 }
 /// The entity a spawned world lives on: what drives it, the name it answers
 /// to, and the queue its jobs are posted through.
@@ -560,409 +581,4 @@ pub fn with_stepped_world_mut<R>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::FRAME_SECONDS;
-    use crate::job::SendErrorKind;
-    use std::time::Duration;
-    use unlit_ecs::bundle;
-
-    /// Jobs sent through the handle run, and what one leaves behind is
-    /// published to the sender's reader.
-    #[test]
-    fn sent_jobs_run_and_publish_back() {
-        let mut host = World::new();
-        let handle = spawn_threaded_world(&mut host, "test", 8, |_, control, _| {
-            control.wait_timeout(Duration::from_millis(1));
-            true
-        })
-        .expect("the world thread starts");
-        handle
-            .sender
-            .send(Box::new(|world: &mut World| {
-                world.root_scope_mut().spawn(bundle![Count(0)]);
-            }))
-            .expect("the world accepts jobs");
-        let counted = crate::channel::Snapshot::new();
-        let reader = counted.reader();
-        let publish = counted.clone();
-        handle
-            .sender
-            .send(Box::new(move |world: &mut World| {
-                world
-                    .root_scope()
-                    .query::<&mut Count>()
-                    .iter()
-                    .next()
-                    .expect("the counter")
-                    .0 += 1;
-                let mut count_rows = world.root_scope().query::<&Count>();
-
-                let count = count_rows.iter().next().expect("the counter").0;
-                publish.publish(count);
-            }))
-            .expect("the world accepts jobs");
-        let mut answer = None;
-        for _ in 0..2_000 {
-            answer = reader.latest().map(|count| *count);
-            if answer.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(answer, Some(1));
-    }
-
-    /// The setup runs before the first job, so a job finds what it built.
-    #[test]
-    fn init_runs_before_the_first_job() {
-        let mut host = World::new();
-        let handle = spawn_threaded_world_with_init(
-            &mut host,
-            "test",
-            8,
-            |world: &mut World| {
-                world.root_scope_mut().spawn(bundle![Count(0)]);
-            },
-            |_, control, (), _| {
-                control.wait_timeout(Duration::from_millis(1));
-                true
-            },
-        )
-        .expect("the world thread starts");
-        let seeded = crate::channel::Snapshot::new();
-        let reader = seeded.reader();
-        let publish = seeded.clone();
-        handle
-            .sender
-            .send(Box::new(move |world: &mut World| {
-                publish.publish(world.root_scope().query::<&Count>().iter().next().is_some());
-            }))
-            .expect("the world accepts jobs");
-        let mut answered = None;
-        for _ in 0..2_000 {
-            answered = reader.latest().map(|found| *found);
-            if answered.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(answered, Some(true), "init ran before the job");
-    }
-
-    /// A full queue fails the send instead of blocking the sender.
-    #[test]
-    fn a_full_queue_fails_the_send() {
-        let mut host = World::new();
-        let handle =
-            spawn_stepped_world_with_init(&mut host, "test", 1, |_| (), |_, _, (), _| true);
-        let mut results = Vec::new();
-        for _ in 0..64 {
-            results.push(handle.sender.send(Box::new(|_| {})));
-        }
-        assert!(
-            results
-                .iter()
-                .any(|result| matches!(result, Err(error) if error.kind() == SendErrorKind::Full)),
-            "a bounded queue must eventually report Full"
-        );
-    }
-
-    /// A stepped world runs its jobs and its tick only when stepped.
-    #[test]
-    fn a_stepped_world_runs_on_its_owner_s_calls() {
-        let mut host = World::new();
-        let handle = spawn_stepped_world_with_init(
-            &mut host,
-            "stepped",
-            8,
-            |world: &mut World| {
-                world.root_scope_mut().spawn(bundle![Count(0)]);
-            },
-            |world: &mut World, _control: &ThreadControl, (), _: f32| {
-                world
-                    .root_scope()
-                    .query::<&mut Count>()
-                    .iter()
-                    .next()
-                    .expect("the counter")
-                    .0 += 1;
-                true
-            },
-        );
-        let count = |host: &World| {
-            with_stepped_world(host, handle.entity, |world| {
-                world
-                    .root_scope()
-                    .query::<&Count>()
-                    .iter()
-                    .next()
-                    .expect("the counter")
-                    .0
-            })
-        };
-        // Nothing has run yet: the host has not stepped the world.
-        assert_eq!(count(&host), Ok(0));
-        assert_eq!(
-            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Ok(StepOutcome::Ran)
-        );
-        assert_eq!(count(&host), Ok(1));
-        assert_eq!(
-            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Ok(StepOutcome::Ran)
-        );
-        assert_eq!(count(&host), Ok(2));
-    }
-
-    /// Draining every stepped world in one pass must not hold a shared
-    /// claim on the proxy that the drain itself needs to write.
-    #[test]
-    fn draining_all_stepped_worlds_does_not_conflict_with_its_own_query() {
-        let mut host = World::new();
-        let first = spawn_stepped_world_with_init(
-            &mut host,
-            "first",
-            8,
-            |world: &mut World| {
-                world.root_scope_mut().spawn(bundle![Count(0)]);
-            },
-            |_, _, (), _| true,
-        );
-        let second = spawn_stepped_world_with_init(
-            &mut host,
-            "second",
-            8,
-            |world: &mut World| {
-                world.root_scope_mut().spawn(bundle![Count(0)]);
-            },
-            |_, _, (), _| true,
-        );
-        for handle in [&first, &second] {
-            handle
-                .sender
-                .send(Box::new(|world: &mut World| {
-                    world
-                        .root_scope()
-                        .query::<&mut Count>()
-                        .iter()
-                        .next()
-                        .expect("the counter")
-                        .0 += 1;
-                }))
-                .expect("the world accepts jobs");
-        }
-        // The single query inside the drain must not trip the borrow ledger.
-        drain_all_stepped_worlds(&host);
-        for handle in [&first, &second] {
-            let count = with_stepped_world(&host, handle.entity, |world| {
-                world
-                    .root_scope()
-                    .query::<&Count>()
-                    .iter()
-                    .next()
-                    .expect("the counter")
-                    .0
-            });
-            assert_eq!(count, Ok(1), "the queued job ran");
-        }
-    }
-
-    /// A world that failed while its host drained it is reported with the
-    /// cause it ended on, so a driver hands on what went wrong and not only
-    /// which world it was.
-    #[test]
-    fn a_drained_world_reports_why_it_failed() {
-        let mut host = World::new();
-        let handle = spawn_stepped_world_with_init(
-            &mut host,
-            "failing",
-            8,
-            |_| (),
-            |_, _: &ThreadControl, (), _: f32| true,
-        );
-        handle
-            .sender
-            .send(Box::new(|_: &mut World| panic!("the drained job died")))
-            .expect("the world accepts jobs");
-
-        let failed = drain_all_stepped_worlds(&host);
-        let expected = WorldError::Panic {
-            stage: WorldStage::Job,
-            message: "the drained job died".into(),
-        };
-        assert_eq!(
-            failed,
-            vec![WorldFailure {
-                name: "failing",
-                error: expected,
-            }]
-        );
-        assert_eq!(
-            join_failures(&failed),
-            "failing (the job panicked: the drained job died)"
-        );
-    }
-
-    /// Several failures read as one clause, each world with its own cause.
-    #[test]
-    fn joined_failures_name_each_world_and_its_cause() {
-        let failures = [
-            WorldFailure {
-                name: "physics",
-                error: WorldError::Command {
-                    source: unlit_ecs::EntityAccessError::NotAlive {
-                        entity: unlit_ecs::Entity::from_bits(7),
-                    },
-                },
-            },
-            WorldFailure {
-                name: "audio",
-                error: WorldError::Step {
-                    source: StepError::NotStepped,
-                },
-            },
-        ];
-        let joined = join_failures(&failures);
-        assert!(
-            joined.starts_with("physics (a queued command failed"),
-            "{joined}"
-        );
-        assert!(joined.contains(", audio ("), "{joined}");
-    }
-
-    /// A stepped world's tick can end the world.
-    #[test]
-    fn a_stepped_tick_ends_the_world() {
-        let mut host = World::new();
-        let handle = spawn_stepped_world_with_init(
-            &mut host,
-            "stepped",
-            8,
-            |_| (),
-            |_, _: &ThreadControl, (), _: f32| false,
-        );
-        assert_eq!(
-            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Ok(StepOutcome::Finished)
-        );
-        assert!(handle.is_finished(), "a false tick ends a stepped world");
-        assert_eq!(
-            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Err(StepError::Unavailable),
-            "a stopped world is reported the same way by every entry point",
-        );
-        assert_eq!(
-            with_stepped_world(&host, handle.entity, |_| panic!("world ended")),
-            Err::<(), _>(StepError::Unavailable),
-        );
-        assert_eq!(
-            with_stepped_world_mut(&host, handle.entity, |_| panic!("world ended")),
-            Err::<(), _>(StepError::Unavailable),
-        );
-    }
-
-    /// An entity that names no world proxy is refused, not silently skipped.
-    #[test]
-    fn stepping_a_foreign_entity_fails_readably() {
-        let mut host = World::new();
-        let plain = host.root_scope_mut().spawn(bundle![Count(0)]);
-        assert!(matches!(
-            step_stepped_world(&host, plain, 0.0),
-            Err(StepError::NoWorld(_))
-        ));
-    }
-
-    /// A world that drives itself on a thread is refused rather than
-    /// silently ignored, so a caller cannot mistake one mode for the other.
-    #[test]
-    fn stepping_a_threaded_world_is_refused() {
-        let mut host = World::new();
-        let handle = spawn_threaded_world(&mut host, "threaded", 8, |_, control, _| {
-            control.wait_timeout(Duration::from_millis(1));
-            true
-        })
-        .expect("the world thread starts");
-        assert_eq!(
-            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Err(StepError::NotStepped)
-        );
-        handle.stop();
-    }
-
-    /// A command a tick queues through the scope is committed by the driver:
-    /// the tick only holds a shared world, so spawning through the queue is
-    /// the way it builds anything, and what it built must be there after.
-    #[test]
-    fn a_stepped_tick_commits_its_queued_commands() {
-        let mut host = World::new();
-        let handle = spawn_stepped_world_with_init(
-            &mut host,
-            "stepped",
-            8,
-            |_| (),
-            |world: &mut World, _control: &ThreadControl, (), _: f32| {
-                world.root_scope().queue().spawn(bundle![Count(7)]);
-                true
-            },
-        );
-        assert_eq!(
-            step_stepped_world(&host, handle.entity, FRAME_SECONDS),
-            Ok(StepOutcome::Ran)
-        );
-        let count = with_stepped_world(&host, handle.entity, |world| {
-            world
-                .root_scope()
-                .query::<&Count>()
-                .iter()
-                .next()
-                .map(|count| count.0)
-        });
-        assert_eq!(count, Ok(Some(7)), "the tick's queued entity was committed");
-    }
-
-    /// A threaded world commits what its tick queued as well: both drivers
-    /// run the same turn, so neither leaves the queue for someone else.
-    #[test]
-    fn a_threaded_tick_commits_its_queued_commands() {
-        let mut host = World::new();
-        let mut first = true;
-        let handle = spawn_threaded_world(&mut host, "threaded", 8, move |world, control, _| {
-            if first {
-                first = false;
-                world.root_scope().queue().spawn(bundle![Count(3)]);
-            }
-            control.wait_timeout(Duration::from_millis(1));
-            true
-        })
-        .expect("the world thread starts");
-        let counted = crate::channel::Snapshot::new();
-        let reader = counted.reader();
-        let mut answer = None;
-        for _ in 0..2_000 {
-            let publish = counted.clone();
-            handle
-                .sender
-                .send(Box::new(move |world: &mut World| {
-                    let count = world
-                        .root_scope()
-                        .query::<&Count>()
-                        .iter()
-                        .next()
-                        .map(|count| count.0);
-                    publish.publish(count);
-                }))
-                .expect("the world accepts jobs");
-            std::thread::sleep(Duration::from_millis(1));
-            if let Some(Some(count)) = reader.latest().map(|count| *count) {
-                answer = Some(count);
-                break;
-            }
-        }
-        handle.stop();
-        assert_eq!(answer, Some(3), "the tick's queued entity was committed");
-    }
-
-    /// The counter the tests share with their worlds.
-    struct Count(u32);
-}
+mod tests;

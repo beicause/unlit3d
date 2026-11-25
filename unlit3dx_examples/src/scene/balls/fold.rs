@@ -100,7 +100,7 @@ impl Balls {
 
         // The balls that are ready to show, or that have waited past the point
         // of being worth waiting for.
-        let stale = world_ended(&scene.physics_state) || world_ended(&scene.render_state);
+        let stale = world_ended(&scene.physics.state()) || world_ended(&scene.render.state());
         let mut showing = std::mem::take(&mut self.showing);
         showing.clear();
         for (ball, entity) in scope.query::<(&mut Ball, Entity)>().iter() {
@@ -153,11 +153,11 @@ impl Balls {
                     assets.materials[candidate.kind * BALL_COLORS.len() + candidate.color];
                 let instance = candidate.instance;
                 let transform = candidate.transform;
-                let sent =
-                    self.shows
-                        .request(&scene.render, candidate.ball, move |world: &mut World| {
-                            show(world, instance, mesh, material, &transform)
-                        });
+                let sent = self
+                    .shows
+                    .request(candidate.ball, move |world: &mut World| {
+                        show(world, instance, mesh, material, &transform)
+                    });
                 match sent {
                     Ok(Asked::Queued | Asked::Coalesced) => {
                         if let Ok(mut ball) = scope.try_query_one::<&mut Ball>(candidate.ball) {

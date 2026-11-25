@@ -379,7 +379,9 @@ mod tests {
     use super::*;
     use crate::FRAME_SECONDS;
     use crate::thread::ThreadControl;
-    use crate::world::{spawn_stepped_world_with_init, spawn_threaded_world, step_stepped_world};
+    use crate::world::{
+        TickOutcome, spawn_stepped_world_with_init, spawn_threaded_world, step_stepped_world,
+    };
 
     /// A component the host command counts.
     struct Marker;
@@ -637,7 +639,7 @@ mod tests {
         let (mut host, transport) = host_with_inbox();
         let threaded = spawn_threaded_world(&mut host, "listed", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
-            true
+            TickOutcome::Running
         })
         .expect("the world thread starts");
 
@@ -651,7 +653,7 @@ mod tests {
         };
         let text = value.to_string();
         assert!(
-            text.contains("listed") && text.contains(&threaded.entity.to_bits().to_string()),
+            text.contains("listed") && text.contains(&threaded.entity().to_bits().to_string()),
             "the host names the threaded world: {text}"
         );
     }
@@ -663,14 +665,14 @@ mod tests {
         let (mut host, transport) = host_with_inbox();
         let threaded = spawn_threaded_world(&mut host, "counted", 8, |_, control, _| {
             control.wait_timeout(Duration::from_millis(1));
-            true
+            TickOutcome::Running
         })
         .expect("the world thread starts");
         let seeded = crate::channel::Snapshot::new();
         let reader = seeded.reader();
         let publish = seeded.clone();
         threaded
-            .sender
+            .commands()
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Marker]);
                 publish.publish(());
@@ -686,7 +688,7 @@ mod tests {
             let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldRef::handle(threaded.entity));
+        let command = command.with_world(WorldRef::handle(threaded.entity()));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -709,17 +711,19 @@ mod tests {
             |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Marker]);
             },
-            |_, _: &ThreadControl, (), _: f32| true,
-        );
+            |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        )
+        .expect("the stepped world starts");
 
         let (command, reply) = McpCommand::new(|world| {
             let count = world.root_scope().query::<&Marker>().iter().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldRef::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity()));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
-        step_stepped_world(&host, stepped.entity, FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(&host, stepped.entity(), FRAME_SECONDS)
+            .expect("the stepped world starts");
 
         let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
@@ -738,20 +742,21 @@ mod tests {
             "panic",
             8,
             |_: &mut World| (),
-            |_, _: &ThreadControl, (), _: f32| true,
-        );
+            |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        )
+        .expect("the stepped world starts");
 
         let (command, reply) = McpCommand::new(|_| {
             panic!("the managed command failed");
         });
-        let command = command.with_world(WorldRef::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity()));
         transport.try_send(command).expect("the inbox takes it");
         let (queued, cancelled) = McpCommand::new(|_| panic!("queued command must not run"));
         transport
-            .try_send(queued.with_world(WorldRef::handle(stepped.entity)))
+            .try_send(queued.with_world(WorldRef::handle(stepped.entity())))
             .expect("the inbox takes the second command");
         run_turn(&mut host);
-        let outcome = step_stepped_world(&host, stepped.entity, FRAME_SECONDS)
+        let outcome = step_stepped_world(&host, stepped.entity(), FRAME_SECONDS)
             .expect("the stepped world can run its first turn");
 
         let crate::world::StepOutcome::Failed(ref error) = outcome else {
@@ -767,7 +772,7 @@ mod tests {
         // The failed world ended with that turn, so a later call finds
         // nothing left to step.
         assert_eq!(
-            step_stepped_world(&host, stepped.entity, FRAME_SECONDS),
+            step_stepped_world(&host, stepped.entity(), FRAME_SECONDS),
             Err(crate::world::StepError::Unavailable),
         );
         let Err(message) = reply.try_recv().expect("the command was answered") else {
@@ -788,7 +793,7 @@ mod tests {
             "the MCP command was cancelled before it ran"
         );
         assert!(matches!(
-            stepped.state.latest().as_deref(),
+            stepped.state().latest().as_deref(),
             Some(&crate::thread::WorldState::Failed(_))
         ));
     }
@@ -803,13 +808,15 @@ mod tests {
             "ended",
             8,
             |_: &mut World| (),
-            |_, _: &ThreadControl, (), _: f32| false,
-        );
-        step_stepped_world(&host, stepped.entity, FRAME_SECONDS).expect("the stepped world starts");
+            |_, _: &ThreadControl, (), _: f32| TickOutcome::Finished,
+        )
+        .expect("the stepped world starts");
+        step_stepped_world(&host, stepped.entity(), FRAME_SECONDS)
+            .expect("the stepped world starts");
         assert!(stepped.is_finished(), "the tick ended the world");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldRef::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity()));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -833,15 +840,16 @@ mod tests {
             "busy",
             1,
             |_: &mut World| (),
-            |_, _: &ThreadControl, (), _: f32| true,
-        );
+            |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        )
+        .expect("the stepped world starts");
         stepped
-            .sender
+            .commands()
             .send(Box::new(|_: &mut World| {}))
             .expect("the first job fits");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldRef::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity()));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -866,18 +874,19 @@ mod tests {
             "short",
             8,
             |_: &mut World| (),
-            |_, _: &ThreadControl, (), _: f32| true,
-        );
+            |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        )
+        .expect("the stepped world starts");
 
         let (command, reply) = McpCommand::new(|_| panic!("a cancelled command must not run"));
-        let command = command.with_world(WorldRef::handle(stepped.entity));
+        let command = command.with_world(WorldRef::handle(stepped.entity()));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
         // The host has handed the command to the world's queue; the
         // receiver is dropped with the entity, so the queue is closed with
         // the command still in it.
         host.root_scope_mut()
-            .despawn(stepped.entity)
+            .despawn(stepped.entity())
             .expect("the proxy despawns");
 
         let answer = receive(reply);
@@ -900,8 +909,9 @@ mod tests {
             "answered",
             8,
             |_: &mut World| (),
-            |_, _: &ThreadControl, (), _: f32| true,
-        );
+            |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        )
+        .expect("the stepped world starts");
         let answered = Arc::new(Mutex::new(false));
         let seen = Arc::clone(&answered);
         let (command, reply) = McpCommand::new(move |_| {
@@ -909,12 +919,12 @@ mod tests {
             Ok(Output::Json(serde_json::Value::Null))
         });
         transport
-            .try_send(command.with_world(WorldRef::handle(stepped.entity)))
+            .try_send(command.with_world(WorldRef::handle(stepped.entity())))
             .expect("the inbox takes it");
         run_turn(&mut host);
         drop(reply);
 
-        let outcome = step_stepped_world(&host, stepped.entity, FRAME_SECONDS)
+        let outcome = step_stepped_world(&host, stepped.entity(), FRAME_SECONDS)
             .expect("the stepped world runs the queued command");
         assert_eq!(outcome, crate::world::StepOutcome::Ran);
         assert!(*sync::lock(&answered), "the job ran with nobody listening");

@@ -178,7 +178,7 @@ impl Interactive {
             return Err(RunError::AlreadyRecording);
         }
         self.recording = Some(
-            with_stepped_world_mut(host, self.worlds().audio.entity, |audio| {
+            with_stepped_world_mut(host, self.worlds().audio.entity(), |audio| {
                 start_recording(audio, max_seconds)
             })
             .map_err(RunError::Step)?,
@@ -191,7 +191,7 @@ impl Interactive {
         let Some(recording) = self.recording.take() else {
             return Ok(None);
         };
-        with_stepped_world_mut(host, self.worlds().audio.entity, |world| {
+        with_stepped_world_mut(host, self.worlds().audio.entity(), |world| {
             recording.stop(world)
         })
         .map(|audio| audio.map(Recording::from))
@@ -244,7 +244,7 @@ pub fn interactive<A: App>(
     let setup = app.setup_render(
         &mut host,
         RenderPorts {
-            world: render.entity,
+            world: render.entity(),
             device: &device,
             panel: Some(panel),
         },
@@ -252,7 +252,7 @@ pub fn interactive<A: App>(
     let (renderer, target) = {
         let mut nested = host
             .root_scope()
-            .try_query_one::<&World>(render.entity)
+            .try_query_one::<&World>(render.entity())
             .map_err(RunError::RenderWorld)?;
         offscreen::bind(nested.get(), setup, &device, A::SIZE)?
     };
@@ -265,7 +265,7 @@ pub fn interactive<A: App>(
             worlds,
             A::PHYSICS_HZ,
             frames,
-            render.entity,
+            render.entity(),
             renderer,
             AUDIO_SAMPLE_RATE,
         ),

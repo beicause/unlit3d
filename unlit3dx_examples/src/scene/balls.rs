@@ -190,10 +190,10 @@ impl Balls {
             // Each of the three is bounded by the same wait: a half that has
             // not come within it is given up on, and so is a show the render
             // world never answered.
-            bodies: Pending::new(scene.physics_state.clone(), Some(PENDING_TIMEOUT)),
-            instances: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT)),
-            shows: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT)),
-            retired: Pending::new(scene.render_state.clone(), Some(PENDING_TIMEOUT)),
+            bodies: Pending::new(scene.physics.clone(), Some(PENDING_TIMEOUT)),
+            instances: Pending::new(scene.render.clone(), Some(PENDING_TIMEOUT)),
+            shows: Pending::new(scene.render.clone(), Some(PENDING_TIMEOUT)),
+            retired: Pending::new(scene.render.clone(), Some(PENDING_TIMEOUT)),
             settled_bodies: Vec::new(),
             settled_instances: Vec::new(),
             settled_shows: Vec::new(),
@@ -316,18 +316,18 @@ impl BallDrops {
         // not a reaction to its output.
         while balls.requests > 0 {
             balls.requests -= 1;
-            balls.drop_ball(world, state, scene);
+            balls.drop_ball(world, state);
         }
         if balls.automatic_drops && balls.spawn_elapsed >= SPAWN_PERIOD {
             balls.spawn_elapsed %= SPAWN_PERIOD;
-            balls.drop_ball(world, state, scene);
+            balls.drop_ball(world, state);
         }
 
         balls.publish(world, scene);
 
         if balls.sweep_elapsed >= SWEEP_PERIOD {
             balls.sweep_elapsed %= SWEEP_PERIOD;
-            balls.sweep_outside_view(world, scene);
+            balls.sweep_outside_view(world);
         }
     }
 }

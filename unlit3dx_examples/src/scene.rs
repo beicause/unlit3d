@@ -319,23 +319,25 @@ pub struct GamePhysics {
 /// between its steps. Each subscription belongs to the world it reads, so a
 /// run that never asks for a snapshot pays nothing for it.
 ///
-/// A port also carries what its world is doing: [`render_state`](Self::render_state),
-/// [`physics_state`](Self::physics_state) and [`audio_state`](Self::audio_state)
-/// are how an object that asked a question learns that the world it asked is
-/// gone, instead of waiting for an answer that will never come.
+/// A port also carries what its world is doing: the state of
+/// [`render`](Self::render), [`physics`](Self::physics) and
+/// [`audio`](Self::audio) is how an object that asked a question learns that
+/// the world it asked is gone, instead of waiting for an answer that will
+/// never come.
 ///
 /// Both run modes build one from the worlds they have — threaded worlds for
 /// the windowed show, stepped worlds for the headless capture — and both then
 /// spawn the same objects with it, so the wiring is written once.
 #[derive(Clone)]
 pub struct Scene {
-    /// Commands into the render world: the objects build their scene and
-    /// move their instances through them.
-    pub render: JobSender,
-    /// Commands into the physics world.
-    pub physics: JobSender,
-    /// Commands into the audio world.
-    pub audio: JobSender,
+    /// The render world: the objects build their scene and move their
+    /// instances through its commands, and read its state to learn whether it
+    /// is still there.
+    pub render: WorldEndpoint,
+    /// The physics world.
+    pub physics: WorldEndpoint,
+    /// The audio world.
+    pub audio: WorldEndpoint,
     /// The physics world's latest pose snapshot.
     ///
     /// A subscription rather than a reader: the install job runs on the
@@ -343,12 +345,6 @@ pub struct Scene {
     /// this handle once that turn has come — and a world that stopped first
     /// says so instead of leaving a reader that never fills.
     pub poses: Subscription<SnapshotReader<GamePhysics>>,
-    /// Whether the render world is still running.
-    pub render_state: SnapshotReader<WorldState>,
-    /// Whether the physics world is still running.
-    pub physics_state: SnapshotReader<WorldState>,
-    /// Whether the audio world is still running.
-    pub audio_state: SnapshotReader<WorldState>,
 }
 
 /// Watch the physics world's body poses.
@@ -432,7 +428,7 @@ pub struct PanelLayout {
 /// fed, and the panel still lays its frames out.
 pub fn spawn_scene<R: WorldRunner>(
     host: &mut World,
-    render: WorldHandle,
+    render: WorldEndpoint,
     audio_setup: AudioSetup,
     panel: Snapshot<EguiTarget>,
     refresh_millihertz: Arc<AtomicU32>,
@@ -446,7 +442,7 @@ pub fn spawn_scene<R: WorldRunner>(
     // The demo asks for the poses it needs; the library collects nothing on
     // its own. The subscription lives in the physics world, so it runs
     // between that world's steps whatever drives it.
-    let poses = watch_poses(&physics.sender);
+    let poses = watch_poses(physics.commands());
 
     // The audio world: one synthesizer voice, mixed into the output stream.
     // The voice builds its synthesizer on the first fill it renders, so it
@@ -477,12 +473,9 @@ pub fn spawn_scene<R: WorldRunner>(
     };
 
     let scene = Scene {
-        render: render.sender.clone(),
-        render_state: render.state.clone(),
-        physics: physics.sender.clone(),
-        physics_state: physics.state.clone(),
-        audio: audio.sender.clone(),
-        audio_state: audio.state.clone(),
+        render: render.clone(),
+        physics: physics.clone(),
+        audio: audio.clone(),
         poses,
     };
 
@@ -515,7 +508,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 // render world builds on the GPU's answer, which is later than
                 // this setup, so it travels as a job and lands before the first
                 // frame draws.
-                if let Err(error) = scene.render.send(camera_job()) {
+                if let Err(error) = scene.render.commands().send(camera_job()) {
                     log::error!("the render world refused its camera ({error:?})");
                 }
                 // Space drops a ball. The key arrives on this world's own
@@ -548,7 +541,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 // since the panel shows what they wrote this frame, and the
                 // render world draws whatever is there.
                 world.root_scope_mut().spawn(bundle![EguiPanelHost::new(
-                    render.sender.clone(),
+                    render.commands().clone(),
                     panel.reader(),
                     unlit3dx::app::PANEL_SLOT,
                 ),]);
@@ -565,7 +558,7 @@ pub fn spawn_scene<R: WorldRunner>(
             let mut index = 0;
             move |world: &mut World, control: &ThreadControl, (), delta_seconds: f32| {
                 if control.stop_requested() {
-                    return false;
+                    return TickOutcome::Finished;
                 }
                 // A tick is a frame whose duration is the one it measured:
                 // the objects read it from the frame like any other
@@ -590,7 +583,7 @@ pub fn spawn_scene<R: WorldRunner>(
                     clock.set_step(Duration::from_secs_f64(1.0 / hz));
                     clock.wait(control);
                 }
-                true
+                TickOutcome::Running
             }
         },
     )
@@ -644,7 +637,7 @@ pub fn panel_buttons(
     host: &World,
     worlds: &SceneWorlds,
 ) -> Vec<(&'static str, unlit3d::egui::egui::Rect)> {
-    with_stepped_world(host, worlds.gameplay.entity, |world| {
+    with_stepped_world(host, worlds.gameplay.entity(), |world| {
         world
             .root_scope()
             .query::<&PanelLayout>()
@@ -674,7 +667,7 @@ pub struct SceneStatus {
 /// Report the scene state: the balls the gameplay world holds and where its
 /// MIDI sequence stands.
 pub fn scene_status(host: &World, worlds: &SceneWorlds) -> SceneStatus {
-    with_stepped_world(host, worlds.gameplay.entity, |world| {
+    with_stepped_world(host, worlds.gameplay.entity(), |world| {
         let scope = world.root_scope();
         let balls = scope.query::<&Ball>().iter().count();
         let sequence = scope
@@ -744,7 +737,7 @@ mod tests {
         let counted = Arc::clone(&runs);
         worlds
             .gameplay
-            .sender
+            .commands()
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![EguiPanel::new(
                     move |_, _, _ui: &mut egui::Ui| {
@@ -759,7 +752,7 @@ mod tests {
         // input arriving, no frame is laid out at all.
         let mut settled = 0;
         for _ in 0..8 {
-            step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS)
+            step_stepped_world(&host, worlds.gameplay.entity(), FRAME_SECONDS)
                 .expect("the stepped world starts");
             let now = runs.load(Ordering::Relaxed);
             if now == settled {
@@ -777,7 +770,7 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS)
+        step_stepped_world(&host, worlds.gameplay.entity(), FRAME_SECONDS)
             .expect("the stepped world starts");
 
         assert!(
@@ -813,7 +806,7 @@ mod tests {
         let counted = Arc::clone(&pressed);
         worlds
             .gameplay
-            .sender
+            .commands()
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![EguiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
@@ -837,7 +830,7 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity, FRAME_SECONDS)
+        step_stepped_world(&host, worlds.gameplay.entity(), FRAME_SECONDS)
             .expect("the stepped world starts");
 
         assert_eq!(

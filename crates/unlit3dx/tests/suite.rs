@@ -9,6 +9,7 @@
 //! required features are off is skipped whole.
 
 mod audio;
+mod lifecycle;
 mod multi_world;
 mod physics;
 mod subscriptions;

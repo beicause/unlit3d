@@ -14,7 +14,7 @@ use web_time::Instant;
 use crate::channel::{Snapshot, SnapshotReader};
 use crate::executor::LocalTasks;
 use crate::job::Job;
-use crate::turn::{Link, StepOutcome, WorldError, WorldStage, close_inbox, run_turn};
+use crate::turn::{Link, StepOutcome, TickOutcome, WorldError, WorldStage, close_inbox, run_turn};
 
 /// How long a dropped thread waits for its tick to notice the stop before it
 /// is left detached instead of blocking the dropper.
@@ -168,11 +168,12 @@ pub enum WorldState {
 
 /// A cloneable view of a world's state.
 ///
-/// A [`WorldThread`] owns the join handle and stops its thread on drop;
-/// this shares only the stop signal and the state, so a
-/// [`WorldHandle`](crate::handle::WorldHandle) can report a world's state and
-/// ask it to stop without owning the thread. A caller reads that state through
-/// the handle, so this stays an implementation detail of the spawn functions.
+/// A [`WorldThread`] owns the thread and stops it on drop; this shares the
+/// stop signal, the state and the join handle, so a
+/// [`WorldEndpoint`](crate::endpoint::WorldEndpoint) can report a world's
+/// state, ask it to stop and wait for its thread without owning either. A
+/// caller reads that state through the endpoint, so this stays an
+/// implementation detail of the spawn functions.
 #[derive(Clone)]
 pub(crate) struct ThreadStatus {
     /// The stop signal, sent on drop.
@@ -182,12 +183,36 @@ pub(crate) struct ThreadStatus {
     /// This status's own reading of the state, for the tests that ask it
     /// directly instead of taking a reader.
     own: SnapshotReader<WorldState>,
+    /// The thread to reclaim, shared with the handle that owns the world.
+    ///
+    /// `None` for a world no thread ever drove: a sub-world and a stepped
+    /// world are turned by their owner, so there is nothing to wait for and
+    /// a wait has to say so rather than report an end it never saw.
+    join: Option<Arc<Mutex<JoinSlot>>>,
+}
+
+/// What is left of a thread's join handle.
+#[derive(Debug, Default)]
+struct JoinSlot {
+    /// The handle, until someone joins it.
+    handle: Option<JoinHandle<()>>,
+    /// Whether the caller gave up the wait for good.
+    detached: bool,
 }
 
 impl ThreadStatus {
-    /// A status for a world on a thread of its own, running from here.
-    pub(crate) fn threaded(stop: Arc<Stop>) -> Self {
-        Self::at(stop)
+    /// A status for a world a thread drives, whose handle arrives later.
+    fn threaded(stop: Arc<Stop>) -> Self {
+        Self::at(stop, Some(Arc::default()))
+    }
+
+    /// A status for a world the host turns, sharing the stop signal it holds.
+    ///
+    /// There is no thread to reclaim, so a wait answers
+    /// [`JoinOutcome::NoHandle`]; the stop signal is the host's, so asking the
+    /// world to stop still reaches the loop that turns it.
+    pub(crate) fn host_owned(stop: Arc<Stop>) -> Self {
+        Self::at(stop, None)
     }
 
     /// A status for a world that shares its owner's thread.
@@ -197,14 +222,19 @@ impl ThreadStatus {
     /// [`WorldState::Running`] until then, and the stop signal belongs to
     /// that owner alone.
     pub(crate) fn detached() -> Self {
-        Self::at(Arc::default())
+        Self::at(Arc::default(), None)
     }
 
-    fn at(stop: Arc<Stop>) -> Self {
+    fn at(stop: Arc<Stop>, join: Option<Arc<Mutex<JoinSlot>>>) -> Self {
         let state = Snapshot::new();
         let own = state.reader();
         state.publish(WorldState::Running);
-        Self { stop, state, own }
+        Self {
+            stop,
+            state,
+            own,
+            join,
+        }
     }
 
     /// A reader of the state this world publishes.
@@ -268,12 +298,65 @@ impl ThreadStatus {
     pub(crate) fn record_failure(&self, error: WorldError) {
         self.state.publish(WorldState::Failed(error));
     }
+
+    /// Wait up to `timeout` for the thread that drives this world to finish.
+    ///
+    /// A world no thread drove answers [`JoinOutcome::NoHandle`]: the caller
+    /// learns there is nothing to reclaim instead of a wait that a detach
+    /// would otherwise disguise as an end.
+    pub(crate) fn join_timeout(&self, timeout: Duration) -> JoinOutcome {
+        let Some(join) = self.join.as_deref() else {
+            return JoinOutcome::NoHandle;
+        };
+        {
+            let slot = sync::lock(join);
+            if slot.detached {
+                return JoinOutcome::Detached;
+            }
+            if slot.handle.is_none() {
+                return JoinOutcome::AlreadyJoined;
+            }
+        }
+        // The wait happens without the slot locked: the thread reaching its
+        // end has no business waiting for a reader of the slot.
+        if !self.stop.wait_finished(timeout) {
+            return JoinOutcome::TimedOut;
+        }
+        let mut slot = sync::lock(join);
+        if let Some(handle) = slot.handle.take() {
+            // A panic was already reported through the world's state.
+            let _ = handle.join();
+        }
+        JoinOutcome::Joined
+    }
+
+    /// Leave the thread running without ever joining it.
+    pub(crate) fn detach(&self) {
+        let Some(join) = self.join.as_deref() else {
+            return;
+        };
+        let mut slot = sync::lock(join);
+        slot.detached = true;
+        slot.handle.take();
+    }
 }
 
 /// Why a world thread could not be started.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ThreadError {
+    /// The world's setup panicked, so there is no world to drive.
+    ///
+    /// A stepped world is set up on the caller's thread, before anything is
+    /// spawned, so a failed setup leaves nothing behind to clean up.
+    #[error("the {name} world could not be set up: {source}")]
+    Setup {
+        /// The name the world was to be known by.
+        name: &'static str,
+        /// Why the setup failed.
+        #[source]
+        source: WorldError,
+    },
     /// The operating system refused to create the thread.
     #[error("the thread for the {name} world was not created: {source}")]
     Spawn {
@@ -304,6 +387,11 @@ pub enum JoinOutcome {
     TimedOut,
     /// The thread was joined by an earlier wait.
     AlreadyJoined,
+    /// No thread ever drove this world, so there is nothing to reclaim.
+    ///
+    /// A sub-world and a stepped world are turned by their owner: their end is
+    /// reported by [`WorldState`], not by a wait.
+    NoHandle,
 }
 
 /// One thread owning one `World`.
@@ -313,12 +401,8 @@ pub enum JoinOutcome {
 /// and may outlive its proxy. Call [`stop`](Self::stop) and then
 /// [`join_timeout`](Self::join_timeout) when teardown must be confirmed.
 pub struct WorldThread {
-    /// The shared state a handle reports.
+    /// The shared state a handle reports, and the shared join slot.
     status: ThreadStatus,
-    /// The thread handle, joined on drop.
-    joined: Option<JoinHandle<()>>,
-    /// Whether the caller gave up the handle before it was joined.
-    detached: bool,
 }
 
 impl WorldThread {
@@ -336,7 +420,7 @@ impl WorldThread {
     /// of unwinding.
     pub fn spawn<T>(name: &str, mut tick: T) -> Result<Self, ThreadError>
     where
-        T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl) -> TickOutcome + Send + 'static,
     {
         // The queue is closed from the start: no producer holds its sender,
         // so a turn finds nothing queued and the tick alone drives the world.
@@ -374,7 +458,7 @@ impl WorldThread {
     ) -> Result<Self, ThreadError>
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S) -> TickOutcome + Send + 'static,
     {
         let stop = Arc::new(Stop::default());
         let status = ThreadStatus::threaded(Arc::clone(&stop));
@@ -440,11 +524,13 @@ impl WorldThread {
                 name: error_name,
                 source,
             })?;
-        Ok(Self {
-            status,
-            joined: Some(joined),
-            detached: false,
-        })
+        // The handle is shared with every endpoint that reaches this world, so
+        // a caller that waits reclaims the thread exactly once no matter which
+        // clone of the endpoint it waits through.
+        if let Some(slot) = status.join.as_deref() {
+            sync::lock(slot).handle = Some(joined);
+        }
+        Ok(Self { status })
     }
 
     /// A cloneable view of the thread's state, for the handle the spawn hands
@@ -477,22 +563,12 @@ impl WorldThread {
     /// Wait up to `timeout` for the thread to finish.
     ///
     /// The wait is woken by the thread itself as it leaves its loop, so it
-    /// costs nothing while the thread runs. The answer says what the handle
-    /// did, not how the world ended: [`WorldState`] holds that. A wait that
+    /// costs nothing while the thread runs. The answer says what became of the
+    /// thread, not how the world ended: [`WorldState`] holds that. A wait that
     /// times out keeps the handle, so calling this again waits for the same
     /// thread instead of pretending it finished.
     pub fn join_timeout(&mut self, timeout: Duration) -> JoinOutcome {
-        if self.detached {
-            return JoinOutcome::Detached;
-        }
-        if self.joined.is_none() {
-            return JoinOutcome::AlreadyJoined;
-        }
-        if !self.status.stop.wait_finished(timeout) {
-            return JoinOutcome::TimedOut;
-        }
-        self.join();
-        JoinOutcome::Joined
+        self.status.join_timeout(timeout)
     }
 
     /// Leave the thread running without ever joining it.
@@ -504,25 +580,16 @@ impl WorldThread {
     /// [`is_finished`](Self::is_finished) keeps reporting the state the world
     /// publishes rather than the state of the thread.
     pub fn detach(&mut self) {
-        self.detached = true;
-        self.joined.take();
-    }
-
-    /// Join the thread, clearing the handle.
-    fn join(&mut self) {
-        if let Some(joined) = self.joined.take() {
-            // A panic was already reported through the panic slot.
-            let _ = joined.join();
-        }
+        self.status.detach();
     }
 }
 
 impl Drop for WorldThread {
     fn drop(&mut self) {
         self.status.stop();
-        if self.join_timeout(STOP_TIMEOUT) == JoinOutcome::TimedOut {
+        if self.status.join_timeout(STOP_TIMEOUT) == JoinOutcome::TimedOut {
             log::warn!("a world thread did not stop within {STOP_TIMEOUT:?}; leaving it detached");
-            self.detach();
+            self.status.detach();
         }
     }
 }
@@ -609,7 +676,9 @@ pub fn fixed_steps(debt: &mut f32, delta_seconds: f32, step_seconds: f32) -> u32
 /// once, and the host steps it whenever a step is due.
 pub(crate) fn stepped_control() -> (ThreadControl, ThreadStatus) {
     let stop = Arc::new(Stop::default());
-    let status = ThreadStatus::threaded(Arc::clone(&stop));
+    // No thread turns this world, so a wait has nothing to reclaim; the stop
+    // signal is still the one the host's turn reads.
+    let status = ThreadStatus::host_owned(Arc::clone(&stop));
     let control = ThreadControl {
         stop,
         self_driven: false,
@@ -630,311 +699,4 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    /// How long a test waits for a thread to reach the state it asserts on.
-    ///
-    /// Generous, because the wait is not what is being measured: on a loaded
-    /// runner a thread can go a long while without being scheduled at all,
-    /// and a short budget would fail a thread that was merely slow to start.
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// Poll until `ready` yields a value, or give up when the timeout runs
-    /// out.
-    ///
-    /// Some of what a test waits for can only be read once - a panic message
-    /// is taken out of its slot - so the poll takes it rather than asking
-    /// twice. Returns `None` on giving up, so the caller asserts on it
-    /// instead of looping without end when a thread never gets to run.
-    fn wait_until<T>(ready: impl Fn() -> Option<T>) -> Option<T> {
-        let deadline = Instant::now() + TEST_TIMEOUT;
-        loop {
-            if let Some(value) = ready() {
-                return Some(value);
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    /// The thread stops when its tick asks it to, and the stop is observable.
-    #[test]
-    fn a_false_tick_ends_the_thread() {
-        let thread = WorldThread::spawn("test", |_, _| false).expect("the thread starts");
-        let state = thread.state();
-        assert!(
-            wait_until(|| thread.is_finished().then_some(())).is_some(),
-            "the thread never finished"
-        );
-        assert_eq!(state.latest().as_deref(), Some(&WorldState::Stopped));
-    }
-
-    /// A tick panic is reported through the state.
-    #[test]
-    fn a_tick_panic_is_reported() {
-        let thread =
-            WorldThread::spawn("test", |_, _| panic!("the tick died")).expect("the thread starts");
-        let state = thread.state();
-        assert!(
-            wait_until(|| thread.is_finished().then_some(())).is_some(),
-            "the thread never finished"
-        );
-        assert_eq!(
-            state.latest().as_deref(),
-            Some(&WorldState::Failed(crate::turn::WorldError::Panic {
-                stage: crate::turn::WorldStage::Body,
-                message: "the tick died".into(),
-            }))
-        );
-    }
-
-    /// A panic in the setup step is reported like a tick panic.
-    #[test]
-    fn a_setup_panic_is_reported() {
-        let (_sender, inbox) = async_channel::bounded(1);
-        let thread = WorldThread::spawn_with(
-            "test",
-            inbox,
-            |_| -> () { panic!("the setup died") },
-            |_, _, ()| false,
-        )
-        .expect("the thread starts");
-        let state = thread.state();
-        assert!(
-            wait_until(|| thread.is_finished().then_some(())).is_some(),
-            "the thread never finished"
-        );
-        assert_eq!(
-            state.latest().as_deref(),
-            Some(&WorldState::Failed(crate::turn::WorldError::Panic {
-                stage: crate::turn::WorldStage::Setup,
-                message: "the setup died".into(),
-            }))
-        );
-    }
-
-    /// A stop ends the tick's wait early instead of sleeping it out.
-    #[test]
-    fn a_stop_wakes_a_sleeping_tick() {
-        // The stop can only cut a wait short if a tick has begun one, so the
-        // drop waits for the tick to say it is about to wait rather than
-        // sleeping a while and hoping. A thread on a loaded runner has not
-        // reached its first tick ten milliseconds in, and a stop that lands
-        // before it does has nothing to wake.
-        let waiting = Arc::new(AtomicBool::new(false));
-        let about_to_wait = Arc::clone(&waiting);
-        let wakeups = Arc::new(AtomicUsize::new(0));
-        let observed = Arc::clone(&wakeups);
-        let thread = WorldThread::spawn("test", move |_, control| {
-            about_to_wait.store(true, Ordering::SeqCst);
-            let before = Instant::now();
-            control.wait_timeout(Duration::from_millis(1_000));
-            if before.elapsed() < Duration::from_millis(900) {
-                observed.fetch_add(1, Ordering::SeqCst);
-            }
-            true
-        });
-        let waited = wait_until(|| waiting.load(Ordering::SeqCst).then_some(()));
-        drop(thread);
-        assert!(waited.is_some(), "the tick never reached its wait");
-        assert!(
-            wakeups.load(Ordering::SeqCst) >= 1,
-            "the stop never woke the sleeping tick"
-        );
-    }
-
-    /// Setup runs before the first tick, and its state reaches every tick.
-    #[test]
-    fn setup_runs_before_the_first_tick() {
-        let ran = Arc::new(AtomicBool::new(false));
-        let saw = Arc::clone(&ran);
-        let (_sender, inbox) = async_channel::bounded(1);
-        let mut thread = WorldThread::spawn_with(
-            "test",
-            inbox,
-            move |_| {
-                saw.store(true, Ordering::SeqCst);
-                7u32
-            },
-            move |_, _, state| {
-                assert_eq!(*state, 7);
-                false
-            },
-        )
-        .expect("the thread starts");
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::Joined
-        );
-        assert!(ran.load(Ordering::SeqCst), "the setup never ran");
-    }
-
-    /// Dropping a thread whose tick ignores the stop returns instead of
-    /// hanging, and leaves the thread detached.
-    #[test]
-    fn a_stuck_tick_does_not_hang_the_drop() {
-        let started = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&started);
-        let thread = WorldThread::spawn("test", move |_, _| {
-            flag.store(true, Ordering::SeqCst);
-            // Ignore the stop forever: the drop must give up on it.
-            std::thread::sleep(Duration::from_secs(30));
-            false
-        })
-        .expect("the thread starts");
-        assert!(
-            wait_until(|| started.load(Ordering::SeqCst).then_some(())).is_some(),
-            "the tick never ran"
-        );
-        let before = Instant::now();
-        drop(thread);
-        assert!(
-            before.elapsed() < STOP_TIMEOUT + Duration::from_secs(1),
-            "the drop waited far longer than the grace period"
-        );
-    }
-
-    /// Waiting for a thread that is still ticking gives up on the timeout
-    /// instead of waiting for the thread.
-    #[test]
-    fn a_join_timeout_gives_up_on_a_stuck_tick() {
-        let mut thread = WorldThread::spawn("test", |_, _| {
-            // Sleep through the stop: nothing ends the tick but the sleep.
-            std::thread::sleep(Duration::from_secs(30));
-            false
-        })
-        .expect("the thread starts");
-        let before = Instant::now();
-        assert_eq!(
-            thread.join_timeout(Duration::from_millis(50)),
-            JoinOutcome::TimedOut
-        );
-        assert!(
-            before.elapsed() < Duration::from_secs(1),
-            "the wait outlasted its timeout"
-        );
-        thread.detach();
-    }
-
-    /// A detached thread is never joined.
-    #[test]
-    fn a_detached_thread_is_forgotten() {
-        let mut thread = WorldThread::spawn("test", |_, control| {
-            control.wait_timeout(Duration::from_millis(5));
-            true
-        })
-        .expect("the thread starts");
-        thread.stop();
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::Joined
-        );
-        thread.detach();
-        assert!(thread.is_finished());
-    }
-
-    /// A detached thread cannot be waited for: the handle is gone, so a wait
-    /// says it was detached instead of claiming the thread has stopped.
-    #[test]
-    fn a_detached_thread_is_never_reported_as_joined() {
-        let mut thread = WorldThread::spawn("test", |_, control| {
-            control.wait_timeout(Duration::from_millis(5));
-            true
-        })
-        .expect("the thread starts");
-        thread.stop();
-        thread.detach();
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::Detached
-        );
-        // The answer does not change with a longer wait: nothing here can
-        // observe the thread exit any more.
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::Detached
-        );
-    }
-
-    /// A second wait after a joined thread reports that the handle is spent
-    /// rather than waiting for a thread that is no longer there.
-    #[test]
-    fn a_second_wait_says_the_handle_is_spent() {
-        let mut thread = WorldThread::spawn("test", |_, _| false).expect("the thread starts");
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::Joined
-        );
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::AlreadyJoined
-        );
-    }
-
-    /// A wait that timed out keeps the handle, so the same thread can still
-    /// be waited for once it stops.
-    #[test]
-    fn a_timed_out_wait_can_be_taken_again() {
-        let stop = Arc::new(AtomicBool::new(false));
-        let watched = Arc::clone(&stop);
-        let mut thread = WorldThread::spawn("test", move |_, _| !watched.load(Ordering::SeqCst))
-            .expect("the thread starts");
-        assert_eq!(
-            thread.join_timeout(Duration::from_millis(10)),
-            JoinOutcome::TimedOut
-        );
-        stop.store(true, Ordering::SeqCst);
-        assert_eq!(
-            thread.join_timeout(Duration::from_secs(2)),
-            JoinOutcome::Joined
-        );
-    }
-
-    /// The step the fixed-step tests accumulate debt against.
-    const STEP: f32 = 1.0 / 60.0;
-
-    /// One step of time runs exactly one step and leaves nothing owed.
-    #[test]
-    fn a_step_of_time_runs_one_fixed_step() {
-        let mut debt = 0.0;
-        assert_eq!(fixed_steps(&mut debt, STEP, STEP), 1);
-        assert_eq!(debt, 0.0);
-    }
-
-    /// The fraction of a step a tick did not spend waits for the next one
-    /// instead of being rounded away.
-    #[test]
-    fn an_unspent_fraction_waits_for_the_next_tick() {
-        let mut debt = 0.0;
-        assert_eq!(fixed_steps(&mut debt, STEP * 0.5, STEP), 0);
-        assert!((debt - STEP * 0.5).abs() < STEP * 1e-4);
-        assert_eq!(fixed_steps(&mut debt, STEP * 0.6, STEP), 1);
-        assert!((debt - STEP * 0.1).abs() < STEP * 1e-4);
-    }
-
-    /// A stall past the catch-up limit runs the limit and drops the rest, so
-    /// a world that was paused resumes instead of replaying the pause.
-    #[test]
-    fn debt_past_the_catch_up_limit_is_discarded() {
-        let mut debt = 0.0;
-        assert_eq!(
-            fixed_steps(&mut debt, STEP * 100.0, STEP),
-            MAX_CATCH_UP_STEPS
-        );
-        assert_eq!(debt, 0.0);
-        // Just short of the limit still runs every whole step it covers.
-        assert_eq!(fixed_steps(&mut debt, STEP * 3.5, STEP), 3);
-    }
-
-    /// A clock that went backwards owes nothing.
-    #[test]
-    fn a_negative_interval_adds_no_time() {
-        let mut debt = 0.0;
-        assert_eq!(fixed_steps(&mut debt, -1.0, STEP), 0);
-        assert_eq!(debt, 0.0);
-    }
-}
+mod tests;

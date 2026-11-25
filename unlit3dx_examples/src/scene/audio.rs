@@ -108,9 +108,11 @@ impl Bundle for PlayingTrack {
         bundle![
             track,
             advancing(move |track: &mut Track, _world, frame| {
-                track
-                    .midi
-                    .advance(f64::from(frame.delta_time), track.voice, &scene.audio);
+                track.midi.advance(
+                    f64::from(frame.delta_time),
+                    track.voice,
+                    scene.audio.commands(),
+                );
             }),
         ]
     }
@@ -143,12 +145,12 @@ impl SceneAudio {
     /// it.
     #[must_use]
     pub fn new(scene: &Scene, soundfont: Arc<[u8]>) -> Self {
-        let mut voice = Pending::new(scene.audio_state.clone(), None);
+        let mut voice = Pending::new(scene.audio.clone(), None);
         // The wait has no ticks to run out of: the install is the one thing
         // the music asks for, so it waits until the world answers or ends.
         // The request is the first this state asks, so there is nothing to
         // coalesce with: it either went to the world or came back unrun.
-        let installed = match voice.request(&scene.audio, (), move |world: &mut World| {
+        let installed = match voice.request((), move |world: &mut World| {
             install_synth(world, &soundfont)
         }) {
             Ok(Asked::Queued) => false,

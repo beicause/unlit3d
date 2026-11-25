@@ -23,8 +23,9 @@ pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, World};
 use unlit3d::frame::{Frame, dispatch_frame};
 
-use crate::handle::WorldHandle;
+use crate::endpoint::WorldEndpoint;
 use crate::thread::{FixedClock, ThreadError, fixed_steps};
+use crate::turn::TickOutcome;
 use crate::world::WorldRunner;
 use unlit_ecs::bundle;
 
@@ -327,7 +328,7 @@ fn physics_world(world: &World) -> unlit_ecs::QueryOne<'_, &mut PhysicsWorld> {
 pub fn spawn_physics_world_with<R: WorldRunner>(
     host: &mut World,
     config: PhysicsConfig,
-) -> Result<WorldHandle, ThreadError> {
+) -> Result<WorldEndpoint, ThreadError> {
     let step_seconds = step_seconds(&config);
     let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
     // A self-driven tick runs before its clock's first wait, so one period is
@@ -346,7 +347,7 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
         move |world| init_physics_world(world, &config),
         move |world, control, (), delta_seconds| {
             if control.stop_requested() {
-                return false;
+                return TickOutcome::Finished;
             }
             // The one pacing rule, whichever driver calls it: the tick's delta
             // accrues debt and a whole period of it is spent as one step.
@@ -365,7 +366,7 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
             };
             dispatch_frame(world, &mut frame);
             frame_index = frame.index.wrapping_add(1);
-            true
+            TickOutcome::Running
         },
     )
 }

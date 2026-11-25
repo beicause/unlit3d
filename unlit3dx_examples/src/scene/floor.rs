@@ -66,12 +66,12 @@ pub fn checker_ground() -> Vec<[u8; 4]> {
 /// Nothing waits for the instance: one that arrives a frame late is simply a
 /// frame without a floor.
 pub fn spawn_floor(scene: &Scene) {
-    if let Err(error) = scene.physics.send(Box::new(|world: &mut World| {
+    if let Err(error) = scene.physics.commands().send(Box::new(|world: &mut World| {
         spawn_fixed_cuboid(world, GROUND_POSITION, GROUND_HALF, GROUND_FRICTION);
     })) {
         log::error!("the physics world refused the ground ({error:?})");
     }
-    if let Err(error) = scene.render.send(ground_job()) {
+    if let Err(error) = scene.render.commands().send(ground_job()) {
         log::error!("the render world refused the ground ({error:?})");
     }
 }

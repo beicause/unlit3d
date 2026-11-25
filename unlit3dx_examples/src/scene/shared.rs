@@ -63,12 +63,12 @@ impl SceneState {
     #[must_use]
     pub fn new(scene: &Scene) -> Self {
         log::info!("the gameplay world started; asking the render world for the scene");
-        let mut build = Pending::new(scene.render_state.clone(), None);
+        let mut build = Pending::new(scene.render.clone(), None);
         // A build that never lands is never retried: the scene is the whole
         // of it, so the wait runs until the render world answers or ends.
         // A fresh state has nothing outstanding, so the request either went
         // to the world or came back unrun; coalescing has nothing to do here.
-        let given_up = match build.request(&scene.render, (), build_assets) {
+        let given_up = match build.request((), build_assets) {
             Ok(Asked::Queued) => false,
             Ok(Asked::Coalesced) => {
                 debug_assert!(false, "a fresh state has no request to coalesce with");
@@ -89,6 +89,23 @@ impl SceneState {
             loaded: None,
             ready: false,
             given_up,
+        }
+    }
+}
+
+impl SceneState {
+    /// A state whose build has already landed, holding `assets`.
+    ///
+    /// A scene a test builds by hand is live from the first tick: there is no
+    /// render world to ask, so nothing is ever asked of one.
+    #[cfg(test)]
+    pub(super) fn settled(scene: &Scene, assets: SceneAssets) -> Self {
+        Self {
+            build: Pending::new(scene.render.clone(), None),
+            settled: Vec::new(),
+            loaded: Some(assets),
+            ready: true,
+            given_up: true,
         }
     }
 }

@@ -6,8 +6,8 @@
 //! This crate turns that constraint into the shape of a program:
 //!
 //! - A **threaded world** runs its own world on a fresh thread, reached
-//!   through the [`handle::WorldHandle`] its spawn returns. Jobs move in through a
-//!   bounded channel and are drained between ticks.
+//!   through the [`endpoint::WorldEndpoint`] its spawn returns. Jobs move in
+//!   through a bounded channel and are drained between ticks.
 //! - A **sub-world** runs a nested world on the host's thread, drained
 //!   with [`host::drain_sub_world`] between frames.
 //! - A **subscription** is the way back, and it is opt-in: a world runs a
@@ -20,7 +20,7 @@
 //!   draws with — publishes through the same handle a collector does.
 //!
 //! The runtime layer is small and complete: [`job`], [`channel`],
-//! [`thread`], [`host`], [`world`], and [`handle`] together are the whole
+//! [`thread`], [`host`], [`world`], and [`endpoint`] together are the whole
 //! low-level API, and a caller can build its own worlds on them. The
 //! feature-gated modules are the convenience layer: `physics`, `audio`,
 //! and `synth` wrap rapier, cpal, and a soundfont synthesizer in the same
@@ -49,13 +49,13 @@ pub mod channel;
 #[cfg(feature = "render")]
 #[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod egui;
+/// The uniform handle to a spawned world.
+pub mod endpoint;
 /// A single-threaded executor for a world's async tasks.
 pub mod executor;
 #[cfg(feature = "render")]
 #[cfg_attr(docsrs, doc(cfg(feature = "render")))]
 pub mod gpu;
-/// The uniform handle to a spawned world.
-pub mod handle;
 /// Sub-worlds, which share the host's thread.
 pub mod host;
 /// Jobs, the work handed to another world.
@@ -151,8 +151,8 @@ pub mod prelude {
             InstallError, Snapshot, SnapshotReader, Stream, StreamReader, Subscription,
             publish_collected,
         },
+        endpoint::{WorldDriving, WorldEndpoint, WorldOwnership},
         executor::{LocalPool, LocalSpawnExt, LocalTasks},
-        handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world, tick_sub_world},
         job::{Job, JobSender, SendError, SendErrorKind},
         request::{Asked, Pending, Settled},
@@ -161,7 +161,7 @@ pub mod prelude {
             WorldThread, fixed_steps,
         },
         world::{
-            StepError, StepOutcome, Stepped, Threaded, WorldName, WorldRunner,
+            StepError, StepOutcome, Stepped, Threaded, TickOutcome, WorldName, WorldRunner,
             spawn_stepped_world_with_init, spawn_threaded_world, spawn_threaded_world_with_init,
             step_stepped_world, with_stepped_world, with_stepped_world_mut,
         },

@@ -17,7 +17,7 @@ impl Balls {
     /// A world that refuses the request outright — its queue is full, or it has
     /// stopped — costs this drop and no more: the ball is despawned before any
     /// answer can name it.
-    pub(super) fn drop_ball(&mut self, world: &World, state: Entity, scene: &Scene) {
+    pub(super) fn drop_ball(&mut self, world: &World, state: Entity) {
         let (kind, color) = look(self.drops as usize);
         self.drops = self.drops.wrapping_add(1);
 
@@ -63,9 +63,9 @@ impl Balls {
         // Both halves are asked for under the ball: the answer names it, and
         // the wait is bounded, so a ball that hears nothing is reclaimed
         // rather left waiting forever.
-        if let Err(error) =
-            self.instances
-                .request(&scene.render, ball, create_instance(mesh, material))
+        if let Err(error) = self
+            .instances
+            .request(ball, create_instance(mesh, material))
         {
             log::warn!("the render world refused an instance request ({error:?})");
             commands.despawn(ball);
@@ -78,12 +78,9 @@ impl Balls {
             restitution: 0.65,
             shape: shape_body(SHAPE_KINDS[kind]),
         };
-        if let Err(error) = self
-            .bodies
-            .request(&scene.physics, ball, move |world: &mut World| {
-                spawn_body(world, description)
-            })
-        {
+        if let Err(error) = self.bodies.request(ball, move |world: &mut World| {
+            spawn_body(world, description)
+        }) {
             log::warn!("the physics world refused a body request ({error:?})");
             // The instance already asked for has no ball to be shown on; its
             // answer despawns it when it arrives.

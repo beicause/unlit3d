@@ -139,7 +139,7 @@ pub async fn headless<A: App>(
     let setup = app.setup_render(
         &mut host,
         RenderPorts {
-            world: render.entity,
+            world: render.entity(),
             device: &device,
             panel: None,
         },
@@ -147,7 +147,7 @@ pub async fn headless<A: App>(
     let (renderer, target) = {
         let mut nested = host
             .root_scope()
-            .try_query_one::<&World>(render.entity)
+            .try_query_one::<&World>(render.entity())
             .map_err(RunError::RenderWorld)?;
         offscreen::bind(nested.get(), setup, &device, config.size)?
     };
@@ -163,7 +163,7 @@ pub async fn headless<A: App>(
         worlds,
         A::PHYSICS_HZ,
         RunFrames::default(),
-        render.entity,
+        render.entity(),
         renderer,
         config.audio_sample_rate,
     );

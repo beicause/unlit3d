@@ -5,11 +5,11 @@ use unlit_ecs::{Bundle, DynamicBundle, World, bundle};
 use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::input::dispatch_input;
 
+use crate::endpoint::{WorldDriving, WorldEndpoint, WorldOwnership};
 use crate::executor::LocalTasks;
-use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
 use crate::thread::ThreadStatus;
-use crate::turn::{Link, StepOutcome, close_inbox, drain_jobs, run_turn};
+use crate::turn::{Link, StepOutcome, TickOutcome, close_inbox, drain_jobs, run_turn};
 use crate::world::{WorldName, WorldSender};
 
 /// The sub-world's own state: the name it logs under, the inbox its jobs arrive
@@ -66,13 +66,13 @@ impl Bundle for HostWorld {
 /// window's swap chain, say — but whose state should not mix with the host's.
 /// Queued jobs run when the host calls [`drain_sub_world`] or [`tick_sub_world`],
 /// and the world itself is reached with a [`World`] query on the entity the
-/// returned handle names.
+/// returned endpoint names.
 #[must_use]
 pub fn spawn_sub_world(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
-) -> WorldHandle {
+) -> WorldEndpoint {
     let (queue, inbox) = bounded(command_capacity);
     let mut nested = World::new();
     // The sub-world owns its async tasks, so a job that mounts something
@@ -90,7 +90,13 @@ pub fn spawn_sub_world(
         name,
         sender: WorldSender::new(sender.clone(), status.clone()),
     });
-    WorldHandle::with_status(entity, sender, status)
+    WorldEndpoint::new(
+        entity,
+        sender,
+        status,
+        WorldOwnership::HostOwned,
+        WorldDriving::Stepped,
+    )
 }
 
 /// The parts of a sub-world a turn reads, cloned out of the nested world so the
@@ -156,6 +162,6 @@ pub fn tick_sub_world(nested: &mut World, frame: &mut Frame) -> StepOutcome {
         dispatch_input(world);
         LocalTasks::pump(world);
         dispatch_frame(world, frame);
-        true
+        TickOutcome::Running
     })
 }

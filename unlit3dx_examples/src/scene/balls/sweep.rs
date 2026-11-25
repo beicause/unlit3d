@@ -17,11 +17,14 @@ impl Balls {
         // The list is cloned rather than handed away: a job the queue cannot
         // take would go with its buffer, and the cleanup would be lost.
         let handles = self.despawns.clone();
-        let sent = scene.physics.send(Box::new(move |world: &mut World| {
-            for handle in handles {
-                let _ = despawn_body(world, handle);
-            }
-        }));
+        let sent = scene
+            .physics
+            .commands()
+            .send(Box::new(move |world: &mut World| {
+                for handle in handles {
+                    let _ = despawn_body(world, handle);
+                }
+            }));
         match sent {
             Ok(()) => self.despawns.clear(),
             // A closed queue is the scene going away, not a fault: nothing is
@@ -41,7 +44,11 @@ impl Balls {
             return;
         }
         let instances = self.orphans.clone();
-        match scene.render.send(despawn_instances_job(instances)) {
+        match scene
+            .render
+            .commands()
+            .send(despawn_instances_job(instances))
+        {
             Ok(()) => self.orphans.clear(),
             // A closed queue is the scene going away, not a fault.
             Err(error) if error.kind() == SendErrorKind::Closed => self.orphans.clear(),
@@ -59,7 +66,7 @@ impl Balls {
     /// The sweep repeats every `SWEEP_PERIOD` seconds, so a ball the camera
     /// loses is put away within one period, and one whose sweep met a full
     /// queue within two.
-    pub(super) fn sweep_outside_view(&mut self, world: &World, scene: &Scene) {
+    pub(super) fn sweep_outside_view(&mut self, world: &World) {
         let mut sweeping = std::mem::take(&mut self.sweeping);
         sweeping.clear();
         for (ball, entity) in world.root_scope().query::<(&Ball, Entity)>().iter() {
@@ -86,10 +93,7 @@ impl Balls {
             self.sweeping = sweeping;
             return;
         }
-        match self
-            .retired
-            .request(&scene.render, (), sweep(sweeping.clone()))
-        {
+        match self.retired.request((), sweep(sweeping.clone())) {
             Ok(Asked::Queued) => {
                 self.sweep_asked = true;
                 sweeping.clear();
@@ -153,7 +157,7 @@ impl Balls {
         }
 
         self.poses_sent = poses.len();
-        match scene.render.send(pose_job(ScenePoses(poses))) {
+        match scene.render.commands().send(pose_job(ScenePoses(poses))) {
             Ok(()) => {}
             // A closed queue is the scene going away, not a fault: the render
             // world stops before the gameplay world's last tick, and a pose

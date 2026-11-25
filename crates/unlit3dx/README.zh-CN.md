@@ -19,7 +19,7 @@ use unlit_ecs::World;
 let mut host = World::new();
 
 // 独占一条线程的 world：一个 `World` 加一条线程，由这个闭包驱动 tick。
-// spawn 返回一个 `WorldHandle`——代理所在的实体、命令队列与线程状态
+// spawn 返回一个 `WorldEndpoint`——代理所在的实体、命令队列、状态读取器与生命周期
 // 合于一身。
 // 由时钟把循环压在 60 Hz：每次 wait 睡到下一步到期，
 // 因此偶尔跑快的一轮不会把节拍推乱。
@@ -29,16 +29,16 @@ let simulation = spawn_threaded_world(&mut host, "simulation", 16, move |world, 
     // 驱动 world 的一方在 tick 跑完后替它向订阅者发布快照，
     // 因此 tick 体不需要自己发布。
     clock.wait(control);
-    !control.stop_requested()
+    if control.stop_requested() { TickOutcome::Finished } else { TickOutcome::Running }
 });
 
 // job 在该 world 线程的 tick 之间运行，且不回答任何东西：要带回的值发布出去，或者用 Pending 请求回来。
-simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle![0u8]))).expect("room in the queue");
+simulation.commands().send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle![0u8]))).expect("room in the queue");
 
 // 快照是两种回传方式之一（另一种是承载事件的流），而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
-let subscription = simulation.sender.watch(|world: &World| {
+let subscription = simulation.commands().watch(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
@@ -75,7 +75,7 @@ note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的�
 - **子 world（sub-world）** 是挂在宿主实体上的嵌套 `World`，由同一条线程持有。
   绘制 world 就是其一：它在主线程上绘制，宿主只在事件之间进入它。它同样有一个
   job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过它返回的
-  `WorldHandle` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
+  `WorldEndpoint` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
   与独占线程的 world 相同的协议，只是没有线程。当持有者驱动该 world 的帧时，
   那一「步」就是 `tick_sub_world`：排空、折叠它收到的输入、跑它的本地任务、分发帧，
   顺序就是这几步互相依赖的顺序。
@@ -96,7 +96,7 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 
 ## Job
 
-`Job` 是装箱的 `FnOnce(&mut World)`。`WorldHandle::sender` 把一个 job 排入
+`Job` 是装箱的 `FnOnce(&mut World)`。`WorldEndpoint::commands` 把一个 job 排入
 队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 world 的线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
@@ -297,7 +297,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
   [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
   的 egui 一节），所以面板所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录
   回来的结果。它持有通向绘制
-  world 的 sender，以及绘制侧报回的屏幕尺寸所经的 `unlit3d::relay::SnapshotReader`；绘制
+  world 的 `WorldEndpoint`，以及绘制侧报回的屏幕尺寸所经的 `unlit3d::relay::SnapshotReader`；绘制
   侧的 source 用 `unlit3d::egui::EguiSource::publish_target` 接收目标，槽位由它自己持有。帧以
   job 的形式过去；无事可画的一 tick——面板静止、没有输入、目标未变、没有到期
   的重绘——什么都不发，所以静止的 egui 零开销；已有的那一帧会一直被绘制，直到更新的一帧
@@ -349,9 +349,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
    自己定义的东西，它就该是一个 job。
 3. **场景为每个要对话的 world 持有一个端口。** world 的地址就是一个 `JobSender`
    加上它建立的那些订阅，于是场景把它们收进自己的一个值里——示例的 `Scene` 带着
-   render、physics、audio 三个 sender 与物理快照——并把它交给需要触达 world 的一切：
+   render、physics、audio 三个端点与物理快照——并把它交给需要触达 world 的一切：
    tick 体、生成函数、控制面板。原本每个对象都要为每个通道留一个字段，现在只是一个参
-   数；从不向音频 world 发送的对象也就不会持有它的 sender。端口留在调用方的 crate
+   数；从不向音频 world 发送的对象也就不会持有它的端点。端口留在调用方的 crate
    里：运行时没有场景要描述，而调用方自己的桥也得到同样的对待。
 
 ## 应用骨架

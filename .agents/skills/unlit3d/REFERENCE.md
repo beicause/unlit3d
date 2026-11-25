@@ -171,13 +171,13 @@
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
 | runner | `trait WorldRunner`：`const SELF_DRIVEN` + `spawn<I, S, T>`（init / tick 两个闭包） | `crates/unlit3dx/src/world.rs` |
-| 自带线程 | `spawn_threaded_world` / `..._with_init`；tick 返回 bool 表示继续 | 同上 |
-| 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world`、`with_stepped_world` | 同上 |
+| 自带线程 | `spawn_threaded_world` / `..._with_init`；tick 返回 `TickOutcome`：`Running` 继续，`Finished` 结束 | 同上 |
+| 定步长 | `spawn_stepped_world_with_init`（返回 `Result`，setup panic 是 `ThreadError::Setup` 且不留半成品）、`step_stepped_world`、`with_stepped_world` | 同上 |
 | 节拍 | `ThreadControl::self_driven` / `wait_timeout`、`FixedClock::new` / `set_step` / `wait`、`fixed_steps` 与 `MAX_CATCH_UP_STEPS = 4` | `crates/unlit3dx/src/thread.rs` |
 | 子 world | `spawn_sub_world`、`drain_sub_world`、`tick_sub_world`（返回 `StepOutcome`；drain + 折叠输入 + 本地任务 + `dispatch_frame`，驱动子 world 一帧就用它） | `crates/unlit3dx/src/host.rs` |
 | 失败成因 | `WorldError` = `Panic { stage: WorldStage, message }` / `Command { source: EntityAccessError }` / `Step { source: StepError }`；`WorldStage` = `Setup` / `Job` / `Command` / `Body` / `Publish`。`StepOutcome::Failed(WorldError)` 与 `WorldState::Failed(WorldError)` 携同一个成因 | `crates/unlit3dx/src/turn.rs` |
 | 批量失败 | `drain_all_stepped_worlds(host) -> Vec<WorldFailure>`（`{ name, error }`）、`join_failures(&[WorldFailure]) -> String` | `crates/unlit3dx/src/world.rs` |
-| 句柄 | `WorldHandle { entity, sender, state }` + `new` / `is_finished` / `stop` | `crates/unlit3dx/src/handle.rs` |
+| 端点 | `WorldEndpoint`：`entity()` / `commands()` / `state()` / `ownership()` / `driving()` / `is_finished()` / `stop()` / `join_timeout()` / `detach()`；字段全私有，identity、队列、状态与生命周期不可拆。`WorldOwnership` = `HostOwned` / `ThreadOwned`、`WorldDriving` = `Continuous` / `Stepped`；所有 spawn 都返回它，包括 `spawn_sub_world`（`HostOwned` + `Stepped`） | `crates/unlit3dx/src/endpoint.rs` |
 | 名字与状态 | `WorldName(&'static str)`；`Threaded` / `Stepped` 标记；`WorldState` = `Running` / `Stopped` / `Failed(WorldError)`——**带成因，`match` 时要绑定** | `crates/unlit3dx/src/world.rs`、`thread.rs` |
 
 | 通信 | 是什么 | 语义 |
@@ -186,7 +186,7 @@
 | 状态 | `Snapshot<T>`：`publish` / `reader` / `has_readers`；`SnapshotReader::latest` | 单槽，订阅前发布的值也留着 |
 | 事件 | `Stream<T>`：`subscribe` / `publish` / `publish_all` | 每个 reader 自带队列、按序、reader drop 即退订 |
 | 订阅 | `JobSender::watch` / `subscribe` → `Subscription<Reader>`；`Subscription::poll()` | 返回的是句柄，不是 reader：入队 ≠ 已安装，world 到下一轮才跑安装 job，之前 `poll()` 答 `None`。装上后 `Some(Ok(reader))`；world 先停则 `Some(Err(InstallError::Ended))`，world 跑了却够不到自己的 outlet 则 `Some(Err(InstallError::Outlet))`。队列满时整个调用仍返回 `Err(SendError)` |
-| 应答 | `Pending::new` / `request` / `advance` | `advance` 要吃 `(delta_seconds, &mut Vec<(K, Settled<T>)>)`，**别漏第一个参数**；一次请求一次应答，`Settled::Answered` / `Expired`。`request` 返回 `Asked`：`Queued` 是排上了；同 key 已有挂着的请求则 `Coalesced`——这一次的 `make` 没跑就丢，答案与超时仍归第一次 |
+| 应答 | `Pending::new(endpoint, timeout)` / `request(key, make)` / `advance` | `Pending` 绑一个 `WorldEndpoint`，`request` 不再收 sender：队列与状态来自同一个 world，发错门的请求写不出来。`advance` 要吃 `(delta_seconds, &mut Vec<(K, Settled<T>)>)`，**别漏第一个参数**；一次请求一次应答，`Settled::Answered` / `Expired`。`request` 返回 `Asked`：`Queued` 是排上了；同 key 已有挂着的请求则 `Coalesced`——这一次的 `make` 没跑就丢，答案与超时仍归第一次 |
 | 发布 | `publish_collected(world) -> usize` | 世界里收集到的快照/流在 tick 之后统一发布 |
 
 ## 展示路径（unlit3dx）

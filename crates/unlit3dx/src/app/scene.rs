@@ -12,7 +12,7 @@ use unlit3d::relay::Snapshot;
 
 pub use super::frames::RunFrames;
 use crate::audio::{AudioFormat, dispatch_audio_fill};
-use crate::handle::WorldHandle;
+use crate::endpoint::WorldEndpoint;
 use crate::thread::fixed_steps;
 use crate::world::{StepOutcome, WorldError, step_stepped_world, with_stepped_world_mut};
 
@@ -39,7 +39,7 @@ pub enum Mode {
 #[derive(Clone)]
 pub struct ScenePorts<'a> {
     /// The render sub-world the scene draws through.
-    pub render: &'a WorldHandle,
+    pub render: &'a WorldEndpoint,
     /// The input writer of the world that holds the scene's window or driver.
     pub input: &'a InputWriter,
     /// The target the scene's panels lay themselves out against, published by
@@ -74,11 +74,11 @@ pub struct RenderSetup {
 #[derive(Clone)]
 pub struct SceneWorlds {
     /// The physics world.
-    pub physics: WorldHandle,
+    pub physics: WorldEndpoint,
     /// The audio world.
-    pub audio: WorldHandle,
+    pub audio: WorldEndpoint,
     /// The gameplay world, which is the scene's own.
-    pub gameplay: WorldHandle,
+    pub gameplay: WorldEndpoint,
 }
 
 /// The most audio one frame may be asked to fill, in seconds.
@@ -243,7 +243,7 @@ impl Stepping {
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
         let outcome =
-            match step_stepped_world(host, self.worlds.gameplay.entity, delta_seconds as f32) {
+            match step_stepped_world(host, self.worlds.gameplay.entity(), delta_seconds as f32) {
                 Ok(outcome) => outcome,
                 Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
             };
@@ -257,7 +257,7 @@ impl Stepping {
         );
         for _ in 0..steps {
             let outcome =
-                match step_stepped_world(host, self.worlds.physics.entity, self.physics_period) {
+                match step_stepped_world(host, self.worlds.physics.entity(), self.physics_period) {
                     Ok(outcome) => outcome,
                     Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
                 };
@@ -265,11 +265,11 @@ impl Stepping {
                 return outcome;
             }
         }
-        let outcome = match step_stepped_world(host, self.worlds.audio.entity, delta_seconds as f32)
-        {
-            Ok(outcome) => outcome,
-            Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
-        };
+        let outcome =
+            match step_stepped_world(host, self.worlds.audio.entity(), delta_seconds as f32) {
+                Ok(outcome) => outcome,
+                Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
+            };
         if outcome != StepOutcome::Ran {
             return outcome;
         }

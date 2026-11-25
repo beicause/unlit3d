@@ -44,6 +44,29 @@ impl core::fmt::Display for StepOutcome {
     }
 }
 
+/// What a world's tick decided about the world it ran.
+///
+/// A tick used to answer a bare `bool`, which reads the same as "this call
+/// worked" and so invited a driver to confuse "the world carries on" with
+/// "the step succeeded". The two answers here name the world's fate only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TickOutcome {
+    /// The world carries on: its driver runs another turn.
+    Running,
+    /// The tick ended the world. The turn it ran in finishes its commit and
+    /// publish first, so the last state the world leaves is readable.
+    Finished,
+}
+
+impl TickOutcome {
+    /// Whether the world carries on after this turn.
+    #[must_use]
+    pub const fn carries_on(self) -> bool {
+        matches!(self, Self::Running)
+    }
+}
+
 /// Which part of a turn failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -122,14 +145,14 @@ pub(crate) struct Link<'a> {
 
 /// Run one turn: the queued jobs, the body, then the commit.
 ///
-/// The body runs once and returns whether the world carries on. A `false`
+/// The body runs once and says whether the world carries on. [`TickOutcome::Finished`]
 /// ends the world after its commit, so the state it leaves is the last one its
 /// readers see. A stop asked before the turn ends the world without running
 /// anything.
 pub(crate) fn run_turn(
     world: &mut World,
     link: Link<'_>,
-    body: impl FnOnce(&mut World) -> bool,
+    body: impl FnOnce(&mut World) -> TickOutcome,
 ) -> StepOutcome {
     if let Some(outcome) = admit(world, link) {
         return outcome;
@@ -138,7 +161,7 @@ pub(crate) fn run_turn(
         return outcome;
     }
     let carries_on = match contain(WorldStage::Body, || body(&mut *world)) {
-        Ok(carries_on) => carries_on,
+        Ok(outcome) => outcome.carries_on(),
         Err(error) => return fail(link, error),
     };
     if let Err(outcome) = commit(world, link) {
@@ -287,7 +310,7 @@ mod tests {
         let ran = AtomicUsize::new(0);
         let outcome = run_turn(&mut world, link, |_| {
             ran.fetch_add(1, Ordering::SeqCst);
-            true
+            TickOutcome::Running
         });
         assert_eq!(outcome, StepOutcome::Ran);
         assert_eq!(ran.load(Ordering::SeqCst), 1);
@@ -303,7 +326,7 @@ mod tests {
             status: &status,
         };
         let mut world = World::new();
-        let outcome = run_turn(&mut world, link, |_| false);
+        let outcome = run_turn(&mut world, link, |_| TickOutcome::Finished);
         assert_eq!(outcome, StepOutcome::Finished);
         assert!(status.is_finished());
         assert!(sender.is_closed());
@@ -322,7 +345,7 @@ mod tests {
         let ran = AtomicUsize::new(0);
         let outcome = run_turn(&mut world, link, |_| {
             ran.fetch_add(1, Ordering::SeqCst);
-            true
+            TickOutcome::Running
         });
         assert_eq!(outcome, StepOutcome::Finished);
         assert_eq!(ran.load(Ordering::SeqCst), 0);
@@ -341,7 +364,7 @@ mod tests {
         let ran = AtomicUsize::new(0);
         let outcome = run_turn(&mut world, link, |_| {
             ran.fetch_add(1, Ordering::SeqCst);
-            true
+            TickOutcome::Running
         });
         assert_eq!(outcome, StepOutcome::Stopped);
         assert_eq!(ran.load(Ordering::SeqCst), 0);
@@ -363,7 +386,7 @@ mod tests {
         let ran = AtomicUsize::new(0);
         let outcome = run_turn(&mut world, link, |_| {
             ran.fetch_add(1, Ordering::SeqCst);
-            true
+            TickOutcome::Running
         });
         let died = WorldError::Panic {
             stage: WorldStage::Job,
@@ -418,9 +441,15 @@ mod tests {
             queued_again.try_send(later).expect("the queue has room");
         });
         sender.try_send(first).expect("the queue has room");
-        assert_eq!(run_turn(&mut world, link, |_| true), StepOutcome::Ran);
+        assert_eq!(
+            run_turn(&mut world, link, |_| TickOutcome::Running),
+            StepOutcome::Ran
+        );
         assert_eq!(ran.load(Ordering::SeqCst), 0);
-        assert_eq!(run_turn(&mut world, link, |_| true), StepOutcome::Ran);
+        assert_eq!(
+            run_turn(&mut world, link, |_| TickOutcome::Running),
+            StepOutcome::Ran
+        );
         assert_eq!(ran.load(Ordering::SeqCst), 1);
     }
 }

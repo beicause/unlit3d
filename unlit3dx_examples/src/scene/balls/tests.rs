@@ -142,17 +142,17 @@ fn a_shown_ball_is_only_taken_by_its_world_ending() {
     );
 }
 
-/// A scene whose queues a test runs itself to answer the requests on them,
+/// A scene whose worlds a test runs itself to answer the requests on them,
 /// and fills again to keep whatever a tick sends away in the lists, where
 /// the test can count it.
-fn stalled_scene() -> (
-    Scene,
-    async_channel::Receiver<Job>,
-    async_channel::Receiver<Job>,
-) {
-    let (render_tx, render_rx) = async_channel::bounded(1);
-    let (physics_tx, physics_rx) = async_channel::bounded(1);
-    let (audio_tx, _audio_rx) = async_channel::bounded(1);
+///
+/// The three worlds are sub-worlds of `host`, so a test answers a request by
+/// draining the world it was asked of, and stalls a world by filling its
+/// queue with jobs nobody runs.
+fn stalled_scene(host: &mut World) -> (Scene, WorldEndpoint, WorldEndpoint) {
+    let render = spawn_sub_world(host, "render", 8);
+    let physics = spawn_sub_world(host, "physics", 8);
+    let audio = spawn_sub_world(host, "audio", 8);
     // The pose subscription is queued on a queue of its own that no test
     // drains, so it stays uninstalled: a tick reads no poses, which is what
     // these tests want from a scene with no physics world behind it.
@@ -161,54 +161,43 @@ fn stalled_scene() -> (
         .watch(|_: &World| None)
         .expect("a fresh queue takes the subscription");
     let scene = Scene {
-        render: JobSender::new(render_tx),
-        physics: JobSender::new(physics_tx),
-        audio: JobSender::new(audio_tx),
+        render: render.clone(),
+        physics: physics.clone(),
+        audio,
         poses,
-        render_state: Snapshot::new().reader(),
-        physics_state: Snapshot::new().reader(),
-        audio_state: Snapshot::new().reader(),
     };
-    (scene, render_rx, physics_rx)
+    (scene, render, physics)
 }
 
-/// Run every job waiting on a queue, so the answer it publishes is there
-/// for the next tick to fold. The world those jobs are for does not exist
-/// in a test, so each runs against an empty world of its own.
-fn answer(jobs: &async_channel::Receiver<Job>) {
-    let mut other = World::new();
-    while let Ok(job) = jobs.try_recv() {
-        job(&mut other);
-    }
+/// Run every job waiting in the queue of `endpoint`'s world, so the answer it
+/// publishes is there for the next tick to fold.
+fn answer(host: &World, endpoint: &WorldEndpoint) {
+    let mut world_row = host.root_scope().query_one::<&mut World>(endpoint.entity());
+    drain_sub_world(world_row.get());
 }
 
 /// Fill every queue, so a send a tick makes on the way out reports `Full`
 /// and the cleanup stays in the lists, where a test can count it.
 fn stall(scene: &Scene) {
-    for queue in [&scene.render, &scene.physics, &scene.audio] {
-        let _ = queue.send(Box::new(|_: &mut World| {}));
+    for queue in [
+        scene.render.commands(),
+        scene.physics.commands(),
+        scene.audio.commands(),
+    ] {
+        while queue.send(Box::new(|_: &mut World| {})).is_ok() {}
     }
 }
 
 /// A scene state whose assets are loaded, so a tick does not turn back at
 /// the door: no render world builds them in a test.
-fn ready_scene_state(world: &mut World, scene: &Scene, jobs: &async_channel::Receiver<Job>) {
-    let entity = world
-        .root_scope_mut()
-        .spawn(bundle![SceneState::new(scene)]);
-    // The asset build has no render world to run in, so the job it sent is
-    // dropped rather than run: the assets the tick needs are put in by
-    // hand.
-    while jobs.try_recv().is_ok() {}
-    let Ok(mut state) = world.root_scope().try_query_one::<&mut SceneState>(entity) else {
-        panic!("the state was just spawned")
-    };
-    let state = state.get();
-    state.ready = true;
-    state.loaded = Some(SceneAssets {
+fn ready_scene_state(world: &mut World, scene: &Scene) {
+    let assets = SceneAssets {
         meshes: vec![world.remote(Entity::from_raw(1, 0))],
         materials: vec![world.remote(Entity::from_raw(2, 0)); BALL_COLORS.len()],
-    });
+    };
+    world
+        .root_scope_mut()
+        .spawn(bundle![SceneState::settled(scene, assets)]);
 }
 
 /// The answers land before the clear, so a clear takes a ball away only
@@ -217,8 +206,8 @@ fn ready_scene_state(world: &mut World, scene: &Scene, jobs: &async_channel::Rec
 #[test]
 fn a_clear_takes_the_halves_a_fold_just_landed() {
     let mut world = World::new();
-    let (scene, render, physics) = stalled_scene();
-    ready_scene_state(&mut world, &scene, &render);
+    let (scene, render, physics) = stalled_scene(&mut world);
+    ready_scene_state(&mut world, &scene);
     let instance = world.remote(Entity::from_raw(10, 0));
     let body = RigidBodyHandle::from_raw_parts(7, 0);
     let entity = world
@@ -230,14 +219,14 @@ fn a_clear_takes_the_halves_a_fold_just_landed() {
     // rather than published by hand.
     balls
         .instances
-        .request(&scene.render, entity, move |_: &mut World| instance)
+        .request(entity, move |_: &mut World| instance)
         .expect("the queue was drained");
     balls
         .bodies
-        .request(&scene.physics, entity, move |_: &mut World| body)
+        .request(entity, move |_: &mut World| body)
         .expect("the queue was drained");
-    answer(&render);
-    answer(&physics);
+    answer(&world, &render);
+    answer(&world, &physics);
     stall(&scene);
     balls.clear = true;
 
@@ -266,8 +255,8 @@ fn a_clear_takes_the_halves_a_fold_just_landed() {
 #[test]
 fn an_answer_without_its_ball_is_cleaned_up() {
     let mut world = World::new();
-    let (scene, render, physics) = stalled_scene();
-    ready_scene_state(&mut world, &scene, &render);
+    let (scene, render, physics) = stalled_scene(&mut world);
+    ready_scene_state(&mut world, &scene);
     let instance = world.remote(Entity::from_raw(10, 0));
     let body = RigidBodyHandle::from_raw_parts(7, 0);
     let gone = world
@@ -282,14 +271,14 @@ fn an_answer_without_its_ball_is_cleaned_up() {
     let mut balls = Balls::new(&scene);
     balls
         .instances
-        .request(&scene.render, gone, move |_: &mut World| instance)
+        .request(gone, move |_: &mut World| instance)
         .expect("the queue was drained");
     balls
         .bodies
-        .request(&scene.physics, gone, move |_: &mut World| body)
+        .request(gone, move |_: &mut World| body)
         .expect("the queue was drained");
-    answer(&render);
-    answer(&physics);
+    answer(&world, &render);
+    answer(&world, &physics);
     stall(&scene);
     BallDrops::tick(&mut balls, &world, &scene, FRAME_SECONDS);
 

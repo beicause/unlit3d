@@ -20,9 +20,10 @@ use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World, bundle};
 use unlit3d::frame::{Frame, dispatch_frame};
 
-use crate::handle::WorldHandle;
+use crate::endpoint::WorldEndpoint;
 use crate::job::{JobSender, SendError};
 use crate::thread::FixedClock;
+use crate::turn::TickOutcome;
 use crate::world::WorldRunner;
 
 /// How many frames the filler generates per pass, the unit the pacing and
@@ -525,7 +526,7 @@ struct OpenOutput {
 pub fn spawn_audio_world_with<R: WorldRunner>(
     host: &mut World,
     config: AudioConfig,
-) -> Result<WorldHandle, AudioError> {
+) -> Result<WorldEndpoint, AudioError> {
     // The filler writes in chunks of AUDIO_FILL_FRAMES frames, so a ring smaller
     // than one chunk would never see room and the stream would stay silent
     // forever. Two chunks leave room to top the ring up between wakeups.
@@ -567,7 +568,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
         |_| (),
         move |world, control, (), delta_seconds| {
             if control.stop_requested() {
-                return false;
+                return TickOutcome::Finished;
             }
             // Whether this tick wants a device open: [`AudioOutputMode::Pulled`] never,
             // [`AudioOutputMode::OnRequest`] once its page has asked. The config speaks for
@@ -679,7 +680,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             };
             dispatch_frame(world, &mut frame);
             frame_index = frame.index.wrapping_add(1);
-            true
+            TickOutcome::Running
         },
     )
     .map_err(AudioError::from)
