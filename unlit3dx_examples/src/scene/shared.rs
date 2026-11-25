@@ -66,8 +66,14 @@ impl SceneState {
         let mut build = Pending::new(scene.render_state.clone(), None);
         // A build that never lands is never retried: the scene is the whole
         // of it, so the wait runs until the render world answers or ends.
+        // A fresh state has nothing outstanding, so the request either went
+        // to the world or came back unrun; coalescing has nothing to do here.
         let given_up = match build.request(&scene.render, (), build_assets) {
-            Ok(()) => false,
+            Ok(Asked::Queued) => false,
+            Ok(Asked::Coalesced) => {
+                debug_assert!(false, "a fresh state has no request to coalesce with");
+                false
+            }
             Err(error) => {
                 log::error!(
                     "the render world refused the scene build ({error:?}); the scene stays empty"

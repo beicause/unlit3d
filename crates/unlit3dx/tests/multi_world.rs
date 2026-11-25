@@ -36,6 +36,14 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
     false
 }
 
+/// The reader of a subscription the world has installed.
+fn installed<R: Clone>(subscription: Subscription<R>) -> R {
+    subscription
+        .poll()
+        .expect("the world installed the subscription")
+        .expect("the subscription outlet is reachable")
+}
+
 /// Sub-world jobs drain in queue order.
 #[test]
 fn sub_world_jobs_drain_in_order() {
@@ -95,8 +103,12 @@ fn a_panicking_job_ends_the_sub_world() {
     // The queue closed with the world: a later send is refused instead of
     // landing in a queue nothing will ever drain.
     assert_eq!(
-        proxy.sender.send(Box::new(|_: &mut World| {})),
-        Err(SendError::Closed)
+        proxy
+            .sender
+            .send(Box::new(|_: &mut World| {}))
+            .expect_err("a stopped world refuses jobs")
+            .kind(),
+        SendErrorKind::Closed
     );
 }
 
@@ -130,6 +142,9 @@ fn a_panicking_job_does_not_run_the_collectors() {
         0,
         "a collector must not run after the world panicked"
     );
+    // The drain ran the installing job before the panic reached the world, so
+    // the subscription was made and only the publishing was lost with it.
+    let reader = installed(reader);
     assert!(reader.latest().is_none(), "nothing was collected");
 }
 
@@ -159,8 +174,12 @@ fn stopping_a_sub_world_ends_it_and_refuses_jobs() {
     assert!(proxy.is_finished(), "the stop ended the sub-world");
     assert_eq!(proxy.state.latest().as_deref(), Some(&WorldState::Stopped));
     assert_eq!(
-        proxy.sender.send(Box::new(|_: &mut World| {})),
-        Err(SendError::Closed)
+        proxy
+            .sender
+            .send(Box::new(|_: &mut World| {}))
+            .expect_err("a stopped world refuses jobs")
+            .kind(),
+        SendErrorKind::Closed
     );
 }
 
@@ -202,8 +221,12 @@ fn despawning_a_stepped_world_ends_it() {
     );
     assert_eq!(world.state.latest().as_deref(), Some(&WorldState::Stopped));
     assert_eq!(
-        world.sender.send(Box::new(|_: &mut World| {})),
-        Err(SendError::Closed)
+        world
+            .sender
+            .send(Box::new(|_: &mut World| {}))
+            .expect_err("a stopped world refuses jobs")
+            .kind(),
+        SendErrorKind::Closed
     );
 }
 
@@ -231,6 +254,7 @@ fn stopping_a_sub_world_publishes_its_last_state() {
     // The first drain installs the collector; the counter arrives afterwards,
     // so the last publish is the only one that can see it.
     drain_sub_world(nested);
+    let reader = installed(reader);
     assert!(reader.latest().is_none(), "nothing was there to collect");
     nested.root_scope_mut().spawn(bundle![Count(7)]);
 
@@ -255,8 +279,12 @@ fn a_finished_stepped_world_refuses_jobs() {
 
     assert!(world.is_finished(), "the tick ended the world");
     assert_eq!(
-        world.sender.send(Box::new(|_: &mut World| {})),
-        Err(SendError::Closed)
+        world
+            .sender
+            .send(Box::new(|_: &mut World| {}))
+            .expect_err("a stopped world refuses jobs")
+            .kind(),
+        SendErrorKind::Closed
     );
 }
 
@@ -321,7 +349,10 @@ fn a_finished_world_drops_jobs_quietly() {
     let refused = world.sender.send(Box::new(|_: &mut World| {
         panic!("a dropped job must not run");
     }));
-    assert_eq!(refused, Err(SendError::Closed));
+    assert_eq!(
+        refused.expect_err("a stopped world refuses jobs").kind(),
+        SendErrorKind::Closed
+    );
 }
 
 /// Dropping the proxy entity stops the world: once the thread has ended,
@@ -374,6 +405,18 @@ fn subscriptions_flow_from_thread_to_host() {
             Some(tick)
         })
         .expect("the world accepts a subscription");
+    let mut ready = None;
+    assert!(
+        wait_for(|| match reader.poll() {
+            Some(installed_reader) => {
+                ready = Some(installed_reader.expect("the subscription outlet is reachable"));
+                true
+            }
+            None => false,
+        }),
+        "the world never installed the subscription"
+    );
+    let reader = ready.expect("the world installed the subscription");
     assert!(
         wait_for(|| reader.latest().is_some_and(|value| *value >= 3)),
         "the reader never saw the collected values"

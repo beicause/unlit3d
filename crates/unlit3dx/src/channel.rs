@@ -26,8 +26,12 @@
 //! world offers them the same way, built-in or not, and the reading side
 //! never blocks.
 
+use std::sync::{Arc, Mutex};
+
+use unlit_ecs::EntityAccessError;
 use unlit_ecs::World;
 use unlit_ecs::bundle;
+use unlit_ecs::sync;
 
 use crate::job::{JobSender, SendError};
 
@@ -42,26 +46,34 @@ impl JobSender {
     /// collector stays quiet while nothing has changed.
     ///
     /// The subscription is a job: it is refused with the queue's error when
-    /// the queue is full or the world has stopped, and the returned reader
-    /// then never sees a snapshot.
+    /// the queue is full or the world has stopped. Being queued is not being
+    /// installed — the job runs on the world's next turn, or never, if the
+    /// world stops first — so the reader is not handed over here: the
+    /// [`Subscription`] returned carries it and answers
+    /// [`poll`](Subscription::poll) with it once the world has installed the
+    /// collector.
     ///
     /// # Panics
     ///
     /// A collector that publishes into its own world — by calling
     /// [`publish_collected`] — panics on the borrow it takes of the
     /// subscription list. A collector only reads the world.
-    pub fn watch<T, F>(&self, collect: F) -> Result<SnapshotReader<T>, SendError>
+    pub fn watch<T, F>(&self, collect: F) -> Result<Subscription<SnapshotReader<T>>, SendError>
     where
         T: Send + Sync + 'static,
         F: FnMut(&World) -> Option<T> + Send + 'static,
     {
         let snapshot = Snapshot::new();
         let reader = snapshot.reader();
+        let state = Arc::new(Mutex::new(InstallState::Pending));
+        let receipt = Receipt {
+            state: Arc::clone(&state),
+        };
         self.send(Box::new(move |world: &mut World| {
             let entry: Box<dyn Entry> = Box::new(SnapshotCollector { collect, snapshot });
-            install(world, entry);
+            receipt.settle(install(world, entry));
         }))?;
-        Ok(reader)
+        Ok(Subscription { reader, state })
     }
 
     /// Subscribe to a stream of this world.
@@ -72,30 +84,132 @@ impl JobSender {
     /// tick with [`StreamReader::pump`].
     ///
     /// The subscription is a job: it is refused with the queue's error when
-    /// the queue is full or the world has stopped, and the returned reader
-    /// then never sees a value.
+    /// the queue is full or the world has stopped, and the reader is handed
+    /// over by [`poll`](Subscription::poll) once the world has run the job,
+    /// for the reasons [`watch`](JobSender::watch) gives.
     ///
     /// # Panics
     ///
     /// A collector that publishes into its own world — by calling
     /// [`publish_collected`] — panics on the borrow it takes of the
     /// subscription list. A collector only reads the world.
-    pub fn subscribe<T, F>(&self, collect: F) -> Result<StreamReader<T>, SendError>
+    pub fn subscribe<T, F>(&self, collect: F) -> Result<Subscription<StreamReader<T>>, SendError>
     where
         T: Clone + Send + 'static,
         F: FnMut(&World, &mut Vec<T>) + Send + 'static,
     {
         let stream = Stream::new();
         let reader = stream.subscribe();
+        let state = Arc::new(Mutex::new(InstallState::Pending));
+        let receipt = Receipt {
+            state: Arc::clone(&state),
+        };
         self.send(Box::new(move |world: &mut World| {
             let entry: Box<dyn Entry> = Box::new(StreamCollector {
                 collect,
                 stream,
                 buffer: Vec::new(),
             });
-            install(world, entry);
+            receipt.settle(install(world, entry));
         }))?;
-        Ok(reader)
+        Ok(Subscription { reader, state })
+    }
+}
+
+/// A subscription that has been queued for a world but may not be installed yet.
+///
+/// The job that installs a collector runs on the target world's own turn, so a
+/// caller cannot have the reader at the moment it asks for one: a world that
+/// stops before that turn never installs it, and a reader handed over anyway
+/// would look exactly like one whose world has not ticked. This holds the
+/// reader and reports whether the collector was ever put in place.
+///
+/// Installing is not publishing: a reader answers with nothing until the
+/// world's first tick after the install collects a value.
+pub struct Subscription<R> {
+    reader: R,
+    state: Arc<Mutex<InstallState>>,
+}
+
+impl<R: Clone> Clone for Subscription<R> {
+    /// A copy asks the same question of the same installation, and is one
+    /// more reader for the collector to publish to until it is dropped.
+    fn clone(&self) -> Self {
+        Self {
+            reader: self.reader.clone(),
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+impl<R: Clone> Subscription<R> {
+    /// The reader, once the target world has installed the collector.
+    ///
+    /// Answers [`None`] while the installing job has not run: a caller that
+    /// drives the world steps it and asks again, and one that does not drive
+    /// it asks on its own next turn. Waiting here would wait on a world only
+    /// the caller can advance. A subscriber whose collector will never be
+    /// installed answers with the reason instead.
+    #[must_use]
+    pub fn poll(&self) -> Option<Result<R, InstallError>> {
+        let state = *sync::lock(&self.state);
+        match state {
+            InstallState::Pending => None,
+            InstallState::Ready => Some(Ok(self.reader.clone())),
+            InstallState::Failed(error) => Some(Err(error)),
+        }
+    }
+}
+
+/// Why a subscription was never installed in its world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum InstallError {
+    /// The world ended before it ran the job that installs the collector.
+    #[error("the world ended before the subscription was installed")]
+    Ended,
+    /// The subscription outlet the world named was not in reach.
+    #[error("the subscription outlet of the world could not be reached: {0}")]
+    Outlet(#[from] EntityAccessError),
+}
+
+/// What became of the install job, shared by the job and the subscription.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallState {
+    /// The world has not run the job yet.
+    Pending,
+    /// The collector is in the world.
+    Ready,
+    /// The collector will never be in the world.
+    Failed(InstallError),
+}
+
+/// The job's side of a subscription: settles the state it shares with the
+/// [`Subscription`], and fails it if the job is dropped without running.
+///
+/// A world that stops closes its queue and drops the jobs still in it, which
+/// is how a subscription that will never be installed reports that rather than
+/// waiting for a turn that will not come.
+struct Receipt {
+    state: Arc<Mutex<InstallState>>,
+}
+
+impl Receipt {
+    /// Record what the install did.
+    fn settle(&self, installed: Result<(), InstallError>) {
+        *sync::lock(&self.state) = match installed {
+            Ok(()) => InstallState::Ready,
+            Err(error) => InstallState::Failed(error),
+        };
+    }
+}
+
+impl Drop for Receipt {
+    fn drop(&mut self) {
+        let mut state = sync::lock(&self.state);
+        if matches!(*state, InstallState::Pending) {
+            *state = InstallState::Failed(InstallError::Ended);
+        }
     }
 }
 
@@ -191,21 +305,22 @@ struct SnapshotOutlet {
 }
 
 /// Add one subscription to `world`, creating the outlet on first use.
-fn install(world: &mut World, entry: Box<dyn Entry>) {
+///
+/// The key answers only for a holder whose row is still there, and the outlet
+/// is not republished or removed by anything else, so a row that is gone under
+/// its key is a world torn down in a way this cannot serve. It is reported
+/// rather than assumed away: a reader whose collector was never installed has
+/// to be told that, or it waits for values on the same terms as one whose
+/// world has not ticked yet.
+fn install(world: &mut World, entry: Box<dyn Entry>) -> Result<(), InstallError> {
     let existing = world.root_scope().singleton::<SnapshotOutlet>();
     match existing {
         Some(entity) => {
-            // The key answers only for a holder whose row is still there, and
-            // the outlet lives in the root scope, which is the scope that
-            // found it — so the row is in reach. Losing the entry here would
-            // leave a reader that never receives anything, and nothing on the
-            // reading side could tell that apart from a world that has not
-            // ticked yet.
             let mut outlet = world
                 .root_scope()
-                .try_query_one::<&mut SnapshotOutlet>(entity)
-                .expect("the subscription outlet is in reach of the scope holding its key");
+                .try_query_one::<&mut SnapshotOutlet>(entity)?;
             outlet.get().entries.push(entry);
+            Ok(())
         }
         None => {
             world.root_scope_mut().spawn(
@@ -214,6 +329,7 @@ fn install(world: &mut World, entry: Box<dyn Entry>) {
                 }]
                 .singleton::<SnapshotOutlet>(),
             );
+            Ok(())
         }
     }
 }
@@ -232,7 +348,8 @@ mod tests {
     ) -> SnapshotReader<u32> {
         let snapshot = Snapshot::new();
         let reader = snapshot.reader();
-        install(world, Box::new(SnapshotCollector { collect, snapshot }));
+        install(world, Box::new(SnapshotCollector { collect, snapshot }))
+            .expect("a fresh world takes a subscription");
         reader
     }
 
@@ -259,6 +376,55 @@ mod tests {
             first.latest().is_none(),
             "the reader of the removed outlet gets nothing, as it carries no collector",
         );
+    }
+
+    /// A subscription is a job, and being queued is not being installed: the
+    /// handle answers nothing until the world's turn runs the job.
+    #[test]
+    fn a_queued_subscription_answers_nothing() {
+        let (sender, receiver) = async_channel::bounded(1);
+        let jobs = JobSender::new(sender);
+        let subscription = jobs
+            .watch(|_| Some(1u32))
+            .expect("the queue has room for the subscription");
+        assert!(
+            subscription.poll().is_none(),
+            "a subscription its world has not run yet is still in the queue"
+        );
+
+        let mut world = World::new();
+        receiver.try_recv().expect("the installing job is queued")(&mut world);
+        assert!(
+            subscription
+                .poll()
+                .expect("the job ran")
+                .expect("the outlet is reachable")
+                .latest()
+                .is_none(),
+            "installing the collector publishes nothing on its own"
+        );
+    }
+
+    /// A world that stopped before the job ran took the installation with it:
+    /// the handle says the subscription ended rather than leaving a reader
+    /// that would never fill.
+    #[test]
+    fn a_subscription_the_world_stopped_before_installing_ended() {
+        let (sender, receiver) = async_channel::bounded(1);
+        let jobs = JobSender::new(sender);
+        let subscription = jobs
+            .watch(|_| Some(1u32))
+            .expect("the queue has room for the subscription");
+
+        // What a world does on its way out: the queue is closed and every job
+        // still in it goes with it, unrun.
+        receiver.close();
+        while receiver.try_recv().is_ok() {}
+
+        match subscription.poll().expect("the subscription ended") {
+            Ok(_) => panic!("a subscription whose job was dropped was installed"),
+            Err(error) => assert_eq!(error, InstallError::Ended),
+        }
     }
 
     /// A world with no subscription has nothing to run.
@@ -349,7 +515,8 @@ mod tests {
                 stream,
                 buffer: Vec::new(),
             }),
-        );
+        )
+        .expect("a fresh world takes a subscription");
 
         publish_collected(&world);
         publish_collected(&world);

@@ -337,7 +337,12 @@ pub struct Scene {
     /// Commands into the audio world.
     pub audio: JobSender,
     /// The physics world's latest pose snapshot.
-    pub poses: SnapshotReader<GamePhysics>,
+    ///
+    /// A subscription rather than a reader: the install job runs on the
+    /// physics world's own turn, so the reader it collects for is had from
+    /// this handle once that turn has come — and a world that stopped first
+    /// says so instead of leaving a reader that never fills.
+    pub poses: Subscription<SnapshotReader<GamePhysics>>,
     /// Whether the render world is still running.
     pub render_state: SnapshotReader<WorldState>,
     /// Whether the physics world is still running.
@@ -353,7 +358,7 @@ pub struct Scene {
 /// a world whose bodies are all asleep publishes no snapshot at all. The
 /// snapshot carries state, not history: a body that moved twice between two
 /// reads is seen once, where it is now.
-fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
+fn watch_poses(sender: &JobSender) -> Subscription<SnapshotReader<GamePhysics>> {
     // Two tables take turns: `previous` holds what the last snapshot carried,
     // which is what the next step compares against, and `gathered` is filled from
     // the world. Filling and exchanging them rather than building a fresh table

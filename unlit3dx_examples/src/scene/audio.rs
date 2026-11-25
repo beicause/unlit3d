@@ -146,10 +146,16 @@ impl SceneAudio {
         let mut voice = Pending::new(scene.audio_state.clone(), None);
         // The wait has no ticks to run out of: the install is the one thing
         // the music asks for, so it waits until the world answers or ends.
+        // The request is the first this state asks, so there is nothing to
+        // coalesce with: it either went to the world or came back unrun.
         let installed = match voice.request(&scene.audio, (), move |world: &mut World| {
             install_synth(world, &soundfont)
         }) {
-            Ok(()) => false,
+            Ok(Asked::Queued) => false,
+            Ok(Asked::Coalesced) => {
+                debug_assert!(false, "a fresh state has no request to coalesce with");
+                false
+            }
             Err(error) => {
                 log::error!("the audio world refused the synthesizer install ({error:?})");
                 true

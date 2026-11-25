@@ -20,7 +20,7 @@ use unlit3dx::prelude::*;
 use unlit3dx::synth::{MidiFile, MidiFileLoopType, MidiMessage};
 
 /// Waits until `probe` answers `true`, giving up after five seconds.
-fn wait_for(probe: impl Fn() -> bool) -> bool {
+fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
     for _ in 0..5_000 {
         if probe() {
             return true;
@@ -28,6 +28,29 @@ fn wait_for(probe: impl Fn() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(1));
     }
     false
+}
+
+/// The reader of a subscription the world has installed, which a world the
+/// caller steps has already done by the time it is asked for.
+fn installed<R: Clone>(subscription: &Subscription<R>) -> R {
+    subscription
+        .poll()
+        .expect("the world installed the subscription")
+        .expect("the subscription outlet is reachable")
+}
+
+/// The reader of a subscription the world installs on a tick of its own.
+fn wait_installed<R: Clone>(subscription: &Subscription<R>) -> R {
+    let mut ready = None;
+    let arrived = wait_for(|| match subscription.poll() {
+        Some(result) => {
+            ready = Some(result.expect("the subscription outlet is reachable"));
+            true
+        }
+        None => false,
+    });
+    assert!(arrived, "the world never installed the subscription");
+    ready.expect("the world installed the subscription")
 }
 
 /// Install the mix's gain and the synthesizer voice on a world, answering
@@ -308,6 +331,8 @@ fn the_audio_world_reports_its_output_opening() {
                 .map(|_audio_output_open| ())
         })
         .expect("the audio world accepts a subscription");
+    let format = wait_installed(&format);
+    let opened = wait_installed(&opened);
     let installed = wait_for(|| format.latest().is_some());
     if !has_output_device() {
         assert!(!installed, "a device-less world published a format");
@@ -352,6 +377,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
     for _ in 0..10 {
         step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     }
+    let opened = installed(&opened);
     assert!(
         opened.latest().is_none(),
         "a stepped OnRequest world opened its output without a request"
@@ -403,6 +429,7 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
         })
         .expect("the audio world accepts a subscription");
     step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    let opened = installed(&opened);
     assert!(
         opened.latest().is_none(),
         "the world opened before being asked"

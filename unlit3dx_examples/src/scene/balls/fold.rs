@@ -1,7 +1,7 @@
 //! Folding the answers back in: what a ball waits for, and when it gives up.
 
 use super::{
-    BALL_COLORS, Ball, BallPhase, Balls, Entity, Scene, SceneState, SendError, Settled,
+    Asked, BALL_COLORS, Ball, BallPhase, Balls, Entity, Scene, SceneState, SendErrorKind, Settled,
     ShowCandidate, Waiting, World, show, waiting, world_ended,
 };
 
@@ -159,16 +159,17 @@ impl Balls {
                             show(world, instance, mesh, material, &transform)
                         });
                 match sent {
-                    Ok(()) => {
+                    Ok(Asked::Queued | Asked::Coalesced) => {
                         if let Ok(mut ball) = scope.try_query_one::<&mut Ball>(candidate.ball) {
                             ball.get().phase = BallPhase::Requested;
                         }
                     }
                     // A closed queue is the scene going away, not a fault.
-                    Err(SendError::Closed) => {}
+                    Err(error) if error.kind() == SendErrorKind::Closed => {}
                     // Backpressure: the candidate is collected again next
                     // tick, so the ball is not given up on.
-                    Err(SendError::Full) => {
+                    Err(error) => {
+                        debug_assert_eq!(error.kind(), SendErrorKind::Full);
                         log::debug!("the render world's queue is full; a show waits a tick");
                     }
                 }

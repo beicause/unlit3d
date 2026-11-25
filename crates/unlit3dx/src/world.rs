@@ -17,7 +17,7 @@ use unlit3d::frame::FrameClock;
 
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
-use crate::job::{Job, JobSender, SendError};
+use crate::job::{Job, JobSender, SendError, SendErrorKind};
 use crate::thread::{ThreadControl, ThreadError, ThreadStatus, WorldThread, stepped_control};
 use crate::turn::{Link, close_inbox, drain_jobs, run_turn};
 
@@ -80,7 +80,7 @@ impl WorldSender {
     /// not enqueue work that cannot ever run.
     pub fn send(&self, job: Job) -> Result<(), SendError> {
         if self.status.is_finished() {
-            return Err(SendError::Closed);
+            return Err(SendError::new(SendErrorKind::Closed, job));
         }
         self.sender.send(job)
     }
@@ -528,7 +528,7 @@ pub fn with_stepped_world_mut<R>(
 mod tests {
     use super::*;
     use crate::FRAME_SECONDS;
-    use crate::job::SendError;
+    use crate::job::SendErrorKind;
     use std::time::Duration;
     use unlit_ecs::bundle;
 
@@ -626,7 +626,9 @@ mod tests {
             results.push(handle.sender.send(Box::new(|_| {})));
         }
         assert!(
-            results.contains(&Err(SendError::Full)),
+            results
+                .iter()
+                .any(|result| matches!(result, Err(error) if error.kind() == SendErrorKind::Full)),
             "a bounded queue must eventually report Full"
         );
     }

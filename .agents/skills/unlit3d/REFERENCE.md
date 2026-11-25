@@ -180,10 +180,11 @@
 
 | 通信 | 是什么 | 语义 |
 | --- | --- | --- |
-| job | `type Job = Box<dyn FnOnce(&mut World) + Send>`；`JobSender::send` | 有界队列，`Full` / `Closed`，永不阻塞；世界每次 tick 前 drain |
+| job | `type Job = Box<dyn FnOnce(&mut World) + Send>`；`JobSender::send` | 有界队列，永不阻塞，世界每次 tick 前 drain；被拒绝时 `SendError` **带着 job 回来**：`kind()` 给 `SendErrorKind::Full` / `Closed`，`into_job()` 取回那份工作。没跑过的 job 重发安全；想放弃就 drop 错误，job 随之而去（连同它持有的状态）。已入队但被停止的世界丢掉的 job 可能跑过一半，没有谁会自行重发它 |
 | 状态 | `Snapshot<T>`：`publish` / `reader` / `has_readers`；`SnapshotReader::latest` | 单槽，订阅前发布的值也留着 |
 | 事件 | `Stream<T>`：`subscribe` / `publish` / `publish_all` | 每个 reader 自带队列、按序、reader drop 即退订 |
-| 应答 | `Pending::new` / `request` / `advance` | `advance` 要吃 `(delta_seconds, &mut Vec<(K, Settled<T>)>)`，**别漏第一个参数**；一次请求一次应答，`Settled::Answered` / `Expired` |
+| 订阅 | `JobSender::watch` / `subscribe` → `Subscription<Reader>`；`Subscription::poll()` | 返回的是句柄，不是 reader：入队 ≠ 已安装，world 到下一轮才跑安装 job，之前 `poll()` 答 `None`。装上后 `Some(Ok(reader))`；world 先停则 `Some(Err(InstallError::Ended))`，world 跑了却够不到自己的 outlet 则 `Some(Err(InstallError::Outlet))`。队列满时整个调用仍返回 `Err(SendError)` |
+| 应答 | `Pending::new` / `request` / `advance` | `advance` 要吃 `(delta_seconds, &mut Vec<(K, Settled<T>)>)`，**别漏第一个参数**；一次请求一次应答，`Settled::Answered` / `Expired`。`request` 返回 `Asked`：`Queued` 是排上了；同 key 已有挂着的请求则 `Coalesced`——这一次的 `make` 没跑就丢，答案与超时仍归第一次 |
 | 发布 | `publish_collected(world) -> usize` | 世界里收集到的快照/流在 tick 之后统一发布 |
 
 ## 展示路径（unlit3dx）

@@ -44,7 +44,7 @@ fn collect_poses(world: &World) -> Option<Poses> {
 
 /// A physics world at the default rate, driven by `R`, with the floor already
 /// queued and a pose subscription on the host.
-fn floored_host<R: WorldRunner>() -> (World, WorldHandle, SnapshotReader<Poses>) {
+fn floored_host<R: WorldRunner>() -> (World, WorldHandle, Subscription<SnapshotReader<Poses>>) {
     let mut host = World::new();
     let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default())
         .expect("the world thread starts");
@@ -73,6 +73,14 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
     false
 }
 
+/// The reader of a subscription a world the caller steps has installed.
+fn installed<R: Clone>(subscription: &Subscription<R>) -> R {
+    subscription
+        .poll()
+        .expect("the world installed the subscription")
+        .expect("the subscription outlet is reachable")
+}
+
 /// The whole job round trip: a body built by a job falls, and the
 /// subscription carries it down to rest a radius above the floor.
 ///
@@ -99,10 +107,12 @@ fn a_dropped_ball_settles_in_its_snapshots() {
             (translation.y - BALL_RADIUS).abs() < 0.05 && translation.y < BALL_START.y
         })
     };
+    let mut poses_reader = None;
     let mut rested = false;
     for _ in 0..STEPS {
         step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
-        rested = poses.latest().is_some_and(|poses| settled(&poses));
+        let reader = poses_reader.get_or_insert_with(|| installed(&poses));
+        rested = reader.latest().is_some_and(|poses| settled(&poses));
         if rested {
             break;
         }
@@ -110,7 +120,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
     assert!(
         rested,
         "the ball never came to rest: the last snapshot is {:?}",
-        poses.latest(),
+        poses_reader.map(|reader| reader.latest()),
     );
 }
 
@@ -137,6 +147,19 @@ fn a_threaded_world_steps_what_a_job_builds() {
             .iter()
             .any(|&(_, translation, _)| translation.y < BALL_START.y - 0.05)
     };
+    let mut poses_reader = None;
+    let installed_here = wait_for(|| match poses.poll() {
+        Some(reader) => {
+            poses_reader = Some(reader.expect("the subscription outlet is reachable"));
+            true
+        }
+        None => false,
+    });
+    assert!(
+        installed_here,
+        "the physics world never installed the subscription"
+    );
+    let poses = poses_reader.expect("the world installed the subscription");
     assert!(
         wait_for(|| poses.latest().is_some_and(|poses| falling(&poses))),
         "the threaded world never stepped the body its job built: {:?}",
@@ -205,7 +228,7 @@ fn a_collector_sees_contacts_from_every_step() {
     // The collector queues what it sees and publishes nothing: the
     // subscription's state is the queue, which is the app's to own. The
     // reader is only the subscription's liveness token here.
-    let _events: SnapshotReader<()> = sender
+    let _events: Subscription<SnapshotReader<()>> = sender
         .watch(move |world: &World| {
             if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().iter().next() {
                 for &contact in &contacts.started {
@@ -375,6 +398,18 @@ fn an_empty_world_publishes_empty_contacts() {
         })
         .expect("the physics world accepts a subscription");
 
+    let mut installed_reader = None;
+    assert!(
+        wait_for(|| match reader.poll() {
+            Some(installed) => {
+                installed_reader = Some(installed.expect("the subscription outlet is reachable"));
+                true
+            }
+            None => false,
+        }),
+        "the physics world never installed the subscription"
+    );
+    let reader = installed_reader.expect("the world installed the subscription");
     assert!(
         wait_for(|| reader.latest().is_some()),
         "the empty world never published a snapshot"

@@ -38,14 +38,17 @@ simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn
 // 快照是两种回传方式之一（另一种是承载事件的流），而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
-let reader = simulation.sender.watch(|world: &World| {
+let subscription = simulation.sender.watch(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
-if let Some(latest) = reader.latest() {
+// 排进队列不等于装上：world 到下一轮才跑这个 job，在那之前 `poll` 答 `None`。
+if let Some(Ok(reader)) = subscription.poll()
+    && let Some(latest) = reader.latest()
+{
     // ... 应用 `latest` ...
 }
-// 丢弃 reader 即退订：world 不再为它收集。
+// 丢弃订阅即退订：world 不再为它收集。
 ```
 
 按 feature 划分的模块在这套核心之上搭场景。**子 world** 让持有者留在主线程上，
@@ -98,6 +101,11 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 world 的线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
 
+错误会把 job 原样带回来——没跑过的那个：`SendErrorKind` 说明队列为何拒绝它，
+`into_job` 把这份工作交回。被拒绝的 job 从未开始，因此重发它是安全的；宁可放弃的
+调用方则直接 drop 这个错误，job 随之而去，连同它当时持有的状态。另一种情形是已经
+入队、却因 world 停下而丢失的 job：它可能已经跑了一半，所以没有什么会自行重发它。
+
 job 也是 world 改变另一个 world 的唯一方式，而且它不回答任何东西：需要汇报什么的
 world 改为通过订阅发布。回复会让发送方等待一个可能正忙、已停止或已经消失的
 world，而回来的东西是状态，状态有自己的通道。
@@ -114,8 +122,11 @@ world 而不属于发起它的那次调用；谁驱动 world，谁就每回合�
 
 ## 快照与流
 
-接收就是订阅：`JobSender::watch` 在目标 world 里装一个收集闭包并交回一个
-reader。驱动该 world 的一方——它的线程、步进它的宿主、或排空它的宿主——在每一轮
+接收就是订阅：`JobSender::watch` 把安装收集闭包的 job 排进目标 world，并交回一个
+`Subscription`。入队不等于已安装，因此在 world 下一轮跑掉这个 job 之前，这个句柄
+什么也不回答：`poll` 到时要么给出 reader，要么给出订阅没能装上的原因。先停下的
+world 会丢掉这个 job，句柄于是报告 `InstallError::Ended`，而不是留下一个永远没人
+填的 reader。驱动该 world 的一方——它的线程、步进它的宿主、或排空它的宿主——在每一轮
 tick 跑完后代为发布，因此 tick 体自己什么也不发布，也不可能发布两次。收集闭包填充
 哪种形状由调用方选择：
 
@@ -127,6 +138,11 @@ tick 跑完后代为发布，因此 tick 体自己什么也不发布，也不可
 用 `Pending` 请求是第三种形状：一次请求一个 job、一个 job 一个答案，只发布一次，
 并由请求时的 key 指名。world 从不回答的请求——或 world 已经结束的请求——会被判过期，
 而不是悬着不管。
+
+`request` 回答一个 `Asked`，因为问两次与问一次不是同一件事。`Queued` 是正在去往
+world 路上的 job；`Coalesced` 是同一个 key 下已经挂着的请求，这一次的 `make` 没跑就
+被丢掉，答案与超时仍归第一次。因此每 tick 问一次的调用方会知道这一 tick 的活没做，
+而不会把沉默误当成注册丢了。
 
 该用哪一个，取决于调用方要的答案：
 
@@ -151,8 +167,8 @@ reader 的节奏拖不垮另一个。碰撞、序列结束需要的就是这个�
 `InputWriter` 就是生产者不是 world 而是窗口的一条流。
 
 不订阅就什么都不收集，而订阅的寿命与 reader 相同：最后一个 reader 克隆被丢弃后，
-收集闭包会在下一 tick 被清除。订阅本身是一个 job，因此队列已满或 world 已停止时，
-它按队列自身的错误被拒绝。
+收集闭包会在下一 tick 被清除。订阅本身是一个 job，因此队列已满时它按队列自身的
+错误被拒绝；world 跑了安装却够不到自己的 outlet 时，报的是 `InstallError::Outlet`。
 
 ## 线程与步进
 

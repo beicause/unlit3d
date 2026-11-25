@@ -1,8 +1,8 @@
 //! Cleaning up: despawning what left the view, and publishing the poses.
 
 use super::{
-    Arc, Ball, BallInstance, BallPhase, Balls, Entity, STATUS_PERIOD, Scene, ScenePoses, SendError,
-    World, despawn_body, despawn_instances_job, live_poses, pose_job, sweep,
+    Arc, Asked, Ball, BallInstance, BallPhase, Balls, Entity, STATUS_PERIOD, Scene, ScenePoses,
+    SendErrorKind, World, despawn_body, despawn_instances_job, live_poses, pose_job, sweep,
 };
 
 impl Balls {
@@ -23,8 +23,13 @@ impl Balls {
             }
         }));
         match sent {
-            Ok(()) | Err(SendError::Closed) => self.despawns.clear(),
-            Err(SendError::Full) => {
+            Ok(()) => self.despawns.clear(),
+            // A closed queue is the scene going away, not a fault: nothing is
+            // left to despawn.
+            Err(error) if error.kind() == SendErrorKind::Closed => self.despawns.clear(),
+            // The job came back unrun, so the list is still the list to send.
+            Err(error) => {
+                debug_assert_eq!(error.kind(), SendErrorKind::Full);
                 log::debug!("the physics world's queue is full; a despawn waits a tick");
             }
         }
@@ -37,8 +42,11 @@ impl Balls {
         }
         let instances = self.orphans.clone();
         match scene.render.send(despawn_instances_job(instances)) {
-            Ok(()) | Err(SendError::Closed) => self.orphans.clear(),
-            Err(SendError::Full) => {
+            Ok(()) => self.orphans.clear(),
+            // A closed queue is the scene going away, not a fault.
+            Err(error) if error.kind() == SendErrorKind::Closed => self.orphans.clear(),
+            Err(error) => {
+                debug_assert_eq!(error.kind(), SendErrorKind::Full);
                 log::debug!("the render world's queue is full; a despawn waits a tick");
             }
         }
@@ -82,14 +90,18 @@ impl Balls {
             .retired
             .request(&scene.render, (), sweep(sweeping.clone()))
         {
-            Ok(()) => {
+            Ok(Asked::Queued) => {
                 self.sweep_asked = true;
                 sweeping.clear();
             }
+            // The same balls were already asked for and the answer has not
+            // come: this tick's sweep is work the world already owes.
+            Ok(Asked::Coalesced) => {}
             // A closed queue is the scene going away: nothing is left to
             // sweep, and the instances stay for the next one.
-            Err(SendError::Closed) => {}
-            Err(SendError::Full) => {
+            Err(error) if error.kind() == SendErrorKind::Closed => {}
+            Err(error) => {
+                debug_assert_eq!(error.kind(), SendErrorKind::Full);
                 log::debug!("the render world's queue is full; a sweep waits for the next one");
             }
         }
@@ -98,7 +110,15 @@ impl Balls {
 
     /// Publish the snapshot's poses onto the balls they name.
     pub(super) fn publish(&mut self, world: &World, scene: &Scene) {
-        let Some(snapshot) = scene.poses.latest() else {
+        // A subscription the physics world has not installed yet, or could
+        // not, has nothing to pose: the balls keep the transforms their show
+        // jobs gave them until a snapshot says otherwise.
+        let Some(snapshot) = scene
+            .poses
+            .poll()
+            .and_then(|installed| installed.ok())
+            .and_then(|poses| poses.latest())
+        else {
             return;
         };
         if self
@@ -138,11 +158,12 @@ impl Balls {
             // A closed queue is the scene going away, not a fault: the render
             // world stops before the gameplay world's last tick, and a pose
             // sent after it has nothing left to draw.
-            Err(SendError::Closed) => {}
+            Err(error) if error.kind() == SendErrorKind::Closed => {}
             // The poses are remembered as published only once they are on
             // their way: a full queue forgets the snapshot, so the same one
             // is posed again next tick instead of being skipped as unchanged.
-            Err(SendError::Full) => {
+            Err(error) => {
+                debug_assert_eq!(error.kind(), SendErrorKind::Full);
                 self.last_snapshot = None;
                 log::debug!("the render world's queue is full; the poses wait for the next one");
             }

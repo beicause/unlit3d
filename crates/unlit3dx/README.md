@@ -42,14 +42,18 @@ simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn
 // subscription carries once per tick and publishes whatever it returns. The payload is the caller's type — the
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
-let reader = simulation.sender.watch(|world: &World| {
+let subscription = simulation.sender.watch(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
-if let Some(latest) = reader.latest() {
+// Queueing the collector is not installing it: the world runs the job on its
+// next turn, so `poll` answers `None` until then.
+if let Some(Ok(reader)) = subscription.poll()
+    && let Some(latest) = reader.latest()
+{
     // ... apply `latest` ...
 }
-// Dropping the reader unsubscribes: the world stops collecting for it.
+// Dropping the subscription unsubscribes: the world stops collecting for it.
 ```
 
 The feature-gated modules build scenes on top of that core. A **sub-world**
@@ -113,6 +117,13 @@ world `Err(SendError::Closed)`, so a world thread that sends to its own queue
 cannot deadlock against itself. The world thread drains its queue before
 every tick, so a job never races a tick.
 
+The error carries the job back, unrun: `SendErrorKind` says why the queue
+refused it and `into_job` gives the work back. A refused job never started,
+so sending it again is safe, and a caller that would rather drop it says so
+by dropping the error — the job goes with it, along with any state it was
+holding. A job that was queued and then lost to a stopping world is the other
+case: it may have half-run, so nothing resends it on its own.
+
 A job is also the only way one world changes another, and it answers nothing:
 a world that must report something publishes it through a subscription
 instead. A reply would have the sender waiting on a world that may be busy,
@@ -135,12 +146,17 @@ way.
 
 ## Snapshots and streams
 
-Receiving is a subscription: `JobSender::watch` installs a collector in the
-target world and hands back a reader. Whoever drives that world — its thread,
-its host stepping it, or its host draining a sub-world — publishes at the end
-of every turn, once the tick has run, so a tick body publishes nothing itself
-and cannot publish twice. Which shape the collector fills is the caller's
-choice:
+Receiving is a subscription: `JobSender::watch` queues the installing job in
+the target world and hands back a `Subscription`. Being queued is not being
+installed, so the handle answers nothing until the world's next turn runs the
+job: `poll` then gives the reader, or the reason the subscription never
+arrived. A world that stopped first drops the job, and the handle reports
+`InstallError::Ended` rather than leaving a reader nothing would ever fill.
+
+Whoever drives that world — its thread, its host stepping it, or its host
+draining a sub-world — publishes at the end of every turn, once the tick has
+run, so a tick body publishes nothing itself and cannot publish twice.
+Which shape the collector fills is the caller's choice:
 
 - `watch` returns a `SnapshotReader<T>`: state, where only the newest value
   matters. The collector returns `Option<T>`.
@@ -152,6 +168,13 @@ Asking through a `Pending` is the third shape: one job per request, one answer
 per job, published once and named by the key the request was made under. A
 request the world never answers, or one whose world ended, is expired instead
 of being left hanging.
+
+`request` answers `Asked`, because asking twice is not the same event as
+asking once. `Queued` is a job on its way to the world; `Coalesced` is a
+request already outstanding under the same key, whose `make` was dropped
+unrun and whose answer and timeout still belong to the first one. A caller
+that asks once per tick therefore learns that this tick's work was not done,
+instead of mistaking the silence for a lost registration.
 
 Which one to reach for follows from the answer the caller needs:
 
@@ -185,7 +208,8 @@ stream whose producer is the window rather than a world.
 Nothing is collected unasked, and a subscription lives exactly as long as its
 reader: dropping the last clone of a reader prunes the collector on the next
 tick. Subscribing is a job, so it is refused with the queue's own error when
-the world is full or has stopped.
+the queue is full; an installation the world ran that could not reach its
+outlet is reported as `InstallError::Outlet`.
 
 ## Threads and stepping
 

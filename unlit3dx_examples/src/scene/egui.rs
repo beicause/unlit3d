@@ -196,7 +196,11 @@ pub fn mount_controls(world: &mut World) {
                     // The output waits for the user's first click: say so, so
                     // a silent panel reads as a nudge to press Play rather
                     // than as something broken.
-                    if unlocked.as_ref().and_then(|open| open.latest()).is_none() {
+                    let open = unlocked
+                        .as_ref()
+                        .and_then(|unlocked| unlocked.poll())
+                        .and_then(|installed| installed.ok());
+                    if open.and_then(|open| open.latest()).is_none() {
                         ui.label("audio is locked until you press Play");
                     }
                     // One row at a time: the borrow each one takes is given

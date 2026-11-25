@@ -27,8 +27,9 @@
 //! renumbers them.
 
 use core::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use crate::job::{Job, JobSender, SendError};
+use crate::job::{Job, JobSender, SendErrorKind};
 use unlit_ecs::World;
 use unlit3d::egui::{EguiSource, EguiTarget, ExternalFrame, egui, lay_out, raw_input};
 use unlit3d::frame::Frame;
@@ -88,7 +89,12 @@ pub struct EguiPanelHost {
     /// dropped here would take the texture changes it carries — a font atlas
     /// upload, usually — with it, leaving the drawing side to draw the panel
     /// against textures it never received.
-    refused: Option<ExternalFrame>,
+    ///
+    /// The frame lives behind an [`Arc`] the job takes it out of, so a frame
+    /// whose job was refused is still there to be sent again: the job never
+    /// ran, so nothing took it, and holding the frame rather than the job is
+    /// what lets it be retried without copying it.
+    refused: Option<Arc<Mutex<Option<ExternalFrame>>>>,
 }
 
 impl EguiPanelHost {
@@ -178,20 +184,25 @@ impl EguiPanelHost {
         // not stop a tick that brought new events: the new frame is laid out
         // and the refused deltas ride along with it (see the send below).
         let mut carried: Option<ExternalFrame> = None;
-        if let Some(frame) = self.refused.take() {
-            match self.render.send(panel_frame_job(self.slot, frame.clone())) {
+        if let Some(held) = self.refused.take() {
+            match self
+                .render
+                .send(panel_frame_job(self.slot, Arc::clone(&held)))
+            {
                 Ok(()) => {}
                 // Still no room: the refused deltas fold into whatever this
                 // tick lays out. Without new events nothing new is laid out,
                 // so the frame simply keeps its place.
-                Err(SendError::Full) if events.is_empty() => {
-                    self.refused = Some(frame);
+                Err(error) if error.kind() == SendErrorKind::Full && events.is_empty() => {
+                    self.refused = Some(held);
                     self.input_scratch = events;
                     return;
                 }
-                Err(SendError::Full) => carried = Some(frame),
+                Err(error) if error.kind() == SendErrorKind::Full => {
+                    carried = unlit_ecs::sync::lock(&held).take();
+                }
                 // The drawing world is gone; the frame has nowhere to go.
-                Err(SendError::Closed) => {}
+                Err(_) => {}
             }
         }
         let due = self
@@ -263,9 +274,10 @@ impl EguiPanelHost {
             refused.screen = laid_out.screen;
             laid_out = refused;
         }
+        let held = Arc::new(Mutex::new(Some(laid_out)));
         match self
             .render
-            .send(panel_frame_job(self.slot, laid_out.clone()))
+            .send(panel_frame_job(self.slot, Arc::clone(&held)))
         {
             Ok(()) => self.laid_out_at = Some(target),
             // The queue is full: nobody took the frame. Keeping it is what
@@ -273,20 +285,26 @@ impl EguiPanelHost {
             // the drawing side missing a texture change, such as a font
             // atlas upload. The refused frame is sent again on the next
             // tick, before anything new is laid out.
-            Err(SendError::Full) => self.refused = Some(laid_out),
+            Err(error) if error.kind() == SendErrorKind::Full => self.refused = Some(held),
             // The drawing world is gone; there is nothing left to draw.
-            Err(SendError::Closed) => self.laid_out_at = Some(target),
+            Err(_) => self.laid_out_at = Some(target),
         }
     }
 }
 
-/// Hand `frame` to the egui source of the world this job runs in.
+/// Hand the frame `frame` holds to the egui source of the world this job runs
+/// in.
 ///
-/// The job walks the world's frame sources and publishes into the first
+/// The job takes the frame out of the cell as it runs, so a job the queue
+/// refused leaves the frame where it was and the same cell can be sent again.
+/// It then walks the world's frame sources and publishes into the first
 /// [`EguiSource`] it finds, which draws that slot from then on. A world with no
 /// source drops the frame, and dropping it clears its texture deltas.
-pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job {
+pub fn panel_frame_job(slot: usize, frame: Arc<Mutex<Option<ExternalFrame>>>) -> Job {
     Box::new(move |world: &mut World| {
+        let Some(frame) = unlit_ecs::sync::lock(&frame).take() else {
+            return;
+        };
         for source in world.root_scope().query::<&mut Source>().iter() {
             if let Ok(ui) = source.as_mut::<EguiSource>() {
                 ui.frames.publish(slot, frame);

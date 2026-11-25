@@ -47,6 +47,20 @@ fn ended(state: &SnapshotReader<WorldState>) -> bool {
     )
 }
 
+/// What a request did when it was asked.
+///
+/// The two answers are not the same event: `Queued` is a job on its way to the
+/// world that will answer it, and `Coalesced` is a request the caller already
+/// has outstanding, whose `make` never ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Asked {
+    /// The job was queued: the world will answer unless it stops first.
+    Queued,
+    /// A request under this key was already outstanding, so nothing was
+    /// queued and the `make` of this one was dropped unrun.
+    Coalesced,
+}
+
 /// How one request ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Settled<T> {
@@ -118,17 +132,20 @@ where
     /// `make` runs once, on the world's own thread, and whatever it returns is
     /// the answer `key` receives. The send is refused when that world's queue
     /// is full or it has stopped, and then no request is outstanding: the
-    /// caller decides whether to ask again on a later tick.
+    /// caller decides whether to ask again on a later tick, and `make` goes
+    /// with the refused job.
     ///
-    /// A request already outstanding under `key` is coalesced: no second job
-    /// is queued, and the first request keeps ownership of the answer and its
-    /// timeout.
-    pub fn request<F>(&mut self, sender: &JobSender, key: K, make: F) -> Result<(), SendError>
+    /// A request already outstanding under `key` is coalesced, and the answer
+    /// says so: no second job is queued, `make` is dropped unrun, and the first
+    /// request keeps ownership of the answer and of the time it was given. A
+    /// caller that asks once per tick therefore learns that the tick's work was
+    /// not done rather than taking the silence for a lost registration.
+    pub fn request<F>(&mut self, sender: &JobSender, key: K, make: F) -> Result<Asked, SendError>
     where
         F: FnOnce(&mut World) -> T + Send + 'static,
     {
         if self.outstanding.iter().any(|request| request.key == key) {
-            return Ok(());
+            return Ok(Asked::Coalesced);
         }
         let answerer = self.answerer.clone();
         let id = self.next_id;
@@ -141,7 +158,7 @@ where
             id,
             remaining: self.timeout,
         });
-        Ok(())
+        Ok(Asked::Queued)
     }
 
     /// What ended on this tick: the requests the world answered, and the ones
@@ -196,7 +213,7 @@ where
 mod tests {
     use super::*;
     use crate::channel::Snapshot;
-    use crate::job::Job;
+    use crate::job::{Job, SendErrorKind};
 
     /// Requests for a world in `state`, and the queue its requests go through.
     fn asking(
@@ -340,8 +357,11 @@ mod tests {
         let (mut pending, jobs, receiver) = asking(WorldState::Running, Some(1.0));
         drop(receiver);
         assert_eq!(
-            pending.request(&jobs, 1, |_: &mut World| 0).err(),
-            Some(SendError::Closed)
+            pending
+                .request(&jobs, 1, |_: &mut World| 0)
+                .expect_err("a stopped world refuses the request")
+                .kind(),
+            SendErrorKind::Closed
         );
 
         assert!(
@@ -366,6 +386,100 @@ mod tests {
         // One tick stood between the first ask and this one, so the wait the
         // first ask was given runs out here however recently it was repeated.
         assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
+    }
+
+    /// A second request under a key already outstanding says it was
+    /// coalesced instead of looking like one that went to the world, and the
+    /// work it named never runs.
+    #[test]
+    fn a_coalesced_request_says_so_and_runs_nothing() {
+        let (mut pending, jobs, receiver) = asking(WorldState::Running, None);
+        let mut world = World::new();
+        assert_eq!(
+            pending
+                .request(&jobs, 1, |_: &mut World| 7)
+                .expect("the queue has room"),
+            Asked::Queued
+        );
+        assert_eq!(
+            pending
+                .request(&jobs, 1, |_: &mut World| panic!("the coalesced work ran"))
+                .expect("a coalesced request is not a failure"),
+            Asked::Coalesced
+        );
+
+        assert_eq!(
+            receiver.len(),
+            1,
+            "the coalesced request queued no second job"
+        );
+        drain(&receiver, &mut world);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Answered(7))]);
+    }
+
+    /// Coalescing leaves the first request's wait alone: the tick it was
+    /// asked on is still the one that counts.
+    #[test]
+    fn a_coalesced_request_does_not_renew_the_first_wait() {
+        let (mut pending, jobs, _receiver) = asking(WorldState::Running, Some(2.0));
+        pending
+            .request(&jobs, 1, |_: &mut World| 0)
+            .expect("the queue has room");
+        assert!(settled(&mut pending, 1.0).is_empty(), "one tick of two");
+
+        assert_eq!(
+            pending
+                .request(&jobs, 1, |_: &mut World| 0)
+                .expect("a coalesced request is not a failure"),
+            Asked::Coalesced
+        );
+        assert_eq!(
+            settled(&mut pending, 1.0),
+            vec![(1, Settled::Expired)],
+            "the coalesced ask did not restart the clock"
+        );
+    }
+
+    /// A request the queue refused comes back with the job it never ran, so
+    /// asking again on a later tick asks the work the first one meant to.
+    #[test]
+    fn a_refused_request_hands_its_work_back() {
+        let (mut pending, jobs, receiver) = asking(WorldState::Running, None);
+        // A queue with one place, taken, so the next request meets a full
+        // queue rather than a stopped one.
+        let (sender, crowded) = async_channel::bounded(1);
+        let full = JobSender::new(sender);
+        full.send(Box::new(|_: &mut World| {}))
+            .expect("the one place was free");
+        let refused = pending
+            .request(&full, 1, |_: &mut World| 7)
+            .expect_err("a full queue refuses the request");
+        assert_eq!(refused.kind(), SendErrorKind::Full);
+        assert!(
+            settled(&mut pending, 1.0).is_empty(),
+            "a request the queue never took waits for nothing"
+        );
+
+        // The job came back unrun, so running it now does the work the ask
+        // meant to do — though the request that asked for it is over, so the
+        // answer lands on nobody.
+        let mut world = World::new();
+        (refused.into_job())(&mut world);
+        assert!(
+            settled(&mut pending, 1.0).is_empty(),
+            "an answer to a request that was never made settles nothing"
+        );
+        drop(crowded);
+
+        // The same work, asked again now that the queue has room, answers.
+        assert_eq!(
+            pending
+                .request(&jobs, 1, |_: &mut World| 7)
+                .expect("the queue has room"),
+            Asked::Queued
+        );
+        drain(&receiver, &mut world);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Answered(7))]);
     }
 
     /// A request with no timeout waits as long as the world owes it.

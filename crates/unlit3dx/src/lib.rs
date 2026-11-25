@@ -147,12 +147,15 @@ pub mod prelude {
     };
     pub use crate::{
         FRAME_SECONDS,
-        channel::{Snapshot, SnapshotReader, Stream, StreamReader, publish_collected},
+        channel::{
+            InstallError, Snapshot, SnapshotReader, Stream, StreamReader, Subscription,
+            publish_collected,
+        },
         executor::{LocalPool, LocalSpawnExt, LocalTasks},
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world, tick_sub_world},
-        job::{Job, JobSender, SendError},
-        request::{Pending, Settled},
+        job::{Job, JobSender, SendError, SendErrorKind},
+        request::{Asked, Pending, Settled},
         thread::{
             FixedClock, JoinOutcome, MAX_CATCH_UP_STEPS, ThreadControl, ThreadError, WorldState,
             WorldThread, fixed_steps,

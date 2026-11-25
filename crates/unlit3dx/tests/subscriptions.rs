@@ -29,6 +29,19 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
 /// The component the subscriptions read.
 struct Marker(u32);
 
+/// The reader of a subscription the world has installed.
+///
+/// A subscription is queued, not installed: the reader it fills only exists
+/// once a tick has run the job that installs the collector. The handle is
+/// given up on the way out, so what is left is the reader the world collects
+/// for and nothing else.
+fn installed<R: Clone>(subscription: Subscription<R>) -> R {
+    subscription
+        .poll()
+        .expect("the world installed the subscription")
+        .expect("the subscription outlet is reachable")
+}
+
 /// Each subscription collects for its own reader: two subscribers on one
 /// world see two different snapshots, and neither overwrites the other.
 #[test]
@@ -53,8 +66,10 @@ fn several_subscribers_each_get_their_own_snapshot() {
 
     step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
 
-    assert_eq!(one.latest().map(|value| *value), Some(1));
-    assert_eq!(two.latest().map(|value| *value), Some(10));
+    let one_reader = installed(one);
+    let two_reader = installed(two);
+    assert_eq!(one_reader.latest().map(|value| *value), Some(1));
+    assert_eq!(two_reader.latest().map(|value| *value), Some(10));
 }
 
 /// A subscription made after the world has been running sees the state of
@@ -77,13 +92,13 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
                 .map(|marker| marker.0)
         })
         .expect("the world accepts a subscription");
-    assert_eq!(
-        reader.latest(),
-        None,
-        "nothing was collected before it asked"
+    assert!(
+        reader.poll().is_none(),
+        "a queued subscription is not an installed one"
     );
 
     step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(0));
 }
 
@@ -104,6 +119,7 @@ fn dropping_the_reader_prunes_the_subscription() {
         })
         .expect("the world accepts a subscription");
     step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
+    let reader = installed(reader);
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the collector ran once");
 
     drop(reader);
@@ -140,6 +156,7 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
     step_stepped_world(&host, world.entity, FRAME_SECONDS).expect("the stepped world starts");
 
+    let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(1));
 }
 
@@ -161,7 +178,10 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
                 .map(|marker| marker.0)
         })
         .expect("the sub-world accepts a subscription");
-    assert_eq!(reader.latest(), None, "nothing ran before the drain");
+    assert!(
+        reader.poll().is_none(),
+        "a queued subscription is not an installed one"
+    );
 
     // The sub-world gets its marker from a job: a nested world runs nothing
     // until its host drains it.
@@ -175,6 +195,7 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
 
     let nested = world_row.get();
     drain_sub_world(nested);
+    let reader = installed(reader);
     assert_eq!(
         reader.latest().map(|value| *value),
         Some(0),
@@ -195,5 +216,11 @@ fn a_full_queue_refuses_a_subscription() {
 
     let refused = world.sender.clone().watch(|_| Some(1u32));
 
-    assert_eq!(refused.err(), Some(SendError::Full));
+    assert_eq!(
+        match refused {
+            Ok(_) => panic!("a full queue refuses the subscription"),
+            Err(error) => error.kind(),
+        },
+        SendErrorKind::Full
+    );
 }

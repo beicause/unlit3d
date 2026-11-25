@@ -153,11 +153,18 @@ fn stalled_scene() -> (
     let (render_tx, render_rx) = async_channel::bounded(1);
     let (physics_tx, physics_rx) = async_channel::bounded(1);
     let (audio_tx, _audio_rx) = async_channel::bounded(1);
+    // The pose subscription is queued on a queue of its own that no test
+    // drains, so it stays uninstalled: a tick reads no poses, which is what
+    // these tests want from a scene with no physics world behind it.
+    let (poses_tx, _poses_rx) = async_channel::bounded(1);
+    let poses: Subscription<SnapshotReader<GamePhysics>> = JobSender::new(poses_tx)
+        .watch(|_: &World| None)
+        .expect("a fresh queue takes the subscription");
     let scene = Scene {
         render: JobSender::new(render_tx),
         physics: JobSender::new(physics_tx),
         audio: JobSender::new(audio_tx),
-        poses: Snapshot::new().reader(),
+        poses,
         render_state: Snapshot::new().reader(),
         physics_state: Snapshot::new().reader(),
         audio_state: Snapshot::new().reader(),
