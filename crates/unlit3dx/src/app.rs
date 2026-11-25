@@ -46,6 +46,7 @@ pub mod interactive;
 pub mod options;
 pub mod windowed;
 
+mod error;
 mod frames;
 mod logging;
 mod offscreen;
@@ -64,7 +65,8 @@ pub mod pace;
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub mod serve;
 
-pub use capture::Capture;
+pub use capture::{Capture, CaptureError, CaptureWriteError, WriteWhat};
+pub use error::{AppConfigError, ConfigError, RunError};
 pub use frames::RunFrames;
 pub use headless::{
     AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, HEADLESS_HZ, HeadlessConfig,
@@ -72,6 +74,7 @@ pub use headless::{
 };
 pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;
+pub use offscreen::OffscreenError;
 pub use options::RunOptions;
 pub use pace::Pacing;
 pub use scene::{AudioPull, Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
@@ -130,12 +133,15 @@ pub trait App: 'static {
     ///
     /// Returning an error is what arguments that cannot be applied do —
     /// a file named on the command line that cannot be read, say: the run
-    /// logs the message and fails.
+    /// logs the cause and fails.
     ///
     /// # Errors
     ///
-    /// Returns the message to show when the arguments cannot be applied.
-    fn configure(&mut self, args: Self::Args) -> Result<(), String> {
+    /// Returns why the arguments cannot be applied. A reason the application
+    /// alone knows is [`AppConfigError::Rejected`]; the variants for causes
+    /// every application shares are there for the ones it does not have to
+    /// invent.
+    fn configure(&mut self, args: Self::Args) -> Result<(), AppConfigError> {
         let _ = args;
         Ok(())
     }
@@ -234,8 +240,8 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         }
     };
     let mut app = app;
-    if let Err(message) = app.configure(args) {
-        log::error!("the command line could not be applied: {message}");
+    if let Err(error) = app.configure(args) {
+        log::error!("the command line could not be applied: {error}");
         return std::process::ExitCode::FAILURE;
     }
     // A client-paced run has no driver without a transport. The run still
@@ -351,8 +357,8 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     if options.mcp_stdio || options.mcp_http_run() {
         let http = match options.mcp_http_bind() {
             Ok(addr) => addr,
-            Err(message) => {
-                log::error!("{message}");
+            Err(error) => {
+                log::error!("{error}");
                 return std::process::ExitCode::FAILURE;
             }
         };
@@ -364,8 +370,8 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
         // names the frames it keeps, and the pacing says who advances them.
         match serve(app, device, transports, pacing, options.capture()) {
             Ok(_) => return std::process::ExitCode::SUCCESS,
-            Err(message) => {
-                log::error!("the MCP server did not start: {message}");
+            Err(error) => {
+                log::error!("the MCP server did not start: {error}");
                 return std::process::ExitCode::FAILURE;
             }
         }
@@ -385,8 +391,8 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
             }
             std::process::ExitCode::SUCCESS
         }
-        Err(message) => {
-            log::error!("{message}");
+        Err(error) => {
+            log::error!("{error}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -403,7 +409,7 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
 fn write_mix(
     config: &HeadlessConfig,
     output: &HeadlessOutput,
-) -> Result<Vec<std::path::PathBuf>, String> {
+) -> Result<Vec<std::path::PathBuf>, RunError> {
     let format = crate::audio::AudioFormat {
         sample_rate: config.audio_sample_rate,
         channels: AUDIO_CHANNELS as u16,

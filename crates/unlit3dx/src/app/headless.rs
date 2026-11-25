@@ -12,6 +12,7 @@ use unlit3d::input::{InputFeed, InputWriter};
 
 use super::App;
 use super::capture::Capture;
+use super::error::RunError;
 use super::offscreen;
 use super::pace::Pacing;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts};
@@ -108,9 +109,9 @@ pub async fn headless<A: App>(
     mut app: A,
     config: &HeadlessConfig,
     device: RenderDevice,
-) -> Result<HeadlessOutput, String> {
+) -> Result<HeadlessOutput, RunError> {
     if config.audio_sample_rate == 0 {
-        return Err("the audio sample rate must be positive".to_owned());
+        return Err(RunError::AudioRate);
     }
     let mut host = World::new();
     let render = spawn_sub_world(&mut host, "render", config.render_capacity);
@@ -145,7 +146,7 @@ pub async fn headless<A: App>(
         let mut nested = host
             .root_scope()
             .try_query_one::<&World>(render.entity)
-            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            .map_err(RunError::RenderWorld)?;
         offscreen::bind(nested.get(), setup, &device, config.size)?
     };
 
@@ -188,7 +189,7 @@ pub async fn headless<A: App>(
         match run.advance(&host, index, draw)? {
             StepOutcome::Ran => {}
             StepOutcome::Finished | StepOutcome::Stopped => break,
-            StepOutcome::Failed => return Err(format!("the scene failed before frame {index}")),
+            StepOutcome::Failed(error) => return Err(RunError::Scene(error)),
         }
 
         let samples = run.mix.samples();
@@ -213,7 +214,7 @@ pub async fn headless<A: App>(
                 let mut nested = host
                     .root_scope()
                     .try_query_one::<&World>(run.render)
-                    .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                    .map_err(RunError::RenderWorld)?;
                 offscreen::texture(nested.get(), run.renderer, &target.texture)?
             };
             let (_, _, pixels) = offscreen::read(&device.device, &device.queue, &texture).await?;

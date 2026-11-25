@@ -50,6 +50,18 @@ async fn request(
     .await
 }
 
+/// Why the GPU request could not start the renderer.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum GpuStartError {
+    /// The adapter or device could not be opened.
+    #[error("failed to start the renderer: {0}")]
+    Request(#[from] GpuRequestError),
+    /// The request never ran: the world that was to run it has no task set.
+    #[error("the world has no task set to run the GPU request on")]
+    Unstartable,
+}
+
 /// The answer a GPU request settles on.
 enum GpuRequest {
     /// The adapter and device are ready for the scene setup.
@@ -82,7 +94,7 @@ enum RequestStage {
 pub fn request_gpu<F, E>(app: Entity, ready: F, failed: E) -> OnFrame
 where
     F: FnOnce(&mut World, &Gpu) + 'static,
-    E: FnOnce(&World, String) + 'static,
+    E: FnOnce(&World, GpuStartError) + 'static,
 {
     // The request future runs among the world's own tasks, so the answer
     // slot needs no lock: the future and the behaviour that reads it run on
@@ -185,20 +197,18 @@ struct RunGpuReady<F, E> {
 impl<F, E> Command for RunGpuReady<F, E>
 where
     F: FnOnce(&mut World, &Gpu) + 'static,
-    E: FnOnce(&World, String) + 'static,
+    E: FnOnce(&World, GpuStartError) + 'static,
 {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        let message = match self.request {
+        let error = match self.request {
             GpuRequest::Ready(gpu) => {
                 (self.ready)(world, &gpu);
                 return Ok(());
             }
-            GpuRequest::Failed(error) => format!("failed to start the renderer: {error}"),
-            GpuRequest::Unstartable => {
-                "the world has no task set to run the GPU request on".to_owned()
-            }
+            GpuRequest::Failed(error) => GpuStartError::Request(error),
+            GpuRequest::Unstartable => GpuStartError::Unstartable,
         };
-        (self.failed)(world, message);
+        (self.failed)(world, error);
         world
             .root_scope()
             .try_query_one::<&mut ExitRequest>(self.app)?

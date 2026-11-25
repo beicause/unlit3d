@@ -552,6 +552,14 @@ registers the
 rendering ones and `unlit3dx` the audio ones. None of those crates is a
 dependency of this one, and the server a host builds carries all of them.
 
+A tool that cannot answer returns a `crate::mcp::ToolError` rather than a
+message, and the answer carries its `ToolErrorKind` as structured content, so a
+client branches on whether the arguments named nothing (`Rejected`), the work
+itself failed (`Failed`), the world may be inconsistent (`Panicked`) or the
+host gave up on the command (`Cancelled`) instead of matching text. The text
+block holds the same JSON, so a client that reads only content still sees both
+fields.
+
 Every entity tool takes an optional `scope` argument naming the scope to act in,
 defaulting to the root. A client that names a scene sees only that scene's subtree, so
 one MCP session can inspect a world's private parts without the host exposing them.

@@ -425,6 +425,12 @@ fn register(router: &mut ToolRouter<McpServer>) {
 `unlit3d` 注册渲染类工具，`unlit3dx` 注册音频类工具。这些 crate 都不是本 crate 的
 依赖，而宿主建起的服务器会带上它们全部。
 
+无法作答的工具返回的是 `crate::mcp::ToolError`，而不是一条消息；应答把它的
+`ToolErrorKind` 作为结构化内容带上，于是客户端按「参数没指到东西」（`Rejected`）、
+「工作本身失败」（`Failed`）「world 可能已不一致」（`Panicked`）「宿主放弃了这个命令」
+（`Cancelled`）分支，而不必去匹配文本。文本块里是同一份 JSON，因此只读内容的客户端
+也看得到这两个字段。
+
 每个实体工具都接受一个可选的 `scope` 参数，指名要操作哪个 scope，默认为根。
 指名了某个场景的客户端只看得到该场景的子树，于是一个 MCP 会话就能检视 world 的私有
 部分，而不必由宿主把它们暴露出来。scope 不拥有的操作——在它子树之外 spawn、despawn

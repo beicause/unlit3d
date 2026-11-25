@@ -20,6 +20,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::ToolError;
 use crate::{Entity, World};
 
 /// What a finished job produced.
@@ -71,7 +72,7 @@ pub struct EncodedAudio {
 /// The closure captures plain data (tool arguments) and runs with exclusive
 /// access to one world. It must be [Send] because it travels across the
 /// channel; the world it touches never does.
-pub(crate) type Job = Box<dyn FnOnce(&mut World) -> Result<Output, String> + Send + 'static>;
+pub(crate) type Job = Box<dyn FnOnce(&mut World) -> Result<Output, ToolError> + Send + 'static>;
 
 /// Which world a tool or a command runs against, as the wire names it.
 ///
@@ -140,7 +141,7 @@ pub struct McpCommand {
     request: Request,
     /// The single reply slot. Taking it marks the command as answered, so a
     /// command dropped before dispatch can still fail its waiting caller.
-    reply: Option<async_channel::Sender<Result<Output, String>>>,
+    reply: Option<async_channel::Sender<Result<Output, ToolError>>>,
     /// The world a [`Request::Job`] runs against.
     world: WorldRef,
 }
@@ -152,8 +153,8 @@ impl McpCommand {
     /// The command starts out aimed at the world the receiving thread owns
     /// directly; redirect it with [`with_world`](Self::with_world).
     pub fn new(
-        job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
-    ) -> (Self, async_channel::Receiver<Result<Output, String>>) {
+        job: impl FnOnce(&mut World) -> Result<Output, ToolError> + Send + 'static,
+    ) -> (Self, async_channel::Receiver<Result<Output, ToolError>>) {
         Self::build(Request::Job(Box::new(job)))
     }
 
@@ -162,11 +163,11 @@ impl McpCommand {
     /// The host answers it with [`answer_worlds`](Self::answer_worlds); the
     /// server holds no world list of its own.
     #[must_use]
-    pub fn list_worlds() -> (Self, async_channel::Receiver<Result<Output, String>>) {
+    pub fn list_worlds() -> (Self, async_channel::Receiver<Result<Output, ToolError>>) {
         Self::build(Request::Worlds)
     }
 
-    fn build(request: Request) -> (Self, async_channel::Receiver<Result<Output, String>>) {
+    fn build(request: Request) -> (Self, async_channel::Receiver<Result<Output, ToolError>>) {
         let (reply, receiver) = async_channel::bounded(1);
         (
             Self {
@@ -212,12 +213,12 @@ impl McpCommand {
     ///
     /// The host calls this when the world cannot be resolved, so the tool call
     /// still gets a readable message rather than a dropped channel.
-    pub fn fail(mut self, message: String) {
-        self.send_result(Err(message));
+    pub fn fail(mut self, error: ToolError) {
+        self.send_result(Err(error));
     }
 
     /// Deliver one result without allowing a slow transport to block the world.
-    fn send_result(&mut self, result: Result<Output, String>) {
+    fn send_result(&mut self, result: Result<Output, ToolError>) {
         if let Some(reply) = self.reply.take() {
             let _ = reply.try_send(result);
         }
@@ -240,7 +241,7 @@ impl McpCommand {
         let request = std::mem::replace(&mut self.request, Request::Worlds);
         let result = match request {
             Request::Job(job) => catch_job(world, job),
-            Request::Worlds => Err("the host did not answer list_worlds".to_owned()),
+            Request::Worlds => Err(ToolError::failed("the host did not answer list_worlds")),
         };
         self.send_result(result);
     }
@@ -259,18 +260,18 @@ impl McpCommand {
                 match std::panic::catch_unwind(AssertUnwindSafe(move || job(world))) {
                     Ok(result) => self.send_result(result),
                     Err(payload) => {
-                        let message = format!(
+                        let error = ToolError::panicked(format!(
                             "the tool panicked and the world it ran in may be inconsistent: {}",
                             panic_message(payload.as_ref())
-                        );
-                        self.send_result(Err(message));
+                        ));
+                        self.send_result(Err(error));
                         std::panic::resume_unwind(payload);
                     }
                 }
             }
-            Request::Worlds => {
-                self.send_result(Err("the host did not answer list_worlds".to_owned()))
-            }
+            Request::Worlds => self.send_result(Err(ToolError::failed(
+                "the host did not answer list_worlds",
+            ))),
         }
     }
 }
@@ -278,7 +279,9 @@ impl McpCommand {
 impl Drop for McpCommand {
     fn drop(&mut self) {
         if let Some(reply) = self.reply.take() {
-            let _ = reply.try_send(Err("the MCP command was cancelled before it ran".to_owned()));
+            let _ = reply.try_send(Err(ToolError::cancelled(
+                "the MCP command was cancelled before it ran",
+            )));
         }
     }
 }
@@ -288,13 +291,13 @@ impl Drop for McpCommand {
 /// The world outlives the unwind only as a memory: what a job that panicked
 /// mid-way left behind is not promised to be consistent, so the error says the
 /// world may need a restart rather than pretending the tool merely failed.
-fn catch_job(world: &mut World, job: Job) -> Result<Output, String> {
+fn catch_job(world: &mut World, job: Job) -> Result<Output, ToolError> {
     match std::panic::catch_unwind(AssertUnwindSafe(move || job(world))) {
         Ok(result) => result,
-        Err(payload) => Err(format!(
+        Err(payload) => Err(ToolError::panicked(format!(
             "the tool panicked and the world it ran in may be inconsistent: {}",
             panic_message(payload.as_ref())
-        )),
+        ))),
     }
 }
 
@@ -312,9 +315,10 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// The information structs the original crates expose carry their own
 /// reflection, so the JSON this transport speaks is derived from their fields
 /// rather than written down a second time here.
-pub fn to_value<'a, T: facet::Facet<'a>>(value: &T) -> Result<Value, String> {
-    let text = facet_json::to_string(value).map_err(|error| error.to_string())?;
-    serde_json::from_str(&text).map_err(|error| error.to_string())
+pub fn to_value<'a, T: facet::Facet<'a>>(value: &T) -> Result<Value, ToolError> {
+    let text =
+        facet_json::to_string(value).map_err(|error| ToolError::failed(error.to_string()))?;
+    serde_json::from_str(&text).map_err(ToolError::from)
 }
 
 /// Read a value back through the reflection it derives, the inverse of
@@ -323,9 +327,9 @@ pub fn to_value<'a, T: facet::Facet<'a>>(value: &T) -> Result<Value, String> {
 /// A reply crosses the transport as JSON, so a tool that reads another tool's
 /// answer goes through the same reflection that wrote it instead of spelling
 /// the shape out a second time.
-pub fn from_value<T: facet::Facet<'static>>(value: &Value) -> Result<T, String> {
-    let text = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    facet_json::from_str(&text).map_err(|error| error.to_string())
+pub fn from_value<T: facet::Facet<'static>>(value: &Value) -> Result<T, ToolError> {
+    let text = serde_json::to_string(value).map_err(ToolError::from)?;
+    facet_json::from_str(&text).map_err(|error| ToolError::rejected(error.to_string()))
 }
 
 /// A spawned entity, as the tools report it.
@@ -377,23 +381,23 @@ pub fn saved_name(file_name: Option<&str>, stem: &str, extension: &str) -> Strin
 /// than a file — one carrying a separator, a parent step or a root — would let
 /// a call write wherever it liked, outside the directory it was handed. Such a
 /// name is refused instead of being joined.
-fn checked_file_name(file_name: &str) -> Result<&Path, String> {
+fn checked_file_name(file_name: &str) -> Result<&Path, ToolError> {
     let mut components = Path::new(file_name).components();
     match (components.next(), components.next()) {
         (Some(Component::Normal(name)), None) => Ok(Path::new(name)),
-        _ => Err(format!(
+        _ => Err(ToolError::rejected(format!(
             "{file_name:?} is not a file name: it must be one path segment, with no directory in it"
-        )),
+        ))),
     }
 }
 
 /// Write `bytes` to `directory/file_name`, creating the directory.
-pub fn write_file(directory: &str, file_name: &str, bytes: &[u8]) -> Result<SavedFile, String> {
+pub fn write_file(directory: &str, file_name: &str, bytes: &[u8]) -> Result<SavedFile, ToolError> {
     let path = Path::new(directory).join(checked_file_name(file_name)?);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(parent).map_err(|error| ToolError::failed(error.to_string()))?;
     }
-    std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    std::fs::write(&path, bytes).map_err(|error| ToolError::failed(error.to_string()))?;
     // Report an absolute path, so a caller does not have to know the process's
     // working directory to find what was written.
     let path = std::fs::canonicalize(&path).unwrap_or(path);
@@ -491,8 +495,9 @@ mod tests {
         let Err(message) = answer else {
             panic!("a panicking job answers with an error");
         };
+        assert_eq!(message.kind(), crate::mcp::ToolErrorKind::Panicked);
         assert_eq!(
-            message,
+            message.message(),
             "the tool panicked and the world it ran in may be inconsistent: a tool blew up"
         );
 
@@ -515,7 +520,11 @@ mod tests {
         let Err(message) = receiver.try_recv().expect("cancellation was sent") else {
             panic!("a dropped command answers with an error");
         };
-        assert_eq!(message, "the MCP command was cancelled before it ran");
+        assert_eq!(message.kind(), crate::mcp::ToolErrorKind::Cancelled);
+        assert_eq!(
+            message.message(),
+            "the MCP command was cancelled before it ran"
+        );
     }
 
     #[test]
@@ -528,7 +537,10 @@ mod tests {
 
     #[test]
     fn a_save_refuses_a_name_that_names_a_path() {
-        assert_eq!(checked_file_name("a.png"), Ok(Path::new("a.png")));
+        assert_eq!(
+            checked_file_name("a.png").expect("one segment is a file name"),
+            Path::new("a.png")
+        );
         assert!(checked_file_name("").is_err());
         assert!(checked_file_name("..").is_err());
         assert!(checked_file_name("../a.png").is_err());

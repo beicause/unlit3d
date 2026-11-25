@@ -14,42 +14,13 @@ pub use bridge::{pump_mcp, serve_mcp};
 
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{
-    CommandSender, EncodedAudio, McpServer, Output, ToolResult, ToolRouter, ToolSource, WorldArg,
-    command, run, tool,
+    CommandSender, EncodedAudio, McpServer, Output, ToolError, ToolResult, ToolRouter, ToolSource,
+    WorldArg, command, run, tool,
 };
 use unlit_ecs::{Entity, World, bundle};
 use unlit3d::winit::builtin::ExitRequest;
 
-use crate::record::{RecordingError, RecordingFormat, RecordingHandle, start_recording};
-
-/// Why a recording tool could not answer its request.
-///
-/// The MCP transport carries errors as strings, so this type lives only
-/// inside the world-side tools; the tool boundary renders it for the client.
-#[derive(Debug, thiserror::Error)]
-enum ToolError {
-    /// The host world carries no exit request.
-    #[error("the host has no exit request")]
-    NoExitRequest,
-    /// A recording is already running on this world.
-    #[error("a recording is already in progress on this world")]
-    AlreadyRecording,
-    /// No recording is running on this world.
-    #[error("no recording is in progress on this world")]
-    NoRecording,
-    /// The recording captured no audio fill.
-    #[error("the recording captured no fill")]
-    EmptyRecording,
-    /// The format or the encoder refused the recording.
-    #[error(transparent)]
-    Recording(#[from] RecordingError),
-    /// The report could not be serialized into JSON.
-    #[error(transparent)]
-    Serialize(#[from] serde_json::Error),
-    /// The file could not be written to the host's directory.
-    #[error("{0}")]
-    Write(String),
-}
+use crate::record::{RecordingFormat, RecordingHandle, start_recording};
 
 /// How long a recording lasts when its caller names no limit.
 const DEFAULT_RECORDING_SECONDS: f32 = 60.0;
@@ -99,7 +70,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
 /// Start recording the mix of the audio world the arguments name.
 async fn start_audio_recording(commands: CommandSender, args: StartRecording) -> ToolResult {
     command(&commands, args.world, move |world| {
-        start(world, args.duration_seconds).map_err(|error| error.to_string())
+        start(world, args.duration_seconds)
     })
     .await
 }
@@ -107,7 +78,7 @@ async fn start_audio_recording(commands: CommandSender, args: StartRecording) ->
 /// Finish a recording and write its file.
 async fn stop_audio_recording(commands: CommandSender, args: StopRecording) -> ToolResult {
     command(&commands, args.world, move |world| {
-        stop(world, &args.directory, args.file_name.as_deref()).map_err(|error| error.to_string())
+        stop(world, &args.directory, args.file_name.as_deref())
     })
     .await
 }
@@ -115,33 +86,24 @@ async fn stop_audio_recording(commands: CommandSender, args: StopRecording) -> T
 /// Finish a recording and return its sound without touching the filesystem.
 async fn read_audio_recording(commands: CommandSender, args: ReadRecording) -> ToolResult {
     run(&commands, args.world, move |world| {
-        read(world, args.format.as_deref()).map_err(|error| error.to_string())
+        read(world, args.format.as_deref())
     })
     .await
 }
 
 /// Ask a windowed or headless host to exit normally.
 async fn request_host_exit(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, |world| {
-        request_exit(world).map_err(|error| error.to_string())
-    })
-    .await
+    command(&commands, args.world, request_exit).await
 }
 
 /// Discard the recording in progress.
 async fn cancel_audio_recording(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, |world| {
-        cancel(world).map_err(|error| error.to_string())
-    })
-    .await
+    command(&commands, args.world, cancel).await
 }
 
 /// Report what the recording in progress has captured.
 async fn audio_recording_status(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, |world| {
-        status(world).map_err(|error| error.to_string())
-    })
-    .await
+    command(&commands, args.world, status).await
 }
 
 /// Ask the host to exit, unless it carries no request component.
@@ -152,7 +114,7 @@ fn request_exit(world: &mut World) -> Result<Value, ToolError> {
         found = true;
     }
     if !found {
-        return Err(ToolError::NoExitRequest);
+        return Err(ToolError::rejected("the host has no exit request"));
     }
     Ok(serde_json::json!({ "requested": true }))
 }
@@ -166,7 +128,9 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Tool
         .next()
         .is_some()
     {
-        return Err(ToolError::AlreadyRecording);
+        return Err(ToolError::rejected(
+            "a recording is already in progress on this world",
+        ));
     }
     let seconds = duration_seconds.unwrap_or(DEFAULT_RECORDING_SECONDS);
     let handle = start_recording(world, seconds);
@@ -185,13 +149,16 @@ fn stop(world: &mut World, directory: &str, file_name: Option<&str>) -> Result<V
     // server cannot write is a mistake to report while the mix is still in the
     // world, not after it has been despawned.
     let name = unlit_ecs::mcp::saved_name(file_name, "audio", "flac");
-    let format = RecordingFormat::of(&name)?;
+    let format =
+        RecordingFormat::of(&name).map_err(|error| ToolError::rejected(error.to_string()))?;
     let handle = take(world)?;
     let Some(audio) = handle.stop(world) else {
-        return Err(ToolError::EmptyRecording);
+        return Err(ToolError::rejected("the recording captured no fill"));
     };
-    let bytes = format.encode(audio.format, &audio.samples)?;
-    let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes).map_err(ToolError::Write)?;
+    let bytes = format
+        .encode(audio.format, &audio.samples)
+        .map_err(|error| ToolError::failed(error.to_string()))?;
+    let saved = unlit_ecs::mcp::write_file(directory, &name, &bytes)?;
     let report = Recorded {
         path: saved.path,
         size: saved.size,
@@ -208,14 +175,17 @@ fn read(world: &mut World, format: Option<&str>) -> Result<Output, ToolError> {
     use base64::Engine as _;
 
     let format = match format {
-        Some(name) => RecordingFormat::from_name(name)?,
+        Some(name) => RecordingFormat::from_name(name)
+            .map_err(|error| ToolError::rejected(error.to_string()))?,
         None => RecordingFormat::DEFAULT,
     };
     let handle = take(world)?;
     let Some(audio) = handle.stop(world) else {
-        return Err(ToolError::EmptyRecording);
+        return Err(ToolError::rejected("the recording captured no fill"));
     };
-    let bytes = format.encode(audio.format, &audio.samples)?;
+    let bytes = format
+        .encode(audio.format, &audio.samples)
+        .map_err(|error| ToolError::failed(error.to_string()))?;
     Ok(Output::Audio(EncodedAudio {
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),
         mime_type: format.mime_type().to_owned(),
@@ -266,7 +236,7 @@ fn take(world: &mut World) -> Result<RecordingHandle, ToolError> {
         .iter()
         .next()
         .map(|(_active_recording, entity)| entity)
-        .ok_or(ToolError::NoRecording)?;
+        .ok_or_else(|| ToolError::rejected("no recording is in progress on this world"))?;
     let handle = {
         let mut recording = world.root_scope().query_one::<&ActiveRecording>(entity);
         recording.get().0.clone()

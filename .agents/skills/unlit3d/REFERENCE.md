@@ -175,8 +175,10 @@
 | 定步长 | `spawn_stepped_world_with_init`、`step_stepped_world`、`with_stepped_world` | 同上 |
 | 节拍 | `ThreadControl::self_driven` / `wait_timeout`、`FixedClock::new` / `set_step` / `wait`、`fixed_steps` 与 `MAX_CATCH_UP_STEPS = 4` | `crates/unlit3dx/src/thread.rs` |
 | 子 world | `spawn_sub_world`、`drain_sub_world`、`tick_sub_world`（返回 `StepOutcome`；drain + 折叠输入 + 本地任务 + `dispatch_frame`，驱动子 world 一帧就用它） | `crates/unlit3dx/src/host.rs` |
+| 失败成因 | `WorldError` = `Panic { stage: WorldStage, message }` / `Command { source: EntityAccessError }` / `Step { source: StepError }`；`WorldStage` = `Setup` / `Job` / `Command` / `Body` / `Publish`。`StepOutcome::Failed(WorldError)` 与 `WorldState::Failed(WorldError)` 携同一个成因 | `crates/unlit3dx/src/turn.rs` |
+| 批量失败 | `drain_all_stepped_worlds(host) -> Vec<WorldFailure>`（`{ name, error }`）、`join_failures(&[WorldFailure]) -> String` | `crates/unlit3dx/src/world.rs` |
 | 句柄 | `WorldHandle { entity, sender, state }` + `new` / `is_finished` / `stop` | `crates/unlit3dx/src/handle.rs` |
-| 名字与状态 | `WorldName(&'static str)`；`Threaded` / `Stepped` 标记；`WorldState` = `Running` / `Stopped` / `Failed(Arc<str>)`——**带失败消息，`match` 时要绑定** | `crates/unlit3dx/src/world.rs`、`thread.rs` |
+| 名字与状态 | `WorldName(&'static str)`；`Threaded` / `Stepped` 标记；`WorldState` = `Running` / `Stopped` / `Failed(WorldError)`——**带成因，`match` 时要绑定** | `crates/unlit3dx/src/world.rs`、`thread.rs` |
 
 | 通信 | 是什么 | 语义 |
 | --- | --- | --- |
@@ -191,7 +193,7 @@
 
 | 项 | 是什么 | 搜 |
 | --- | --- | --- |
-| GPU | `Gpu` 就是 `unlit_wgpu::context::GpuContext`：`GpuContext::headless(tier, power_preference, label)` 自建 instance，`GpuContext::present_to(instance, window, tier, power_preference, label)` 用窗口 surface 探测适配器后丢弃它；`label` 是设备在校验信息里的名字，两者都 async 返回 `Result<GpuContext, GpuRequestError>`。`request_gpu(app, ready, failed)` 返回 `OnFrame`，把请求驱动成帧任务；成功时调用 `ready(world, gpu)`，失败时调用 `failed(world, message)` 并请求退出 | `crates/unlit_wgpu/src/context.rs`、`crates/unlit3dx/src/gpu.rs` |
+| GPU | `Gpu` 就是 `unlit_wgpu::context::GpuContext`：`GpuContext::headless(tier, power_preference, label)` 自建 instance，`GpuContext::present_to(instance, window, tier, power_preference, label)` 用窗口 surface 探测适配器后丢弃它；`label` 是设备在校验信息里的名字，两者都 async 返回 `Result<GpuContext, GpuRequestError>`。`request_gpu(app, ready, failed)` 返回 `OnFrame`，把请求驱动成帧任务；成功时调用 `ready(world, gpu)`，失败时调用 `failed(world, GpuStartError)` 并请求退出 | `crates/unlit_wgpu/src/context.rs`、`crates/unlit3dx/src/gpu.rs` |
 | 常量 | `SCENE_PASS_ORDER = FramePassOrder(0)`、`BLIT_PASS_ORDER = FramePassOrder(1)`、`PRESENT_ORDER = 10` | `crates/unlit3d/src/winit/presenter.rs` |
 | 两条路径 | `PresentationPath`：`Surface { samples, with_depth }` 直画交换链；`Intermediate(TargetConfig)` 画进常驻纹理再加一个 blit pass 贴回交换链。默认 `Surface { samples: OFFSCREEN_SAMPLES, with_depth: true }` | 同上 |
 | 呈现模式 | `SurfaceOptions { present_mode, desired_maximum_frame_latency }`，默认 `Fifo` + 2 在途帧。表面缺所请求的模式时降级到 `Fifo`（连 `Fifo` 都没有才退回它列出的第一个）并打警告；`AutoVsync` / `AutoNoVsync` 原样交给 wgpu 解析 | `crates/unlit3d/src/winit/surface.rs` |

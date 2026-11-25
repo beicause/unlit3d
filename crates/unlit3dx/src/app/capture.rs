@@ -46,11 +46,9 @@ impl Capture {
         _index: u32,
         _pixels: &[u8],
         _size: (u32, u32),
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<PathBuf>, CaptureWriteError> {
         match self.into {
-            Some(_) => {
-                Err("a capture cannot be written here: this target has no filesystem".to_owned())
-            }
+            Some(_) => Err(CaptureWriteError::NoFilesystem),
             None => Ok(None),
         }
     }
@@ -66,11 +64,9 @@ impl Capture {
         &self,
         _format: AudioFormat,
         _samples: &[f32],
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<PathBuf>, CaptureWriteError> {
         match self.into {
-            Some(_) => {
-                Err("a capture cannot be written here: this target has no filesystem".to_owned())
-            }
+            Some(_) => Err(CaptureWriteError::NoFilesystem),
             None => Ok(None),
         }
     }
@@ -107,7 +103,7 @@ impl Capture {
         index: u32,
         pixels: &[u8],
         size: (u32, u32),
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<PathBuf>, CaptureWriteError> {
         use image::ImageEncoder as _;
 
         let Some(into) = &self.into else {
@@ -117,10 +113,14 @@ impl Capture {
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(pixels, size.0, size.1, image::ExtendedColorType::Rgba8)
-            .map_err(|error| format!("frame {index} could not be encoded: {error}"))?;
+            .map_err(|source| CaptureWriteError::Encode {
+                what: WriteWhat::Frame(index),
+                source,
+            })?;
         let path = into.join(format!("frame_{index}.png"));
-        std::fs::write(&path, png).map_err(|error| {
-            format!("the frame {} could not be written: {error}", path.display())
+        std::fs::write(&path, png).map_err(|source| CaptureWriteError::Write {
+            path: path.clone(),
+            source,
         })?;
         Ok(Some(path))
     }
@@ -141,7 +141,7 @@ impl Capture {
         &self,
         format: AudioFormat,
         samples: &[f32],
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<PathBuf>, CaptureWriteError> {
         let Some(into) = &self.into else {
             return Ok(None);
         };
@@ -151,28 +151,87 @@ impl Capture {
         make_directory(into)?;
         let flac = crate::record::RecordingFormat::Flac
             .encode(format, samples)
-            .map_err(|error| format!("the mix could not be encoded: {error}"))?;
+            .map_err(CaptureWriteError::Mix)?;
         let path = into.join("audio.flac");
-        std::fs::write(&path, flac)
-            .map_err(|error| format!("the mix {} could not be written: {error}", path.display()))?;
+        std::fs::write(&path, flac).map_err(|source| CaptureWriteError::Write {
+            path: path.clone(),
+            source,
+        })?;
         Ok(Some(path))
     }
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-fn make_directory(into: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(into).map_err(|error| {
-        format!(
-            "the output directory {} could not be made: {error}",
-            into.display()
-        )
+fn make_directory(into: &Path) -> Result<(), CaptureWriteError> {
+    std::fs::create_dir_all(into).map_err(|source| CaptureWriteError::Directory {
+        path: into.to_path_buf(),
+        source,
     })
 }
 
-/// Why a frame could not be read back for a capture.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+/// Which picture a capture could not encode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteWhat {
+    /// One frame, by the index the run gave it.
+    Frame(u32),
+    /// The mix the run played.
+    Mix,
+}
+
+impl core::fmt::Display for WriteWhat {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Frame(index) => write!(f, "frame {index}"),
+            Self::Mix => f.write_str("the mix"),
+        }
+    }
+}
+
+/// Why a capture could not be written where it was told to.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CaptureError {
+#[non_exhaustive]
+pub enum CaptureWriteError {
+    /// This target has no filesystem at all, so a named directory cannot be
+    /// written to.
+    #[error("a capture cannot be written here: this target has no filesystem")]
+    NoFilesystem,
+    /// The directory the capture writes into could not be made.
+    #[error("the output directory {} could not be made: {source}", path.display())]
+    Directory {
+        /// The directory that could not be made.
+        path: PathBuf,
+        /// What the filesystem reported.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A frame did not encode.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[error("{what} could not be encoded: {source}")]
+    Encode {
+        /// Which picture failed.
+        what: WriteWhat,
+        /// What the encoder reported.
+        #[source]
+        source: image::ImageError,
+    },
+    /// The mix did not encode.
+    #[error("the mix could not be encoded: {0}")]
+    Mix(#[source] crate::record::RecordingError),
+    /// A file the capture wrote could not be created.
+    #[error("{} could not be written: {source}", path.display())]
+    Write {
+        /// The file that could not be written.
+        path: PathBuf,
+        /// What the filesystem reported.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Why a frame could not be read back for a capture, or written once it was.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CaptureError {
     /// The host no longer holds the render sub-world the frame was drawn in.
     #[error("the render sub-world is gone")]
     NoRenderWorld,
@@ -182,6 +241,7 @@ pub(crate) enum CaptureError {
     /// Nor the device and queue a copy needs.
     #[error("the render context has no device")]
     NoDevice,
+    /// Nor the queue a copy needs.
     #[error("the render context has no queue")]
     NoQueue,
     /// Nor the graph that holds the target.
@@ -197,6 +257,9 @@ pub(crate) enum CaptureError {
     /// The copy itself failed: an unmappable format, or a device that gave up.
     #[error("reading the frame back failed: {0}")]
     Readback(#[from] unlit_wgpu::readback::ReadbackError),
+    /// The picture was read back but could not be written.
+    #[error(transparent)]
+    Write(#[from] CaptureWriteError),
 }
 
 /// Read back a requested frame immediately after it is presented.
@@ -206,11 +269,13 @@ pub(crate) fn capture_presented(
     render: unlit_ecs::Entity,
     capture: &Capture,
     index: u32,
-) -> Result<(), String> {
+) -> Result<(), CaptureError> {
     if capture.wants(index) {
-        let (size, pixels) = read_presented(world, render)
-            .map_err(|error| format!("the run could not capture frame {index}: {error}"))?;
-        if let Some(path) = capture.write_frame(index, &pixels, size)? {
+        let (size, pixels) = read_presented(world, render)?;
+        if let Some(path) = capture
+            .write_frame(index, &pixels, size)
+            .map_err(CaptureError::Write)?
+        {
             log::info!("the run wrote {}", path.display());
         }
     }

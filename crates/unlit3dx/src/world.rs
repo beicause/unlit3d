@@ -21,7 +21,7 @@ use crate::job::{Job, JobSender, SendError, SendErrorKind};
 use crate::thread::{ThreadControl, ThreadError, ThreadStatus, WorldThread, stepped_control};
 use crate::turn::{Link, close_inbox, drain_jobs, run_turn};
 
-pub use crate::turn::StepOutcome;
+pub use crate::turn::{StepOutcome, WorldError, WorldStage};
 
 /// The proxy component a spawned world leaves on the host.
 ///
@@ -437,15 +437,50 @@ pub fn step_stepped_world(
     }))
 }
 
+/// A world that ended in failure while its host drained it.
+///
+/// The cause travels with the name, so a driver that gives up on a failed world
+/// hands on what went wrong instead of only which world it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldFailure {
+    /// The name the world was spawned under.
+    pub name: &'static str,
+    /// What ended the world.
+    pub error: WorldError,
+}
+
+impl core::fmt::Display for WorldFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} ({})", self.name, self.error)
+    }
+}
+
+/// Print the failures of several worlds as one clause.
+///
+/// A driver that gives up on a set of worlds reports all of them in one
+/// message, so each world's name and cause read together.
+#[must_use]
+pub fn join_failures(failures: &[WorldFailure]) -> String {
+    let mut out = String::new();
+    for (index, failure) in failures.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        let _ = core::fmt::Write::write_fmt(&mut out, format_args!("{failure}"));
+    }
+    out
+}
+
 /// Drain the queued jobs of every world the host steps.
 ///
 /// This walks the proxies directly, so a caller that must answer a
 /// command before its next frame does not need to gather entities into
 /// a separate buffer first.
 ///
-/// Returns the names of failed worlds, including any that failed on an earlier
-/// turn. Their queues are closed and their collectors no longer run.
-pub fn drain_all_stepped_worlds(host: &World) -> Vec<&'static str> {
+/// Returns the worlds that failed, including any that failed on an earlier
+/// turn, with the cause each ended with. Their queues are closed and their
+/// collectors no longer run.
+pub fn drain_all_stepped_worlds(host: &World) -> Vec<WorldFailure> {
     let mut proxies = host.root_scope().query::<&mut WorldProxy>();
     let mut failed = Vec::new();
     for proxy in proxies.iter() {
@@ -464,8 +499,8 @@ pub fn drain_all_stepped_worlds(host: &World) -> Vec<&'static str> {
             inbox,
             status,
         };
-        if drain_jobs(world, link) == StepOutcome::Failed {
-            failed.push(*name);
+        if let StepOutcome::Failed(error) = drain_jobs(world, link) {
+            failed.push(WorldFailure { name, error });
         }
     }
     failed
@@ -731,6 +766,69 @@ mod tests {
             });
             assert_eq!(count, Ok(1), "the queued job ran");
         }
+    }
+
+    /// A world that failed while its host drained it is reported with the
+    /// cause it ended on, so a driver hands on what went wrong and not only
+    /// which world it was.
+    #[test]
+    fn a_drained_world_reports_why_it_failed() {
+        let mut host = World::new();
+        let handle = spawn_stepped_world_with_init(
+            &mut host,
+            "failing",
+            8,
+            |_| (),
+            |_, _: &ThreadControl, (), _: f32| true,
+        );
+        handle
+            .sender
+            .send(Box::new(|_: &mut World| panic!("the drained job died")))
+            .expect("the world accepts jobs");
+
+        let failed = drain_all_stepped_worlds(&host);
+        let expected = WorldError::Panic {
+            stage: WorldStage::Job,
+            message: "the drained job died".into(),
+        };
+        assert_eq!(
+            failed,
+            vec![WorldFailure {
+                name: "failing",
+                error: expected,
+            }]
+        );
+        assert_eq!(
+            join_failures(&failed),
+            "failing (the job panicked: the drained job died)"
+        );
+    }
+
+    /// Several failures read as one clause, each world with its own cause.
+    #[test]
+    fn joined_failures_name_each_world_and_its_cause() {
+        let failures = [
+            WorldFailure {
+                name: "physics",
+                error: WorldError::Command {
+                    source: unlit_ecs::EntityAccessError::NotAlive {
+                        entity: unlit_ecs::Entity::from_bits(7),
+                    },
+                },
+            },
+            WorldFailure {
+                name: "audio",
+                error: WorldError::Step {
+                    source: StepError::NotStepped,
+                },
+            },
+        ];
+        let joined = join_failures(&failures);
+        assert!(
+            joined.starts_with("physics (a queued command failed"),
+            "{joined}"
+        );
+        assert!(joined.contains(", audio ("), "{joined}");
     }
 
     /// A stepped world's tick can end the world.

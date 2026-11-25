@@ -8,7 +8,9 @@
 
 use unlit_ecs::World;
 use unlit_ecs::mcp::serde_json::{Map, json};
-use unlit_ecs::mcp::{CommandSender, McpServer, ToolResult, ToolRouter, WorldArg, command, tool};
+use unlit_ecs::mcp::{
+    CommandSender, McpServer, ToolError, ToolResult, ToolRouter, WorldArg, command, tool,
+};
 use unlit3dx::app::Interactive;
 
 use crate::scene::{panel_buttons, scene_status};
@@ -29,7 +31,9 @@ async fn scene_extra_status(commands: CommandSender, args: WorldArg) -> ToolResu
     command(&commands, args.world, |host: &mut World| {
         let mut interactive = host.root_scope().query::<&Interactive>();
         let Some(interactive) = interactive.iter().next() else {
-            return Err("the host is not an interactive headless scene".to_owned());
+            return Err(ToolError::rejected(
+                "the host is not an interactive headless scene",
+            ));
         };
         let worlds = interactive.worlds();
         let scene = scene_status(host, worlds);

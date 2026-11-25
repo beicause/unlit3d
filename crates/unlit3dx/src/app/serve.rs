@@ -8,6 +8,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use unlit_ecs::mcp::ToolError;
 use unlit_ecs::mcp::serde_json::{Value, json};
 use unlit_ecs::mcp::{
     CommandSender, McpServer, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
@@ -18,6 +19,7 @@ use unlit3d::winit::builtin::ExitRequest;
 
 use super::App;
 use super::capture::Capture;
+use super::error::RunError;
 use super::headless::{
     AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, UNBOUNDED_MIX_SECONDS,
 };
@@ -84,11 +86,9 @@ pub fn serve<A: App>(
     transports: Transports,
     pacing: Pacing,
     capture: Option<Capture>,
-) -> Result<Option<SocketAddr>, String> {
+) -> Result<Option<SocketAddr>, RunError> {
     if pacing.client && !transports.stdio && transports.http.is_none() {
-        return Err(
-            "a client-paced host has no driver without a transport; name one with Transports, or let the host pace its own frames".to_owned(),
-        );
+        return Err(RunError::NoDriver);
     }
     let mut host = interactive_host(app, device, pacing)?;
     // The mix is observed from the run's first fill, so the recording opens
@@ -113,8 +113,7 @@ pub fn serve<A: App>(
         }
     }
     if transports.stdio {
-        serve_mcp(&mut host)
-            .map_err(|error| format!("the MCP stdio server failed to start: {error}"))?;
+        serve_mcp(&mut host).map_err(RunError::Stdio)?;
     }
     let http = match transports.http {
         Some(addr) => bind_http(&mut host, addr)?,
@@ -141,7 +140,11 @@ pub fn serve<A: App>(
 
 /// Build the interactive host the headless MCP runs serve, carrying the
 /// exit request and the interactive state.
-fn interactive_host<A: App>(app: A, device: RenderDevice, pacing: Pacing) -> Result<World, String> {
+fn interactive_host<A: App>(
+    app: A,
+    device: RenderDevice,
+    pacing: Pacing,
+) -> Result<World, RunError> {
     let (mut host, interactive) = interactive(app, device)?;
     host.root_scope_mut().spawn(bundle![ExitRequest(false)]);
     // The pacing is part of the host rather than of the loop that reads it:
@@ -162,14 +165,16 @@ fn interactive_host<A: App>(app: A, device: RenderDevice, pacing: Pacing) -> Res
 /// A build without the mcp-http feature refuses the address rather than
 /// silently serving nothing.
 #[cfg(feature = "mcp-http")]
-fn bind_http(host: &mut World, addr: SocketAddr) -> Result<Option<SocketAddr>, String> {
-    crate::mcp::serve_http_mcp(host, addr).map(Some)
+fn bind_http(host: &mut World, addr: SocketAddr) -> Result<Option<SocketAddr>, RunError> {
+    crate::mcp::serve_http_mcp(host, addr)
+        .map(Some)
+        .map_err(RunError::Http)
 }
 
 /// Refuse the HTTP transport: this build does not serve it.
 #[cfg(not(feature = "mcp-http"))]
-fn bind_http(_host: &mut World, _addr: SocketAddr) -> Result<Option<SocketAddr>, String> {
-    Err("the HTTP transport needs the mcp-http feature".to_owned())
+fn bind_http(_host: &mut World, _addr: SocketAddr) -> Result<Option<SocketAddr>, RunError> {
+    Err(RunError::NoHttpTransport)
 }
 
 /// How long a client-paced turn waits for a command before looking at the
@@ -189,7 +194,7 @@ const POLL_SECONDS: f64 = 1.0;
 /// notice the exit request, and to notice that the budget is spent. The
 /// budget is checked here rather than in [step_frames] alone so that a run
 /// whose steps came from anywhere reaches its last frame the same way.
-fn pump_until_done(host: &mut World, pacing: Pacing) -> Result<(), String> {
+fn pump_until_done(host: &mut World, pacing: Pacing) -> Result<(), RunError> {
     // The transports ring this handle when they post, so the turn sleeps
     // until there is something to do instead of spinning a core while the
     // client thinks. The timeout is the exit request's own alarm: a client
@@ -217,7 +222,7 @@ fn pump_until_done(host: &mut World, pacing: Pacing) -> Result<(), String> {
 /// MCP between the frames, so a client observes and injects but does not
 /// pace. The count ends the run, and so does a client's exit request; a
 /// host with no count runs until one of those happens.
-fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), String> {
+fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), RunError> {
     let step = Duration::from_secs_f64(FIXED_FRAME_SECONDS);
     let mut next = Instant::now() + step;
     while !pacing.is_spent(advanced(host)) {
@@ -230,7 +235,7 @@ fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), String> {
                 match interactive.get().step(host, 1)? {
                     StepOutcome::Ran => {}
                     StepOutcome::Finished | StepOutcome::Stopped => break,
-                    StepOutcome::Failed => return Err("the interactive scene failed".to_owned()),
+                    StepOutcome::Failed(error) => return Err(RunError::Scene(error)),
                 }
             }
         }
@@ -256,13 +261,12 @@ fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), String> {
     Ok(())
 }
 
-fn pump(host: &mut World) -> Result<(), String> {
-    let failed =
-        pump_mcp(host).map_err(|error| format!("the MCP command queue failed: {error}"))?;
+fn pump(host: &mut World) -> Result<(), RunError> {
+    let failed = pump_mcp(host)?;
     if failed.is_empty() {
         Ok(())
     } else {
-        Err(format!("world jobs failed: {}", failed.join(", ")))
+        Err(RunError::Jobs(failed))
     }
 }
 
@@ -313,7 +317,7 @@ fn exit_requested(host: &World) -> bool {
 }
 
 /// Write the mix the run played, and report a capture it never completed.
-fn write_capture(host: &mut World, capture: Option<&Capture>) -> Result<(), String> {
+fn write_capture(host: &mut World, capture: Option<&Capture>) -> Result<(), RunError> {
     let Some(capture) = capture else {
         return Ok(());
     };
@@ -322,7 +326,7 @@ fn write_capture(host: &mut World, capture: Option<&Capture>) -> Result<(), Stri
         .singleton::<Interactive>()
         .and_then(|entity| scope.try_query_one::<&mut Interactive>(entity).ok())
     else {
-        return Err("the host is not an interactive headless scene".to_owned());
+        return Err(RunError::NotInteractive);
     };
     let interactive = interactive.get();
     let advanced = interactive.frame();
@@ -386,7 +390,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
 async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
     command(&commands, args.world, move |host| {
         if args.frames == 0 {
-            return Err("frames must be at least 1".to_owned());
+            return Err(ToolError::rejected("frames must be at least 1"));
         }
         // A self-paced host owns its clock. Letting this tool step it as well
         // would advance the same scene twice and violate the pacing contract.
@@ -396,7 +400,7 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
             .and_then(|entity| scope.try_query_one::<&Pacing>(entity).ok())
             .is_some_and(|mut pacing| !pacing.get().client);
         if self_paced {
-            return Err("the host paces its own frames and takes no stepping".to_owned());
+            return Err(RunError::SelfPaced.into());
         }
         let frames = allowed(host, args.frames);
         if let Some(mut interactive) = scope
@@ -414,8 +418,8 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
                 for request in host.root_scope().query::<&mut ExitRequest>().iter() {
                     request.0 = true;
                 }
-                if outcome == StepOutcome::Failed {
-                    return Err("the interactive scene failed".to_owned());
+                if let StepOutcome::Failed(error) = outcome {
+                    return Err(RunError::Scene(error).into());
                 }
             }
             // The frame is drawn as the steps leave it, so the frame a client
@@ -428,7 +432,7 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         }
         let mut windows = host.root_scope().query::<&mut WindowFrames>();
         let Some(window) = windows.iter().next() else {
-            return Err("the host has no client-paced frame driver".to_owned());
+            return Err(RunError::NoDriver.into());
         };
         let mut stepped = 0;
         while stepped < frames {
@@ -438,7 +442,7 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
                 // client asked for frames of the run, not of the display.
                 FrameOutcome::Presented | FrameOutcome::Skipped => stepped += 1,
                 FrameOutcome::Ended => break,
-                FrameOutcome::Failed(message) => return Err(message),
+                FrameOutcome::Failed(error) => return Err(error.into()),
             }
         }
         Ok(json!({ "frame": advanced(host), "stepped": stepped }))
@@ -456,10 +460,9 @@ async fn scene_status(commands: CommandSender, args: WorldArg) -> ToolResult {
             .singleton::<Interactive>()
             .and_then(|entity| scope.try_query_one::<&Interactive>(entity).ok())
         else {
-            return Err(
-                "the host is not an interactive headless scene; a windowed host reports its frame through step_frames and its picture through list_resources"
-                    .to_owned(),
-            );
+            return Err(ToolError::rejected(
+                "the host is not an interactive headless scene; a windowed host reports its frame through step_frames and its picture through list_resources",
+            ));
         };
         Ok(status(interactive.get()))
     })

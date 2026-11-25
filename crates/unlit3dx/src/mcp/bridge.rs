@@ -14,12 +14,12 @@ use std::net::SocketAddr;
 
 use async_channel::{Receiver, Sender, TrySendError, bounded};
 
-use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldRef};
+use unlit_ecs::mcp::{McpCommand, ToolError, WorldEntry, WorldRef};
 use unlit_ecs::sync;
 use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
 
-use crate::world::{WorldName, WorldSender, drain_all_stepped_worlds};
+use crate::world::{StepOutcome, WorldFailure, WorldName, WorldSender, drain_all_stepped_worlds};
 
 const MCP_COMMAND_CAPACITY: usize = 256;
 const MCP_COMMANDS_PER_TURN: usize = 64;
@@ -31,11 +31,13 @@ fn command_sink(sender: Sender<McpCommand>, wake: InboxWake) -> impl Fn(McpComma
             true
         }
         Err(TrySendError::Full(command)) => {
-            command.fail("the MCP host command queue is full; retry later".to_owned());
+            command.fail(ToolError::cancelled(
+                "the MCP host command queue is full; retry later",
+            ));
             true
         }
         Err(TrySendError::Closed(command)) => {
-            command.fail("the MCP host has stopped".to_owned());
+            command.fail(ToolError::cancelled("the MCP host has stopped"));
             false
         }
     }
@@ -172,13 +174,16 @@ pub fn serve_mcp(world: &mut World) -> std::io::Result<()> {
 ///
 /// # Errors
 ///
-/// Fails when the port cannot be bound, carrying the underlying message.
+/// Fails when the port cannot be bound, carrying what the server reported.
 #[cfg(feature = "mcp-http")]
-pub fn serve_http_mcp(world: &mut World, addr: SocketAddr) -> Result<SocketAddr, String> {
+pub fn serve_http_mcp(
+    world: &mut World,
+    addr: SocketAddr,
+) -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
     let (sender, receiver) = bounded::<McpCommand>(MCP_COMMAND_CAPACITY);
     let wake = host_wake(world);
     let sink = command_sink(sender, wake.clone());
-    let server = unlit_ecs::mcp::serve_http_with(sink, addr).map_err(|error| error.to_string())?;
+    let server = unlit_ecs::mcp::serve_http_with(sink, addr)?;
     let bound = server.local_addr();
     world.root_scope_mut().spawn(McpInbox { receiver, wake });
     // The handle is the component that keeps the server alive: the world
@@ -221,9 +226,9 @@ fn drain(world: &World, inbox: &McpInbox) {
 /// turn ends by draining those queues: the reply must not wait for a frame the
 /// client has not asked for yet.
 ///
-/// Returns the names of the stepped worlds whose queued jobs panicked during
-/// the turn — see [`drain_all_stepped_worlds`].
-pub fn pump_mcp(world: &mut World) -> Result<Vec<&'static str>, EntityAccessError> {
+/// Returns the worlds that failed during the turn, with the cause each ended
+/// with — see [`crate::world::drain_all_stepped_worlds`].
+pub fn pump_mcp(world: &mut World) -> Result<Vec<WorldFailure>, EntityAccessError> {
     for inbox in world.root_scope().query::<&McpInbox>().iter() {
         drain(world, inbox);
     }
@@ -234,8 +239,11 @@ pub fn pump_mcp(world: &mut World) -> Result<Vec<&'static str>, EntityAccessErro
         .query::<(&mut World, &WorldName, &WorldSender)>()
         .iter()
     {
-        if crate::host::drain_sub_world(nested) == crate::world::StepOutcome::Failed {
-            failed.push(name.0);
+        if let StepOutcome::Failed(error) = crate::host::drain_sub_world(nested) {
+            failed.push(WorldFailure {
+                name: name.0,
+                error,
+            });
         }
     }
     Ok(failed)
@@ -330,12 +338,16 @@ impl Command for RunInWorld {
             if let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(entity) {
                 command.dispatch(nested.get());
             } else {
-                command.fail(format!("entity {entity:?} carries no world"));
+                command.fail(ToolError::rejected(format!(
+                    "entity {entity:?} carries no world"
+                )));
             }
             return Ok(());
         };
         if sender.is_finished() {
-            command.fail(format!("the world on {entity:?} has stopped"));
+            command.fail(ToolError::cancelled(format!(
+                "the world on {entity:?} has stopped"
+            )));
             return Ok(());
         }
         // The command rides inside the job, so a slot keeps it here: a
@@ -350,9 +362,9 @@ impl Command for RunInWorld {
         if let Err(error) = sender.send(job)
             && let Some(command) = sync::lock(&pending).take()
         {
-            command.fail(format!(
+            command.fail(ToolError::cancelled(format!(
                 "the world on {entity:?} refused the command: {error}"
-            ));
+            )));
         }
         Ok(())
     }
@@ -489,7 +501,7 @@ mod tests {
     }
 
     /// Receive a test reply without allowing a broken dispatch to hang the suite.
-    fn receive(reply: Receiver<Result<Output, String>>) -> Result<Output, String> {
+    fn receive(reply: Receiver<Result<Output, ToolError>>) -> Result<Output, ToolError> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match reply.try_recv() {
@@ -570,7 +582,7 @@ mod tests {
             panic!("the command fails")
         };
         assert!(
-            message.contains("carries no world"),
+            message.message().contains("carries no world"),
             "the failure says why: {message}"
         );
     }
@@ -742,7 +754,16 @@ mod tests {
         let outcome = step_stepped_world(&host, stepped.entity, FRAME_SECONDS)
             .expect("the stepped world can run its first turn");
 
-        assert_eq!(outcome, crate::world::StepOutcome::Failed);
+        let crate::world::StepOutcome::Failed(ref error) = outcome else {
+            panic!("the panicking command fails the world, not {outcome:?}");
+        };
+        assert_eq!(
+            error,
+            &crate::world::WorldError::Panic {
+                stage: crate::world::WorldStage::Job,
+                message: "the managed command failed".into(),
+            }
+        );
         // The failed world ended with that turn, so a later call finds
         // nothing left to step.
         assert_eq!(
@@ -752,14 +773,20 @@ mod tests {
         let Err(message) = reply.try_recv().expect("the command was answered") else {
             panic!("the panicking command answers with an error");
         };
-        assert!(message.contains("the managed command failed"), "{message}");
+        assert!(
+            message.message().contains("the managed command failed"),
+            "{message}"
+        );
         let Err(message) = cancelled
             .try_recv()
             .expect("the queued command was cancelled")
         else {
             panic!("a cancelled command answers with an error");
         };
-        assert_eq!(message, "the MCP command was cancelled before it ran");
+        assert_eq!(
+            message.message(),
+            "the MCP command was cancelled before it ran"
+        );
         assert!(matches!(
             stepped.state.latest().as_deref(),
             Some(&crate::thread::WorldState::Failed(_))
@@ -791,7 +818,7 @@ mod tests {
             panic!("the command fails")
         };
         assert!(
-            message.contains("has stopped"),
+            message.message().contains("has stopped"),
             "the failure says why: {message}"
         );
     }
@@ -823,7 +850,7 @@ mod tests {
             panic!("the command fails")
         };
         assert!(
-            message.contains("refused the command"),
+            message.message().contains("refused the command"),
             "the failure says why: {message}"
         );
     }
@@ -857,7 +884,10 @@ mod tests {
         let Err(message) = answer else {
             panic!("the cancelled command answers with an error")
         };
-        assert_eq!(message, "the MCP command was cancelled before it ran");
+        assert_eq!(
+            message.message(),
+            "the MCP command was cancelled before it ran"
+        );
     }
 
     /// A caller that gave up before the answer arrives does not take the

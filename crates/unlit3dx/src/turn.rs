@@ -8,15 +8,18 @@
 //! a failed command ends the world and is recorded as its state, so no driver
 //! has to guess what a half-run turn left behind.
 
+use std::sync::Arc;
+
 use async_channel::Receiver;
-use unlit_ecs::World;
+use unlit_ecs::{EntityAccessError, World};
 
 use crate::channel::publish_collected;
 use crate::job::Job;
 use crate::thread::{ThreadStatus, WorldState, panic_message};
+use crate::world::StepError;
 
 /// What one turn of a world did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepOutcome {
     /// The turn ran and the world carries on.
@@ -27,7 +30,80 @@ pub enum StepOutcome {
     Stopped,
     /// A job, the body or the commit panicked or failed, and the world ended
     /// with that as its state.
-    Failed,
+    Failed(WorldError),
+}
+
+impl core::fmt::Display for StepOutcome {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Ran => f.write_str("still running"),
+            Self::Finished => f.write_str("finished"),
+            Self::Stopped => f.write_str("stopped"),
+            Self::Failed(error) => write!(f, "failed: {error}"),
+        }
+    }
+}
+
+/// Which part of a turn failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WorldStage {
+    /// The world could not be set up on its thread.
+    Setup,
+    /// A queued job panicked.
+    Job,
+    /// A queued command panicked or was refused.
+    Command,
+    /// The tick panicked.
+    Body,
+    /// A collector panicked.
+    Publish,
+}
+
+impl core::fmt::Display for WorldStage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match self {
+            Self::Setup => "setup",
+            Self::Job => "job",
+            Self::Command => "queued command",
+            Self::Body => "tick",
+            Self::Publish => "collector",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Why a world ended in failure.
+///
+/// Carries the cause rather than only its text, so a driver that reports a
+/// failure hands on what went wrong: the command that was refused, the step
+/// that could not be taken, or the panic and the stage it came from. Cloning is
+/// cheap, because a failure is recorded and then reported by several readers.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum WorldError {
+    /// A job, the tick or a collector panicked.
+    #[error("the {stage} panicked: {message}")]
+    Panic {
+        /// Which stage of the turn panicked.
+        stage: WorldStage,
+        /// What the panic carried.
+        message: Arc<str>,
+    },
+    /// A queued command could not be applied.
+    #[error("a queued command failed: {source}")]
+    Command {
+        /// What the world reported when it refused the command.
+        #[source]
+        source: EntityAccessError,
+    },
+    /// A stepped world could not be driven at all.
+    #[error("the world could not be driven: {source}")]
+    Step {
+        /// Why the world could not be reached or run.
+        #[source]
+        source: StepError,
+    },
 }
 
 /// The inbox and state a driver reads each turn.
@@ -61,9 +137,9 @@ pub(crate) fn run_turn(
     if let Err(outcome) = run_jobs(world, link) {
         return outcome;
     }
-    let carries_on = match contain(|| body(&mut *world)) {
+    let carries_on = match contain(WorldStage::Body, || body(&mut *world)) {
         Ok(carries_on) => carries_on,
-        Err(message) => return fail(link, message),
+        Err(error) => return fail(link, error),
     };
     if let Err(outcome) = commit(world, link) {
         return outcome;
@@ -97,7 +173,7 @@ pub(crate) fn drain_jobs(world: &mut World, link: Link<'_>) -> StepOutcome {
 /// Whether the world has already ended, or must end before running anything.
 fn admit(world: &mut World, link: Link<'_>) -> Option<StepOutcome> {
     match link.status.current().as_deref() {
-        Some(WorldState::Failed(_)) => return Some(StepOutcome::Failed),
+        Some(WorldState::Failed(error)) => return Some(StepOutcome::Failed(error.clone())),
         Some(WorldState::Stopped) => return Some(StepOutcome::Finished),
         _ => {}
     }
@@ -123,8 +199,8 @@ fn run_jobs(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
         let Ok(job) = link.inbox.try_recv() else {
             break;
         };
-        if let Err(message) = contain(|| job(&mut *world)) {
-            return Err(fail(link, message));
+        if let Err(error) = contain(WorldStage::Job, || job(&mut *world)) {
+            return Err(fail(link, error));
         }
     }
     apply(world, link)
@@ -133,10 +209,10 @@ fn run_jobs(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
 /// Apply the commands queued on the world. A failed command ends the world:
 /// the commands after it would run against a state the caller never meant.
 fn apply(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
-    match contain(|| world.apply()) {
+    match contain(WorldStage::Command, || world.apply()) {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(fail(link, format!("a queued command failed: {error}"))),
-        Err(message) => Err(fail(link, message)),
+        Ok(Err(source)) => Err(fail(link, WorldError::Command { source })),
+        Err(error) => Err(fail(link, error)),
     }
 }
 
@@ -149,25 +225,27 @@ fn commit(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
 /// Publish what the world's collectors return. A collector is arbitrary code,
 /// so a panic in one ends the world rather than reaching the driver.
 fn publish(world: &World, link: Link<'_>) -> Result<(), StepOutcome> {
-    match contain(|| publish_collected(world)) {
+    match contain(WorldStage::Publish, || publish_collected(world)) {
         Ok(_) => Ok(()),
-        Err(message) => Err(fail(link, message)),
+        Err(error) => Err(fail(link, error)),
     }
 }
 
-/// Run `f`, turning a panic into its message.
-fn contain<R>(f: impl FnOnce() -> R) -> Result<R, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-        .map_err(|payload| panic_message(payload.as_ref()))
+/// Run `f`, turning a panic into the error that names its stage.
+fn contain<R>(stage: WorldStage, f: impl FnOnce() -> R) -> Result<R, WorldError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|payload| WorldError::Panic {
+        stage,
+        message: panic_message(payload.as_ref()).into(),
+    })
 }
 
-/// End the world with `message` as its state, and close its queue so a later
+/// End the world with `error` as its state, and close its queue so a later
 /// send is refused instead of waiting for a turn that will never come.
-fn fail(link: Link<'_>, message: String) -> StepOutcome {
-    log::error!("the world {} failed: {message}", link.name);
-    link.status.record_failure(message);
+fn fail(link: Link<'_>, error: WorldError) -> StepOutcome {
+    log::error!("the world {} failed: {error}", link.name);
+    link.status.record_failure(error.clone());
     close_inbox(link.inbox);
-    StepOutcome::Failed
+    StepOutcome::Failed(error)
 }
 
 /// Mark the world finished and close its queue.
@@ -287,12 +365,16 @@ mod tests {
             ran.fetch_add(1, Ordering::SeqCst);
             true
         });
-        assert_eq!(outcome, StepOutcome::Failed);
+        let died = WorldError::Panic {
+            stage: WorldStage::Job,
+            message: "the job died".into(),
+        };
+        assert_eq!(outcome, StepOutcome::Failed(died.clone()));
         assert_eq!(ran.load(Ordering::SeqCst), 0);
         assert!(sender.is_closed());
         assert_eq!(
             status.state().latest().as_deref(),
-            Some(&WorldState::Failed("the job died".into()))
+            Some(&WorldState::Failed(died))
         );
     }
 
@@ -306,10 +388,14 @@ mod tests {
         };
         let mut world = World::new();
         let outcome = run_turn(&mut world, link, |_| panic!("the body died"));
-        assert_eq!(outcome, StepOutcome::Failed);
+        let died = WorldError::Panic {
+            stage: WorldStage::Body,
+            message: "the body died".into(),
+        };
+        assert_eq!(outcome, StepOutcome::Failed(died.clone()));
         assert_eq!(
             status.state().latest().as_deref(),
-            Some(&WorldState::Failed("the body died".into()))
+            Some(&WorldState::Failed(died))
         );
     }
 

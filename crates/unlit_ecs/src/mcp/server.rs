@@ -30,6 +30,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::World;
+use crate::mcp::ToolError;
 use crate::mcp::host::{McpCommand, Output, WorldRef, panic_message};
 
 pub use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
@@ -139,8 +140,8 @@ fn add_routes(into: &mut ToolRouter<McpServer>, from: ToolRouter<McpServer>) {
 pub async fn send(
     commands: &CommandSender,
     world: WorldRef,
-    job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
-) -> Result<Result<Output, String>, ErrorData> {
+    job: impl FnOnce(&mut World) -> Result<Output, ToolError> + Send + 'static,
+) -> Result<Result<Output, ToolError>, ErrorData> {
     let (command, receiver) = McpCommand::new(job);
     exchange(commands, command.with_world(world), receiver).await
 }
@@ -165,8 +166,8 @@ pub async fn send(
 async fn exchange(
     commands: &CommandSender,
     command: McpCommand,
-    receiver: async_channel::Receiver<Result<Output, String>>,
-) -> Result<Result<Output, String>, ErrorData> {
+    receiver: async_channel::Receiver<Result<Output, ToolError>>,
+) -> Result<Result<Output, ToolError>, ErrorData> {
     commands
         .send(command)
         .await
@@ -198,7 +199,7 @@ pub async fn worlds(commands: &CommandSender) -> Result<Value, ErrorData> {
             "list_worlds was answered with something other than JSON",
             None,
         )),
-        Err(message) => Err(ErrorData::internal_error(message, None)),
+        Err(error) => Err(ErrorData::internal_error(error.to_string(), None)),
     }
 }
 
@@ -206,7 +207,7 @@ pub async fn worlds(commands: &CommandSender) -> Result<Value, ErrorData> {
 pub async fn run(
     commands: &CommandSender,
     world: WorldRef,
-    job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
+    job: impl FnOnce(&mut World) -> Result<Output, ToolError> + Send + 'static,
 ) -> ToolResult {
     reply(send(commands, world, job).await?)
 }
@@ -216,7 +217,7 @@ pub async fn run(
 /// Every output shape becomes the block a client renders it in, and a failed
 /// job becomes a tool-level error rather than a transport one, so a model
 /// reads the message instead of seeing the call fail.
-fn reply(answer: Result<Output, String>) -> ToolResult {
+fn reply(answer: Result<Output, ToolError>) -> ToolResult {
     match answer {
         Ok(Output::Json(value)) => Ok(CallToolResult::structured(value)),
         // An image answers with an MCP image content block so the client
@@ -237,7 +238,7 @@ fn reply(answer: Result<Output, String>) -> ToolResult {
             result.structured_content = Some(audio.structured);
             Ok(result)
         }
-        Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+        Err(error) => Ok(CallToolResult::structured_error(error.to_value())),
     }
 }
 
@@ -245,7 +246,7 @@ fn reply(answer: Result<Output, String>) -> ToolResult {
 pub async fn command(
     commands: &CommandSender,
     world: WorldRef,
-    job: impl FnOnce(&mut World) -> Result<Value, String> + Send + 'static,
+    job: impl FnOnce(&mut World) -> Result<Value, ToolError> + Send + 'static,
 ) -> ToolResult {
     run(commands, world, move |world| job(world).map(Output::from)).await
 }
@@ -360,7 +361,7 @@ fn pump(receiver: async_channel::Receiver<McpCommand>, sink: impl Fn(McpCommand)
         }
     };
     while let Ok(command) = receiver.try_recv() {
-        command.fail(stopped.clone());
+        command.fail(ToolError::cancelled(stopped.clone()));
     }
 }
 
@@ -479,6 +480,48 @@ mod tests {
         router
     }
 
+    /// A job that failed answers with structured content, so a client branches
+    /// on the kind instead of matching a message.
+    #[test]
+    fn a_failed_job_answers_with_the_kind_a_client_branches_on() {
+        let result = super::reply(Err(crate::mcp::ToolError::rejected("no entity 7")))
+            .expect("a failed tool is a tool-level answer, not a transport one");
+        assert_eq!(result.is_error, Some(true));
+        let structured = result
+            .structured_content
+            .expect("the failure carries structured content");
+        assert_eq!(structured["kind"], "rejected");
+        assert_eq!(structured["message"], "no entity 7");
+        let text = result
+            .content
+            .first()
+            .and_then(|block| block.as_text().map(|text| text.text.clone()))
+            .expect("the failure carries a text block too");
+        assert!(
+            text.contains("no entity 7"),
+            "a client that reads only text still sees the cause: {text}"
+        );
+    }
+
+    /// A job that answered with JSON stays a success, so the structured
+    /// failure above is not a shape every answer takes.
+    #[test]
+    fn a_answered_job_is_not_an_error() {
+        let result = super::reply(Ok(super::Output::Json(
+            crate::mcp::serde_json::json!({ "frame": 3 }),
+        )))
+        .expect("a JSON answer is a tool-level success");
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "a JSON answer is not a failure"
+        );
+        assert_eq!(
+            result.structured_content.expect("the JSON is structured")["frame"],
+            3
+        );
+    }
+
     #[test]
     fn a_name_two_sources_claim_reaches_the_one_registered_first() {
         // The name a client sends has to reach exactly one tool. Letting the
@@ -497,7 +540,7 @@ mod tests {
         count: usize,
     ) -> (
         async_channel::Receiver<super::McpCommand>,
-        Vec<async_channel::Receiver<Result<super::Output, String>>>,
+        Vec<async_channel::Receiver<Result<super::Output, crate::mcp::ToolError>>>,
     ) {
         let (sender, receiver) = async_channel::bounded(count.max(1));
         let mut replies = Vec::new();
@@ -527,7 +570,9 @@ mod tests {
                 .err()
                 .expect("the call never reached a world");
             assert!(
-                message.starts_with("the transport that delivers commands panicked"),
+                message
+                    .message()
+                    .starts_with("the transport that delivers commands panicked"),
                 "the answer says why the call stopped: {message}"
             );
         }
@@ -543,7 +588,10 @@ mod tests {
                 .expect("the pump answers the call")
                 .err()
                 .expect("the call never reached a world");
-            assert_eq!(message, "the transport that delivers commands stopped");
+            assert_eq!(
+                message.message(),
+                "the transport that delivers commands stopped"
+            );
         }
     }
 

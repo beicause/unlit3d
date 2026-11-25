@@ -16,6 +16,8 @@ use crate::audio::AudioFormat;
 use crate::host::tick_sub_world;
 use crate::world::StepOutcome;
 
+use super::error::RunError;
+
 /// The worlds of one inline-stepped run, the frame counter they share, and the
 /// render path that draws each frame.
 pub(super) struct SteppedRun {
@@ -87,7 +89,7 @@ impl SteppedRun {
         host: &World,
         index: u32,
         draw: bool,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, RunError> {
         refresh_input(host);
         let outcome = self.stepper.step(host, FIXED_FRAME_SECONDS);
         if outcome != StepOutcome::Ran {
@@ -107,7 +109,7 @@ impl SteppedRun {
             let mut nested = host
                 .root_scope()
                 .try_query_one::<&mut World>(self.render)
-                .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                .map_err(RunError::RenderWorld)?;
             let world = nested.get();
             let outcome = tick_sub_world(world, &mut self.frame);
             if outcome != StepOutcome::Ran {

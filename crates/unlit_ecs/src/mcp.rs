@@ -13,6 +13,7 @@
 //! depending on any of them. Not built on wasm, where a browser drives the world
 //! directly rather than through this protocol.
 
+mod error;
 pub mod host;
 #[cfg(feature = "mcp-http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp-http")))]
@@ -24,6 +25,7 @@ pub use crate::reflect::{
     ComponentEntry, ComponentError, contains, current_partial, default_partial, encode_json,
     entries, entry, names, push, push_json, set, set_json,
 };
+pub use error::{ToolError, ToolErrorKind};
 pub use host::{
     Despawned, EncodedAudio, EncodedImage, McpCommand, Output, SavedFile, SpawnedEntity,
     WorldEntry, WorldRef, extension_of, from_value, saved_name, to_value, with_extension,

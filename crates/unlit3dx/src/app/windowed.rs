@@ -29,6 +29,7 @@ use winit::window::Window;
 
 use super::App;
 use super::capture::Capture;
+use super::error::RunError;
 use super::headless::RENDER_COMMAND_CAPACITY;
 use super::pace::Pacing;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
@@ -120,7 +121,7 @@ pub fn windowed<A: App>(
     mut app: A,
     options: WindowOptions,
     event_loop: EventLoop<()>,
-) -> Result<(), String> {
+) -> Result<(), RunError> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = WinitHost::<()>::new();
     let world = host.world_mut();
@@ -257,15 +258,11 @@ pub fn windowed<A: App>(
                         let mut nested = world
                             .root_scope()
                             .try_query_one::<&unlit_ecs::World>(render.entity)
-                            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                            .map_err(RunError::RenderWorld)?;
                         let nested = nested.get();
                         (
-                            nested
-                                .resolve(setup.renderer)
-                                .map_err(|error| error.to_string())?,
-                            nested
-                                .resolve(setup.pass)
-                                .map_err(|error| error.to_string())?,
+                            nested.resolve(setup.renderer).map_err(RunError::Resolve)?,
+                            nested.resolve(setup.pass).map_err(RunError::Resolve)?,
                         )
                     };
                     setup_presenter(
@@ -278,14 +275,10 @@ pub fn windowed<A: App>(
                         offscreen,
                         options.surface,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(RunError::Setup)
                 })();
                 if let Err(error) = outcome {
-                    failure.report(
-                        world,
-                        app_entity,
-                        format!("failed to build the presentation path: {error}"),
-                    );
+                    failure.report(world, app_entity, error);
                     return;
                 }
                 log::info!("the scene is set up");
@@ -295,11 +288,7 @@ pub fn windowed<A: App>(
                     not(target_os = "android")
                 ))]
                 if mcp && let Err(error) = crate::mcp::serve_mcp(world) {
-                    failure.report(
-                        world,
-                        app_entity,
-                        format!("the MCP stdio server failed to start: {error}"),
-                    );
+                    failure.report(world, app_entity, RunError::Stdio(error));
                     return;
                 }
                 #[cfg(all(
@@ -312,12 +301,8 @@ pub fn windowed<A: App>(
                         Ok(bound) => {
                             log::info!("the MCP HTTP server is listening on http://{bound}/");
                         }
-                        Err(message) => {
-                            failure.report(
-                                world,
-                                app_entity,
-                                format!("the MCP HTTP server failed to start: {message}"),
-                            );
+                        Err(error) => {
+                            failure.report(world, app_entity, RunError::Http(error));
                         }
                     }
                 }
@@ -325,7 +310,7 @@ pub fn windowed<A: App>(
         },
         {
             let failure = failure.clone();
-            move |world, message| failure.report(world, app_entity, message)
+            move |world, error| failure.report(world, app_entity, error.into())
         }
     ),]);
     let (pump, redraw) = pump_presented();
@@ -335,8 +320,9 @@ pub fn windowed<A: App>(
         .root_scope_mut()
         .spawn(bundle![unlit3d::winit::presenter::resize_presented()]);
 
-    host.run(event_loop)
-        .map_err(|error| format!("the event loop failed: {error}"))?;
+    host.run(event_loop).map_err(|source| RunError::EventLoop {
+        source: Box::new(source),
+    })?;
 
     // A capture that ended short says so: its frames ran out before the run
     // reached the last one it named, or the window closed first.

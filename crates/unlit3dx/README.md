@@ -228,7 +228,7 @@ tick body has to know which one it is under.
   stops its thread and waits at most a few seconds (`STOP_TIMEOUT`) for it; a tick that will not
   stop is left detached rather than hanging the dropper. The handle reports on
   the world — `is_finished`, and `state`, a `SnapshotReader<WorldState>` that
-  reads `Running`, `Stopped` or `Failed(message)` — and `stop` asks it to
+  reads `Running`, `Stopped` or `Failed(error)` — and `stop` asks it to
   end. `join_timeout` and `detach` are on the `WorldThread` itself, for
   callers that own one directly: a wait answers `JoinOutcome` (`Joined`,
   `TimedOut`, `Detached` or `AlreadyJoined`) rather than a bare `bool`, so a
@@ -240,12 +240,23 @@ tick body has to know which one it is under.
   component on the host entity, and
   `step_stepped_world` runs one iteration on the caller's thread: drain the
   queue, then tick, each under `catch_unwind` — the threaded loop's order.
-  It answers a `StepOutcome` (`Ran`, `Finished`, `Stopped` or `Failed`)
-  so a caller can tell what the step did, and a `StepError` when the entity
-  names no stepped world — stepping a threaded world is refused rather than
-  silently doing nothing. `with_stepped_world` lends the nested `World` out
+  It answers a `StepOutcome` (`Ran`, `Finished`, `Stopped` or
+  `Failed(error)`) so a caller can tell what the step did and why a failed
+  one failed, and a `StepError` when the entity names no stepped world —
+  stepping a threaded world is refused rather than silently doing nothing. `with_stepped_world` lends the nested `World` out
   for work that needs to reach it directly, such as reading a frame back out
   of a drawing world, and reports the same error instead of answering `None`.
+
+Every failure a world ends on is a `WorldError`, whichever stage raised it:
+`Panic { stage, message }` names the stage (setup, a job, a queued command,
+the tick, a collector) that panicked, `Command { source }` carries the
+`EntityAccessError` a queued command was refused with, and `Step { source }`
+carries the `StepError` a driver could not step the world with. `WorldState`
+and `StepOutcome` both carry it, so the cause a thread's state reports is the
+same one a stepped world's step returns — a driver cannot lose it by choosing
+one entry point over another. `drain_all_stepped_worlds` reports each failed
+world as a `WorldFailure { name, error }` rather than a bare name, and
+`join_failures` prints a set of them as one clause.
 
 Pacing is what the mode changes. `ThreadControl::wait_timeout` blocks a real
 thread and returns at once when the control is not self-driven, so the same
@@ -475,8 +486,8 @@ blocks, wasm-safe:
 ```rust,ignore
 world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
     // ... build the scene where the request started ...
-}, |world, message| {
-    log::error!("GPU setup failed: {message}");
+}, |world, error| {
+    log::error!("GPU setup failed: {error}");
     // The runtime requests exit after the failed callback returns.
 })]);
 ```
@@ -527,6 +538,19 @@ clap parser, so a single `--help` describes both; the parsed arguments reach
 capture's write-out (`frame_<index>.png` per captured frame, and `audio.flac`
 for a headless or interactive run that played anything) live in the module
 too, so an application supplies a scene and its soundfont, not a `main`.
+
+Every entry point answers a `RunError`, so a caller branches on what went
+wrong rather than reading a message: the command line (`Config`), a scene world
+that ended (`Scene(WorldError)`), the render sub-world or its resources
+(`RenderWorld`, `Resolve`, `Offscreen`, `Capture`), a world that could not be
+stepped (`Step`), the worlds a drain found failed (`Jobs`), or a transport that
+would not start (`Stdio`, `Http`). Each keeps its cause reachable through
+`std::error::Error::source`, so the `WorldError` behind a `Scene` failure reads
+the same whether it arrived through a thread's state, a step's outcome, an MCP
+answer or the run's own error. `App::configure` answers `AppConfigError` — its
+`Read` variant for a file the arguments named, its `Rejected` variant for a
+reason only the application knows — and `ConfigError` folds that together with
+the switches the run parses itself.
 
 A windowed capture writes its frames and nothing else. Its frames are named
 by the frame loop, whose count a client may drive one step at a time, while

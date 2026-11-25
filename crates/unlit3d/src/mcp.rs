@@ -140,7 +140,7 @@ async fn frame_clocks(commands: CommandSender, _args: NoArgs) -> ToolResult {
     }
     to_value(&reports)
         .map(CallToolResult::structured)
-        .map_err(|error| ErrorData::internal_error(error, None))
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 /// One world as this crate reads it back from a listing.
@@ -185,7 +185,7 @@ async fn world_frame_clock(
             "a frame clock answered with something other than JSON",
             None,
         )),
-        Err(message) => Err(ErrorData::internal_error(message, None)),
+        Err(error) => Err(ErrorData::internal_error(error.to_string(), None)),
     }
 }
 

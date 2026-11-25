@@ -15,7 +15,7 @@ use image::ImageEncoder as _;
 
 use unlit_ecs::mcp::host::{SavedFile, extension_of, saved_name, to_value, write_file};
 use unlit_ecs::mcp::serde_json::{self, Value};
-use unlit_ecs::mcp::{EncodedImage, Output};
+use unlit_ecs::mcp::{EncodedImage, Output, ToolError};
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::readback::{try_readback_buffer, try_readback_texture};
 use unlit_wgpu::resources::{
@@ -30,51 +30,55 @@ use crate::reflect;
 ///
 /// The context is a singleton, spawned by [`spawn_context`]
 /// when the world was given a device; a world without one has no graph to read.
-fn render_context(world: &World) -> Result<RenderContext, String> {
-    RenderContext::of(world).ok_or_else(|| "the world has no render context".to_string())
+fn render_context(world: &World) -> Result<RenderContext, ToolError> {
+    RenderContext::of(world).ok_or_else(|| ToolError::rejected("the world has no render context"))
 }
 
 /// The entity carrying the world's renderer, from `handle` or by query.
-fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
+fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, ToolError> {
     if let Some(entity) = handle {
         return world
             .root_scope()
             .try_query_one::<Has<Renderer>>(entity)
             .is_ok_and(|mut holder| holder.get())
             .then_some(entity)
-            .ok_or_else(|| format!("entity {entity:?} carries no renderer"));
+            .ok_or_else(|| ToolError::rejected(format!("entity {entity:?} carries no renderer")));
     }
     let mut found: Option<Entity> = None;
     for (_renderer, entity) in world.root_scope().query::<(&Renderer, Entity)>().iter() {
         if found.is_some() {
-            return Err("the world has more than one renderer; pass `renderer`".to_string());
+            return Err(ToolError::rejected(
+                "the world has more than one renderer; pass `renderer`",
+            ));
         }
         found = Some(entity);
     }
-    found.ok_or_else(|| "the world has no renderer".to_string())
+    found.ok_or_else(|| ToolError::rejected("the world has no renderer"))
 }
 
 /// The entity carrying the world's mesh source, from `handle` or by query.
-fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
+fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, ToolError> {
     if let Some(entity) = handle {
         let is_mesh_source = world
             .root_scope()
             .try_query_one::<&Source>(entity)
             .is_ok_and(|mut source| source.get().as_ref::<MeshSource>().is_ok());
-        return is_mesh_source
-            .then_some(entity)
-            .ok_or_else(|| format!("entity {entity:?} carries no mesh source"));
+        return is_mesh_source.then_some(entity).ok_or_else(|| {
+            ToolError::rejected(format!("entity {entity:?} carries no mesh source"))
+        });
     }
     let mut found: Option<Entity> = None;
     for (source, entity) in world.root_scope().query::<(&Source, Entity)>().iter() {
         if source.as_ref::<MeshSource>().is_ok() {
             if found.is_some() {
-                return Err("the world has more than one mesh source; pass `source`".to_string());
+                return Err(ToolError::rejected(
+                    "the world has more than one mesh source; pass `source`",
+                ));
             }
             found = Some(entity);
         }
     }
-    found.ok_or_else(|| "the world has no mesh source".to_string())
+    found.ok_or_else(|| ToolError::rejected("the world has no mesh source"))
 }
 
 /// Run `f` with the mesh source `handle` names, or the world's only one.
@@ -82,57 +86,57 @@ fn with_mesh_source<R>(
     world: &World,
     handle: Option<Entity>,
     f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
-) -> Result<R, String> {
+) -> Result<R, ToolError> {
     let entity = mesh_source_entity(world, handle)?;
     // The scope is the source's own: a source entity is its own scope, and a
     // source only ever sees the subtree it draws.
     let scope = world
         .try_scope(entity)
-        .map_err(|_| "the mesh source entity is gone".to_string())?;
+        .map_err(|_| ToolError::rejected("the mesh source entity is gone"))?;
     let mut source = scope
         .try_query_one::<&mut Source>(entity)
-        .map_err(|_| "the mesh source entity is gone".to_string())?;
+        .map_err(|_| ToolError::rejected("the mesh source entity is gone"))?;
     let mesh_source = source
         .get()
         .as_mut::<MeshSource>()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ToolError::failed(error.to_string()))?;
     Ok(f(mesh_source, &scope))
 }
 
 /// The device the context names, cloned out of the world.
-fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, String> {
+fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, ToolError> {
     context
         .device(&world.root_scope())
-        .map_err(|_| "the render context has no device".to_string())
+        .map_err(|_| ToolError::rejected("the render context has no device"))
 }
 
 /// The queue the context names, cloned out of the world.
-fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String> {
+fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, ToolError> {
     context
         .queue(&world.root_scope())
-        .map_err(|_| "the render context has no queue".to_string())
+        .map_err(|_| ToolError::rejected("the render context has no queue"))
 }
 
 /// The graph the context names, borrowed from the world.
 fn graph_of<'w>(
     world: &'w World,
     context: RenderContext,
-) -> Result<unlit_ecs::QueryOne<'w, &'w ResourceGraph>, String> {
+) -> Result<unlit_ecs::QueryOne<'w, &'w ResourceGraph>, ToolError> {
     world
         .root_scope()
         .try_query_one::<&ResourceGraph>(context.graph)
-        .map_err(|_| "the render context has no resource graph".to_string())
+        .map_err(|_| ToolError::rejected("the render context has no resource graph"))
 }
 
 /// The graph the context names, mutably borrowed from the world.
 fn graph_of_mut<'w>(
     world: &'w World,
     context: RenderContext,
-) -> Result<unlit_ecs::QueryOne<'w, &'w mut ResourceGraph>, String> {
+) -> Result<unlit_ecs::QueryOne<'w, &'w mut ResourceGraph>, ToolError> {
     world
         .root_scope()
         .try_query_one::<&mut ResourceGraph>(context.graph)
-        .map_err(|_| "the render context has no resource graph".to_string())
+        .map_err(|_| ToolError::rejected("the render context has no resource graph"))
 }
 
 /// Whether input events were delivered.
@@ -165,7 +169,7 @@ struct BufferRead {
     data: String,
 }
 
-pub(crate) fn graph_summary(world: &World) -> Result<Value, String> {
+pub(crate) fn graph_summary(world: &World) -> Result<Value, ToolError> {
     let context = render_context(world)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
@@ -174,7 +178,7 @@ pub(crate) fn graph_summary(world: &World) -> Result<Value, String> {
 }
 
 /// Every resource slot in the graph.
-pub(crate) fn list_resources(world: &World) -> Result<Value, String> {
+pub(crate) fn list_resources(world: &World) -> Result<Value, ToolError> {
     let context = render_context(world)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
@@ -182,13 +186,13 @@ pub(crate) fn list_resources(world: &World) -> Result<Value, String> {
 }
 
 /// The resources a resource depends on, as handles.
-pub(crate) fn resource_dependencies(world: &World, id: ResId) -> Result<Value, String> {
+pub(crate) fn resource_dependencies(world: &World, id: ResId) -> Result<Value, ToolError> {
     let context = render_context(world)?;
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
     let handle = graph
         .resolve(id)
-        .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+        .ok_or_else(|| ToolError::rejected(format!("stale resource id {}", id.to_bits())))?;
     let ids = graph
         .dependencies(&handle)
         .map(|dependency| dependency.id())
@@ -197,7 +201,7 @@ pub(crate) fn resource_dependencies(world: &World, id: ResId) -> Result<Value, S
 }
 
 /// Drop unreferenced resources and rebuild dirty ones.
-pub(crate) fn graph_maintain(world: &World) -> Result<Value, String> {
+pub(crate) fn graph_maintain(world: &World) -> Result<Value, ToolError> {
     let context = render_context(world)?;
     let mut graph_row = graph_of_mut(world, context)?;
     let graph = graph_row.get();
@@ -214,45 +218,50 @@ fn read_buffer_bytes(
     id: ResId,
     offset: u64,
     size: Option<u64>,
-) -> Result<(u64, Vec<u8>), String> {
+) -> Result<(u64, Vec<u8>), ToolError> {
     let context = render_context(world)?;
     let buffer = {
         let mut graph_row = graph_of(world, context)?;
         let graph = graph_row.get();
         let handle = graph
             .resolve(id)
-            .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+            .ok_or_else(|| ToolError::rejected(format!("stale resource id {}", id.to_bits())))?;
         match graph.get::<Resource>(&handle) {
             Some(Resource::Buffer(buffer)) => buffer.clone(),
-            _ => return Err(format!("resource id {} is not a buffer", id.to_bits())),
+            _ => {
+                return Err(ToolError::rejected(format!(
+                    "resource id {} is not a buffer",
+                    id.to_bits()
+                )));
+            }
         }
     };
     if !buffer.usage().contains(wgpu::BufferUsages::COPY_SRC) {
-        return Err(format!(
+        return Err(ToolError::rejected(format!(
             "the buffer behind id {} was not created with COPY_SRC, so it cannot be read back",
             id.to_bits()
-        ));
+        )));
     }
     let total = buffer.size();
     if offset > total {
-        return Err(format!(
+        return Err(ToolError::rejected(format!(
             "offset {offset} is past the buffer's {total} bytes"
-        ));
+        )));
     }
     // A copy reads whole aligned runs: wgpu rejects anything else outright, and
     // a caller that named the edges of a field cannot know the alignment, so
     // the misalignment is reported here instead of as a copy wgpu refused.
     let alignment = wgpu::COPY_BUFFER_ALIGNMENT;
     if !offset.is_multiple_of(alignment) {
-        return Err(format!(
+        return Err(ToolError::rejected(format!(
             "offset {offset} is not a multiple of the {alignment} bytes a buffer copy reads in"
-        ));
+        )));
     }
     let size = size.unwrap_or(total - offset).min(total - offset);
     if !size.is_multiple_of(alignment) {
-        return Err(format!(
+        return Err(ToolError::rejected(format!(
             "size {size} is not a multiple of the {alignment} bytes a buffer copy reads in"
-        ));
+        )));
     }
     if size == 0 {
         // Nothing to copy, and a staging buffer of no bytes is not a buffer
@@ -264,7 +273,7 @@ fn read_buffer_bytes(
     // The tool runs inside a synchronous closure on the world's thread, so the
     // readback's future is driven to completion here rather than awaited.
     let bytes = pollster::block_on(try_readback_buffer(&device, &queue, &buffer, offset, size))
-        .map_err(|error| format!("failed to read the buffer back: {error}"))?;
+        .map_err(|error| ToolError::failed(format!("failed to read the buffer back: {error}")))?;
     Ok((offset, bytes))
 }
 
@@ -274,7 +283,7 @@ pub(crate) fn read_buffer(
     id: ResId,
     offset: u64,
     size: Option<u64>,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let (offset, bytes) = read_buffer_bytes(world, id, offset, size)?;
     to_value(&BufferRead {
         offset,
@@ -291,7 +300,7 @@ pub(crate) fn save_buffer(
     size: Option<u64>,
     directory: &str,
     file_name: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let (_, bytes) = read_buffer_bytes(world, id, offset, size)?;
     let file_name = saved_name(file_name, "buffer", "bin");
     to_value(&write_file(directory, &file_name, &bytes)?)
@@ -310,18 +319,20 @@ struct Frame {
 
 impl Frame {
     /// The color type an encoder reads these bytes as.
-    fn color(&self) -> Result<image::ExtendedColorType, String> {
+    fn color(&self) -> Result<image::ExtendedColorType, ToolError> {
         match self.format {
             wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
                 Ok(image::ExtendedColorType::Rgba8)
             }
-            other => Err(format!("cannot encode a {other:?} texture")),
+            other => Err(ToolError::rejected(format!(
+                "cannot encode a {other:?} texture"
+            ))),
         }
     }
 
     /// The frame's pixels with their alpha channel dropped, for an encoder
     /// that takes no alpha.
-    fn rgb8(&self) -> Result<Vec<u8>, String> {
+    fn rgb8(&self) -> Result<Vec<u8>, ToolError> {
         self.color()?;
         let mut rgb = Vec::with_capacity(self.bytes.len() / 4 * 3);
         for pixel in self.bytes.as_chunks::<4>().0 {
@@ -349,21 +360,25 @@ impl ImageFormat {
 
     /// The format `name` names, or an error when it names none this server
     /// can write.
-    fn from_name(name: &str) -> Result<Self, String> {
+    fn from_name(name: &str) -> Result<Self, ToolError> {
         match name.to_ascii_lowercase().as_str() {
             "png" => Ok(Self::Png),
             "webp" => Ok(Self::Webp),
             "jpg" | "jpeg" => Ok(Self::Jpeg),
-            other => Err(format!(
+            other => Err(ToolError::rejected(format!(
                 "cannot write a {other:?} image; use .png, .webp, .jpg or .jpeg"
-            )),
+            ))),
         }
     }
 
     /// The format the file named `file_name` asks for.
-    fn of(file_name: &str) -> Result<Self, String> {
+    fn of(file_name: &str) -> Result<Self, ToolError> {
         extension_of(file_name).map_or_else(
-            || Err(format!("the file name {file_name:?} has no extension")),
+            || {
+                Err(ToolError::rejected(format!(
+                    "the file name {file_name:?} has no extension"
+                )))
+            },
             Self::from_name,
         )
     }
@@ -378,7 +393,7 @@ impl ImageFormat {
     }
 
     /// Encode a frame read back from a texture.
-    fn encode(self, frame: &Frame) -> Result<Vec<u8>, String> {
+    fn encode(self, frame: &Frame) -> Result<Vec<u8>, ToolError> {
         let color = frame.color()?;
         let mut bytes = Vec::new();
         match self {
@@ -401,42 +416,47 @@ impl ImageFormat {
                 image::ExtendedColorType::Rgb8,
             ),
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ToolError::failed(error.to_string()))?;
         Ok(bytes)
     }
 }
 
 /// Encode a frame into `directory`, as the image format `file_name` names.
-fn save_image(directory: &str, file_name: &str, frame: &Frame) -> Result<SavedFile, String> {
+fn save_image(directory: &str, file_name: &str, frame: &Frame) -> Result<SavedFile, ToolError> {
     let bytes = ImageFormat::of(file_name)?.encode(frame)?;
     write_file(directory, file_name, &bytes)
 }
 
 /// The frame a texture read produced.
-fn read_texture_frame(world: &World, id: ResId) -> Result<Frame, String> {
+fn read_texture_frame(world: &World, id: ResId) -> Result<Frame, ToolError> {
     let context = render_context(world)?;
     let texture = {
         let mut graph_row = graph_of(world, context)?;
         let graph = graph_row.get();
         let handle = graph
             .resolve(id)
-            .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+            .ok_or_else(|| ToolError::rejected(format!("stale resource id {}", id.to_bits())))?;
         match graph.get::<Resource>(&handle) {
             Some(Resource::Texture(texture)) => texture.clone(),
             Some(Resource::TextureView(view)) => view.texture().clone(),
-            _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
+            _ => {
+                return Err(ToolError::rejected(format!(
+                    "resource id {} is not a texture",
+                    id.to_bits()
+                )));
+            }
         }
     };
     if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-        return Err(format!(
+        return Err(ToolError::rejected(format!(
             "the texture behind id {} was not created with COPY_SRC, so it cannot be read back",
             id.to_bits()
-        ));
+        )));
     }
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     let bytes = pollster::block_on(try_readback_texture(&device, &queue, &texture))
-        .map_err(|error| format!("failed to read the texture back: {error}"))?;
+        .map_err(|error| ToolError::failed(format!("failed to read the texture back: {error}")))?;
     Ok(Frame {
         bytes,
         width: texture.width(),
@@ -450,7 +470,7 @@ pub(crate) fn read_texture_as_image(
     world: &World,
     id: ResId,
     format: Option<&str>,
-) -> Result<Output, String> {
+) -> Result<Output, ToolError> {
     let format = match format {
         Some(name) => ImageFormat::from_name(name)?,
         None => ImageFormat::DEFAULT,
@@ -465,7 +485,7 @@ pub(crate) fn save_texture_as_image(
     id: ResId,
     directory: &str,
     file_name: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let frame = read_texture_frame(world, id)?;
     let file_name = saved_name(file_name, "texture", "webp");
     to_value(&save_image(directory, &file_name, &frame)?)
@@ -476,31 +496,33 @@ fn single_entity<T: 'static>(
     world: &World,
     handle: Option<Entity>,
     what: &str,
-) -> Result<Entity, String> {
+) -> Result<Entity, ToolError> {
     if let Some(entity) = handle {
         return world
             .root_scope()
             .try_query_one::<Has<T>>(entity)
             .is_ok_and(|mut holder| holder.get())
             .then_some(entity)
-            .ok_or_else(|| format!("entity {entity:?} carries no {what}"));
+            .ok_or_else(|| ToolError::rejected(format!("entity {entity:?} carries no {what}")));
     }
     let mut found: Option<Entity> = None;
     for (_t, entity) in world.root_scope().query::<(&T, Entity)>().iter() {
         if found.is_some() {
-            return Err(format!("the world has more than one {what}; pass `entity`"));
+            return Err(ToolError::rejected(format!(
+                "the world has more than one {what}; pass `entity`"
+            )));
         }
         found = Some(entity);
     }
-    found.ok_or_else(|| format!("the world has no {what}"))
+    found.ok_or_else(|| ToolError::rejected(format!("the world has no {what}")))
 }
 
 /// A world's input state, encoded: how its devices are.
-pub(crate) fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, ToolError> {
     let entity = single_entity::<InputState>(world, entity, "input state")?;
     let text = reflect::encode_json(&world.root_scope(), entity, "InputState")
-        .map_err(|error| error.to_string())?;
-    serde_json::from_str(&text).map_err(|error| error.to_string())
+        .map_err(|error| ToolError::failed(error.to_string()))?;
+    serde_json::from_str(&text).map_err(|error| ToolError::failed(error.to_string()))
 }
 
 /// Feed input events to the world and deliver them.
@@ -511,9 +533,11 @@ pub(crate) fn send_input(
     world: &World,
     entity: Option<Entity>,
     events: &Value,
-) -> Result<Value, String> {
-    let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
-    let decoded = reflect::decode_events(&text).map_err(|error| error.to_string())?;
+) -> Result<Value, ToolError> {
+    let text =
+        serde_json::to_string(events).map_err(|error| ToolError::failed(error.to_string()))?;
+    let decoded =
+        reflect::decode_events(&text).map_err(|error| ToolError::failed(error.to_string()))?;
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
     world
         .root_scope()
@@ -522,20 +546,29 @@ pub(crate) fn send_input(
             let writer = writer.get();
             writer.push_all(decoded)
         })
-        .map_err(|error| format!("entity {entity:?} carries no input writer: {error}"))?;
+        .map_err(|error| {
+            ToolError::failed(format!(
+                "entity {entity:?} carries no input writer: {error}"
+            ))
+        })?;
     let delivered = dispatch_input(world);
     to_value(&Delivered { delivered })
 }
 
 /// Render one frame from the world.
-pub(crate) fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
+pub(crate) fn render_frame(
+    world: &mut World,
+    renderer: Option<Entity>,
+) -> Result<Value, ToolError> {
     let entity = renderer_entity(world, renderer)?;
     let world_ref: &World = &*world;
     world_ref
         .root_scope()
         .try_query_one::<&mut Renderer>(entity)
         .map(|mut renderer| renderer.get().render(world_ref))
-        .map_err(|error| format!("entity {entity:?} carries no renderer: {error}"))?;
+        .map_err(|error| {
+            ToolError::failed(format!("entity {entity:?} carries no renderer: {error}"))
+        })?;
     Ok(Value::Null)
 }
 
@@ -547,22 +580,27 @@ fn screenshot_target(
     world: &World,
     context: RenderContext,
     id: ResId,
-) -> Result<wgpu::Texture, String> {
+) -> Result<wgpu::Texture, ToolError> {
     let mut graph_row = graph_of(world, context)?;
     let graph = graph_row.get();
     let handle = graph
         .resolve(id)
-        .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+        .ok_or_else(|| ToolError::rejected(format!("stale resource id {}", id.to_bits())))?;
     let texture = match graph.get::<Resource>(&handle) {
         Some(Resource::Texture(texture)) => texture.clone(),
         Some(Resource::TextureView(view)) => view.texture().clone(),
-        _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
+        _ => {
+            return Err(ToolError::rejected(format!(
+                "resource id {} is not a texture",
+                id.to_bits()
+            )));
+        }
     };
     if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-        return Err(format!(
+        return Err(ToolError::rejected(format!(
             "resource id {} is a texture no one can read back: it lacks COPY_SRC",
             id.to_bits()
-        ));
+        )));
     }
     Ok(texture)
 }
@@ -572,14 +610,14 @@ fn screenshot_frame(
     world: &mut World,
     renderer: Option<Entity>,
     target: ResId,
-) -> Result<Frame, String> {
+) -> Result<Frame, ToolError> {
     let context = render_context(world)?;
     let texture = screenshot_target(world, context, target)?;
     render_frame(world, renderer)?;
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     let bytes = pollster::block_on(try_readback_texture(&device, &queue, &texture))
-        .map_err(|error| format!("failed to read the texture back: {error}"))?;
+        .map_err(|error| ToolError::failed(format!("failed to read the texture back: {error}")))?;
     Ok(Frame {
         bytes,
         width: texture.width(),
@@ -594,7 +632,7 @@ pub(crate) fn read_screenshot(
     renderer: Option<Entity>,
     target: ResId,
     format: Option<&str>,
-) -> Result<Output, String> {
+) -> Result<Output, ToolError> {
     let format = match format {
         Some(name) => ImageFormat::from_name(name)?,
         None => ImageFormat::DEFAULT,
@@ -610,7 +648,7 @@ pub(crate) fn save_screenshot(
     target: ResId,
     directory: &str,
     file_name: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let frame = screenshot_frame(world, renderer, target)?;
     let file_name = saved_name(file_name, "screenshot", "webp");
     to_value(&save_image(directory, &file_name, &frame)?)
@@ -627,16 +665,18 @@ pub(crate) fn spawn_gltf(
     scope: Option<Entity>,
     path: Option<&str>,
     document: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let gltf = match (path, document) {
         (Some(path), None) => LitGltf::load(Path::new(path)),
         (None, Some(document)) => LitGltf::from_bytes(&gltf_document_bytes(document)?),
         (Some(_), Some(_)) => {
-            return Err("pass either `path` or `document`, not both".to_string());
+            return Err(ToolError::rejected(
+                "pass either `path` or `document`, not both",
+            ));
         }
-        (None, None) => return Err("pass one of `path` and `document`".to_string()),
+        (None, None) => return Err(ToolError::rejected("pass one of `path` and `document`")),
     }
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| ToolError::failed(error.to_string()))?;
     // Content goes into the requested scope, which defaults to the source
     // entity itself, so the frame that draws the source also draws the scene.
     let scope = match scope {
@@ -648,25 +688,25 @@ pub(crate) fn spawn_gltf(
     // caller never gets a handle to.
     world
         .try_scope(scope)
-        .map_err(|_| format!("no scope {scope:?}"))?;
+        .map_err(|_| ToolError::rejected(format!("no scope {scope:?}")))?;
     let resources = with_mesh_source(world, source, |source, scope| {
         gltf.insert_resources(source, scope)
     })?
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| ToolError::failed(error.to_string()))?;
     let model = gltf
         .to_model(&resources)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ToolError::failed(error.to_string()))?;
     let root = world
         .try_scope_mut(scope)
-        .map_err(|_| format!("no scope {scope:?}"))?
+        .map_err(|_| ToolError::rejected(format!("no scope {scope:?}")))?
         .spawn_named("lit model", LitModelBundle::new(model));
     let mut entities = vec![root];
     let mut cursor = 0;
     while cursor < entities.len() {
         let parent = entities[cursor];
-        let children = world
-            .children(parent)
-            .map_err(|error| format!("cannot enumerate model child {parent:?}: {error}"))?;
+        let children = world.children(parent).map_err(|error| {
+            ToolError::failed(format!("cannot enumerate model child {parent:?}: {error}"))
+        })?;
         entities.extend(children);
         cursor += 1;
     }
@@ -676,7 +716,7 @@ pub(crate) fn spawn_gltf(
 
 /// The bytes of an inline glTF document: JSON text as written, or a GLB's
 /// bytes decoded from base64.
-fn gltf_document_bytes(document: &str) -> Result<Vec<u8>, String> {
+fn gltf_document_bytes(document: &str) -> Result<Vec<u8>, ToolError> {
     // A JSON document is the one form a caller can paste; anything else is
     // taken as base64, so the leading brace decides without guessing at the
     // alphabet.
@@ -685,7 +725,7 @@ fn gltf_document_bytes(document: &str) -> Result<Vec<u8>, String> {
     }
     base64::engine::general_purpose::STANDARD
         .decode(document.trim())
-        .map_err(|error| format!("the document is not base64: {error}"))
+        .map_err(|error| ToolError::failed(format!("the document is not base64: {error}")))
 }
 
 /// An image's size, as structured output.
@@ -703,7 +743,7 @@ fn image_value(
     width: u32,
     height: u32,
     format: ImageFormat,
-) -> Result<Output, String> {
+) -> Result<Output, ToolError> {
     Ok(Output::Image(EncodedImage {
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
         mime_type: format.mime_type().to_string(),
@@ -793,7 +833,7 @@ pub(crate) struct FrameClockReport {
 /// no frame rather than a made-up zero, so a client can tell the two apart.
 /// The average covers the last [`FRAME_WINDOW`] frames, which is finer than a
 /// client can sample for itself and survives the frames between two calls.
-pub(crate) fn frame_clock(world: &mut World) -> Result<FrameClockReport, String> {
+pub(crate) fn frame_clock(world: &mut World) -> Result<FrameClockReport, ToolError> {
     let existing = world
         .root_scope()
         .query::<&FrameMonitorState>()
@@ -845,13 +885,34 @@ mod tests {
 
     #[test]
     fn an_extension_names_the_image_format() {
-        assert_eq!(ImageFormat::of("a.png"), Ok(ImageFormat::Png));
-        assert_eq!(ImageFormat::of("a.webp"), Ok(ImageFormat::Webp));
-        assert_eq!(ImageFormat::of("a.jpg"), Ok(ImageFormat::Jpeg));
-        assert_eq!(ImageFormat::of("a.jpeg"), Ok(ImageFormat::Jpeg));
-        assert_eq!(ImageFormat::of("a.JPG"), Ok(ImageFormat::Jpeg));
-        assert_eq!(ImageFormat::of("a.PNG"), Ok(ImageFormat::Png));
-        assert_eq!(ImageFormat::from_name("jpeg"), Ok(ImageFormat::Jpeg));
+        assert_eq!(
+            ImageFormat::of("a.png").expect("Png is a known format"),
+            ImageFormat::Png
+        );
+        assert_eq!(
+            ImageFormat::of("a.webp").expect("Webp is a known format"),
+            ImageFormat::Webp
+        );
+        assert_eq!(
+            ImageFormat::of("a.jpg").expect("Jpeg is a known format"),
+            ImageFormat::Jpeg
+        );
+        assert_eq!(
+            ImageFormat::of("a.jpeg").expect("Jpeg is a known format"),
+            ImageFormat::Jpeg
+        );
+        assert_eq!(
+            ImageFormat::of("a.JPG").expect("Jpeg is a known format"),
+            ImageFormat::Jpeg
+        );
+        assert_eq!(
+            ImageFormat::of("a.PNG").expect("Png is a known format"),
+            ImageFormat::Png
+        );
+        assert_eq!(
+            ImageFormat::from_name("jpeg").expect("Jpeg is a known format"),
+            ImageFormat::Jpeg
+        );
         assert!(ImageFormat::of("a").is_err());
         assert!(ImageFormat::of("a.gif").is_err());
     }

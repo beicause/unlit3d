@@ -67,7 +67,9 @@ impl Command for RunInWorld {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let Self { entity, command } = *self;
         let Ok(mut nested) = world.root_scope().try_query_one::<&mut World>(entity) else {
-            command.fail(format!("host entity {entity:?} carries no world"));
+            command.fail(unlit_ecs::mcp::ToolError::rejected(format!(
+                "host entity {entity:?} carries no world"
+            )));
             return Ok(());
         };
         command.dispatch(&mut *nested.get());

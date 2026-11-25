@@ -6,6 +6,7 @@
 use rmcp::model::CallToolResult;
 use serde_json::Value;
 
+use crate::mcp::ToolError;
 use crate::mcp::host::{Despawned, SpawnedEntity, to_value};
 use crate::mcp::server::{
     CommandSender, EntityArg, GetComponent, ListEntities, McpServer, NoArgs, SetComponent,
@@ -15,40 +16,41 @@ use crate::reflect;
 use crate::{DynamicBundle, Entity, Scope, ScopeMut, World};
 
 /// A high-level description of a scope.
-fn summarize_world(scope: &Scope<'_>) -> Result<Value, String> {
+fn summarize_world(scope: &Scope<'_>) -> Result<Value, ToolError> {
     to_value(&scope.info())
 }
 
 /// The component names the reflection table holds.
-fn component_names(_world: &World) -> Result<Value, String> {
+fn component_names(_world: &World) -> Result<Value, ToolError> {
     to_value(&reflect::names().collect::<Vec<_>>())
 }
 
 /// Every archetype with the component names it stores.
-fn summarize_archetypes(scope: &Scope<'_>) -> Result<Value, String> {
+fn summarize_archetypes(scope: &Scope<'_>) -> Result<Value, ToolError> {
     to_value(&scope.archetype_infos())
 }
 
 /// Every spawned entity with its component names.
-fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, String> {
+fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, ToolError> {
     to_value(&scope.entity_infos(limit))
 }
 
 /// One entity's component names and location.
-fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, String> {
+fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, ToolError> {
     let info = scope
         .entity_info(entity)
-        .map_err(|_| format!("no entity {entity:?}"))?;
+        .map_err(|_| ToolError::rejected(format!("no entity {entity:?}")))?;
     to_value(&info)
 }
 
 /// One component of one entity, encoded.
-fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value, String> {
+fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value, ToolError> {
     if !scope.contains(entity) {
-        return Err(format!("no entity {entity:?}"));
+        return Err(ToolError::rejected(format!("no entity {entity:?}")));
     }
-    let text = reflect::encode_json(scope, entity, name).map_err(|error| error.to_string())?;
-    serde_json::from_str(&text).map_err(|error| error.to_string())
+    let text = reflect::encode_json(scope, entity, name)
+        .map_err(|error| ToolError::failed(error.to_string()))?;
+    serde_json::from_str(&text).map_err(ToolError::from)
 }
 
 /// Overwrite one component of one entity.
@@ -57,24 +59,26 @@ fn write_component(
     entity: Entity,
     name: &str,
     value: &Value,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     if !scope.contains(entity) {
-        return Err(format!("no entity {entity:?}"));
+        return Err(ToolError::rejected(format!("no entity {entity:?}")));
     }
-    let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    reflect::set_json(scope, entity, name, &patch).map_err(|error| error.to_string())?;
+    let patch = serde_json::to_string(value).map_err(ToolError::from)?;
+    reflect::set_json(scope, entity, name, &patch)
+        .map_err(|error| ToolError::rejected(error.to_string()))?;
     Ok(Value::Null)
 }
 
 /// Spawn an entity from a map of component name to value.
-fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Value, String> {
+fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Value, ToolError> {
     let object = components
         .as_object()
-        .ok_or_else(|| "components must be an object".to_string())?;
+        .ok_or_else(|| ToolError::rejected("components must be an object"))?;
     let mut bundle = DynamicBundle::new();
     for (name, value) in object {
-        let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-        reflect::push_json(&mut bundle, name, &patch).map_err(|error| error.to_string())?;
+        let patch = serde_json::to_string(value).map_err(ToolError::from)?;
+        reflect::push_json(&mut bundle, name, &patch)
+            .map_err(|error| ToolError::rejected(error.to_string()))?;
     }
     let spawned = scope.entity();
     let name = "mcp spawned";
@@ -90,11 +94,11 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
 ///
 /// An entity the scope cannot remove is an error the caller reads, not a
 /// `false` beside a name: what to do about it depends on why.
-fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
+fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, ToolError> {
     let name = scope.readonly().entity_name(entity).unwrap_or("");
     scope
         .despawn(entity)
-        .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
+        .map_err(|error| ToolError::rejected(format!("cannot despawn {entity:?}: {error}")))?;
     to_value(&Despawned { name })
 }
 
@@ -185,20 +189,20 @@ async fn despawn_entity(commands: CommandSender, args: EntityArg) -> ToolResult 
 }
 
 /// The scope an ECS tool runs in: the scope the arguments name, or the root.
-fn scoped(world: &World, scope: Option<u64>) -> Result<Scope<'_>, String> {
+fn scoped(world: &World, scope: Option<u64>) -> Result<Scope<'_>, ToolError> {
     match scope {
         None => Ok(world.root_scope()),
         Some(bits) => {
             let scope = Entity::from_bits(bits);
             world
                 .try_scope(scope)
-                .map_err(|_| format!("no scope {scope:?}"))
+                .map_err(|_| ToolError::rejected(format!("no scope {scope:?}")))
         }
     }
 }
 
 /// The mutable scope an ECS tool runs in.
-fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, String> {
+fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, ToolError> {
     match scope {
         None => Ok(world.root_scope_mut()),
         Some(bits) => {
@@ -206,7 +210,7 @@ fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, Str
 
             world
                 .try_scope_mut(scope)
-                .map_err(|_| format!("no scope {scope:?}"))
+                .map_err(|_| ToolError::rejected(format!("no scope {scope:?}")))
         }
     }
 }
@@ -319,7 +323,7 @@ mod tests {
         world.root_scope_mut().despawn(scene).unwrap();
         let error = scoped(&world, Some(bits)).expect_err("the scope is gone");
         assert_eq!(
-            error,
+            error.to_string(),
             format!("no scope {restored:?}"),
             "the bits it came as"
         );
@@ -334,7 +338,7 @@ mod tests {
         let restored = Entity::from_bits(bits);
         let error = scoped(&world, Some(bits)).expect_err("no such scope");
         assert_eq!(
-            error,
+            error.to_string(),
             format!("no scope {restored:?}"),
             "the bits it came as"
         );
@@ -346,7 +350,10 @@ mod tests {
         let scope = scoped(&world, Some(scene.to_bits())).unwrap();
         let error = write_component(&scope, sibling, "Marker", &serde_json::json!({ "0": 9 }))
             .expect_err("the sibling is out of reach");
-        assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
+        assert!(
+            error.to_string().contains(&sibling.to_bits().to_string()),
+            "{error}"
+        );
         assert_eq!(world.root_scope().query_one::<&Marker>(sibling).get().0, 2);
     }
 
@@ -355,7 +362,10 @@ mod tests {
         let (world, scene, _, sibling) = fixture();
         let scope = scoped(&world, Some(scene.to_bits())).unwrap();
         let error = read_component(&scope, sibling, "Marker").expect_err("out of reach");
-        assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
+        assert!(
+            error.to_string().contains(&sibling.to_bits().to_string()),
+            "{error}"
+        );
     }
 
     #[test]
@@ -380,8 +390,14 @@ mod tests {
         let (mut world, scene, _, sibling) = fixture();
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let error = despawn_one(&mut scope, sibling).expect_err("it is not its to remove");
-        assert!(error.contains("is not its to move or remove"), "{error}");
-        assert!(error.contains(&format!("{sibling:?}")), "{error}");
+        assert!(
+            error.to_string().contains("is not its to move or remove"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains(&format!("{sibling:?}")),
+            "{error}"
+        );
         assert!(
             world.root_scope().contains(sibling),
             "the refusal removed nothing"
@@ -467,7 +483,7 @@ mod tests {
             &serde_json::json!({ "0": scene.to_bits() }),
         )
         .expect_err("there is no such component");
-        assert!(!error.is_empty(), "{error}");
+        assert!(!error.message().is_empty(), "{error}");
         assert_eq!(
             world.parent_scope(child).unwrap(),
             scene,
@@ -481,6 +497,6 @@ mod tests {
         let mut scope = scoped_mut(&mut world, None).unwrap();
         let error = spawn_from_value(&mut scope, &serde_json::json!({ "OnDespawn": {} }))
             .expect_err("a callback has no wire form");
-        assert!(!error.is_empty());
+        assert!(!error.message().is_empty());
     }
 }

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use unlit_ecs::World;
-use unlit3dx::app::{App, Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds};
+use unlit3dx::app::{App, AppConfigError, Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds};
 use unlit3dx::prelude::*;
 
 use crate::scene::{self, AudioSetup, WINDOW_SIZE};
@@ -43,10 +43,12 @@ impl App for Demo {
     const TITLE: &'static str = "unlit3dx multi-world";
     const SIZE: (u32, u32) = WINDOW_SIZE;
 
-    fn configure(&mut self, args: DemoArgs) -> Result<(), String> {
+    fn configure(&mut self, args: DemoArgs) -> Result<(), AppConfigError> {
         if let Some(path) = args.soundfont {
-            let bytes = std::fs::read(&path)
-                .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            let bytes = std::fs::read(&path).map_err(|source| AppConfigError::Read {
+                path: path.clone(),
+                source,
+            })?;
             self.soundfont = bytes.into();
         }
         Ok(())

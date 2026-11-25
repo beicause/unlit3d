@@ -29,7 +29,7 @@ use unlit3d::winit::presenter::{PresentationPath, pump_presented_with};
 use crate::executor::LocalTasks;
 use crate::gpu::Gpu;
 use crate::host::tick_sub_world;
-use crate::world::StepOutcome;
+use crate::world::{StepOutcome, WorldFailure, join_failures};
 
 /// Build the presentation path and spawn its [`Presenter`] in the host
 /// world.
@@ -106,14 +106,14 @@ pub enum TurnError {
     #[error("the render world is unavailable: {0}")]
     RenderWorld(#[from] EntityAccessError),
     /// The simulation that the turn advances has stopped.
-    #[error("a simulation world stopped ({0:?})")]
+    #[error("a simulation world stopped ({})", .0)]
     Simulation(StepOutcome),
     /// The render sub-world has stopped, so there is no frame to draw.
-    #[error("the render world stopped ({0:?})")]
+    #[error("the render world stopped ({})", .0)]
     Render(StepOutcome),
-    /// Jobs the worlds were asked to run failed, by the names of their worlds.
-    #[error("world jobs failed: {}", .0.join(", "))]
-    Jobs(Vec<&'static str>),
+    /// Worlds the host steps failed while their jobs were drained.
+    #[error("{} world(s) failed: {}", .0.len(), join_failures(.0))]
+    Jobs(Vec<WorldFailure>),
     /// The frame was drawn but could not be presented.
     #[error("failed to present a frame: {0}")]
     Present(#[from] PresenterError),

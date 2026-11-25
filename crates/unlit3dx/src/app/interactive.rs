@@ -14,6 +14,7 @@ use unlit3d::relay::Snapshot;
 
 use super::App;
 use super::capture::Capture;
+use super::error::RunError;
 use super::headless::{AUDIO_SAMPLE_RATE, RENDER_COMMAND_CAPACITY};
 use super::offscreen;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, SceneWorlds};
@@ -56,7 +57,7 @@ impl Interactive {
     /// drives dispatch theirs in their own ticks. The host world carries no
     /// scene of its own, so it takes no frame: what it would clock is the
     /// stepper's fixed rate, which a reader already knows.
-    pub fn step(&mut self, host: &World, frames: u32) -> Result<StepOutcome, String> {
+    pub fn step(&mut self, host: &World, frames: u32) -> Result<StepOutcome, RunError> {
         for _ in 0..frames {
             let index = self.run.frames.advanced();
             let outcome = self.run.advance(host, index, self.capture.wants(index))?;
@@ -75,7 +76,7 @@ impl Interactive {
     /// to the end: a run with no length of its own keeps what it got to when
     /// the process is killed.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    fn capture_frame(&self, host: &World, index: u32) -> Result<(), String> {
+    fn capture_frame(&self, host: &World, index: u32) -> Result<(), RunError> {
         if self.capture.wants(index) {
             let (width, height, pixels) = pollster::block_on(self.read_frame(host))?;
             if let Some(path) = self.capture.write_frame(index, &pixels, (width, height))? {
@@ -89,7 +90,7 @@ impl Interactive {
     /// writes are the caller's to read back through
     /// [`Interactive::render_frame`] instead.
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    fn capture_frame(&self, _host: &World, _index: u32) -> Result<(), String> {
+    fn capture_frame(&self, _host: &World, _index: u32) -> Result<(), RunError> {
         Ok(())
     }
 
@@ -116,36 +117,38 @@ impl Interactive {
     }
 
     /// Draw the current scene without stepping, then read back its pixels.
-    pub async fn render_frame(&self, host: &World) -> Result<Vec<u8>, String> {
+    pub async fn render_frame(&self, host: &World) -> Result<Vec<u8>, RunError> {
         self.draw(host)?;
         let (_, _, pixels) = self.read_frame(host).await?;
         Ok(pixels)
     }
 
     /// Read the rendered frame without drawing or advancing it.
-    async fn read_frame(&self, host: &World) -> Result<(u32, u32, Vec<u8>), String> {
+    async fn read_frame(&self, host: &World) -> Result<(u32, u32, Vec<u8>), RunError> {
         let texture = {
             let mut nested = host
                 .root_scope()
                 .try_query_one::<&World>(self.run.render)
-                .map_err(|error| format!("the render world is unavailable: {error}"))?;
+                .map_err(RunError::RenderWorld)?;
             offscreen::texture(nested.get(), self.run.renderer, &self.target)?
         };
-        offscreen::read(&self.device, &self.queue, &texture).await
+        offscreen::read(&self.device, &self.queue, &texture)
+            .await
+            .map_err(RunError::Offscreen)
     }
 
     /// Drain the render world's queued jobs and draw without stepping.
-    pub fn draw(&self, host: &World) -> Result<(), String> {
+    pub fn draw(&self, host: &World) -> Result<(), RunError> {
         let mut nested = host
             .root_scope()
             .try_query_one::<&mut World>(self.run.render)
-            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            .map_err(RunError::RenderWorld)?;
         let world = nested.get();
         let outcome = drain_sub_world(world);
-        if outcome != StepOutcome::Ran {
-            return Err(format!("the render world cannot draw: {outcome:?}"));
-        }
-        offscreen::render(world, self.run.renderer)
+        let StepOutcome::Ran = outcome else {
+            return Err(RunError::RenderWorldStop(outcome));
+        };
+        offscreen::render(world, self.run.renderer).map_err(RunError::Offscreen)
     }
 
     /// Click at `position`: move the pointer there, then press and release
@@ -170,21 +173,21 @@ impl Interactive {
     ///
     /// The recording lives on the audio world, so its fills are counted even
     /// though the world is stepped from here.
-    pub fn start_recording(&mut self, host: &World, max_seconds: f32) -> Result<(), String> {
+    pub fn start_recording(&mut self, host: &World, max_seconds: f32) -> Result<(), RunError> {
         if self.recording.is_some() {
-            return Err("the audio world is already recording".to_owned());
+            return Err(RunError::AlreadyRecording);
         }
         self.recording = Some(
             with_stepped_world_mut(host, self.worlds().audio.entity, |audio| {
                 start_recording(audio, max_seconds)
             })
-            .map_err(|error| format!("recording could not start: {error}"))?,
+            .map_err(RunError::Step)?,
         );
         Ok(())
     }
 
     /// Stop the recording and take the samples it captured.
-    pub fn stop_recording(&mut self, host: &World) -> Result<Option<Recording>, String> {
+    pub fn stop_recording(&mut self, host: &World) -> Result<Option<Recording>, RunError> {
         let Some(recording) = self.recording.take() else {
             return Ok(None);
         };
@@ -192,7 +195,7 @@ impl Interactive {
             recording.stop(world)
         })
         .map(|audio| audio.map(Recording::from))
-        .map_err(|error| format!("recording could not stop: {error}"))
+        .map_err(RunError::Step)
     }
 }
 
@@ -222,7 +225,7 @@ impl From<RecordedAudio> for Recording {
 pub fn interactive<A: App>(
     mut app: A,
     device: RenderDevice,
-) -> Result<(World, Interactive), String> {
+) -> Result<(World, Interactive), RunError> {
     let mut host = World::new();
     let input = InputWriter::new();
     host.root_scope_mut().spawn(InputFeed(input.clone()));
@@ -250,7 +253,7 @@ pub fn interactive<A: App>(
         let mut nested = host
             .root_scope()
             .try_query_one::<&World>(render.entity)
-            .map_err(|error| format!("the render world is unavailable: {error}"))?;
+            .map_err(RunError::RenderWorld)?;
         offscreen::bind(nested.get(), setup, &device, A::SIZE)?
     };
     // The MCP tools read the same frame count from the host.

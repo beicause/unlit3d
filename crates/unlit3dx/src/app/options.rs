@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use super::error::ConfigError;
+
 /// The switches a run owns.
 ///
 /// The application's arguments, declared through [`App::Args`](super::App::Args), are
@@ -91,18 +93,18 @@ impl RunOptions {
     /// error until the run reads it, which happens before the window or
     /// the headless loop starts, and the message carries the
     /// `--mcp-http-addr` prefix so the failing switch stays findable.
-    pub fn mcp_http_addr(&self) -> Result<std::net::SocketAddr, String> {
+    pub fn mcp_http_addr(&self) -> Result<std::net::SocketAddr, ConfigError> {
         self.mcp_http_addr
             .as_deref()
             .unwrap_or(Self::DEFAULT_MCP_HTTP_ADDR)
             .parse()
-            .map_err(|error| format!("--mcp-http-addr: {error}"))
+            .map_err(|source| ConfigError::HttpAddr { source })
     }
 
     /// The address the MCP HTTP server listens on, when the command line
     /// asks for one: [None] when neither switch names it, and the parse
     /// error when the named one does not parse.
-    pub fn mcp_http_bind(&self) -> Result<Option<std::net::SocketAddr>, String> {
+    pub fn mcp_http_bind(&self) -> Result<Option<std::net::SocketAddr>, ConfigError> {
         if !self.mcp_http_run() {
             return Ok(None);
         }

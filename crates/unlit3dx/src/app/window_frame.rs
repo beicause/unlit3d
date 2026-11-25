@@ -10,25 +10,26 @@ use unlit3d::winit::presenter::{PRESENT_ORDER, Presenter};
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use super::Capture;
+use super::error::RunError;
 use super::{Pacing, RunFrames, Stepping};
 use crate::host::drain_sub_world;
 use crate::present::{TurnError, TurnOutcome, present_turn};
 use crate::world::{StepOutcome, drain_all_stepped_worlds};
 
 #[derive(Clone, Default)]
-pub(super) struct RunFailure(Rc<RefCell<Option<String>>>);
+pub(super) struct RunFailure(Rc<RefCell<Option<RunError>>>);
 
 impl RunFailure {
-    pub(super) fn report(&self, world: &World, app: Entity, message: String) {
+    pub(super) fn report(&self, world: &World, app: Entity, error: RunError) {
         let mut slot = self.0.borrow_mut();
         if slot.is_none() {
-            log::error!("{message}");
-            *slot = Some(message);
+            log::error!("{error}");
+            *slot = Some(error);
         }
         exit(world, app);
     }
 
-    pub(super) fn take(&self) -> Option<String> {
+    pub(super) fn take(&self) -> Option<RunError> {
         self.0.borrow_mut().take()
     }
 }
@@ -41,7 +42,7 @@ impl RunFailure {
 /// left to the next turn, and only [`FrameOutcome::Failed`] carries a message
 /// for the run to record. A caller therefore decides once per variant what to
 /// do, instead of re-deriving the case from a boolean it had to guess at.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) enum FrameOutcome {
     /// The frame was drawn and presented.
     Presented,
@@ -53,8 +54,8 @@ pub(super) enum FrameOutcome {
     /// or the scene ended. The exit has already been requested.
     Ended,
     /// The frame could not be taken, and the run cannot continue. The caller
-    /// records the message, which stops the run.
-    Failed(String),
+    /// records the error, which stops the run.
+    Failed(RunError),
 }
 
 pub(super) struct WindowFrames {
@@ -80,7 +81,7 @@ impl WindowFrames {
             return FrameOutcome::Ended;
         }
         if self.failure.0.borrow().is_some() {
-            return FrameOutcome::Failed("the windowed run has already failed".to_owned());
+            return FrameOutcome::Failed(RunError::AlreadyFailed);
         }
         let index = self.frames.advanced();
         let mut frame = Frame { delta_time, index };
@@ -98,10 +99,10 @@ impl WindowFrames {
                 self.frames.advance();
                 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
                 if let Some(capture) = &self.capture
-                    && let Err(message) =
+                    && let Err(error) =
                         super::capture::capture_presented(world, self.render, capture, index)
                 {
-                    return FrameOutcome::Failed(message);
+                    return FrameOutcome::Failed(error.into());
                 }
                 if self.pacing.is_spent(self.frames.advanced()) {
                     exit(world, self.app);
@@ -115,18 +116,19 @@ impl WindowFrames {
             Ok(TurnOutcome::Waiting) => FrameOutcome::Skipped,
             Ok(TurnOutcome::Skipped) => match self.service_idle(world) {
                 Ok(()) => FrameOutcome::Skipped,
-                Err(error) => FrameOutcome::Failed(error.to_string()),
+                Err(error) => FrameOutcome::Failed(error.into()),
             },
             // A simulation that ended is the run ending, unless it failed.
-            Err(error @ TurnError::Simulation(outcome)) => {
+            Err(TurnError::Simulation(StepOutcome::Failed(error))) => {
                 exit(world, self.app);
-                if outcome == StepOutcome::Failed {
-                    FrameOutcome::Failed(error.to_string())
-                } else {
-                    FrameOutcome::Ended
-                }
+                FrameOutcome::Failed(RunError::Scene(error))
             }
-            Err(error) => FrameOutcome::Failed(error.to_string()),
+            Err(error @ TurnError::Simulation(_)) => {
+                exit(world, self.app);
+                let _ = error;
+                FrameOutcome::Ended
+            }
+            Err(error) => FrameOutcome::Failed(error.into()),
         }
     }
 
@@ -176,10 +178,10 @@ pub(super) fn drive_window() -> OnFrame {
                 exit(world, state.app);
             } else if state.pacing.client {
                 if let Err(error) = state.service_idle(world) {
-                    state.failure.report(world, state.app, error.to_string());
+                    state.failure.report(world, state.app, error.into());
                 }
-            } else if let FrameOutcome::Failed(message) = state.submit(world, frame.delta_time) {
-                state.failure.report(world, state.app, message);
+            } else if let FrameOutcome::Failed(error) = state.submit(world, frame.delta_time) {
+                state.failure.report(world, state.app, error);
             }
         },
     )

@@ -14,7 +14,7 @@ use web_time::Instant;
 use crate::channel::{Snapshot, SnapshotReader};
 use crate::executor::LocalTasks;
 use crate::job::Job;
-use crate::turn::{Link, StepOutcome, close_inbox, run_turn};
+use crate::turn::{Link, StepOutcome, WorldError, WorldStage, close_inbox, run_turn};
 
 /// How long a dropped thread waits for its tick to notice the stop before it
 /// is left detached instead of blocking the dropper.
@@ -162,8 +162,8 @@ pub enum WorldState {
     Stopped,
     /// The world failed: a job, a tick, a queued command or a collector
     /// panicked, or a queued command could not be applied, and this is the
-    /// message it carried.
-    Failed(Arc<str>),
+    /// cause it carried.
+    Failed(WorldError),
 }
 
 /// A cloneable view of a world's state.
@@ -261,12 +261,12 @@ impl ThreadStatus {
         self.state.publish(WorldState::Stopped);
     }
 
-    /// Record the failure that ended the world, message and all.
+    /// Record the failure that ended the world, cause and all.
     ///
     /// A failure is the last word: a world that failed reads as failed even
     /// after the driver that noticed it marks the world finished.
-    pub(crate) fn record_failure(&self, message: String) {
-        self.state.publish(WorldState::Failed(message.into()));
+    pub(crate) fn record_failure(&self, error: WorldError) {
+        self.state.publish(WorldState::Failed(error));
     }
 }
 
@@ -407,9 +407,12 @@ impl WorldThread {
                 let mut state = match setup {
                     Ok(state) => state,
                     Err(payload) => {
-                        let message = panic_message(payload.as_ref());
-                        log::error!("the world thread {thread_name} failed: {message}");
-                        thread_status.record_failure(message);
+                        let error = WorldError::Panic {
+                            stage: WorldStage::Setup,
+                            message: panic_message(payload.as_ref()).into(),
+                        };
+                        log::error!("the world thread {thread_name} failed: {error}");
+                        thread_status.record_failure(error);
                         close_inbox(&inbox);
                         thread_stop.finish();
                         return;
@@ -682,7 +685,10 @@ mod tests {
         );
         assert_eq!(
             state.latest().as_deref(),
-            Some(&WorldState::Failed("the tick died".into()))
+            Some(&WorldState::Failed(crate::turn::WorldError::Panic {
+                stage: crate::turn::WorldStage::Body,
+                message: "the tick died".into(),
+            }))
         );
     }
 
@@ -704,7 +710,10 @@ mod tests {
         );
         assert_eq!(
             state.latest().as_deref(),
-            Some(&WorldState::Failed("the setup died".into()))
+            Some(&WorldState::Failed(crate::turn::WorldError::Panic {
+                stage: crate::turn::WorldStage::Setup,
+                message: "the setup died".into(),
+            }))
         );
     }
 

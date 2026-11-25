@@ -192,11 +192,21 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
 - **`Stepped`** 让 world 留在它被生成的地方。`spawn_stepped_world_with_init` 把嵌套的
   `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
   迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。
-  它返回 `StepOutcome`（`Ran`、`Finished`、`Stopped` 或 `Failed`），让调用方知道
-  这一趟做了什么；实体指向的并非 stepped world 时返回 `StepError`——步进一个
+  它返回 `StepOutcome`（`Ran`、`Finished`、`Stopped` 或 `Failed(error)`），让调用方
+  知道这一趟做了什么、失败的那一趟为何失败；实体指向的并非 stepped world 时返回
+  `StepError`——步进一个
   threaded world 会被明确拒绝，而不是静默地什么都不做。`with_stepped_world` 把嵌套
   `World` 借出来，供需要直接触达它的工作使用，例如从绘制 world 读回一帧，并以同样
   的错误取代 `None`。
+
+world 结束时所处的每一种失败都是 `WorldError`，无论由哪个阶段抛出：
+`Panic { stage, message }` 指明发生 panic 的阶段（setup、job、排队命令、tick、
+收集器），`Command { source }` 携带排队命令被拒绝时的 `EntityAccessError`，
+`Step { source }` 携带驱动器无法步进该 world 时的 `StepError`。`WorldState` 与
+`StepOutcome` 都携带它，因此线程状态报告的成因与 stepped world 的一次步进返回的
+成因是同一个——驱动器不会因为选了另一个入口而丢掉它。`drain_all_stepped_worlds`
+把每个失败的 world 报成 `WorldFailure { name, error }` 而不是祼名字，`join_failures`
+把它们拼成一句。
 
 模式改变的是配速。`ThreadControl::wait_timeout` 会阻塞一条真实线程，而当 control
 并非自驱时立刻返回，于是同一个 tick 体服务两者：在 `Threaded` 下 `FixedClock` 等
@@ -353,8 +363,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
 ```rust,ignore
 world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
     // ... 在请求发起处搭建场景 ...
-}, |world, message| {
-    log::error!("GPU setup failed: {message}");
+}, |world, error| {
+    log::error!("GPU setup failed: {error}");
     // failed 回调返回后，运行时会请求退出。
 })]);
 ```
@@ -390,6 +400,15 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 （每个被捕获的帧各一个 `frame_<index>.png`，无头或交互式运行真的播放过东西时
 再加一个 `audio.flac`）也住在模块里——应用只需给出场景与它的音源，而不是一个
 `main`。
+
+四个入口都回答 `RunError`，于是调用方按哪里出错分支，而不是去读一条消息：命令行
+（`Config`）、结束了的场景 world（`Scene(WorldError)`）、渲染子 world 或它的资源
+（`RenderWorld`、`Resolve`、`Offscreen`、`Capture`）、无法步进的 world（`Step`）、
+排空时发现失败的那些 world（`Jobs`），以及起不来的传输（`Stdio`、`Http`）。每一个都
+把成因留在 `std::error::Error::source` 里，所以 `Scene` 背后的 `WorldError` 无论经由
+线程状态、一次步进的结果、一个 MCP 应答还是运行自身的错误到来，读起来都是同一个。
+`App::configure` 回答 `AppConfigError`——参数点名的文件读不了是它的 `Read`，只有应用
+自己知道的原因走它的 `Rejected`——而 `ConfigError` 把它与运行自己解析的开关并到一处。
 
 窗口运行上的捕获只写帧，不写混音。它的帧由帧循环编号，而这个计数可能是客户端
 一次一步驱动的；窗口播放的混音则是由音频设备按设备自己的时钟填充的，两者没有
