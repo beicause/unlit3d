@@ -26,25 +26,11 @@ use super::headless::{
 use super::interactive::{Interactive, interactive};
 use super::pace::Pacing;
 use super::scene::RunFrames;
+use super::shape::RunShape;
 use super::window_frame::{FrameOutcome, WindowFrames};
 use crate::audio::AudioFormat;
 use crate::mcp::{pump_mcp, serve_mcp};
 use crate::world::StepOutcome;
-
-/// The transports a headless run serves MCP over.
-///
-/// A run serves any combination of them: a client can speak over the
-/// process's pipes, over a TCP port, or both at once.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Transports {
-    /// Serve the process's standard streams: the client that spawned the
-    /// run speaks to it over its pipes.
-    pub stdio: bool,
-    /// Serve streamable HTTP on the address named, which network clients
-    /// connect to. Port 0 leaves the port to the OS; [serve] returns the
-    /// address bound.
-    pub http: Option<SocketAddr>,
-}
 
 /// Serve an application's scene over MCP.
 ///
@@ -62,8 +48,8 @@ pub struct Transports {
 /// The capture writes the frames it names as the run reaches them, and the
 /// mix it played when the run ends.
 ///
-/// The transports named in [Transports] serve in combination; [serve]
-/// returns the address the HTTP transport bound, when one was named.
+/// The transports the [RunShape] names serve in combination; [serve] returns
+/// the address the HTTP transport bound, when one was named.
 ///
 /// The tools reach the server through an [`unlit_ecs::mcp::ToolSource`]
 /// submitted inside this module. A linker drops the submissions of an
@@ -74,22 +60,21 @@ pub struct Transports {
 ///
 /// # Errors
 ///
-/// Fails without serving anything when [Transports] names no transport and
-/// the pacing leaves the frames to a client that cannot arrive: the host
-/// would have nothing to drive it. Fails when the HTTP transport cannot
-/// bind its port, carrying the underlying message. Naming an HTTP address on
-/// a build without the mcp-http feature fails the same way, and so does a
-/// capture that cannot be written.
+/// Fails when the HTTP transport cannot bind its port, carrying the
+/// underlying error. Naming an HTTP address on a build without the mcp-http
+/// feature is refused while the shape is read, and so does a transport the
+/// build does not serve; a capture that cannot be written fails the run.
+///
+/// A client-paced shape always names a transport, since nothing else could
+/// drive the frames, so the host here always has a driver.
 pub fn serve<A: App>(
     app: A,
     device: RenderDevice,
-    transports: Transports,
-    pacing: Pacing,
-    capture: Option<Capture>,
+    shape: &RunShape,
 ) -> Result<Option<SocketAddr>, RunError> {
-    if pacing.client && !transports.stdio && transports.http.is_none() {
-        return Err(RunError::NoDriver);
-    }
+    let pacing = shape.pacing();
+    let transports = shape.transports;
+    let capture = shape.capture.clone();
     let mut host = interactive_host(app, device, pacing)?;
     // The mix is observed from the run's first fill, so the recording opens
     // before any command runs. A client-paced run records a fixed span: the
@@ -432,7 +417,9 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         }
         let mut windows = host.root_scope().query::<&mut WindowFrames>();
         let Some(window) = windows.iter().next() else {
-            return Err(RunError::NoDriver.into());
+            return Err(ToolError::rejected(
+                "the host has neither an interactive scene nor a presenter to step",
+            ));
         };
         let mut stepped = 0;
         while stepped < frames {

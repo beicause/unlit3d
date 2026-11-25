@@ -512,7 +512,12 @@ flight, which decide whether the swap chain waits for the display.
 drains its jobs, folds the input it has been fed, runs its tasks, dispatches
 the frame — and presents it; a sub-world has no turn of its own, so the
 behaviour that drives its frame is also what keeps its input queue from
-filling. `pump_presented` keeps frames coming while the window lives, and
+filling. What a turn came to is a `TurnOutcome`, told apart by variant: a
+frame was presented, the surface handed out no image (`Skipped`), the host is
+suspended (`Suspended`), or the host has no presentation path yet
+(`Unprepared`). The last two draw nothing in either case, but a suspended host
+draws again once it resumes while an unprepared one waits on a setup that may
+have failed, so they are not one answer. `pump_presented` keeps frames coming while the window lives, and
 `resize_presented` follows the window around. The `app` module's windowed
 entry is the assembled version of that behaviour, and the one to reach for
 unless a caller is assembling the window itself. The render
@@ -530,7 +535,17 @@ run's own switches (`--headless`, `--interactive`, `--mcp-stdio`, `--mcp-http`,
 `--stepped`, `--max-frames`, `--capture-frames`, `--capture-out`) — the frame
 count ends the run wherever it runs, and says nothing about pacing:
 `--interactive` hands the frames to a client and the run paces itself
-otherwise. A capture names the frames to keep and the directory they go to;
+otherwise. Those switches are read once, by `RunShape::parse`, into the
+`RunShape` every entry consumes: `ownership` says whether the worlds live on
+their own threads or in the host (`--stepped`, `--interactive`, a browser),
+`driving` says whether the run's own loop advances the frames or a client does
+(`--interactive` with a transport this build serves), `offscreen` says whether
+frames are drawn into a target rather than the surface (`--headless`, a
+transport, a capture), `transports` holds stdio and HTTP together rather than
+trading one for the other, and `frames`/`capture` carry the length and the
+frames to keep. A switch this build cannot honour — `--mcp-http` without the
+`mcp-http` feature — is refused by the parse, so no entry re-checks a feature
+gate. A capture names the frames to keep and the directory they go to;
 on a windowed run it also asks for the offscreen path, since a swap chain
 image cannot be read back — and the application's `App::Args` are read by one
 clap parser, so a single `--help` describes both; the parsed arguments reach

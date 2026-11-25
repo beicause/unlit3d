@@ -110,10 +110,12 @@ impl WindowFrames {
                 }
                 FrameOutcome::Presented
             }
-            // Nothing can be presented yet, or the host is suspended: the
-            // render world's clients may still be waiting on its setup, so
-            // nothing is drained.
-            Ok(TurnOutcome::Waiting) => FrameOutcome::Skipped,
+            // The host is suspended: it draws again when it is resumed, and no
+            // world ticks while it is away.
+            Ok(TurnOutcome::Suspended) => FrameOutcome::Skipped,
+            // Nothing can be presented yet: the render world's clients are
+            // still waiting on its setup, so nothing is drained either.
+            Ok(TurnOutcome::Unprepared) => FrameOutcome::Skipped,
             Ok(TurnOutcome::Skipped) => match self.service_idle(world) {
                 Ok(()) => FrameOutcome::Skipped,
                 Err(error) => FrameOutcome::Failed(error.into()),

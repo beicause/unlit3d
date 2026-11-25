@@ -11,11 +11,10 @@ use unlit_wgpu::context::RenderDevice;
 use unlit3d::input::{InputFeed, InputWriter};
 
 use super::App;
-use super::capture::Capture;
 use super::error::RunError;
 use super::offscreen;
-use super::pace::Pacing;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts};
+use super::shape::{RunShape, WorldOwnership};
 use super::stepped::SteppedRun;
 use crate::host::spawn_sub_world;
 use crate::world::{StepOutcome, Stepped};
@@ -54,18 +53,17 @@ pub const UNBOUNDED_MIX_SECONDS: f32 = 600.0;
 pub struct HeadlessConfig {
     /// The frame size, in pixels.
     pub size: (u32, u32),
-    /// Who advances the frames, and the most it advances.
+    /// How the run is put together: who advances the frames, the most it
+    /// advances, and which frames it keeps and where.
     ///
-    /// A headless run advances them itself, so [`Pacing::client`] is
-    /// ignored: the struct is the same one a windowed run reads, so what it
-    /// names means the same thing on either path.
-    pub pacing: Pacing,
-    /// Which frames to keep, and where to write them.
+    /// A headless run steps its own worlds, so `--headless` is read into the
+    /// hosted shape: [`RunShape::ownership`] is [`WorldOwnership::Hosted`] on
+    /// this path, whichever entry built the shape.
     ///
-    /// The run draws a frame only when the capture names it, so a capture that
-    /// names nothing leaves the run audio-only: the render world still drains
-    /// its commands and dispatches its frames, but none is drawn.
-    pub capture: Capture,
+    /// The run draws a frame only when [`RunShape::capture`] names it, so a
+    /// shape with no capture leaves the run audio-only: the render world still
+    /// drains its commands and dispatches its frames, but none is drawn.
+    pub shape: RunShape,
     /// The rate the mix is pulled at. The synthesizer takes it from the stream
     /// it renders into.
     pub audio_sample_rate: u32,
@@ -77,8 +75,10 @@ impl Default for HeadlessConfig {
     fn default() -> Self {
         Self {
             size: (1024, 720),
-            pacing: Pacing::default(),
-            capture: Capture::default(),
+            shape: RunShape {
+                ownership: WorldOwnership::Hosted,
+                ..RunShape::default()
+            },
             audio_sample_rate: AUDIO_SAMPLE_RATE,
             render_capacity: RENDER_COMMAND_CAPACITY,
         }
@@ -113,6 +113,8 @@ pub async fn headless<A: App>(
     if config.audio_sample_rate == 0 {
         return Err(RunError::AudioRate);
     }
+    let pacing = config.shape.pacing();
+    let capture = config.shape.capture.clone().unwrap_or_default();
     let mut host = World::new();
     let render = spawn_sub_world(&mut host, "render", config.render_capacity);
     // A run with no window draws no pointer of its own, but its client injects
@@ -168,24 +170,21 @@ pub async fn headless<A: App>(
     // Every run keeps a bounded mix: as long as the run itself when it names a
     // length, at most `UNBOUNDED_MIX_SECONDS` when it plays until killed. The
     // bound is whole interleaved frames, so a cut never lands mid-frame.
-    let mix_seconds = config
-        .pacing
-        .frames
-        .map_or(UNBOUNDED_MIX_SECONDS, |frames| {
-            frames as f32 * FIXED_FRAME_SECONDS as f32
-        });
+    let mix_seconds = pacing.frames.map_or(UNBOUNDED_MIX_SECONDS, |frames| {
+        frames as f32 * FIXED_FRAME_SECONDS as f32
+    });
     let mix_limit = (mix_seconds * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS;
     let mut mix_capped = false;
 
     loop {
         let index = run.frames.advanced();
-        if config.pacing.is_spent(index) {
+        if pacing.is_spent(index) {
             break;
         }
         // The capture is what decides whether this frame is drawn: a drawn
         // frame nobody reads is a wasted draw, and a frame the capture names
         // and the run does not draw is a picture missing from it.
-        let draw = config.capture.wants(index);
+        let draw = capture.wants(index);
         match run.advance(&host, index, draw)? {
             StepOutcome::Ran => {}
             StepOutcome::Finished | StepOutcome::Stopped => break,
@@ -218,7 +217,7 @@ pub async fn headless<A: App>(
                 offscreen::texture(nested.get(), run.renderer, &target.texture)?
             };
             let (_, _, pixels) = offscreen::read(&device.device, &device.queue, &texture).await?;
-            config.capture.write_frame(index, &pixels, config.size)?;
+            capture.write_frame(index, &pixels, config.size)?;
             output.frames.push((index, pixels));
         }
     }

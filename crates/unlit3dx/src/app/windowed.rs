@@ -7,7 +7,6 @@
 //! from the frame loop that draws them. What differs is who calls a tick
 //! and how it is paced; the scene is the same either way.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -28,11 +27,11 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
 use super::App;
-use super::capture::Capture;
 use super::error::RunError;
 use super::headless::RENDER_COMMAND_CAPACITY;
 use super::pace::Pacing;
 use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts, Stepping};
+use super::shape::{RunShape, WorldOwnership};
 use super::window_frame::{RunFailure, WindowFrames, drive_window};
 use crate::gpu::request_gpu;
 use crate::host::spawn_sub_world;
@@ -48,37 +47,16 @@ pub struct WindowOptions {
     pub size: (u32, u32),
     /// The render sub-world's mailbox capacity.
     pub render_capacity: usize,
-    /// Drive the worlds from the frame loop rather than threads of their
-    /// own. A browser always takes this path, whatever the option says.
-    /// A client-paced run always takes it too: threads of their own would
-    /// step behind the client's back.
-    pub stepped: bool,
-    /// Leave the frames to the client: no frame behaviour steps the
-    /// worlds, and the MCP tools step them through the parked stepper
-    /// instead.
-    pub interactive: bool,
-    /// Serve the scene over MCP on standard input and output, drawing into
-    /// an offscreen target so a client can read frames back.
-    pub mcp_stdio: bool,
-    /// Serve the scene over MCP on a TCP port as well, so network clients
-    /// reach the host while the window stays up. The address is bound once
-    /// the GPU request resolves; port 0 leaves the port to the OS. Only a
-    /// build with the mcp-http feature serves it.
-    pub mcp_http_addr: Option<SocketAddr>,
-    /// The most frames the run advances before it ends, when it is bounded.
+    /// How the run is put together: who steps the worlds, who advances the
+    /// frames, what a frame draws into and which transports reach a client.
     ///
-    /// A run with no bound ends when its window closes; one bounded here
-    /// closes its own window at that frame, so a windowed run and a headless
-    /// one stop at the same place.
-    pub max_frames: Option<u32>,
+    /// A windowed run reads the same shape a headless one does, so a switch
+    /// means the same thing on either path. A capture in the shape asks the
+    /// run to present offscreen — the swap chain image is not readable — and
+    /// to read each frame it names back after the presenter has drawn it.
+    pub shape: RunShape,
     /// How the surface presents.
     pub surface: SurfaceOptions,
-    /// The frames the run writes out, and where.
-    ///
-    /// A capture asks the run to present offscreen — the swap chain image is
-    /// not readable — and to read each frame it names back after the
-    /// presenter has drawn it.
-    pub capture: Option<Capture>,
 }
 
 impl WindowOptions {
@@ -99,13 +77,8 @@ impl Default for WindowOptions {
             title: "unlit3dx".to_owned(),
             size: (1024, 720),
             render_capacity: RENDER_COMMAND_CAPACITY,
-            stepped: cfg!(target_arch = "wasm32"),
-            interactive: false,
-            mcp_stdio: false,
-            mcp_http_addr: None,
-            max_frames: None,
+            shape: RunShape::default(),
             surface: SurfaceOptions::default(),
-            capture: None,
         }
     }
 }
@@ -163,7 +136,8 @@ pub fn windowed<A: App>(
     let panel = Snapshot::<EguiTarget>::new();
     let refresh_millihertz = Arc::new(AtomicU32::new(0));
 
-    let stepped = options.stepped || options.interactive || cfg!(target_arch = "wasm32");
+    let shape = &options.shape;
+    let stepped = shape.ownership == WorldOwnership::Hosted;
     let ports = ScenePorts {
         render: &render,
         input: &input,
@@ -177,16 +151,7 @@ pub fn windowed<A: App>(
         app.spawn_scene::<Threaded>(world, ports)
     };
     let frames = RunFrames::default();
-    let pacing = Pacing {
-        client: options.interactive
-            && cfg!(all(
-                feature = "mcp",
-                not(any(target_arch = "wasm32", target_os = "android"))
-            ))
-            && (options.mcp_stdio
-                || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some())),
-        frames: options.max_frames,
-    };
+    let pacing = shape.pacing();
     world
         .root_scope_mut()
         .spawn(bundle![pacing].singleton::<Pacing>());
@@ -216,9 +181,18 @@ pub fn windowed<A: App>(
     // requests dispatch frames into it.
     let app_entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
     let render_entity = render.entity;
-    let mcp = options.mcp_stdio;
-    let capture = options.capture.clone();
-    let captured = capture.is_some();
+    let offscreen = shape.offscreen;
+    #[cfg(all(
+        feature = "mcp",
+        not(any(target_arch = "wasm32", target_os = "android"))
+    ))]
+    let mcp = shape.transports.stdio;
+    #[cfg(all(
+        feature = "mcp-http",
+        not(any(target_arch = "wasm32", target_os = "android"))
+    ))]
+    let http = shape.transports.http;
+    let capture = shape.capture.clone();
     let failure = RunFailure::default();
     world.root_scope_mut().spawn(bundle![
         drive_window(),
@@ -246,13 +220,6 @@ pub fn windowed<A: App>(
                         panel: Some(panel.clone()),
                     },
                 );
-                // Two things need the offscreen target: the MCP tools, which
-                // read the scene back whichever transport serves them, and a
-                // capture, which reads the frame the presenter drew. A plain
-                // window draws into the swap chain, which cannot be read.
-                let offscreen = mcp
-                    || captured
-                    || (cfg!(feature = "mcp-http") && options.mcp_http_addr.is_some());
                 let outcome = (|| {
                     let (renderer, pass) = {
                         let mut nested = world
@@ -296,7 +263,7 @@ pub fn windowed<A: App>(
                     not(target_arch = "wasm32"),
                     not(target_os = "android")
                 ))]
-                if let Some(addr) = options.mcp_http_addr {
+                if let Some(addr) = http {
                     match crate::mcp::serve_http_mcp(world, addr) {
                         Ok(bound) => {
                             log::info!("the MCP HTTP server is listening on http://{bound}/");

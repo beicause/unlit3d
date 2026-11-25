@@ -117,21 +117,6 @@ impl RunOptions {
         self.mcp_http || self.mcp_http_addr.is_some()
     }
 
-    /// Whether the command line names a transport a client can reach the
-    /// run through.
-    pub fn has_transport(&self) -> bool {
-        self.mcp_stdio || self.mcp_http_run()
-    }
-
-    /// Whether the client paces the frames.
-    ///
-    /// `--interactive` alone does not: pacing it without a transport would
-    /// park the run with nothing left to unpark it, so the switch is read
-    /// as naming the run's own pacing instead.
-    pub fn client_paced(&self) -> bool {
-        self.interactive && self.has_transport()
-    }
-
     /// The most frames a run advances, when the command line bounds it.
     ///
     /// `--max-frames` names it outright. Failing that, a capture names the
@@ -165,14 +150,6 @@ impl RunOptions {
             Some(into),
         ))
     }
-
-    /// Who advances the run's frames, and the most it advances.
-    pub fn pacing(&self) -> super::pace::Pacing {
-        super::pace::Pacing {
-            client: self.client_paced(),
-            frames: self.frame_budget(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -188,7 +165,6 @@ mod tests {
         assert!(options.stepped);
         assert!(!options.headless);
         assert!(!options.mcp_http_run());
-        assert!(options.has_transport());
     }
 
     #[test]
@@ -262,7 +238,6 @@ mod tests {
             RunOptions::try_parse_from(["unlit3dx", "--headless", "--interactive", "--mcp-stdio"])
                 .expect("the switch parses");
         assert!(options.interactive);
-        assert!(options.client_paced());
         assert_eq!(options.max_frames, None);
         assert_eq!(options.frame_budget(), None);
     }
@@ -278,7 +253,6 @@ mod tests {
             "12",
         ])
         .expect("a client-paced run may still be bounded");
-        assert!(options.client_paced());
         assert_eq!(options.frame_budget(), Some(12));
     }
 
@@ -310,15 +284,6 @@ mod tests {
         ])
         .expect("the values parse");
         assert_eq!(options.frame_budget(), Some(5));
-    }
-
-    #[test]
-    fn the_client_pacing_needs_a_transport() {
-        let options = RunOptions::try_parse_from(["unlit3dx", "--interactive"])
-            .expect("the switch parses on its own");
-        assert!(options.interactive);
-        assert!(!options.has_transport());
-        assert!(!options.client_paced());
     }
 
     #[test]

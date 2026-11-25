@@ -51,6 +51,7 @@ mod frames;
 mod logging;
 mod offscreen;
 mod scene;
+mod shape;
 mod stepped;
 mod window_frame;
 
@@ -78,6 +79,7 @@ pub use offscreen::OffscreenError;
 pub use options::RunOptions;
 pub use pace::Pacing;
 pub use scene::{AudioPull, Mode, RenderPorts, RenderSetup, ScenePorts, SceneWorlds, Stepping};
+pub use shape::{DrivingMode, RunShape, TransportConfig, WorldOwnership};
 pub use windowed::{WindowOptions, windowed};
 
 #[cfg(all(
@@ -86,7 +88,7 @@ pub use windowed::{WindowOptions, windowed};
     not(target_os = "android")
 ))]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
-pub use serve::{Transports, serve};
+pub use serve::serve;
 
 /// The rate a scene's physics world runs at when its application says
 /// nothing else, in hertz.
@@ -244,44 +246,36 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         log::error!("the command line could not be applied: {error}");
         return std::process::ExitCode::FAILURE;
     }
+    // The run is put together once, here: the switches are read into one
+    // shape and every entry below consumes that shape rather than deriving
+    // its own combination. A switch this build cannot honour is refused by
+    // the parse, so nothing downstream has to check a feature gate again.
+    let shape = match RunShape::parse(&options) {
+        Ok(shape) => shape,
+        Err(error) => {
+            log::error!("{error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     // A client-paced run has no driver without a transport. The run still
     // starts — the scene is a valid one to look at — but the switch changes
     // nothing, so say so before the run blocks on a frame nothing advances.
-    if options.interactive && !options.has_transport() {
+    if options.interactive && !shape.transports.any() {
         warn_reaching_no_client();
-    }
-    // A build without the server cannot serve a transport the command line
-    // names, so it says which feature to turn on instead of running the
-    // scene with the switch quietly ignored. Both entries share the refusal,
-    // which is why it sits before either of them starts.
-    if (options.mcp_stdio || options.mcp_http_run()) && !cfg!(feature = "mcp") {
-        log::error!("the MCP server needs the mcp feature");
-        return std::process::ExitCode::FAILURE;
-    }
-    if options.mcp_http_run() && !cfg!(feature = "mcp-http") {
-        log::error!("the HTTP transport needs the mcp-http feature");
-        return std::process::ExitCode::FAILURE;
     }
     // With no transport and no length, nothing outside the process can end
     // it: no client asks it to stop and no budget runs out. That is a
     // supported way to run a scene for as long as someone watches it, so it
     // is announced rather than refused.
-    if !options.has_transport() && options.frame_budget().is_none() {
+    if !shape.transports.any() && shape.frames.is_none() {
         warn_reaching_no_end();
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     if options.headless {
-        return headless_main(app, &options);
+        return headless_main(app, &shape);
     }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    let _ = &options;
-    let mcp_http_addr = match options.mcp_http_bind() {
-        Ok(addr) => addr,
-        Err(message) => {
-            log::error!("{message}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let _ = &shape;
     let event_loop = match EventLoop::<()>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
@@ -290,12 +284,7 @@ pub fn run<A: App>(app: A) -> std::process::ExitCode {
         }
     };
     let window = WindowOptions {
-        stepped: options.stepped || cfg!(target_arch = "wasm32"),
-        interactive: options.interactive,
-        mcp_stdio: options.mcp_stdio,
-        mcp_http_addr,
-        max_frames: options.frame_budget(),
-        capture: options.capture(),
+        shape,
         ..WindowOptions::for_app::<A>()
     };
     match windowed(app, window, event_loop) {
@@ -335,12 +324,11 @@ fn warn_reaching_no_end() {
 /// those frames to its client instead, and a capture writes the frames it
 /// names as it reaches them.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode {
+fn headless_main<A: App>(app: A, shape: &RunShape) -> std::process::ExitCode {
     use crate::gpu::Gpu;
     use unlit_wgpu::capabilities::DeviceTier;
     use unlit_wgpu::context::RenderDevice;
 
-    let pacing = options.pacing();
     let gpu = match pollster::block_on(Gpu::headless(
         DeviceTier::from_env(),
         wgpu::PowerPreference::default(),
@@ -354,21 +342,11 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     };
     let device = RenderDevice::from(gpu);
     #[cfg(feature = "mcp")]
-    if options.mcp_stdio || options.mcp_http_run() {
-        let http = match options.mcp_http_bind() {
-            Ok(addr) => addr,
-            Err(error) => {
-                log::error!("{error}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
-        let transports = Transports {
-            stdio: options.mcp_stdio,
-            http,
-        };
-        // A served run shares the switches a windowed one reads: the capture
-        // names the frames it keeps, and the pacing says who advances them.
-        match serve(app, device, transports, pacing, options.capture()) {
+    if shape.transports.any() {
+        // A served run shares the shape a windowed one reads: the capture
+        // names the frames it keeps, and the driving mode says who advances
+        // them.
+        match serve(app, device, shape) {
             Ok(_) => return std::process::ExitCode::SUCCESS,
             Err(error) => {
                 log::error!("the MCP server did not start: {error}");
@@ -378,8 +356,10 @@ fn headless_main<A: App>(app: A, options: &RunOptions) -> std::process::ExitCode
     }
     let config = HeadlessConfig {
         size: A::SIZE,
-        pacing,
-        capture: options.capture().unwrap_or_default(),
+        shape: RunShape {
+            ownership: WorldOwnership::Hosted,
+            ..shape.clone()
+        },
         audio_sample_rate: AUDIO_SAMPLE_RATE,
         ..HeadlessConfig::default()
     };
@@ -414,11 +394,12 @@ fn write_mix(
         sample_rate: config.audio_sample_rate,
         channels: AUDIO_CHANNELS as u16,
     };
+    let capture = config.shape.capture.clone().unwrap_or_default();
     let mut written = Vec::new();
-    if let Some(path) = config.capture.write_audio(format, &output.audio)? {
+    if let Some(path) = capture.write_audio(format, &output.audio)? {
         written.push(path);
     }
-    if let Some(frame) = config.capture.missing(output.advanced) {
+    if let Some(frame) = capture.missing(output.advanced) {
         log::warn!(
             "the run advanced {} frames and never reached frame {frame}, so the capture is incomplete",
             output.advanced

@@ -20,7 +20,9 @@ use std::sync::Arc;
 use unlit_wgpu_test_util::{
     Ctx, Tolerance, assert_image_snapshot_with_tolerance, gpu_tests, snapshots,
 };
-use unlit3dx::app::{AUDIO_SAMPLE_RATE, Capture, HeadlessConfig, Pacing, headless as headless_run};
+use unlit3dx::app::{
+    AUDIO_SAMPLE_RATE, Capture, HeadlessConfig, RunShape, WorldOwnership, headless as headless_run,
+};
 use unlit3dx_asset_bytes::soundfont as embedded_soundfont;
 use unlit3dx_examples::demo::Demo;
 use unlit3dx_examples::scene::WINDOW_SIZE;
@@ -128,11 +130,12 @@ fn required_soundfont() -> Option<Arc<[u8]>> {
 fn config(frames: u32, capture: Vec<u32>) -> HeadlessConfig {
     HeadlessConfig {
         size: WINDOW_SIZE,
-        pacing: Pacing {
-            client: false,
+        shape: RunShape {
+            ownership: WorldOwnership::Hosted,
             frames: Some(frames),
+            capture: Some(Capture::new(capture, None)),
+            ..RunShape::default()
         },
-        capture: Capture::new(capture, None),
         audio_sample_rate: AUDIO_SAMPLE_RATE,
         ..Default::default()
     }

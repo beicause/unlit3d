@@ -15,6 +15,7 @@ use std::net::AddrParseError;
 use std::path::PathBuf;
 
 use unlit_ecs::EntityAccessError;
+#[cfg(feature = "mcp")]
 use unlit_ecs::mcp::{ToolError, ToolErrorKind};
 
 use super::capture::{CaptureError, CaptureWriteError};
@@ -102,14 +103,12 @@ pub enum RunError {
     /// The MCP HTTP transport could not be bound.
     #[error("the MCP HTTP server failed to start: {0}")]
     Http(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// The MCP stdio transport was asked for, but this build does not serve it.
+    #[error("the MCP server needs the mcp feature")]
+    NoMcpServer,
     /// The transport was asked for, but this build does not serve it.
     #[error("the HTTP transport needs the mcp-http feature")]
     NoHttpTransport,
-    /// A client-paced run was given no transport to be driven through.
-    #[error(
-        "a client-paced host has no driver without a transport; name one with Transports, or let the host pace its own frames"
-    )]
-    NoDriver,
     /// The host paces its own frames, so nothing else may step it.
     #[error("the host paces its own frames and takes no stepping")]
     SelfPaced,
@@ -146,6 +145,7 @@ impl From<CaptureWriteError> for RunError {
     }
 }
 
+#[cfg(feature = "mcp")]
 impl From<RunError> for ToolError {
     /// A tool call reports the same failure the run would have logged, told
     /// apart by whether the caller can do anything about it: a request the run
@@ -154,8 +154,8 @@ impl From<RunError> for ToolError {
     fn from(error: RunError) -> Self {
         let kind = match error {
             RunError::AudioRate
+            | RunError::NoMcpServer
             | RunError::NoHttpTransport
-            | RunError::NoDriver
             | RunError::SelfPaced
             | RunError::NotInteractive
             | RunError::AlreadyRecording => ToolErrorKind::Rejected,
@@ -169,6 +169,7 @@ impl From<RunError> for ToolError {
 mod tests {
     use std::error::Error as _;
 
+    #[cfg(feature = "mcp")]
     use unlit_ecs::mcp::ToolErrorKind;
 
     use super::RunError;
@@ -208,6 +209,7 @@ mod tests {
 
     /// A tool call tells apart what the caller can correct from what it
     /// cannot, which is the reason the run's errors are not just messages.
+    #[cfg(feature = "mcp")]
     #[test]
     fn a_tool_call_branches_on_whether_the_caller_can_help() {
         use unlit_ecs::mcp::ToolError;

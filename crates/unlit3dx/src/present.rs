@@ -125,6 +125,12 @@ pub enum TurnError {
 /// through are told apart rather than folded into one "nothing happened":
 /// only the first leaves the worlds ready for the next turn to drive, and the
 /// second must not reach the render world at all.
+///
+/// The two reasons a turn finds nothing to present through are told apart too,
+/// because they resume differently: a suspended host draws again once it is
+/// resumed, while a host with no presentation path draws once the path is
+/// built. A run that never builds one is waiting on a setup that failed, which
+/// is diagnosable only if this is what it says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnOutcome {
     /// A frame was drawn and presented.
@@ -132,9 +138,12 @@ pub enum TurnOutcome {
     /// The surface handed out no image, so nothing was drawn and no world
     /// ticked.
     Skipped,
-    /// Nothing presented, because the host is suspended or has no presentation
-    /// path yet.
-    Waiting,
+    /// The host is suspended: nothing is drawn until it resumes, and no world
+    /// ticks while it is away.
+    Suspended,
+    /// The host has no presentation path yet, so nothing is drawn and no world
+    /// ticks: the render world's clients queue jobs that assume its setup ran.
+    Unprepared,
 }
 
 /// Drive a render turn only after acquiring an image. The preparation callback
@@ -146,8 +155,8 @@ pub enum TurnOutcome {
 /// through. Its clients send jobs that assume its own setup has run — the
 /// scene asks its render world for a camera and looks the mesh source up while
 /// answering — and the path coming into being is what says that setup
-/// finished, so a turn that runs before it is a [`TurnOutcome::Waiting`] turn
-/// that touches nothing.
+/// finished, so a turn that runs before it is a [`TurnOutcome::Unprepared`]
+/// turn that touches nothing.
 pub fn present_turn(
     world: &World,
     render: Entity,
@@ -160,12 +169,12 @@ pub fn present_turn(
         .iter()
         .any(|state| !state.0)
     {
-        return Ok(TurnOutcome::Waiting);
+        return Ok(TurnOutcome::Suspended);
     }
     let mut presenters = world.root_scope().query::<&mut Presenter>();
     let mut rows = presenters.iter();
     let Some(presenter) = rows.next() else {
-        return Ok(TurnOutcome::Waiting);
+        return Ok(TurnOutcome::Unprepared);
     };
     if rows.next().is_some() {
         return Err(TurnError::MultiplePresenters);
@@ -202,4 +211,37 @@ pub fn present_turn(
 /// advancing on its own.
 pub fn pump_presented() -> (OnAboutToWait, OnWindowEvent) {
     pump_presented_with(Some(Box::new(LocalTasks::pump)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unlit_ecs::{Entity, World, bundle};
+    use unlit3d::winit::builtin::Resumed;
+
+    /// Turn a host world once, with a render world the turn never reaches.
+    fn a_turn(world: &World) -> Result<TurnOutcome, TurnError> {
+        let render = Entity::from_bits(0);
+        let mut frame = Frame {
+            delta_time: 0.0,
+            index: 0,
+        };
+        present_turn(world, render, &mut frame, || Ok(()))
+    }
+
+    #[test]
+    fn a_suspended_host_is_told_apart_from_one_without_a_presentation_path() {
+        let mut suspended = World::new();
+        suspended.root_scope_mut().spawn(bundle![Resumed(false)]);
+        assert!(
+            matches!(a_turn(&suspended), Ok(TurnOutcome::Suspended)),
+            "a suspended host draws again once it resumes"
+        );
+        let mut unprepared = World::new();
+        unprepared.root_scope_mut().spawn(bundle![Resumed(true)]);
+        assert!(
+            matches!(a_turn(&unprepared), Ok(TurnOutcome::Unprepared)),
+            "a host that never built its path leaves its render world unturned"
+        );
+    }
 }

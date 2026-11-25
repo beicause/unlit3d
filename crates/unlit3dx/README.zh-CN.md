@@ -382,7 +382,10 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 这条路。两条路都收一个 `SurfaceOptions`：呈现模式与允许在途的帧数，它们决定交换链是否
 等显示器。`present_turn` 是每帧那一趟事务：排空子 world 的 job、折叠它收到的输入、跑它的本地任务、
 分发帧，再呈现它。子 world 没有自己的回合，所以驱动它那一帧的地方也是让它输入队列
-不堆满的地方。`pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随
+不堆满的地方。一趟事务的结果是 `TurnOutcome`，按变体区分：帧已呈现、表面没给出图
+（`Skipped`）、宿主挂起（`Suspended`）、宿主还没建起呈现路径（`Unprepared`）。后两者
+都不画任何东西，但挂起的宿主恢复后会重新画，没有呈现路径的宿主则在等一个可能已经失败
+的 setup，所以它们不是一个答案。`pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随
 窗口变化。`app` 模块的窗口入口就是这套行为的组装版，除非调用方自己在拼窗口，否则用它。绘制 world 所需的 render
 桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`
 自带一份，位于 `src/render.rs`。
@@ -393,7 +396,14 @@ instance，并用一个窗口 surface 探测适配器、随后丢弃它，因此
 馈送、定步配速（`Stepping`）、离屏目标与 MCP 服务器的接线都在里面。运行自己的
 开关（`--headless`、`--interactive`、`--mcp-stdio`、`--mcp-http`、`--stepped`、
 `--max-frames`、`--capture-frames`、`--capture-out`）——帧数决定运行在哪里结束，
-与配速无关：`--interactive` 把帧交给客户端，其余情况由运行自己配速。捕获点名要留
+与配速无关：`--interactive` 把帧交给客户端，其余情况由运行自己配速。这些开关由
+`RunShape::parse` 只读一次，读成四个入口共同消费的 `RunShape`：`ownership` 说 world
+住在自己的线程上还是住在宿主里（`--stepped`、`--interactive`、浏览器），`driving` 说
+帧由运行自己的循环推进还是由客户端推进（`--interactive` 且本构建真的提供传输），
+`offscreen` 说帧是画进目标还是画到表面（`--headless`、有传输、有捕获），`transports`
+把 stdio 与 HTTP 放在一起而不是二选一，`frames`/`capture` 携带长度与要留的帧。本构建
+满足不了的开关——没有 `mcp-http` 特性却给 `--mcp-http`——在解析处就被拒绝，所以没有
+哪个入口需要再查一次特性门。捕获点名要留
 哪些帧、写到哪个目录；在窗口运行上它还会要求走离屏路径，因为交换链的图读不回来——
 与应用的 `App::Args` 由同一个 clap 解析器读入，一份 `--help` 同时描述两者；解析好的
 参数以结构体交给 `App::configure`，未声明的名字会被拒绝。日志与捕获落盘
