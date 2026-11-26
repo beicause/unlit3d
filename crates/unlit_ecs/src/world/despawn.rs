@@ -18,6 +18,14 @@ use super::World;
 /// means the callbacks keep finding new children, not that the cascade is slow.
 const MAX_CASCADE_PASSES: usize = 64;
 
+/// A cascade temporarily owns these buffers; re-entry takes independent ones.
+#[derive(Default)]
+pub(super) struct CascadeScratch {
+    ordered: Vec<Entity>,
+    stack: Vec<(Entity, bool)>,
+    called: EntityHashSet,
+}
+
 impl World {
     /// Despawn `entity` and its whole subtree, on behalf of `caller`.
     ///
@@ -42,20 +50,26 @@ impl World {
         }
         self.location(entity)?;
         self.check_owns(caller, entity)?;
-        // Which entities have already had their callback in this cascade. A
-        // row is held back until its children are gone, so the entity that put
-        // one back is visited again; without this it would run its callback
-        // again, and one that puts a child back on every run would never let
-        // the cascade finish. The set is this call's own, so a panic drops it
-        // with the stack rather than leaving a world marked as dying.
-        let mut called = EntityHashSet::default();
-        let mut doomed = Vec::new();
+        let mut scratch = core::mem::take(&mut self.despawn);
+        let result = self.cascade(entity, &mut scratch);
+        scratch.called.clear();
+        scratch.ordered.clear();
+        self.despawn = scratch;
+        result
+    }
+
+    fn cascade(
+        &mut self,
+        entity: Entity,
+        scratch: &mut CascadeScratch,
+    ) -> Result<(), EntityAccessError> {
         for _ in 0..MAX_CASCADE_PASSES {
             // Read the subtree every pass: it is the callbacks' to change, and
             // a pass that had to leave a parent standing leaves work behind.
-            self.tree.subtree_post_order(entity, &mut doomed);
-            for victim in &doomed {
-                self.remove_entity(*victim, &mut called);
+            self.tree
+                .subtree_post_order(entity, &mut scratch.ordered, &mut scratch.stack);
+            for &victim in &scratch.ordered {
+                self.remove_entity(victim, &mut scratch.called);
             }
             // The row of `entity` going is what ends the cascade. A pass that
             // took nothing has not necessarily finished: a callback can put a

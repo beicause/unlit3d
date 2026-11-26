@@ -504,19 +504,20 @@ pub fn dispatch_input(world: &World) -> bool {
     let Some(entity) = world.root_scope().singleton::<InputEvents>() else {
         return false;
     };
-    // The batch is copied out while the component is borrowed, so a callback
-    // may read the world — including this component — freely.
-    let events = {
+    // Give up the ECS borrow before calling behaviours. The reader pins the
+    // batch while callbacks run without locking out other readers.
+    let reader = {
         let Ok(mut row) = world.root_scope().try_query_one::<&InputEvents>(entity) else {
             log::warn!("the input buffer {entity:?} went out of reach during the tick");
             return false;
         };
-        row.get().with_batch(|batch| batch.to_vec())
+        row.get().events.clone()
     };
+    reader.with_batch(|events| deliver_input(world, events))
+}
 
-    let delivered = !events.is_empty();
-
-    for event in &events {
+fn deliver_input(world: &World, events: &[InputEvent]) -> bool {
+    for event in events {
         match event {
             InputEvent::Key(event) => {
                 for (on_key, entity) in world.root_scope().query::<(&mut OnKey, Entity)>().iter() {
@@ -570,7 +571,7 @@ pub fn dispatch_input(world: &World) -> bool {
         }
     }
 
-    delivered
+    !events.is_empty()
 }
 
 #[cfg(test)]

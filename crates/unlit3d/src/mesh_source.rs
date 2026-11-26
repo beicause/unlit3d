@@ -524,6 +524,7 @@ impl SceneSource for MeshSource {
         {
             profiling::scope!("mesh_source.assemble");
             self.assemble_frame(world, scene, &uniforms);
+            self.caches.visible_cache.clear();
         }
     }
 }

@@ -857,6 +857,28 @@ fn replacing_a_part_rebuilds_the_virtual_root() {
     assert_eq!(*order.borrow(), vec!["root"]);
 }
 
+#[test]
+fn sweeping_a_dirty_recipe_keeps_the_rebuild_count_exact() {
+    let mut graph = ResourceGraph::new();
+    let part = graph.insert(Virtual, None);
+    let dead = graph.insert(Virtual, Some(Rebuild::new(|_| panic!("discarded recipe"))));
+    graph.add_dependency(&dead, &part);
+    for _ in 0..128 {
+        graph.replace(&part, Virtual);
+        assert_eq!(graph.dirty_rebuilds, 1, "repeated invalidation counts once");
+    }
+    let unrelated: Vec<_> = (0..1024).map(|_| graph.insert(Virtual, None)).collect();
+    drop(dead);
+    graph.maintain();
+    assert_eq!(graph.dirty_rebuilds, 0);
+    assert_eq!(
+        graph.order.capacity(),
+        0,
+        "live clean nodes require no rebuild walk"
+    );
+    assert_eq!(graph.len(), unrelated.len() + 1);
+}
+
 /// A virtual node is a graph citizen with no handle: it resolves to
 /// [`Virtual`] and to nothing else.
 #[test]

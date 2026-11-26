@@ -2,7 +2,7 @@ use super::*;
 use crate::components::{GpuRenderPipeline, InstanceVisibility, Transform, ZSortedDrawing};
 use crate::lit::{LitMeshDesc, LitPipelineKey};
 use crate::mesh::MorphDeltas;
-use crate::mesh::{MeshDescriptor, MeshDraw, MeshIndexing};
+use crate::mesh::{MeshDescriptor, MeshIndexing};
 use crate::pass::PassInfo;
 use crate::source::{DrawSource, spawn_context};
 use crate::target::{FrameId, PassId, RenderTargetId};

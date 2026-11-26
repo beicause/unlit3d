@@ -11,6 +11,8 @@
 //! audio thread only turns messages into samples and sums every source into
 //! the stream's interleaved frames.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 pub use rustysynth_ext::{MidiFile, MidiFileLoopType, MidiMessage, SoundFont, Synthesizer};
@@ -248,15 +250,85 @@ pub struct SynthVoice {
     /// The synthesizer that turns messages into samples, built on the first
     /// fill from the rate that fill reports.
     pub synthesizer: Option<Synthesizer>,
-    /// Messages waiting for their moment, in seconds from the next fill's
-    /// start.
-    queued: Vec<(f64, MidiMessage)>,
+    queue: MidiQueue,
     /// The left channel's block, reused across fills.
     left: Vec<f32>,
     /// The right channel's block, reused across fills.
     right: Vec<f32>,
     /// Whether building gave up, so no queue is kept for it any more.
     gave_up: bool,
+}
+
+#[derive(Default)]
+struct MidiQueue {
+    elapsed: f64,
+    next: u64,
+    entries: BinaryHeap<ScheduledMidi>,
+}
+
+struct ScheduledMidi {
+    at: f64,
+    ordinal: u64,
+    message: MidiMessage,
+}
+
+impl PartialEq for ScheduledMidi {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for ScheduledMidi {}
+
+impl PartialOrd for ScheduledMidi {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScheduledMidi {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .at
+            .total_cmp(&self.at)
+            .then_with(|| other.ordinal.cmp(&self.ordinal))
+    }
+}
+
+impl MidiQueue {
+    fn push(&mut self, delay: f64, message: MidiMessage) {
+        let delay = if delay.is_finite() {
+            delay.max(0.0)
+        } else {
+            0.0
+        };
+        self.entries.push(ScheduledMidi {
+            at: self.elapsed + delay,
+            ordinal: self.next,
+            message,
+        });
+        self.next += 1;
+    }
+
+    fn pop_before(&mut self, frames: usize, sample_rate: u32) -> Option<(usize, MidiMessage)> {
+        let delay = (self.entries.peek()?.at - self.elapsed).max(0.0);
+        let offset = crate::time::AudioSampleTime::from_secs(delay, sample_rate).0;
+        (offset < frames).then(|| {
+            (
+                offset,
+                self.entries.pop().expect("the head was present").message,
+            )
+        })
+    }
+
+    fn advance(&mut self, frames: usize, sample_rate: u32) {
+        if self.entries.is_empty() {
+            self.elapsed = 0.0;
+            self.next = 0;
+        } else {
+            self.elapsed += frames as f64 / f64::from(sample_rate);
+        }
+    }
 }
 
 impl Bundle for SynthVoice {
@@ -274,7 +346,7 @@ impl SynthVoice {
         let voice = Self {
             font: Some(font.clone()),
             synthesizer: None,
-            queued: Vec::new(),
+            queue: MidiQueue::default(),
             left: Vec::new(),
             right: Vec::new(),
             gave_up: false,
@@ -317,7 +389,7 @@ impl SynthVoice {
             log::error!("a synth voice cannot be built ({reason}); it stays silent");
         }
         self.synthesizer = None;
-        self.queued.clear();
+        self.queue.entries.clear();
         self.gave_up = true;
     }
 }
@@ -617,8 +689,7 @@ pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job {
         if voice.gave_up {
             return;
         }
-        let delay = crate::time::FrameDelta::from_secs(delay).as_secs();
-        voice.queued.push((delay, kind.into_message()));
+        voice.queue.push(delay, kind.into_message());
     })
 }
 
@@ -648,10 +719,9 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
         return;
     }
     let frames = chunk.frames();
-    let seconds_per_frame = 1.0 / f64::from(chunk.sample_rate);
     let SynthVoice {
         synthesizer,
-        queued,
+        queue,
         left,
         right,
         ..
@@ -661,18 +731,8 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
     };
     left.resize(frames, 0.0);
     right.resize(frames, 0.0);
-    // Taken out so the messages can be walked while the fields are borrowed to
-    // render; put back with its allocation, whatever is left over.
-    let mut pending = std::mem::take(queued);
-    pending.sort_by(|one, other| one.0.total_cmp(&other.0));
     let mut wrote = 0;
-    let mut applied = 0;
-    for (delay, message) in &pending {
-        let offset = crate::time::AudioSampleTime::from_secs(*delay, chunk.sample_rate);
-        if offset.0 >= frames {
-            break;
-        }
-        let offset = offset.0;
+    while let Some((offset, message)) = queue.pop_before(frames, chunk.sample_rate) {
         if offset > wrote {
             synthesizer.render(&mut left[wrote..offset], &mut right[wrote..offset]);
             wrote = offset;
@@ -681,7 +741,7 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
             status,
             data1,
             data2,
-        } = *message
+        } = message
         {
             synthesizer.process_midi_message(
                 i32::from(status & 0x0F),
@@ -690,15 +750,9 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
                 i32::from(data2),
             );
         }
-        applied += 1;
     }
     synthesizer.render(&mut left[wrote..frames], &mut right[wrote..frames]);
-    pending.drain(..applied);
-    let elapsed = frames as f64 * seconds_per_frame;
-    for (delay, _) in &mut pending {
-        *delay = (*delay - elapsed).max(0.0);
-    }
-    *queued = pending;
+    queue.advance(frames, chunk.sample_rate);
     add_stereo(left, right, chunk);
 }
 

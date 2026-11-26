@@ -6,7 +6,7 @@ fn voice(world: &mut World) -> Entity {
     let voice = SynthVoice {
         font: None,
         synthesizer: None,
-        queued: Vec::new(),
+        queue: MidiQueue::default(),
         left: Vec::new(),
         right: Vec::new(),
         gave_up: false,
@@ -38,7 +38,12 @@ fn queued(world: &World, voice: Entity) -> Vec<(f64, MidiMessage)> {
         .try_query_one::<&SynthVoice>(voice)
         .map(|mut voice| {
             let voice = voice.get();
-            voice.queued.clone()
+            let mut entries: Vec<_> = voice.queue.entries.iter().collect();
+            entries.sort_unstable_by_key(|entry| entry.ordinal);
+            entries
+                .into_iter()
+                .map(|entry| (entry.at - voice.queue.elapsed, entry.message))
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -65,6 +70,32 @@ fn note(key: u8) -> MidiMessage {
         velocity: 100,
     }
     .into_message()
+}
+
+#[test]
+fn midi_fills_keep_future_deadlines_and_fifo_order_on_ties() {
+    let mut queue = MidiQueue::default();
+    const RATE: u32 = 32_000;
+    let block = 125;
+    let seconds = block as f64 / f64::from(RATE);
+    for key in 4..100 {
+        queue.push(100.0, note(key));
+    }
+    queue.push(seconds, note(2));
+    queue.push(seconds, note(3));
+    queue.push(0.0, note(1));
+    assert_eq!(queue.pop_before(block, RATE), Some((0, note(1))));
+    assert_eq!(queue.pop_before(block, RATE), None);
+    queue.advance(block, RATE);
+    queue.push(0.0, note(4));
+    for key in 2..=4 {
+        assert_eq!(queue.pop_before(block, RATE), Some((0, note(key))));
+    }
+    let storage = queue.entries.capacity();
+    assert_eq!(queue.pop_before(block, RATE), None);
+    assert_eq!(queue.entries.len(), 96);
+    assert_eq!(queue.entries.capacity(), storage);
+    assert_eq!(queue.entries.peek().unwrap().at, 100.0);
 }
 
 /// A note on at `time`.

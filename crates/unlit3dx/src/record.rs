@@ -290,6 +290,46 @@ pub(crate) fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
     bytes
 }
 
+struct FlacSamples<'a> {
+    format: AudioFormat,
+    remaining: &'a [f32],
+    block: Vec<i32>,
+}
+
+impl flacenc::source::Source for FlacSamples<'_> {
+    fn channels(&self) -> usize {
+        usize::from(self.format.channels.max(1))
+    }
+
+    fn bits_per_sample(&self) -> usize {
+        usize::from(BITS_PER_SAMPLE)
+    }
+
+    fn sample_rate(&self) -> usize {
+        self.format.sample_rate.max(1) as usize
+    }
+
+    fn len_hint(&self) -> Option<usize> {
+        Some(self.remaining.len() / self.channels())
+    }
+
+    fn read_samples<F: flacenc::source::Fill>(
+        &mut self,
+        block_size: usize,
+        dest: &mut F,
+    ) -> Result<usize, flacenc::error::SourceError> {
+        let channels = self.channels();
+        let frames = (self.remaining.len() / channels).min(block_size);
+        let (samples, remaining) = self.remaining.split_at(frames * channels);
+        self.block.clear();
+        self.block
+            .extend(samples.iter().map(|&sample| i32::from(quantize(sample))));
+        dest.fill_interleaved(&self.block)?;
+        self.remaining = remaining;
+        Ok(frames)
+    }
+}
+
 /// Write interleaved samples as a lossless FLAC stream.
 ///
 /// The samples quantize to 16 bits first, exactly as [`write_wav`] does, so
@@ -300,22 +340,16 @@ pub(crate) fn write_flac(format: AudioFormat, samples: &[f32]) -> Result<Vec<u8>
     use flacenc::component::BitRepr;
     use flacenc::error::Verify;
 
-    let channels = usize::from(format.channels.max(1));
-    let quantized: Vec<i32> = samples
-        .iter()
-        .map(|sample| i32::from(quantize(*sample)))
-        .collect();
     let config = flacenc::config::Encoder::default();
     let block_size = config.block_size;
     let verified = config
         .into_verified()
         .map_err(|(_, error)| RecordingError::Verify(error))?;
-    let source = flacenc::source::MemSource::from_samples(
-        &quantized,
-        channels,
-        usize::from(BITS_PER_SAMPLE),
-        format.sample_rate.max(1) as usize,
-    );
+    let source = FlacSamples {
+        format,
+        remaining: samples,
+        block: Vec::new(),
+    };
     let mut stream = flacenc::encode_with_fixed_block_size(&verified, source, block_size)?;
     // The trailing frame holds whatever samples the mix's length leaves over,
     // and the encoder lets that drag the stream's declared minimum block size
@@ -486,6 +520,33 @@ mod tests {
         AudioChunk, AudioFillOrder, GlobalAudioGain, OnAudioFill, dispatch_audio_fill,
     };
     use zerocopy::FromBytes;
+
+    #[test]
+    fn flac_quantization_reuses_one_block_for_the_whole_recording() {
+        use flacenc::source::{FrameBuf, Source};
+
+        const BLOCK: usize = 128;
+        let format = AudioFormat {
+            channels: 2,
+            sample_rate: 48_000,
+        };
+        let samples = vec![0.5; (BLOCK * 32 + 1) * usize::from(format.channels)];
+        let mut source = FlacSamples {
+            format,
+            remaining: &samples,
+            block: Vec::new(),
+        };
+        let mut dest = FrameBuf::with_size(source.channels(), BLOCK).unwrap();
+        assert_eq!(source.read_samples(BLOCK, &mut dest).unwrap(), BLOCK);
+        let storage = (source.block.as_ptr(), source.block.capacity());
+        assert!(storage.1 < samples.len());
+        for _ in 1..32 {
+            assert_eq!(source.read_samples(BLOCK, &mut dest).unwrap(), BLOCK);
+            assert_eq!((source.block.as_ptr(), source.block.capacity()), storage);
+        }
+        assert_eq!(source.read_samples(BLOCK, &mut dest).unwrap(), 1);
+        assert!(source.remaining.is_empty());
+    }
 
     fn constant_source(world: &mut World, level: f32) -> Entity {
         world.root_scope_mut().spawn(bundle![OnAudioFill::new(

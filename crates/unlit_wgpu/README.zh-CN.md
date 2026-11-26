@@ -565,7 +565,7 @@ for draw in scene.draws {
 [`Scene::record`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L446) 只按给定顺序录制；
 [`Scene::record_composited`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L473) 再进一步——把多个场景
 合成进一个 pass，按每条绘制的 [`DrawOrder`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/src/scene.rs#L267) 排序：按场景顺序先录
-顺次绘制，再合并所有场景的深度排序池从远到近，最后是压尾绘制。
+顺次绘制，再合并所有场景的深度排序池从远到近，最后是压尾绘制。调用 `record_composited` 时传入可复用的 `CompositeScratch`；深度相同的绘制保留提交顺序。
 
 ### 管线特化：一个变体、一份蓝图、一条缓存的管线
 

@@ -17,6 +17,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
+use hashbrown::HashMap;
 use rapier3d::prelude::*;
 
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
@@ -84,7 +85,7 @@ pub(crate) struct PhysicsEvents {
     collector: ChannelEventCollector,
     /// The moving bodies' velocities, sampled before the step so a contact
     /// can be reported with the speed the pair was closing at.
-    velocities: Vec<(RigidBodyHandle, Vec3)>,
+    velocities: HashMap<RigidBodyHandle, Vec3>,
 }
 
 impl PhysicsEvents {
@@ -98,7 +99,7 @@ impl PhysicsEvents {
         Self {
             receiver,
             collector: ChannelEventCollector::new(collision_sender, force_sender, tear_sender),
-            velocities: Vec::new(),
+            velocities: HashMap::new(),
         }
     }
 
@@ -116,10 +117,7 @@ impl PhysicsEvents {
 
     /// The velocity a body had before the step, or zero if it was still.
     fn velocity(&self, body: RigidBodyHandle) -> Vec3 {
-        self.velocities
-            .iter()
-            .find(|(known, _)| *known == body)
-            .map_or(Vec3::ZERO, |(_, velocity)| *velocity)
+        self.velocities.get(&body).copied().unwrap_or(Vec3::ZERO)
     }
 }
 

@@ -20,12 +20,14 @@
 //! [`spawn_context`](crate::source::spawn_context); the renderer keeps the
 //! context's entity ids so it can reach the device and queue every frame.
 
-use std::collections::{BTreeMap, BTreeSet};
+use core::ops::Range;
+use std::collections::BTreeMap;
 
+use hashbrown::{HashMap, HashSet};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 use unlit_wgpu::context::DeviceLost;
 use unlit_wgpu::globals::Globals;
-use unlit_wgpu::scene::{Scene, ViewportRect};
+use unlit_wgpu::scene::{CompositeScratch, Scene, ViewportRect};
 
 use crate::components::RenderLoadOps;
 use crate::frame::FrameClock;
@@ -108,7 +110,11 @@ pub struct Renderer {
     placement_warnings: PlacementWarnings,
     /// The sources some pass reached this frame, reused to sort out the ones
     /// no pass reached.
-    reached: BTreeSet<Entity>,
+    reached: HashSet<Entity>,
+    /// Source keys captured during the build walk, partitioned by pass.
+    source_keys: Vec<(SourceOrder, Entity)>,
+    source_ranges: HashMap<Entity, Range<usize>>,
+    composite: CompositeScratch,
     /// The sources no pass reached this frame, reused between frames.
     unreached: Vec<Entity>,
     /// The loss this renderer has already reported, so a dead device is
@@ -223,7 +229,10 @@ impl Renderer {
             source_warnings: OrderWarnings::default(),
             scenes: BTreeMap::new(),
             placement_warnings: PlacementWarnings::default(),
-            reached: BTreeSet::new(),
+            reached: HashSet::new(),
+            source_keys: Vec::new(),
+            source_ranges: HashMap::new(),
+            composite: CompositeScratch::default(),
             unreached: Vec::new(),
             reported_loss: None,
             reported_missing_clock: false,
@@ -354,6 +363,8 @@ impl Renderer {
         }
         self.reached.clear();
         self.unreached.clear();
+        self.source_keys.clear();
+        self.source_ranges.clear();
 
         // Build phase: each source fills the scene of the pass it is built for,
         // taking its own short-lived borrow of the world for the GPU state it
@@ -363,17 +374,15 @@ impl Renderer {
         // order they record in is resolved below, from the `order` field of each
         // entity.
         //
-        // Each source is fetched and dropped before the next one, so no list of
-        // entities is built: the query hands out a `&mut Source` while the rest
-        // of the world stays shared for `build_scene` to read.
+        // This query also records placement (including parked passes) and
+        // saves the order keys used by the record phase.
         {
             profiling::scope!("renderer.frame.build_sources");
             let context = self.context;
             let root = world.root_scope();
             for (pass_entity, pass) in root.query::<(Entity, &FramePass)>().iter() {
-                let Some(info) = self.pass_info(world, pass_entity, pass) else {
-                    continue;
-                };
+                let info = self.pass_info(world, pass_entity, pass);
+                let start = self.source_keys.len();
                 // Each source builds against its own subtree: the source
                 // entity is the scope, so what it draws is what hangs below
                 // it, and two sources under one pass draw different sets
@@ -382,10 +391,15 @@ impl Renderer {
                 // live in the shared subtree, which every scope sees.
                 let pass_scope = world.try_scope(pass_entity).unwrap_or(root);
                 for (entity, source) in pass_scope.query::<(Entity, &mut Source)>().iter() {
+                    self.reached.insert(entity);
+                    let Some(info) = info else { continue };
+                    self.source_keys.push((source.order, entity));
                     let scope = world.try_scope(entity).unwrap_or(pass_scope);
                     let scene = self.scene_for(pass_entity, entity);
                     source.build_scene(&scope, context, info, scene, &mut encoder);
                 }
+                self.source_ranges
+                    .insert(pass_entity, start..self.source_keys.len());
             }
         }
 
@@ -433,15 +447,13 @@ impl Renderer {
             let Some(attachments) = pass.attachments(world, self.context) else {
                 continue;
             };
-            let pass_scope = world.try_scope(pass_entity).unwrap_or(root);
             {
                 profiling::scope!("renderer.frame.resolve_sources");
-                self.sources.resolve(
-                    pass_scope
-                        .query::<(Entity, &Source)>()
-                        .iter()
-                        .map(|(entity, source)| (source.order, entity)),
-                );
+                let keys = self
+                    .source_ranges
+                    .get(&pass_entity)
+                    .map_or(&[][..], |range| &self.source_keys[range.clone()]);
+                self.sources.resolve(keys.iter().copied());
                 // Ambiguities are remembered per pass, so two passes with
                 // their own tied sources do not keep overwriting each other's
                 // report and warn every frame.
@@ -498,7 +510,12 @@ impl Renderer {
                         scenes.push(&slot.scene);
                     }
                 }
-                Scene::record_composited(&mut render_pass, &scenes, Some(whole));
+                Scene::record_composited(
+                    &mut render_pass,
+                    &scenes,
+                    Some(whole),
+                    &mut self.composite,
+                );
                 // Clearing here drops the borrows the buffer holds, so the
                 // next pass's source resolution can take the renderer
                 // mutably again; the allocation itself stays for reuse.
@@ -550,12 +567,6 @@ impl Renderer {
     /// pass asks it to build anything, and the frame does not show it.
     fn note_placement(&mut self, world: &World) {
         let root = world.root_scope();
-        for (pass_entity, _) in root.query::<(Entity, &FramePass)>().iter() {
-            let pass_scope = world.try_scope(pass_entity).unwrap_or(root);
-            for (entity, _) in pass_scope.query::<(Entity, &Source)>().iter() {
-                self.reached.insert(entity);
-            }
-        }
         for (entity, _) in root.query::<(Entity, &Source)>().iter() {
             if !self.reached.contains(&entity) {
                 self.unreached.push(entity);
@@ -676,7 +687,7 @@ mod tests {
             pass.park();
         }
 
-        renderer.note_placement(&world);
+        renderer.render(&world);
         assert!(
             !renderer.reached.contains(&beside),
             "a source beside the passes is reached by none of them"

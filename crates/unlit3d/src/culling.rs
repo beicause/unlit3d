@@ -26,17 +26,18 @@ pub fn is_culled(aabb: Aabb, world_from_local: &Affine3A, frustum: &FrustumPlane
 /// A mesh that passed culling, with its placement resolved.
 ///
 /// Culling resolves only what every family needs to decide *whether* and
-/// *where* to draw: the entity and its world transform. What per-instance state
+/// *where* to draw: the mesh handle, entity and world transform. What per-instance state
 /// a draw carries is the drawing family's own business, so it is not resolved
 /// here — a family reads the components it wants, for the entity it is given,
 /// while it packs its own instance record.
 ///
 /// A culled entity never reaches a family at all, so nothing is specialized or
 /// registered for a mesh the camera cannot see.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct VisibleMesh {
     /// The entity the mesh belongs to.
     pub(crate) entity: Entity,
+    pub(crate) gpu: GpuMesh,
     /// The entity's world transform, resolved from its optional [Transform]
     /// and defaulting to the identity.
     pub(crate) world_from_local: Affine3A,
@@ -83,6 +84,7 @@ pub(crate) fn collect_visible(
         }
         out.push(VisibleMesh {
             entity,
+            gpu: gpu_mesh.clone(),
             world_from_local: model,
         });
     }

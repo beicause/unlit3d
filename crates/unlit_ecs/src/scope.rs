@@ -102,9 +102,15 @@ impl ScopeTree {
     /// the parent it lived in, so a child's callback still sees living
     /// ancestors. `ordered` is cleared first, so a caller that sweeps pass
     /// after pass reuses one buffer.
-    pub(crate) fn subtree_post_order(&self, root: Entity, ordered: &mut Vec<Entity>) {
+    pub(crate) fn subtree_post_order(
+        &self,
+        root: Entity,
+        ordered: &mut Vec<Entity>,
+        stack: &mut Vec<(Entity, bool)>,
+    ) {
         ordered.clear();
-        let mut stack = vec![(root, false)];
+        stack.clear();
+        stack.push((root, false));
         while let Some((entity, expanded)) = stack.pop() {
             if expanded {
                 ordered.push(entity);

@@ -477,9 +477,10 @@ impl Scene {
         pass: &mut wgpu::RenderPass<'_>,
         scenes: &[&Scene],
         fallback: Option<ViewportRect>,
+        scratch: &mut CompositeScratch,
     ) {
         let mut state = PassState::default();
-        record_composited_into(pass, &mut state, scenes, fallback);
+        record_composited_into(pass, &mut state, scenes, fallback, scratch);
     }
 }
 
@@ -524,14 +525,16 @@ fn record_draw<'a, P: RenderPassInterface<'a>>(
     }
 }
 
-/// A depth-sorted draw waiting for the pool to be complete.
-///
-/// The pool interleaves scenes, so the draw carries the region its own scene
-/// resolves to rather than relying on the pass holding it.
-struct SortedDraw<'a> {
-    draw: &'a DrawEntry,
+/// Reusable depth-ordering storage for [`Scene::record_composited`].
+#[derive(Default)]
+pub struct CompositeScratch {
+    sorted: Vec<SortedDraw>,
+}
+
+struct SortedDraw {
+    scene: usize,
+    draw: usize,
     depth: f32,
-    viewport: Option<ViewportRect>,
 }
 
 /// The composite recorder behind [`Scene::record_composited`], generic over
@@ -546,6 +549,7 @@ fn record_composited_into<'a, P: RenderPassInterface<'a>>(
     state: &mut PassState<'a>,
     scenes: &[&'a Scene],
     fallback: Option<ViewportRect>,
+    scratch: &mut CompositeScratch,
 ) {
     // The sequenced draws first, in scene order: opaque geometry keeps the
     // order its scene listed, which is the order its batching is arranged
@@ -567,26 +571,27 @@ fn record_composited_into<'a, P: RenderPassInterface<'a>>(
 
     // The depth-sorted pool: the sorted draws of every scene, ordered
     // back-to-front. Farthest first is the order translucent colours layer
-    // in; the sort is stable, so draws that tie on depth keep the order
-    // their scenes listed them in.
-    let mut pool: Vec<SortedDraw<'_>> = Vec::new();
-    for scene in scenes {
-        for draw in &scene.draws {
-            if let DrawOrder::Sorted(depth) = draw.order {
-                pool.push(SortedDraw {
-                    draw,
-                    depth,
-                    viewport: scene.resolved_viewport(fallback),
-                });
+    // in. Scene and draw indices break depth ties in submission order.
+    let pool = &mut scratch.sorted;
+    pool.clear();
+    for (scene, contents) in scenes.iter().enumerate() {
+        for (draw, entry) in contents.draws.iter().enumerate() {
+            if let DrawOrder::Sorted(depth) = entry.order {
+                pool.push(SortedDraw { scene, draw, depth });
             }
         }
     }
-    pool.sort_by(|a, b| b.depth.total_cmp(&a.depth));
-    for sorted in &pool {
-        if let Some(viewport) = sorted.viewport {
+    pool.sort_unstable_by(|a, b| {
+        b.depth
+            .total_cmp(&a.depth)
+            .then_with(|| (a.scene, a.draw).cmp(&(b.scene, b.draw)))
+    });
+    for sorted in pool {
+        let scene = scenes[sorted.scene];
+        if let Some(viewport) = scene.resolved_viewport(fallback) {
             state.set_viewport(pass, viewport);
         }
-        record_draw(pass, state, sorted.draw);
+        record_draw(pass, state, &scene.draws[sorted.draw]);
     }
 
     // The trailing draws last, in scene order: egui and overlays sit above the

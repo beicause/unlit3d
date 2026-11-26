@@ -321,13 +321,8 @@ pub struct MeshParts {
 /// resolving the visible set. Everything only drawing reads lives in
 /// [`MeshParts`] behind the [`Self::parts`] handle.
 ///
-/// The frame path borrows a mesh rather than copying it, so what a mesh's size
-/// costs is cache traffic, not a value being moved: a column is contiguous, and
-/// walking it pulls whole cache lines through the cache while only the cull and
-/// resolve fields are used. A mesh that carried its buffers inline would drag
-/// them through every walk for the sake of a few bytes of bounds. Keep new
-/// fields on the side of that line that reads them: a per-entity field belongs
-/// inline, a per-mesh one belongs in [`MeshParts`].
+/// Culling walks this component column and copies handles only for survivors.
+/// Per-mesh allocation and binding state belongs in [`MeshParts`].
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "reflect",

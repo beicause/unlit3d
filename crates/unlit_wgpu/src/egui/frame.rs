@@ -112,34 +112,49 @@ impl EguiIntegration {
         screen: ScreenDescriptor,
     ) {
         for frame in sources.iter_mut() {
-            self.apply_textures(graph, queue, frame.source, &frame.textures);
-            // egui panics if a delta is dropped unapplied, so mark it handled.
-            frame.textures.clear();
+            self.update_textures(graph, queue, frame.source, &mut frame.textures);
         }
+        self.update_geometry(
+            graph,
+            encoder,
+            sources.iter().flat_map(|frame| {
+                frame
+                    .primitives
+                    .iter()
+                    .map(move |primitive| (frame.source, primitive))
+            }),
+            screen,
+        );
+    }
 
-        // The primitives of every source, flattened in place: the sources
-        // keep their own tessellation and this walks it without collecting a
-        // list of borrows first.
-        let primitives = sources.iter().flat_map(|frame| {
-            frame
-                .primitives
-                .iter()
-                .map(move |primitive| (frame.source, primitive))
-        });
+    /// Apply and clear one source's texture delta before uploading geometry.
+    pub fn update_textures(
+        &mut self,
+        graph: &mut ResourceGraph,
+        queue: &wgpu::Queue,
+        source: Source,
+        textures: &mut egui::TexturesDelta,
+    ) {
+        self.apply_textures(graph, queue, source, textures);
+        textures.clear();
+    }
 
-        let counts = measure(primitives);
+    /// Upload one frame's geometry after applying all its texture deltas.
+    /// The iterator and its clone must visit the same primitives in draw order.
+    pub fn update_geometry<'a>(
+        &mut self,
+        graph: &mut ResourceGraph,
+        encoder: &mut wgpu::CommandEncoder,
+        primitives: impl Iterator<Item = (Source, &'a egui::ClippedPrimitive)> + Clone,
+        screen: ScreenDescriptor,
+    ) {
+        let counts = measure(primitives.clone());
+        self.frame_vertices = counts.vertices;
         if counts.vertices == 0 {
             self.draws.clear();
             return;
         }
         self.reserve(graph, counts);
-        self.frame_vertices = counts.vertices;
-        let primitives = sources.iter().flat_map(|frame| {
-            frame
-                .primitives
-                .iter()
-                .map(move |primitive| (frame.source, primitive))
-        });
         self.upload_geometry(encoder, primitives, screen, counts);
 
         // Build every material the frame needs here, while the graph is still

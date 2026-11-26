@@ -97,6 +97,7 @@ pub struct World {
     /// excludes one. The visibility walk reads it on every row, so the absence of
     /// a runtime flag there is the point.
     tree: ScopeTree,
+    despawn: despawn::CascadeScratch,
     /// Who holds which component values.
     ///
     /// A cell because a claim is registered by a query constructed from `&World`
@@ -143,6 +144,7 @@ impl World {
             names: TypeIdHashMap::default(),
             commands: RefCell::new(VecDeque::new()),
             tree: ScopeTree::default(),
+            despawn: despawn::CascadeScratch::default(),
             borrow: RefCell::new(BorrowLedger::default()),
             // Both are overwritten below, before the world leaves this
             // function and anything can read them.

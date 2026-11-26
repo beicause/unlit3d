@@ -640,6 +640,10 @@ caller extends the set through the same trait the built-in ones use:
   in local space, for area light and soft window light. Its `rect` constructor
   builds the common rectangle.
 
+A custom [`Light`](light::Light) implements `pack(world_from_local, sink)` to
+write its GPU record and return its cluster ranking weight. A nonpositive
+packed intensity excludes the light; directional lights ignore the returned weight.
+
 The shading itself is Lambert and nothing more; how a fragment finds the lights
 that reach it — clustering, the directional uniform, the polygon form factor — is
 laid out in [`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.md#lighting-forward-clustered-lambert).

@@ -334,32 +334,15 @@ impl ResourceGraph {
     /// maintains more often than it changes anything — skips the walk
     /// entirely.
     pub fn maintain(&mut self) {
-        while self
-            .graph
-            .remove_where_drop_into(|node| node.strong.strong_count() == 0)
-            > 0
-        {
-            // A collected node may have been one of the counted dirty ones;
-            // what remains is cheap to recount and only happens when something
-            // was actually collected.
-            self.recount_dirty_rebuilds();
-        }
+        let dirty = &mut self.dirty_rebuilds;
+        while self.graph.remove_where_drop_into(
+            |node| node.strong.strong_count() == 0,
+            |node| *dirty -= usize::from(node.dirty && node.rebuild.is_some()),
+        ) > 0
+        {}
         if self.dirty_rebuilds > 0 {
             self.rebuild_dirty();
         }
-    }
-
-    /// Recount the dirty nodes that carry a rebuild recipe, from the graph.
-    ///
-    /// The count is kept incrementally as nodes are marked and rebuilt; this
-    /// is the fallback for the paths that remove nodes wholesale, where the
-    /// bookkeeping would otherwise have to hook the sweep.
-    fn recount_dirty_rebuilds(&mut self) {
-        self.dirty_rebuilds = self
-            .graph
-            .iter()
-            .filter(|(_, node)| node.dirty && node.rebuild.is_some())
-            .count();
     }
 
     /// The immediate dependencies recorded for `id`.

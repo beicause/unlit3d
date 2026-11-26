@@ -84,8 +84,8 @@ pub mod prelude {
     #[cfg(feature = "egui")]
     pub use crate::egui::{EguiPanel, EguiSource};
     pub use crate::light::{
-        AmbientLight, DirectionalLight, Light, LightDescribe, LightKind, LightSink, LightSource,
-        PointLight, QuadLight, SpotLight,
+        AmbientLight, DirectionalLight, Light, LightSink, LightSource, PointLight, QuadLight,
+        SpotLight,
     };
     pub use crate::lit::{
         InstanceColor, InstanceCutoff, InstanceHullWidth, LIT_MODEL_UPDATE_ORDER, LitInstance,

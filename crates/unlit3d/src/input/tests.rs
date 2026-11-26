@@ -140,6 +140,30 @@ fn each_event_reaches_its_category_and_every_on_input() {
 }
 
 #[test]
+fn dispatch_shares_the_text_payload_with_batch_readers() {
+    let mut world = World::new();
+    let writer = InputWriter::new();
+    let input = world.root_scope_mut().spawn(InputFeed(writer.clone()));
+    world
+        .root_scope_mut()
+        .spawn(bundle![OnText::new(move |world, _, text| {
+            let mut row = world.root_scope().query_one::<&InputEvents>(input);
+            row.get().with_batch(|batch| {
+                let [InputEvent::Text(queued)] = batch else {
+                    panic!("one text event was queued");
+                };
+                assert_eq!(
+                    text.0.as_ptr(),
+                    queued.0.as_ptr(),
+                    "dispatch must not clone text"
+                );
+            });
+        })]);
+    writer.push(text_event());
+    assert!(dispatch_input(&world));
+}
+
+#[test]
 fn one_entity_carries_on_key_and_on_input_together() {
     // The two components are different cells, so a single entity may have
     // both and both run in the same dispatch.

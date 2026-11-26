@@ -357,8 +357,11 @@ fn rendering_a_world_twice_reuses_every_per_frame_cache() {
         &mut scene,
         &mut encoder,
     );
-    let drawn_first = drawn(&h.source);
-    assert_eq!(drawn_first.len(), 1, "the entity was drawn");
+    assert_eq!(scene.draws.len(), 1, "the entity was drawn");
+    assert!(
+        h.source.caches.visible_cache.is_empty(),
+        "frame scratch releases its mesh handles"
+    );
     let capacities = (
         h.source.caches.visible_cache.capacity(),
         h.source.caches.entry_handle_cache.capacity(),
@@ -375,7 +378,7 @@ fn rendering_a_world_twice_reuses_every_per_frame_cache() {
         &mut scene,
         &mut encoder,
     );
-    assert_eq!(drawn(&h.source), drawn_first, "the same draws, in order");
+    assert_eq!(scene.draws.len(), 1, "the entity is still drawn");
     assert_eq!(
         (
             h.source.caches.visible_cache.capacity(),
@@ -464,11 +467,6 @@ fn entities_sharing_a_draw_state_share_one_handle_set() {
     );
 
     assert_eq!(
-        h.source.caches.visible_cache.len(),
-        3,
-        "all three are visible"
-    );
-    assert_eq!(
         h.source.caches.entry_handle_cache.len(),
         1,
         "one mesh, one draw state, one handle set"
@@ -490,7 +488,7 @@ fn a_hidden_entity_is_not_drawn() {
     h.world
         .root_scope_mut()
         .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
-    let shown = h.spawn_mesh(mesh.clone());
+    h.spawn_mesh(mesh.clone());
     let hidden = h.world.root_scope_mut().spawn(bundle![
         Transform::default(),
         mesh.clone(),
@@ -509,15 +507,12 @@ fn a_hidden_entity_is_not_drawn() {
         &mut encoder,
     );
 
-    let drawn: Vec<_> = h
-        .source
-        .caches
-        .visible_cache
-        .iter()
-        .map(|entry| entry.mesh.entity)
-        .collect();
-    assert_eq!(drawn, [shown], "the hidden entity reached no family");
-    assert_ne!(drawn, [hidden]);
+    let instances = |scene: &Scene| match &scene.draws[0].range {
+        DrawRange::Indexed { instances, .. } | DrawRange::Vertices { instances, .. } => {
+            instances.len()
+        }
+    };
+    assert_eq!(instances(&scene), 1, "the hidden entity reached no draw");
 
     // Flipping the flag back draws it again with the components it already
     // had: no respawn, no new mesh, no reallocated handles.
@@ -534,7 +529,7 @@ fn a_hidden_entity_is_not_drawn() {
         &mut encoder,
     );
     assert_eq!(
-        h.source.caches.visible_cache.len(),
+        instances(&scene),
         2,
         "the entity is drawn again once the flag says so"
     );

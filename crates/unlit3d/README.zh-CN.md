@@ -416,6 +416,9 @@ z-sorted 绘制排序与透视相机完全一致。
 - `QuadLight`——局部空间四个顶点构成的任意凸多边形，用于面光与柔和的窗光；它的
   `rect` 构造函数构造常见的矩形。
 
+自定义光源实现 `Light::pack(world_from_local, sink)`，写入 GPU 数据并返回分簇排序权重。
+写入的强度不大于零时，该灯不会生效；方向光不使用返回的权重。
+
 着色本身只是 Lambert；片元如何找到照到它的光源——聚类、方向光 uniform、多边形面光的
 形状因子——见 [`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md#光照前向聚簇的-lambert)。
 这一层负责的是把光源做成组件，并逐帧把它们加起来。

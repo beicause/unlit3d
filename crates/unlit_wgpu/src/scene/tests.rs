@@ -505,6 +505,7 @@ fn a_composite_orders_before_sorted_and_after() {
         &mut PassState::default(),
         &[&meshes, &lines, &ui],
         None,
+        &mut CompositeScratch::default(),
     );
 
     // Opaque meshes, opaque line, then panes and the stroke farthest
@@ -546,18 +547,28 @@ fn a_composite_keeps_the_order_of_equal_draws() {
         ..Scene::default()
     };
 
-    let mut pass = MockPass::default();
-    record_composited_into(
-        &mut pass,
-        &mut PassState::default(),
-        &[&meshes, &lines],
-        None,
-    );
-
-    assert_eq!(
-        pass.draws,
-        vec![(0..4, 1..2), (0..4, 0..1), (0..4, 2..3), (0..4, 3..4)]
-    );
+    let mut scratch = CompositeScratch::default();
+    let mut storage = None;
+    for _ in 0..2 {
+        let mut pass = MockPass::default();
+        record_composited_into(
+            &mut pass,
+            &mut PassState::default(),
+            &[&meshes, &lines],
+            None,
+            &mut scratch,
+        );
+        assert_eq!(
+            pass.draws,
+            vec![(0..4, 1..2), (0..4, 0..1), (0..4, 2..3), (0..4, 3..4)]
+        );
+        let current = (scratch.sorted.as_ptr(), scratch.sorted.capacity());
+        assert_eq!(
+            *storage.get_or_insert(current),
+            current,
+            "the same pool backs both frames"
+        );
+    }
 }
 
 /// A scene that states no order keeps its place: with every draw
@@ -586,6 +597,7 @@ fn a_composite_without_sorted_draws_keeps_scene_order() {
         &mut PassState::default(),
         &[&lines, &meshes],
         None,
+        &mut CompositeScratch::default(),
     );
 
     assert_eq!(pass.draws, vec![(0..4, 0..1), (0..4, 1..2)]);
@@ -625,6 +637,7 @@ fn a_composite_draws_into_each_scenes_own_region() {
         &mut PassState::default(),
         &[&meshes, &lines, &ui],
         Some(whole),
+        &mut CompositeScratch::default(),
     );
 
     assert_eq!(pass.draws.len(), 3);

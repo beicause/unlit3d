@@ -22,7 +22,7 @@ use unlit_wgpu::scene::{
 };
 
 use crate::bounds::FrustumPlanes;
-use crate::components::{Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, ZSortedDrawing};
+use crate::components::{Camera, GpuMaterial, GpuRenderPipeline, ZSortedDrawing};
 use crate::culling::{VisibleMesh, collect_visible};
 use crate::pipeline::{
     DrawContext, FamilyContext, GlobalResources, InstanceContext, InstanceData,
@@ -200,16 +200,15 @@ where
         // questioning the marker separately would fetch the same row twice.
         // The material is read once and both its uses come from it: it decides
         // how the draw is grouped and which bind group it binds.
-        for &candidate in self.frame.meshes {
+        for candidate in self.frame.meshes {
             let Ok(mut row) = world.try_query_one::<(
                 &GpuRenderPipeline,
-                &GpuMesh,
                 Option<&GpuMaterial>,
                 Has<ZSortedDrawing>,
             )>(candidate.entity) else {
                 continue;
             };
-            let (pipeline, gpu_mesh, material, z_sorted) = row.get();
+            let (pipeline, material, z_sorted) = row.get();
             // Another family's entity: its key is not this family's type, so
             // this family does not draw it.
             let Some(key) = pipeline.key::<K>() else {
@@ -222,29 +221,16 @@ where
                 ),
                 None => (0, None),
             };
-            self.push(
-                candidate,
-                key,
-                gpu_mesh,
-                material,
-                sort_key,
-                material_bg,
-                z_sorted,
-            );
+            self.push(candidate, key, material, sort_key, material_bg, z_sorted);
         }
     }
 
     /// Resolve one candidate's variant, registering the pipeline on first
     /// sight, and push its [VisibleEntry].
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one field per resolved draw component"
-    )]
     fn push(
         &mut self,
-        mesh: VisibleMesh,
+        mesh: &VisibleMesh,
         key: &K,
-        gpu_mesh: &GpuMesh,
         material: Option<&GpuMaterial>,
         sort_key: u64,
         material_bg: Option<ResHandle<wgpu::BindGroup>>,
@@ -253,6 +239,7 @@ where
         // The frame, not the entity, knows the target, the mesh's layout and
         // whether a material is bound, so the variant is derived from what the
         // draw actually resolves to.
+        let gpu_mesh = &mesh.gpu;
         let draw = DrawContext {
             surface: self.frame.surface,
             device: self.frame.device,
@@ -301,7 +288,7 @@ where
             material: material_bg,
         };
         self.visible.push(VisibleEntry {
-            mesh,
+            mesh: mesh.clone(),
             family: self.family,
             pipeline_id,
             // Filled in when the family packs its instance stream; no record
@@ -419,7 +406,7 @@ pub(crate) struct SceneFrame<'a> {
 /// family, and sort the result for drawing.
 ///
 /// Culling is a CPU pass over every mesh entity, done once here rather than
-/// once per family: it resolves each mesh's placement and tint and drops the
+/// once per family: it resolves each mesh's placement and drops the
 /// entities outside the camera frustum. Only the survivors reach the
 /// registered families, so nothing is specialized or registered for a mesh the
 /// camera cannot see.
@@ -464,6 +451,8 @@ pub(crate) fn collect_and_sort_visible(
             family.collect_and_resolve(FamilyId::new(index as u32), &frame, visible, register);
         }
     }
+
+    meshes.clear();
 
     // Sort: not z-sorted before z-sorted, then by pipeline, then by the key that
     // matters for that kind. Opaque draws are keyed by material so neighbours

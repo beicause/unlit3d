@@ -1,8 +1,8 @@
 use super::{
-    ArrayVec, Camera, EntryHandles, Family, FamilyId, FrameUniforms, GpuMesh, InstanceContext,
-    InstanceData, MeshSource, PipelineVariant, RenderPipelineFactory, RenderPipelineHandles,
-    RenderPipelineKey, Scene, SceneFrame, Scope, SurfaceKey, TypeId, assemble_scene,
-    collect_and_sort_visible, register_concrete,
+    ArrayVec, Camera, EntryHandles, Family, FamilyId, FrameUniforms, InstanceContext, InstanceData,
+    MeshSource, PipelineVariant, RenderPipelineFactory, RenderPipelineHandles, RenderPipelineKey,
+    Scene, SceneFrame, Scope, SurfaceKey, TypeId, assemble_scene, collect_and_sort_visible,
+    register_concrete,
 };
 
 impl MeshSource {
@@ -147,8 +147,7 @@ impl MeshSource {
     /// names the same handles. The visible set therefore carries a
     /// [`DrawHandlesKey`](crate::scene::DrawHandlesKey) by value rather than the
     /// handles themselves, and the
-    /// expensive part — reading the mesh component and cloning its buffers out
-    /// of the graph — happens once per distinct key instead of once per entity.
+    /// cloning of buffers out of the graph happens once per distinct key.
     pub(super) fn assemble_frame(
         &mut self,
         world: &Scope<'_>,
@@ -170,12 +169,7 @@ impl MeshSource {
                 // throwaway per visible entity.
                 let key = entry.handles_key.clone();
 
-                let mut mesh_row = world
-                    .try_query_one::<&GpuMesh>(entry.mesh.entity)
-                    .unwrap_or_else(|_| {
-                        panic!("visible entity has GpuMesh: {:?}", entry.mesh.entity)
-                    });
-                let mesh = mesh_row.get();
+                let mesh = &entry.mesh.gpu;
 
                 let mesh_bg = mesh
                     .parts
@@ -196,7 +190,8 @@ impl MeshSource {
                         .clone();
                     // A mesh binds its vertex buffers whole; the draw's range
                     // is what picks the mesh's slice out of the pool.
-                    vertex_buffers.push((*slot, buffer.clone(), 0..buffer.size()));
+                    let size = buffer.size();
+                    vertex_buffers.push((*slot, buffer, 0..size));
                 }
 
                 let index_buffer = mesh.parts.index_buffer.as_ref().map(|(buffer, format)| {

@@ -40,9 +40,7 @@
 use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
-use unlit_wgpu::egui::{
-    EguiFrame, EguiIntegration, ScreenDescriptor, Source, egui_variant, screen_view,
-};
+use unlit_wgpu::egui::{EguiIntegration, ScreenDescriptor, Source, egui_variant, screen_view};
 use unlit_wgpu::pipeline::ShaderCache;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
@@ -344,55 +342,33 @@ impl SceneSource for EguiSource {
         // world — the overlay reads this tick's batch, it does not take it. A
         // world without a buffer is not an error: the overlay still lays out
         // at the target's own size, unfeed.
-        let input = scope
-            .singleton::<InputEvents>()
-            .and_then(|entity| {
-                scope
-                    .try_query_one::<(&InputEvents, &InputState)>(entity)
-                    .ok()
+        let mut input = scope.singleton::<InputEvents>().and_then(|entity| {
+            scope
+                .try_query_one::<(&InputEvents, Option<&InputState>)>(entity)
+                .ok()
+        });
+        let input = input.as_mut().map(|row| row.get());
+        let (scale_factor, size_px, focused) = input
+            .as_ref()
+            .and_then(|(_, state)| {
+                state.map(|state| (state.scale_factor, state.size_px, state.focused))
             })
-            .map(|mut row| {
-                let (input_events, state) = row.get();
-                (
-                    // The count the batch is translated from, not the state it has
-                    // since folded into: the state already holds the batch, and
-                    // counting it against itself would count every touch twice.
-                    input_events.touch_baseline(),
-                    (state.scale_factor, state.size_px, state.focused),
-                )
-            });
-        let (active_touches, state) = match input {
-            Some((baseline, state)) => (baseline, Some(state)),
-            None => (0, None),
-        };
-        let (scale_factor, size_px, focused) =
-            state.unwrap_or((1.0, (target.width, target.height), true));
-        // A caller that has not learned the window's size yet leaves `size_px`
-        // at zero; the target's own pixel size lays the overlay out correctly, where
-        // a zero-sized screen would lay out nothing.
+            .unwrap_or((1.0, (target.width, target.height), true));
         let size_px = if size_px == (0, 0) {
             (target.width, target.height)
         } else {
             size_px
         };
-        // One physical pixel per logical point until something says otherwise.
         let pixels_per_point = if scale_factor > 0.0 {
             scale_factor
         } else {
             1.0
         };
-        // The batch is translated into this source's own list, which the frame
-        // takes over and the next frame takes back: egui keeps the raw input
-        // it was handed for the length of a pass, so the buffer is reclaimed
-        // once the pass is over rather than allocated again.
         let mut event_scratch = core::mem::take(&mut self.event_scratch);
         event_scratch.clear();
-        if let Some(mut row) = scope
-            .singleton::<InputEvents>()
-            .and_then(|entity| scope.try_query_one::<&InputEvents>(entity).ok())
-        {
-            let input_events = row.get();
-            input_events.with_batch(|batch| {
+        if let Some((events, state)) = input {
+            let active_touches = state.map_or(0, |_| events.touch_baseline());
+            events.with_batch(|batch| {
                 convert::to_egui_events_into(
                     batch,
                     pixels_per_point,
@@ -478,9 +454,6 @@ impl SceneSource for EguiSource {
         // copied — it is drawn again on every frame that brings no newer one —
         // so the gather borrows the slots for as long as the upload takes.
         let own = self.ctx.tessellate(output.shapes, screen.pixels_per_point);
-        let own_textures = core::mem::take(&mut output.textures_delta);
-        // What a frame contributes in geometry when its slice is left empty.
-        const NO_PRIMITIVES: [egui::ClippedPrimitive; 0] = [];
         // The overlay draws through a mapping of its own rather than through a
         // camera entity: `screen_view` maps egui's points onto clip space and
         // the pass's view is the same point size, so the frame's registry keys
@@ -517,38 +490,41 @@ impl SceneSource for EguiSource {
 
         let gpu = &mut self.targets[index].gpu;
         self.frames.with_frames(|slots| {
-            let mut sources = Vec::with_capacity(slots.len() + 1);
-            sources.push(EguiFrame {
-                source: Source::LOCAL,
-                textures: own_textures,
-                primitives: &own,
-            });
+            let graph = graph_holder.get();
+            gpu.integration.update_textures(
+                graph,
+                &queue,
+                Source::LOCAL,
+                &mut output.textures_delta,
+            );
+            // A mismatched layout has no geometry at this size, but its texture
+            // updates must survive: a later layout may still use those images.
             for (index, slot) in slots.iter_mut().enumerate() {
-                let Some(frame) = slot else {
-                    continue;
-                };
-                // A frame laid out at another size is not drawn: its clip
-                // rectangles were computed in the wrong pixels, and the world
-                // that published it lays a new one out at the size this source
-                // now draws at. Its textures still go through, because egui
-                // sends a texture on the frame that first writes it and never
-                // again — dropping the delta would lose that image for good,
-                // leaving every later draw of the slot with nothing to sample.
-                let primitives = if frame.screen == screen {
-                    &frame.primitives[..]
-                } else {
-                    &NO_PRIMITIVES[..]
-                };
-                sources.push(EguiFrame {
-                    source: Source::published(index),
-                    textures: core::mem::take(&mut frame.textures),
-                    primitives,
-                });
+                if let Some(frame) = slot {
+                    gpu.integration.update_textures(
+                        graph,
+                        &queue,
+                        Source::published(index),
+                        &mut frame.textures,
+                    );
+                }
             }
+            let primitives = own
+                .iter()
+                .map(|primitive| (Source::LOCAL, primitive))
+                .chain(slots.iter().enumerate().flat_map(|(index, slot)| {
+                    slot.as_ref()
+                        .filter(|frame| frame.screen == screen)
+                        .into_iter()
+                        .flat_map(move |frame| {
+                            frame
+                                .primitives
+                                .iter()
+                                .map(move |primitive| (Source::published(index), primitive))
+                        })
+                }));
             gpu.integration
-                .update_with(graph_holder.get(), &queue, encoder, &mut sources, screen);
-            // The deltas were applied and cleared; a frame's geometry stayed
-            // where it was, so the slot still holds what it will draw again.
+                .update_geometry(graph, encoder, primitives, screen);
         });
 
         // The frame's one rebuild pass: the textures the integration just

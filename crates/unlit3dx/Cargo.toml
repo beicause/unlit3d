@@ -43,6 +43,7 @@ flacenc = { workspace = true, default-features = false, optional = true }
 futures-executor.workspace = true
 futures-util.workspace = true
 glam.workspace = true
+hashbrown.workspace = true
 log.workspace = true
 rapier3d = { workspace = true, optional = true }
 ringbuf = { workspace = true, optional = true }

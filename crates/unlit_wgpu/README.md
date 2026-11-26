@@ -644,7 +644,8 @@ records what it is given, and [`Scene::record_composited`](scene::Scene::record_
 is the one step further it offers — compositing several scenes into one pass
 ordered by each draw's [`DrawOrder`](scene::DrawOrder): sequenced draws first
 in scene order, then every scene's depth-sorted pool together, farthest first,
-then the trailing draws.
+then the trailing draws. Pass a reusable [`CompositeScratch`](scene::CompositeScratch)
+to `record_composited`; draws at the same depth retain their submission order.
 
 ### Pipeline specialization: a variant, a blueprint, a cached pipeline
 

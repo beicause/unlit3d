@@ -8,8 +8,6 @@
 //! A capture with no directory writes nothing: it only keeps the frames for
 //! the caller that drove the run, which is what an in-process test reads.
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-use std::path::Path;
 use std::path::PathBuf;
 
 use crate::audio::AudioFormat;
@@ -22,6 +20,8 @@ use crate::audio::AudioFormat;
 pub struct Capture {
     frames: Vec<u32>,
     into: Option<PathBuf>,
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    directory_ready: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 impl Capture {
@@ -30,7 +30,11 @@ impl Capture {
     pub fn new(mut frames: Vec<u32>, into: Option<PathBuf>) -> Self {
         frames.sort_unstable();
         frames.dedup();
-        Self { frames, into }
+        Self {
+            frames,
+            into,
+            ..Self::default()
+        }
     }
 
     /// Write one captured frame, which this target cannot do at all: it has
@@ -86,7 +90,9 @@ impl Capture {
     /// finished capture.
     #[must_use]
     pub fn missing(&self, advanced: u32) -> Option<u32> {
-        self.frames.iter().copied().find(|frame| *frame >= advanced)
+        self.frames
+            .get(self.frames.partition_point(|frame| *frame < advanced))
+            .copied()
     }
 
     /// Write one captured frame as a PNG, when the capture writes.
@@ -109,7 +115,7 @@ impl Capture {
         let Some(into) = &self.into else {
             return Ok(None);
         };
-        make_directory(into)?;
+        self.prepare_directory(into)?;
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(pixels, size.0, size.1, image::ExtendedColorType::Rgba8)
@@ -148,7 +154,7 @@ impl Capture {
         if samples.is_empty() {
             return Ok(None);
         }
-        make_directory(into)?;
+        self.prepare_directory(into)?;
         let flac = crate::record::RecordingFormat::Flac
             .encode(format, samples)
             .map_err(CaptureWriteError::Mix)?;
@@ -159,14 +165,19 @@ impl Capture {
         })?;
         Ok(Some(path))
     }
-}
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-fn make_directory(into: &Path) -> Result<(), CaptureWriteError> {
-    std::fs::create_dir_all(into).map_err(|source| CaptureWriteError::Directory {
-        path: into.to_path_buf(),
-        source,
-    })
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn prepare_directory(&self, into: &std::path::Path) -> Result<(), CaptureWriteError> {
+        let mut ready = unlit_ecs::sync::lock(&self.directory_ready);
+        if !*ready {
+            std::fs::create_dir_all(into).map_err(|source| CaptureWriteError::Directory {
+                path: into.to_path_buf(),
+                source,
+            })?;
+            *ready = true;
+        }
+        Ok(())
+    }
 }
 
 /// Which picture a capture could not encode.

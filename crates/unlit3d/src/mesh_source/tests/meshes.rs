@@ -297,23 +297,25 @@ fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         &mut scene,
         &mut encoder,
     );
-    let shapes: Vec<MeshDraw> = h
-        .source
-        .caches
-        .visible_cache
-        .iter()
-        .map(|entry| entry.handles_key.shape.clone())
-        .collect();
     assert_eq!(
         h.source.caches.entry_handle_cache.len(),
         2,
         "each distinct slice interns its own handles"
     );
-    assert_eq!(shapes[0].first(), 0, "the first mesh starts at zero");
-    assert_ne!(
-        shapes[0].first(),
-        shapes[1].first(),
-        "each draw keeps its own slice of the pool"
+    assert_eq!(scene.draws.len(), 2, "both entities were drawn");
+    let [a, b] = &scene.draws[..] else {
+        unreachable!("the scene has exactly two draws");
+    };
+    let (
+        unlit_wgpu::scene::DrawRange::Indexed { indices: a, .. },
+        unlit_wgpu::scene::DrawRange::Indexed { indices: b, .. },
+    ) = (&a.range, &b.range)
+    else {
+        panic!("both draws must still be indexed");
+    };
+    assert_eq!(a.start.min(b.start), 0, "the first mesh starts at zero");
+    assert!(
+        a.end <= b.start || b.end <= a.start,
+        "the slices do not overlap"
     );
-    assert_eq!(drawn(&h.source).len(), 2, "both entities were drawn");
 }

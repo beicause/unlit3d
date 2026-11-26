@@ -321,7 +321,12 @@ impl<N> Dag<N> {
     /// in place, so a weight whose drop releases something another node was
     /// waiting for only shows up on the next call: a caller that has to reach
     /// a fixpoint sweeps until this reports `0`.
-    pub fn remove_where_drop_into(&mut self, is_dead: impl Fn(&N) -> bool) -> usize {
+    /// `removed_weight` receives only the selected weights.
+    pub fn remove_where_drop_into(
+        &mut self,
+        is_dead: impl Fn(&N) -> bool,
+        mut removed_weight: impl FnMut(N),
+    ) -> usize {
         self.order.clear();
         self.order.extend(
             (0..self.nodes.len())
@@ -332,7 +337,9 @@ impl<N> Dag<N> {
         let removed = order.len();
         for &index in &order {
             let id = self.node_id(index);
-            self.remove(id);
+            if let Some(weight) = self.remove(id) {
+                removed_weight(weight);
+            }
         }
         self.order = order;
         removed
@@ -733,8 +740,15 @@ mod tests {
         dag.add_edge(base, middle).unwrap();
         dag.add_edge(middle, root).unwrap();
 
-        let removed = dag.remove_where_drop_into(|&name| name == "middle");
+        let mut notified = Vec::new();
+        let removed =
+            dag.remove_where_drop_into(|&name| name == "middle", |name| notified.push(name));
         assert_eq!(removed, 1);
+        assert_eq!(
+            notified,
+            ["middle"],
+            "bookkeeping runs only for removed nodes"
+        );
         assert_eq!(dag.get(base), Some(&"base"), "the node it depends on stays");
         assert_eq!(dag.get(outside), Some(&"outside"));
         assert_eq!(dag.get(middle), None);
@@ -760,7 +774,7 @@ mod tests {
         let mut sweeps = 0;
         loop {
             sweeps += 1;
-            let removed = dag.remove_where_drop_into(|&name| name != "keep");
+            let removed = dag.remove_where_drop_into(|&name| name != "keep", drop);
             if removed == 0 {
                 break;
             }
@@ -877,7 +891,7 @@ mod tests {
             }
 
             let removed: Vec<usize> = removed.into_iter().filter(|&index| index < nodes).collect();
-            dag.remove_where_drop_into(|&index| removed.contains(&index));
+            dag.remove_where_drop_into(|&index| removed.contains(&index), drop);
 
             let mut order = Vec::new();
             dag.topological_order_into(&mut order);

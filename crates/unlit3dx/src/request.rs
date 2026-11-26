@@ -1,9 +1,11 @@
 //! Send a job and poll for its answer without blocking the calling world.
 
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_channel::{Receiver, bounded};
+use hashbrown::HashMap;
 use unlit_ecs::World;
 use web_time::Instant;
 
@@ -60,8 +62,7 @@ impl CancellationToken {
     }
 }
 
-struct Outstanding<K, T> {
-    key: K,
+struct Outstanding<T> {
     answer: Receiver<Result<T, Cancelled>>,
     queued_at: Instant,
     cancellation: CancellationToken,
@@ -72,12 +73,12 @@ struct Outstanding<K, T> {
 pub struct Pending<K, T> {
     world: WorldEndpoint,
     timeout: Option<WallTimeout>,
-    outstanding: Vec<Outstanding<K, T>>,
+    outstanding: HashMap<K, Outstanding<T>>,
 }
 
 impl<K, T> Pending<K, T>
 where
-    K: Eq + Clone,
+    K: Eq + Hash + Clone,
     T: Send + 'static,
 {
     /// Construct a request set. `None` waits until the world answers or ends.
@@ -86,7 +87,7 @@ where
         Self {
             world,
             timeout,
-            outstanding: Vec::new(),
+            outstanding: HashMap::new(),
         }
     }
 
@@ -109,7 +110,7 @@ where
     where
         F: FnOnce(&mut World, &CancellationToken) -> Result<T, Cancelled> + Send + 'static,
     {
-        if self.outstanding.iter().any(|request| request.key == key) {
+        if self.outstanding.contains_key(&key) {
             return Ok(Asked::Coalesced);
         }
         let cancellation = CancellationToken(Arc::new(AtomicBool::new(false)));
@@ -120,19 +121,21 @@ where
             let result = token.checkpoint().and_then(|()| make(world, &token));
             let _ = send.try_send(result);
         }))?;
-        self.outstanding.push(Outstanding {
+        self.outstanding.insert(
             key,
-            answer,
-            queued_at,
-            cancellation,
-        });
+            Outstanding {
+                answer,
+                queued_at,
+                cancellation,
+            },
+        );
         Ok(Asked::Queued)
     }
 
     /// Request cancellation for an outstanding key without waiting for it.
     /// `true` means the signal was sent, not that the job acknowledged it.
     pub fn cancel(&self, key: &K) -> bool {
-        let Some(request) = self.outstanding.iter().find(|request| &request.key == key) else {
+        let Some(request) = self.outstanding.get(key) else {
             return false;
         };
         request.cancellation.0.store(true, Ordering::Release);
@@ -140,6 +143,7 @@ where
     }
 
     /// Replace `settled` with results observed on this poll, each reported once.
+    /// The results have no guaranteed order.
     /// Answers and acknowledged cancellation take precedence over world exit;
     /// world exit takes precedence over timeout. Polling does not drive the world.
     pub fn poll(&mut self, settled: &mut Vec<(K, Settled<T>)>) {
@@ -152,7 +156,7 @@ where
         // status cannot disappear between a failed receive and the status read.
         let state = self.world.state().latest();
         let timeout = self.timeout;
-        self.outstanding.retain(|request| {
+        self.outstanding.retain(|key, request| {
             let outcome = match request.answer.try_recv() {
                 Ok(Ok(value)) => Settled::Answered(value),
                 Ok(Err(Cancelled(()))) => Settled::Cancelled,
@@ -168,7 +172,7 @@ where
                     _ => return true,
                 },
             };
-            settled.push((request.key.clone(), outcome));
+            settled.push((key.clone(), outcome));
             false
         });
     }
@@ -232,10 +236,11 @@ mod tests {
         let mut settled = Vec::new();
         let now = pending
             .outstanding
-            .last()
-            .map_or_else(Instant::now, |request| {
-                request.queued_at + Duration::from_secs_f32(seconds_since_ask)
-            });
+            .values()
+            .map(|request| request.queued_at)
+            .max()
+            .unwrap_or_else(Instant::now)
+            + Duration::from_secs_f32(seconds_since_ask);
         pending.poll_at(now, &mut settled);
         settled
     }
@@ -253,8 +258,10 @@ mod tests {
         }
         drain(&receiver, &mut world);
 
+        let mut answers = settled(&mut pending, 1.0);
+        answers.sort_unstable_by_key(|(key, _)| *key);
         assert_eq!(
-            settled(&mut pending, 1.0),
+            answers,
             vec![
                 (0, Settled::Answered(0)),
                 (1, Settled::Answered(10)),
