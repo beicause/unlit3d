@@ -33,7 +33,8 @@ impl Capture {
         Self {
             frames,
             into,
-            ..Self::default()
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            directory_ready: std::sync::Arc::default(),
         }
     }
 

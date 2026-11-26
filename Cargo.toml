@@ -97,7 +97,7 @@ futures-executor = { version = "0.3.34", default-features = false, features = ["
 # The spawn extension trait a local pool is used through. std implies alloc,
 # which is what the trait needs.
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
-glam = { version = "0.33", default-features = false, features = ["std", "zerocopy"] }
+glam = { version = "0.33", default-features = false, features = ["f64", "std", "zerocopy"] }
 # The glyph runs a page's text is drawn as. `vello_gpu` shapes them but keeps
 # `glifo`, the crate the glyphs come from, out of its own exports, so the
 # adapter that hands it glyphs names them itself.

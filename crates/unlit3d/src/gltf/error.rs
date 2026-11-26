@@ -238,7 +238,7 @@ pub enum Error {
     },
 }
 
-#[cfg(feature = "mcp")]
+#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 impl Error {
     /// The failure as structured content: the variant's name under `kind`, and
     /// the document positions that disagree under the names the variant gives

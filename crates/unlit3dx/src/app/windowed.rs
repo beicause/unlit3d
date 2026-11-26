@@ -191,6 +191,7 @@ pub fn windowed<A: App>(
         not(any(target_arch = "wasm32", target_os = "android"))
     ))]
     let http = shape.transports.http;
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     let capture = shape.capture.clone();
     let failure = RunFailure::default();
     world.root_scope_mut().spawn(bundle![

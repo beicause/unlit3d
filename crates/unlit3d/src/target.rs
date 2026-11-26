@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn one_worlds_entity_is_not_anothers_target() {
+    fn one_worlds_entity_is_not_another_worlds_target() {
         let one = World::new();
         let two = World::new();
         let named = |world: &World| RenderTargetId {
