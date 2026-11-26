@@ -64,7 +64,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 
 每实例组件都是**具名字段结构体**：`InstanceColor { color }` / `InstanceCutoff { cutoff }` / `InstanceHullWidth { width }` / `InstanceVisibility { visible }`；前三个有 `new(..)`，四个都有 `Default`（`InstanceVisibility` 没有 `new`，用 `InstanceVisibility { visible: false }`）。写成 `InstanceColor(Vec4::ONE)` 编不过。
 
-不假设顶点布局：通用版 `allocate_mesh` 接受你自定的 `MeshDesc`。`LitOptions` 是**纯策略**（剔除、深度测试与写入、混合、写掩码、着色开关）；顶点通道有无、是否带材质、是否 morph，是 family 在解析 draw 时自己折叠进 `LitVariant` 的事实。颜色格式、采样数、有没有深度附件由这一帧的 `SurfaceKey` 决定，**不**写在 `LitOptions` 里。
+不假设顶点布局：通用版 `allocate_mesh` 接受你自定的 `MeshDescriptor`（`indexing` 用 `MeshIndexing::NonIndexed`/`Indexed` 表达，返回 `Result<GpuMesh, MeshError>`）。`LitOptions` 是**纯策略**（剔除、深度测试与写入、混合、写掩码、着色开关）；顶点通道有无、是否带材质、是否 morph，是 family 在解析 draw 时自己折叠进 `LitVariant` 的事实。颜色格式、采样数、有没有深度附件由这一帧的 `SurfaceKey` 决定，**不**写在 `LitOptions` 里。
 
 ## 管线与渲染目标
 

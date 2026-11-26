@@ -112,7 +112,7 @@ pub(crate) fn lit_variant(options: &Hashed<LitOptions>, draw: &DrawContext<'_>) 
         // Only a culling variant has a front to distinguish: one that culls
         // nothing would compile a second variant drawing the same frame.
         reversed_winding: options.primitive.cull_mode.is_some()
-            && if draw.mesh.skinned {
+            && if draw.mesh.skin.is_some() {
                 skin_mirrored(draw)
             } else {
                 draw.world_from_local.matrix3.determinant() < 0.0
@@ -381,10 +381,9 @@ impl InstanceData for LitInstance {
             .map_or(0.0, |mut hull| hull.get().width);
         // Skinning and morphing are independent: a mesh may have either, both
         // or neither, and each packs into its own array.
-        let joints_base = if mesh.skinned {
-            context.pack_joints()
-        } else {
-            0
+        let joints_base = match mesh.skin {
+            Some(skin) => context.pack_joints(skin),
+            None => 0,
         };
         let morph_base = if mesh.morph_targets > 0 {
             context.pack_morph_weights(mesh.morph_targets)

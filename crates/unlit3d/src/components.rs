@@ -15,6 +15,7 @@ use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexLayout;
 
 use crate::bounds::Aabb;
+use crate::mesh::{MeshDraw, SkinShape};
 use crate::mesh_source::MeshStorage;
 /// World-space transform (translation, rotation, scale).
 ///
@@ -349,9 +350,9 @@ pub struct GpuMesh {
     /// A pipeline family specializes on this: two meshes whose layouts imply
     /// different pipeline descriptors resolve to different compiled pipelines.
     /// It is owned here so a key can name it without going back to the
-    /// [`MeshDesc`](crate::mesh::MeshDesc) it was uploaded from. It may name a slot
-    /// whose buffer the draw binds from the renderer rather than the mesh —
-    /// the per-instance buffer, for one.
+    /// [`MeshDescriptor`](crate::mesh::MeshDescriptor) it was uploaded from. It
+    /// may name a slot whose buffer the draw binds from the renderer rather than
+    /// the mesh — the per-instance buffer, for one.
     ///
     /// Held as a shared handle rather than inline: the draw path keys on it
     /// once per visible entity per frame, and a handle makes that a pointer
@@ -359,26 +360,13 @@ pub struct GpuMesh {
     /// every attribute.
     pub vertex_layout: VertexLayout,
 
-    /// Number of indices (indexed draw) or vertices (non-indexed draw).
-    pub count: u32,
-
-    /// Where the mesh's range starts inside the buffer it lives in.
+    /// The slice of the buffer this mesh draws, as one value.
     ///
-    /// A draw binds the whole buffer, so what picks the mesh's slice out of it
-    /// is the draw's range: this is the first index for an indexed draw, and
-    /// the first vertex for a non-indexed one. A mesh that owns its buffer
-    /// whole starts at `0`, so both kinds of mesh draw the same way.
-    pub first: u32,
-
-    /// Where the mesh's vertices start, in elements, for an indexed draw.
-    ///
-    /// An indexed draw adds this to every index it reads, which is how the
-    /// indices find their vertices when the vertex stream does not start at the
-    /// beginning of its buffer. Zero for a mesh that owns its buffers whole.
-    pub base_vertex: u32,
-
-    /// Whether to issue an indexed draw.
-    pub indexed: bool,
+    /// A draw binds the whole buffer it reads, so what picks a mesh's slice out
+    /// of a buffer it shares is the draw's range. Holding that range as one
+    /// value rather than as a count, a start and an indexed flag is what keeps a
+    /// mesh from describing a draw whose parts disagree.
+    pub draw: MeshDraw,
 
     /// The mesh's local-space bounding box, used for CPU frustum culling.
     pub aabb: Aabb,
@@ -391,12 +379,14 @@ pub struct GpuMesh {
     /// the [`MorphWeights`] entity a mesh references has to hold.
     pub morph_targets: u32,
 
-    /// Whether the mesh's position stream carries joint indices and weights.
+    /// How many joint matrices the mesh's position stream is deformed by, or
+    /// `None` when it carries no joint indices.
     ///
-    /// A skinned draw reads the joint matrices a [`SkinPose`] entity holds, so
-    /// a mesh with this set has to say which entity that is with a
-    /// [`SkinBinding`].
-    pub skinned: bool,
+    /// A skinned draw reads the joint matrices a [`SkinPose`] entity holds, so a
+    /// mesh with this set has to say which entity that is with a
+    /// [`SkinBinding`], and the pose has to hold a matrix for every joint the
+    /// mesh names.
+    pub skin: Option<SkinShape>,
 }
 
 /// The joint matrices one pose is drawn with, as animating code updates them.
@@ -411,8 +401,10 @@ pub struct GpuMesh {
 /// transform it was bound in, applied in the mesh's own space. A vertex is
 /// deformed by the weighted sum of the matrices its own joint indices name, so
 /// the pose has to hold at least as many matrices as the highest index any of
-/// its meshes uses; allocation cannot check that, and reading past the end of
-/// the uploaded pose is a GPU out-of-bounds access.
+/// its meshes uses. A mesh states that count as a
+/// [`SkinShape`](crate::mesh::SkinShape), and packing the pose for a draw holds
+/// it to it, so a short pose panics there rather than reading past the end of
+/// the uploaded array.
 ///
 /// Only meshes whose variant reads joints see this: one that reads none ignores
 /// the pose it was bound to, exactly as it ignores a UV slice it does not

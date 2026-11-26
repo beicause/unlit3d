@@ -577,7 +577,7 @@ fn spawn_model(scope: &mut ScopeMut<'_>, root: Entity, model: &LitModelData) {
                     transform: Transform::default(),
                     primitive: primitive.clone(),
                     skin: pose
-                        .filter(|_| primitive.mesh.skinned)
+                        .filter(|_| primitive.mesh.skin.is_some())
                         .map(|pose| SkinBinding { pose }),
                     morph: morph
                         .filter(|_| primitive.mesh.morph_targets > 0)

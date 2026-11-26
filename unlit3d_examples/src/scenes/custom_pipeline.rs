@@ -219,18 +219,21 @@ fn build(
         module: sky_module,
         layout: sky_layout.clone(),
     });
-    let sky_mesh = source.allocate_mesh(
-        &world.root_scope(),
-        MeshDesc {
-            count: SKY_VERTICES,
-            aabb: Aabb::new(glam::Vec3::ZERO, glam::Vec3::splat(SKY_EXTENT)),
-            vertex_buffers: arrayvec::ArrayVec::new(),
-            index_buffer: None,
-            indexed: false,
-            bind_group: None,
-            morph_deltas: None,
-        },
-    );
+    let sky_mesh = source
+        .allocate_mesh(
+            &world.root_scope(),
+            MeshDescriptor {
+                indexing: MeshIndexing::NonIndexed {
+                    vertex_count: SKY_VERTICES,
+                },
+                aabb: Aabb::new(glam::Vec3::ZERO, glam::Vec3::splat(SKY_EXTENT)),
+                vertex_buffers: arrayvec::ArrayVec::new(),
+                bind_group: None,
+                skin: None,
+                morph_deltas: None,
+            },
+        )
+        .expect("the sky mesh is drawable");
 
     // -- the particle family -------------------------------------------------
     let particle_layout = particle_material_layout(&device);
@@ -258,21 +261,24 @@ fn build(
         module: particle_module,
         layout: particle_layout.clone(),
     });
-    let particle_mesh = source.allocate_mesh(
-        &world.root_scope(),
-        MeshDesc {
-            count: PARTICLE_VERTICES,
-            aabb: Aabb::new(
-                glam::Vec3::new(0.0, 1.30, 0.0),
-                glam::Vec3::new(3.0, 1.60, 3.0),
-            ),
-            vertex_buffers: arrayvec::ArrayVec::new(),
-            index_buffer: None,
-            indexed: false,
-            bind_group: None,
-            morph_deltas: None,
-        },
-    );
+    let particle_mesh = source
+        .allocate_mesh(
+            &world.root_scope(),
+            MeshDescriptor {
+                indexing: MeshIndexing::NonIndexed {
+                    vertex_count: PARTICLE_VERTICES,
+                },
+                aabb: Aabb::new(
+                    glam::Vec3::new(0.0, 1.30, 0.0),
+                    glam::Vec3::new(3.0, 1.60, 3.0),
+                ),
+                vertex_buffers: arrayvec::ArrayVec::new(),
+                bind_group: None,
+                skin: None,
+                morph_deltas: None,
+            },
+        )
+        .expect("the particle mesh is drawable");
     let particle_material = {
         let device = device.clone();
         let layout = particle_layout.clone();

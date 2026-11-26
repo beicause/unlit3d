@@ -1,6 +1,6 @@
 # unlit3d / unlit3dx 审查结果实施计划
 
-本文位于 `docs/todo/`，随实施推进更新。截至 2026-11-25，P0-A–P0-J 与 P1-A–P1-D 已实施、验收并提交；P2-A–P2-D、P3-A–P3-D 与 SK-1–SK-13 未开始。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
+本文位于 `docs/todo/`，随实施推进更新。截至 2026-11-26，P0-A–P0-J、P1-A–P1-D 与 P2-A 已实施、验收并提交；P2-B–P2-D、P3-A–P3-D 与 SK-1–SK-13 未开始。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
 
 ## 实施进度
 
@@ -24,6 +24,7 @@
 | P1-B 失败原因 | `b599b75` | 34 文件 +1441/−538 | `WorldError` 到达场景/step 出口、`ToolError` 的 kind 可分支、拒绝与入队后停机分别结算 | 已验收 |
 | P1-C `RunShape` | `754c3a8` | 13 文件 +472/−223 | 8 条开关组合解析、`TurnOutcome` 区分 `Suspended` 与 `Unprepared` | 已验收 |
 | P1-D `WorldEndpoint` | `0ab3d7b` | 38 文件 +1792/−1297 | endpoint 排队、三种 world 的 ownership/driving、`NoHandle`/`Detached`/二次等待、setup panic 报因且不留半成品 | 已验收 |
+| P2-A mesh 资源模型 | `3a0b77a` | 28 文件 +991/−426 | `MeshDescriptor` 的 8 类拒绝（无图元、索引/顶点缓冲过短、slot 越界、零 stride、无 morph target、位移不足、pose 短于 joints） | 已验收 |
 
 ### 验收命令与结果
 
@@ -45,7 +46,7 @@
 - **非 Linux 平台**：`target_os = "android"` 与 Windows 的 `cfg` 分支未运行，`RunShape` 在这些平台上把 ownership 定为 `Hosted` 的路径未实测。
 - **真实音频设备**：本机只有 PipeWire 提供的 sink，音频用例按 `has_output_device()` 分支运行，两种分支均通过；但未在无声卡环境验证「永久静音」那条诊断路径的日志文本。
 - **`blitz_system_fonts`**：只做了 `cargo check`，未运行宿主字体枚举下的排版用例。
-- **P2/P3/SK**：全部未开始。SK-1–SK-10 的 API 纠错所需的新签名已经就位（`WorldEndpoint`、`TickOutcome`、`RunShape`、`ToolError`、`StepOutcome::Failed(WorldError)`），但技能页面尚未按这些签名复核。
+- **P2-B–P2-D / P3 / SK**：未开始。SK-1–SK-10 的 API 纠错所需的新签名已经就位（`WorldEndpoint`、`TickOutcome`、`RunShape`、`ToolError`、`StepOutcome::Failed(WorldError)`、`MeshDescriptor`），但技能页面尚未按这些签名复核。
 
 ## 目标与执行原则
 
@@ -108,7 +109,7 @@
 
 补审来源记录见[独立来源页](supplemental-review-2026-11-24.md)；其中六项实现内容已全部迁入本计划 P0-E–P0-J，技能实施计划的十三项问题仍为配套任务。`SK-11`–`SK-13` 是本次结构、信息分层和格式复核新增的稳定性任务，不是新的 API 缺陷。审查完成、隔离探针复现或文档写入不等于实现与验收完成：一个包只有在回归测试补齐、验收命令通过并提交后才算完成。
 
-P0-A–P0-J 与 P1-A–P1-D 已按此门槛完成，交付记录见[实施进度](#实施进度)；P2-A–P2-D、P3-A–P3-D 与 SK-1–SK-13 待实施。下文各包的步骤仍是唯一权威说明，实施时按它执行，不要以进度表代替。
+P0-A–P0-J、P1-A–P1-D 与 P2-A 已按此门槛完成，交付记录见[实施进度](#实施进度)；P2-B–P2-D、P3-A–P3-D 与 SK-1–SK-13 待实施。下文各包的步骤仍是唯一权威说明，实施时按它执行，不要以进度表代替。
 
 ### 库实现任务总表（主任务与补审任务）
 
@@ -851,9 +852,11 @@ struct RunShape {
 
 ## P2：收紧公共 API 不变量
 
-本阶段尚未开始。
+P2 阶段进行中：P2-A 已完成，P2-B–P2-D 未开始。
 
 ### P2-A：重构 mesh / skin / morph 资源边界
+
+**状态**：已实施并提交。
 
 **问题**
 

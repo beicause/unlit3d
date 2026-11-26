@@ -548,7 +548,11 @@ fn entities_drawing_different_meshes_stay_separate_draws() {
     let mut h = harness();
     let first = h.tri_mesh();
     let second = h.tri_mesh();
-    assert_ne!(first.first, second.first, "the meshes own different slices");
+    assert_ne!(
+        first.draw.first(),
+        second.draw.first(),
+        "the meshes own different slices"
+    );
     h.world
         .root_scope_mut()
         .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);

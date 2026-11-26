@@ -111,24 +111,25 @@ impl From<ColorLoadOpProxy> for wgpu::LoadOp<wgpu::Color> {
 /// A [GpuMesh] as the fields a reader can see.
 #[derive(Facet)]
 pub struct GpuMeshProxy {
-    /// Vertices the mesh draws.
+    /// The vertex or index range the draw reads.
     #[facet(default)]
     pub count: u32,
-    /// First vertex.
+    /// Where the draw starts in the buffer it reads.
     #[facet(default)]
     pub first: u32,
     /// Base vertex added to each index.
     #[facet(default)]
-    pub base_vertex: u32,
+    pub base_vertex: i32,
     /// Whether the mesh draws from an index buffer.
     #[facet(default)]
     pub indexed: bool,
     /// How many morph targets the mesh has.
     #[facet(default)]
     pub morph_targets: u32,
-    /// Whether the mesh is skinned.
+    /// How many joint matrices the mesh's vertices are deformed by, zero when
+    /// it carries no joint indices.
     #[facet(default)]
-    pub skinned: bool,
+    pub joints: u32,
     /// The mesh's bounds.
     #[facet(default)]
     pub aabb: AabbProxy,
@@ -160,12 +161,12 @@ impl From<&Aabb> for AabbProxy {
 impl From<&GpuMesh> for GpuMeshProxy {
     fn from(mesh: &GpuMesh) -> Self {
         Self {
-            count: mesh.count,
-            first: mesh.first,
-            base_vertex: mesh.base_vertex,
-            indexed: mesh.indexed,
+            count: mesh.draw.count(),
+            first: mesh.draw.first(),
+            base_vertex: mesh.draw.base_vertex(),
+            indexed: mesh.draw.is_indexed(),
             morph_targets: mesh.morph_targets,
-            skinned: mesh.skinned,
+            joints: mesh.skin.map_or(0, |skin| skin.joints),
             aabb: AabbProxy::from(&mesh.aabb),
         }
     }

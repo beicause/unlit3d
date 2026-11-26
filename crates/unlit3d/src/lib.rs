@@ -122,7 +122,10 @@ pub mod prelude {
             subscribe_input,
         },
         line::{Line, LineSegment, LineSource},
-        mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
+        mesh::{
+            JointMatrix, MeshDescriptor, MeshDraw, MeshError, MeshIndexing, MorphDeltas, SkinShape,
+            VertexBufferDesc,
+        },
         mesh_source::MeshSource,
         offscreen::{IntermediateSize, PersistentTarget, TargetConfig},
         pass::{FramePass, FramePassOrder, Pass, PassInfo},

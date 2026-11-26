@@ -79,19 +79,21 @@ fn a_mesh_registers_its_pooled_parts_nowhere_under_its_root() {
     // outright: the built-in variants bind nothing per mesh, so their
     // meshes carry none.
     let bind_group = h.empty_bind_group();
-    let mesh = h.source.allocate_mesh(
-        &h.world.root_scope(),
-        MeshDesc {
-            vertex_buffers: ArrayVec::new(),
-            index_buffer: None,
-            count: 3,
-            indexed: false,
-            // No vertices, so the truthful bound is a zero box at the origin.
-            aabb: crate::bounds::Aabb::new(glam::Vec3::ZERO, glam::Vec3::ZERO),
-            bind_group: Some(bind_group.clone()),
-            morph_deltas: None,
-        },
-    );
+    let mesh = h
+        .source
+        .allocate_mesh(
+            &h.world.root_scope(),
+            MeshDescriptor {
+                vertex_buffers: ArrayVec::new(),
+                indexing: MeshIndexing::NonIndexed { vertex_count: 3 },
+                // No vertices, so the truthful bound is a zero box at the origin.
+                aabb: crate::bounds::Aabb::new(glam::Vec3::ZERO, glam::Vec3::ZERO),
+                bind_group: Some(bind_group.clone()),
+                skin: None,
+                morph_deltas: None,
+            },
+        )
+        .expect("the mesh is drawable");
     let ctx = h.source.context();
 
     // The pools are the source's, not the mesh's: a mesh that goes away

@@ -337,6 +337,27 @@ used; a mesh carrying its buffers inline would drag them through every walk for
 the sake of a few bytes of bounds. The split is by read frequency, not by kind,
 so a new field belongs on the side that reads it.
 
+What a caller writes is a [`MeshDescriptor`](mesh::MeshDescriptor), and
+[`MeshDescriptor::validate`](mesh::MeshDescriptor::validate) is the gate between
+it and a [`GpuMesh`](components::GpuMesh). The description names its geometry
+with one [`MeshIndexing`](mesh::MeshIndexing) — a vertex count, or an index
+buffer with its format and count — rather than with a count, a flag and an
+optional buffer, so no combination of fields can say the mesh is indexed without
+an index buffer. The same call checks that every vertex and index buffer is
+large enough for what the draw reads, that each slot is one a pass binds, and
+that the displacements of a morphing mesh hold three components per vertex and
+target. A description that fails comes back as a
+[`MeshError`](mesh::MeshError) naming the buffer and the shortfall, before
+anything is uploaded.
+
+A skinned mesh states how many joint matrices it needs with a
+[`SkinShape`](mesh::SkinShape), which is the count of the highest joint index its
+vertex stream uses plus one. The pose a mesh is drawn with is checked against it
+when the draw packs joints, so a pose that is short of the mesh's joints is a
+panic naming the mesh rather than a read past the end of the uploaded array: the
+draw path cannot report a GPU out-of-bounds access, so the check has to happen
+where the pose is read.
+
 [`MeshSource::register_lit_family`](mesh_source::MeshSource::register_lit_family)
 registers the built-in lit family;
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family)
@@ -686,7 +707,7 @@ two separate growing arrays and two separate pack methods rather than one
 
 ```rust,ignore
 impl InstanceContext<'_> {
-    pub fn pack_joints(&mut self) -> u32;
+    pub fn pack_joints(&mut self, skin: SkinShape) -> u32;
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32;
 }
 ```
@@ -694,7 +715,10 @@ impl InstanceContext<'_> {
 [`pack_joints`](pipeline::InstanceContext::pack_joints) appends the entity's
 joint matrices — the [`SkinPose`](components::SkinPose) its
 [`SkinBinding`](components::SkinBinding) names — to the frame's joint array and
-returns the index its slice starts at.
+returns the index its slice starts at. It takes the mesh's
+[`SkinShape`](mesh::SkinShape) and holds the pose to it, so a pose shorter than
+the mesh's highest joint index panics here rather than reading past the end of
+the uploaded array.
 [`pack_morph_weights`](pipeline::InstanceContext::pack_morph_weights) does the
 same for the [`MorphWeights`](components::MorphWeights) its
 [`MorphBinding`](components::MorphBinding) names, checking the weight count

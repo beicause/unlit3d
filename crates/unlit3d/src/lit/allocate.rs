@@ -7,6 +7,7 @@ use super::{
     Scope, SecondaryFlags, SurfaceKey, TextureView, VertexAttributes, VertexBufferLayoutDesc,
     compress_weights,
 };
+use crate::mesh::SkinShape;
 use crate::mesh_source::{PooledMeshDesc, PooledStream};
 
 /// The allocation below is a use of [`MeshSource::allocate_pooled_mesh`], the
@@ -156,6 +157,20 @@ impl MeshSource {
         // needs its UVs. A variant that reads none ignores joints it was
         // handed, as it ignores UVs it does not declare.
         let skinned = variant.needs_joints();
+        let skin = if skinned {
+            let joints = joints.expect("a variant that reads joints needs the mesh's joints");
+            // The pose the mesh is drawn with has to hold a matrix for every
+            // joint its stream names, and only the stream knows the highest.
+            let highest = joints
+                .iter()
+                .flatten()
+                .copied()
+                .max()
+                .expect("a joint stream describes at least one vertex");
+            Some(SkinShape::through(highest))
+        } else {
+            None
+        };
         let (joints, weights) = if skinned {
             let joints = joints.expect("a variant that reads joints needs the mesh's joints");
             let weights = weights.expect("a variant that reads joints needs the mesh's weights");
@@ -225,7 +240,7 @@ impl MeshSource {
                 vertex_count: positions.len(),
                 indices,
                 morph_deltas,
-                skinned,
+                skin,
             },
             |stream: PooledStream<'_>| {
                 if stream.slot == PRIMARY_SLOT {

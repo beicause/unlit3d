@@ -80,7 +80,9 @@ impl LitGltf {
                         .collect::<Result<Vec<_>, _>>()?,
                     None => Vec::new(),
                 };
-                let skinned = primitives.iter().any(|primitive| primitive.mesh.skinned);
+                let skinned = primitives
+                    .iter()
+                    .any(|primitive| primitive.mesh.skin.is_some());
                 let skin = self.model_skin(&node, index, &remap, skinned)?;
                 let morph = primitives
                     .iter()

@@ -37,7 +37,7 @@
 //! than carrying a base descriptor, one family serves entities that differ in
 //! material or target policy, and the cache key is canonical by construction.
 //!
-//! Geometry is described by [crate::mesh::MeshDesc], which lists vertex buffers
+//! Geometry is described by [crate::mesh::MeshDescriptor], which lists vertex buffers
 //! tagged with the slot a pipeline expects them in and carries the layout each
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
@@ -60,6 +60,7 @@ use unlit_wgpu::texel_array::ArrayHandle;
 
 use crate::components::{GpuMaterial, GpuMesh, MorphBinding, MorphWeights, SkinBinding, SkinPose};
 use crate::global_uniforms::{FrameUniforms, UniformGroups};
+use crate::mesh::SkinShape;
 
 pub use unlit_wgpu::resources::Rebuild;
 
@@ -651,14 +652,18 @@ impl<'a> InstanceContext<'a> {
     /// index its slice starts at.
     ///
     /// The matrices come from the [`SkinPose`] of the entity this one names
-    /// with a [`SkinBinding`]. A family calls this only for a skinned mesh, and
+    /// with a [`SkinBinding`]. `skin` is the mesh's shape, whose joint count the
+    /// pose is held to: a pose shorter than it would leave a vertex reading
+    /// past the end of the slice, which is a GPU out-of-bounds access rather
+    /// than a wrong picture. A family calls this only for a skinned mesh, and
     /// puts the returned base into the record field its shader reads.
     ///
     /// # Panics
     ///
     /// If the entity names no pose entity, if that entity carries no
-    /// [`SkinPose`], or if the pose is empty.
-    pub fn pack_joints(&mut self) -> u32 {
+    /// [`SkinPose`], or if the pose holds fewer matrices than the mesh's
+    /// [`SkinShape`] names joints.
+    pub fn pack_joints(&mut self, skin: SkinShape) -> u32 {
         let mut binding_row = self
             .world
             .try_query_one::<&SkinBinding>(self.entity)
@@ -679,10 +684,9 @@ impl<'a> InstanceContext<'a> {
                 )
             });
         let pose = pose_row.get();
-        assert!(
-            !pose.matrices.is_empty(),
-            "a skinned mesh's pose needs at least one joint matrix"
-        );
+        if let Err(error) = skin.validate(&pose.matrices) {
+            panic!("a skinned mesh cannot be drawn with this pose: {error}");
+        }
         let base = self.joints.len() as u32;
         self.joints.extend_from_slice(&pose.matrices);
         base

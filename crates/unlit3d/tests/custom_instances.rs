@@ -338,19 +338,22 @@ async fn a_custom_family_owns_its_instance_stream() {
         source.register_family::<CustomInstanceKey, _, _>(world, NoBindingFactory, CustomInstances);
         let pipeline = GpuRenderPipeline::new(key);
         let buffer = upload(&device, &queue, &SQUARE);
-        let mesh = source.allocate_mesh(
-            world,
-            MeshDesc {
-                vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
-                    .expect("one buffer fits"),
-                index_buffer: None,
-                count: SQUARE.len() as u32,
-                indexed: false,
-                aabb: aabb_of(&SQUARE),
-                bind_group: None,
-                morph_deltas: None,
-            },
-        );
+        let mesh = source
+            .allocate_mesh(
+                world,
+                MeshDescriptor {
+                    vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
+                        .expect("one buffer fits"),
+                    indexing: MeshIndexing::NonIndexed {
+                        vertex_count: SQUARE.len() as u32,
+                    },
+                    aabb: aabb_of(&SQUARE),
+                    bind_group: None,
+                    skin: None,
+                    morph_deltas: None,
+                },
+            )
+            .expect("the mesh is drawable");
         (pipeline, mesh)
     });
 

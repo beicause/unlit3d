@@ -196,7 +196,7 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
             .expect("the embedded document uploads")
     });
     assert!(
-        resources.meshes[0].mesh.skinned,
+        resources.meshes[0].mesh.skin.is_some(),
         "the primitive declares JOINTS_0, so the uploaded mesh reads joints"
     );
 

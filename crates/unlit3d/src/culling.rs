@@ -91,6 +91,7 @@ pub(crate) fn collect_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh::MeshDraw;
     use arrayvec::ArrayVec;
     use glam::Vec3;
     use std::rc::Rc;
@@ -149,13 +150,10 @@ mod tests {
                 storage: MeshStorage::default(),
             }),
             vertex_layout: VertexLayout::default(),
-            count: 0,
-            first: 0,
-            base_vertex: 0,
-            indexed: false,
+            draw: MeshDraw::Vertices { vertices: 0..0 },
             aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
             morph_targets: 0,
-            skinned: false,
+            skin: None,
         };
         let near = world
             .root_scope_mut()
@@ -195,13 +193,10 @@ mod tests {
                 storage: MeshStorage::default(),
             }),
             vertex_layout: VertexLayout::default(),
-            count: 0,
-            first: 0,
-            base_vertex: 0,
-            indexed: false,
+            draw: MeshDraw::Vertices { vertices: 0..0 },
             aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
             morph_targets: 0,
-            skinned: false,
+            skin: None,
         };
         let shown = world.root_scope_mut().spawn(bundle![
             mesh.clone(),

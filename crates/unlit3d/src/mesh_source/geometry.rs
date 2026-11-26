@@ -1,8 +1,9 @@
 use super::{
-    ArrayVec, BufferPool, GpuMaterial, GpuMesh, MAX_VERTEX_BUFFERS, MeshDesc, MeshMetadata,
+    ArrayVec, BufferPool, GpuMaterial, GpuMesh, MAX_VERTEX_BUFFERS, MeshEntry, MeshMetadata,
     MeshParts, MeshSource, MeshStorage, Rc, Rebuild, ResHandle, Resource, ResourceGraph, Scope,
     StorageTicket, TextureExt, TextureView, VertexBufferLayoutDesc, VertexLayout, Virtual,
 };
+use crate::mesh::{MeshDescriptor, MeshDraw, MeshError, MeshIndexing, MorphDeltas};
 
 impl MeshSource {
     // -- mesh allocation -------------------------------------------------------
@@ -19,167 +20,207 @@ impl MeshSource {
     ///
     /// [`MeshSource::allocate_lit_mesh`](crate::mesh_source::MeshSource::allocate_lit_mesh) is the helper that builds the
     /// compressed layout the built-in lit shader expects.
-    pub fn allocate_mesh(&mut self, world: &Scope<'_>, desc: MeshDesc) -> GpuMesh {
-        let metadata = MeshMetadata {
-            aabb_center: desc.aabb.center,
-            aabb_half_extents: desc.aabb.half_extents,
-            ..Default::default()
-        };
-        // The raw API says nothing about the mesh's channels, so the mesh is
-        // not known to carry joints; a caller that uploads a skinned layout
-        // goes through `allocate_lit_mesh`, which does know. It owns its
-        // buffers whole, so it is drawn from vertex zero and morphs nothing.
-        self.allocate_mesh_with_metadata(world, desc, metadata, false, 0)
-    }
-
-    /// Upload a mesh together with the full metadata entry it owns.
     ///
-    /// The entry is appended to the CPU-side array and reaches the GPU on the
-    /// next built scene; the returned handle names its index. `vertex_offset`
-    /// is the draw addressing the entry carries; the morph count is the one the
-    /// mesh's own displacements declare.
+    /// # Errors
     ///
-    /// `skinned` records whether the mesh's position stream carries joints, so
-    /// a skinned draw can be required to name the pose entity it deforms by.
-    pub(crate) fn allocate_mesh_with_metadata(
+    /// If the descriptor does not describe a mesh that can be drawn: see
+    /// [`MeshDescriptor::validate`](crate::mesh::MeshDescriptor::validate). Nothing is uploaded
+    /// in that case, so a refused description leaves no parts in the graph.
+    pub fn allocate_mesh(
         &mut self,
         world: &Scope<'_>,
-        desc: MeshDesc,
-        mut metadata: MeshMetadata,
-        skinned: bool,
-        vertex_offset: u32,
-    ) -> GpuMesh {
-        let MeshDesc {
+        desc: MeshDescriptor,
+    ) -> Result<GpuMesh, MeshError> {
+        desc.validate()?;
+
+        let MeshDescriptor {
             vertex_buffers,
-            index_buffer,
-            count,
-            indexed,
+            indexing,
             aabb,
             bind_group,
+            skin,
             morph_deltas,
         } = desc;
 
-        // The vertex offset is part of the entry the mesh owns, so the shader
-        // reaches it through the same index the decode parameters come from.
-        // It maps `@builtin(vertex_index)` back to this mesh's own vertex
-        // ordinal for the morph displacements.
-        metadata.vertex_offset = vertex_offset;
-
-        // The parts, capped like the description they come from: a mesh cannot
-        // have more vertex buffers than a pass can bind.
-        let mut buffers = ArrayVec::<ResHandle<wgpu::Buffer>, MAX_VERTEX_BUFFERS>::new();
+        // Nothing is registered before the description is accepted, so a
+        // refused mesh leaves no parts behind in the graph.
+        let mut dependencies = ArrayVec::<ResHandle<wgpu::Buffer>, MAX_VERTEX_BUFFERS>::new();
         let mut vertex_slots =
             ArrayVec::<(u32, ResHandle<wgpu::Buffer>), MAX_VERTEX_BUFFERS>::new();
         let mut layouts = Vec::with_capacity(vertex_buffers.len());
-        for desc in vertex_buffers {
+        for buffer in vertex_buffers {
             // The mesh's virtual root is built from it, so the buffer lives
             // exactly as long as the root does.
-            let id = self.context.graph(world).get().insert(desc.buffer, None);
-            vertex_slots.push((desc.slot, id.clone()));
+            let id = self.context.graph(world).get().insert(buffer.buffer, None);
+            vertex_slots.push((buffer.slot, id.clone()));
+            dependencies.push(id);
             // The layout is owned by the mesh so a family can key on it
             // without reading the description again.
             layouts.push((
-                desc.slot,
+                buffer.slot,
                 VertexBufferLayoutDesc {
-                    array_stride: desc.array_stride,
-                    step_mode: desc.step_mode,
-                    attributes: desc.attributes,
+                    array_stride: buffer.array_stride,
+                    step_mode: buffer.step_mode,
+                    attributes: buffer.attributes,
                 },
             ));
-            buffers.push(id);
         }
         let vertex_layout = VertexLayout::new(layouts);
 
-        let index_buffer = index_buffer.map(|(buffer, format)| {
-            // Weak for the same reason as the vertex buffers.
-            let id = self.context.graph(world).get().insert(buffer, None);
-            (id, format)
-        });
-
-        // The morph displacements are this mesh's geometry, but they go into
-        // the frame-wide pool rather than a resource of their own, so the mesh
-        // holds an element range like it holds a vertex range. The range's
-        // offset is what its metadata entry names.
-        //
-        // The joint matrices and the morph weights are *not* here. They are
-        // per-instance pose state: the frame's global group binds them, so two
-        // instances of one mesh can deform differently.
-        let (morph_target_count, morph_deltas_offset, morph_deltas_allocation) = match morph_deltas
-        {
-            Some(morph) => {
-                let (offset, allocation) = self
-                    .arrays
-                    .allocate_morph_deltas(&self.device(world), &morph);
-                (morph.target_count, offset, Some(allocation))
+        // A mesh that owns its buffers whole draws from the start of them, and
+        // its indices name its own vertices, so no base vertex is needed.
+        let (draw, index_buffer) = match indexing {
+            MeshIndexing::NonIndexed { vertex_count } => (
+                MeshDraw::Vertices {
+                    vertices: 0..vertex_count,
+                },
+                None,
+            ),
+            MeshIndexing::Indexed {
+                index_buffer,
+                format,
+                count,
+            } => {
+                let id = self.context.graph(world).get().insert(index_buffer, None);
+                dependencies.push(id.clone());
+                (
+                    MeshDraw::Indexed {
+                        indices: 0..count,
+                        base_vertex: 0,
+                    },
+                    Some((id, format)),
+                )
             }
-            None => (0, 0, None),
         };
+
+        let metadata = MeshMetadata {
+            aabb_center: aabb.center,
+            aabb_half_extents: aabb.half_extents,
+            ..Default::default()
+        };
+        let entry = self.allocate_entry(world, metadata, morph_deltas, 0);
 
         // A bind group the caller supplied — a custom pipeline's per-mesh data
         // — hangs under the mesh's root, so giving the mesh up frees it with
-        // the rest of its parts. The pools a mesh's own data lives in
-        // are deliberately not dependencies: a pooled resource changes when its
-        // pool grows, and a dependency would rebuild every group of every mesh
-        // sharing the pool for nothing.
+        // the rest of its parts.
         let bind_group_id =
             bind_group.map(|bind_group| self.context.graph(world).get().insert(bind_group, None));
 
-        // The entry is owned whether or not the pipeline reads it: a draw that
-        // reads no metadata simply leaves the index unused. A slot a removed
-        // mesh held is reused, so the array stays as dense as the meshes that
-        // are still alive.
-        //
-        // The morph count and displacement offset the addressing carries are
-        // this mesh's own: no other values describe the displacements it
-        // pooled.
-        metadata.morph_count = morph_target_count;
-        metadata.morph_deltas_offset = morph_deltas_offset;
-        let metadata_index = self.arrays.allocate_metadata(metadata);
+        let storage = MeshStorage {
+            inbox: self.inbox.clone(),
+            ticket: StorageTicket {
+                vertex: None,
+                index: None,
+                morph_deltas: entry.morph_deltas,
+                metadata_index: entry.metadata_index,
+            },
+            metadata_index: entry.metadata_index,
+        };
+        let parts = self.mesh_parts(
+            world,
+            vertex_slots,
+            index_buffer,
+            bind_group_id,
+            storage,
+            &dependencies,
+        );
 
-        // The virtual root below is the one node that keeps the parts alive:
-        // each part is registered on its own and the root is built from all of
-        // them, so dropping the last id to the root leaves the parts nothing
-        // else holds for the next `maintain` to collect. Depending on the
-        // parts is also what makes a replaced part mark the root dirty.
+        Ok(GpuMesh {
+            parts,
+            vertex_layout,
+            draw,
+            aabb,
+            morph_targets: entry.morph_targets,
+            skin,
+        })
+    }
+
+    /// Build the parts a mesh handle shares, under a root that owns them.
+    ///
+    /// The virtual root is the one node that keeps the parts alive: each part is
+    /// registered on its own and the root depends on all of them, so dropping
+    /// the last handle to the root leaves the parts nothing else holds for the
+    /// next `maintain` to collect. Depending on the parts is also what makes a
+    /// replaced part mark the root dirty.
+    ///
+    /// `dependencies` names the nodes the caller registered for the parts that
+    /// are resources of their own. A pooled mesh names none of them: its buffers
+    /// are the pools', which outlive it and are deliberately not dependencies —
+    /// a pooled resource changes when its pool grows, and a dependency would
+    /// rebuild every group of every mesh sharing the pool for nothing.
+    pub(crate) fn mesh_parts(
+        &mut self,
+        world: &Scope<'_>,
+        vertex_buffers: ArrayVec<(u32, ResHandle<wgpu::Buffer>), MAX_VERTEX_BUFFERS>,
+        index_buffer: Option<(ResHandle<wgpu::Buffer>, wgpu::IndexFormat)>,
+        bind_group_id: Option<ResHandle<wgpu::BindGroup>>,
+        storage: MeshStorage,
+        dependencies: &[ResHandle<wgpu::Buffer>],
+    ) -> Rc<MeshParts> {
         let mut graph_holder = self.context.graph(world);
         let graph = graph_holder.get();
         let root = graph.insert(Virtual, None);
-        for id in &buffers {
-            graph.add_dependency(&root, id);
-        }
-        if let Some((id, _format)) = &index_buffer {
+        for id in dependencies {
             graph.add_dependency(&root, id);
         }
         if let Some(id) = &bind_group_id {
             graph.add_dependency(&root, id);
         }
         drop(graph_holder);
+        Rc::new(MeshParts {
+            root,
+            vertex_buffers,
+            index_buffer,
+            bind_group_id,
+            storage,
+        })
+    }
 
-        GpuMesh {
-            parts: Rc::new(MeshParts {
-                root,
-                vertex_buffers: vertex_slots,
-                index_buffer,
-                bind_group_id,
-                storage: MeshStorage {
-                    inbox: self.inbox.clone(),
-                    ticket: StorageTicket {
-                        vertex: None,
-                        index: None,
-                        morph_deltas: morph_deltas_allocation,
-                        metadata_index,
-                    },
-                    metadata_index,
-                },
-            }),
-            vertex_layout,
-            count,
-            first: 0,
-            base_vertex: 0,
-            indexed,
-            aabb,
-            morph_targets: morph_target_count,
-            skinned,
+    /// Record the metadata entry a mesh owns and pool its morph displacements.
+    ///
+    /// The entry is owned whether or not the pipeline reads it: a draw that
+    /// reads no metadata simply leaves the index unused. A slot a removed mesh
+    /// held is reused, so the array stays as dense as the meshes that are still
+    /// alive.
+    ///
+    /// The vertex offset is part of the entry, so the shader reaches it through
+    /// the same index the decode parameters come from. It maps
+    /// `@builtin(vertex_index)` back to this mesh's own vertex ordinal for the
+    /// morph displacements.
+    ///
+    /// The displacements are geometry the mesh owns, but they go into the
+    /// frame-wide pool rather than a resource of their own, so what comes back
+    /// is the range the mesh holds and the count its addressing names. The
+    /// joint matrices and morph weights are *not* here: they are per-instance
+    /// pose state, so two instances of one mesh can deform differently.
+    pub(crate) fn allocate_entry(
+        &mut self,
+        world: &Scope<'_>,
+        mut metadata: MeshMetadata,
+        morph_deltas: Option<MorphDeltas>,
+        vertex_offset: u32,
+    ) -> MeshEntry {
+        metadata.vertex_offset = vertex_offset;
+        let (morph_targets, morph_deltas_range) = match morph_deltas {
+            Some(morph) => {
+                let (offset, allocation) = self
+                    .arrays
+                    .allocate_morph_deltas(&self.device(world), &morph);
+                (morph.target_count, Some((offset, allocation)))
+            }
+            None => (0, None),
+        };
+        let (morph_deltas_offset, morph_deltas) = match morph_deltas_range {
+            Some((offset, allocation)) => (offset, Some(allocation)),
+            None => (0, None),
+        };
+        metadata.morph_count = morph_targets;
+        metadata.morph_deltas_offset = morph_deltas_offset;
+        let metadata_index = self.arrays.allocate_metadata(metadata);
+        MeshEntry {
+            metadata_index,
+            morph_deltas,
+            morph_targets,
         }
     }
 

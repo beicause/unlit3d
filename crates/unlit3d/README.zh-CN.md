@@ -227,6 +227,17 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 几个字节的包围盒而让每次遍历都把它们拖一遍。拆分的依据是读取频率而不是字段类别，所以新增
 字段应放在读取它的那一侧。
 
+调用者写的是 `MeshDescriptor`，`MeshDescriptor::validate` 则是它与 `GpuMesh` 之间的关卡。
+描述用单个 `MeshIndexing` 指明几何——顶点数量，或者一个索引缓冲区连同它的格式与数量——
+而不再用「数量、布尔标志、可选缓冲区」三件套，所以不存在「声称索引绘制却没有索引缓冲区」
+这类字段组合。同一次校验还检查：每条顶点缓冲与索引缓冲都够本次绘制读、每个 slot 都是一趟
+pass 能绑的、morph mesh 的位移数组每顶点每 target 都是三分量。不通过时返回 `MeshError`，
+指名是哪条缓冲差多少，此时尚未上传任何东西。
+
+蒙皮 mesh 用 `SkinShape` 声明它需要多少个 joint 矩阵，即顶点流里最高 joint 序号加一。
+绘制时打包 joint 会拿 pose 对照它校验，所以 pose 短于 mesh 的 joint 数是一个指名该 mesh 的
+panic，而不是读到上传数组尾部之外：绘制路径无法上报 GPU 越界，校验只能落在读取 pose 处。
+
 `MeshSource::register_lit_family` 注册内置的 lit 家族；`MeshSource::register_family`
 注册调用者自己的家族，这与内置家族走的是同一条路——连家族自己拥有并声明的逐实例
 顶点流也不例外（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)）。其他组件
@@ -455,12 +466,13 @@ pub trait InstanceData: 'static {
 
 ```rust,ignore
 impl InstanceContext<'_> {
-    pub fn pack_joints(&mut self) -> u32;
+    pub fn pack_joints(&mut self, skin: SkinShape) -> u32;
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32;
 }
 ```
 
-`pack_joints` 把实体的关节矩阵——即其 `SkinBinding` 指名的 `SkinPose`——追加到
+`pack_joints` 接受该 mesh 的 `SkinShape` 并据此校验 pose，短于最高 joint 序号的 pose 在这里
+panic，而不是读到上传数组尾部之外。它把实体的关节矩阵——即其 `SkinBinding` 指名的 `SkinPose`——追加到
 本帧关节数组，并返回其切片起始下标；`pack_morph_weights` 对 `MorphBinding` 指名的
 `MorphWeights` 做同样的事，并校验权重数量与网格 target 数一致。两者都不画的家族
 两者都不调用；lit 家族对蒙皮网格调用 `pack_joints`、对形变网格调用

@@ -31,7 +31,11 @@ fn indexed_meshes_share_one_index_buffer() {
         second.parts.index_buffer.as_ref().map(|(id, _)| id.clone()),
         Some(pool)
     );
-    assert_ne!(first.first, second.first, "the slices do not overlap");
+    assert_ne!(
+        first.draw.first(),
+        second.draw.first(),
+        "the slices do not overlap"
+    );
 
     // The ranges tile the pool in allocation order.
     let first_range = first
@@ -42,8 +46,8 @@ fn indexed_meshes_share_one_index_buffer() {
         .map(|allocation| h.source.pools.index_pool.allocation_size(allocation))
         .expect("the mesh holds an index allocation");
     assert_eq!(
-        first.first + first_range / size_of::<u16>() as u32,
-        second.first,
+        first.draw.first() + first_range / size_of::<u16>() as u32,
+        second.draw.first(),
         "the second mesh starts where the first ends"
     );
 }
@@ -52,13 +56,14 @@ fn indexed_meshes_share_one_index_buffer() {
 fn a_removed_mesh_frees_its_index_range_for_the_next_mesh() {
     let mut h = harness();
     let first = h.tri_mesh();
-    let first_offset = first.first;
+    let first_offset = first.draw.first();
     drop(first);
     h.source.maintain(&h.world.root_scope());
 
     let again = h.tri_mesh();
     assert_eq!(
-        again.first, first_offset,
+        again.draw.first(),
+        first_offset,
         "the freed range is handed out again"
     );
 }
@@ -74,7 +79,7 @@ fn an_index_pool_that_grows_keeps_every_meshes_slice() {
         .clone()
         .expect("the mesh is indexed")
         .0;
-    let first_offset = first.first;
+    let first_offset = first.draw.first();
 
     // Enough meshes to push the pool past its starting size.
     let mut last = None;
@@ -95,7 +100,8 @@ fn an_index_pool_that_grows_keeps_every_meshes_slice() {
         "the node follows the pool's buffer"
     );
     assert_eq!(
-        first.first, first_offset,
+        first.draw.first(),
+        first_offset,
         "the first mesh's slice did not move"
     );
     assert!(
@@ -120,13 +126,13 @@ fn a_non_indexed_mesh_holds_no_index_allocation() {
         },
     );
 
-    assert!(!mesh.indexed);
+    assert!(!mesh.draw.is_indexed());
     assert!(mesh.parts.index_buffer.is_none());
     assert!(
         mesh.parts.storage.ticket.index.is_none(),
         "a non-indexed mesh holds no index allocation"
     );
-    assert_eq!(mesh.first, 0);
+    assert_eq!(mesh.draw.first(), 0);
 }
 
 #[test]
@@ -155,21 +161,25 @@ fn meshes_sharing_a_layout_share_one_buffer_per_stream() {
     }
     // One element allocation covers both streams at the same index, which
     // is what makes a single `base_vertex` address them all.
-    assert_eq!(first.base_vertex, 0);
-    assert_ne!(second.base_vertex, first.base_vertex);
+    assert_eq!(first.draw.base_vertex() as u32, 0);
+    assert_ne!(
+        second.draw.base_vertex() as u32,
+        first.draw.base_vertex() as u32
+    );
 }
 
 #[test]
 fn a_removed_mesh_frees_its_vertex_range_for_the_next_mesh() {
     let mut h = harness();
     let first = h.tri_mesh();
-    let vertex_offset = first.base_vertex;
+    let vertex_offset = first.draw.base_vertex() as u32;
     drop(first);
     h.source.maintain(&h.world.root_scope());
 
     let again = h.tri_mesh();
     assert_eq!(
-        again.base_vertex, vertex_offset,
+        again.draw.base_vertex() as u32,
+        vertex_offset,
         "the freed element range is handed out again"
     );
 }
@@ -185,7 +195,7 @@ fn a_vertex_pool_that_grows_keeps_every_meshes_element_index() {
         .iter()
         .map(|(_, id)| id.clone())
         .collect();
-    let base_vertex = first.base_vertex;
+    let base_vertex = first.draw.base_vertex() as u32;
 
     // Enough meshes to push the pool past its starting capacity.
     let mut last = None;
@@ -212,7 +222,8 @@ fn a_vertex_pool_that_grows_keeps_every_meshes_element_index() {
         );
     }
     assert_eq!(
-        first.base_vertex, base_vertex,
+        first.draw.base_vertex() as u32,
+        base_vertex,
         "the first mesh's element index did not move"
     );
     assert!(
@@ -252,8 +263,15 @@ fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
             ..Default::default()
         },
     );
-    assert!(first.indexed && second.indexed, "both meshes are indexed");
-    assert_ne!(first.first, second.first, "the slices do not overlap");
+    assert!(
+        first.draw.is_indexed() && second.draw.is_indexed(),
+        "both meshes are indexed"
+    );
+    assert_ne!(
+        first.draw.first(),
+        second.draw.first(),
+        "the slices do not overlap"
+    );
 
     h.world
         .root_scope_mut()
@@ -279,21 +297,22 @@ fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         &mut scene,
         &mut encoder,
     );
-    let shapes: Vec<DrawShape> = h
+    let shapes: Vec<MeshDraw> = h
         .source
         .caches
         .visible_cache
         .iter()
-        .map(|entry| entry.handles_key.shape)
+        .map(|entry| entry.handles_key.shape.clone())
         .collect();
     assert_eq!(
         h.source.caches.entry_handle_cache.len(),
         2,
         "each distinct slice interns its own handles"
     );
-    assert_eq!(shapes[0].first, 0, "the first mesh starts at zero");
+    assert_eq!(shapes[0].first(), 0, "the first mesh starts at zero");
     assert_ne!(
-        shapes[0].first, shapes[1].first,
+        shapes[0].first(),
+        shapes[1].first(),
         "each draw keeps its own slice of the pool"
     );
     assert_eq!(drawn(&h.source).len(), 2, "both entities were drawn");

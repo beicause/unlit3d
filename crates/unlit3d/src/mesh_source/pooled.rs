@@ -2,8 +2,7 @@
 //!
 //! A pooled mesh keeps its vertices in the source's vertex streams and its
 //! indices in its index pool, so every such mesh draws out of the same buffers
-//! and names its own range through [GpuMesh::first] and
-//! [GpuMesh::base_vertex]. [`MeshSource::allocate_pooled_mesh`] is the one
+//! and names its own range through [GpuMesh::draw]. [`MeshSource::allocate_pooled_mesh`] is the one
 //! entry: the caller states the streams the mesh occupies and fills each of
 //! them, and the source allocates the ranges, applies the pool offset where the
 //! device requires it and hands back a complete handle.
@@ -13,11 +12,11 @@
 //! meshes the same way.
 
 use super::{
-    ArrayVec, GpuMesh, MAX_VERTEX_BUFFERS, MeshDesc, MeshMetadata, MeshSource, Rc, Scope,
-    VertexBufferLayoutDesc, VertexLayout, VertexStreamPool,
+    ArrayVec, GpuMesh, MAX_VERTEX_BUFFERS, MeshMetadata, MeshSource, MeshStorage, Scope,
+    StorageTicket, VertexBufferLayoutDesc, VertexLayout, VertexStreamPool,
 };
 use crate::bounds::Aabb;
-use crate::mesh::MorphDeltas;
+use crate::mesh::{MeshDraw, MorphDeltas, SkinShape};
 use core::mem::size_of;
 use core::num::NonZeroU64;
 use unlit_wgpu::mesh::index_fits_u16;
@@ -183,11 +182,13 @@ pub struct PooledMeshDesc<'a> {
     pub indices: Option<&'a [u32]>,
     /// The morph displacements that deform the mesh.
     pub morph_deltas: Option<MorphDeltas>,
-    /// Whether the mesh's position stream carries joints.
+    /// How many joint matrices the mesh's position stream is deformed by, or
+    /// `None` when it carries no joint indices.
     ///
     /// A skinned mesh is drawn by an entity that names the pose it deforms by,
-    /// so the flag is what lets the draw path require that binding.
-    pub skinned: bool,
+    /// so this is what lets the draw path require that binding and hold the
+    /// pose to hold a matrix for every joint.
+    pub skin: Option<SkinShape>,
 }
 
 /// One stream of a pooled mesh, handed to its writer as it is filled.
@@ -249,7 +250,7 @@ impl MeshSource {
             vertex_count,
             indices,
             morph_deltas,
-            skinned,
+            skin,
         } = desc;
         assert!(vertex_count > 0, "a pooled mesh covers at least one vertex");
 
@@ -308,10 +309,13 @@ impl MeshSource {
             "a vertex offset has to fit the i32 a draw's base vertex is"
         );
         let offset = IndexOffset::new(supports_base_vertex, vertex_offset);
+        // Zero whenever the offset was baked into the indices instead, which is
+        // what a draw on a device without `base_vertex` requires. The metadata
+        // entry carries `vertex_offset` either way: the shader reads
+        // pool-global vertex ordinals on both paths.
         let draw_base_vertex = offset.draw_base_vertex;
-        let (index_buffer, count, indexed, index_allocation, first) = match indices {
+        let (index_buffer, draw, index_allocation) = match indices {
             Some(indices) if !indices.is_empty() => {
-                let index_count = indices.len() as u32;
                 // An offset that pushes an index past `u16::MAX` has to widen
                 // the buffer it is written into, so the format and the bytes
                 // are decided together.
@@ -342,86 +346,65 @@ impl MeshSource {
                 let first = range.allocation.offset / index_format_size(format);
                 (
                     Some((self.pools.index_pool_id.clone(), format)),
-                    index_count,
-                    true,
+                    MeshDraw::Indexed {
+                        indices: first..first + indices.len() as u32,
+                        base_vertex: draw_base_vertex as i32,
+                    },
                     Some(range.allocation),
-                    first,
                 )
             }
             // A non-indexed draw names its first vertex directly, so the pool
             // offset goes on the draw's range. A non-zero `base_vertex` is
             // ignored for a non-indexed draw, so it cannot carry the offset.
-            _ => (None, vertex_count as u32, false, None, vertex_offset),
+            _ => (
+                None,
+                MeshDraw::Vertices {
+                    vertices: vertex_offset..vertex_offset + vertex_count as u32,
+                },
+                None,
+            ),
         };
 
-        // The mesh owns the metadata entry: the AABB and UV decode parameters
-        // the streams derived, plus the addressing the draw needs. The vertex
-        // offset is known here, and the mesh's own morph count is taken from
-        // the displacements it uploaded.
-        let aabb = Aabb::new(metadata.aabb_center, metadata.aabb_half_extents);
-        let mut mesh = self.allocate_mesh_with_metadata(
-            world,
-            MeshDesc {
-                // The streams are the vertex pool's, not the mesh's own: the
-                // mesh names the pool's node for each slot and its own range,
-                // so no buffer is registered under the mesh for them.
-                vertex_buffers: ArrayVec::new(),
-                // The indices are the index pool's, not the mesh's own: the
-                // mesh names the pool's node and its own range, so no buffer
-                // is registered under the mesh for them.
-                index_buffer: None,
-                count,
-                indexed,
-                aabb,
-                // The caller binds nothing at the mesh group, so the mesh
-                // carries no group of its own.
-                bind_group: None,
-                morph_deltas,
-            },
-            metadata,
-            skinned,
-            vertex_offset,
-        );
-
-        // The mesh's parts are complete only now: the pool-backed slots are
-        // known once the pools have been allocated above. The handle is
-        // freshly built and shared with nothing, so it is uniquely owned here
-        // and can be patched in place.
-        let parts = Rc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
-
-        // The mesh's layout is only the streams it draws from: the
-        // per-instance stream is the family's own and is bound by the source at
-        // draw time, so it is not part of the mesh's layout at all.
+        // The mesh's layout is only the streams it draws from: the per-instance
+        // stream is the family's own and is bound by the source at draw time,
+        // so it is not part of the mesh's layout at all. A slot the pipeline
+        // declares and the mesh does not fill is left out, since its buffer is
+        // the pool's whole stream rather than anything this mesh owns.
         let mut layout = ArrayVec::<_, MAX_VERTEX_BUFFERS>::new();
-
-        // The mesh's slices of the pools it shares: the draw names its ranges
-        // by `first` and `base_vertex`. The layout is the key's own, slot by
-        // slot: the family keys on it, so it is owned by the mesh even though
-        // the buffers behind it are the pool's.
+        let mut vertex_buffers = ArrayVec::<_, MAX_VERTEX_BUFFERS>::new();
         for (slot, stream_layout) in streams {
-            if stream_layout.array_stride > 0 {
-                layout.push((*slot, stream_layout.clone()));
-                // Resolved before the parts are borrowed mutably below: the
-                // lookup needs the source, which the borrow would rule out.
-                let node = self.vertex_node(world, stream_layout);
-                parts.vertex_buffers.push((*slot, node));
+            if stream_layout.array_stride == 0 {
+                continue;
             }
+            layout.push((*slot, stream_layout.clone()));
+            let node = self.vertex_node(world, stream_layout);
+            vertex_buffers.push((*slot, node));
         }
-        parts.index_buffer = index_buffer;
-        // Record the pool ranges the mesh holds on the storage it carries:
-        // when the mesh dies, its drop posts them to the inbox for the
-        // source's reclaim to hand back. The displacement range is already on
-        // the ticket its allocation wrote.
-        parts.storage.ticket.vertex = Some(vertices.allocation);
-        parts.storage.ticket.index = index_allocation;
-        mesh.vertex_layout = VertexLayout::new(layout);
-        mesh.first = first;
-        // Zero whenever the offset was baked into the indices instead, which is
-        // what a draw on a device without `base_vertex` requires. The metadata
-        // entry carries `vertex_offset` either way: the shader reads
-        // pool-global vertex ordinals on both paths.
-        mesh.base_vertex = draw_base_vertex;
-        mesh
+        let vertex_layout = VertexLayout::new(layout);
+
+        // The mesh gives up its own metadata entry and displacement range only
+        // when it dies, so both are recorded on the ticket its parts carry.
+        let entry = self.allocate_entry(world, metadata, morph_deltas, vertex_offset);
+        let storage = MeshStorage {
+            inbox: self.inbox.clone(),
+            ticket: StorageTicket {
+                vertex: Some(vertices.allocation),
+                index: index_allocation,
+                morph_deltas: entry.morph_deltas,
+                metadata_index: entry.metadata_index,
+            },
+            metadata_index: entry.metadata_index,
+        };
+        let aabb = Aabb::new(metadata.aabb_center, metadata.aabb_half_extents);
+        let parts = self.mesh_parts(world, vertex_buffers, index_buffer, None, storage, &[]);
+        GpuMesh {
+            parts,
+            vertex_layout,
+            draw,
+            aabb,
+            morph_targets: entry.morph_targets,
+            skin,
+        }
     }
 }
 

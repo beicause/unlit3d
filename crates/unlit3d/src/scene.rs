@@ -297,12 +297,7 @@ where
         // three are already in hand.
         let handles_key = DrawHandlesKey {
             mesh: gpu_mesh.parts.root.clone(),
-            shape: DrawShape {
-                indexed: gpu_mesh.indexed,
-                count: gpu_mesh.count,
-                first: gpu_mesh.first,
-                base_vertex: gpu_mesh.base_vertex,
-            },
+            shape: gpu_mesh.draw.clone(),
             material: material_bg,
         };
         self.visible.push(VisibleEntry {
@@ -509,7 +504,7 @@ pub(crate) struct DrawHandlesKey {
     /// The mesh's root node, which names its buffers and bind group.
     pub(crate) mesh: ResHandle<Virtual>,
     /// What the draw reads from the mesh.
-    pub(crate) shape: DrawShape,
+    pub(crate) shape: crate::mesh::MeshDraw,
     /// The material's bind group, when the entity carries a material.
     pub(crate) material: Option<ResHandle<wgpu::BindGroup>>,
 }
@@ -520,27 +515,6 @@ pub(crate) struct RenderPipelineHandles {
     pub(crate) pipeline: wgpu::RenderPipeline,
     /// The bind group bound at the global index, when the pipeline binds one.
     pub(crate) global: Option<wgpu::BindGroup>,
-}
-
-/// The shape of one draw: what is drawn and from which source.
-///
-/// Resolved once per entry alongside its handles, so assembling the draws
-/// names no [GpuMesh] and therefore needs no access to the world.
-///
-/// Comparable so that two entries drawing the same geometry are recognized as
-/// one instanced draw; see [assemble_scene].
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct DrawShape {
-    /// Whether the draw is indexed; when it is not, `count` is a vertex count.
-    pub(crate) indexed: bool,
-    /// How many indices or vertices the draw reads.
-    pub(crate) count: u32,
-    /// Where the draw starts in the buffer it reads: the first index for an
-    /// indexed draw, the first vertex for a non-indexed one.
-    pub(crate) first: u32,
-    /// Where the mesh's vertices start, for an indexed draw to offset every
-    /// index by.
-    pub(crate) base_vertex: u32,
 }
 
 /// The resource-graph handles one interned key resolves to.
@@ -621,7 +595,7 @@ pub(crate) fn assemble_scene(
         }
 
         let entry = &visible[start];
-        let shape = entry.handles_key.shape;
+        let shape = &entry.handles_key.shape;
         let handle = handles
             .get(&entry.handles_key)
             .expect("every visible entry's handles were interned");
@@ -633,16 +607,16 @@ pub(crate) fn assemble_scene(
         let base = entry.instance_index;
         let count = (end - start) as u32;
 
-        let first = shape.first;
+        let first = shape.first();
         let last = first
-            .checked_add(shape.count)
+            .checked_add(shape.count())
             .expect("a draw's index range stays inside the 32-bit index space");
         let instances = base
             .checked_add(count)
             .expect("a draw's instance range stays inside the 32-bit instance space");
-        let range = if shape.indexed {
+        let range = if shape.is_indexed() {
             DrawRange::indexed(first..last)
-                .with_base_vertex(shape.base_vertex as i32)
+                .with_base_vertex(shape.base_vertex())
                 .with_instances(base..instances)
         } else {
             DrawRange::vertices(first..last).with_instances(base..instances)

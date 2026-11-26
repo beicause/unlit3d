@@ -151,13 +151,10 @@ mod tests {
                 storage: MeshStorage::default(),
             }),
             vertex_layout: VertexLayout::default(),
-            count: 3,
-            first: 0,
-            base_vertex: 0,
-            indexed: false,
+            draw: crate::mesh::MeshDraw::Vertices { vertices: 0..3 },
             aabb: Aabb::new(glam::Vec3::ZERO, glam::Vec3::splat(0.5)),
             morph_targets: 0,
-            skinned: false,
+            skin: None,
         };
         let entity = world.root_scope_mut().spawn(bundle![mesh]);
         let error = set_json(&world.root_scope(), entity, "GpuMesh", "{}")

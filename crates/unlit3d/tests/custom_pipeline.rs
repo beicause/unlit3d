@@ -316,19 +316,22 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
             mapped_at_creation: false,
         });
         queue.write_buffer(&buffer, 0, TRIANGLE.as_bytes());
-        let mesh = source.allocate_mesh(
-            world,
-            MeshDesc {
-                vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
-                    .expect("one buffer fits"),
-                index_buffer: None,
-                count: TRIANGLE.len() as u32,
-                indexed: false,
-                aabb: aabb_of(&TRIANGLE),
-                bind_group: None,
-                morph_deltas: None,
-            },
-        );
+        let mesh = source
+            .allocate_mesh(
+                world,
+                MeshDescriptor {
+                    vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
+                        .expect("one buffer fits"),
+                    indexing: MeshIndexing::NonIndexed {
+                        vertex_count: TRIANGLE.len() as u32,
+                    },
+                    aabb: aabb_of(&TRIANGLE),
+                    bind_group: None,
+                    skin: None,
+                    morph_deltas: None,
+                },
+            )
+            .expect("the mesh is drawable");
         (pipeline, mesh)
     });
 
@@ -436,19 +439,22 @@ async fn one_pipeline_draws_many_meshes() {
                     resource: tint_buffer.as_entire_binding(),
                 }],
             });
-            source.allocate_mesh(
-                world,
-                MeshDesc {
-                    vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
-                        .expect("one buffer fits"),
-                    index_buffer: None,
-                    count: TRIANGLE.len() as u32,
-                    indexed: false,
-                    aabb: aabb_of(&TRIANGLE),
-                    bind_group: Some(bind_group),
-                    morph_deltas: None,
-                },
-            )
+            source
+                .allocate_mesh(
+                    world,
+                    MeshDescriptor {
+                        vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
+                            .expect("one buffer fits"),
+                        indexing: MeshIndexing::NonIndexed {
+                            vertex_count: TRIANGLE.len() as u32,
+                        },
+                        aabb: aabb_of(&TRIANGLE),
+                        bind_group: Some(bind_group),
+                        skin: None,
+                        morph_deltas: None,
+                    },
+                )
+                .expect("the mesh is drawable")
         };
         (
             pipeline,

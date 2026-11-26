@@ -56,7 +56,6 @@ use zerocopy::IntoBytes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts, frame_camera};
 use crate::culling::VisibleMesh;
 use crate::global_uniforms::{CameraKey, FrameUniforms, UniformGroups, ViewKey};
-use crate::mesh::MeshDesc;
 use crate::pass::PassInfo;
 use crate::pipeline::{
     GlobalResources, InstanceContext, InstanceData, Rebuild, RegisteredGlobal,
@@ -341,6 +340,17 @@ use self::caches::FrameCaches;
 use self::mesh_pools::MeshPools;
 pub use self::pooled::{PooledMeshDesc, PooledStream};
 pub use self::storage::MeshStorage;
+
+/// What a mesh's metadata entry and pooled displacements came to.
+///
+/// The index names the entry the mesh owns in the source's metadata array, the
+/// count is how many morph targets its addressing describes, and the range is
+/// the slice of the frame-wide displacement array the mesh holds.
+pub(crate) struct MeshEntry {
+    pub(crate) metadata_index: u32,
+    pub(crate) morph_deltas: Option<Allocation>,
+    pub(crate) morph_targets: u32,
+}
 
 use self::arrays::{FrameArrays, grow_array_to_fit};
 use self::storage::StorageTicket;
