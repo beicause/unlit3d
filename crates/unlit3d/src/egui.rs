@@ -161,7 +161,7 @@ struct Target {
 ///
 /// Nothing is built until the first frame: the source's pipeline is
 /// specialized on the frame's target, which is only known in
-/// [`SceneSource::build`](crate::source::SceneSource::build). The pipeline and
+/// [`SceneSource::build`]. The pipeline and
 /// its bind groups are built then, one set per target the source is drawn
 /// into, and reused for as long as that target is.
 ///

@@ -1,7 +1,7 @@
 //! Load glTF documents and patch them into another world's
 //! [`MeshSource`](crate::mesh_source::MeshSource): upload textures, materials
 //! and meshes into an existing resource graph, unload them again, and prepare
-//! the document's default scene as a reusable [`LitModel`](crate::lit::LitModel).
+//! the document's default scene as a reusable [`LitModel`].
 //!
 //! [`LitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each

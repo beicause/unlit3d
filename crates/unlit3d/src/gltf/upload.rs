@@ -379,10 +379,10 @@ impl LitGltf {
     /// A mode the device has no topology for is expanded into the list that
     /// draws the same primitives, so its index stream is not the document's.
     ///
-    /// The morph-target count the displacement stream is packed with is the
-    /// one [`mesh_morph_targets`](super::scene::mesh_morph_targets) validated
-    /// for the whole mesh, so every primitive of a mesh uploads the same
-    /// slots.
+    /// The morph-target count the displacement stream is packed with comes
+    /// from the mesh rather than the primitive, so every primitive of a mesh
+    /// uploads the same slots; a document whose primitives disagree is
+    /// rejected before any of them uploads.
     ///
     /// # Errors
     ///

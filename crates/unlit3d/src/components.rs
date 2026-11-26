@@ -396,7 +396,7 @@ pub struct GpuMesh {
 /// deformed by the weighted sum of the matrices its own joint indices name, so
 /// the pose has to hold at least as many matrices as the highest index any of
 /// its meshes uses. A mesh states that count as a
-/// [`SkinShape`](crate::mesh::SkinShape), and packing the pose for a draw holds
+/// [`SkinShape`], and packing the pose for a draw holds
 /// it to it, so a short pose panics there rather than reading past the end of
 /// the uploaded array.
 ///
@@ -630,7 +630,10 @@ mod tests {
                 .abs_diff_eq(glam::Vec3::new(-2.0, 3.0, 4.0), 1e-6)
         );
         assert!(transform.rotation.is_normalized());
-        assert!(transform.compute_matrix().abs_diff_eq(matrix, 1e-6));
+        // Rebuilding the matrix walks through a rotation matrix and back, so the
+        // error is f32 rounding rather than anything the decomposition gets
+        // wrong; a wrong reflection or axis order is off by a whole unit.
+        assert!(transform.compute_matrix().abs_diff_eq(matrix, 1e-5));
     }
 
     #[test]
@@ -649,7 +652,7 @@ mod tests {
             let transform = Transform::from_matrix(matrix);
             assert!(transform.rotation.is_normalized(), "{mask:b}");
             assert!(
-                transform.compute_matrix().abs_diff_eq(matrix, 1e-6),
+                transform.compute_matrix().abs_diff_eq(matrix, 1e-5),
                 "{mask:b}"
             );
         }

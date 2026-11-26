@@ -263,7 +263,8 @@ impl Presenter {
     /// Each holder is told the new window size and works out its own from it:
     /// the surface configures its swap chain, the swap chain's attachments
     /// follow the size the surface reports, and the offscreen target applies
-    /// its own [`IntermediateSize`] policy — so nothing here has to know what
+    /// its own [`IntermediateSize`](crate::offscreen::IntermediateSize) policy —
+    /// so nothing here has to know what
     /// an intermediate target's size is. The target's texture and view are
     /// replaced in place — their resource nodes keep their ids — so the blit
     /// reading the view rebuilds its bind group through its own dependency,

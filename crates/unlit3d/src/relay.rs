@@ -12,7 +12,7 @@
 //!   the size an overlay is laid out at. A reader is not a queue consumer, so a
 //!   slow one cannot fall behind, and one that subscribes late still sees the
 //!   newest publish.
-//! - A [`Stream`] queues events separately for each subscriber. A lagging
+//! - A [`Stream`](crate::relay::Stream) queues events separately for each subscriber. A lagging
 //!   subscriber drains the accepted events in order and then observes overflow;
 //!   neither the producer nor other subscribers wait for it.
 

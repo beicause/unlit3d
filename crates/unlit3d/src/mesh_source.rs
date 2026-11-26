@@ -4,7 +4,7 @@
 //! a mesh is uploaded into, the pipeline families an entity's key resolves
 //! through, the per-frame caches the draw list is built from, and the
 //! [`Scene`] those draws are recorded from. It is an ordinary
-//! [`DrawSource`] — the frame driver knows nothing about meshes, so a
+//! [`DrawSource`](crate::source::DrawSource) — the frame driver knows nothing about meshes, so a
 //! caller's own source runs beside it with no less privilege.
 //!
 //! The state the source owns is grouped by what it is for, and each group
@@ -116,7 +116,7 @@ struct RegisteredPipeline {
     global: Option<RegisteredGlobal>,
 }
 
-/// The [DrawSource] that draws meshes.
+/// The [`DrawSource`](crate::source::DrawSource) that draws meshes.
 ///
 /// It owns the mesh pools, the pipeline families, the per-frame caches and the
 /// [`Scene`] the frame's draws are assembled into, and it fetches the device,

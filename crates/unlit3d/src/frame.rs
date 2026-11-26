@@ -288,10 +288,6 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 
 thread_local! {
     /// The behaviour list [`dispatch`] reuses across frames.
-    #[cfg_attr(
-        target_os = "android",
-        expect(clippy::missing_const_for_thread_local, reason = "the initializer is already const")
-    )]
     static BEHAVIOURS: RefCell<Vec<(FrameBehaviourOrder, Entity)>> =
         const { RefCell::new(Vec::new()) };
 }

@@ -49,7 +49,7 @@ impl BlitSource {
     /// Blit `view` over the pass's target.
     ///
     /// `view` must already be registered in the frame's resource graph — the
-    /// one the frame's [`RenderContext`] addresses — like the view it is
+    /// one the frame's [`RenderContext`](crate::source::RenderContext) addresses — like the view it is
     /// blitted into.
     pub fn new(view: ResHandle<TextureView>) -> Self {
         Self {

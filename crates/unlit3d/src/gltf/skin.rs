@@ -2,7 +2,7 @@
 //!
 //! The pose is the deformation a mesh's joint stream addresses; the weights
 //! are the morph targets' blend factors. Both are per-node state: a model node
-//! carries them as [`LitModelSkin`](crate::lit::LitModelSkin) and
+//! carries them as [`LitModelSkin`] and
 //! [`LitModelMorph`](crate::lit::LitModelMorph), and these accessors answer the
 //! same questions about the document alone, for a caller inspecting one before
 //! building a model.

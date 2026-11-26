@@ -6,7 +6,8 @@
 //! [`WindowSurface`] owns the surface and its configuration and keeps the
 //! frame's color image registered in the frame's resource graph, one id for the
 //! surface's whole life, so a resize replaces the view in place. The depth and
-//! multisample attachments belong to the caller — see [`FrameAttachments`] —
+//! multisample attachments belong to the caller — see
+//! [`FrameAttachments`](crate::attachments::FrameAttachments) —
 //! and a stated attachment spans only the render that consumes it: the frame
 //! loop below states and gives up the attachments through the surface's own
 //! acquire and the frame's present, and presenting the frame destroys the
@@ -160,7 +161,8 @@ impl Default for SurfaceOptions {
 /// The surface is configured for the window's current size and keeps the
 /// frame's color image registered in the frame's resource graph.
 /// A pass states that view as its color attachment together with the frame's
-/// depth and multisample attachments — see [`FrameAttachments`] — and
+/// depth and multisample attachments — see
+/// [`FrameAttachments`](crate::attachments::FrameAttachments) — and
 /// [`Frame::present_and_park`] presents the frame and parks the pass again.
 /// [`Self::resize`] keeps the surface in step with the window.
 ///

@@ -253,17 +253,9 @@ impl OnAudioPostFill {
 
 thread_local! {
     /// The source list [`dispatch_audio_fill`] reuses across fills.
-    #[cfg_attr(
-        target_os = "android",
-        expect(clippy::missing_const_for_thread_local, reason = "the initializer is already const")
-    )]
     static SOURCES: RefCell<Vec<(AudioFillOrder, Entity)>> = const { RefCell::new(Vec::new()) };
 
     /// The post-fill list [`dispatch_audio_fill`] reuses across fills.
-    #[cfg_attr(
-        target_os = "android",
-        expect(clippy::missing_const_for_thread_local, reason = "the initializer is already const")
-    )]
     static POST_SOURCES: RefCell<Vec<Entity>> = const { RefCell::new(Vec::new()) };
 }
 

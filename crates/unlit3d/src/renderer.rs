@@ -78,7 +78,7 @@ pub struct Renderer {
     ///
     /// Taken from the [`FrameClock`] when the frame starts, so every
     /// [`PassInfo`] of one frame carries the same
-    /// [`FrameId`](crate::target::FrameId) and the next frame carries another.
+    /// [`FrameId`] and the next frame carries another.
     frame: FrameId,
     /// The frame's passes in record order, reused every frame so resolving
     /// the order allocates nothing.

@@ -3,7 +3,7 @@
 //! A spawned world - a sub-world on the host thread, a threaded world on its
 //! own, a world the host steps - is reached the same way: a bounded command
 //! channel that never blocks, a published state and a stop signal. A
-//! [`WorldEndpoint`] carries those together with the host entity the world's
+//! [`WorldEndpoint`](crate::endpoint::WorldEndpoint) carries those together with the host entity the world's
 //! proxy component lives on, so the pieces a caller acts on always describe
 //! one world: there is no way to hold the queue of one world beside the state
 //! of another.
