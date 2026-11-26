@@ -34,7 +34,7 @@ const SPAWN_PERIOD: f32 = 0.7;
 
 /// How long a ball may wait for its two halves before its instance and body
 /// are reclaimed, in seconds.
-const PENDING_TIMEOUT: f32 = 5.0;
+const PENDING_TIMEOUT: WallTimeout = WallTimeout(std::time::Duration::from_secs(5));
 
 /// How often live instances are tested against the camera's view, in seconds.
 const SWEEP_PERIOD: f32 = 0.5;
@@ -265,7 +265,7 @@ impl Bundle for BallDrops {
                 balls,
                 world,
                 &scene,
-                frame.delta_time
+                frame.delta_time.as_secs_f32()
             )),
         ]
     }
@@ -306,7 +306,7 @@ impl BallDrops {
         // first. Folded the other way round, the clear would queue the
         // despawn and the fold would still find the ball, show it, and leave
         // its instance behind when the entity went away.
-        balls.fold_answers(world, state, scene, delta_seconds);
+        balls.fold_answers(world, state, scene);
         if core::mem::take(&mut balls.clear) {
             balls.clear_balls(world, scene);
         }

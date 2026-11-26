@@ -79,7 +79,7 @@ fn the_frame_clock_averages_the_frames_after_its_first_call() {
     world.root_scope_mut().spawn(bundle![FrameClock::default()]);
     for index in 0..3u32 {
         let mut frame = crate::frame::Frame {
-            delta_time: 1.0 / 60.0,
+            delta_time: crate::time::FrameDelta::from_secs(1.0 / 60.0),
             index,
         };
         dispatch_frame(&mut world, &mut frame);
@@ -93,7 +93,7 @@ fn the_frame_clock_averages_the_frames_after_its_first_call() {
     // The frames after it fold into the rolling window.
     for index in 3..5u32 {
         let mut frame = crate::frame::Frame {
-            delta_time: 1.0 / 30.0,
+            delta_time: crate::time::FrameDelta::from_secs(1.0 / 30.0),
             index,
         };
         dispatch_frame(&mut world, &mut frame);
@@ -127,7 +127,7 @@ fn a_world_that_never_dispatched_a_frame_reports_none() {
     // frame dispatched into it still reads as no frame rather than a zero
     // the client would take for a real first frame.
     let mut frame = crate::frame::Frame {
-        delta_time: 1.0 / 60.0,
+        delta_time: crate::time::FrameDelta::from_secs(1.0 / 60.0),
         index: 7,
     };
     dispatch_frame(&mut world, &mut frame);

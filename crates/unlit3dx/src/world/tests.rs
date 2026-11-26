@@ -122,7 +122,7 @@ fn a_stepped_world_runs_on_its_owner_s_calls() {
         |world: &mut World| {
             world.root_scope_mut().spawn(bundle![Count(0)]);
         },
-        |world: &mut World, _control: &ThreadControl, (), _: f32| {
+        |world: &mut World, _control: &ThreadControl, (), _: FrameDelta| {
             world
                 .root_scope()
                 .query::<&mut Count>()
@@ -148,12 +148,20 @@ fn a_stepped_world_runs_on_its_owner_s_calls() {
     // Nothing has run yet: the host has not stepped the world.
     assert_eq!(count(&host), Ok(0));
     assert_eq!(
-        step_stepped_world(&host, handle.entity(), FRAME_SECONDS),
+        step_stepped_world(
+            &host,
+            handle.entity(),
+            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
         Ok(StepOutcome::Ran)
     );
     assert_eq!(count(&host), Ok(1));
     assert_eq!(
-        step_stepped_world(&host, handle.entity(), FRAME_SECONDS),
+        step_stepped_world(
+            &host,
+            handle.entity(),
+            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
         Ok(StepOutcome::Ran)
     );
     assert_eq!(count(&host), Ok(2));
@@ -225,7 +233,7 @@ fn a_drained_world_reports_why_it_failed() {
         "failing",
         8,
         |_| (),
-        |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        |_, _: &ThreadControl, (), _: FrameDelta| TickOutcome::Running,
     )
     .expect("the stepped world starts");
     handle
@@ -287,16 +295,24 @@ fn a_stepped_tick_ends_the_world() {
         "stepped",
         8,
         |_| (),
-        |_, _: &ThreadControl, (), _: f32| TickOutcome::Finished,
+        |_, _: &ThreadControl, (), _: FrameDelta| TickOutcome::Finished,
     )
     .expect("the stepped world starts");
     assert_eq!(
-        step_stepped_world(&host, handle.entity(), FRAME_SECONDS),
+        step_stepped_world(
+            &host,
+            handle.entity(),
+            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
         Ok(StepOutcome::Finished)
     );
     assert!(handle.is_finished(), "a false tick ends a stepped world");
     assert_eq!(
-        step_stepped_world(&host, handle.entity(), FRAME_SECONDS),
+        step_stepped_world(
+            &host,
+            handle.entity(),
+            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
         Err(StepError::Unavailable),
         "a stopped world is reported the same way by every entry point",
     );
@@ -316,7 +332,7 @@ fn stepping_a_foreign_entity_fails_readably() {
     let mut host = World::new();
     let plain = host.root_scope_mut().spawn(bundle![Count(0)]);
     assert!(matches!(
-        step_stepped_world(&host, plain, 0.0),
+        step_stepped_world(&host, plain, FrameDelta::ZERO),
         Err(StepError::NoWorld(_))
     ));
 }
@@ -332,7 +348,11 @@ fn stepping_a_threaded_world_is_refused() {
     })
     .expect("the world thread starts");
     assert_eq!(
-        step_stepped_world(&host, handle.entity(), FRAME_SECONDS),
+        step_stepped_world(
+            &host,
+            handle.entity(),
+            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
         Err(StepError::NotStepped)
     );
     handle.stop();
@@ -349,14 +369,18 @@ fn a_stepped_tick_commits_its_queued_commands() {
         "stepped",
         8,
         |_| (),
-        |world: &mut World, _control: &ThreadControl, (), _: f32| {
+        |world: &mut World, _control: &ThreadControl, (), _: FrameDelta| {
             world.root_scope().queue().spawn(bundle![Count(7)]);
             TickOutcome::Running
         },
     )
     .expect("the stepped world starts");
     assert_eq!(
-        step_stepped_world(&host, handle.entity(), FRAME_SECONDS),
+        step_stepped_world(
+            &host,
+            handle.entity(),
+            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
         Ok(StepOutcome::Ran)
     );
     let count = with_stepped_world(&host, handle.entity(), |world| {

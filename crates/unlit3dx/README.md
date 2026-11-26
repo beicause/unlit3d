@@ -158,16 +158,18 @@ draining a sub-world — publishes at the end of every turn, once the tick has
 run, so a tick body publishes nothing itself and cannot publish twice.
 Which shape the collector fills is the caller's choice:
 
-- `watch` returns a `SnapshotReader<T>`: state, where only the newest value
-  matters. The collector returns `Option<T>`.
-- `subscribe` returns a `StreamReader<T>`: events, where every value matters.
-  The collector appends to the buffer it is handed, and every value reaches
-  every reader's queue.
+- `watch` installs a `SnapshotReader<T, WorldError>`. Its collector returns
+  `Option<T>`; `None` keeps the latest value in place.
+- `subscribe(capacity, collect)` installs a `StreamReader<T, WorldError>` with
+  a bounded queue. Its collector appends to a reusable buffer.
 
-Asking through a `Pending` is the third shape: one job per request, one answer
-per job, published once and named by the key the request was made under. A
-request the world never answers, or one whose world ended, is expired instead
-of being left hanging.
+`Pending::poll` reports each settled key once: `Answered`, `TimedOut`,
+`WorldStopped`, `WorldFailed`, or `Cancelled`. The optional `WallTimeout`
+uses monotonic elapsed time even while simulation is paused. A timeout stops
+waiting, not the job. `cancel` only requests cancellation: a queued job checks
+before calling its closure, and a running `request_cancellable` acknowledges
+cancellation by returning the error from a token checkpoint. Neither path
+reverts work already done.
 
 `request` answers `Asked`, because asking twice is not the same event as
 asking once. `Queued` is a job on its way to the world; `Coalesced` is a
@@ -187,29 +189,35 @@ Which one to reach for follows from the answer the caller needs:
 
 As in the usage example, the payload is the caller's type.
 
-A snapshot reader is a single-slot mailbox: `latest` peeks the newest
-snapshot, there is no backlog and no ordering to reason about, and an unread
-one is replaced. The slot is an `ArcSwapOption`, so neither side takes a lock
-the other contends on: the world swaps the newest snapshot in, and a reader
-that already holds one keeps reading that copy to the end. A world that
-collects per tick and a consumer that reads per frame meet in the middle
-without ever blocking. A collector that returns `None` leaves the newest
-snapshot in place, which is how a world that has not changed stays quiet.
-A value published before any reader subscribed is kept as well, so a reader
-that arrives late still sees it instead of waiting for the next publish.
+A snapshot reader's `poll` reports `Uninitialized`, `Unchanged`, or
+`Updated` against that reader's cursor, or `Closed` or `Failed` after the
+world ends. `latest` reads the last published value without changing the
+cursor, including after the world ends. A reader that already holds a value
+can keep it after replacement.
 
-A stream reader keeps a queue of its own: `pump` once per tick folds
-whatever arrived into that tick's batch, and `with_batch` reads it. A reader
-that ticks slower than the producer still sees every event, in order, and one
-reader's pace cannot starve another's. That is what a collision or a sequence
-ending needs, and it is also how input reaches a world: `InputWriter` is a
-stream whose producer is the window rather than a world.
+A stream reader's `pump` moves queued events into the next batch, which
+`with_batch` reads in order. A reader that runs out of capacity accepts no more
+events; after it drains the accepted prefix, `pump` reports `Overflow`.
+Normal closure and failure also drain first. A slow reader does not block the
+producer or other readers. Platform input has a separate local inbox that does
+not discard releases or focus changes while the consumer is paused.
 
 Nothing is collected unasked, and a subscription lives exactly as long as its
 reader: dropping the last clone of a reader prunes the collector on the next
 tick. Subscribing is a job, so it is refused with the queue's own error when
 the queue is full; an installation the world ran that could not reach its
 outlet is reported as `InstallError::Outlet`.
+
+## Clock domains
+
+World ticks take a `FrameDelta`; zero still runs a turn but supplies no elapsed
+frame time. `SimulationDelta` accounts for fixed-step debt; the physics
+world's `SimulationTime` advances only after a completed physics step. Audio
+positions use `AudioSampleTime`, counted in sample frames, not interleaved
+channel samples. Animation positions use `AnimationTime` on the clip's own
+timeline and can be sampled even while frame time stands still. Seconds-based
+constructors treat negative and non-finite values as zero. None of these
+clocks advances a `WallTimeout`, which measures monotonic elapsed time.
 
 ## Threads and stepping
 

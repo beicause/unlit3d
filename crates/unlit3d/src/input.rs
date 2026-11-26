@@ -191,7 +191,7 @@ impl InputEvents {
         // would report every change the batch carries as one the replay already
         // knew.
         sync::lock(&self.baseline).capture(state);
-        self.events.pump();
+        let _ = self.events.pump();
         self.events.with_batch(|batch| {
             for event in batch {
                 state.record(event);
@@ -250,7 +250,7 @@ impl InputWriter {
     /// and never read, and its spawn is refused.
     pub fn subscribe(&self) -> InputPair {
         InputPair(InputEvents {
-            events: self.0.subscribe(),
+            events: self.0.input_inbox(),
             baseline: Arc::default(),
             ticks: Arc::default(),
         })

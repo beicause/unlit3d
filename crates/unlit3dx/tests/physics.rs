@@ -44,7 +44,11 @@ fn collect_poses(world: &World) -> Option<Poses> {
 
 /// A physics world at the default rate, driven by `R`, with the floor already
 /// queued and a pose subscription on the host.
-fn floored_host<R: WorldRunner>() -> (World, WorldEndpoint, Subscription<SnapshotReader<Poses>>) {
+fn floored_host<R: WorldRunner>() -> (
+    World,
+    WorldEndpoint,
+    Subscription<SnapshotReader<Poses, unlit3dx::world::WorldError>>,
+) {
     let mut host = World::new();
     let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default())
         .expect("the world thread starts");
@@ -110,7 +114,12 @@ fn a_dropped_ball_settles_in_its_snapshots() {
     let mut poses_reader = None;
     let mut rested = false;
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
         let reader = poses_reader.get_or_insert_with(|| installed(&poses));
         rested = reader.latest().is_some_and(|poses| settled(&poses));
         if rested {
@@ -181,13 +190,21 @@ fn a_physics_tick_dispatches_its_frame() {
         .send(Box::new(move |world: &mut World| {
             world.root_scope_mut().spawn(bundle![OnFrame::new(
                 move |_world, _entity, frame: &mut Frame| {
-                    record.lock().unwrap().push((frame.index, frame.delta_time));
+                    record
+                        .lock()
+                        .unwrap()
+                        .push((frame.index, frame.delta_time.as_secs_f32()));
                 },
             ),]);
         }))
         .expect("the physics world accepts jobs");
     for _ in 0..3 {
-        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
     }
     assert_eq!(
         *seen.lock().unwrap(),
@@ -228,7 +245,7 @@ fn a_collector_sees_contacts_from_every_step() {
     // The collector queues what it sees and publishes nothing: the
     // subscription's state is the queue, which is the app's to own. The
     // reader is only the subscription's liveness token here.
-    let _events: Subscription<SnapshotReader<()>> = sender
+    let _events: Subscription<SnapshotReader<(), unlit3dx::world::WorldError>> = sender
         .watch(move |world: &World| {
             if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().iter().next() {
                 for &contact in &contacts.started {
@@ -267,7 +284,12 @@ fn a_collector_sees_contacts_from_every_step() {
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
         while let Ok((one, two, _speed)) = contacts.try_recv() {
             for body in [one, two] {
                 if !landed.contains(&body) {

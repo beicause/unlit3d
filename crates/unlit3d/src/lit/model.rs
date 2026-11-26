@@ -21,6 +21,7 @@ use super::sampling::sample_channel;
 use crate::components::{MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform};
 use crate::frame::{FrameBehaviourOrder, OnFrame};
 use crate::lit::{LitMeshBundle, LitMeshPrimitive};
+use crate::time::{AnimationTime, FrameDelta};
 use unlit_ecs::{Bundle, DynamicBundle, Entity, OnSpawn, Scope, ScopeMut, World, bundle};
 
 /// The update band for model graph evaluation.
@@ -368,8 +369,8 @@ pub enum LitModelClock {
 pub struct LitModelAnimation {
     /// Selected clip index.
     pub clip: Option<usize>,
-    /// Current clip time in seconds.
-    pub time: f32,
+    /// Current position on the selected clip's timeline.
+    pub time: AnimationTime,
     /// How the time moves.
     pub clock: LitModelClock,
 }
@@ -378,7 +379,7 @@ impl Default for LitModelAnimation {
     fn default() -> Self {
         Self {
             clip: None,
-            time: 0.0,
+            time: AnimationTime::START,
             clock: LitModelClock::Playing {
                 speed: 1.0,
                 looping: true,
@@ -507,8 +508,8 @@ impl LitModelBundle {
 /// Whether an evaluation moves the clip time or only samples it.
 #[derive(Clone, Copy, Debug)]
 enum Step {
-    /// Advance by this many seconds first, when the clock is playing.
-    Advance(f32),
+    /// Advance by this frame delta when the clock is playing.
+    Advance(FrameDelta),
     /// Sample the stored time as written.
     Sample,
 }
@@ -650,39 +651,28 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
         return;
     }
     let clip = animation.clip.and_then(|index| model.animations.get(index));
-    let sample_time = clip.map(|clip| match animation.clock {
-        LitModelClock::Playing { speed, looping } => match step {
-            Step::Advance(delta) => {
-                animation.time += delta * speed;
-                let time = if clip.duration > 0.0 {
-                    if looping {
-                        animation.time.rem_euclid(clip.duration)
-                    } else {
-                        animation.time.clamp(0.0, clip.duration)
-                    }
+    let sample_time = clip.map(|clip| {
+        let mut time = f64::from(animation.time.as_secs());
+        if let LitModelClock::Playing { speed, looping } = animation.clock {
+            if let Step::Advance(delta) = step
+                && speed.is_finite()
+            {
+                time += f64::from(delta.as_secs_f32()) * f64::from(speed);
+            }
+            let duration = f64::from(clip.duration);
+            if duration.is_finite() && duration > 0.0 {
+                time = if looping {
+                    time.rem_euclid(duration)
                 } else {
-                    animation.time
+                    time.clamp(0.0, duration)
                 };
-                animation.time = time;
-                time
             }
-            // A one-off sampling pass of a playing clip brings the stored time
-            // into the clip's range without advancing it, so sampling twice in a
-            // frame reads the same pose.
-            Step::Sample if clip.duration > 0.0 => {
-                if looping {
-                    animation.time.rem_euclid(clip.duration)
-                } else {
-                    animation.time.clamp(0.0, clip.duration)
-                }
-            }
-            Step::Sample => animation.time,
-        },
-        // A manual clock's time is the caller's to choose: it is sampled as
-        // written, and a time past the last keyframe holds that keyframe rather
-        // than wrapping to the start of the clip. Only a sampling pass reaches
-        // here, since a frame's advance returns above.
-        LitModelClock::Manual => animation.time,
+        }
+        let time = AnimationTime::from_secs(time.min(f64::from(f32::MAX)) as f32);
+        if matches!(step, Step::Advance(_)) {
+            animation.time = time;
+        }
+        time.as_secs()
     });
     // Batch reads and writes resolve each archetype's columns once. A handle
     // that is dead, out of view, or lacks the component is left out of its

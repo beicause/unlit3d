@@ -423,7 +423,10 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         };
         let mut stepped = 0;
         while stepped < frames {
-            match window.submit(host, FIXED_FRAME_SECONDS as f32) {
+            match window.submit(
+                host,
+                crate::time::FrameDelta::from_secs(FIXED_FRAME_SECONDS),
+            ) {
                 // A frame that drew, and one the surface had no image for,
                 // both count as stepped: the run moved on either way, and the
                 // client asked for frames of the run, not of the display.

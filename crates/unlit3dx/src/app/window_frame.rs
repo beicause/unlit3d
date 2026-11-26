@@ -14,6 +14,7 @@ use super::error::RunError;
 use super::{Pacing, RunFrames, Stepping};
 use crate::host::drain_sub_world;
 use crate::present::{TurnError, TurnOutcome, present_turn};
+use crate::time::FrameDelta;
 use crate::world::{StepOutcome, drain_all_stepped_worlds};
 
 #[derive(Clone, Default)]
@@ -75,7 +76,7 @@ impl WindowFrames {
     /// The worlds are stepped only once a surface image is in hand, so a run
     /// whose window is hidden or whose surface is being rebuilt stands still
     /// rather than banking time it would then have to catch up on.
-    pub(super) fn submit(&mut self, world: &World, delta_time: f32) -> FrameOutcome {
+    pub(super) fn submit(&mut self, world: &World, delta_time: FrameDelta) -> FrameOutcome {
         if self.pacing.is_spent(self.frames.advanced()) {
             exit(world, self.app);
             return FrameOutcome::Ended;
@@ -86,9 +87,10 @@ impl WindowFrames {
         let index = self.frames.advanced();
         let mut frame = Frame { delta_time, index };
         let result = present_turn(world, self.render, &mut frame, || {
-            let outcome = self.stepper.as_mut().map_or(StepOutcome::Ran, |stepper| {
-                stepper.step(world, f64::from(delta_time))
-            });
+            let outcome = self
+                .stepper
+                .as_mut()
+                .map_or(StepOutcome::Ran, |stepper| stepper.step(world, delta_time));
             match outcome {
                 StepOutcome::Ran => Ok(()),
                 outcome => Err(outcome),

@@ -94,6 +94,7 @@ pub mod record;
 pub mod synth;
 /// World threads and their pacing.
 pub mod thread;
+pub mod time;
 /// The turn every world runs, whichever driver runs it.
 pub mod turn;
 /// Threaded worlds, which run on their own thread.
@@ -148,18 +149,19 @@ pub mod prelude {
     pub use crate::{
         FRAME_SECONDS,
         channel::{
-            InstallError, Snapshot, SnapshotReader, Stream, StreamReader, Subscription,
-            publish_collected,
+            InstallError, Snapshot, SnapshotPoll, SnapshotReader, Stream, StreamEnd, StreamReader,
+            Subscription, publish_collected,
         },
         endpoint::{WorldDriving, WorldEndpoint, WorldOwnership},
         executor::{LocalPool, LocalSpawnExt, LocalTasks},
         host::{drain_sub_world, spawn_sub_world, tick_sub_world},
         job::{Job, JobSender, SendError, SendErrorKind},
-        request::{Asked, Pending, Settled},
+        request::{Asked, CancellationToken, Cancelled, Pending, Settled},
         thread::{
             FixedClock, JoinOutcome, MAX_CATCH_UP_STEPS, ThreadControl, ThreadError, WorldState,
             WorldThread, fixed_steps,
         },
+        time::{AudioSampleTime, FrameDelta, SimulationDelta, SimulationTime, WallTimeout},
         world::{
             StepError, StepOutcome, Stepped, Threaded, TickOutcome, WorldName, WorldRunner,
             spawn_stepped_world_with_init, spawn_threaded_world, spawn_threaded_world_with_init,

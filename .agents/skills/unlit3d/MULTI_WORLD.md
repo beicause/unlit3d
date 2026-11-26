@@ -5,8 +5,8 @@
 ## 通信协议（唯一一种）
 
 - `World` 是 `!Send`：`Arc<Mutex<World>>` 这条路编译器直接封死——锁不是「不推荐」，是「不可行」。多线程的正确形状是**一个关注点一个 world**，world 之间从不互调。
-- **进去靠 job，回来靠订阅**：job 是唯一改变另一个世界的方式（`Box<dyn FnOnce(&mut World) + Send>`，不回答、有界队列、满了 `SendError::Full`、已停 `Closed`、永不阻塞）；拿回数据只有三种形状——`watch`（最新状态，单槽无积压）、`subscribe`（每个事件，按序）、`Pending`（一次请求一次应答，超时给 `Expired` 而不是等死）。
-- **时机由内置机制保证**：job 在 tick 前 drain，快照 / 流在 tick 之后由驱动方统一发布，tick 体自己不发布。快照单槽是 `ArcSwapOption`，世界换入最新值、reader 读自己持有的副本，两边永不互锁。自造 mpsc channel、`Mutex`、共享 `Arc` 或回答式 job 只会绕过这些时机保证，还得自己面对竞争与死锁。
+- **进去靠 job，回来靠订阅或应答**：`JobSender::send` 非阻塞，有界队列拒绝时通过 `SendError::into_job()` 还回 job。`watch` 留最新值，`subscribe(capacity, collect)` 按序留有界事件，两者都要先 `Subscription::poll()` 确认安装。事件队列满时保留已接收的批次，然后报 `Overflow` 并结束该 reader。普通停止与 world 失败各有终态。
+- **时机由内置机制保证**：job 在 tick 前排空，快照和事件在 tick 后由驱动方统一发布。`Pending` 通过 `poll` 结算应答；`WallTimeout` 用单调时钟，即使不推进 world 也会到期，但不会取消已排队的 job。需要取消时发信号，并且只把 job 确认的取消视为 `Settled::Cancelled`。
 - **三种 runner 协议完全相同**：`Threaded`（自带线程）、`Stepped`（宿主线程上 `step_stepped_world` 推）、子 world（`spawn_sub_world` + `drain_sub_world`，也在宿主线程）。同一份 tick 体在三种下都能跑。
 
 ## 两种骨架
@@ -51,11 +51,11 @@ windowed(
 // 示意骨架：render_world/pass/device 来自 setup_render_world 返回的装配（ctx 是它的
 // RenderContext），size 是你要的离屏尺寸；名字对应该文其它片段。捕获帧的进程给
 // setup_render_world 的 panel 参数传 None，pass 下就只有 mesh source。
-let step = FIXED_FRAME_SECONDS;                               // 每帧时长（秒）
+let step = FrameDelta::from_secs(FIXED_FRAME_SECONDS);
 // 目标建在它在的那个 world 里；pass 由 setup_render_world 建好。
 let target = PersistentTarget::bind(&render_world, ctx, pass.0, &device, size, TargetConfig::default())
     .expect("the offscreen target is bound");
-let mut frame = Frame { delta_time: step as f32, index: 0, size };
+let mut frame = Frame { delta_time: step, index: 0 };
 // Stepping 只记物理一笔账：按 PHYSICS_HZ 攒步。
 // 音频拉取是另一件事，交给自己要消费样本的进程：
 // AudioPull::new(sample_rate) 按采样周期攒块，audio_format 由音频 world

@@ -13,13 +13,7 @@ impl Balls {
     /// Every wait is bounded by the same timeout, so this is the one place a
     /// request is given up on: an answer that never came names its ball, and
     /// the ball is reclaimed with whatever halves it did receive.
-    pub(super) fn fold_answers(
-        &mut self,
-        world: &World,
-        state: Entity,
-        scene: &Scene,
-        delta_seconds: f32,
-    ) {
+    pub(super) fn fold_answers(&mut self, world: &World, state: Entity, scene: &Scene) {
         let scope = world.root_scope();
 
         // A ball whose request was given up on loses the halves it has, and
@@ -29,8 +23,7 @@ impl Balls {
 
         // A retired instance is already gone from the render world: only its
         // body and its ball entity are left to despawn.
-        self.retired
-            .advance(delta_seconds, &mut self.settled_retired);
+        self.retired.poll(&mut self.settled_retired);
         for (_, answer) in self.settled_retired.drain(..) {
             // Settled either way, so the next sweep may be asked. An expiry
             // leaves the instances it named in the render world rather than
@@ -53,33 +46,32 @@ impl Balls {
 
         // An instance whose ball is already gone has nobody to be shown on,
         // so it is despawned rather than leaked.
-        self.instances
-            .advance(delta_seconds, &mut self.settled_instances);
+        self.instances.poll(&mut self.settled_instances);
         for (ball, answer) in self.settled_instances.drain(..) {
             match (scope.try_query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(instance)) => {
                     found.get().instance = Some(instance);
                 }
                 (Err(_), Settled::Answered(instance)) => self.orphans.push(instance),
-                (_, Settled::Expired) => self.expired.push(ball),
+                (_, _) => self.expired.push(ball),
             }
         }
 
-        self.bodies.advance(delta_seconds, &mut self.settled_bodies);
+        self.bodies.poll(&mut self.settled_bodies);
         for (ball, answer) in self.settled_bodies.drain(..) {
             match (scope.try_query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(handle)) => {
                     found.get().body = Some(handle);
                 }
                 (Err(_), Settled::Answered(handle)) => self.despawns.push(handle),
-                (_, Settled::Expired) => self.expired.push(ball),
+                (_, _) => self.expired.push(ball),
             }
         }
 
         // The show answers once the instance really wears its assets, so a
         // show the render world never answered leaves the ball waiting instead
         // of marking it shown.
-        self.shows.advance(delta_seconds, &mut self.settled_shows);
+        self.shows.poll(&mut self.settled_shows);
         for (ball, answer) in self.settled_shows.drain(..) {
             match (scope.try_query_one::<&mut Ball>(ball), answer) {
                 (Ok(mut found), Settled::Answered(true)) => {
@@ -88,7 +80,7 @@ impl Balls {
                 // A show answered no, or a ball that went away while its show
                 // was in flight: the instance it wore has nobody left to
                 // stand for.
-                (Ok(mut found), Settled::Answered(false)) | (Ok(mut found), Settled::Expired) => {
+                (Ok(mut found), _) => {
                     if let Some(instance) = found.get().instance.take() {
                         self.orphans.push(instance);
                     }

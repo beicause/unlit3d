@@ -155,7 +155,7 @@ impl Server {
                 // frame clock has a loop to report.
                 for index in 0..3u32 {
                     let mut frame = Frame {
-                        delta_time: 1.0 / 60.0,
+                        delta_time: unlit3d::time::FrameDelta::from_secs(1.0 / 60.0),
                         index,
                     };
                     dispatch_frame(&mut world, &mut frame);

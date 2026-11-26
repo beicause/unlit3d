@@ -139,7 +139,7 @@ impl SceneBuild {
             return;
         }
         let mut settled = core::mem::take(&mut state.settled);
-        state.build.advance(0.0, &mut settled);
+        state.build.poll(&mut settled);
         for (_, settled) in settled.drain(..) {
             match settled {
                 Settled::Answered(assets) => {
@@ -154,7 +154,11 @@ impl SceneBuild {
                 }
                 // The wait runs until the world answers or ends, so this is
                 // the world ending: a job a panic took never builds a scene.
-                Settled::Expired => {
+                Settled::WorldFailed(error) => {
+                    log::error!("the world failed while building the scene: {error}");
+                    state.given_up = true;
+                }
+                _ => {
                     log::error!(
                         "the render world ended before it built the scene; the scene stays empty"
                     );

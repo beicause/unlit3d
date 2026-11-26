@@ -336,7 +336,7 @@ impl Renderer {
             };
             let globals = Globals {
                 time: clock.time,
-                delta_time: clock.delta_time,
+                delta_time: clock.delta_time.as_secs_f32(),
                 frame_count: clock.index,
                 ..Globals::default()
             };

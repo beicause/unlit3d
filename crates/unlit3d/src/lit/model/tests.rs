@@ -60,7 +60,7 @@ fn a_model_places_and_animates_its_own_subtree() {
         model: model.clone(),
         animation: LitModelAnimation {
             clip: Some(0),
-            time: 0.25,
+            time: AnimationTime::from_secs(0.25),
             ..LitModelAnimation::default()
         },
     });
@@ -105,7 +105,7 @@ fn a_model_places_and_animates_its_own_subtree() {
     dispatch_frame(
         &mut world,
         &mut Frame {
-            delta_time: 0.25,
+            delta_time: crate::time::FrameDelta::from_secs(0.25),
             index: 0,
         },
     );
@@ -159,13 +159,20 @@ fn explicit_evaluation_samples_without_advancing_time() {
         model,
         animation: LitModelAnimation {
             clip: Some(0),
-            time: 1.25,
+            time: AnimationTime::from_secs(1.25),
             ..LitModelAnimation::default()
         },
     });
     LitModelBundle::evaluate(&world.root_scope(), root);
     let scope = world.root_scope();
-    assert_eq!(scope.query_one::<&LitModelAnimation>(root).get().time, 1.25);
+    assert_eq!(
+        scope
+            .query_one::<&LitModelAnimation>(root)
+            .get()
+            .time
+            .as_secs(),
+        1.25
+    );
     let mut instance_query = scope.query_one::<&LitModelInstance>(root);
     let instance = instance_query.get();
     assert_eq!(instance.matrices()[0].transform_point3(Vec3::ZERO).x, 0.25);
@@ -303,7 +310,7 @@ fn a_manual_clock_is_sampled_only_by_the_caller() {
         model,
         animation: LitModelAnimation {
             clip: Some(0),
-            time: 0.25,
+            time: AnimationTime::from_secs(0.25),
             clock: LitModelClock::Manual,
         },
     });
@@ -324,11 +331,11 @@ fn a_manual_clock_is_sampled_only_by_the_caller() {
         .root_scope()
         .query_one::<&mut LitModelAnimation>(root)
         .get()
-        .time = 0.75;
+        .time = AnimationTime::from_secs(0.75);
     dispatch_frame(
         &mut world,
         &mut Frame {
-            delta_time: 0.5,
+            delta_time: crate::time::FrameDelta::from_secs(0.5),
             index: 0,
         },
     );
@@ -337,7 +344,8 @@ fn a_manual_clock_is_sampled_only_by_the_caller() {
             .root_scope()
             .query_one::<&LitModelAnimation>(root)
             .get()
-            .time,
+            .time
+            .as_secs(),
         0.75
     );
     assert_eq!(x(&world), 0.5);
@@ -370,7 +378,7 @@ fn a_base_edit_reaches_a_clip_held_still() {
         model,
         animation: LitModelAnimation {
             clip: Some(0),
-            time: 0.5,
+            time: AnimationTime::from_secs(0.5),
             clock: LitModelClock::Manual,
         },
     });
@@ -481,7 +489,7 @@ fn a_model_of_another_shape_is_reported_rather_than_written_through() {
     dispatch_frame(
         &mut world,
         &mut Frame {
-            delta_time: 0.25,
+            delta_time: crate::time::FrameDelta::from_secs(0.25),
             index: 0,
         },
     );

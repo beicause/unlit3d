@@ -645,7 +645,7 @@ impl Command for DrawFrame {
             (now - last).as_secs_f32().min(MAX_MEASURED_FRAME_SECONDS)
         });
         let mut frame = Frame {
-            delta_time,
+            delta_time: crate::time::FrameDelta::from_secs(f64::from(delta_time)),
             index: self.index.fetch_add(1, Ordering::Relaxed),
         };
         if let Some(pre_dispatch) = &self.pre_dispatch {

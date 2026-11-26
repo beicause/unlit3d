@@ -540,8 +540,8 @@ panic，而不是读到上传数组尾部之外。它把实体的关节矩阵—
 世界空间的蒙皮姿态。bundle 在生成时求值一次；`LIT_MODEL_UPDATE_ORDER` 的帧回调只求值播放时钟
 的实例。写入
 `LitModelAnimation` 可选择片段，其 `LitModelClock` 说明时间由谁推进：`Playing` 在每次
-帧派发中按帧 delta 推进；`Manual` 把播放交给调用方，调用方写 `LitModelAnimation::time`
-并用 `LitModelBundle::evaluate` 采样——帧派发既不推进也不求值手动时钟的实例，因此它画出的
+帧派发中按 `FrameDelta` 推进；`Manual` 把播放交给调用方，调用方写 `LitModelAnimation::time`
+（`AnimationTime`）并用 `LitModelBundle::evaluate` 采样——帧派发既不推进也不求值手动时钟的实例，因此它画出的
 姿态就是调用方最近一次采样的时间，与调用方写入时间的先后顺序无关。销毁根实体即可移除整份实例；它生成的节点
 属于模型自己，单独销毁一棵子树不会留下有意义的东西。同一个 bundle 也接受不经 glTF 的
 手工 `LitModel` 数据；`LitModel::new` 会拒绝索引、关键时间或值数量互相矛盾的输入，
@@ -986,7 +986,8 @@ resume 状态都是单例键，因此一个 world 各只有一份：宿主在循
 一帧之内的推进同样是行为。[`frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/index.html) 模块只有一个族
 [`OnFrame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html)，由 [`dispatch_frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/fn.dispatch_frame.html) 驱动；
 帧行为拿到 `&World`、它所在实体，以及一个 `&mut`
-[`Frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.Frame.html)——里面是这一帧的 delta 与序号。形状与事件族完全一致，
+[`Frame`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.Frame.html)——里面是这一帧的 `FrameDelta` 与序号。
+用 `FrameDelta::from_secs` 构造帧时长；负数及非有限值按零处理。形状与事件族完全一致，
 只是把「事件」换成了「这一帧的上下文」。用
 [`OnFrame::new`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html#method.new) 生成的行为不声明顺序，这些不声明顺序的行为构成一个
 顺序带，带内的先后不做任何保证。若某个行为的读写被另一个行为依赖，就用

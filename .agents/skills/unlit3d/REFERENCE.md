@@ -117,7 +117,7 @@
 
 | 项 | 是什么 |
 | --- | --- |
-| 帧 | `Frame { delta_time, index, size }` |
+| 帧 | `Frame { delta_time: FrameDelta, index }`；`FrameDelta::from_secs` 将负值和非有限值视为零，数值边界用 `as_secs()` 或 `as_secs_f32()` |
 | 时钟 | `FrameClock { time, delta_time, index }` + `advance` |
 | 派发 | `dispatch_frame`：先 reset `FrameSkip`、推进所有 `FrameClock`，再把 `OnFrame` 按 order 跑一遍（只按 order 排序，实体不参与比较），最后 `world.apply()`——**apply 失败只 `log::error!`，不返回错误** |
 | 行为 | `OnFrame::new(f)` 不带顺序、`OnFrame::with_order(order, f)` 带顺序。回调是 `FnMut(&World, Entity, &mut Frame) + 'static`——**是 `&mut Frame`，不是 `&Frame`** |
@@ -183,10 +183,10 @@
 | 通信 | 是什么 | 语义 |
 | --- | --- | --- |
 | job | `type Job = Box<dyn FnOnce(&mut World) + Send>`；`JobSender::send` | 有界队列，永不阻塞，世界每次 tick 前 drain；被拒绝时 `SendError` **带着 job 回来**：`kind()` 给 `SendErrorKind::Full` / `Closed`，`into_job()` 取回那份工作。没跑过的 job 重发安全；想放弃就 drop 错误，job 随之而去（连同它持有的状态）。已入队但被停止的世界丢掉的 job 可能跑过一半，没有谁会自行重发它 |
-| 状态 | `Snapshot<T>`：`publish` / `reader` / `has_readers`；`SnapshotReader::latest` | 单槽，订阅前发布的值也留着 |
-| 事件 | `Stream<T>`：`subscribe` / `publish` / `publish_all` | 每个 reader 自带队列、按序、reader drop 即退订 |
+| 状态 | `Snapshot<T, E>`：`publish` / `reader` / `has_readers`；`SnapshotReader::latest` / `poll` | 单槽。`poll` 按 reader 区分 `Uninitialized` / `Unchanged` / `Updated` / `Closed` / `Failed`；终止后 `latest()` 仍返回最后的值 |
+| 事件 | `Stream<T, E>`：`subscribe(NonZeroUsize)` / `publish` / `publish_all`；`StreamReader::pump` / `with_batch` | 每个订阅有独立有界队列，clone 共享同一队列。`pump` 先交付已接收的事件，再报 `Closed` / `Failed` / `Overflow`；overflow 只结束队列满的 reader |
 | 订阅 | `JobSender::watch` / `subscribe` → `Subscription<Reader>`；`Subscription::poll()` | 返回的是句柄，不是 reader：入队 ≠ 已安装，world 到下一轮才跑安装 job，之前 `poll()` 答 `None`。装上后 `Some(Ok(reader))`；world 先停则 `Some(Err(InstallError::Ended))`，world 跑了却够不到自己的 outlet 则 `Some(Err(InstallError::Outlet))`。队列满时整个调用仍返回 `Err(SendError)` |
-| 应答 | `Pending::new(endpoint, timeout)` / `request(key, make)` / `advance` | `Pending` 绑一个 `WorldEndpoint`，`request` 不再收 sender：队列与状态来自同一个 world，发错门的请求写不出来。`advance` 要吃 `(delta_seconds, &mut Vec<(K, Settled<T>)>)`，**别漏第一个参数**；一次请求一次应答，`Settled::Answered` / `Expired`。`request` 返回 `Asked`：`Queued` 是排上了；同 key 已有挂着的请求则 `Coalesced`——这一次的 `make` 没跑就丢，答案与超时仍归第一次 |
+| 应答 | `Pending::new(endpoint, Option<WallTimeout>)` / `request(key, make)` / `poll(&mut settled)` | `Pending` 只向绑定的 `WorldEndpoint` 发送。`Settled` 区分 `Answered` / `TimedOut` / `WorldStopped` / `WorldFailed` / `Cancelled`。超时只结束等待；`cancel(&key)` 发信号，job 在运行前或 `request_cancellable` 的检查点确认取消。`Asked::Coalesced` 不运行新闭包、不重置首个请求的超时 |
 | 发布 | `publish_collected(world) -> usize` | 世界里收集到的快照/流在 tick 之后统一发布 |
 
 ## 展示路径（unlit3dx）
@@ -223,7 +223,7 @@
 
 移动整个实例时改根实体的 `Transform`；选片段写 `LitModelAnimation::clip`（也可用 `LitModel::clip_index(name)` 按名字找，比位置稳），时间由 `LitModelAnimation::clock` 决定：`LitModelClock::Playing { speed, looping }` 由帧派发按 delta 推进，`LitModelClock::Manual` 把播放交给调用方。
 
-帧派发完全不管手动时钟的实例：它既不推进时间也不求值，姿态只由调用方的 `LitModelBundle::evaluate(&scope, root)` 产生。所以手动时钟下写完 `time` 必须自己调一次 `evaluate`，本帧才会画到这个时间；而帧序不再影响结果——排在 `LIT_MODEL_UPDATE_ORDER = -10`（`Playing` 唯一的自动求值点）之前还是之后写都一样。spawn 时的 `OnSpawn` 已采样一次，所以只想渲染一帧（如 CLI 的一次性离屏渲染）不必再 evaluate。手动时钟下改节点基准变换，要等到下一次采样才进画面，不是下一帧。
+帧派发完全不管手动时钟的实例：它既不推进时间也不求值，姿态只由调用方的 `LitModelBundle::evaluate(&scope, root)` 产生。所以手动时钟下写入 `AnimationTime::from_secs(seconds)` 后必须自己调一次 `evaluate`，本帧才会画到这个时间；而帧序不再影响结果——排在 `LIT_MODEL_UPDATE_ORDER = -10`（`Playing` 唯一的自动求值点）之前还是之后写都一样。spawn 时的 `OnSpawn` 已采样一次，所以只想渲染一帧（如 CLI 的一次性离屏渲染）不必再 evaluate。手动时钟下改节点基准变换，要等到下一次采样才进画面，不是下一帧。
 
 模型节点、绘制实体、蒙皮姿态与权重实体都是模型自持的派生状态，`LitModelInstance`（`nodes()` / `draws()` / `poses()` / `weights()` / `matrices()`）只读。单独 despawn 一棵子树不受支持：失效的句柄会让那次求值静默跳过它们，留下半活的模型；要移除就 despawn 根。
 

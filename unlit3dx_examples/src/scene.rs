@@ -253,7 +253,7 @@ fn camera_job() -> Job {
         world
             .root_scope_mut()
             .spawn(bundle![OnFrame::new(move |world, _entity, frame| {
-                azimuth += ORBIT_SPEED * frame.delta_time;
+                azimuth += ORBIT_SPEED * frame.delta_time.as_secs_f32();
                 let size = frame_size(world).unwrap_or(WINDOW_SIZE);
                 let camera = camera_looking_at(
                     size,
@@ -344,7 +344,7 @@ pub struct Scene {
     /// physics world's own turn, so the reader it collects for is had from
     /// this handle once that turn has come — and a world that stopped first
     /// says so instead of leaving a reader that never fills.
-    pub poses: Subscription<SnapshotReader<GamePhysics>>,
+    pub poses: Subscription<SnapshotReader<GamePhysics, unlit3dx::world::WorldError>>,
 }
 
 /// Watch the physics world's body poses.
@@ -354,7 +354,9 @@ pub struct Scene {
 /// a world whose bodies are all asleep publishes no snapshot at all. The
 /// snapshot carries state, not history: a body that moved twice between two
 /// reads is seen once, where it is now.
-fn watch_poses(sender: &JobSender) -> Subscription<SnapshotReader<GamePhysics>> {
+fn watch_poses(
+    sender: &JobSender,
+) -> Subscription<SnapshotReader<GamePhysics, unlit3dx::world::WorldError>> {
     // Two tables take turns: `previous` holds what the last snapshot carried,
     // which is what the next step compares against, and `gathered` is filled from
     // the world. Filling and exchanging them rather than building a fresh table
@@ -556,7 +558,7 @@ pub fn spawn_scene<R: WorldRunner>(
             let refresh_millihertz = refresh_millihertz.clone();
             let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAMEPLAY_HZ));
             let mut index = 0;
-            move |world: &mut World, control: &ThreadControl, (), delta_seconds: f32| {
+            move |world: &mut World, control: &ThreadControl, (), delta_seconds: FrameDelta| {
                 if control.stop_requested() {
                     return TickOutcome::Finished;
                 }
@@ -752,8 +754,12 @@ mod tests {
         // input arriving, no frame is laid out at all.
         let mut settled = 0;
         for _ in 0..8 {
-            step_stepped_world(&host, worlds.gameplay.entity(), FRAME_SECONDS)
-                .expect("the stepped world starts");
+            step_stepped_world(
+                &host,
+                worlds.gameplay.entity(),
+                unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+            )
+            .expect("the stepped world starts");
             let now = runs.load(Ordering::Relaxed);
             if now == settled {
                 break;
@@ -770,8 +776,12 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity(), FRAME_SECONDS)
-            .expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            worlds.gameplay.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
 
         assert!(
             runs.load(Ordering::Relaxed) > settled,
@@ -830,8 +840,12 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(&host, worlds.gameplay.entity(), FRAME_SECONDS)
-            .expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            worlds.gameplay.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
 
         assert_eq!(
             pressed.load(Ordering::Relaxed),

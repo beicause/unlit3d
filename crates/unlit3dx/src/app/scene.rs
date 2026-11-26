@@ -14,6 +14,7 @@ pub use super::frames::RunFrames;
 use crate::audio::{AudioFormat, dispatch_audio_fill};
 use crate::endpoint::WorldEndpoint;
 use crate::thread::fixed_steps;
+use crate::time::{AudioSampleTime, FrameDelta, SimulationDelta};
 use crate::world::{StepOutcome, WorldError, step_stepped_world, with_stepped_world_mut};
 
 use super::error::RunError;
@@ -137,7 +138,7 @@ impl AudioPull {
         &self.samples
     }
 
-    /// Fill the mix `delta_seconds` asks for and hand back the samples.
+    /// Fill the mix `delta` asks for and hand back the samples.
     ///
     /// The frames come out of `host`'s audio world at `world`, which must be
     /// the stepped world this run drives. A frame whose duration is too short
@@ -151,7 +152,7 @@ impl AudioPull {
         &mut self,
         host: &World,
         world: Entity,
-        delta_seconds: f64,
+        delta: FrameDelta,
         format: AudioFormat,
     ) -> Result<&[f32], RunError> {
         // Debt past the catch-up limit is discarded rather than owed, the way
@@ -159,8 +160,8 @@ impl AudioPull {
         // either way, and filling a buffer as long as the stall would only
         // delay the run further. A negative interval — a clock that went
         // backwards — owes nothing.
-        self.debt = (self.debt + delta_seconds.max(0.0)).min(MAX_AUDIO_CATCH_UP_SECONDS);
-        let frames = (self.debt / self.period) as usize;
+        self.debt = (self.debt + delta.as_secs()).min(MAX_AUDIO_CATCH_UP_SECONDS);
+        let frames = AudioSampleTime((self.debt / self.period) as usize).0;
         self.debt -= frames as f64 * self.period;
         if frames == 0 {
             self.samples.clear();
@@ -196,9 +197,9 @@ pub struct Stepping {
     /// The worlds this stepper drives.
     worlds: SceneWorlds,
     /// The physics time the last frame did not spend.
-    physics_debt: f32,
+    physics_debt: SimulationDelta,
     /// How long one physics step lasts.
-    physics_period: f32,
+    physics_period: SimulationDelta,
 }
 
 impl Stepping {
@@ -213,14 +214,14 @@ impl Stepping {
     /// Panics if `physics_hz` gives no positive, finite period.
     #[must_use]
     pub fn new(worlds: SceneWorlds, physics_hz: f64) -> Self {
-        let physics_period = (1.0 / physics_hz) as f32;
+        let physics_period = SimulationDelta::from_secs((1.0 / physics_hz) as f32);
         assert!(
-            physics_period.is_finite() && physics_period > 0.0,
+            physics_period != SimulationDelta::ZERO,
             "a physics rate must be a positive finite number, not {physics_hz}"
         );
         Self {
             worlds,
-            physics_debt: 0.0,
+            physics_debt: SimulationDelta::ZERO,
             physics_period,
         }
     }
@@ -231,45 +232,46 @@ impl Stepping {
         &self.worlds
     }
 
-    /// Step the scene once for `delta_seconds`: gameplay ticks, physics steps
+    /// Step the scene once for `delta`: gameplay ticks, physics steps
     /// as its rate comes due, and the audio world drains the note jobs those
     /// ticks sent.
     ///
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.
     /// The caller accounts for the frame after drawing it.
-    pub fn step(&mut self, host: &World, delta_seconds: f64) -> StepOutcome {
+    pub fn step(&mut self, host: &World, delta: FrameDelta) -> StepOutcome {
         // Gameplay runs once per host frame with its measured duration: its
         // requests reach the other worlds before they step, and a slow frame
         // never causes a burst of catch-up ticks.
-        let outcome =
-            match step_stepped_world(host, self.worlds.gameplay.entity(), delta_seconds as f32) {
-                Ok(outcome) => outcome,
-                Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
-            };
+        let outcome = match step_stepped_world(host, self.worlds.gameplay.entity(), delta) {
+            Ok(outcome) => outcome,
+            Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
+        };
         if outcome != StepOutcome::Ran {
             return outcome;
         }
         let steps = fixed_steps(
             &mut self.physics_debt,
-            delta_seconds as f32,
+            SimulationDelta::from_secs(delta.as_secs_f32()),
             self.physics_period,
         );
         for _ in 0..steps {
-            let outcome =
-                match step_stepped_world(host, self.worlds.physics.entity(), self.physics_period) {
-                    Ok(outcome) => outcome,
-                    Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
-                };
+            let outcome = match step_stepped_world(
+                host,
+                self.worlds.physics.entity(),
+                FrameDelta::from_secs(f64::from(self.physics_period.as_secs())),
+            ) {
+                Ok(outcome) => outcome,
+                Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
+            };
             if outcome != StepOutcome::Ran {
                 return outcome;
             }
         }
-        let outcome =
-            match step_stepped_world(host, self.worlds.audio.entity(), delta_seconds as f32) {
-                Ok(outcome) => outcome,
-                Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
-            };
+        let outcome = match step_stepped_world(host, self.worlds.audio.entity(), delta) {
+            Ok(outcome) => outcome,
+            Err(source) => return StepOutcome::Failed(WorldError::Step { source }),
+        };
         if outcome != StepOutcome::Ran {
             return outcome;
         }

@@ -195,7 +195,7 @@ pub fn build_world(
         })?;
         let animation = LitModelAnimation {
             clip: clip.map(|_| 0),
-            time: document.time,
+            time: unlit3d::time::AnimationTime::from_secs(document.time),
             clock: LitModelClock::Manual,
         };
         world.scope_mut(source_entity).spawn(LitModelBundle {

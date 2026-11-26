@@ -14,6 +14,7 @@ use web_time::Instant;
 use crate::channel::{Snapshot, SnapshotReader};
 use crate::executor::LocalTasks;
 use crate::job::Job;
+use crate::time::{FrameDelta, SimulationDelta};
 use crate::turn::{Link, StepOutcome, TickOutcome, WorldError, WorldStage, close_inbox, run_turn};
 
 /// How long a dropped thread waits for its tick to notice the stop before it
@@ -124,12 +125,12 @@ impl ThreadControl {
     }
 
     /// Seconds since the previous tick, measured once per turn.
-    pub(crate) fn elapsed_seconds(&self) -> f32 {
+    pub(crate) fn frame_delta(&self) -> FrameDelta {
         let now = Instant::now();
         let mut last = sync::lock(&self.last_tick);
-        let elapsed = last.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        let elapsed = last.map_or(0.0, |last| now.duration_since(last).as_secs_f64());
         *last = Some(now);
-        elapsed
+        FrameDelta::from_secs(elapsed)
     }
 
     /// Sleep for at most `timeout`, returning early when a stop is requested.
@@ -662,11 +663,20 @@ pub const MAX_CATCH_UP_STEPS: u32 = 4;
 /// steps to catch up, and simulating a pause that long is neither cheap nor
 /// wanted.
 ///
-/// A negative `delta_seconds` - a clock that went backwards - adds no time.
-pub fn fixed_steps(debt: &mut f32, delta_seconds: f32, step_seconds: f32) -> u32 {
-    *debt = (*debt + delta_seconds.max(0.0)).min(step_seconds * MAX_CATCH_UP_STEPS as f32);
-    let steps = (*debt / step_seconds) as u32;
-    *debt -= steps as f32 * step_seconds;
+/// A zero `period` runs no steps and leaves the debt unchanged.
+pub fn fixed_steps(
+    debt: &mut SimulationDelta,
+    delta: SimulationDelta,
+    period: SimulationDelta,
+) -> u32 {
+    let period = f64::from(period.as_secs());
+    if period == 0.0 {
+        return 0;
+    }
+    let available = (f64::from(debt.as_secs()) + f64::from(delta.as_secs()))
+        .min(period * f64::from(MAX_CATCH_UP_STEPS));
+    let steps = (available / period) as u32;
+    *debt = SimulationDelta::from_secs((available - f64::from(steps) * period) as f32);
     steps
 }
 

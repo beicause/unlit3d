@@ -223,7 +223,7 @@ mod tests {
     fn a_turn(world: &World) -> Result<TurnOutcome, TurnError> {
         let render = Entity::from_bits(0);
         let mut frame = Frame {
-            delta_time: 0.0,
+            delta_time: unlit3d::time::FrameDelta::from_secs(0.0),
             index: 0,
         };
         present_turn(world, render, &mut frame, || Ok(()))

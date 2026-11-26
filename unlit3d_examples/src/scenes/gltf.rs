@@ -220,7 +220,8 @@ fn build(
             // sits in the frame's order.
             let scope = world.scope(source_entity);
             for (root, time) in [(fox_root, fox_time), (morph_root, morph_time)] {
-                scope.query_one::<&mut LitModelAnimation>(root).get().time = time;
+                scope.query_one::<&mut LitModelAnimation>(root).get().time =
+                    unlit3d::time::AnimationTime::from_secs(time);
                 LitModelBundle::evaluate(&scope, root);
             }
             // The camera the whole sequence shares, re-aimed at the frame's

@@ -12,8 +12,8 @@
 //! - A **stream** keeps every value, once per reader. The collector appends
 //!   what it found to each reader's queue, and the reader folds that queue
 //!   into its own tick with [`StreamReader::pump`](unlit3d::relay::StreamReader::pump). That is the shape events
-//!   want: input, collisions, a sequence ending. A reader that ticks slower
-//!   than the producer still sees every value, in order.
+//!   want: input, collisions, a sequence ending. A reader that fills its queue
+//!   drains the accepted events before observing overflow.
 //!
 //! A third shape is a question, and it is not here: [`Pending`](crate::request::Pending)
 //! sends one job per request and folds each answer back under the key the
@@ -26,6 +26,7 @@
 //! world offers them the same way, built-in or not, and the reading side
 //! never blocks.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use unlit_ecs::EntityAccessError;
@@ -35,7 +36,9 @@ use unlit_ecs::sync;
 
 use crate::job::{JobSender, SendError};
 
-pub use unlit3d::relay::{Snapshot, SnapshotReader, Stream, StreamReader};
+use crate::turn::WorldError;
+
+pub use unlit3d::relay::{Snapshot, SnapshotPoll, SnapshotReader, Stream, StreamEnd, StreamReader};
 
 impl JobSender {
     /// Watch a snapshot of this world.
@@ -58,12 +61,15 @@ impl JobSender {
     /// A collector that publishes into its own world — by calling
     /// [`publish_collected`] — panics on the borrow it takes of the
     /// subscription list. A collector only reads the world.
-    pub fn watch<T, F>(&self, collect: F) -> Result<Subscription<SnapshotReader<T>>, SendError>
+    pub fn watch<T, F>(
+        &self,
+        collect: F,
+    ) -> Result<Subscription<SnapshotReader<T, WorldError>>, SendError>
     where
         T: Send + Sync + 'static,
         F: FnMut(&World) -> Option<T> + Send + 'static,
     {
-        let snapshot = Snapshot::new();
+        let snapshot = Snapshot::default();
         let reader = snapshot.reader();
         let state = Arc::new(Mutex::new(InstallState::Pending));
         let receipt = Receipt {
@@ -79,9 +85,10 @@ impl JobSender {
     /// Subscribe to a stream of this world.
     ///
     /// `collect` runs on the world's own thread once per tick and appends
-    /// whatever it found to `out`, which is reused across ticks. Every value
-    /// reaches every reader's queue; the reader drains its queue in its own
-    /// tick with [`StreamReader::pump`].
+    /// whatever it found to `out`, which is reused across ticks. The reader
+    /// drains its queue with [`StreamReader::pump`]. If that queue hits
+    /// `capacity`, the reader drains the accepted prefix and reports overflow.
+    /// A world failure ends the subscription with the original [`WorldError`].
     ///
     /// The subscription is a job: it is refused with the queue's error when
     /// the queue is full or the world has stopped, and the reader is handed
@@ -93,13 +100,17 @@ impl JobSender {
     /// A collector that publishes into its own world — by calling
     /// [`publish_collected`] — panics on the borrow it takes of the
     /// subscription list. A collector only reads the world.
-    pub fn subscribe<T, F>(&self, collect: F) -> Result<Subscription<StreamReader<T>>, SendError>
+    pub fn subscribe<T, F>(
+        &self,
+        capacity: NonZeroUsize,
+        collect: F,
+    ) -> Result<Subscription<StreamReader<T, WorldError>>, SendError>
     where
         T: Clone + Send + 'static,
         F: FnMut(&World, &mut Vec<T>) + Send + 'static,
     {
-        let stream = Stream::new();
-        let reader = stream.subscribe();
+        let stream = Stream::default();
+        let reader = stream.subscribe(capacity);
         let state = Arc::new(Mutex::new(InstallState::Pending));
         let receipt = Receipt {
             state: Arc::clone(&state),
@@ -243,12 +254,13 @@ pub fn publish_collected(world: &World) -> usize {
 trait Entry {
     /// Collect and publish one tick's worth; answers whether a reader is alive.
     fn publish(&mut self, world: &World) -> bool;
+    fn finish(&self, error: Option<&WorldError>);
 }
 
 /// A subscription that keeps the newest value its collector returns.
 struct SnapshotCollector<T, F> {
     collect: F,
-    snapshot: Snapshot<T>,
+    snapshot: Snapshot<T, WorldError>,
 }
 
 impl<T, F> Entry for SnapshotCollector<T, F>
@@ -267,12 +279,19 @@ where
         }
         true
     }
+
+    fn finish(&self, error: Option<&WorldError>) {
+        match error {
+            Some(error) => self.snapshot.fail(error.clone()),
+            None => self.snapshot.close(),
+        }
+    }
 }
 
 /// A subscription that queues everything its collector appends.
 struct StreamCollector<T, F> {
     collect: F,
-    stream: Stream<T>,
+    stream: Stream<T, WorldError>,
     /// Reused across ticks so a collector never allocates its result.
     buffer: Vec<T>,
 }
@@ -291,6 +310,26 @@ where
         self.buffer.clear();
         (self.collect)(world, &mut self.buffer);
         self.stream.publish_all(self.buffer.drain(..)) > 0
+    }
+
+    fn finish(&self, error: Option<&WorldError>) {
+        match error {
+            Some(error) => self.stream.fail(error.clone()),
+            None => self.stream.close(),
+        }
+    }
+}
+
+pub(crate) fn finish_collected(world: &World, error: Option<&WorldError>) {
+    let scope = world.root_scope();
+    let Some(entity) = scope.singleton::<SnapshotOutlet>() else {
+        return;
+    };
+    let Ok(mut outlet) = scope.try_query_one::<&SnapshotOutlet>(entity) else {
+        return;
+    };
+    for entry in &outlet.get().entries {
+        entry.finish(error);
     }
 }
 
@@ -345,8 +384,8 @@ mod tests {
     fn subscribe_in(
         world: &mut World,
         collect: impl FnMut(&World) -> Option<u32> + 'static,
-    ) -> SnapshotReader<u32> {
-        let snapshot = Snapshot::new();
+    ) -> SnapshotReader<u32, WorldError> {
+        let snapshot = Snapshot::default();
         let reader = snapshot.reader();
         install(world, Box::new(SnapshotCollector { collect, snapshot }))
             .expect("a fresh world takes a subscription");
@@ -503,8 +542,8 @@ mod tests {
     fn a_stream_subscription_delivers_every_value() {
         let mut tick = 0;
         let mut world = World::new();
-        let stream = Stream::new();
-        let reader = stream.subscribe();
+        let stream = Stream::default();
+        let reader = stream.subscribe(NonZeroUsize::new(8).unwrap());
         install(
             &mut world,
             Box::new(StreamCollector {
@@ -520,7 +559,7 @@ mod tests {
 
         publish_collected(&world);
         publish_collected(&world);
-        reader.pump();
+        assert_eq!(reader.pump(), None);
         assert_eq!(
             reader.with_batch(|batch| batch.to_vec()),
             vec![1, 10, 2, 20]
@@ -528,7 +567,7 @@ mod tests {
 
         // A second pump with nothing new replaces the batch rather than
         // repeating the events of the previous tick.
-        reader.pump();
+        assert_eq!(reader.pump(), None);
         assert!(reader.with_batch(|batch| batch.to_vec()).is_empty());
     }
 }

@@ -72,6 +72,7 @@ pub mod scene;
 mod screen;
 pub mod source;
 pub mod target;
+pub mod time;
 #[cfg(feature = "winit")]
 #[cfg_attr(docsrs, doc(cfg(feature = "winit")))]
 pub mod winit;
@@ -137,6 +138,7 @@ pub mod prelude {
             Source, SourceOrder, WrongSourceType, drain_open_urls, spawn_context,
         },
         target::{FrameId, PassId, RenderTargetId},
+        time::{AnimationTime, FrameDelta},
     };
     pub use unlit_ecs::prelude::*;
     pub use unlit_ecs::{Command, Commands};

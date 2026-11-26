@@ -180,7 +180,9 @@ impl Default for RunShape {
 mod tests {
     use clap::Parser as _;
 
-    use super::{DrivingMode, RunShape, TransportConfig, WorldOwnership};
+    #[cfg(feature = "mcp-http")]
+    use super::TransportConfig;
+    use super::{DrivingMode, RunShape, WorldOwnership};
     use crate::app::RunOptions;
 
     fn parse(args: &[&str]) -> RunShape {

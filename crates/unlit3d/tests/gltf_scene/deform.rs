@@ -160,7 +160,7 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
     let read = async |gpu: &TestGpu, time: f32| {
         *scope.query_one::<&mut LitModelAnimation>(root).get() = LitModelAnimation {
             clip: Some(0),
-            time,
+            time: unlit3d::time::AnimationTime::from_secs(time),
             clock: LitModelClock::Manual,
         };
         LitModelBundle::evaluate(&scope, root);

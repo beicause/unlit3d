@@ -1,6 +1,6 @@
 # unlit3d / unlit3dx 审查结果实施计划
 
-本文位于 `docs/todo/`，随实施推进更新。截至 2026-11-26，P0-A–P0-J、P1-A–P1-D 与 P2-A 已实施、验收并提交；P2-B–P2-D、P3-A–P3-D 与 SK-1–SK-13 未开始。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
+本文位于 `docs/todo/`，随实施推进更新。截至 2026-11-26，P0-A–P0-J、P1-A–P1-D 与 P2-A–P2-D 已实施并通过本机验收；P3-A–P3-D 与 SK-1–SK-13 未开始。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
 
 ## 实施进度
 
@@ -26,7 +26,15 @@
 | P1-D `WorldEndpoint` | `0ab3d7b` | 38 文件 +1792/−1297 | endpoint 排队、三种 world 的 ownership/driving、`NoHandle`/`Detached`/二次等待、setup panic 报因且不留半成品 | 已验收 |
 | P2-A mesh 资源模型 | `d34701a` | 28 文件 +991/−426 | `MeshDescriptor` 的 8 类拒绝（无图元、索引/顶点缓冲过短、slot 越界、零 stride、无 morph target、位移不足、pose 短于 joints） | 已验收 |
 
+| P2-B Pass、帧与渲染目标身份 | `517c85b`、`f8b2970` | 65 文件 +1283/−639，补修 11 文件 +181/−39 | 自定义源收到三类身份、共享目标上的 pass、resize 后单一尺寸、同颜色视图但不同深度的目标 | 已验收 |
+| P2-C glTF 资源与错误 | `758be6b` | 33 文件 +1782/−1017 | 稀疏资源 ID、独立模型资源寿命、选择性解码、越界 clip、手动时钟、带 BOM 的 JSON 与结构化 MCP 错误 | 已验收 |
+| P2-D 快照、事件流、请求与时间域 | 本包提交 | — | 快照独立读游标、缓冲溢出后先排空、停止与失败终态、确认取消、拒绝 job 不串答 | 已通过本机验收 |
+
 ### 验收命令与结果
+
+P2-D 的集中验收包含工作区全目标全特性 Clippy、Nextest（1,323 项通过，0 跳过，14 个测试二进制）、文档测试（16 项通过，5 项忽略）与 `cargo xtask line-count`（383 个代码文件，0 个达到 1000 行）。
+
+P2-C 的集中验收包含 `cargo fmt --all --check`、工作区全目标全特性 Clippy、四个核心 crate 与 `unlit3d_cli` 的 Nextest（1,244 项通过，0 跳过）、两个 crate 的文档测试（18 项通过，5 项忽略）与 `cargo xtask line-count`（0 个代码文件达到 1000 行）。构建时保留既有 `unlit_wgpu` 的未用 `ringbuf` 依赖警告。
 
 在 `main` 的 `0ab3d7b` 上运行：
 
@@ -46,7 +54,7 @@
 - **非 Linux 平台**：`target_os = "android"` 与 Windows 的 `cfg` 分支未运行，`RunShape` 在这些平台上把 ownership 定为 `Hosted` 的路径未实测。
 - **真实音频设备**：本机只有 PipeWire 提供的 sink，音频用例按 `has_output_device()` 分支运行，两种分支均通过；但未在无声卡环境验证「永久静音」那条诊断路径的日志文本。
 - **`blitz_system_fonts`**：只做了 `cargo check`，未运行宿主字体枚举下的排版用例。
-- **P2-B–P2-D / P3 / SK**：未开始。SK-1–SK-10 的 API 纠错所需的新签名已经就位（`WorldEndpoint`、`TickOutcome`、`RunShape`、`ToolError`、`StepOutcome::Failed(WorldError)`、`MeshDescriptor`），但技能页面尚未按这些签名复核。
+- **P2-D / P3 / SK**：P2-D 的 wasm 运行行为未经验证；P3 与技能审查尚未开始。SK-1–SK-10 的 API 纠错所需的新签名已经就位（`WorldEndpoint`、`TickOutcome`、`RunShape`、`ToolError`、`StepOutcome::Failed(WorldError)`、`MeshDescriptor`），但技能页面尚未按这些签名复核。
 
 ## 目标与执行原则
 

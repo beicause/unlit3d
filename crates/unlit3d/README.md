@@ -819,7 +819,8 @@ only instances with a playing clock.
 Write `LitModelAnimation` to select a clip, and its `LitModelClock` to say who
 drives the time: `Playing` advances it by the frame's delta on every dispatched
 frame, while `Manual` leaves playback to the caller, who writes
-`LitModelAnimation::time` and samples it with `LitModelBundle::evaluate` — no
+`LitModelAnimation::time` with an `AnimationTime` and samples it with
+`LitModelBundle::evaluate` — no
 frame advances or evaluates a manual instance, so its pose is exactly the time
 the caller last sampled, whatever order the caller wrote it in. Despawn the root
 to remove the whole instance;
@@ -1443,7 +1444,9 @@ What happens *within* one frame is a behaviour too. The [`frame`](frame) module
 has one family, [`OnFrame`](frame::OnFrame), dispatched by
 [`dispatch_frame`](frame::dispatch_frame); a frame behaviour receives `&World`,
 the entity it sits on, and a `&mut` [`Frame`](frame::Frame) carrying the frame's
-delta time and index. That is the same shape as the event families, with
+`FrameDelta` and index. Construct the delta with `FrameDelta::from_secs`;
+negative and non-finite input supplies zero elapsed time. That is the same
+shape as the event families, with
 the frame context in place of an event. A behaviour spawned with
 [`OnFrame::new`](frame::OnFrame::new) states no order: the behaviours that state
 none form a band, and the dispatch promises nothing about the order within it.

@@ -617,7 +617,8 @@ pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job {
         if voice.gave_up {
             return;
         }
-        voice.queued.push((delay.max(0.0), kind.into_message()));
+        let delay = crate::time::FrameDelta::from_secs(delay).as_secs();
+        voice.queued.push((delay, kind.into_message()));
     })
 }
 
@@ -667,11 +668,11 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
     let mut wrote = 0;
     let mut applied = 0;
     for (delay, message) in &pending {
-        let offset = (*delay / seconds_per_frame).round();
-        if offset >= frames as f64 {
+        let offset = crate::time::AudioSampleTime::from_secs(*delay, chunk.sample_rate);
+        if offset.0 >= frames {
             break;
         }
-        let offset = offset as usize;
+        let offset = offset.0;
         if offset > wrote {
             synthesizer.render(&mut left[wrote..offset], &mut right[wrote..offset]);
             wrote = offset;

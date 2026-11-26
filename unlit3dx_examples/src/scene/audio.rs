@@ -109,7 +109,7 @@ impl Bundle for PlayingTrack {
             track,
             advancing(move |track: &mut Track, _world, frame| {
                 track.midi.advance(
-                    f64::from(frame.delta_time),
+                    frame.delta_time.as_secs(),
                     track.voice,
                     scene.audio.commands(),
                 );
@@ -202,7 +202,7 @@ impl Music {
             return;
         }
         let mut settled = core::mem::take(&mut audio.settled);
-        audio.voice.advance(0.0, &mut settled);
+        audio.voice.poll(&mut settled);
         for (_, settled) in settled.drain(..) {
             audio.installed = true;
             match settled {
@@ -215,7 +215,10 @@ impl Music {
                 Settled::Answered(None) => {}
                 // The install was asked once and never answered, so this is
                 // the audio world ending with the job still in its queue.
-                Settled::Expired => {
+                Settled::WorldFailed(error) => {
+                    log::error!("the world failed while installing the synthesizer: {error}");
+                }
+                _ => {
                     log::error!("the audio world ended before it installed the synthesizer");
                 }
             }

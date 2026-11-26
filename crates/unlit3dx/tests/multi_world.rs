@@ -223,7 +223,12 @@ fn despawning_a_stepped_world_ends_it() {
         |_, _, (), _| TickOutcome::Running,
     )
     .expect("the stepped world starts");
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     assert!(!world.is_finished(), "the world is still running");
 
     assert!(
@@ -301,7 +306,12 @@ fn a_finished_stepped_world_refuses_jobs() {
         |_, _, (), _| TickOutcome::Finished,
     )
     .expect("the stepped world starts");
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
 
     assert!(world.is_finished(), "the tick ended the world");
     assert_eq!(
@@ -489,7 +499,7 @@ fn tick_sub_world_runs_jobs_folds_input_and_dispatches_the_frame() {
         .expect("the sub-world accepts a job");
 
     let mut frame = Frame {
-        delta_time: 1.0 / 60.0,
+        delta_time: unlit3d::time::FrameDelta::from_secs(1.0 / 60.0),
         index: 0,
     };
     // The job's own tick comes first: the buffer it spawns subscribes to the

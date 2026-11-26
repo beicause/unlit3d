@@ -803,11 +803,11 @@ fn frame_monitor(monitor: Arc<Mutex<FrameMonitor>>) -> OnFrame {
         // A panic elsewhere poisons the lock but not the window it guards: a
         // queue of durations has no invariant a half-finished update breaks, so
         // the monitor keeps the mean rather than losing the whole statistic.
-        if frame.delta_time > 0.0 {
+        if frame.delta_time.as_secs() > 0.0 {
             monitor
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .record(frame.delta_time);
+                .record(frame.delta_time.as_secs_f32());
         }
     })
 }
@@ -873,7 +873,9 @@ pub(crate) fn frame_clock(world: &mut World) -> Result<FrameClockReport, ToolErr
         .copied();
     // A zero-duration frame would report an infinite rate; leave the
     // instantaneous fps out instead.
-    let fps = clock.and_then(|clock| (clock.delta_time > 0.0).then(|| 1.0 / clock.delta_time));
+    let fps = clock.and_then(|clock| {
+        (clock.delta_time.as_secs() > 0.0).then(|| 1.0 / clock.delta_time.as_secs_f32())
+    });
     let average_fps = monitor
         .average_delta()
         .filter(|delta| *delta > 0.0)
@@ -881,7 +883,7 @@ pub(crate) fn frame_clock(world: &mut World) -> Result<FrameClockReport, ToolErr
     let window_frames = monitor.window.len();
     Ok(FrameClockReport {
         index: clock.map(|clock| clock.index),
-        delta_time: clock.map(|clock| clock.delta_time),
+        delta_time: clock.map(|clock| clock.delta_time.as_secs_f32()),
         time: clock.map(|clock| clock.time),
         fps,
         average_fps,

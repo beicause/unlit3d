@@ -13,7 +13,7 @@ use std::sync::Arc;
 use async_channel::Receiver;
 use unlit_ecs::{EntityAccessError, World};
 
-use crate::channel::publish_collected;
+use crate::channel::{finish_collected, publish_collected};
 use crate::job::Job;
 use crate::thread::{ThreadStatus, WorldState, panic_message};
 use crate::world::StepError;
@@ -162,7 +162,7 @@ pub(crate) fn run_turn(
     }
     let carries_on = match contain(WorldStage::Body, || body(&mut *world)) {
         Ok(outcome) => outcome.carries_on(),
-        Err(error) => return fail(link, error),
+        Err(error) => return fail(world, link, error),
     };
     if let Err(outcome) = commit(world, link) {
         return outcome;
@@ -170,7 +170,7 @@ pub(crate) fn run_turn(
     if carries_on {
         StepOutcome::Ran
     } else {
-        end(link);
+        end(world, link);
         StepOutcome::Finished
     }
 }
@@ -208,7 +208,7 @@ fn admit(world: &mut World, link: Link<'_>) -> Option<StepOutcome> {
     if let Err(outcome) = publish(world, link) {
         return Some(outcome);
     }
-    end(link);
+    end(world, link);
     Some(StepOutcome::Stopped)
 }
 
@@ -223,7 +223,7 @@ fn run_jobs(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
             break;
         };
         if let Err(error) = contain(WorldStage::Job, || job(&mut *world)) {
-            return Err(fail(link, error));
+            return Err(fail(world, link, error));
         }
     }
     apply(world, link)
@@ -234,8 +234,8 @@ fn run_jobs(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
 fn apply(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
     match contain(WorldStage::Command, || world.apply()) {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(source)) => Err(fail(link, WorldError::Command { source })),
-        Err(error) => Err(fail(link, error)),
+        Ok(Err(source)) => Err(fail(world, link, WorldError::Command { source })),
+        Err(error) => Err(fail(world, link, error)),
     }
 }
 
@@ -250,7 +250,7 @@ fn commit(world: &mut World, link: Link<'_>) -> Result<(), StepOutcome> {
 fn publish(world: &World, link: Link<'_>) -> Result<(), StepOutcome> {
     match contain(WorldStage::Publish, || publish_collected(world)) {
         Ok(_) => Ok(()),
-        Err(error) => Err(fail(link, error)),
+        Err(error) => Err(fail(world, link, error)),
     }
 }
 
@@ -264,15 +264,17 @@ fn contain<R>(stage: WorldStage, f: impl FnOnce() -> R) -> Result<R, WorldError>
 
 /// End the world with `error` as its state, and close its queue so a later
 /// send is refused instead of waiting for a turn that will never come.
-fn fail(link: Link<'_>, error: WorldError) -> StepOutcome {
+fn fail(world: &World, link: Link<'_>, error: WorldError) -> StepOutcome {
     log::error!("the world {} failed: {error}", link.name);
+    finish_collected(world, Some(&error));
     link.status.record_failure(error.clone());
     close_inbox(link.inbox);
     StepOutcome::Failed(error)
 }
 
 /// Mark the world finished and close its queue.
-fn end(link: Link<'_>) {
+fn end(world: &World, link: Link<'_>) {
+    finish_collected(world, None);
     link.status.finish();
     close_inbox(link.inbox);
 }

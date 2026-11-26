@@ -14,6 +14,7 @@ use super::offscreen;
 use super::scene::{AudioPull, RunFrames, SceneWorlds, Stepping};
 use crate::audio::AudioFormat;
 use crate::host::tick_sub_world;
+use crate::time::FrameDelta;
 use crate::world::StepOutcome;
 
 use super::error::RunError;
@@ -51,7 +52,7 @@ impl SteppedRun {
             stepper: Stepping::new(worlds, physics_hz),
             frames,
             frame: Frame {
-                delta_time: FIXED_FRAME_SECONDS as f32,
+                delta_time: FrameDelta::from_secs(FIXED_FRAME_SECONDS),
                 index: 0,
             },
             mix: AudioPull::new(sample_rate),
@@ -91,7 +92,7 @@ impl SteppedRun {
         draw: bool,
     ) -> Result<StepOutcome, RunError> {
         refresh_input(host);
-        let outcome = self.stepper.step(host, FIXED_FRAME_SECONDS);
+        let outcome = self.stepper.step(host, self.frame.delta_time);
         if outcome != StepOutcome::Ran {
             return Ok(outcome);
         }
@@ -102,7 +103,7 @@ impl SteppedRun {
         self.mix.pull(
             host,
             self.stepper.worlds().audio.entity(),
-            FIXED_FRAME_SECONDS,
+            self.frame.delta_time,
             self.format,
         )?;
         {

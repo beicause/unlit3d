@@ -14,7 +14,7 @@ use unlit3dx::prelude::*;
 
 /// A tick that idles until it is asked to stop, so a test controls when the
 /// thread ends.
-fn idle_tick(_: &mut World, control: &ThreadControl, _: f32) -> TickOutcome {
+fn idle_tick(_: &mut World, control: &ThreadControl, _: FrameDelta) -> TickOutcome {
     control.wait_timeout(Duration::from_millis(1));
     TickOutcome::Running
 }
@@ -32,7 +32,7 @@ fn each_spawn_reports_who_owns_and_drives_it() {
         "stepped",
         8,
         |_: &mut World| (),
-        |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        |_, _: &ThreadControl, (), _: FrameDelta| TickOutcome::Running,
     )
     .expect("the stepped world starts");
     let nested = spawn_sub_world(&mut host, "nested", 8);
@@ -71,7 +71,7 @@ fn a_world_no_thread_drives_has_nothing_to_join() {
         "stepped",
         8,
         |_: &mut World| (),
-        |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        |_, _: &ThreadControl, (), _: FrameDelta| TickOutcome::Running,
     )
     .expect("the stepped world starts");
     let nested = spawn_sub_world(&mut host, "nested", 8);
@@ -148,7 +148,7 @@ fn a_stepped_setup_that_panicked_reports_why_and_spawns_nothing() {
         "broken",
         8,
         |_: &mut World| panic!("the setup failed"),
-        |_, _: &ThreadControl, (), _: f32| TickOutcome::Running,
+        |_, _: &ThreadControl, (), _: FrameDelta| TickOutcome::Running,
     ) {
         Ok(_) => panic!("a panicking setup fails the spawn"),
         Err(error) => error,

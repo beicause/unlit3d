@@ -96,13 +96,21 @@ fn an_audio_tick_dispatches_its_frame() {
         .send(Box::new(move |world: &mut World| {
             world.root_scope_mut().spawn(bundle![OnFrame::new(
                 move |_world, _entity, frame: &mut Frame| {
-                    record.lock().unwrap().push((frame.index, frame.delta_time));
+                    record
+                        .lock()
+                        .unwrap()
+                        .push((frame.index, frame.delta_time.as_secs_f32()));
                 },
             ),]);
         }))
         .expect("the audio world accepts jobs");
     for _ in 0..3 {
-        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
     }
     assert_eq!(
         *seen.lock().unwrap(),
@@ -375,7 +383,12 @@ fn a_stepped_world_opens_nothing_until_asked() {
         })
         .expect("the audio world accepts a subscription");
     for _ in 0..10 {
-        step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+        )
+        .expect("the stepped world starts");
     }
     let opened = installed(&opened);
     assert!(
@@ -388,8 +401,12 @@ fn a_stepped_world_opens_nothing_until_asked() {
         // No device to grant: the request keeps being retried and the
         // world stays open-less, which is the answer to look for here.
         for _ in 0..10 {
-            step_stepped_world(&host, world.entity(), FRAME_SECONDS)
-                .expect("the stepped world starts");
+            step_stepped_world(
+                &host,
+                world.entity(),
+                unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+            )
+            .expect("the stepped world starts");
         }
         assert!(
             opened.latest().is_none(),
@@ -397,7 +414,12 @@ fn a_stepped_world_opens_nothing_until_asked() {
         );
         return;
     }
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     assert!(
         wait_for(|| opened.latest().is_some()),
         "the request landed but the output never opened"
@@ -428,14 +450,24 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
                 .map(|_audio_output_open| ())
         })
         .expect("the audio world accepts a subscription");
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     let opened = installed(&opened);
     assert!(
         opened.latest().is_none(),
         "the world opened before being asked"
     );
     request_audio_output(&sender).expect("the audio world accepts a job");
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     if !has_output_device() {
         return;
     }

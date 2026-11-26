@@ -157,9 +157,10 @@ fn stalled_scene(host: &mut World) -> (Scene, WorldEndpoint, WorldEndpoint) {
     // drains, so it stays uninstalled: a tick reads no poses, which is what
     // these tests want from a scene with no physics world behind it.
     let (poses_tx, _poses_rx) = async_channel::bounded(1);
-    let poses: Subscription<SnapshotReader<GamePhysics>> = JobSender::new(poses_tx)
-        .watch(|_: &World| None)
-        .expect("a fresh queue takes the subscription");
+    let poses: Subscription<SnapshotReader<GamePhysics, unlit3dx::world::WorldError>> =
+        JobSender::new(poses_tx)
+            .watch(|_: &World| None)
+            .expect("a fresh queue takes the subscription");
     let scene = Scene {
         render: render.clone(),
         physics: physics.clone(),

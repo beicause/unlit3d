@@ -446,7 +446,7 @@ async fn a_build_is_told_the_pass_target_and_frame_it_belongs_to() {
         .root_scope()
         .query::<&mut FrameClock>()
         .iter()
-        .for_each(|clock| clock.advance(1.0 / 60.0, 1));
+        .for_each(|clock| clock.advance(unlit3d::time::FrameDelta::from_secs(1.0 / 60.0), 1));
     gpu.render(&world);
     let second_frame = seen.borrow()[2..].to_vec();
     assert_eq!(second_frame.len(), 2);

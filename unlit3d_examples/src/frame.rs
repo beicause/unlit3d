@@ -28,7 +28,7 @@ pub(crate) fn step_sequence(entity: Entity) -> OnFrame {
         {
             Some(step) => {
                 let mut clock = world.root_scope().query_one::<&mut SequenceClock>(entity);
-                tick(&mut clock.get().0, step, frame.delta_time)
+                tick(&mut clock.get().0, step, frame.delta_time.as_secs_f32())
             }
             None => true,
         };
@@ -213,7 +213,9 @@ pub(crate) fn advance_scene(app: Entity) -> OnFrame {
             .root_scope()
             .try_query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| {
-                scene.get().advance(&mut *nested.get(), frame.delta_time);
+                scene
+                    .get()
+                    .advance(&mut *nested.get(), frame.delta_time.as_secs_f32());
             });
     })
 }

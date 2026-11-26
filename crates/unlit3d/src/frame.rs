@@ -27,6 +27,8 @@ use std::cell::RefCell;
 
 pub(crate) use unlit_ecs::{Entity, World};
 
+use crate::time::FrameDelta;
+
 /// The longest frame a host that measures wall-clock time reports, in seconds.
 ///
 /// A stall — a dragged window, a debugger pause, a suspended process — would
@@ -43,7 +45,7 @@ pub const MAX_MEASURED_FRAME_SECONDS: f32 = 0.1;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     /// The seconds since the previous frame.
-    pub delta_time: f32,
+    pub delta_time: FrameDelta,
     /// The frame's index, counting from zero.
     pub index: u32,
 }
@@ -61,7 +63,7 @@ pub struct FrameClock {
     /// The seconds since the first frame.
     pub time: f32,
     /// The seconds the current frame took.
-    pub delta_time: f32,
+    pub delta_time: FrameDelta,
     /// The current frame's index, counting from zero.
     pub index: u32,
 }
@@ -72,8 +74,8 @@ impl FrameClock {
     /// The clock follows the frame loop's own count rather than counting
     /// builds: `index` and `delta_time` are what the loop states, and `time`
     /// is the sum of the deltas it has stated.
-    pub fn advance(&mut self, delta_time: f32, index: u32) {
-        self.time += delta_time;
+    pub fn advance(&mut self, delta_time: FrameDelta, index: u32) {
+        self.time = (f64::from(self.time) + delta_time.as_secs()).min(f64::from(f32::MAX)) as f32;
         self.delta_time = delta_time;
         self.index = index;
     }
@@ -378,7 +380,7 @@ mod tests {
 
     fn frame() -> Frame {
         Frame {
-            delta_time: 0.0,
+            delta_time: crate::time::FrameDelta::from_secs(0.0),
             index: 0,
         }
     }
@@ -445,14 +447,14 @@ mod tests {
                 }),]);
         }
         let mut frame = Frame {
-            delta_time: 0.5,
+            delta_time: crate::time::FrameDelta::from_secs(0.5),
             index: 7,
         };
         dispatch_frame(&mut world, &mut frame);
         assert_eq!(
             *seen.borrow(),
             Some(Frame {
-                delta_time: 0.5,
+                delta_time: crate::time::FrameDelta::from_secs(0.5),
                 index: 7,
             })
         );
@@ -605,11 +607,11 @@ mod tests {
         }
 
         let mut frame = Frame {
-            delta_time: 0.25,
+            delta_time: crate::time::FrameDelta::from_secs(0.25),
             index: 3,
         };
         dispatch_frame(&mut world, &mut frame);
-        frame.delta_time = 0.5;
+        frame.delta_time = crate::time::FrameDelta::from_secs(0.5);
         frame.index = 4;
         dispatch_frame(&mut world, &mut frame);
 
@@ -618,7 +620,7 @@ mod tests {
             seen[0],
             FrameClock {
                 time: 0.25,
-                delta_time: 0.25,
+                delta_time: crate::time::FrameDelta::from_secs(0.25),
                 index: 3,
             },
             "the first frame's clock starts from zero"
@@ -627,7 +629,7 @@ mod tests {
             seen[1],
             FrameClock {
                 time: 0.75,
-                delta_time: 0.5,
+                delta_time: crate::time::FrameDelta::from_secs(0.5),
                 index: 4,
             },
             "time accumulates the deltas the loop states"

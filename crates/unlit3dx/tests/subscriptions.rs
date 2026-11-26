@@ -1,6 +1,7 @@
 //! Integration tests for snapshot subscriptions: a world collects state
 //! only while a reader asked for it, and each subscription is its own.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -22,7 +23,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldEndpoint {
         |world: &mut World| {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         },
-        |_world: &mut World, _control: &ThreadControl, (), _: f32| TickOutcome::Running,
+        |_world: &mut World, _control: &ThreadControl, (), _: FrameDelta| TickOutcome::Running,
     )
     .expect("the stepped world starts")
 }
@@ -65,7 +66,12 @@ fn several_subscribers_each_get_their_own_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
 
     let one_reader = installed(one);
     let two_reader = installed(two);
@@ -79,7 +85,12 @@ fn several_subscribers_each_get_their_own_snapshot() {
 fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
 
     let reader = world
         .commands()
@@ -98,7 +109,12 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
         "a queued subscription is not an installed one"
     );
 
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(0));
 }
@@ -119,19 +135,34 @@ fn dropping_the_reader_prunes_the_subscription() {
             Some(1u32)
         })
         .expect("the world accepts a subscription");
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     let reader = installed(reader);
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the collector ran once");
 
     drop(reader);
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
         "a dropped reader must stop its collector"
     );
 
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
     let live =
         with_stepped_world(&host, world.entity(), publish_collected).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
@@ -154,8 +185,18 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
-    step_stepped_world(&host, world.entity(), FRAME_SECONDS).expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
+    step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    )
+    .expect("the stepped world starts");
 
     let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(1));
@@ -202,6 +243,86 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
         Some(0),
         "the drain published what the collector collected"
     );
+}
+
+#[test]
+fn a_failed_world_ends_its_subscriptions_without_dropping_the_world() {
+    let mut host = World::new();
+    let world = subscribed_world(&mut host, 8);
+    let watched = world.commands().watch(|_| Some(1u32)).unwrap();
+    let streamed = world
+        .commands()
+        .subscribe(NonZeroUsize::MIN, |_, out| out.push(2u32))
+        .unwrap();
+    assert_eq!(
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
+        Ok(StepOutcome::Ran)
+    );
+    let mut snapshot = installed(watched);
+    let stream = installed(streamed);
+    assert_eq!(snapshot.poll(), SnapshotPoll::Updated(Arc::new(1)));
+    world
+        .commands()
+        .send(Box::new(|_: &mut World| panic!("test failure")))
+        .unwrap();
+    let Ok(StepOutcome::Failed(error)) = step_stepped_world(
+        &host,
+        world.entity(),
+        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
+    ) else {
+        panic!("the world should report the failed job");
+    };
+    assert_eq!(snapshot.poll(), SnapshotPoll::Failed(error.clone()));
+    assert_eq!(snapshot.latest().as_deref(), Some(&1));
+    assert_eq!(stream.pump(), None);
+    assert_eq!(stream.with_batch(|batch| batch.to_vec()), [2]);
+    assert_eq!(stream.pump(), Some(StreamEnd::Failed(error)));
+}
+
+#[test]
+fn a_stopped_world_closes_its_subscriptions_after_the_final_publish() {
+    let mut host = World::new();
+    let world = subscribed_world(&mut host, 8);
+    let mut tick = 0u32;
+    let watched = world
+        .commands()
+        .watch(move |_| {
+            tick += 1;
+            Some(tick)
+        })
+        .unwrap();
+    assert_eq!(
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
+        Ok(StepOutcome::Ran)
+    );
+    let mut snapshot = installed(watched);
+    world.stop();
+    assert_eq!(
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
+        Ok(StepOutcome::Stopped)
+    );
+    assert_eq!(
+        step_stepped_world(
+            &host,
+            world.entity(),
+            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
+        ),
+        Err(StepError::Unavailable)
+    );
+    assert_eq!(snapshot.poll(), SnapshotPoll::Closed);
+    assert_eq!(snapshot.latest().as_deref(), Some(&2));
 }
 
 /// A full command queue refuses the subscription instead of blocking, and

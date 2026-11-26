@@ -25,6 +25,7 @@ use unlit3d::frame::{Frame, dispatch_frame};
 
 use crate::endpoint::WorldEndpoint;
 use crate::thread::{FixedClock, ThreadError, fixed_steps};
+use crate::time::{SimulationDelta, SimulationTime};
 use crate::turn::TickOutcome;
 use crate::world::WorldRunner;
 use unlit_ecs::bundle;
@@ -157,7 +158,13 @@ impl Bundle for Physics {
     /// The bundle claims the [`PhysicsWorld`] singleton key: a world holds one
     /// physics world, and every reader finds its entity through the key.
     fn into_bundle(self) -> DynamicBundle {
-        bundle![self.world, self.events, self.contacts].singleton::<PhysicsWorld>()
+        bundle![
+            self.world,
+            self.events,
+            self.contacts,
+            SimulationTime::default()
+        ]
+        .singleton::<PhysicsWorld>()
     }
 }
 
@@ -330,12 +337,16 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
     config: PhysicsConfig,
 ) -> Result<WorldEndpoint, ThreadError> {
     let step_seconds = step_seconds(&config);
-    let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds));
+    let mut clock = FixedClock::new(Duration::from_secs_f32(step_seconds.as_secs()));
     // A self-driven tick runs before its clock's first wait, so one period is
     // owed from the start: the first turn simulates, and every later turn
     // spends exactly the debt its own delta accrued. A stepped world owes
     // nothing until its host hands it a delta.
-    let mut debt = if R::SELF_DRIVEN { step_seconds } else { 0.0 };
+    let mut debt = if R::SELF_DRIVEN {
+        step_seconds
+    } else {
+        SimulationDelta::ZERO
+    };
     // The world's own frame ordinal. A tick is the world's frame — it steps
     // the simulation by whatever debt gathered — so a reader sees the pacing
     // the steps really ran at, not the host's frame rate.
@@ -351,7 +362,11 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
             }
             // The one pacing rule, whichever driver calls it: the tick's delta
             // accrues debt and a whole period of it is spent as one step.
-            let steps = fixed_steps(&mut debt, delta_seconds, step_seconds);
+            let steps = fixed_steps(
+                &mut debt,
+                SimulationDelta::from_secs(delta_seconds.as_secs_f32()),
+                step_seconds,
+            );
             for _ in 0..steps {
                 step_once(world);
             }
@@ -382,7 +397,7 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 /// Panics when [`PhysicsConfig::hz`] is not a positive finite number.
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = Physics::new(config.gravity);
-    physics.world.integration_parameters.dt = step_seconds(config);
+    physics.world.integration_parameters.dt = step_seconds(config).as_secs();
     world.root_scope_mut().spawn(physics);
 }
 
@@ -392,13 +407,15 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
 ///
 /// Panics when the rate is not a positive finite number: the period is what
 /// the rate means, and there is none to measure a step by otherwise.
-fn step_seconds(config: &PhysicsConfig) -> f32 {
+fn step_seconds(config: &PhysicsConfig) -> SimulationDelta {
+    let period = SimulationDelta::from_secs((1.0 / config.hz) as f32);
     assert!(
-        config.hz.is_finite() && config.hz > 0.0,
+        period != SimulationDelta::ZERO
+            && Duration::try_from_secs_f32(period.as_secs()).is_ok_and(|d| !d.is_zero()),
         "a physics rate must be a positive finite number, not {}",
         config.hz
     );
-    1.0 / config.hz as f32
+    period
 }
 
 /// Step the rapier world once, draining its contacts into
@@ -430,6 +447,13 @@ pub fn step_once(world: &World) -> bool {
     match events.as_mut() {
         Some(events) => physics.step_with_events(&(), &events.get().collector),
         None => physics.step(),
+    }
+    if let Ok(mut clock) = world
+        .root_scope()
+        .try_query_one::<&mut SimulationTime>(entity)
+    {
+        clock.get().0 +=
+            f64::from(SimulationDelta::from_secs(physics.integration_parameters.dt).as_secs());
     }
     let Some(mut events) = events else {
         return true;

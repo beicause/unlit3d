@@ -283,7 +283,7 @@ impl Scene {
         }
 
         let mut frame = Frame {
-            delta_time,
+            delta_time: unlit3d::time::FrameDelta::from_secs(f64::from(delta_time)),
             index: self.frame,
         };
         dispatch_frame(world, &mut frame);

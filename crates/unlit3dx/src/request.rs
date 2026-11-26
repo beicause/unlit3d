@@ -1,220 +1,183 @@
-//! Requests a world answers, and the waiting for their answers.
-//!
-//! A job is one way: what one world says to another is a closure, and nothing
-//! comes back with it. A caller that needs a value the other world makes asks
-//! for it, and [Pending](crate::request::Pending) is the asking: it sends the job, names what it asked
-//! for with a key of the caller's own — a ball's entity, say — and folds
-//! whatever came back into the world on the caller's own tick.
-//!
-//! Three things make it more than a queue of answers:
-//!
-//! - **An answer is named.** Two requests are not told apart by the payload
-//!   they carry: the key the caller asked with is the key the answer comes
-//!   back under, so a ball finds its own instance however many others were
-//!   asked for at the same time.
-//! - **The wait is bounded.** A request whose answer has not come within
-//!   `timeout` seconds is given up on, and so is every
-//!   request still outstanding when the world that owes them ends: a job a
-//!   panic took with it never answers, and neither does a world that stopped.
-//! - **Nothing waits on an empty slot.** The answers are folded on the
-//!   caller's tick, so a caller never blocks, and an answer that arrives for
-//!   a request already given up on is dropped instead of delivered twice.
-//!
-//! A [Pending](crate::request::Pending) is not a future and the wait is not a wakeup: an answer lands
-//! in a queue, and the tick that needs it folds it. That is what keeps a
-//! stepped world's wait identical to a threaded one's, and what lets an answer
-//! be applied straight to the world rather than handed to a continuation
-//! outside it — a continuation could not hold the `&mut World` the answer is
-//! for, and would have to wait for the tick anyway.
+//! Send a job and poll for its answer without blocking the calling world.
 
-use async_channel::{Receiver, Sender, unbounded};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use async_channel::{Receiver, bounded};
 use unlit_ecs::World;
+use web_time::Instant;
 
-use crate::channel::SnapshotReader;
 use crate::endpoint::WorldEndpoint;
 use crate::job::SendError;
 use crate::thread::WorldState;
+use crate::world::WorldError;
 
-/// Whether the world behind a reader of its state has ended.
-///
-/// A question asked of a world that failed is never answered, and neither is
-/// one asked of a world that stopped: the job is gone with the turn it ran in.
-/// A caller that asked waits on this instead of waiting forever.
-fn ended(state: &SnapshotReader<WorldState>) -> bool {
-    matches!(
-        state.latest().as_deref(),
-        Some(WorldState::Stopped | WorldState::Failed(_))
-    )
-}
+use crate::time::WallTimeout;
 
-/// What a request did when it was asked.
-///
-/// The two answers are not the same event: `Queued` is a job on its way to the
-/// world that will answer it, and `Coalesced` is a request the caller already
-/// has outstanding, whose `make` never ran.
+/// Whether asking queued a job or reused the outstanding request for its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Asked {
-    /// The job was queued: the world will answer unless it stops first.
+    /// A job was queued.
     Queued,
-    /// A request under this key was already outstanding, so nothing was
-    /// queued and the `make` of this one was dropped unrun.
+    /// The supplied job was not queued and did not renew the existing wait.
     Coalesced,
 }
 
 /// How one request ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Settled<T> {
-    /// The world it was asked of answered, with this.
-    ///
-    /// A request the world could not carry out answers as well, with a value
-    /// that says so: a show that did not happen answers `false` rather than
-    /// nothing, so the caller learns the difference between a world that has
-    /// not answered and one that answered no.
+    /// The job returned a value, which may itself express an operation error.
     Answered(T),
-    /// The wait is over and nothing came: the request's time ran out, or the
-    /// world that owed it ended.
-    Expired,
+    /// The caller stopped waiting, without interrupting the job.
+    TimedOut,
+    /// The world stopped before answering.
+    WorldStopped,
+    /// The world failed before answering.
+    WorldFailed(WorldError),
+    /// The job observed and acknowledged a cancellation request.
+    Cancelled,
 }
 
-type RequestId = u64;
+/// The cancellation signal for one job. A checkpoint does not undo earlier work.
+#[derive(Clone, Debug)]
+pub struct CancellationToken(Arc<AtomicBool>);
 
-struct Outstanding<K> {
+/// A cancellation acknowledged by the job through a token checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the job acknowledged cancellation")]
+pub struct Cancelled(());
+
+impl CancellationToken {
+    /// Return an acknowledgment once the caller has requested cancellation.
+    /// Propagate the error to end the job; ignoring it does not cancel anything.
+    pub fn checkpoint(&self) -> Result<(), Cancelled> {
+        if self.0.load(Ordering::Acquire) {
+            Err(Cancelled(()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct Outstanding<K, T> {
     key: K,
-    id: RequestId,
-    remaining: Option<f32>,
+    answer: Receiver<Result<T, Cancelled>>,
+    queued_at: Instant,
+    cancellation: CancellationToken,
 }
 
-/// The requests one world owes a caller, and the answers that have come back.
-///
-/// One [Pending] serves one world: it is built with the endpoint of the world
-/// that owes the answers, and every request made through it goes to that
-/// world. A caller that asks two worlds for two things keeps two.
-///
-/// `K` is what the caller names a request by, and `T` what the world answers
-/// with.
+/// The requests one caller is waiting for from a single world endpoint.
+/// A dropped or timed-out request stops waiting without cancelling its job.
 pub struct Pending<K, T> {
-    answerer: Sender<(RequestId, T)>,
-    answers: Receiver<(RequestId, T)>,
-    next_id: RequestId,
-    /// The world that owes the answers: its queue and its state, together, so
-    /// a request cannot be sent to one world and waited on against another.
     world: WorldEndpoint,
-    /// How many seconds a request may go unanswered; `None` waits for as long
-    /// as the world owes it.
-    timeout: Option<f32>,
-    /// The requests still outstanding, and how many seconds each has left.
-    outstanding: Vec<Outstanding<K>>,
+    timeout: Option<WallTimeout>,
+    outstanding: Vec<Outstanding<K, T>>,
 }
 
 impl<K, T> Pending<K, T>
 where
-    K: Eq + Clone + Send + 'static,
+    K: Eq + Clone,
     T: Send + 'static,
 {
-    /// Requests for the world `world` reaches, each allowed to go unanswered
-    /// for `timeout` seconds. `None` waits until the world answers or ends.
+    /// Construct a request set. `None` waits until the world answers or ends.
     #[must_use]
-    pub fn new(world: WorldEndpoint, timeout: Option<f32>) -> Self {
-        let (answerer, answers) = unbounded();
+    pub fn new(world: WorldEndpoint, timeout: Option<WallTimeout>) -> Self {
         Self {
-            answerer,
-            answers,
-            next_id: 0,
             world,
             timeout,
             outstanding: Vec::new(),
         }
     }
 
-    /// Ask the world behind this endpoint for what `make` returns, as the
-    /// request `key` names.
-    ///
-    /// `make` runs once, on the world's own thread, and whatever it returns is
-    /// the answer `key` receives. The send is refused when that world's queue
-    /// is full or it has stopped, and then no request is outstanding: the
-    /// caller decides whether to ask again on a later tick, and `make` goes
-    /// with the refused job.
-    ///
-    /// A request already outstanding under `key` is coalesced, and the answer
-    /// says so: no second job is queued, `make` is dropped unrun, and the first
-    /// request keeps ownership of the answer and of the time it was given. A
-    /// caller that asks once per tick therefore learns that the tick's work was
-    /// not done rather than taking the silence for a lost registration.
+    /// Queue a job. Cancellation can prevent it from starting, but cannot
+    /// interrupt this closure after it starts. Use [`Self::request_cancellable`]
+    /// to add checkpoints while the job is running.
     pub fn request<F>(&mut self, key: K, make: F) -> Result<Asked, SendError>
     where
         F: FnOnce(&mut World) -> T + Send + 'static,
     {
+        self.request_cancellable(key, move |world, _| Ok(make(world)))
+    }
+
+    /// Queue a job that may acknowledge cancellation at its checkpoints.
+    ///
+    /// The world checks the token before invoking `make`. An outstanding key
+    /// coalesces without replacing the job, its token or its deadline. A send
+    /// refusal returns the job, but no answer to it will settle any request.
+    pub fn request_cancellable<F>(&mut self, key: K, make: F) -> Result<Asked, SendError>
+    where
+        F: FnOnce(&mut World, &CancellationToken) -> Result<T, Cancelled> + Send + 'static,
+    {
         if self.outstanding.iter().any(|request| request.key == key) {
             return Ok(Asked::Coalesced);
         }
-        let answerer = self.answerer.clone();
-        let id = self.next_id;
-        self.world
-            .commands()
-            .send(Box::new(move |world: &mut World| {
-                let _ = answerer.try_send((id, make(world)));
-            }))?;
-        self.next_id += 1;
+        let cancellation = CancellationToken(Arc::new(AtomicBool::new(false)));
+        let token = cancellation.clone();
+        let (send, answer) = bounded(1);
+        let queued_at = Instant::now();
+        self.world.commands().send(Box::new(move |world| {
+            let result = token.checkpoint().and_then(|()| make(world, &token));
+            let _ = send.try_send(result);
+        }))?;
         self.outstanding.push(Outstanding {
             key,
-            id,
-            remaining: self.timeout,
+            answer,
+            queued_at,
+            cancellation,
         });
         Ok(Asked::Queued)
     }
 
-    /// What ended on this tick: the requests the world answered, and the ones
-    /// given up on, each under the key it was asked with.
-    ///
-    /// Call it once per tick of the asking world, and take every item it
-    /// writes: an unanswered request is given up on only once, and an answer
-    /// is handed out only once. A request is expired when the time it was
-    /// given runs out, or at once when the world that owed it ended — a job
-    /// that panicked takes its answer with it, and a world that stopped never
-    /// runs another.
-    ///
-    /// An answer that arrived for a request no longer outstanding is dropped:
-    /// the request was given up on, and whatever it asked for has already been
-    /// dealt with. Requests come out oldest first — the answered in the order
-    /// the world published them, then the expired in the order they were
-    /// asked — so two runs of the same durations settle the same requests in
-    /// the same order.
-    ///
-    /// `settled` is cleared and reused, so a caller that keeps one allocates
-    /// nothing per tick but what the answers themselves weigh.
-    pub fn advance(&mut self, delta_seconds: f32, settled: &mut Vec<(K, Settled<T>)>) {
+    /// Request cancellation for an outstanding key without waiting for it.
+    /// `true` means the signal was sent, not that the job acknowledged it.
+    pub fn cancel(&self, key: &K) -> bool {
+        let Some(request) = self.outstanding.iter().find(|request| &request.key == key) else {
+            return false;
+        };
+        request.cancellation.0.store(true, Ordering::Release);
+        true
+    }
+
+    /// Replace `settled` with results observed on this poll, each reported once.
+    /// Answers and acknowledged cancellation take precedence over world exit;
+    /// world exit takes precedence over timeout. Polling does not drive the world.
+    pub fn poll(&mut self, settled: &mut Vec<(K, Settled<T>)>) {
+        self.poll_at(Instant::now(), settled);
+    }
+
+    fn poll_at(&mut self, now: Instant, settled: &mut Vec<(K, Settled<T>)>) {
         settled.clear();
-        while let Ok((id, value)) = self.answers.try_recv() {
-            if let Some(at) = self.outstanding.iter().position(|request| request.id == id) {
-                let request = self.outstanding.remove(at);
-                settled.push((request.key, Settled::Answered(value)));
-            }
-        }
-        let ended = ended(&self.world.state());
-        let mut outstanding = std::mem::take(&mut self.outstanding);
-        outstanding.retain_mut(|Outstanding { key, remaining, .. }| {
-            if ended {
-                settled.push((key.clone(), Settled::Expired));
-                return false;
-            }
-            let Some(left) = remaining else {
-                return true;
+        // Read the status first, so an answer published before the terminal
+        // status cannot disappear between a failed receive and the status read.
+        let state = self.world.state().latest();
+        let timeout = self.timeout;
+        self.outstanding.retain(|request| {
+            let outcome = match request.answer.try_recv() {
+                Ok(Ok(value)) => Settled::Answered(value),
+                Ok(Err(Cancelled(()))) => Settled::Cancelled,
+                Err(_) => match state.as_deref() {
+                    Some(WorldState::Stopped) => Settled::WorldStopped,
+                    Some(WorldState::Failed(error)) => Settled::WorldFailed(error.clone()),
+                    _ if timeout.is_some_and(|WallTimeout(wait)| {
+                        now.saturating_duration_since(request.queued_at) >= wait
+                    }) =>
+                    {
+                        Settled::TimedOut
+                    }
+                    _ => return true,
+                },
             };
-            *left -= delta_seconds.max(0.0);
-            if *left <= 0.0 {
-                settled.push((key.clone(), Settled::Expired));
-                return false;
-            }
-            true
+            settled.push((request.key.clone(), outcome));
+            false
         });
-        self.outstanding = outstanding;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use unlit_ecs::Entity;
 
     use crate::endpoint::{WorldDriving, WorldOwnership};
@@ -246,7 +209,13 @@ mod tests {
     ) -> (Pending<u32, u32>, async_channel::Receiver<Job>) {
         let (sender, receiver) = async_channel::unbounded();
         let endpoint = endpoint_for(state, JobSender::new(sender));
-        (Pending::new(endpoint, timeout), receiver)
+        (
+            Pending::new(
+                endpoint,
+                timeout.map(|seconds| WallTimeout(Duration::from_secs_f32(seconds))),
+            ),
+            receiver,
+        )
     }
 
     /// Run every job queued so far.
@@ -256,10 +225,18 @@ mod tests {
         }
     }
 
-    /// What one advance of `delta_seconds` settled.
-    fn settled(pending: &mut Pending<u32, u32>, delta_seconds: f32) -> Vec<(u32, Settled<u32>)> {
+    fn settled(
+        pending: &mut Pending<u32, u32>,
+        seconds_since_ask: f32,
+    ) -> Vec<(u32, Settled<u32>)> {
         let mut settled = Vec::new();
-        pending.advance(delta_seconds, &mut settled);
+        let now = pending
+            .outstanding
+            .last()
+            .map_or_else(Instant::now, |request| {
+                request.queued_at + Duration::from_secs_f32(seconds_since_ask)
+            });
+        pending.poll_at(now, &mut settled);
         settled
     }
 
@@ -291,6 +268,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancellation_is_not_reported_until_the_job_checks_the_token() {
+        let (mut pending, receiver) = asking(WorldState::Running, None);
+        pending
+            .request(1, |_| panic!("the cancelled body must not start"))
+            .unwrap();
+        assert!(pending.cancel(&1));
+        assert!(settled(&mut pending, 0.0).is_empty());
+        drain(&receiver, &mut World::new());
+        assert_eq!(settled(&mut pending, 0.0), vec![(1, Settled::Cancelled)]);
+        assert!(!pending.cancel(&1));
+    }
+
+    #[test]
+    fn a_running_job_can_acknowledge_cancellation_at_a_checkpoint() {
+        let (mut pending, receiver) = asking(WorldState::Running, None);
+        let (started, start) = std::sync::mpsc::channel();
+        let (resume, wait) = std::sync::mpsc::channel();
+        pending
+            .request_cancellable(1, move |_, token| {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+                token.checkpoint()?;
+                Ok(7)
+            })
+            .unwrap();
+        let job = receiver.try_recv().unwrap();
+        let worker = std::thread::spawn(move || job(&mut World::new()));
+        start.recv().unwrap();
+        assert!(pending.cancel(&1));
+        resume.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(settled(&mut pending, 0.0), vec![(1, Settled::Cancelled)]);
+    }
+
+    #[test]
+    fn a_refused_job_cannot_answer_a_later_request_under_the_same_key() {
+        let (send, queue) = bounded(1);
+        send.try_send(Box::new(|_: &mut World| {}) as Job).unwrap();
+        let endpoint = endpoint_for(WorldState::Running, JobSender::new(send));
+        let mut pending = Pending::new(endpoint, None);
+        let refused = pending.request(1, |_| 7).unwrap_err();
+        let _ = queue.try_recv().unwrap();
+        pending.request(1, |_| 8).unwrap();
+        let mut world = World::new();
+        refused.into_job()(&mut world);
+        assert!(settled(&mut pending, 0.0).is_empty());
+        drain(&queue, &mut world);
+        assert_eq!(settled(&mut pending, 0.0), vec![(1, Settled::Answered(8))]);
+    }
+
+    #[test]
+    fn a_failed_world_settles_the_request_with_its_cause() {
+        let error = WorldError::Panic {
+            stage: crate::world::WorldStage::Job,
+            message: "failed".into(),
+        };
+        let (mut pending, _receiver) = asking(WorldState::Failed(error.clone()), None);
+        pending.request(1, |_| 7).unwrap();
+        assert_eq!(
+            settled(&mut pending, 0.0),
+            vec![(1, Settled::WorldFailed(error))]
+        );
+    }
+
     /// A request whose job never ran is given up on once its time runs out,
     /// and not before.
     #[test]
@@ -304,7 +346,7 @@ mod tests {
             settled(&mut pending, 1.0).is_empty(),
             "one tick of two is spent"
         );
-        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
+        assert_eq!(settled(&mut pending, 2.0), vec![(1, Settled::TimedOut)]);
     }
 
     /// A world that ended owes nothing: every request still outstanding is
@@ -318,7 +360,7 @@ mod tests {
 
         assert_eq!(
             settled(&mut pending, 1.0),
-            vec![(1, Settled::Expired)],
+            vec![(1, Settled::WorldStopped)],
             "the job sat in the queue of a world that never ran it"
         );
         assert_eq!(receiver.len(), 1, "the job was still sent");
@@ -343,7 +385,7 @@ mod tests {
         let (mut pending, receiver) = asking(WorldState::Running, Some(1.0));
         let mut world = World::new();
         pending.request(1, |_| 7).unwrap();
-        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::TimedOut)]);
         pending.request(1, |_| 8).unwrap();
         receiver.try_recv().unwrap()(&mut world);
         assert!(settled(&mut pending, 0.0).is_empty());
@@ -361,7 +403,7 @@ mod tests {
             .request(1, |_: &mut World| 7)
             .expect("the queue has room");
 
-        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
+        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::TimedOut)]);
 
         // The job runs on a drain after the wait is over, which is what a
         // world that was a tick behind looks like from here.
@@ -407,7 +449,7 @@ mod tests {
 
         // One tick stood between the first ask and this one, so the wait the
         // first ask was given runs out here however recently it was repeated.
-        assert_eq!(settled(&mut pending, 1.0), vec![(1, Settled::Expired)]);
+        assert_eq!(settled(&mut pending, 2.0), vec![(1, Settled::TimedOut)]);
     }
 
     /// A second request under a key already outstanding says it was
@@ -456,8 +498,8 @@ mod tests {
             Asked::Coalesced
         );
         assert_eq!(
-            settled(&mut pending, 1.0),
-            vec![(1, Settled::Expired)],
+            settled(&mut pending, 2.0),
+            vec![(1, Settled::TimedOut)],
             "the coalesced ask did not restart the clock"
         );
     }

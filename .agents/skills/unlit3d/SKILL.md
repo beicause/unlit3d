@@ -31,7 +31,7 @@ description: 用 unlit3d（单 world 渲染库）与 unlit3dx（多 world 运行
 2. **source 画它自己子树里的东西**。`Renderer::render` 遍历每个 pass，对 pass 下面的每个 `Source` 用 `world.scope(source_entity)` 取作用域，只有挂在该 scope 下的实体才被画。相机同理——相机是为「持有它的那个 source」取景的。
 3. **pass 是一个 scope，source 又是一个 scope**。pass 录制它下面的 source，按 `FramePassOrder` 排序；pass 内按 `SourceOrder` 排序。挂在 pass 下、与 source 平级的渲染实体不会被画。
 4. **一帧两个阶段**：先让每个 pass 的每个 source 调 `SceneSource::build`（低层 `DrawSource::build_scene`）填 `Scene`——`SceneBuild` 给出 scope、渲染上下文、`PassInfo` 与本帧的 encoder，上传也走这个 encoder——再逐个 pass 录制提交。所以上传和读它的 draw 在同一次 submission 里。
-5. **`Renderer::render(&world)` 是唯一的驱动点**。它只录帧、不推进世界；`Frame`（`delta_time` / `index` / `size`）由调用方构造，用 `dispatch_frame` 发给 `OnFrame` 行为组件。
+5. **`Renderer::render(&world)` 只录帧，不推进世界**。调用方构造 `Frame { delta_time: FrameDelta, index }`，用 `dispatch_frame` 推进帧时钟并运行 `OnFrame` 行为组件。渲染目标尺寸由各 pass 的附件提供。
 6. **资源句柄是组件**。`GpuMesh` 用 `Rc<MeshParts>` 共享底层缓冲区、`GpuMaterial` 是资源图里的 bind group 句柄，clone 都只是拷贝句柄；想再画一份就 clone 出来再 spawn 一个实例实体，不要重新创建 GPU 资源。
 
 ## 硬约束

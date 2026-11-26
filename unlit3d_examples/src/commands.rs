@@ -44,7 +44,7 @@ impl Command for RunSceneAdvance {
         let Some(mut advance) = advance else {
             return Ok(());
         };
-        advance(world, frame.index, frame.delta_time, size);
+        advance(world, frame.index, frame.delta_time.as_secs_f32(), size);
         let _ = world
             .root_scope()
             .try_query_one::<&mut SceneAdvance>(entity)

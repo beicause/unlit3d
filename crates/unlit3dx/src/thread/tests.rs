@@ -275,40 +275,79 @@ const STEP: f32 = 1.0 / 60.0;
 /// One step of time runs exactly one step and leaves nothing owed.
 #[test]
 fn a_step_of_time_runs_one_fixed_step() {
-    let mut debt = 0.0;
-    assert_eq!(fixed_steps(&mut debt, STEP, STEP), 1);
-    assert_eq!(debt, 0.0);
+    let mut debt = SimulationDelta::ZERO;
+    assert_eq!(
+        fixed_steps(
+            &mut debt,
+            SimulationDelta::from_secs(STEP),
+            SimulationDelta::from_secs(STEP)
+        ),
+        1
+    );
+    assert_eq!(debt, SimulationDelta::ZERO);
 }
 
 /// The fraction of a step a tick did not spend waits for the next one
 /// instead of being rounded away.
 #[test]
 fn an_unspent_fraction_waits_for_the_next_tick() {
-    let mut debt = 0.0;
-    assert_eq!(fixed_steps(&mut debt, STEP * 0.5, STEP), 0);
-    assert!((debt - STEP * 0.5).abs() < STEP * 1e-4);
-    assert_eq!(fixed_steps(&mut debt, STEP * 0.6, STEP), 1);
-    assert!((debt - STEP * 0.1).abs() < STEP * 1e-4);
+    let mut debt = SimulationDelta::ZERO;
+    assert_eq!(
+        fixed_steps(
+            &mut debt,
+            SimulationDelta::from_secs(STEP * 0.5),
+            SimulationDelta::from_secs(STEP)
+        ),
+        0
+    );
+    assert!((debt.as_secs() - STEP * 0.5).abs() < STEP * 1e-4);
+    assert_eq!(
+        fixed_steps(
+            &mut debt,
+            SimulationDelta::from_secs(STEP * 0.6),
+            SimulationDelta::from_secs(STEP)
+        ),
+        1
+    );
+    assert!((debt.as_secs() - STEP * 0.1).abs() < STEP * 1e-4);
 }
 
 /// A stall past the catch-up limit runs the limit and drops the rest, so
 /// a world that was paused resumes instead of replaying the pause.
 #[test]
 fn debt_past_the_catch_up_limit_is_discarded() {
-    let mut debt = 0.0;
+    let mut debt = SimulationDelta::ZERO;
     assert_eq!(
-        fixed_steps(&mut debt, STEP * 100.0, STEP),
+        fixed_steps(
+            &mut debt,
+            SimulationDelta::from_secs(STEP * 100.0),
+            SimulationDelta::from_secs(STEP)
+        ),
         MAX_CATCH_UP_STEPS
     );
-    assert_eq!(debt, 0.0);
+    assert_eq!(debt, SimulationDelta::ZERO);
     // Just short of the limit still runs every whole step it covers.
-    assert_eq!(fixed_steps(&mut debt, STEP * 3.5, STEP), 3);
+    assert_eq!(
+        fixed_steps(
+            &mut debt,
+            SimulationDelta::from_secs(STEP * 3.5),
+            SimulationDelta::from_secs(STEP)
+        ),
+        3
+    );
 }
 
 /// A clock that went backwards owes nothing.
 #[test]
 fn a_negative_interval_adds_no_time() {
-    let mut debt = 0.0;
-    assert_eq!(fixed_steps(&mut debt, -1.0, STEP), 0);
-    assert_eq!(debt, 0.0);
+    let mut debt = SimulationDelta::ZERO;
+    assert_eq!(
+        fixed_steps(
+            &mut debt,
+            SimulationDelta::from_secs(-1.0),
+            SimulationDelta::from_secs(STEP)
+        ),
+        0
+    );
+    assert_eq!(debt, SimulationDelta::ZERO);
 }

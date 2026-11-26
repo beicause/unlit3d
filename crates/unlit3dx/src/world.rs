@@ -21,6 +21,7 @@ use crate::job::{Job, JobSender, SendError, SendErrorKind};
 use crate::thread::{
     ThreadControl, ThreadError, ThreadStatus, WorldThread, panic_message, stepped_control,
 };
+use crate::time::FrameDelta;
 use crate::turn::{Link, close_inbox, drain_jobs, run_turn};
 
 pub use crate::turn::{StepOutcome, TickOutcome, WorldError, WorldStage};
@@ -97,7 +98,7 @@ impl WorldSender {
 }
 
 /// The tick a world runs, with its one-time state already captured.
-type Tick = Box<dyn FnMut(&mut World, &ThreadControl, f32) -> TickOutcome>;
+type Tick = Box<dyn FnMut(&mut World, &ThreadControl, FrameDelta) -> TickOutcome>;
 
 /// A world the host steps: the world, its command queue and its tick.
 ///
@@ -159,7 +160,7 @@ pub trait WorldRunner: 'static {
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static;
+        T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + Send + 'static;
 }
 
 /// A world on its own thread.
@@ -181,7 +182,7 @@ impl WorldRunner for Threaded {
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + Send + 'static,
     {
         spawn_threaded_world_with_init(host, name, command_capacity, init, tick)
     }
@@ -200,7 +201,7 @@ impl WorldRunner for Stepped {
     where
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + Send + 'static,
     {
         spawn_stepped_world_with_init(host, name, command_capacity, init, tick)
     }
@@ -209,13 +210,13 @@ impl WorldRunner for Stepped {
 /// Spawn a threaded world on a fresh thread, driven by `tick`.
 ///
 /// The thread's loop runs a turn per iteration: the jobs queued for the world,
-/// then `tick`, then the commit and the publish. A tick that returns `false`
+/// then `tick`, then the commit and the publish. A tick that returns [`TickOutcome::Finished`]
 /// ends the thread. A panic in a job, in the tick or in a collector is
 /// contained, recorded as the world's state, and ends the thread. The handle
 /// returned carries the handle every later job goes through, and dropping the
 /// host entity it names stops the thread.
 ///
-/// `tick` takes the whole seconds since the previous tick, so a tick body
+/// `tick` takes the elapsed frame time since the previous tick, so a tick body
 /// can advance by the time that really passed rather than assume the
 /// rate it asked to be woken at.
 ///
@@ -232,14 +233,14 @@ pub fn spawn_threaded_world<T>(
     mut tick: T,
 ) -> Result<WorldEndpoint, ThreadError>
 where
-    T: FnMut(&mut World, &ThreadControl, f32) -> TickOutcome + Send + 'static,
+    T: FnMut(&mut World, &ThreadControl, FrameDelta) -> TickOutcome + Send + 'static,
 {
     spawn_threaded_world_with_init(
         host,
         name,
         command_capacity,
         |_| (),
-        move |world, control, (), delta_seconds| tick(world, control, delta_seconds),
+        move |world, control, (), delta| tick(world, control, delta),
     )
 }
 
@@ -263,13 +264,13 @@ pub fn spawn_threaded_world_with_init<I, S, T>(
 where
     I: FnOnce(&mut World) -> S + Send + 'static,
     S: 'static,
-    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + Send + 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + Send + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     // The thread's loop runs the turn, so the queue and the status travel with
     // it: the driver owns what happens between two ticks.
     let thread = WorldThread::spawn_with(name, inbox, init, move |world, control, state| {
-        tick(world, control, state, control.elapsed_seconds())
+        tick(world, control, state, control.frame_delta())
     })?;
     let status: ThreadStatus = thread.status();
     let sender = JobSender::new(queue);
@@ -319,7 +320,7 @@ pub fn spawn_stepped_world_with_init<I, S, T>(
 where
     I: FnOnce(&mut World) -> S + 'static,
     S: 'static,
-    T: FnMut(&mut World, &ThreadControl, &mut S, f32) -> TickOutcome + 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + 'static,
 {
     let (queue, inbox) = bounded::<Job>(command_capacity);
     let mut world = World::new();
@@ -341,8 +342,8 @@ where
         })?;
     let (control, status) = stepped_control();
     let tick = Box::new(
-        move |world: &mut World, control: &ThreadControl, delta_seconds: f32| {
-            tick(world, control, &mut state, delta_seconds)
+        move |world: &mut World, control: &ThreadControl, delta: FrameDelta| {
+            tick(world, control, &mut state, delta)
         },
     );
     let stepped = SteppedWorld {
@@ -411,32 +412,28 @@ pub enum StepError {
     Unavailable,
 }
 
-/// Run one turn of a stepped world with `delta_seconds`.
+/// Run one turn of a stepped world with `delta`.
 ///
-/// The turn is the one every driver runs: the queued jobs, then the tick, then
-/// the commit and the publish. A tick that returns `false` stops the world; a
-/// panic, in a job, in the tick or in a collector, is contained, logged and
-/// published as the world's state, and ends the world too. A world that has
-/// already ended runs nothing, and answers [StepError::Unavailable] the way
-/// [with_stepped_world] does: every entry point reports a stopped world the
-/// same way, so a caller that switches between them cannot read one as alive.
+/// Runs queued jobs, the tick, and then the commit and publication. A tick
+/// that returns [`TickOutcome::Finished`] publishes once before ending. A
+/// pending stop request skips the jobs and tick, publishes the final state,
+/// and reports [`StepOutcome::Stopped`]. A panic or failed command ends the
+/// world with its cause in [`StepOutcome::Failed`].
 ///
 /// # Errors
 ///
-/// Returns [StepError::NoWorld] when `entity` names no reachable world proxy,
-/// [StepError::NotStepped] when it names a threaded world, which drives itself
-/// and must not be stepped from here, and [StepError::Unavailable] after the
-/// stepped world has stopped or received a stop request.
+/// Returns [`StepError::NoWorld`] for an unreachable proxy, [`StepError::NotStepped`]
+/// for a threaded world, and [`StepError::Unavailable`] once the world has ended.
 pub fn step_stepped_world(
     host: &World,
     entity: Entity,
-    delta_seconds: f32,
+    delta: FrameDelta,
 ) -> Result<StepOutcome, StepError> {
     let mut proxy = host.root_scope().try_query_one::<&mut WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &mut proxy.get().kind else {
         return Err(StepError::NotStepped);
     };
-    if stepped.status.is_finished() || stepped.status.stop_requested() {
+    if stepped.status.is_finished() {
         return Err(StepError::Unavailable);
     }
     let SteppedWorld {
@@ -454,7 +451,7 @@ pub fn step_stepped_world(
     };
     Ok(run_turn(world, link, |world| {
         LocalTasks::pump(world);
-        tick(world, control, delta_seconds)
+        tick(world, control, delta)
     }))
 }
 

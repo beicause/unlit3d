@@ -151,7 +151,7 @@ impl EguiPanelHost {
         // The host's clock is the world's, so it moves on whether or not there
         // is a target to lay out against: a frame stepped before the drawing
         // side first drew is time the panel has still lived through.
-        self.time += f64::from(frame.delta_time.max(0.0));
+        self.time += frame.delta_time.as_secs();
         // The drawing side is the only party that knows the frame's target, so
         // there is nothing to lay out against until it has drawn once.
         let Some(target) = self.screen.latest().map(|target| *target) else {
@@ -400,7 +400,7 @@ mod tests {
     /// A frame of the duration these tests step at.
     fn frame(delta_time: f32) -> Frame {
         Frame {
-            delta_time,
+            delta_time: unlit3d::time::FrameDelta::from_secs(f64::from(delta_time)),
             index: 0,
         }
     }

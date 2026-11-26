@@ -130,14 +130,16 @@ world 会丢掉这个 job，句柄于是报告 `InstallError::Ended`，而不是
 tick 跑完后代为发布，因此 tick 体自己什么也不发布，也不可能发布两次。收集闭包填充
 哪种形状由调用方选择：
 
-- `watch` 返回 `SnapshotReader<T>`：状态，只关心最新的值。收集闭包返回
-  `Option<T>`。
-- `subscribe` 返回 `StreamReader<T>`：事件，每一个值都重要。收集闭包向
-  交给它的缓冲区追加，每个值都会进入每个 reader 的队列。
+- `watch` 安装 `SnapshotReader<T, WorldError>`。收集闭包返回 `Option<T>`；
+  返回 `None` 时保留最新值。
+- `subscribe(capacity, collect)` 安装 `StreamReader<T, WorldError>`，队列容量有限。
+  收集闭包向可复用的缓冲区追加事件。
 
-用 `Pending` 请求是第三种形状：一次请求一个 job、一个 job 一个答案，只发布一次，
-并由请求时的 key 指名。world 从不回答的请求——或 world 已经结束的请求——会被判过期，
-而不是悬着不管。
+`Pending::poll` 对每个已结算的 key 报告一次：`Answered`、`TimedOut`、
+`WorldStopped`、`WorldFailed` 或 `Cancelled`。可选的 `WallTimeout` 按单调时钟计时，
+模拟暂停也继续计时。超时只结束等待，不会中断 job。`cancel` 仅发出取消请求：排队中的
+job 会在执行闭包前检查，正在执行的 `request_cancellable` 则通过返回 token 检查点的
+错误来确认取消。两者都不会回滚已完成的操作。
 
 `request` 回答一个 `Asked`，因为问两次与问一次不是同一件事。`Queued` 是正在去往
 world 路上的 job；`Coalesced` 是同一个 key 下已经挂着的请求，这一次的 `make` 没跑就
@@ -154,21 +156,26 @@ world 路上的 job；`Coalesced` 是同一个 key 下已经挂着的请求，�
 
 载荷是调用方的类型，与用法一节的示例相同。
 
-快照 reader 是一个单槽信箱：`latest` 窥视最新一份，没有积压，也没有需要推演的
-顺序，未被读取的那份直接被替换。槽是 `ArcSwapOption`，因此双方都不必去抢对方持有
-的锁：world 把最新一份换进去，已经持有旧快照的 reader 可以一直把那一份读完。按 tick
-收集的 world 与按帧读取的消费者在中间会合，谁也不阻塞谁。收集闭包返回 `None` 时保留
-最新一份快照，状态未变的 world 因此保持安静。还没有任何 reader 时发布的值同样会保留，
-后来才订阅的 reader 仍能看到它，而不必等下一次发布。
+快照 reader 的 `poll` 按自己的读取进度报告 `Uninitialized`、`Unchanged` 或
+`Updated`；world 结束后报告 `Closed` 或 `Failed`。`latest` 不推进读取进度，world
+结束后仍可读取最后发布的值。已持有一份快照的 reader 在该值被替换后仍可继续使用它。
 
-流 reader 持有自己的队列：每 tick `pump` 一次，把期间到达的值折成这一 tick 的批次，
-`with_batch` 读取它。tick 比生产者慢的 reader 仍会按顺序看到每一个事件，而且一个
-reader 的节奏拖不垮另一个。碰撞、序列结束需要的就是这个；输入也是这样到达 world 的：
-`InputWriter` 就是生产者不是 world 而是窗口的一条流。
+流 reader 用 `pump` 把排队的事件移入下一批，再用 `with_batch` 按序读取。容量耗尽的
+reader 停止接收新事件，读完已入队的事件后，`pump` 报告 `Overflow`。正常关闭和失败
+也先排空队列。慢 reader 不会阻塞生产者或其他 reader。平台输入有独立的本地收件箱，
+消费者暂停时不会丢弃释放和失焦事件。
 
 不订阅就什么都不收集，而订阅的寿命与 reader 相同：最后一个 reader 克隆被丢弃后，
 收集闭包会在下一 tick 被清除。订阅本身是一个 job，因此队列已满时它按队列自身的
 错误被拒绝；world 跑了安装却够不到自己的 outlet 时，报的是 `InstallError::Outlet`。
+
+## 时间域
+
+world tick 接收 `FrameDelta`；零值仍运行一轮，但不增加帧经过时间。`SimulationDelta`
+记录定步长的时间欠账；物理 world 的 `SimulationTime` 只在完成一步后推进。
+`AudioSampleTime` 以采样帧计数，而不是以交错声道的样本数计数。`AnimationTime` 表示片段
+自身时间轴上的位置，即使帧时间不动也可以采样。以秒为输入的构造函数把负数与非有限值视为零。
+这些时钟都不推进 `WallTimeout`；后者衡量单调时钟经过的时间。
 
 ## 线程与步进
 
