@@ -1,4 +1,4 @@
-//! End-to-end GPU tests for [`BlitSource`], a frame source that copies one
+//! End-to-end GPU tests for [`BlitSource`], a draw source that copies one
 //! world texture onto the frame's target.
 //!
 //! The blit reads its view and sampler out of the frame's resource graph, so
@@ -94,7 +94,7 @@ fn blit_world_from(
     let gpu = TestGpu::frame_only(&mut world, ctx);
     let texture = solid_texture(&ctx.device, &ctx.queue, format, rgba);
     let (_, view) = gpu.register_texture(&world, texture);
-    let source = gpu.spawn_source(&mut world, FrameSourceOrder::MESH, BlitSource::new(view));
+    let source = gpu.spawn_source(&mut world, SourceOrder::MESH, BlitSource::new(view));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target, source)
 }

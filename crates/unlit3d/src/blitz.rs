@@ -1,4 +1,4 @@
-//! A Blitz page, painted as a frame source.
+//! A Blitz page, painted as a draw source.
 //!
 //! [`BlitzSource`] draws the [`BlitzDocument`] its scope carries: `blitz-dom` lays
 //! the page out, `blitz-paint` records what it painted, and Vello's GPU backend
@@ -38,7 +38,7 @@
 //!     ResourceGraph::new(),
 //! );
 //!
-//! let source = world.root_scope_mut().spawn(bundle![Source::new(FrameSourceOrder::BLITZ, BlitzSource::new())]);
+//! let source = world.root_scope_mut().spawn(bundle![Source::new(SourceOrder::BLITZ, BlitzSource::new())]);
 //! world.scope_mut(source).spawn(bundle![
 //!     BlitzDocument::new("<body style=\"background: #204060\"><p>hello</p></body>"),
 //! ]);
@@ -50,12 +50,11 @@ use blitz_traits::shell::{ColorScheme, ShellProvider as _, Viewport};
 use unlit_ecs::{Entity, Scope};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawOrder, Scene};
-use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::input::{InputBaseline, InputEvent, InputEvents, InputState};
-use crate::pass::PassInfo;
 use crate::screen::ScreenBlit;
-use crate::source::{FrameSource, RenderContext};
+use crate::source::{SceneBuild, SceneSource};
+use crate::target::{FrameId, RenderTargetId};
 
 mod document;
 mod events;
@@ -100,22 +99,22 @@ pub struct BlitzSource {
     /// The state the copied batch was queued against, copied out beside it for
     /// the same reason. Kept between frames to be reused.
     start: InputBaseline,
-    /// One uploaded texture and one rasterizer per surface and size the page is
+    /// One uploaded texture and one rasterizer per target and size the page is
     /// drawn at.
     targets: Vec<TextureTarget>,
     /// The frame the targets were last used in.
-    frame: u32,
+    frame: FrameId,
     /// Whether the world was focused on the last frame this source was built.
     focused: bool,
     /// The composite the page reaches the frame through.
     screen: ScreenBlit,
 }
 
-/// A page's pixels uploaded for one surface, at one size.
+/// A page's pixels uploaded for one target, at one size.
 ///
-/// The surface and the size say which texture a page's pixels go into; the
+/// The target and the size say which texture a page's pixels go into; the
 /// generation says which page they hold. A target is reused for as long as the
-/// frame keeps drawing at that surface and size, and one that no frame has drawn
+/// frame keeps drawing at that target and size, and one that no frame has drawn
 /// for two frames is dropped.
 ///
 /// The rasterizer is the target's rather than the source's, so a page drawn into
@@ -124,8 +123,8 @@ pub struct BlitzSource {
 /// frame and at another on the next would otherwise be laid out again on every
 /// frame.
 struct TextureTarget {
-    /// The surface the texture has to match.
-    key: SurfaceKey,
+    /// The target the texture is composed into.
+    id: RenderTargetId,
     /// The size the texture was created at.
     size: (u32, u32),
     /// The drawing commands of the page, and what rasterizes them.
@@ -136,7 +135,7 @@ struct TextureTarget {
     /// keeps alive through this handle for as long as the target lists it.
     view: ResHandle<TextureView>,
     /// The last frame this target was drawn in.
-    frame: u32,
+    frame: FrameId,
     /// The generation of the page uploaded into it, or `None` while it holds
     /// nothing.
     ///
@@ -158,7 +157,7 @@ impl BlitzSource {
             batch: Vec::new(),
             start: InputBaseline::default(),
             targets: Vec::new(),
-            frame: 0,
+            frame: FrameId::default(),
             focused: true,
             screen: ScreenBlit::new(DrawOrder::After),
         }
@@ -171,15 +170,15 @@ impl Default for BlitzSource {
     }
 }
 
-impl FrameSource for BlitzSource {
-    fn build_scene(
-        &mut self,
-        scope: &Scope<'_>,
-        ctx: RenderContext,
-        info: PassInfo,
-        scene: &mut Scene,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+impl SceneSource for BlitzSource {
+    fn build(&mut self, build: SceneBuild<'_>, scene: &mut Scene) {
+        let SceneBuild {
+            scope,
+            ctx,
+            info,
+            encoder,
+        } = build;
+        let scope = &scope;
         // The graph settles on every way out of this build: the uploads and the
         // composite's own nodes are registered here and realised at the end of
         // the scope.
@@ -305,23 +304,23 @@ impl FrameSource for BlitzSource {
         // repaint.
         let mut repaint = shell.take_redraw();
 
-        // A target is kept for the surface and the size it is drawn at, and one
+        // A target is kept for the target and the size it is drawn at, and one
         // that no frame has drawn for two frames is dropped, which leaves the
         // graph to reclaim its resources once the last handle is gone. The
         // rasterizer and the buffer it paints into live with the target, so a
         // page drawn at two sizes lays each of them out once rather than laying
         // the page out again on every frame that switches between them.
-        let frame = ctx.clock(scope).map(|clock| clock.index).unwrap_or(0);
+        let frame = info.frame;
         if self.frame != frame {
             self.frame = frame;
-            self.targets.retain(|target| target.frame + 1 >= frame);
+            self.targets.retain(|target| target.frame.0 + 1 >= frame.0);
         }
 
         let mut graph = ctx.graph(scope);
         let index = match self
             .targets
             .iter()
-            .position(|target| target.key == info.surface && target.size == size)
+            .position(|target| target.id == info.target && target.size == size)
         {
             Some(index) => index,
             None => {
@@ -351,7 +350,7 @@ impl FrameSource for BlitzSource {
                 // target only has to hold the view.
                 graph.add_dependency(&view, &texture);
                 self.targets.push(TextureTarget {
-                    key: info.surface,
+                    id: info.target,
                     size,
                     painter: Painter::new(&device, &queue, size),
                     view,

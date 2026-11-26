@@ -2,9 +2,9 @@
 //! document, and the callbacks that watch what Blitz dispatches.
 
 use super::{
-    Arc, BlitzDocument, BlitzSource, Code, Ctx, FramePassOrder, FrameSourceOrder, ImeEvent,
-    ImeKind, InputEvent, Key, KeyEvent, KeyLocation, Location, Modifiers, MouseEvent, Mutex,
-    OnBlitzEvent, Pass, PointerAction, PointerEvent, PointerKind, Seen, Source, TestGpu, TextEvent,
+    Arc, BlitzDocument, BlitzSource, Code, Ctx, FramePassOrder, ImeEvent, ImeKind, InputEvent, Key,
+    KeyEvent, KeyLocation, Location, Modifiers, MouseEvent, Mutex, OnBlitzEvent, Pass,
+    PointerAction, PointerEvent, PointerKind, Seen, Source, SourceOrder, TestGpu, TextEvent,
     TouchPhase, WheelUnit, World, bind_target, bundle, click, feed, pixel, pointer_payload,
     refresh_input, render_page, render_watched_page, spawn_input,
 };
@@ -61,10 +61,9 @@ pub(super) async fn one_tick_reaches_a_shared_page_once() {
         <div id="target" style="position: absolute; left: 0; top: 0; width: 64px; height: 64px">
         </div>
     </body></html>"#;
-    let source = world.scope_mut(nested).spawn(bundle![Source::new(
-        FrameSourceOrder::BLITZ,
-        BlitzSource::new()
-    )]);
+    let source = world
+        .scope_mut(nested)
+        .spawn(bundle![Source::new(SourceOrder::BLITZ, BlitzSource::new())]);
     world.scope_mut(source).spawn(bundle![
         BlitzDocument::new(html),
         OnBlitzEvent::new(move |_scope, _entity, event| {

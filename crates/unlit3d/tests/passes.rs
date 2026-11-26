@@ -6,7 +6,7 @@
 //! each. These tests exercise that from the outside: what ends up in each
 //! target, which sources are built at all, and what a shared source draws into.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::common::{COLOR_FORMAT, Ctx, HEIGHT, TestGpu, WIDTH};
@@ -63,14 +63,16 @@ fn solid_texture(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> w
     texture
 }
 
-/// Bind a fresh offscreen target to `pass`, and return the colour texture.
+/// Bind one fresh offscreen target to every pass in `passes`, and return the
+/// colour texture.
 ///
 /// [`TestGpu`] binds its own pass; a frame with several passes has to say which
-/// one it means.
-fn bind_target(
+/// one it means. Binding one target to more than one pass is how a test of
+/// pass identity keeps the target out of the difference.
+fn bind_shared_target(
     gpu: &TestGpu,
     world: &World,
-    pass: Entity,
+    passes: &[Entity],
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
@@ -83,17 +85,29 @@ fn bind_target(
     let attachments = FrameAttachments::new(
         world,
         gpu.context,
-        COLOR_FORMAT,
-        (WIDTH, HEIGHT),
-        samples,
-        with_depth,
-        false,
+        AttachmentDesc {
+            format: COLOR_FORMAT,
+            size: (WIDTH, HEIGHT),
+            sample_count: samples,
+            depth: with_depth.then_some(DepthAttachment::Transient),
+        },
     );
-    {
-        let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
-        pass.get().set_attachments(&attachments, color_view);
+    for &pass in passes {
+        let mut row = world.root_scope().query_one::<&mut FramePass>(pass);
+        row.get().set_attachments(&attachments, color_view.clone());
     }
     color
+}
+
+/// Bind a fresh offscreen target to `pass`, and return the colour texture.
+fn bind_target(
+    gpu: &TestGpu,
+    world: &World,
+    pass: Entity,
+    samples: u32,
+    with_depth: bool,
+) -> wgpu::Texture {
+    bind_shared_target(gpu, world, &[pass], samples, with_depth)
 }
 
 /// The RGBA of `target`'s centre pixel.
@@ -123,7 +137,7 @@ struct CountingSource {
     builds: Rc<Cell<u32>>,
 }
 
-impl FrameSource for CountingSource {
+impl DrawSource for CountingSource {
     fn build_scene(
         &mut self,
         _scope: &Scope<'_>,
@@ -154,12 +168,12 @@ async fn two_passes_draw_their_own_sources() {
 
     let texture = solid_texture(&ctx.device, &ctx.queue, FIRST);
     let (_, view) = gpu.register_texture(&world, texture);
-    gpu.spawn_source(&mut world, FrameSourceOrder::MESH, BlitSource::new(view));
+    gpu.spawn_source(&mut world, SourceOrder::MESH, BlitSource::new(view));
 
     let texture = solid_texture(&ctx.device, &ctx.queue, SECOND);
     let (_, view) = gpu.register_texture(&world, texture);
     world.scope_mut(second_pass).spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         BlitSource::new(view)
     )]);
 
@@ -190,7 +204,7 @@ async fn a_nested_source_is_built_by_every_pass_above_it() {
 
     let nested_builds = Rc::new(Cell::new(0));
     world.scope_mut(nested_pass).spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         CountingSource {
             builds: nested_builds.clone(),
         }
@@ -198,7 +212,7 @@ async fn a_nested_source_is_built_by_every_pass_above_it() {
 
     let sibling_builds = Rc::new(Cell::new(0));
     world.scope_mut(outer_pass).spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         CountingSource {
             builds: sibling_builds.clone(),
         }
@@ -227,7 +241,7 @@ async fn a_source_no_pass_reaches_draws_nowhere() {
 
     let builds = Rc::new(Cell::new(0));
     world.root_scope_mut().spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         CountingSource {
             builds: builds.clone(),
         }
@@ -282,7 +296,7 @@ async fn a_parked_pass_draws_nothing() {
     let texture = solid_texture(&ctx.device, &ctx.queue, COLOR);
     let (_, view) = gpu.register_texture(&world, texture);
     world.scope_mut(pass_b).spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         BlitSource::new(view)
     )]);
 
@@ -321,7 +335,7 @@ async fn a_shared_source_draws_into_every_pass() {
     let (_, view) = gpu.register_texture(&world, texture);
     let shared = world.shared();
     world.scope_mut(shared).spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         BlitSource::new(view)
     )]);
 
@@ -339,10 +353,240 @@ async fn a_shared_source_draws_into_every_pass() {
     );
 }
 
+/// What one build of a source was told about where it draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    pass: PassId,
+    target: RenderTargetId,
+    frame: FrameId,
+    size: (u32, u32),
+}
+
+/// A source that records what each build was told, and draws nothing.
+///
+/// A build's context is not visible in the pixels, so a source is the only
+/// place a test can read it.
+struct RecordingSource {
+    seen: Rc<RefCell<Vec<Seen>>>,
+}
+
+impl SceneSource for RecordingSource {
+    fn build(&mut self, build: SceneBuild<'_>, _scene: &mut Scene) {
+        let SceneBuild { info, .. } = build;
+        self.seen.borrow_mut().push(Seen {
+            pass: info.pass,
+            target: info.target,
+            frame: info.frame,
+            size: (info.width, info.height),
+        });
+    }
+}
+
+/// A source in the shared subtree is built once per pass, and each build names
+/// its own pass, the target it draws into, and the frame it belongs to.
+async fn a_build_is_told_the_pass_target_and_frame_it_belongs_to() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let first_pass = gpu.pass();
+    let root = world.root_scope().entity();
+    let second_pass = spawn_pass(&mut world, root, 1);
+    // One target for both passes: the two builds then differ in the pass they
+    // name and nothing else.
+    let shared_target = bind_shared_target(&gpu, &world, &[first_pass, second_pass], 1, false);
+
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let shared = world.shared();
+    world.scope_mut(shared).spawn(bundle![Source::new(
+        SourceOrder::MESH,
+        RecordingSource { seen: seen.clone() }
+    )]);
+
+    gpu.render(&world);
+    let first_frame = seen.borrow().clone();
+    assert_eq!(
+        first_frame.len(),
+        2,
+        "a source the shared subtree places under both passes is built once per pass"
+    );
+    assert_ne!(
+        first_frame[0].pass, first_frame[1].pass,
+        "each build names the pass that reached it"
+    );
+    assert_eq!(
+        first_frame[0].target, first_frame[1].target,
+        "both passes draw into the one bound target, so both builds name it"
+    );
+    assert_eq!(
+        first_frame[0].frame, first_frame[1].frame,
+        "one frame builds every source, so the builds share a frame id"
+    );
+
+    // The same passes, one frame later: the frame id moves and the identities
+    // of the pass and the target do not. The clock belongs to the frame loop,
+    // and a test drives it by hand the way `dispatch_frame` does.
+    world
+        .root_scope()
+        .query::<&mut FrameClock>()
+        .iter()
+        .for_each(|clock| clock.advance(1.0 / 60.0, 1));
+    gpu.render(&world);
+    let second_frame = seen.borrow()[2..].to_vec();
+    assert_eq!(second_frame.len(), 2);
+    assert_ne!(
+        second_frame[0].frame, first_frame[0].frame,
+        "a later frame is a different frame"
+    );
+    assert_eq!(
+        second_frame[0].pass, first_frame[0].pass,
+        "the pass keeps its identity across frames"
+    );
+    assert_eq!(
+        second_frame[0].target, first_frame[0].target,
+        "the target keeps its identity across frames"
+    );
+    assert!(
+        second_frame.iter().all(|seen| seen.size == (WIDTH, HEIGHT)),
+        "a build learns the size of the target it draws into, got {second_frame:?}"
+    );
+
+    // A pass bound to another target names that one, so a source keying
+    // per-target state tells the two targets apart.
+    let other_target = bind_target(&gpu, &world, second_pass, 1, false);
+    let _ = other_target;
+    seen.borrow_mut().clear();
+    gpu.render(&world);
+    let moved = seen.borrow().clone();
+    assert_eq!(moved.len(), 2);
+    assert_ne!(
+        moved[0].target, moved[1].target,
+        "the rebound pass draws into its own target, which is not the shared one"
+    );
+    assert_eq!(
+        moved
+            .iter()
+            .filter(|seen| seen.target == first_frame[0].target)
+            .count(),
+        1,
+        "only the pass still bound to the shared target names it, got {moved:?}"
+    );
+    assert_ne!(shared_target, other_target);
+}
+
+/// A target applies its own size policy, so every caller states the size it
+/// knows rather than having to resolve it first.
+async fn a_target_applies_its_size_policy_to_the_size_it_is_told() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let device = gpu
+        .context
+        .device(&world.root_scope())
+        .expect("the context's device");
+    let target = PersistentTarget::bind(
+        &world,
+        gpu.context,
+        gpu.pass(),
+        &device,
+        (WIDTH, HEIGHT),
+        TargetConfig {
+            samples: 1,
+            depth: None,
+            size: IntermediateSize::Scale(0.5),
+            ..TargetConfig::default()
+        },
+    )
+    .expect("the pass entity exists");
+
+    assert_eq!(
+        target.size(&world),
+        Some((WIDTH / 2, HEIGHT / 2)),
+        "the scale policy halves what the caller reports"
+    );
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&FramePass>(gpu.pass())
+            .get()
+            .target_size(&world),
+        Some((WIDTH / 2, HEIGHT / 2)),
+        "the pass reads its own colour attachment, so it cannot disagree with the target"
+    );
+}
+
+/// A resize leaves one size behind: the target, its attachments and the pass
+/// all report the new one, and the next build sees it.
+async fn a_resize_leaves_one_size_behind() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let device = gpu
+        .context
+        .device(&world.root_scope())
+        .expect("the context's device");
+    let pass = gpu.pass();
+    let mut target = PersistentTarget::bind(
+        &world,
+        gpu.context,
+        pass,
+        &device,
+        (WIDTH, HEIGHT),
+        TargetConfig {
+            samples: 1,
+            depth: Some(DepthAttachment::Transient),
+            ..TargetConfig::default()
+        },
+    )
+    .expect("the pass entity exists");
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    world.scope_mut(pass).spawn(bundle![Source::new(
+        SourceOrder::MESH,
+        RecordingSource { seen: seen.clone() }
+    )]);
+
+    gpu.render(&world);
+    assert_eq!(
+        seen.borrow().last().map(|seen| seen.size),
+        Some((WIDTH, HEIGHT)),
+        "the first build sees the size the target was bound at"
+    );
+
+    let resized = (WIDTH / 2, HEIGHT / 2);
+    target
+        .resize(&world, &device, resized)
+        .expect("the pass entity exists");
+    assert_eq!(
+        target.size(&world),
+        Some(resized),
+        "the target reports the size its texture is allocated at"
+    );
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&FramePass>(pass)
+            .get()
+            .target_size(&world),
+        Some(resized),
+        "the pass reads the attachment it draws into, so a resize cannot leave it behind"
+    );
+
+    seen.borrow_mut().clear();
+    gpu.render(&world);
+    let after = seen.borrow().clone();
+    assert_eq!(
+        after.first().map(|seen| seen.size),
+        Some(resized),
+        "the next build is told the resized target, got {after:?}"
+    );
+}
+
 // This file's share of the suite's registry: the suite root concatenates
 // it with its siblings', and `gpu_test_main!` there runs the result under
 // `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
+    a_build_is_told_the_pass_target_and_frame_it_belongs_to,
+    a_target_applies_its_size_policy_to_the_size_it_is_told,
+    a_resize_leaves_one_size_behind,
     two_passes_draw_their_own_sources,
     a_nested_source_is_built_by_every_pass_above_it,
     a_source_no_pass_reaches_draws_nowhere,

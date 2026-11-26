@@ -368,7 +368,7 @@ async fn a_source_draws_only_its_own_subtree() {
     // A second source beside the first, both children of the frame's pass.
     let mut second_source = MeshSource::new(&world.root_scope(), gpu.context);
     second_source.register_lit_family(&world.root_scope());
-    let second = gpu.spawn_source(&mut world, FrameSourceOrder::MESH, second_source);
+    let second = gpu.spawn_source(&mut world, SourceOrder::MESH, second_source);
 
     // One cube per source, each with the camera that frames it.
     let near = gpu.allocate_cube_mesh(&world);

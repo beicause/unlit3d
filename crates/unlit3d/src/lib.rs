@@ -68,9 +68,10 @@ pub mod reflect;
 pub mod relay;
 pub mod renderer;
 pub mod scene;
-/// The fullscreen composite a frame source shows one texture with.
+/// The fullscreen composite a draw source shows one texture with.
 mod screen;
 pub mod source;
+pub mod target;
 #[cfg(feature = "winit")]
 #[cfg_attr(docsrs, doc(cfg(feature = "winit")))]
 pub mod winit;
@@ -100,7 +101,7 @@ pub mod prelude {
         pump_presented_with, resize_presented, setup_presenter,
     };
     pub use crate::{
-        attachments::FrameAttachments,
+        attachments::{AttachmentDesc, DepthAttachment, FrameAttachments},
         blit::BlitSource,
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
@@ -132,9 +133,10 @@ pub mod prelude {
         relay::{Snapshot, SnapshotReader, Stream, StreamReader},
         renderer::Renderer,
         source::{
-            FrameSource, FrameSourceOrder, MaintainScope, OpenUrl, OpenUrls, RenderContext, Source,
-            WrongSourceType, drain_open_urls, spawn_context,
+            DrawSource, MaintainScope, OpenUrl, OpenUrls, RenderContext, SceneBuild, SceneSource,
+            Source, SourceOrder, WrongSourceType, drain_open_urls, spawn_context,
         },
+        target::{FrameId, PassId, RenderTargetId},
     };
     pub use unlit_ecs::prelude::*;
     pub use unlit_ecs::{Command, Commands};

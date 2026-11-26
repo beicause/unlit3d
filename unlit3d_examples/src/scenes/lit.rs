@@ -195,7 +195,7 @@ fn build(
 
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     let mut floor = grid(
         glam::Vec3::new(0.0, 0.0, FLOOR.2 - FLOOR.0 * 0.5),

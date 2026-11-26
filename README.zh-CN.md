@@ -28,7 +28,7 @@ ECS 层。内置 **Lambert** 管线，提供由平行光、点光、聚光与多
   索引；而具备完整基线的设备仍走 storage buffer 与整缓冲绑定，不额外增加 pass 状态
   切换。走哪条路由适配器自身的 downlevel 能力决定，而非编译期 feature。
 - **由调用者组合的场景。** 一帧是一串 pass，每个 pass 都是普通实体，携带自己绘入的
-  view；每个 pass 录制其下的帧源，这些帧源各自贡献绘制并声明自己在该 pass 中的位置。
+  view；每个 pass 录制其下的绘制源，这些绘制源各自贡献绘制并声明自己在该 pass 中的位置。
   内置网格渲染、egui 叠加层与调用者自己的源权限完全相同。
 - **精简的 ECS。** 借鉴 OOP 重视对象状态，实体原型不可变，系统由外部驱动而非内置，
   行为是持有闭包的组件而非 system，参见 [unlit_ecs](./crates/unlit_ecs/README.zh-CN.md)。
@@ -65,7 +65,7 @@ ECS 层。内置 **Lambert** 管线，提供由平行光、点光、聚光与多
 | Crate | 职责 |
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 lit 管线、egui 后端。不认识 ECS。 |
-| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、egui 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、绘制源、输入、egui 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 或 HTTP 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_suite.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
@@ -83,7 +83,7 @@ ECS 层。内置 **Lambert** 管线，提供由平行光、点光、聚光与多
 其余条目仍可通过各自的 crate 路径访问。
 
 两条原则决定了这种分层：**内置管线不享有特权**，它由调用者自建管线所用的同一批公开
-设施组合而成；**帧源彼此平等**，内置网格源与调用者自己的绘制趟次没有任何差别。
+设施组合而成；**绘制源彼此平等**，内置网格源与调用者自己的绘制趟次没有任何差别。
 
 各 crate 的 README 记述它自己那部分的设计取舍：
 [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) 讲资源图、声明式场景、管线特化与

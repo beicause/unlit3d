@@ -53,7 +53,7 @@ fn build(
     let key = LitPipelineKey::new(default_options());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));

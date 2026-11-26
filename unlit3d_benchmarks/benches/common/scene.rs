@@ -129,6 +129,15 @@ impl Frame {
         // benchmark drives the source directly, so it states this itself
         // rather than spawning a pass for a renderer to find.
         let info = PassInfo {
+            pass: PassId {
+                world: world.id(),
+                entity: unlit_ecs::Entity::from_bits(0),
+            },
+            target: RenderTargetId {
+                world: world.id(),
+                color: unlit_wgpu::resources::ResId::from_bits(0),
+            },
+            frame: FrameId::default(),
             surface: SURFACE,
             width: 256,
             height: 192,

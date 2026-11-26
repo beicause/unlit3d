@@ -26,7 +26,7 @@ let renderer = world.root_scope_mut().spawn(Renderer::new(ctx));
 let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
 let source = world
     .scope_mut(pass)
-    .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
+    .spawn(bundle![Source::new(SourceOrder::MESH, mesh_source)]);
 
 // 相机与渲染实体都挂在 source 自己的子树里。
 world.scope_mut(source).spawn(bundle![camera]);
@@ -34,7 +34,16 @@ world.scope_mut(source)
     .spawn(bundle![Transform::default(), mesh, material, GpuRenderPipeline::new(key)]);
 
 // 每帧：先给 pass 挂附件，再让 renderer 录一次。
-let attachments = FrameAttachments::new(&world, ctx, format, size, 1, true);
+let attachments = FrameAttachments::new(
+    &world,
+    ctx,
+    AttachmentDesc {
+        format,
+        size,
+        sample_count: 1,
+        depth: Some(DepthAttachment::Transient),
+    },
+);
 world.root_scope().query_one::<&mut FramePass>(pass)
     .get().set_attachments(&attachments, color_view);
 world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
@@ -64,7 +73,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 
 每实例组件都是**具名字段结构体**：`InstanceColor { color }` / `InstanceCutoff { cutoff }` / `InstanceHullWidth { width }` / `InstanceVisibility { visible }`；前三个有 `new(..)`，四个都有 `Default`（`InstanceVisibility` 没有 `new`，用 `InstanceVisibility { visible: false }`）。写成 `InstanceColor(Vec4::ONE)` 编不过。
 
-不假设顶点布局：通用版 `allocate_mesh` 接受你自定的 `MeshDescriptor`（`indexing` 用 `MeshIndexing::NonIndexed`/`Indexed` 表达，返回 `Result<GpuMesh, MeshError>`）。`LitOptions` 是**纯策略**（剔除、深度测试与写入、混合、写掩码、着色开关）；顶点通道有无、是否带材质、是否 morph，是 family 在解析 draw 时自己折叠进 `LitVariant` 的事实。颜色格式、采样数、有没有深度附件由这一帧的 `SurfaceKey` 决定，**不**写在 `LitOptions` 里。
+不假设顶点布局：通用版 `allocate_mesh` 接受你自定的 `MeshDescriptor`（`indexing` 用 `MeshIndexing::NonIndexed`/`Indexed` 表达，返回 `Result<GpuMesh, MeshError>`）。`LitOptions` 是**纯策略**（剔除、深度测试与写入、混合、写掩码、着色开关）；顶点通道有无、是否带材质、是否 morph，是 family 在解析 draw 时自己折叠进 `LitVariant` 的事实。颜色格式、采样数、有没有深度附件由这一帧的目标决定（`PassInfo::surface` 是 `SurfaceKey`，它只是管线特化键；按目标缓存状态要用 `PassInfo::target`），**不**写在 `LitOptions` 里。
 
 ## 管线与渲染目标
 
@@ -105,7 +114,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 ```rust
 let ui = world
     .root_scope_mut()
-    .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
+    .spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
 world.scope_mut(ui).spawn(bundle![EguiPanel::new(|_scope, _entity, ui| {
     ui.label("hello");
 })]);

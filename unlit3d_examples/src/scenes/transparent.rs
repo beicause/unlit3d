@@ -113,7 +113,7 @@ fn build(
 
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
 

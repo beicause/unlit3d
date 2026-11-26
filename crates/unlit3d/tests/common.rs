@@ -47,7 +47,7 @@ impl TestGpu {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(&world.root_scope(), test.context);
         source.register_lit_family(&world.root_scope());
-        test.source = Some(test.spawn_source(world, FrameSourceOrder::MESH, source));
+        test.source = Some(test.spawn_source(world, SourceOrder::MESH, source));
         test
     }
 
@@ -58,8 +58,8 @@ impl TestGpu {
     pub fn spawn_source(
         &self,
         world: &mut World,
-        order: FrameSourceOrder,
-        source: impl FrameSource,
+        order: SourceOrder,
+        source: impl DrawSource,
     ) -> Entity {
         world
             .scope_mut(self.pass)
@@ -399,7 +399,7 @@ impl TestGpu {
             TargetConfig {
                 format: COLOR_FORMAT,
                 samples,
-                with_depth,
+                depth: with_depth.then_some(DepthAttachment::Transient),
                 ..TargetConfig::default()
             },
         )

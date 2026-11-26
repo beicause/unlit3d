@@ -3,14 +3,14 @@
 //! A window presents through a swap chain, which the frame's own attachment
 //! helpers do not cover: every frame hands out a new color image, and the
 //! attachments the frame draws with have to match the window's size.
-//! [`WindowSurface`] owns the surface and its configuration, keeps the frame's
-//! color image registered in the frame's resource graph, and hands it back from
-//! [`WindowSurface::acquire_for`], which parks the pass that states the frame's
-//! attachments around the acquire. The depth and multisample attachments belong
-//! to the caller — see [`FrameAttachments`]
-//! — and a stated attachment spans only the render that consumes it: the frame
-//! loop below states and gives up the attachments through the two methods, and
-//! presenting the frame destroys the swap-chain view the pass stated.
+//! [`WindowSurface`] owns the surface and its configuration and keeps the
+//! frame's color image registered in the frame's resource graph, one id for the
+//! surface's whole life, so a resize replaces the view in place. The depth and
+//! multisample attachments belong to the caller — see [`FrameAttachments`] —
+//! and a stated attachment spans only the render that consumes it: the frame
+//! loop below states and gives up the attachments through the surface's own
+//! acquire and the frame's present, and presenting the frame destroys the
+//! swap-chain view the pass stated.
 //!
 //! The caller creates the `wgpu::Surface` itself, because the adapter has to
 //! be requested with it as the compatible surface. That request is async —
@@ -20,7 +20,7 @@
 //! ```rust
 //! use std::sync::Arc;
 //!
-//! use unlit3d::attachments::FrameAttachments;
+//! use unlit3d::attachments::{AttachmentDesc, DepthAttachment, FrameAttachments};
 //! use unlit3d::prelude::*;
 //! use unlit3d::winit::WindowSurface;
 //! use winit::window::Window;
@@ -59,20 +59,21 @@
 //! let attachments = FrameAttachments::new(
 //!     world,
 //!     context,
-//!     window_surface.color_format(),
-//!     window_surface.size(),
-//!     4,
-//!     true,
-//!     false,
+//!     AttachmentDesc {
+//!         format: window_surface.color_format(),
+//!         size: window_surface.size(),
+//!         sample_count: 4,
+//!         depth: Some(DepthAttachment::Transient),
+//!     },
 //! );
 //! (window_surface, attachments)
 //! # }
 //! ```
 //!
-//! and the frame loop then only has to acquire and present through the pass:
-//! [`WindowSurface::acquire_for`] parks the pass and attaches the acquired
-//! image for its render, and [`Frame::present_and_park`] presents the frame
-//! and parks the pass again:
+//! and a frame loop then only has to acquire, render and present: acquiring
+//! hands out the frame's image, the loop states it on the pass with the
+//! frame's attachments, and [`Frame::present_and_park`] presents the frame and
+//! parks the pass again:
 //!
 //! ```rust
 //! # use unlit3d::attachments::FrameAttachments;
@@ -87,17 +88,20 @@
 //! #     attachments: &FrameAttachments,
 //! # ) {
 //! let root = world.root_scope();
-//! let Some(frame) = window_surface.acquire_for(
-//!     world,
-//!     renderer_entity,
-//!     pass,
-//!     Some(attachments),
-//! ) else {
-//!     // The pass stays parked: nothing records into a swap-chain image
-//!     // that is gone or was never acquired.
+//! let Some(frame) = root
+//!     .try_query_one::<&mut Renderer>(renderer_entity)
+//!     .ok()
+//!     .and_then(|mut renderer| window_surface.acquire(world, renderer.get()))
+//! else {
+//!     // Nothing records into a swap-chain image that is gone or was never
+//!     // acquired.
 //!     return;
 //! };
 //! // The region the content is drawn into belongs to the caller.
+//! root.try_query_one::<&mut FramePass>(pass)
+//!     .unwrap()
+//!     .get()
+//!     .set_attachments(attachments, frame.color_view().clone());
 //! root.try_query_one::<&mut Renderer>(renderer_entity)
 //!     .map(|mut renderer| renderer.get().render(world))
 //!     .unwrap();
@@ -110,7 +114,6 @@ use std::sync::Arc;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
-use crate::attachments::FrameAttachments;
 use crate::pass::FramePass;
 use crate::renderer::Renderer;
 
@@ -156,10 +159,8 @@ impl Default for SurfaceOptions {
 ///
 /// The surface is configured for the window's current size and keeps the
 /// frame's color image registered in the frame's resource graph.
-/// [`Self::acquire_for`] hands a frame to a pass — parking the pass around
-/// the acquire and stating the frame's color view with the pass's own depth
-/// and multisample attachments, see
-/// [`FrameAttachments`] — and
+/// A pass states that view as its color attachment together with the frame's
+/// depth and multisample attachments — see [`FrameAttachments`] — and
 /// [`Frame::present_and_park`] presents the frame and parks the pass again.
 /// [`Self::resize`] keeps the surface in step with the window.
 ///
@@ -350,8 +351,9 @@ impl WindowSurface {
     /// color view as its render target, together with whatever depth and
     /// multisample attachments it draws with.
     ///
-    /// A frame loop usually wants [`Self::acquire_for`], which parks the
-    /// stating pass around this call and states the frame's attachments on it.
+    /// The loop parks the pass before calling this and states the frame's
+    /// attachments on it afterwards, so no frame records into an image that is
+    /// gone.
     pub fn acquire(&mut self, world: &World, renderer: &mut Renderer) -> Option<Frame> {
         let device = renderer
             .context()
@@ -410,51 +412,6 @@ impl WindowSurface {
             surface_texture,
             color_view: color,
         })
-    }
-
-    /// Acquire the next frame for a pass and state the frame's attachments on
-    /// it.
-    ///
-    /// This is a frame loop's whole acquire step: the pass is parked, the
-    /// next frame is acquired through its renderer, and the pass takes the
-    /// frame's color view along with `attachments` when they are given.
-    /// Without attachments the pass stays parked and the frame comes back
-    /// with nothing stated on it — a loop that lost its attachments presents
-    /// it empty rather than stale. A `None` — the window is occluded or
-    /// minimized, or the swap chain had to be reconfigured — leaves the pass
-    /// parked, so a frame rendered while the loop is between presents skips
-    /// the pass rather than recording into a swap-chain image that is gone.
-    ///
-    /// Pair the frame with [`Frame::present_and_park`], which presents it
-    /// and parks the pass again.
-    ///
-    /// # Panics
-    ///
-    /// If `renderer` does not name a [`Renderer`], or — with
-    /// `attachments` — if `pass` does not name a [`FramePass`].
-    pub fn acquire_for(
-        &mut self,
-        world: &World,
-        renderer: Entity,
-        pass: Entity,
-        attachments: Option<&FrameAttachments>,
-    ) -> Option<Frame> {
-        let _ = world
-            .root_scope()
-            .try_query_one::<&mut FramePass>(pass)
-            .map(|mut pass| pass.get().park());
-        let mut renderer_row = world.root_scope().query_one::<&mut Renderer>(renderer);
-        let Some(frame) = self.acquire(world, &mut *renderer_row.get()) else {
-            // The acquire failed, so the pass stays parked: nothing records
-            // into a swap-chain image that is gone or was never acquired.
-            return None;
-        };
-        if let Some(attachments) = attachments {
-            let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
-            pass.get()
-                .set_attachments(attachments, frame.color_view().clone());
-        }
-        Some(frame)
     }
 
     /// Rebuild the surface from the window after the swap chain was lost.

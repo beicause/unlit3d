@@ -306,7 +306,7 @@ fn built(
 
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     // One smooth sphere, shared by every body and by both of its draws.
     let (positions, normals, indices) = sphere(SLICES, STACKS);
@@ -412,10 +412,9 @@ fn built(
     // The orbit and the armillary rings are washes — blended over the frame
     // and hidden by what stands in front of them — and the ticks are opaque,
     // so one source draws both of the source's ink behaviours.
-    let lines = world.scope_mut(pass).spawn(bundle![Source::new(
-        FrameSourceOrder::LINE,
-        LineSource::new()
-    )]);
+    let lines = world
+        .scope_mut(pass)
+        .spawn(bundle![Source::new(SourceOrder::LINE, LineSource::new())]);
     let mut strokes = orbit();
     strokes.extend(armillary());
     strokes.extend(caps_strokes());

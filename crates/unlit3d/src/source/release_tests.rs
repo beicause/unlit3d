@@ -1,9 +1,21 @@
 use super::*;
 use unlit_wgpu::resources::{ResHandle, Resource as GraphResource};
 
+use crate::target::{FrameId, PassId, RenderTargetId};
+use unlit_wgpu::resources::ResId;
+
 /// A pass's target; these tests never draw, so only the graph matters.
-fn test_info() -> PassInfo {
+fn test_info(world: &World) -> PassInfo {
     PassInfo {
+        pass: PassId {
+            world: world.id(),
+            entity: Entity::from_bits(0),
+        },
+        target: RenderTargetId {
+            world: world.id(),
+            color: ResId::from_bits(0),
+        },
+        frame: FrameId::default(),
         surface: unlit_wgpu::specialize::SurfaceKey {
             color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
             depth_stencil_format: None,
@@ -25,7 +37,7 @@ struct OwningSource {
     node: Option<ResHandle>,
 }
 
-impl FrameSource for OwningSource {
+impl DrawSource for OwningSource {
     fn build_scene(
         &mut self,
         scope: &Scope<'_>,
@@ -55,7 +67,7 @@ struct EarlyReturnSource {
     node: Option<ResHandle>,
 }
 
-impl FrameSource for EarlyReturnSource {
+impl DrawSource for EarlyReturnSource {
     fn build_scene(
         &mut self,
         scope: &Scope<'_>,
@@ -111,7 +123,7 @@ fn build_once(world: &mut World, entity: Entity, ctx: RenderContext) {
                 let scope = world
                     .try_scope(entity)
                     .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
-                source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
+                source.build_scene(&scope, ctx, test_info(world), &mut scene, &mut encoder)
             }
         })
         .unwrap_or_else(|_| panic!("the source entity exists: {entity:?}"));
@@ -146,7 +158,7 @@ fn dropping_a_source_releases_the_nodes_it_owns() {
     let ctx = noop_context(&mut world);
     let base = graph_len(&world, ctx);
     let entity = world.root_scope_mut().spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         OwningSource {
             context: ctx,
             node: None,
@@ -185,7 +197,7 @@ fn removing_a_source_that_owns_nothing_still_removes_it() {
     let ctx = noop_context(&mut world);
     let base = graph_len(&world, ctx);
     let entity = world.root_scope_mut().spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         OwningSource {
             context: ctx,
             node: None,
@@ -211,7 +223,7 @@ fn one_maintain_drops_the_nodes_every_source_gave_up() {
     let mut entities = Vec::new();
     for _ in 0..2 {
         entities.push(world.root_scope_mut().spawn(bundle![Source::new(
-            FrameSourceOrder::MESH,
+            SourceOrder::MESH,
             OwningSource {
                 context: ctx,
                 node: None,
@@ -258,7 +270,7 @@ fn a_build_that_returns_early_still_maintains() {
     let ctx = noop_context(&mut world);
     let base = graph_len(&world, ctx);
     let entity = world.root_scope_mut().spawn(bundle![Source::new(
-        FrameSourceOrder::MESH,
+        SourceOrder::MESH,
         EarlyReturnSource {
             context: ctx,
             node: None,

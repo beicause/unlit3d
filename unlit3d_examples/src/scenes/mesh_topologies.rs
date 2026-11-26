@@ -199,7 +199,7 @@ fn build(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot

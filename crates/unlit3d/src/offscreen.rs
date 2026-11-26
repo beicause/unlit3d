@@ -14,7 +14,7 @@ use unlit_ecs::{Entity, World};
 use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
-use crate::attachments::FrameAttachments;
+use crate::attachments::{AttachmentDesc, DepthAttachment, FrameAttachments};
 use crate::pass::FramePass;
 use crate::source::RenderContext;
 
@@ -45,13 +45,13 @@ pub struct TargetConfig {
     pub format: wgpu::TextureFormat,
     /// The sample count of the color and depth targets.
     pub samples: u32,
-    /// Whether the target carries a depth-stencil attachment.
-    pub with_depth: bool,
-    /// Whether the depth attachment keeps its previous contents readable, so
-    /// a pass on this target may open with [`LoadOp::Load`](wgpu::LoadOp).
-    /// The default clears and discards the depth of every frame, which lets
-    /// the driver skip storing it.
-    pub persistent_depth: bool,
+    /// The target's depth-stencil attachment, or `None` for a target whose
+    /// sources draw without one.
+    ///
+    /// A [`DepthAttachment::Persistent`] keeps the depth readable so a pass
+    /// may open with [`LoadOp::Load`](wgpu::LoadOp); the default discards it
+    /// after every frame, which lets the driver skip storing it.
+    pub depth: Option<DepthAttachment>,
     /// How an intermediate target presented to a window follows its size.
     /// Purely offscreen rendering states an explicit pixel size instead.
     pub size: IntermediateSize,
@@ -72,8 +72,7 @@ impl Default for TargetConfig {
         Self {
             format: OFFSCREEN_FORMAT,
             samples: OFFSCREEN_SAMPLES,
-            with_depth: true,
-            persistent_depth: false,
+            depth: Some(DepthAttachment::Transient),
             size: IntermediateSize::Scale(1.0),
             label: Some(SCENE_COLOR_LABEL),
         }
@@ -97,8 +96,8 @@ pub struct PersistentTarget {
     pub view: ResHandle<TextureView>,
     /// The depth and multisample attachments the frames draw with.
     attachments: FrameAttachments,
-    /// The size the target is built at, so a same-size resize is a no-op.
-    size: (u32, u32),
+    /// The frame's context, whose graph holds the texture and both views.
+    context: RenderContext,
     /// What kind of target this is, so a resize rebuilds the same kind.
     config: TargetConfig,
 }
@@ -123,6 +122,10 @@ impl PersistentTarget {
         size: (u32, u32),
         config: TargetConfig,
     ) -> Result<Self, unlit_ecs::EntityAccessError> {
+        // The policy turns the size the caller has — a window's, most often —
+        // into the size the texture is allocated at, so every caller states the
+        // size it knows rather than having to resolve it first.
+        let size = config.size.resolve(size);
         let color = create_color_target(device, config.format, size.0, size.1);
         // The texture is registered as a resource in its own right, and the
         // view depends on it, so whoever holds the view keeps the texture
@@ -147,11 +150,12 @@ impl PersistentTarget {
         let attachments = FrameAttachments::new(
             world,
             context,
-            config.format,
-            size,
-            config.samples,
-            config.with_depth,
-            config.persistent_depth,
+            AttachmentDesc {
+                format: config.format,
+                size,
+                sample_count: config.samples,
+                depth: config.depth,
+            },
         );
         let mut pass_row = world.root_scope().try_query_one::<&mut FramePass>(pass)?;
         pass_row.get().set_attachments(&attachments, view.clone());
@@ -159,9 +163,22 @@ impl PersistentTarget {
             texture,
             view,
             attachments,
-            size,
+            context,
             config,
         })
+    }
+
+    /// The size the target's texture is allocated at, in physical pixels.
+    ///
+    /// Read from the texture itself rather than kept beside it, so there is one
+    /// answer to how big the target is: the one the texture the pass draws into
+    /// carries. `None` when the texture is no longer in the frame's graph, or
+    /// when the world holds no rendering context.
+    #[must_use]
+    pub fn size(&self, world: &World) -> Option<(u32, u32)> {
+        let mut graph_row = self.context.try_graph(&world.root_scope()).ok()?;
+        let texture = graph_row.get().get(&self.texture)?;
+        Some((texture.width(), texture.height()))
     }
 
     /// Rebind the target against a new window `size`.
@@ -178,24 +195,22 @@ impl PersistentTarget {
     pub fn resize(
         &mut self,
         world: &World,
-        context: RenderContext,
         device: &wgpu::Device,
         size: (u32, u32),
     ) -> Result<(), unlit_ecs::EntityAccessError> {
         let size = self.config.size.resolve(size);
-        if size == self.size {
+        if self.size(world) == Some(size) {
             return Ok(());
         }
         let color = create_color_target(device, self.config.format, size.0, size.1);
         {
-            let mut graph = context.try_graph(&world.root_scope())?;
+            let mut graph = self.context.try_graph(&world.root_scope())?;
             graph.get().replace(&self.texture, color.clone());
             graph.get().replace(
                 &self.view,
                 TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             );
         }
-        self.size = size;
         // Replaces the depth and multisample views in place and maintains the
         // graph, which rebuilds what reads the replaced ones.
         self.attachments.resize(world, size);

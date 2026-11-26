@@ -297,7 +297,7 @@ impl EguiPanelHost {
 ///
 /// The job takes the frame out of the cell as it runs, so a job the queue
 /// refused leaves the frame where it was and the same cell can be sent again.
-/// It then walks the world's frame sources and publishes into the first
+/// It then walks the world's draw sources and publishes into the first
 /// [`EguiSource`] it finds, which draws that slot from then on. A world with no
 /// source drops the frame, and dropping it clears its texture deltas.
 pub fn panel_frame_job(slot: usize, frame: Arc<Mutex<Option<ExternalFrame>>>) -> Job {
@@ -324,7 +324,7 @@ mod tests {
     use unlit3d::egui::EguiPanel;
     use unlit3d::input::{InputWriter, Modifiers, refresh_input};
     use unlit3d::relay::Snapshot;
-    use unlit3d::source::FrameSourceOrder;
+    use unlit3d::source::SourceOrder;
 
     /// The worlds a panel is split across: the one holding it, and the one
     /// that draws what it sends.
@@ -355,10 +355,9 @@ mod tests {
 
         fn with_capacity(capacity: usize) -> Self {
             let mut render = World::new();
-            render.root_scope_mut().spawn(bundle![Source::new(
-                FrameSourceOrder::EGUI,
-                EguiSource::new()
-            )]);
+            render
+                .root_scope_mut()
+                .spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
             let (sender, jobs) = async_channel::bounded(capacity);
             let target = Snapshot::new();
             let host = EguiPanelHost::new(JobSender::new(sender.clone()), target.reader(), 0);

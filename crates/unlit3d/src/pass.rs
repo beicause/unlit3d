@@ -4,7 +4,7 @@
 //! A frame is made of passes, recorded in [`FramePassOrder`]. Each pass is an
 //! ECS entity carrying a [`FramePass`], and the sources under it — the
 //! entities in its own scope — record into it, in
-//! [`FrameSourceOrder`](crate::source::FrameSourceOrder). A pass therefore
+//! [`SourceOrder`](crate::source::SourceOrder). A pass therefore
 //! states both halves of a frame's shape: how the frame is split up, and where
 //! each part of it draws.
 //!
@@ -36,6 +36,7 @@ use crate::attachments::FrameAttachments;
 use crate::components::RenderLoadOps;
 use crate::order::OrderKey;
 use crate::source::RenderContext;
+use crate::target::{FrameId, PassId, RenderTargetId};
 
 /// When a pass records, relative to the others.
 ///
@@ -106,15 +107,6 @@ pub struct FramePass {
     /// an unrelated entity is despawned, which is why a split screen states a
     /// camera per pass instead.
     pub camera: Option<Entity>,
-    /// The pixel size of the target the pass draws into, as of the last
-    /// [`Self::set_attachments`]; `None` while the pass draws nowhere.
-    ///
-    /// This is the resolution of the pass's attachments, not the region its
-    /// content occupies: a letterboxed pass states the whole target here and
-    /// the content's rectangle in [`Self::viewport`]. A behaviour that sizes
-    /// something to the target — a camera's aspect, most of all — reads it from
-    /// here, since no frame carries a target.
-    pub target_size: Option<(u32, u32)>,
     color: Option<ResHandle<TextureView>>,
     depth: Option<ResHandle<TextureView>>,
     msaa: Option<ResHandle<TextureView>>,
@@ -130,7 +122,6 @@ impl FramePass {
             order,
             viewport: None,
             camera: None,
-            target_size: None,
             color: None,
             depth: None,
             msaa: None,
@@ -165,7 +156,6 @@ impl FramePass {
         attachments: &FrameAttachments,
         color_view: ResHandle<TextureView>,
     ) {
-        self.target_size = Some(attachments.size());
         self.color = Some(color_view);
         self.depth = attachments.depth_view.clone();
         self.msaa = attachments.msaa_view.clone();
@@ -177,10 +167,50 @@ impl FramePass {
     /// its target is gone — a minimized window, say — without disturbing the
     /// sources under it.
     pub fn park(&mut self) {
-        self.target_size = None;
         self.color = None;
         self.depth = None;
         self.msaa = None;
+    }
+
+    /// The pixel size of the target the pass draws into, read from the color
+    /// attachment's own texture; `None` while the pass draws nowhere.
+    ///
+    /// This is the resolution of the target, not the region its content
+    /// occupies: a letterboxed pass states the whole target here and the
+    /// content's rectangle in [`Self::viewport`]. A behaviour that sizes
+    /// something to the target — a camera's aspect, most of all — reads it from
+    /// here, since no frame carries a target.
+    ///
+    /// The size is read rather than stored, so there is one answer to how big
+    /// the target is: the one the attachment it draws into carries. A resize
+    /// replaces that attachment in place and the next frame reads the new size,
+    /// with no second copy to fall out of step.
+    ///
+    /// `None` also when the world holds no rendering context, which is a world
+    /// that never had a device.
+    ///
+    /// # Panics
+    ///
+    /// If the pass's color view is gone from the graph, or if it is not a
+    /// texture view.
+    #[must_use]
+    pub fn target_size(&self, world: &World) -> Option<(u32, u32)> {
+        let ctx = RenderContext::of(world)?;
+        let color = self.color.as_ref()?;
+        let mut graph_row = ctx.try_graph(&world.root_scope()).ok()?;
+        let view = graph_row.get().get(color)?;
+        let texture = view.texture();
+        Some((texture.width(), texture.height()))
+    }
+
+    /// What names the target this pass draws into, while it is bound.
+    ///
+    /// The color attachment names it; a pass that states only a depth view —
+    /// a prepass — is named by that instead. Either node keeps its id for the
+    /// target's whole life, so the id survives a resize.
+    pub(crate) fn target_id(&self, world: &World) -> Option<RenderTargetId> {
+        let view = self.color.as_ref().or(self.depth.as_ref())?;
+        Some(RenderTargetId::of(world, view))
     }
 
     /// The attachments this pass records into, read out of the frame's graph.
@@ -260,6 +290,23 @@ impl Bundle for Pass {
 /// learns what it is drawing into and where in that target it belongs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PassInfo {
+    /// The logical pass this is being built for.
+    ///
+    /// A source may be recorded by several passes, and two of them may draw
+    /// into one target with one surface key: this is what tells them apart when
+    /// state cannot be shared between them.
+    pub pass: PassId,
+    /// The target the pass draws into.
+    ///
+    /// Two passes over one target share this and do not share [`Self::pass`],
+    /// so state that belongs to the target — a swap chain's per-size caches, a
+    /// text layout sized to the target — is keyed here, and state that belongs
+    /// to the pass is keyed by [`Self::pass`]. A resize replaces the target's
+    /// attachments in place and the id survives it; only a pass bound to
+    /// another target gets another id.
+    pub target: RenderTargetId,
+    /// Which frame this build belongs to, as the clock numbered it.
+    pub frame: FrameId,
     /// The target's pipeline specialization key.
     pub surface: SurfaceKey,
     /// The target's width, in physical pixels.

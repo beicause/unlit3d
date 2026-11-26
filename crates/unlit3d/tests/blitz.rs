@@ -1,4 +1,4 @@
-//! End-to-end GPU tests for [`BlitzSource`], a frame source that lays out an
+//! End-to-end GPU tests for [`BlitzSource`], a draw source that lays out an
 //! HTML document and paints it over the frame.
 //!
 //! What these pin down is the composite and the input path rather than the
@@ -139,7 +139,7 @@ async fn centre_pixel(
 fn render_page(ctx: &Ctx, html: &str) -> (World, TestGpu, wgpu::Texture, Entity, Entity) {
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
-    let source = gpu.spawn_source(&mut world, FrameSourceOrder::BLITZ, BlitzSource::new());
+    let source = gpu.spawn_source(&mut world, SourceOrder::BLITZ, BlitzSource::new());
     // A page declares no depth state, so its target carries no depth
     // attachment: wgpu requires the pass and the pipeline to agree.
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
@@ -292,11 +292,12 @@ fn bind_target(gpu: &TestGpu, world: &World, pass: Entity) -> wgpu::Texture {
     let attachments = FrameAttachments::new(
         world,
         gpu.context,
-        COLOR_FORMAT,
-        (WIDTH, HEIGHT),
-        1,
-        false,
-        false,
+        AttachmentDesc {
+            format: COLOR_FORMAT,
+            size: (WIDTH, HEIGHT),
+            sample_count: 1,
+            depth: None,
+        },
     );
     let mut pass = world.root_scope().query_one::<&mut FramePass>(pass);
     pass.get().set_attachments(&attachments, color_view);

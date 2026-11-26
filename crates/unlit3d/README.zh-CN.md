@@ -13,17 +13,17 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `blitz` | 否 | `blitz` 模块：由 [Blitz](https://crates.io/crates/blitz-dom) 布局的 HTML 文档，作为帧源绘制 |
+| `blitz` | 否 | `blitz` 模块：由 [Blitz](https://crates.io/crates/blitz-dom) 布局的 HTML 文档，作为绘制源绘制 |
 | `blitz_epaint_fonts` | 否 | 页面布局所用的字体：egui 的默认字体，使同一份标记在每个目标上画出同样的字形 |
 | `blitz_sc_fonts` | 否 | 给内置字体加上 Noto Sans SC 子集，覆盖通用规范汉字表一级与二级汉字 |
 | `blitz_system_fonts` | 否 | 让页面回退到宿主已装的字体，补上内置字体没有覆盖的部分 |
-| `egui` | 是 | `egui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
+| `egui` | 是 | `egui` 模块（作为绘制源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；`presenter`，建在它之上的现成窗口循环；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档（含 `KHR_draco_mesh_compression` 压缩的 primitive）加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
 | `mcp` | 否 | `mcp` 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
 
-使用 `--no-default-features` 时，本 crate 保留 ECS 组件、帧源、mesh 路径、管线抽象
+使用 `--no-default-features` 时，本 crate 保留 ECS 组件、绘制源、mesh 路径、管线抽象
 与可移植的 `input` 模块——它们都不依赖 egui 或 winit。开启 `gltf` 则在同一套 ECS 与
 mesh 路径之上增加 glTF 加载器，见下文。开启 `reflect` 会派生 JSON 桥所需的反射，引擎
 其余部分不变。
@@ -79,7 +79,7 @@ Godot 的场景树轻松可以拆分和组合；API 可以非常高层（如 God
 
 一帧**不是**「一个主场景加若干附加物」，也不是一个 pass：它是一串 pass。
 `Renderer` 自身不绘制任何东西：它按 `FramePassOrder` 遍历 world 里的 `FramePass`
-实体，在每个 pass 内按各帧源自身携带的 `FrameSourceOrder` 顺序录制其下的源。
+实体，在每个 pass 内按各绘制源自身携带的 `SourceOrder` 顺序录制其下的源。
 
 渲染 world 就是一棵普通的实体树，而树本身**就是**帧的形状：一个 scope 看得见它扎根
 的实体、其下的一切，以及 shared 子树，但看不见祖先，也看不见兄弟。
@@ -137,8 +137,10 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   `PersistentTarget`，它们都在同一个 world 里，且句柄保持稳定，因此一个 pass 可以每帧
   换一个新的颜色 view 而不触发其下源的重建。交换链的颜色 view 每帧都变，而常驻目标的
   颜色 view 是它自己的纹理、只在 resize 时变——正因如此，截图才能在呈现之后回读这一帧。
-- 每个源在 `build_scene` 中填充一个 `Scene`，随后渲染器把该场景录制进以这个 pass
-  自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
+- 每个源在 `SceneSource::build` 中填充一个 `Scene`，随后渲染器把该场景录制进以这个
+  pass 自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
+  构建经由 `SceneBuild` 获知自己画什么：实体 scope、渲染上下文、指明 pass／目标／帧的
+  `PassInfo`，以及本帧的命令 encoder，因此整趟上传都能在 pass 录制之前暂存。
 - 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：
   渲染器里没有任何 mesh 专用的字段或绘制路径，内置 lit 家族通过与调用者家族相同的
   `MeshSource::register_family` 注册（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)），
@@ -156,7 +158,7 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
   挂在 `RenderContext` 单例键下：于是 `RenderContext::of` 只凭 world 就能拿到它，同一个
   world 上再生成一份会 panic，而不是留下互相矛盾的地址。能力随帧一起传递，因为调用者是拿适配器推导出来的：设备无法自述的信息不该让
   每个源各自重新发现。
-- **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制
+- **构建与录制是两个阶段。** 源在自己的构建期间往图里注册资源并暂存上传；录制
   阶段只读取已经产出的场景。合并两者就必须在场景产出之前读资源图，只剩内部可变性把
   借用冲突推到运行期，因此保留两阶段以换取编译期保证。
 - **每个源在自己的构建里整理一次资源图。** `replace` 只做标记；每个源在上传之后、
@@ -174,14 +176,16 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 *(pass, source)* 对，由渲染器持有：它是本帧的临时产物，而不是源的状态。一个被多个 pass
 看见的源会按 pass 各构建一次，各自填进那个 pass 自己的场景，于是每个 pass 只录制自己
 目标所要求的绘制。这些槽位跨帧保留以便稳定场景复用分配，而世界已够不到的配对会在帧末
-交还缓冲。按目标保留 GPU 状态的源——egui 源的管线与材质表、屏幕合成器的管线——以
-`SurfaceKey` 为键，于是交替的 pass 各自复用条目，而不是每帧重建。「3D 主场景」只是
+交还缓冲。按绘制保留 GPU 状态的源，以 `PassInfo` 为该绘制声明的身份为键——egui 源的管线与材质表
+按 `PassInfo::target`，线条源的实例流按 `PassInfo::pass`——于是交替的 pass 各自复用
+条目，而不是每帧重建。两个 pass 可以画进同一个目标，两个目标也可以共用一个 `SurfaceKey`，
+而后者只是管线特化键；要缓存这一对的状态，需要的是身份而不是这个键。「3D 主场景」只是
 第一个被录制的源产出的场景，而不是渲染器的特例。
 
 <details>
 <summary>为什么上下文与源是 world 的成员，而不是渲染器的字段</summary>
 
-这不是「把渲染器内部拆开」，而是让帧源与第三方源完全同权：新增或移除一个源就是
+这不是「把渲染器内部拆开」，而是让绘制源与第三方源完全同权：新增或移除一个源就是
 spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下文，不需要经过渲染器转交。
 
 - 资源引用就是实体引用，靠调用者保存的 `Entity` 句柄取用。
@@ -197,7 +201,7 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 <details>
 <summary>为什么顺序是实体上的字段，而不是源上的方法</summary>
 
-`FrameSourceOrder` 不实现 `Default`。若给出默认值，「忘记给顺序」与
+`SourceOrder` 不实现 `Default`。若给出默认值，「忘记给顺序」与
 「确实想沿用创建顺序」就无法区分，顺序意图又变回隐式。同理，顺序是 `Source::new` 的第一个
 参数，并且放在公开字段里而不是藏在访问器后：两个持有同类源的实体按各自拿到的顺序录制，
 想在运行时重排的调用方直接写这个字段。它也不能借用实体在原型内的行序：实体的行序不保证
@@ -387,8 +391,8 @@ z-sorted 绘制排序与透视相机完全一致。
   笔画没有颜色可以罩住背景——而切割会在目标自己有抗锯齿的地方让位：多采样目标把同一份
   覆盖率摊进 alpha-to-coverage 的样本掩码，边缘在那里依旧平滑。宽度以**物理像素**计，这正是关键：靠近相机的笔画与
   同一个笔画在远处一样粗细，而以世界单位计的宽度会随距离变细。source 就是一个普通的
-  `FrameSource`——一个 world 的笔画就是它的 scope 这一帧看见的 `Line` 实体——并声明
-  `FrameSourceOrder::LINE`，排在 mesh source 之后：每种笔画都测试网格写下的深度，所以
+  `DrawSource`——一个 world 的笔画就是它的 scope 这一帧看见的 `Line` 实体——并声明
+  `SourceOrder::LINE`，排在 mesh source 之后：每种笔画都测试网格写下的深度，所以
   本体必须已经进了深度缓冲，身后的笔画才会被挡住。是否也写深度由笔画自己的策略说了算——
   默认的混合笔画不写，默认的不透明笔画写，笔画之间因此能互相遮挡——而不动深度的笔画
   把它的中点深度交给 pass 的合成，与所有源的混合绘制一起从远到近排序，颜色按这个顺序层叠。
@@ -645,7 +649,7 @@ CSS 滤镜只在画场有对应图元时才画：单原语图里的 flood、高�
 图——按无滤镜绘制。
 
 页面是整份文档而不是贴在场景上的附加物，且覆盖整个目标，所以它以
-`FrameSourceOrder::BLITZ` 录制——在网格之上、叠加层之下，于是叠加层仍可读。
+`SourceOrder::BLITZ` 录制——在网格之上、叠加层之下，于是叠加层仍可读。
 
 页面是被驱动的，不是被拍的。帧的输入按 Blitz 期望的指针、滚轮、键盘、文本与 IME 事件送进
 它的文档，且换算成 CSS 像素而不是输入报出的物理像素，于是悬停、焦点、滚动、文本编辑与表单
@@ -794,7 +798,7 @@ let pass = world
     .spawn(Pass::new(FramePassOrder(0)));
 let source = world
     .scope_mut(pass)
-    .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
+    .spawn(bundle![Source::new(SourceOrder::MESH, mesh_source)]);
 let scope = world.scope(source);
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -859,11 +863,12 @@ let color = create_color_target(
 let attachments = FrameAttachments::new(
     &world,
     ctx,
-    wgpu::TextureFormat::Rgba8UnormSrgb,
-    (1280, 720),
-    1,
-    true,
-    false,
+    AttachmentDesc {
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        size: (1280, 720),
+        sample_count: 1,
+        depth: Some(DepthAttachment::Transient),
+    },
 );
 let scope = world.scope(source);
 let color_view = {
@@ -894,7 +899,7 @@ let mut world = World::new();
 // scope and drives whatever panels it finds there.
 let ui = world
     .root_scope_mut()
-    .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
+    .spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
 world.scope_mut(ui).spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);

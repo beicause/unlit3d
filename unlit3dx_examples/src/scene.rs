@@ -209,13 +209,13 @@ pub fn setup_render_world(
     source.register_lit_family(&world.root_scope());
     world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
     if let Some(screen) = panel {
         let mut source = EguiSource::new();
         source.publish_target(screen);
         world
             .scope_mut(pass)
-            .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source)]);
+            .spawn(bundle![Source::new(SourceOrder::EGUI, source)]);
     }
     (world.remote(renderer), world.remote(pass))
 }
@@ -276,16 +276,16 @@ fn camera_job() -> Job {
 /// scene's pass drew into on the last frame it was bound, or `None` before it
 /// has been bound once.
 ///
-/// A frame carries no size, so the pass states the target's size where it binds
-/// attachments — the one place both a windowed swap chain and an offscreen
-/// target pass through. The demo's pass letterboxes nothing, so the region the
-/// camera frames is the target itself.
+/// The size is read from the target's own color view, so it is the size the
+/// attachments actually have rather than a number the pass remembered. The
+/// demo's pass letterboxes nothing, so the region the camera frames is the
+/// target itself.
 fn frame_size(world: &World) -> Option<(u32, u32)> {
     let mut passes = world.root_scope().query::<&FramePass>();
     passes
         .iter()
         .find(|pass| pass.order == SCENE_PASS_ORDER)
-        .and_then(|pass| pass.target_size)
+        .and_then(|pass| pass.target_size(world))
 }
 
 /// The point on the orbit the camera sits at for one azimuth.

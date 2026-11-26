@@ -28,7 +28,7 @@ use unlit_ecs::bundle;
 use unlit_ecs::sync;
 use unlit_ecs::{Command, Entity, EntityAccessError};
 
-use crate::attachments::FrameAttachments;
+use crate::attachments::{AttachmentDesc, DepthAttachment, FrameAttachments};
 use crate::blit::BlitSource;
 use crate::frame::{
     Frame, FrameBehaviourOrder, FrameSkip, MAX_MEASURED_FRAME_SECONDS, OnFrame, dispatch_frame,
@@ -36,7 +36,7 @@ use crate::frame::{
 use crate::offscreen::{PersistentTarget, TargetConfig};
 use crate::pass::{FramePass, FramePassOrder, Pass};
 use crate::renderer::Renderer;
-use crate::source::{FrameSourceOrder, Source};
+use crate::source::{Source, SourceOrder};
 use crate::winit::builtin::{Resumed, window};
 use crate::winit::event::{OnAboutToWait, OnWindowEvent};
 use crate::winit::surface::{SurfaceOptions, WindowSurface};
@@ -260,12 +260,14 @@ impl Presenter {
     /// Match the surface, the swap-chain attachments and the offscreen
     /// target to a new size.
     ///
-    /// The surface resizes first and reports the size it ended up with; the
-    /// swap chain's attachments follow it, and the offscreen target is
-    /// rebuilt for that size. The target's texture and view are replaced in
-    /// place — their resource nodes keep their ids — so the blit reading
-    /// the view rebuilds its bind group through its own dependency, without
-    /// the presenter touching the source.
+    /// Each holder is told the new window size and works out its own from it:
+    /// the surface configures its swap chain, the swap chain's attachments
+    /// follow the size the surface reports, and the offscreen target applies
+    /// its own [`IntermediateSize`] policy — so nothing here has to know what
+    /// an intermediate target's size is. The target's texture and view are
+    /// replaced in place — their resource nodes keep their ids — so the blit
+    /// reading the view rebuilds its bind group through its own dependency,
+    /// without the presenter touching the source.
     ///
     /// # Errors
     ///
@@ -295,15 +297,14 @@ impl Presenter {
         let Some(target) = self.target.as_mut() else {
             return Ok(());
         };
-        let context = {
+        let device = {
             let mut renderer = world
                 .root_scope()
                 .try_query_one::<&Renderer>(self.renderer)?;
-            renderer.get().context()
+            renderer.get().context().device(&world.root_scope())?
         };
-        let device = context.device(&world.root_scope())?;
         target
-            .resize(world, context, &device, size)
+            .resize(world, &device, size)
             .map_err(PresenterError::MissingResource)?;
         Ok(())
     }
@@ -488,27 +489,20 @@ fn build_in(
     // path it is the scene's own pass, with the scene's sample count and
     // depth; with it, the blit covers the target with one triangle — one
     // sample and no depth.
-    let (samples, with_depth) = match path {
+    let (samples, depth) = match path {
         PresentationPath::Surface {
             samples,
             with_depth,
-        } => (samples, with_depth),
-        PresentationPath::Intermediate(_) => (1, false),
+        } => (samples, with_depth.then_some(DepthAttachment::Transient)),
+        PresentationPath::Intermediate(_) => (1, None),
     };
     let target = match path {
         PresentationPath::Surface { .. } => None,
         PresentationPath::Intermediate(config) => {
             let device = context.device(&world.root_scope())?;
             Some(
-                PersistentTarget::bind(
-                    world,
-                    context,
-                    scene_pass,
-                    &device,
-                    config.size.resolve(size),
-                    config,
-                )
-                .map_err(PresenterError::Target)?,
+                PersistentTarget::bind(world, context, scene_pass, &device, size, config)
+                    .map_err(PresenterError::Target)?,
             )
         }
     };
@@ -520,7 +514,7 @@ fn build_in(
         Some(target) => {
             let blit_pass = world.root_scope_mut().spawn(Pass::new(BLIT_PASS_ORDER));
             world.try_scope_mut(blit_pass)?.spawn(bundle![Source::new(
-                FrameSourceOrder::MESH,
+                SourceOrder::MESH,
                 BlitSource::new(target.view.clone())
             )]);
             Some(Blit { pass: blit_pass })
@@ -545,11 +539,12 @@ fn build_in(
             let attachments = FrameAttachments::new(
                 world,
                 renderer.context(),
-                surface.color_format(),
-                surface.size(),
-                samples,
-                with_depth,
-                false,
+                AttachmentDesc {
+                    format: surface.color_format(),
+                    size: surface.size(),
+                    sample_count: samples,
+                    depth,
+                },
             );
             (surface, attachments)
         }

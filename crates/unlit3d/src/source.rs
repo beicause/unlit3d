@@ -1,8 +1,8 @@
-//! Frame sources: the things a frame is made of.
+//! Draw sources: the things a frame is made of.
 //!
 //! A [`Renderer`](crate::renderer::Renderer) draws nothing itself. It assembles a frame
 //! out of [`FramePass`](crate::pass::FramePass)es, and each pass out of the
-//! [`FrameSource`]s below it: every source builds its own [`Scene`] from the
+//! [`DrawSource`]s below it: every source builds its own [`Scene`] from the
 //! world, and the pass records it. A source's place in the entity tree is
 //! therefore what chooses its pass. The built-in mesh rendering is one such
 //! source ([`MeshSource`](crate::mesh_source::MeshSource)) and an egui overlay is
@@ -11,7 +11,7 @@
 //!
 //! A source is an ordinary component holding a boxed [`AnySource`], so one
 //! query drives every concrete source type: build all of them, then record
-//! their scenes in [`FrameSourceOrder`]. The GPU state a source needs — the device,
+//! their scenes in [`SourceOrder`]. The GPU state a source needs — the device,
 //! the queue and the resource graph — lives in the world too, addressed by the
 //! [`RenderContext`] the sources are handed; its accessors are what let a source
 //! fetch the graph while the driver only holds a shared borrow of the world. What
@@ -40,9 +40,9 @@ use crate::pass::PassInfo;
 /// records relative to the others is a decision, and a silent default is
 /// exactly what an explicit order exists to remove.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FrameSourceOrder(pub i32);
+pub struct SourceOrder(pub i32);
 
-impl FrameSourceOrder {
+impl SourceOrder {
     /// The built-in mesh source's order.
     pub const MESH: Self = Self(0);
     /// The order of lines drawn over the meshes.
@@ -66,8 +66,8 @@ impl FrameSourceOrder {
     pub const BLITZ: Self = Self(90);
 }
 
-impl OrderKey for FrameSourceOrder {
-    const ORDER: &'static str = "FrameSourceOrder";
+impl OrderKey for SourceOrder {
+    const ORDER: &'static str = "SourceOrder";
     const SUBJECT: &'static str = "sources";
 
     fn value(self) -> i32 {
@@ -223,7 +223,7 @@ impl RenderContext {
 
     /// Maintain the frame's [`ResourceGraph`] when the returned scope drops.
     ///
-    /// Call this at the top of [`FrameSource::build_scene`] and drop the scope
+    /// Call this at the top of [`DrawSource::build_scene`] and drop the scope
     /// before reading a resource: every return in between — including the early
     /// ones a source takes when it has nothing to draw — settles the graph, so
     /// no path has to remember to. The pass is the same one
@@ -267,7 +267,7 @@ impl RenderContext {
 /// Maintains the frame's resource graph when it ends.
 ///
 /// [`RenderContext::maintain_scope`] returns one. It is a scope guard rather
-/// than a call so that a frame source cannot forget the pass on a return: the
+/// than a call so that a draw source cannot forget the pass on a return: the
 /// guard settles the graph on every way out of the scope it lives in, and a
 /// build that has to read the graph before the end — assembling a frame from
 /// the bind groups the pass just rebuilt — drops it explicitly at that point.
@@ -290,7 +290,7 @@ impl Drop for MaintainScope<'_> {
     }
 }
 
-/// A URL a frame source asked the host to open.
+/// A URL a draw source asked the host to open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenUrl {
     /// The URL to open.
@@ -355,18 +355,90 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
     }
 }
 
+/// What one build of a [`SceneSource`] is handed.
+///
+/// Everything a build needs arrives together: the scope the source hangs under,
+/// the frame's GPU state, the pass and target it draws into, and the frame's
+/// encoder. A source that reads all four can take them as one value instead of
+/// remembering a five-argument order, and a later field reaches every source
+/// without rewriting each signature.
+pub struct SceneBuild<'a> {
+    /// The entity the source hangs under. What the build draws is what lies
+    /// below it, and two sources under one pass see different sets.
+    pub scope: Scope<'a>,
+    /// The frame's GPU state: the device, the queue, the resource graph.
+    pub ctx: RenderContext,
+    /// The pass the build belongs to, and the target it draws into.
+    pub info: PassInfo,
+    /// The frame's one command encoder.
+    ///
+    /// Uploads and draws share its submission, because passes are opened only
+    /// after every source of the frame has built. A source records its own
+    /// commands into it and hands it back untouched; nothing it does with the
+    /// encoder outlives the build, and the driver alone ends the encoder.
+    pub encoder: &'a mut wgpu::CommandEncoder,
+}
+
+/// A source of one pass's draws, given its whole context at once.
+///
+/// This is the trait to implement. Every built-in source is one, and a caller's
+/// own source needs nothing else: implement [`Self::build`], answer the draws of
+/// one frame, and the blanket [`DrawSource`] impl makes it spawnable.
+///
+/// The driver calls [`Self::build`] once per pass that reaches the source, in
+/// the same frame, each time into that pass's own [`Scene`]. Per-pass state is
+/// therefore keyed by [`PassInfo::pass`] rather than kept in one field, and
+/// per-target state by [`PassInfo::target`] — two passes may draw into one
+/// target, and two targets may share a surface key. A source under two passes
+/// is built twice before any pass is opened, so nothing it records may assume
+/// another source's uploads landed first.
+pub trait SceneSource: 'static {
+    /// Fill `scene` with this frame's draws of the pass [`SceneBuild::info`]
+    /// names.
+    ///
+    /// `scene` arrives empty. A source with nothing to draw returns leaving it
+    /// empty: the frame still records, and still applies its load ops.
+    fn build(&mut self, build: SceneBuild<'_>, scene: &mut Scene);
+}
+
+impl<T: SceneSource> DrawSource for T {
+    fn build_scene(
+        &mut self,
+        scope: &Scope<'_>,
+        ctx: RenderContext,
+        info: PassInfo,
+        scene: &mut Scene,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.build(
+            SceneBuild {
+                scope: *scope,
+                ctx,
+                info,
+                encoder,
+            },
+            scene,
+        );
+    }
+}
+
 /// A source of one frame's draws.
 ///
+/// The low-level form of [`SceneSource`]: the same build, with every part of the
+/// context as its own argument. Implement this instead when a source has to
+/// control what it does with the encoder beyond staging uploads, or when the
+/// erased handle must be built without going through [`SceneSource`]. Everything
+/// else should implement [`SceneSource`].
+///
 /// A source owns whatever state it draws from, and fills a [`Scene`] with the
-/// draws of one frame each time the driver calls
-/// [`FrameSource::build_scene`]. The scene is the driver's, not the source's:
-/// a source in the scope of several passes is built once per pass, each time
-/// into that pass's own scene.
+/// draws of one frame each time the driver calls [`Self::build_scene`]. The
+/// scene is the driver's, not the source's: a source in the scope of several
+/// passes is built once per pass, each time into that pass's own scene.
 ///
 /// Where a source records is not part of the trait: it belongs to the
 /// [`Source`] the entity carries: one kind of source can record at two
 /// different orders, and writing that field reorders a live source.
-pub trait FrameSource: 'static {
+pub trait DrawSource: 'static {
     /// Fill `scene` with this frame's draws, fetching what it needs from
     /// `world`.
     ///
@@ -378,8 +450,8 @@ pub trait FrameSource: 'static {
     /// `scene` arrives empty and belongs to the pass for this frame: write the
     /// draws of what `info` describes into it, and the driver records it into
     /// that pass. A source the scope of several passes reaches is called once
-    /// per pass, so per-pass state must be keyed by [`PassInfo::surface`]
-    /// rather than kept in one field.
+    /// per pass, so per-pass state must be keyed by [`PassInfo::pass`] and
+    /// per-target state by [`PassInfo::target`] rather than kept in one field.
     ///
     /// `ctx` carries only entity ids, so it never conflicts with the source's
     /// own borrow of `world`. `encoder` is the frame's one encoder, and a
@@ -399,15 +471,15 @@ pub trait FrameSource: 'static {
     );
 }
 
-/// A frame source behind an erased handle, so one query sees every concrete
+/// A draw source behind an erased handle, so one query sees every concrete
 /// source type.
 ///
-/// Method-free on purpose: [`Any`] supplies downcasting, the [`FrameSource`]
+/// Method-free on purpose: [`Any`] supplies downcasting, the [`DrawSource`]
 /// supertrait supplies the trait API, and the blanket impl means an implementor
 /// writes no boilerplate at all.
-pub trait AnySource: Any + FrameSource {}
+pub trait AnySource: Any + DrawSource {}
 
-impl<T: FrameSource> AnySource for T {}
+impl<T: DrawSource> AnySource for T {}
 
 /// Why a typed access to a [`Source`] was refused.
 ///
@@ -425,7 +497,7 @@ pub struct WrongSourceType {
     pub requested: &'static str,
 }
 
-/// A frame source as an ECS component.
+/// A draw source as an ECS component.
 ///
 /// The trait API is reachable directly (`source.build_scene(..)`); typed access
 /// upcasts to `dyn Any` and downcasts, which [`Source::as_mut`] and
@@ -439,12 +511,12 @@ pub struct Source {
     /// The concrete type `source` was built from, for a readable refusal.
     type_name: &'static str,
     /// Where this source records, relative to the others.
-    pub order: FrameSourceOrder,
+    pub order: SourceOrder,
 }
 
 impl Source {
     /// Wrap `source`, recording it at `order`.
-    pub fn new<S: FrameSource>(order: FrameSourceOrder, source: S) -> Self {
+    pub fn new<S: DrawSource>(order: SourceOrder, source: S) -> Self {
         Self {
             type_name: core::any::type_name::<S>(),
             source: Box::new(source),
@@ -458,7 +530,7 @@ impl Source {
     ///
     /// Answers [`WrongSourceType`] when the source holds a different type,
     /// naming both the type it holds and the one asked for.
-    pub fn as_mut<T: FrameSource>(&mut self) -> Result<&mut T, WrongSourceType> {
+    pub fn as_mut<T: DrawSource>(&mut self) -> Result<&mut T, WrongSourceType> {
         let actual = self.type_name;
         let erased: &mut dyn Any = &mut *self.source;
         erased.downcast_mut::<T>().ok_or(WrongSourceType {
@@ -473,7 +545,7 @@ impl Source {
     ///
     /// Answers [`WrongSourceType`] when the source holds a different type,
     /// naming both the type it holds and the one asked for.
-    pub fn as_ref<T: FrameSource>(&self) -> Result<&T, WrongSourceType> {
+    pub fn as_ref<T: DrawSource>(&self) -> Result<&T, WrongSourceType> {
         let actual = self.type_name;
         let erased: &dyn Any = &*self.source;
         erased.downcast_ref::<T>().ok_or(WrongSourceType {

@@ -1,11 +1,11 @@
-//! The fullscreen composite a frame source shows one texture with.
+//! The fullscreen composite a draw source shows one texture with.
 //!
 //! A composite draws one triangle over the whole target, sampling a texture
 //! view it is handed. What varies between its users is only what the pipeline
 //! says about the target and how the fragment combines with it — a blit copies
 //! a texture an earlier pass drew, while a document composites its page over
 //! the meshes — so those are the variant's fields and everything else is built
-//! once per frame source.
+//! once per draw source.
 //!
 //! The sampled texture's own format decides one of those fields. A sampler
 //! reading an sRGB-encoded texture decodes it, so the fragment already holds
@@ -27,6 +27,7 @@ use unlit_wgpu::specialize::{
 
 use crate::pass::PassInfo;
 use crate::source::RenderContext;
+use crate::target::FrameId;
 
 /// The WESL module whose fullscreen vertex the composite draws.
 const VERTEX_MODULE: &str = "fullscreen_vertex";
@@ -47,11 +48,12 @@ const SAMPLER_BINDING: u32 = 1;
 /// The state a screen composite draws through, kept across the frames of one
 /// source.
 ///
-/// The sampler, the layout and the current bind group do not depend on the
-/// target, so one of each serves every pass a frame records the source into.
-/// The pipelines are specialized per target, because the passes of one frame
-/// need not share a sample count or a depth attachment. Pointing the source at
-/// another view rebuilds the group and keeps the rest.
+/// The sampler and the layout belong to the device, so one of each serves every
+/// pass a frame records the source into. The pipelines are specialized per
+/// target, because the passes of one frame need not share a sample count or a
+/// depth attachment. The bind groups are kept per view: a source drawn into two
+/// targets reads two textures, and keeping one group per view is what lets the
+/// passes alternate without either rebuilding what the other built.
 pub(crate) struct ScreenBlit {
     /// Where the composite's draw sits among the pass's own.
     ///
@@ -64,18 +66,27 @@ pub(crate) struct ScreenBlit {
     core: Option<Core>,
 }
 
-/// The state a composite reads its view through.
+/// The state a composite reads its views through.
 struct Core {
-    /// The layout the bind group is built against.
+    /// The layout the bind groups are built against.
     layout: wgpu::BindGroupLayout,
-    /// The sampler the view is read with, in the frame's graph.
+    /// The sampler the views are read with, in the frame's graph.
     sampler: ResHandle<wgpu::Sampler>,
-    /// The view the current bind group reads.
-    view: ResHandle<TextureView>,
-    /// The graph node binding the view and its sampler.
-    bind_group: ResHandle<wgpu::BindGroup>,
     /// The pipelines, specialized on the target and the fragment policy.
     pipelines: Variants<wgpu::RenderPipeline, ScreenVariant>,
+    /// One entry per view the source has been pointed at, with the frame that
+    /// last read it.
+    views: Vec<ViewGroup>,
+}
+
+/// The bind group one view is read through.
+struct ViewGroup {
+    /// The view the group binds.
+    view: ResHandle<TextureView>,
+    /// The graph node binding the view and the sampler.
+    bind_group: ResHandle<wgpu::BindGroup>,
+    /// The last frame a pass read the view through this group.
+    frame: FrameId,
 }
 
 /// The pipeline variant a composite resolves to.
@@ -143,20 +154,15 @@ impl ScreenBlit {
                 .is_srgb()
         };
 
-        if self.core.is_none() {
+        let core = self.core.get_or_insert_with(|| {
             let sampler = ctx.graph(scope).get().insert(sampler(&device), None);
-            let layout = bind_group_layout(&device);
-            let bind_group =
-                allocate_bind_group(scope, ctx, &device, &layout, sampler.clone(), view.clone());
-            self.core = Some(Core {
-                layout,
+            Core {
+                layout: bind_group_layout(&device),
                 sampler,
-                view: view.clone(),
-                bind_group,
                 pipelines: Variants::new(&device),
-            });
-        }
-        let core = self.core.as_mut().expect("the core is built above");
+                views: Vec::new(),
+            }
+        });
 
         let ordinal = core.pipelines.specialize(ScreenVariant {
             surface: info.surface,
@@ -164,15 +170,37 @@ impl ScreenBlit {
             srgb_to_linear_output: !srgb_source && info.surface.color_format.is_srgb(),
         });
 
-        // The same target, a different view: the layout and the sampler stay,
-        // and the view's new id gets its own group.
-        if core.view != view {
-            let layout = core.layout.clone();
-            let sampler = core.sampler.clone();
-            core.bind_group =
-                allocate_bind_group(scope, ctx, &device, &layout, sampler, view.clone());
-            core.view = view;
-        }
+        // A view this source has not been pointed at yet gets a group of its
+        // own, and one it read last frame is reused as it stands: two passes
+        // drawing through different views therefore keep a group each instead
+        // of rebuilding the other's every frame.
+        let known = core.views.iter().position(|group| group.view == view);
+        let bind_group = match known {
+            Some(index) => {
+                core.views[index].frame = info.frame;
+                core.views[index].bind_group.clone()
+            }
+            None => {
+                let bind_group = allocate_bind_group(
+                    scope,
+                    ctx,
+                    &device,
+                    &core.layout,
+                    core.sampler.clone(),
+                    view.clone(),
+                );
+                core.views.push(ViewGroup {
+                    view,
+                    bind_group: bind_group.clone(),
+                    frame: info.frame,
+                });
+                bind_group
+            }
+        };
+        // A view no pass read for a whole frame is one the frame no longer
+        // draws through, so its group and the view it binds are let go.
+        let frame = info.frame;
+        core.views.retain(|group| group.frame.0 + 1 >= frame.0);
 
         // Drop the scope so the graph maintains before the group is read back
         // out: a replace this build made must be visible to the draw.
@@ -181,7 +209,7 @@ impl ScreenBlit {
         let graph = graph_holder.get();
         let pipeline = &core.pipelines.get(ordinal).pipeline;
         let bind_group = graph
-            .get(&core.bind_group)
+            .get(&bind_group)
             .expect("the bind group is registered in the graph");
         scene.draws.push(
             DrawEntry::new(pipeline, DrawRange::vertices(0..FULLSCREEN_VERTICES))

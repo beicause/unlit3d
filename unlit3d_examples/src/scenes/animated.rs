@@ -110,7 +110,7 @@ fn build(
     let key = LitPipelineKey::new(super::default_options());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     let camera_entity = world
         .scope_mut(source_entity)

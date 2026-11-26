@@ -291,7 +291,7 @@ impl Bundle for InputPair {
 ///
 /// [`dispatch_input`] calls this, so a world that dispatches needs nothing
 /// else. A world that reads input without dispatching — one where a
-/// [`FrameSource`](crate::source::FrameSource) or a panel is the only reader —
+/// [`DrawSource`](crate::source::DrawSource) or a panel is the only reader —
 /// calls this once per tick instead, before anything reads the batch.
 ///
 /// Calling it in the same tick as [`dispatch_input`] is harmless but wasteful:

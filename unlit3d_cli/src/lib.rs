@@ -180,7 +180,7 @@ pub fn build_world(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     spawn_lights(&mut world, source_entity, &config.lights);
 
@@ -256,7 +256,7 @@ pub fn offscreen_world(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
     // The input is shared by every source, so it lives in the subtree every
     // scope sees.
     let input = InputWriter::new();
@@ -469,7 +469,7 @@ fn bind_target(
         TargetConfig {
             format: COLOR_FORMAT,
             samples,
-            with_depth,
+            depth: with_depth.then_some(DepthAttachment::Transient),
             ..TargetConfig::default()
         },
     )

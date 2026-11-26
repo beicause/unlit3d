@@ -16,11 +16,11 @@ directly, and you are expected to know WebGPU to use it well.
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `blitz` | no | the `blitz` module: an HTML document laid out by [Blitz](https://crates.io/crates/blitz-dom) and drawn as a frame source |
+| `blitz` | no | the `blitz` module: an HTML document laid out by [Blitz](https://crates.io/crates/blitz-dom) and drawn as a draw source |
 | `blitz_epaint_fonts` | no | the font a page is laid out with: egui's default font, so the same markup paints the same glyphs on every target |
 | `blitz_sc_fonts` | no | adds a Noto Sans SC subset to the bundled fonts, covering the level-1 and level-2 characters of the Table of General Standard Chinese Characters |
 | `blitz_system_fonts` | no | lets a page fall back to the fonts the host has installed for whatever the bundled ones do not cover |
-| `egui` | yes | the `egui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
+| `egui` | yes | the `egui` module (an egui overlay drawn as a draw source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into a `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
@@ -110,7 +110,7 @@ A frame is **not** "one main scene plus extras", and not one pass either: it is 
 sequence of passes. [`Renderer`](renderer::Renderer) draws nothing itself: it walks the
 world's [`FramePass`](pass::FramePass) entities in
 [`FramePassOrder`](pass::FramePassOrder), and within each pass records the frame
-sources below it, in the [`FrameSourceOrder`](source::FrameSourceOrder) each
+sources below it, in the [`SourceOrder`](source::SourceOrder) each
 one carries.
 
 A render world is an ordinary entity tree, and the tree *is* the frame's shape:
@@ -187,10 +187,14 @@ without the tree changing.
   chain's and changes every frame; a persistent target's is a texture of its own
   and changes only on resize, which is what lets a screenshot read the frame after
   it was presented.
-- Each source fills a [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, and the
-  renderer records that scene into the pass opened over the pass's
-  attachments. A frame is therefore still one encoder and one submission, no
-  matter how many passes it has.
+- Each source fills a [`Scene`](unlit_wgpu::scene::Scene) in
+  [`SceneSource::build`](source::SceneSource::build), and the renderer records that
+  scene into the pass opened over the pass's attachments. A frame is therefore
+  still one encoder and one submission, no matter how many passes it has. The
+  build is told what it draws through [`SceneBuild`](source::SceneBuild): the
+  entity scope, the render context, the [`PassInfo`](pass::PassInfo) naming the
+  pass, target and frame, and the frame's command encoder, so a whole upload can
+  be staged before the pass records.
 - The built-in mesh rendering is one source, [`MeshSource`](mesh_source::MeshSource), and it has no more
   privilege than a caller's own: there is no mesh-specific field or draw path in
   the renderer, the built-in lit family is registered through the same
@@ -227,7 +231,7 @@ without the tree changing.
   the adapter: what the device cannot report about itself is not rediscovered
   per source.
 - **Build and record are two phases.** A source registers resources in the graph
-  and stages uploads during `build_scene`; recording only reads the scenes it
+  and stages uploads during its build; recording only reads the scenes it
   already produced. Merging them would force the graph to be read before the
   scene exists, leaving interior mutability to defer the borrow conflict to
   runtime, so the two phases stay for the compile-time guarantee.
@@ -257,17 +261,21 @@ state: a source several passes see is built once per pass, into that pass's own
 scene, so each pass records exactly the draws its own target asked for. The
 slots outlive the frame so a steady scene reuses their allocations, and a pair
 the world no longer reaches gives its buffers back at the end of the frame. A
-source that keeps GPU state per target — the egui source's pipeline and material
-table, a screen composite's pipeline — keys it on
-[`SurfaceKey`](unlit_wgpu::specialize::SurfaceKey), so alternating passes reuse
-their own entry instead of rebuilding it every frame. The "main 3D scene" is
-just the scene the first recorded source produced, not a special case of the
-renderer.
+source that keeps GPU state per draw keys it on what
+[`PassInfo`](pass::PassInfo) names the draw with — the egui source's pipeline and
+material table by [`PassInfo::target`](pass::PassInfo::target), a line source's
+instance stream by [`PassInfo::pass`](pass::PassInfo::pass) — so alternating
+passes reuse their own entry instead of rebuilding it every frame. Two passes may
+draw into one target, and two targets may share a
+[`SurfaceKey`](unlit_wgpu::specialize::SurfaceKey), which is only a pipeline
+specialization key; state cached by the pair needs the identities, not the key.
+The "main 3D scene" is just the scene the first recorded source produced, not a
+special case of the renderer.
 
 <details>
 <summary>Why the context and the sources are world members rather than renderer fields</summary>
 
-This is not "taking the renderer apart" but giving frame sources and third-party
+This is not "taking the renderer apart" but giving draw sources and third-party
 sources exactly equal standing: adding or removing a source is
 spawning/despawning an entity, and a source uses the shared context directly in
 its own build phase without the renderer passing it along.
@@ -291,7 +299,7 @@ its own build phase without the renderer passing it along.
 <details>
 <summary>Why the order is a field on the entity instead of a method on the source</summary>
 
-`FrameSourceOrder` does not implement `Default`. With a default value,
+`SourceOrder` does not implement `Default`. With a default value,
 "forgot to give the order" and "really meant to keep creation order" become
 indistinguishable, and the ordering intent turns implicit again. The order is
 `Source::new`'s first argument for the same reason, and it sits in a public
@@ -590,9 +598,9 @@ different questions:
   is in **physical pixels**, which is the
   whole point: a stroke near the camera and the same stroke far away are the
   same weight, where a width in world units narrows with distance. The source
-  is an ordinary [`FrameSource`](source::FrameSource) — a world's strokes are
+  is an ordinary [`DrawSource`](source::DrawSource) — a world's strokes are
   the `Line` entities its scope sees this frame — and it declares
-  [`FrameSourceOrder::LINE`](source::FrameSourceOrder::LINE), after the mesh
+  [`SourceOrder::LINE`](source::SourceOrder::LINE), after the mesh
   source: every stroke tests the depth the meshes wrote, so the bodies must
   already be in the depth buffer for a stroke behind one to be hidden. Whether
   a stroke also writes depth is its own policy's word — the default blending
@@ -987,7 +995,7 @@ matrices a `brightness`, `grayscale` or `sepia` becomes, and any graph of
 several primitives — is drawn without the filter.
 
 A page is a whole document rather than an attachment laid over a scene, and it
-covers the target, so it records at [`FrameSourceOrder::BLITZ`](source::FrameSourceOrder::BLITZ) —
+covers the target, so it records at [`SourceOrder::BLITZ`](source::SourceOrder::BLITZ) —
 over the meshes and under the overlay, which stays readable on top of it.
 
 The page is driven, not photographed. The frame's input reaches its document as
@@ -1200,7 +1208,7 @@ let pass = world
     .spawn(Pass::new(FramePassOrder(0)));
 let source = world
     .scope_mut(pass)
-    .spawn(bundle![Source::new(FrameSourceOrder::MESH, mesh_source)]);
+    .spawn(bundle![Source::new(SourceOrder::MESH, mesh_source)]);
 let scope = world.scope(source);
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -1265,11 +1273,12 @@ let color = create_color_target(
 let attachments = FrameAttachments::new(
     &world,
     ctx,
-    wgpu::TextureFormat::Rgba8UnormSrgb,
-    (1280, 720),
-    1,
-    true,
-    false,
+    AttachmentDesc {
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        size: (1280, 720),
+        sample_count: 1,
+        depth: Some(DepthAttachment::Transient),
+    },
 );
 let scope = world.scope(source);
 let color_view = {
@@ -1301,7 +1310,7 @@ let mut world = World::new();
 // scope and drives whatever panels it finds there.
 let ui = world
     .root_scope_mut()
-    .spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
+    .spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
 world.scope_mut(ui).spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),]);

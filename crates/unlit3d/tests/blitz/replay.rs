@@ -2,8 +2,8 @@
 //! was queued, rather than the state it has since folded into.
 
 use super::{
-    Arc, BlitzDocument, BlitzSource, Ctx, FrameSourceOrder, InputEvent, InputEvents, Modifiers,
-    MouseButton, MouseEvent, Mutex, OnBlitzEvent, Seen, TestGpu, TouchPhase, WheelUnit, World,
+    Arc, BlitzDocument, BlitzSource, Ctx, InputEvent, InputEvents, Modifiers, MouseButton,
+    MouseEvent, Mutex, OnBlitzEvent, Seen, SourceOrder, TestGpu, TouchPhase, WheelUnit, World,
     bundle, feed, pointer_payload, refresh_input, render_watched_page, spawn_input,
 };
 
@@ -341,7 +341,7 @@ pub(super) async fn a_replaced_page_replays_from_the_world_state() {
     let input = spawn_input(&mut world);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
-    let source = gpu.spawn_source(&mut world, FrameSourceOrder::BLITZ, BlitzSource::new());
+    let source = gpu.spawn_source(&mut world, SourceOrder::BLITZ, BlitzSource::new());
     let page = world.scope_mut(source).spawn(bundle![
         BlitzDocument::new(html),
         OnBlitzEvent::new(move |_scope, _entity, event| {

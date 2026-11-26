@@ -49,7 +49,7 @@ fn build(
     let key = LitPipelineKey::new(default_options());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
@@ -86,10 +86,9 @@ fn build(
     // card, which is translucent so the cube and the overlay's band all show
     // through it: the frame proves the three sources share one pass and stack
     // in the order their sources declare.
-    let page_source = world.scope_mut(pass).spawn(bundle![Source::new(
-        FrameSourceOrder::BLITZ,
-        BlitzSource::new()
-    )]);
+    let page_source = world
+        .scope_mut(pass)
+        .spawn(bundle![Source::new(SourceOrder::BLITZ, BlitzSource::new())]);
     world
         .scope_mut(page_source)
         .spawn(bundle![BlitzDocument::new(PAGE)]);

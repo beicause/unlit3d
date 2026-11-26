@@ -27,12 +27,12 @@
 | 绘制顺序 | `FramePassOrder(pub i32)`，低者先录 | 同上 |
 | 附件 | `FramePass::set_attachments`：深度 / MSAA 视图 + 颜色视图 | 同上 |
 | 视口 | `FramePass::viewport: Option<ViewportRect>`（字段在 pass.rs）；`ViewportRect::new(w, h)` / `at(x, y)` / `with_depth(min, max)` / `fit_aspect(aspect, target_w, target_h)` | `crates/unlit_wgpu/src/scene.rs` |
-| 每 pass 信息 | `PassInfo { surface: SurfaceKey, width, height, viewport }`，source 靠它知道画进什么目标、目标多大 | `crates/unlit3d/src/pass.rs` |
+| 每 pass 信息 | `PassInfo { pass: PassId, target: RenderTargetId, frame: FrameId, surface: SurfaceKey, width, height, viewport, camera }`，source 靠它知道这次构建属于哪个 pass、哪个目标、哪一帧、目标多大。`SurfaceKey` 只是管线特化键，两个目标可以共用，按目标缓存状态要用 `target`，按 pass 缓存（如线条实例流）用 `pass` | `crates/unlit3d/src/pass.rs`、`crates/unlit3d/src/target.rs` |
 | 清屏 | `RenderLoadOps { color, depth, stencil }`（定义在 `crates/unlit3d/src/components.rs`），默认 `color_clear()` / `depth_clear()`（清 0.0，reverse-z 的远平面）/ `stencil_clear()`；三个 `const fn` 在 `crates/unlit_wgpu/src/render_attachments.rs`，经 prelude 重导出 | `crates/unlit3d/src/components.rs`、`crates/unlit_wgpu/src/render_attachments.rs` |
-| source 组件 | `Source::new(FrameSourceOrder, impl FrameSource)` + `pub order` 字段（直接写它即可重排）/ `as_mut::<T>` / `as_ref::<T>` / `build_scene` | `crates/unlit3d/src/source.rs` |
-| source 顺序 | `FrameSourceOrder::MESH = 0`、`::LINE = 50`、`::BLITZ = 90`、`::EGUI = 100`：线默认夹在 mesh 与 egui 之间，因为它测 mesh 写下的深度；Blitz 页面是覆盖整个目标的不透明文档，所以在 mesh 之上、叠加层之下。顺序属于实体而非源类型，`Source::new` 的第一个参数就是它；同类源的两个实体可以给不同顺序 | 同上 |
-| 自定义 source | `trait FrameSource` 只有 `build_scene`：顺序不来自类型，而来自 `Source` 的 `order` 字段。会被**每个 pass 各调一次**，per-pass 状态按 `info.surface` 存 | 同上 |
-| 附件分配 | `FrameAttachments::new` 只分配**深度**（`with_depth` 为真时）与 **MSAA**（`sample_count > 1` 时）两张纹理并把视图登记进图；**颜色附件是调用方的**，两者用 `FramePass::set_attachments` 配到一起。`resize` 重建时视图 id 不变 | `crates/unlit3d/src/attachments.rs` |
+| source 组件 | `Source::new(SourceOrder, impl DrawSource)` + `pub order` 字段（直接写它即可重排）/ `as_mut::<T>` / `as_ref::<T>` / `build_scene`。实现 `SceneSource`（`fn build(&mut self, SceneBuild<'_>, &mut Scene)`）即有 `DrawSource` 的 blanket 实现；`SceneBuild { scope, ctx, info, encoder }` 把四个上下文一次给出 | `crates/unlit3d/src/source.rs` |
+| source 顺序 | `SourceOrder::MESH = 0`、`::LINE = 50`、`::BLITZ = 90`、`::EGUI = 100`：线默认夹在 mesh 与 egui 之间，因为它测 mesh 写下的深度；Blitz 页面是覆盖整个目标的不透明文档，所以在 mesh 之上、叠加层之下。顺序属于实体而非源类型，`Source::new` 的第一个参数就是它；同类源的两个实体可以给不同顺序 | 同上 |
+| 自定义 source | 首选实现 `trait SceneSource`（只有 `build`），`trait DrawSource::build_scene` 是低层形式，只在需要控制 encoder 超出上传范围时实现。顺序不来自类型，而来自 `Source` 的 `order` 字段。会被**每个 pass 各调一次**：per-pass 状态按 `info.pass` 存，per-target 状态按 `info.target` 存 | 同上 |
+| 附件分配 | `FrameAttachments::new(world, ctx, AttachmentDesc { format, size, sample_count, depth: Option<DepthAttachment> })`，只分配**深度**（`depth` 为 `Some(..)` 时；`Transient` 每 pass 后丢弃、`Persistent` 可 `LoadOp::Load`）与 **MSAA**（`sample_count > 1` 时）两张纹理并把视图登记进图；**颜色附件是调用方的**，两者用 `FramePass::set_attachments` 配到一起。`resize` 重建时视图 id 不变，尺寸只有一份（读自视图），`FrameAttachments::size(&world)` / `Pass::target_size(&world)` 都读它 | `crates/unlit3d/src/attachments.rs` |
 | 目标特化键 | 画的时候 `Pass::attachments()` 把三个视图装配成 `RenderAttachments`，它的 `surface_key()` 才是 `SurfaceKey` 的来源。**`FrameAttachments` 上没有这个方法** | `crates/unlit_wgpu/src/render_attachments.rs` |
 
 ## mesh 与材质（MeshSource）

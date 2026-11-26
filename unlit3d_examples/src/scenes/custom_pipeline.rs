@@ -306,7 +306,7 @@ fn build(
     // scene goes through a pipeline the example compiled itself.
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
     let camera_entity = world
         .scope_mut(source_entity)
         .spawn(bundle![camera_looking_at(

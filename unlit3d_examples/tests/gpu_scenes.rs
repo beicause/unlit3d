@@ -248,7 +248,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         size,
         TargetConfig {
             samples: def.samples,
-            with_depth: def.depth,
+            depth: def.depth.then_some(DepthAttachment::Transient),
             ..TargetConfig::default()
         },
     )
@@ -345,7 +345,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         size,
         TargetConfig {
             samples: def.samples,
-            with_depth: def.depth,
+            depth: def.depth.then_some(DepthAttachment::Transient),
             ..TargetConfig::default()
         },
     )

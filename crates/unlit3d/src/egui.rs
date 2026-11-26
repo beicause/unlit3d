@@ -1,6 +1,6 @@
-//! An egui overlay, drawn as a frame source.
+//! An egui overlay, drawn as a draw source.
 //!
-//! [`EguiSource`] is a [`FrameSource`] that renders the world's egui interfaces
+//! [`EguiSource`] is a [`DrawSource`] that renders the world's egui interfaces
 //! over whatever the frame already holds. The interfaces themselves are
 //! [`EguiPanel`] behaviour components: the source is only their driver, and it
 //! runs whatever panels its own scope carries, in query order.
@@ -21,7 +21,7 @@
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities under the same source, each with its own
 //! // sibling state.
-//! let ui = world.root_scope_mut().spawn(bundle![Source::new(FrameSourceOrder::EGUI, EguiSource::new())]);
+//! let ui = world.root_scope_mut().spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
 //! world.scope_mut(ui).spawn(bundle![
 //!     EguiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
@@ -46,7 +46,6 @@ use unlit_wgpu::egui::{
 use unlit_wgpu::pipeline::ShaderCache;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
-use unlit_wgpu::specialize::SurfaceKey;
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
@@ -59,7 +58,8 @@ use crate::input::{InputEvents, InputState};
 use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::relay::Snapshot;
-use crate::source::{FrameSource, RenderContext};
+use crate::source::{SceneBuild, SceneSource};
+use crate::target::RenderTargetId;
 /// egui, re-exported because an [`EguiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
@@ -111,14 +111,14 @@ impl EguiPanel {
     }
 }
 
-/// The GPU state of a [`EguiSource`], built for one [`SurfaceKey`].
+/// The GPU state of a [`EguiSource`], built for one [`RenderTargetId`].
 ///
 /// One entry per target the source has been asked to draw into: a source may be
 /// recorded by several passes, and the passes of one frame need not share a
-/// key — a multisampled offscreen pass and a single-sampled swap chain differ in
-/// sample count. Each entry has uniforms and an integration of its own, because
-/// the integration holds the pipeline specialized for that target and the
-/// texture atlases uploaded for it.
+/// target — a multisampled offscreen pass and a single-sampled swap chain have
+/// their own attachments. Each entry has uniforms and an integration of its own,
+/// because the integration holds the pipeline specialized for that target and
+/// the texture atlases uploaded for it.
 struct Gpu {
     /// How the global bind group is built for the pipeline this target is
     /// specialized for.
@@ -140,28 +140,32 @@ struct Gpu {
 
 /// One target's [`Gpu`] state.
 ///
-/// Entries are kept for the world's life: a key changes with a target's format
-/// or sample count, not with its size, so a windowed frame loop settles on one
-/// or two of them and never rebuilds as the passes alternate.
+/// Entries are kept for as long as the target is drawn into. The key names the
+/// target rather than its surface: two targets of one frame can agree on format
+/// and sample count and still be two targets, and the state an overlay keeps —
+/// its material bind groups, its uniforms — is the pipeline's, so a source that
+/// keyed on the surface alone would rebuild the second target's state on every
+/// frame the passes alternate.
 struct Target {
-    /// The target's specialization key.
-    key: SurfaceKey,
+    /// The target the state was built for.
+    id: RenderTargetId,
     /// The state built for it.
     gpu: Gpu,
 }
 
-/// A frame source that draws the world's egui interfaces as an overlay.
+/// A draw source that draws the world's egui interfaces as an overlay.
 ///
 /// The source owns egui's [`Context`](egui::Context) — its font atlas and
 /// memory survive across frames — and drives every [`EguiPanel`] in the world.
 /// Spawn it like any other source ([`Source::new`](crate::source::Source::new)) at
-/// [`FrameSourceOrder::EGUI`](crate::source::FrameSourceOrder::EGUI), so it records
+/// [`SourceOrder::EGUI`](crate::source::SourceOrder::EGUI), so it records
 /// after the meshes.
 ///
 /// Nothing is built until the first frame: the source's pipeline is
 /// specialized on the frame's target, which is only known in
-/// [`FrameSource::build_scene`]. The pipeline and its bind groups are built
-/// then, and rebuilt when the target's [`SurfaceKey`] changes.
+/// [`SceneSource::build`](crate::source::SceneSource::build). The pipeline and
+/// its bind groups are built then, one set per target the source is drawn
+/// into, and reused for as long as that target is.
 ///
 /// The overlay binds uniforms of the frame's own registry: its projection maps
 /// logical points onto clip space rather than world space, so it names a camera
@@ -256,18 +260,23 @@ impl EguiSource {
         })
     }
 
-    /// The index of the entry for `surface`, building it on first use.
+    /// The index of the entry for `id`, building it on first use.
     ///
     /// A source may be recorded by several passes, and the passes of one frame
-    /// need not share a key — a multisampled offscreen pass and a single-
-    /// sampled swap chain differ in sample count — so the state is kept per key
-    /// rather than rebuilt when the key changes: alternating passes would
-    /// otherwise specialize the pipeline, and drop the material table with it,
-    /// twice per frame.
-    fn target_index(&mut self, device: &wgpu::Device, surface: SurfaceKey) -> usize {
-        if let Some(index) = self.targets.iter().position(|target| target.key == surface) {
+    /// need not share a target — a multisampled offscreen pass and a single-
+    /// sampled swap chain have attachments of their own — so the state is kept
+    /// per target rather than rebuilt as the passes alternate: one shared entry
+    /// would otherwise specialize the pipeline, and drop the material table with
+    /// it, on every pass.
+    fn target_index(&mut self, device: &wgpu::Device, info: PassInfo) -> usize {
+        if let Some(index) = self
+            .targets
+            .iter()
+            .position(|target| target.id == info.target)
+        {
             return index;
         }
+        let surface = info.surface;
         // An overlay drawn into an sRGB target encodes its own output in gamma space,
         // so the fragment converts to linear; the same call the winit path
         // makes for its swap chain.
@@ -285,7 +294,7 @@ impl EguiSource {
             })
         });
         self.targets.push(Target {
-            key: surface,
+            id: info.target,
             gpu: Gpu {
                 recipe,
                 groups: UniformGroups::new(),
@@ -302,15 +311,15 @@ impl Default for EguiSource {
     }
 }
 
-impl FrameSource for EguiSource {
-    fn build_scene(
-        &mut self,
-        scope: &Scope<'_>,
-        ctx: RenderContext,
-        info: PassInfo,
-        scene: &mut Scene,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+impl SceneSource for EguiSource {
+    fn build(&mut self, build: SceneBuild<'_>, scene: &mut Scene) {
+        let SceneBuild {
+            scope,
+            ctx,
+            info,
+            encoder,
+        } = build;
+        let scope = &scope;
         // Settle the graph on every way out of this build, the early return
         // below included. The pass runs where this scope ends, once the
         // integration has uploaded and before the scene reads a group.
@@ -405,7 +414,7 @@ impl FrameSource for EguiSource {
         // so its layout is built against the same target this one draws at.
         self.screen.publish(target_screen);
 
-        let index = self.target_index(&device, target.surface);
+        let index = self.target_index(&device, target);
 
         // The events reached egui's own types while the world's `InputEvents`
         // were read, and they stay in the world afterwards: the overlay reads them,
@@ -563,7 +572,7 @@ impl FrameSource for EguiSource {
 /// that is drawn again — a slot holding its frame across many drawn frames —
 /// asks once and is served once. The other commands stay where they are:
 /// copying text or an image is the integration's to serve on the platform it
-/// runs on; only a URL needs something a frame source is not: a page to open
+/// runs on; only a URL needs something a draw source is not: a page to open
 /// it in.
 fn take_open_urls(output: &mut egui::PlatformOutput, out: &mut Vec<OpenUrl>) {
     for command in &output.commands {

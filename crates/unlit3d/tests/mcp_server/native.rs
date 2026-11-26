@@ -48,7 +48,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();
@@ -75,8 +75,16 @@ fn offscreen_world(ctx: &Ctx) -> World {
         graph.add_dependency(&view, &texture);
         view
     };
-    let attachments =
-        FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true, false);
+    let attachments = FrameAttachments::new(
+        &world,
+        context,
+        AttachmentDesc {
+            format: COLOR_FORMAT,
+            size: SIZE,
+            sample_count: SAMPLES,
+            depth: Some(DepthAttachment::Transient),
+        },
+    );
     world
         .root_scope()
         .query_one::<&mut FramePass>(pass)

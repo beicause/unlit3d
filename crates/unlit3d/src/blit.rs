@@ -1,4 +1,4 @@
-//! A frame source that copies a texture over the pass's target.
+//! A draw source that copies a texture over the pass's target.
 //!
 //! [`BlitSource`] draws one screen-covering triangle, sampling a texture view
 //! it is handed. It is how a frame presents what an earlier pass drew: a first
@@ -12,15 +12,13 @@
 //! pass's target through the generic variant cache, like any other source's, so
 //! the same source presents into a swap chain or into another offscreen target.
 
-use unlit_ecs::Scope;
 use unlit_wgpu::resources::{ResHandle, TextureView};
 use unlit_wgpu::scene::{DrawOrder, Scene};
 
-use crate::pass::PassInfo;
 use crate::screen::ScreenBlit;
-use crate::source::{FrameSource, RenderContext};
+use crate::source::{SceneBuild, SceneSource};
 
-/// A frame source that blits one texture view over its pass's target.
+/// A draw source that blits one texture view over its pass's target.
 ///
 /// The view the source samples is the caller's, registered in the frame's
 /// [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph), so a world may hand over a different one through the
@@ -29,7 +27,7 @@ use crate::source::{FrameSource, RenderContext};
 /// [`EguiSource`](crate::egui::EguiSource) specializes its own.
 ///
 /// The blit covers the whole target, so spawn it at
-/// [`FrameSourceOrder::MESH`](crate::source::FrameSourceOrder::MESH).
+/// [`SourceOrder::MESH`](crate::source::SourceOrder::MESH).
 pub struct BlitSource {
     /// The view the source copies, in the frame's resource graph.
     ///
@@ -62,15 +60,15 @@ impl BlitSource {
     }
 }
 
-impl FrameSource for BlitSource {
-    fn build_scene(
-        &mut self,
-        scope: &Scope<'_>,
-        ctx: RenderContext,
-        info: PassInfo,
-        scene: &mut Scene,
-        _encoder: &mut wgpu::CommandEncoder,
-    ) {
+impl SceneSource for BlitSource {
+    fn build(&mut self, build: SceneBuild<'_>, scene: &mut Scene) {
+        let SceneBuild {
+            scope,
+            ctx,
+            info,
+            encoder: _encoder,
+        } = build;
+        let scope = &scope;
         self.screen
             .record(scope, ctx, info, scene, self.view.clone(), self.blend);
     }

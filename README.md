@@ -39,7 +39,7 @@ treat every crate as work in progress.
   build feature.
 - **A scene the caller composes.** A frame is a sequence of passes, each an
   ordinary entity holding the views it draws into, and each pass records the
-  frame sources below it, which contribute their own draws and state where in
+  draw sources below it, which contribute their own draws and state where in
   that pass they belong. The built-in mesh rendering, the egui overlay and a
   caller's own source have exactly the same standing.
 - **A small ECS.** Borrowing OOP's focus on object state, an entity's archetype
@@ -92,7 +92,7 @@ treat every crate as work in progress.
 | Crate | Role |
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in lit pipeline, and an egui backend. Knows nothing about ECS. |
-| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, egui and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
+| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, draw sources, input, egui and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. It also carries the MCP server that exposes a running world over stdio or HTTP, which each crate extends with its own tools. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_suite.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
@@ -112,7 +112,7 @@ else stays reachable through its own crate path.
 
 Two principles shape the layering: **the built-in pipeline gets no privilege**,
 being composed from the same public facilities a caller's own pipeline uses; and
-**frame sources are peers**, with the built-in mesh source and a caller's own
+**draw sources are peers**, with the built-in mesh source and a caller's own
 pass differing in nothing.
 
 Each crate's README carries the design rationale for what it owns:

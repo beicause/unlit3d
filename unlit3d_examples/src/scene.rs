@@ -1,8 +1,8 @@
 use super::{
     EguiSource, Entity, EntityAccessError, Frame, FramePass, FrameRate, FrameSkip,
-    FrameSourceOrder, FullscreenActive, FullscreenRequest, GPU_INFO_AREA, PanelRects, Pass,
-    RenderDevice, RenderLoadOps, Renderer, ResourceGraph, SCENE_PASS_ORDER, SELECTOR_WINDOW,
-    SceneControl, SceneFrame, SceneSize, SceneSwitch, Source, ViewportRect, World, bundle,
+    FullscreenActive, FullscreenRequest, GPU_INFO_AREA, PanelRects, Pass, RenderDevice,
+    RenderLoadOps, Renderer, ResourceGraph, SCENE_PASS_ORDER, SELECTOR_WINDOW, SceneControl,
+    SceneFrame, SceneSize, SceneSwitch, Source, SourceOrder, ViewportRect, World, bundle,
     color_clear, dispatch_frame, dispatch_input_on_frame, egui, mount_api_docs, mount_frame_rate,
     mount_fullscreen, mount_gpu_info, mount_selector, run_scene_advance, scenes, spawn_context,
     step_sequence,
@@ -145,7 +145,7 @@ impl Scene {
             }
             world
                 .scope_mut(pass)
-                .spawn(bundle![Source::new(FrameSourceOrder::EGUI, source_egui)])
+                .spawn(bundle![Source::new(SourceOrder::EGUI, source_egui)])
         });
         let control = (def.build)(&mut world, context, pass, ui, content, options);
         let SceneControl { advance, snapshot } = control;

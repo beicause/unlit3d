@@ -239,7 +239,7 @@ impl NetProvider for BlitzResources {
 
 /// What a page asks of the shell it is laid out in.
 ///
-/// A page has one thing to ask of a frame source: another frame. The document
+/// A page has one thing to ask of a draw source: another frame. The document
 /// reports that it scrolled, that a resource landed, or that a callback changed
 /// it, and the source paints again the next time it is built. The rest of a
 /// shell — the cursor, the window title, the clipboard, the input method —

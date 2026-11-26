@@ -1,4 +1,4 @@
-//! End-to-end GPU tests for [`EguiSource`] as a frame source.
+//! End-to-end GPU tests for [`EguiSource`] as a draw source.
 //!
 //! Two groups. The first draws egui with no `MeshSource` and no camera at all;
 //! the second draws a mesh and an overlay in one pass, which is where the two sources
@@ -160,7 +160,7 @@ fn rich_panel() -> EguiPanel {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
             |ui| {
                 ui.heading("unlit3d");
-                ui.label("frame source egui");
+                ui.label("draw source egui");
                 ui.separator();
                 ui.checkbox(&mut spin, "spin");
                 ui.add(egui::Slider::new(&mut blend, 0.0..=1.0));
@@ -277,7 +277,7 @@ fn egui_only_world(world: &mut World, ctx: &Ctx) -> (TestGpu, Entity) {
 /// Mount a `EguiSource` and answer its entity: a panel spawned under it is what
 /// the source runs.
 fn mount_egui_source(world: &mut World, gpu: &TestGpu) -> Entity {
-    gpu.spawn_source(world, FrameSourceOrder::EGUI, EguiSource::new())
+    gpu.spawn_source(world, SourceOrder::EGUI, EguiSource::new())
 }
 
 /// Spawn `panel` under the egui source, which is the scope it runs.
@@ -525,7 +525,7 @@ async fn mesh_and_egui_frame(
     spawn_panel(world, ui, panel);
     if egui_first {
         let mut source = world.root_scope().query_one::<&mut Source>(ui);
-        source.get().order = FrameSourceOrder(FrameSourceOrder::MESH.0 - 1);
+        source.get().order = SourceOrder(SourceOrder::MESH.0 - 1);
     }
 
     let target = gpu.bind_offscreen_target_with(world, 1, true);
@@ -541,7 +541,7 @@ const PANEL_PIXEL: (u32, u32) = (16, 144);
 /// The overlay paints over the mesh whatever the source record order is.
 ///
 /// Every egui draw carries `DrawOrder::After`, so the pass composite tiers the
-/// egui behind the sequenced geometry regardless of where `FrameSourceOrder`
+/// egui behind the sequenced geometry regardless of where `SourceOrder`
 /// puts the `EguiSource`: the record order only shapes the sequence tier, and
 /// the mesh is its only member here, so both frames come out identical.
 async fn egui_draws_over_the_mesh_in_any_source_order() {
@@ -602,7 +602,7 @@ async fn egui_does_not_clip_the_mesh() {
                 RED,
             );
         }),]);
-    gpu.spawn_source(&mut world, FrameSourceOrder::EGUI, EguiSource::new());
+    gpu.spawn_source(&mut world, SourceOrder::EGUI, EguiSource::new());
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -699,7 +699,7 @@ async fn mesh_and_egui_survive_a_second_frame() {
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&world, &gpu);
 
-    gpu.spawn_source(&mut world, FrameSourceOrder::EGUI, EguiSource::new());
+    gpu.spawn_source(&mut world, SourceOrder::EGUI, EguiSource::new());
     world.root_scope_mut().spawn(bundle![rich_panel()]);
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);

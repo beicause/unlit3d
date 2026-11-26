@@ -1,7 +1,7 @@
 use super::{
-    BuildPresenter, Entity, InitialScene, McpEnabled, PanelRects, PresentationPath, Presenter,
-    PresenterEntity, RenderDevice, RenderWorld, SAMPLE_COUNT, Scene, SceneEntity, SurfaceOptions,
-    TargetConfig, World, gpu, scenes, window,
+    BuildPresenter, DepthAttachment, Entity, InitialScene, McpEnabled, PanelRects,
+    PresentationPath, Presenter, PresenterEntity, RenderDevice, RenderWorld, SAMPLE_COUNT, Scene,
+    SceneEntity, SurfaceOptions, TargetConfig, World, gpu, scenes, window,
 };
 
 /// Bring the scene and its presentation path up, as far as the state allows.
@@ -86,7 +86,7 @@ pub(crate) fn present(world: &World, app: Entity) {
     let path = if mcp {
         PresentationPath::Intermediate(TargetConfig {
             samples: def.samples,
-            with_depth: def.depth,
+            depth: def.depth.then_some(DepthAttachment::Transient),
             ..TargetConfig::default()
         })
     } else {

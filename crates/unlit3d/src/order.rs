@@ -9,7 +9,7 @@
 //!
 //! This is crate-internal on purpose: a caller's vocabulary is
 //! [`FramePassOrder`](crate::pass::FramePassOrder) and
-//! [`FrameSourceOrder`](crate::source::FrameSourceOrder), and there is nothing
+//! [`SourceOrder`](crate::source::SourceOrder), and there is nothing
 //! to gain from exposing the generic form they are built on.
 
 use core::fmt::Debug;

@@ -63,7 +63,7 @@ pub(crate) struct FrameArrays {
     /// Whether the metadata array changed since it was last uploaded.
     ///
     /// Allocating or removing a mesh marks it; the next
-    /// [build](crate::source::FrameSource::build_scene) uploads the array then,
+    /// [build](crate::source::DrawSource::build_scene) uploads the array then,
     /// so an upload always lands in the same encoder as the draws that read it.
     pub(super) metadata_dirty: bool,
 
@@ -100,7 +100,7 @@ pub(crate) struct FrameArrays {
     /// array was last uploaded.
     ///
     /// Allocating or removing a mesh marks it; the next
-    /// [build](crate::source::FrameSource::build_scene) uploads the array then,
+    /// [build](crate::source::DrawSource::build_scene) uploads the array then,
     /// so the upload always lands in the same encoder as the draws that read it.
     morph_deltas_dirty: bool,
 }

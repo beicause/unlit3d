@@ -18,14 +18,49 @@
 //!
 //! A frame whose sources declare no depth state must have no depth attachment:
 //! wgpu requires a pipeline's depth state to match the pass's attachments
-//! exactly. `with_depth` decides whether one is allocated at all, and
-//! [`FrameAttachments::depth_view`] reports it.
+//! exactly. [`AttachmentDesc::depth`] decides whether one is allocated at all
+//! and how it keeps its contents, and [`FrameAttachments::depth_view`] reports
+//! it.
 
 use unlit_ecs::World;
 use unlit_wgpu::render_attachments::{create_depth_target, create_msaa_target};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 use crate::source::RenderContext;
+
+/// How a depth attachment keeps its contents between passes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepthAttachment {
+    /// The contents are discarded after each pass, so the texture is allocated
+    /// transient and costs no memory once the target is drawn into.
+    Transient,
+    /// The contents stay readable, so a pass on this target may open with
+    /// [`LoadOp::Load`](wgpu::LoadOp). The texture is stored rather than
+    /// discarded, which costs the memory of a full depth buffer.
+    Persistent,
+}
+
+/// What a frame's attachments are made of, besides the color one the caller
+/// holds.
+///
+/// This is what [`FrameAttachments::new`] takes: one value describing the
+/// target, rather than a run of arguments whose order a caller has to
+/// remember and whose neighbouring booleans read the same at a call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttachmentDesc {
+    /// The color attachment's format, which a multisample attachment resolves
+    /// into.
+    pub format: wgpu::TextureFormat,
+    /// The target's size, in physical pixels.
+    pub size: (u32, u32),
+    /// How many samples every attachment carries. `1` allocates no
+    /// multisample attachment, because a single-sampled pass resolves into
+    /// nothing.
+    pub sample_count: u32,
+    /// The depth attachment, or `None` for a frame whose sources declare no
+    /// depth state.
+    pub depth: Option<DepthAttachment>,
+}
 
 /// The depth and multisample attachments a frame draws with, allocated and
 /// kept registered in the frame's resource graph.
@@ -40,8 +75,6 @@ pub struct FrameAttachments {
     ctx: RenderContext,
     /// The format the multisample attachment carries: the color attachment's.
     format: wgpu::TextureFormat,
-    /// The size the attachments are allocated at.
-    size: (u32, u32),
     /// The sample count the attachments are allocated with.
     sample_count: u32,
     /// Whether the depth attachment keeps its previous contents readable, so
@@ -60,28 +93,23 @@ impl FrameAttachments {
     /// Allocate the depth and multisample attachments for a `size`-pixel
     /// target, and register their views in the frame's graph.
     ///
-    /// A depth-stencil texture is allocated only when `with_depth`, and a
-    /// multisample one only when `sample_count > 1`. `format` is the color
-    /// attachment's, which the multisample attachment resolves into.
-    /// `persistent_depth` keeps the depth texture's previous contents
-    /// readable — a pass on this target may open with
-    /// [`LoadOp::Load`](wgpu::LoadOp) — at the cost of storing the results
-    /// after every pass instead of discarding them.
-    pub fn new(
-        world: &World,
-        ctx: RenderContext,
-        format: wgpu::TextureFormat,
-        size: (u32, u32),
-        sample_count: u32,
-        with_depth: bool,
-        persistent_depth: bool,
-    ) -> Self {
+    /// A depth-stencil texture is allocated only when the description names
+    /// one, and a multisample one only when `sample_count > 1`. See
+    /// [`AttachmentDesc`] for what each part of the description decides.
+    pub fn new(world: &World, ctx: RenderContext, desc: AttachmentDesc) -> Self {
+        let AttachmentDesc {
+            format,
+            size,
+            sample_count,
+            depth,
+        } = desc;
+        let persistent_depth = depth == Some(DepthAttachment::Persistent);
         let device = ctx
             .device(&world.root_scope())
             .expect("the context's device resource exists");
         let mut graph_holder = ctx.graph(&world.root_scope());
         let graph = graph_holder.get();
-        let depth_view = with_depth.then(|| {
+        let depth_view = depth.is_some().then(|| {
             let texture =
                 create_depth_target(&device, size.0, size.1, sample_count, !persistent_depth);
             graph.insert(
@@ -99,7 +127,6 @@ impl FrameAttachments {
         Self {
             ctx,
             format,
-            size,
             sample_count,
             persistent_depth,
             depth_view,
@@ -112,9 +139,18 @@ impl FrameAttachments {
     /// It is the target's own size, which the depth and multisample views
     /// span. A pass that letterboxes states the region its content occupies
     /// on the pass, not here.
+    ///
+    /// The size is read from a view rather than stored, so there is one answer
+    /// to how big the target is: the one the view the pass draws into carries.
+    /// `None` when this set has no depth or multisample view to read it from,
+    /// or when their size cannot be resolved out of the frame's graph.
     #[must_use]
-    pub fn size(&self) -> (u32, u32) {
-        self.size
+    pub fn size(&self, world: &World) -> Option<(u32, u32)> {
+        let id = self.msaa_view.as_ref().or(self.depth_view.as_ref())?;
+        let mut graph_row = self.ctx.try_graph(&world.root_scope()).ok()?;
+        let view = graph_row.get().get(id)?;
+        let texture = view.texture();
+        Some((texture.width(), texture.height()))
     }
 
     /// Rebuild the attachments for a new target size.
@@ -124,10 +160,14 @@ impl FrameAttachments {
     /// follows the replacement. The graph is maintained before returning, since
     /// a resize is not followed by a scene rebuild that would maintain it.
     pub fn resize(&mut self, world: &World, size: (u32, u32)) {
-        if size == self.size {
+        if self.depth_view.is_none() && self.msaa_view.is_none() {
+            // Nothing to allocate: the colour attachment is the target's own
+            // and follows its own resize.
             return;
         }
-        self.size = size;
+        if self.size(world) == Some(size) {
+            return;
+        }
         let device = self
             .ctx
             .device(&world.root_scope())

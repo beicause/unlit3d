@@ -4,7 +4,7 @@
 //! a mesh is uploaded into, the pipeline families an entity's key resolves
 //! through, the per-frame caches the draw list is built from, and the
 //! [`Scene`] those draws are recorded from. It is an ordinary
-//! [`FrameSource`] — the frame driver knows nothing about meshes, so a
+//! [`DrawSource`] — the frame driver knows nothing about meshes, so a
 //! caller's own source runs beside it with no less privilege.
 //!
 //! The state the source owns is grouped by what it is for, and each group
@@ -56,7 +56,6 @@ use zerocopy::IntoBytes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts, frame_camera};
 use crate::culling::VisibleMesh;
 use crate::global_uniforms::{CameraKey, FrameUniforms, UniformGroups, ViewKey};
-use crate::pass::PassInfo;
 use crate::pipeline::{
     GlobalResources, InstanceContext, InstanceData, Rebuild, RegisteredGlobal,
     RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
@@ -65,7 +64,7 @@ use crate::scene::{
     AnyFamily, DrawHandlesKey, EntryHandles, Family, FamilyId, RenderPipelineHandles, SceneFrame,
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
-use crate::source::{FrameSource, RenderContext};
+use crate::source::{RenderContext, SceneBuild, SceneSource};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The capacity that covers `needed` after growing from `current`.
@@ -117,7 +116,7 @@ struct RegisteredPipeline {
     global: Option<RegisteredGlobal>,
 }
 
-/// The [FrameSource] that draws meshes.
+/// The [DrawSource] that draws meshes.
 ///
 /// It owns the mesh pools, the pipeline families, the per-frame caches and the
 /// [`Scene`] the frame's draws are assembled into, and it fetches the device,
@@ -355,15 +354,15 @@ pub(crate) struct MeshEntry {
 use self::arrays::{FrameArrays, grow_array_to_fit};
 use self::storage::StorageTicket;
 
-impl FrameSource for MeshSource {
-    fn build_scene(
-        &mut self,
-        world: &Scope<'_>,
-        ctx: RenderContext,
-        info: PassInfo,
-        scene: &mut Scene,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+impl SceneSource for MeshSource {
+    fn build(&mut self, build: SceneBuild<'_>, scene: &mut Scene) {
+        let SceneBuild {
+            scope,
+            ctx,
+            info,
+            encoder,
+        } = build;
+        let world = &scope;
         // Settle the graph on every way out of this build, the early returns
         // below included, rather than only on the path that draws. The pass
         // runs where this scope ends — see the explicit drop before the frame

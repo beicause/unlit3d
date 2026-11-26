@@ -4,7 +4,8 @@ use crate::lit::{LitMeshDesc, LitPipelineKey};
 use crate::mesh::MorphDeltas;
 use crate::mesh::{MeshDescriptor, MeshDraw, MeshIndexing};
 use crate::pass::PassInfo;
-use crate::source::spawn_context;
+use crate::source::{DrawSource, spawn_context};
+use crate::target::{FrameId, PassId, RenderTargetId};
 use unlit_ecs::bundle;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::context::RenderDevice;
@@ -139,7 +140,7 @@ fn harness() -> Harness {
     let mut source = MeshSource::new(&world.root_scope(), ctx);
     source.register_lit_family(&world.root_scope());
     let key = LitPipelineKey::new(unlit_options());
-    let target = bind_test_target(&world.root_scope(), ctx);
+    let target = bind_test_target(&world, &world.root_scope(), ctx);
     Harness {
         world,
         source,
@@ -150,7 +151,7 @@ fn harness() -> Harness {
 
 /// Register a color texture and a matching depth texture in the context's
 /// graph and describe them as the pass the tests drive the source with.
-fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> PassInfo {
+fn bind_test_target(world: &World, scope: &Scope<'_>, ctx: RenderContext) -> PassInfo {
     let device = ctx.device(scope).expect("the context's device");
     let ft = create_render_target(
         &device,
@@ -173,6 +174,12 @@ fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> PassInfo {
     let attachments =
         RenderAttachments::from_views(graph.get(&color).cloned(), graph.get(&depth).cloned(), None);
     PassInfo {
+        pass: PassId {
+            world: world.id(),
+            entity: Entity::from_bits(0),
+        },
+        target: RenderTargetId::of(world, &color),
+        frame: FrameId::default(),
         surface: attachments.surface_key(),
         width: TEST_SIZE,
         height: TEST_SIZE,

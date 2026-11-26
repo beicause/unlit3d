@@ -265,7 +265,7 @@ fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
         size,
         TargetConfig {
             samples: 1,
-            with_depth: false,
+            depth: None,
             ..TargetConfig::default()
         },
     )

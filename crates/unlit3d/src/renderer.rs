@@ -2,9 +2,9 @@
 //!
 //! A [`Renderer`] draws nothing itself. It drives the frame's [`FramePass`]es:
 //! each pass states what it draws into, every
-//! [`FrameSource`](crate::source::FrameSource) whose scope reaches the pass
+//! [`DrawSource`](crate::source::DrawSource) whose scope reaches the pass
 //! fills the pass's [`Scene`] from the world, and the
-//! driver records that scene in [`FrameSourceOrder`] into the pass. The passes
+//! driver records that scene in [`SourceOrder`] into the pass. The passes
 //! themselves record in [`FramePassOrder`]. That is the whole of it —
 //! the built-in mesh rendering is one source
 //! ([`MeshSource`](crate::mesh_source::MeshSource)) and has no more privilege
@@ -31,7 +31,8 @@ use crate::components::RenderLoadOps;
 use crate::frame::FrameClock;
 use crate::order::{OrderWarnings, Ordering};
 use crate::pass::{FramePass, FramePassOrder, PassInfo};
-use crate::source::{FrameSourceOrder, RenderContext, Source};
+use crate::source::{RenderContext, Source, SourceOrder};
+use crate::target::{FrameId, PassId};
 
 /// The label a pass records under when its entity carries no name: a handle
 /// rebuilt from bits keeps none, and a nameless pass would leave a validation
@@ -62,7 +63,7 @@ const FALLBACK_PASS_LABEL: &str = "unlit3d::pass";
 ///     .spawn(Pass::new(FramePassOrder(0)));
 /// world
 ///     .scope_mut(pass)
-///     .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+///     .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 /// let renderer = world.root_scope_mut().spawn(Renderer::new(ctx));
 /// ```
 pub struct Renderer {
@@ -71,6 +72,12 @@ pub struct Renderer {
     /// Kept so [`Renderer::render`] can reach the queue to submit through;
     /// everything else a frame needs the world hands out itself.
     context: RenderContext,
+    /// The frame this renderer is recording.
+    ///
+    /// Taken from the [`FrameClock`] when the frame starts, so every
+    /// [`PassInfo`] of one frame carries the same
+    /// [`FrameId`](crate::target::FrameId) and the next frame carries another.
+    frame: FrameId,
     /// The frame's passes in record order, reused every frame so resolving
     /// the order allocates nothing.
     passes: Ordering<FramePassOrder>,
@@ -87,10 +94,10 @@ pub struct Renderer {
     ///
     /// One buffer serves every pass in turn, because a pass's sources are
     /// recorded before the next pass is looked at.
-    sources: Ordering<FrameSourceOrder>,
-    /// Reports sources tied on the same [`FrameSourceOrder`], without repeating
+    sources: Ordering<SourceOrder>,
+    /// Reports sources tied on the same [`SourceOrder`], without repeating
     /// itself every frame.
-    source_warnings: OrderWarnings<FrameSourceOrder>,
+    source_warnings: OrderWarnings<SourceOrder>,
     /// The scene each (pass, source) pair built this frame, keyed by the pair.
     ///
     /// Slots outlive the frame, so a steady scene reuses its allocations and a
@@ -207,6 +214,7 @@ impl Renderer {
     pub fn new(ctx: RenderContext) -> Self {
         Self {
             context: ctx,
+            frame: FrameId::default(),
             passes: Ordering::default(),
             pass_warnings: OrderWarnings::default(),
             camera_warnings: MissingCameraWarnings::default(),
@@ -246,7 +254,7 @@ impl Renderer {
     /// The frame is assembled in two phases. First every source of every pass
     /// fills that pass's scene, taking its own short-lived borrow of the world;
     /// then the passes are recorded in [`FramePassOrder`], and within each pass
-    /// its sources in [`FrameSourceOrder`]. A source draws into the passes whose
+    /// its sources in [`SourceOrder`]. A source draws into the passes whose
     /// scope reaches it, so its place in the entity tree is what chooses its
     /// pass — and a source the scopes of several passes reach is built once per
     /// pass, each time into that pass's own scene. A source no pass reaches
@@ -336,6 +344,7 @@ impl Renderer {
             let uniforms = row.get();
             uniforms.begin_frame();
             uniforms.advance_globals(&device, &mut encoder, &globals);
+            self.frame = FrameId(clock.index);
         }
 
         // Every scene of the last frame is stale until this frame builds it
@@ -576,6 +585,7 @@ impl Renderer {
         pass: &FramePass,
     ) -> Option<PassInfo> {
         let attachments = pass.attachments(world, self.context)?;
+        let target = pass.target_id(world)?;
         let camera = pass.camera.filter(|camera| {
             let has_camera = world
                 .root_scope()
@@ -587,6 +597,12 @@ impl Renderer {
             has_camera
         });
         Some(PassInfo {
+            pass: PassId {
+                world: world.id(),
+                entity: pass_entity,
+            },
+            target,
+            frame: self.frame,
             surface: attachments.surface_key(),
             width: attachments.width(),
             height: attachments.height(),
@@ -610,14 +626,14 @@ mod tests {
     use unlit_ecs::Scope;
 
     use crate::pass::{FramePassOrder, Pass};
-    use crate::source::{FrameSource, spawn_context};
+    use crate::source::{DrawSource, spawn_context};
 
     use unlit_wgpu::context::RenderDevice;
 
     /// A source that draws nothing: placement is decided from the tree alone.
     struct Nowhere;
 
-    impl FrameSource for Nowhere {
+    impl DrawSource for Nowhere {
         fn build_scene(
             &mut self,
             _scope: &Scope<'_>,
@@ -647,14 +663,12 @@ mod tests {
     #[test]
     fn a_parked_pass_reaches_the_sources_under_it() {
         let (mut world, mut renderer, pass) = world_with_a_pass();
-        let under = world.scope_mut(pass).spawn(unlit_ecs::bundle![Source::new(
-            FrameSourceOrder::MESH,
-            Nowhere
-        )]);
-        let beside = world.root_scope_mut().spawn(unlit_ecs::bundle![Source::new(
-            FrameSourceOrder::MESH,
-            Nowhere
-        )]);
+        let under = world
+            .scope_mut(pass)
+            .spawn(unlit_ecs::bundle![Source::new(SourceOrder::MESH, Nowhere)]);
+        let beside = world
+            .root_scope_mut()
+            .spawn(unlit_ecs::bundle![Source::new(SourceOrder::MESH, Nowhere)]);
 
         {
             let mut row = world.root_scope().query_one::<&mut FramePass>(pass);

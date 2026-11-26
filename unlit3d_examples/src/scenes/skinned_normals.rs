@@ -60,7 +60,7 @@ fn build(
     let key = LitPipelineKey::new(options);
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     let ((positions, uvs, _gradient, indices), normals) = cube_with_normals();
     // A distinct flat colour per face: the face turned toward the camera is

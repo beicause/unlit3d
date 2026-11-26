@@ -9,7 +9,10 @@ use crate::input::{
     refresh_input,
 };
 use crate::pass::PassInfo;
-use crate::source::{OpenUrl, drain_open_urls, spawn_context};
+use crate::source::{DrawSource, OpenUrl, RenderContext, drain_open_urls, spawn_context};
+use crate::target::{FrameId, PassId, RenderTargetId};
+use unlit_wgpu::resources::ResId;
+use unlit_wgpu::specialize::SurfaceKey;
 
 /// How many times a panel's closure ran, in a sibling component: a panel
 /// cannot keep state in itself.
@@ -30,9 +33,19 @@ fn test_egui_target() -> EguiTarget {
 
 /// The pass target the tests build scenes against. Nothing here records a
 /// pass, so only the target's key and size matter — no attachment has to
-/// exist behind them.
-fn test_target() -> PassInfo {
+/// exist behind them, and the pass and target ids are placeholders named
+/// after the world so they cannot collide with another world's.
+fn test_target(world: &World) -> PassInfo {
     PassInfo {
+        pass: PassId {
+            world: world.id(),
+            entity: Entity::from_bits(0),
+        },
+        target: RenderTargetId {
+            world: world.id(),
+            color: ResId::from_bits(0),
+        },
+        frame: FrameId::default(),
         surface: SurfaceKey {
             color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
             depth_stencil_format: None,
@@ -165,7 +178,7 @@ fn each_panel_runs_once_and_may_write_a_sibling() {
 #[test]
 fn a_panel_is_driven_by_the_source() {
     let (mut world, ctx) = test_world();
-    let target = test_target();
+    let target = test_target(&world);
     world
         .root_scope_mut()
         .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {
@@ -356,7 +369,7 @@ fn a_filter_selects_which_panels_a_caller_collects() {
 #[test]
 fn the_frame_events_reach_the_panels() {
     let (mut world, ctx) = test_world();
-    let target = test_target();
+    let target = test_target(&world);
 
     let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let recorded = Rc::clone(&seen);
@@ -416,7 +429,7 @@ fn a_mouse_click_reaches_a_widget() {
     let clicked = Rc::new(Cell::new(false));
 
     let (mut world, ctx) = test_world();
-    let target = test_target();
+    let target = test_target(&world);
     let flag = Rc::clone(&clicked);
     world
         .root_scope_mut()
@@ -480,7 +493,7 @@ fn a_mouse_click_reaches_a_widget() {
 #[test]
 fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
     let (world, ctx) = test_world();
-    let info = test_target();
+    let info = test_target(&world);
     // Laid out in a context of its own, the way a publishing world would:
     // its texture ids start where every context's do.
     let mut other = World::new();
@@ -528,7 +541,7 @@ fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
 #[test]
 fn a_displaced_frame_hands_its_textures_to_its_successor() {
     let (world, ctx) = test_world();
-    let info = test_target();
+    let info = test_target(&world);
     // One context, laid out twice: the second pass writes no texture, and
     // is what a publisher outrunning the drawing side publishes over the
     // first.
@@ -607,7 +620,7 @@ fn a_frame_laid_out_at_another_size_hands_its_textures_over() {
     let resized = PassInfo {
         width: 2 * width,
         height: 2 * height,
-        ..test_target()
+        ..test_target(&world)
     };
     source.build_scene(&world.root_scope(), ctx, resized, &mut scene, &mut encoder);
     assert!(
@@ -627,7 +640,7 @@ fn a_frame_laid_out_at_another_size_hands_its_textures_over() {
     source.build_scene(
         &world.root_scope(),
         ctx,
-        test_target(),
+        test_target(&world),
         &mut scene,
         &mut encoder,
     );
@@ -693,7 +706,7 @@ fn two_contexts_keep_their_textures_apart() {
 #[test]
 fn a_world_without_input_state_draws_an_idle_frame() {
     let (mut world, ctx) = test_world();
-    let target = test_target();
+    let target = test_target(&world);
     world
         .root_scope_mut()
         .spawn(bundle![EguiPanel::new(|_world, _entity, ui| {

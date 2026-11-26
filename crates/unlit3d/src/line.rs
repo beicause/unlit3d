@@ -1,4 +1,4 @@
-//! A frame source that draws screen-space line segments of constant pixel
+//! A draw source that draws screen-space line segments of constant pixel
 //! width.
 //!
 //! A line is not a mesh: the width a caller asks for is in pixels and a mesh
@@ -41,7 +41,7 @@
 //! Every stroke tests against the depth the pass already holds, which is why
 //! the source records after the mesh source: a mesh recorded after a stroke
 //! would paint over it wherever the two overlap. See
-//! [FrameSourceOrder::LINE](crate::source::FrameSourceOrder::LINE). What a
+//! [SourceOrder::LINE](crate::source::SourceOrder::LINE). What a
 //! stroke writes is its own policy's word: one whose depth-stencil policy
 //! writes keeps the depth it covers, and one that does not write hides nothing
 //! behind it.
@@ -65,15 +65,15 @@ use unlit_wgpu::pipeline::{
     GLOBAL_GROUP, GlobalBindings, global_bind_group_layout, supports_storage_buffers,
 };
 use unlit_wgpu::scene::{DrawEntry, DrawOrder, DrawRange, Scene};
-use unlit_wgpu::specialize::{SurfaceKey, Variants};
+use unlit_wgpu::specialize::Variants;
 use zerocopy::IntoBytes;
 
 use crate::components::Camera as SceneCamera;
 use crate::components::{InstanceVisibility, Transform, frame_camera};
 use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
-use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
-use crate::source::{FrameSource, RenderContext};
+use crate::source::{RenderContext, SceneBuild, SceneSource};
+use crate::target::PassId;
 
 /// The vertex-buffer slot the instance stream binds at.
 ///
@@ -254,30 +254,31 @@ struct Gpu {
     /// The instance stream the segments are uploaded into, allocated on the
     /// first non-empty frame.
     ///
-    /// The stream holds one frame's collection at a time: a source recorded
-    /// into a second pass uploads the same records again, overwriting bytes
-    /// the first pass's draws still name. That is safe because a source's
-    /// records come from its own scope, not from the pass — two uploads
-    /// carry the same bytes — but a per-pass record would break it, and the
-    /// repeat upload is spent work. See
+    /// The stream belongs to the pass: the records are ordered by the camera the
+    /// pass states, so two passes can collect the same strokes in different
+    /// orders, and the draws of both are recorded before either runs. A frame
+    /// therefore keeps one stream per pass, and a pass with strokes of its own
+    /// uploads them once. See
     /// [InstanceBuffer::upload](unlit_wgpu::instance_stream::InstanceBuffer::upload).
     segments: InstanceBuffer,
 }
 
-/// A frame source drawing the [Line]s of its scope.
+/// A draw source drawing the [Line]s of its scope.
 ///
 /// The strokes belong to the entities: the source collects the [Line]s its
 /// scope sees every frame it is asked to draw, so a caller adds, moves or
 /// removes strokes by spawning entities and moving their components, the same
 /// way meshes work.
 pub struct LineSource {
-    /// The per-target GPU state.
+    /// The per-pass GPU state.
     ///
-    /// A source is recorded once per pass reaching it, and the passes of a frame
-    /// need not share a specialization key - a multisampled offscreen pass and a
-    /// single-sampled swap chain differ in sample count - so the pipelines are
-    /// kept per key instead of being rebuilt as the passes alternate.
-    gpus: Vec<(SurfaceKey, Gpu)>,
+    /// A source is recorded once per pass reaching it, and two passes need not
+    /// share a target: two passes onto one swap chain differ in viewport while
+    /// an offscreen pass differs in sample count. The state is keyed by the
+    /// pass rather than by the target's specialization key, because the
+    /// pipelines, the uniform groups and the depth the strokes sorted by all
+    /// belong to the pass alone.
+    gpus: Vec<(PassId, Gpu)>,
     /// The records collected this frame, packed for the instance stream.
     ///
     /// A scratch rather than a field the caller fills: a source draws many
@@ -313,9 +314,9 @@ impl LineSource {
         }
     }
 
-    /// The entry for 'surface', building it on first use.
-    fn target(&mut self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) -> usize {
-        if let Some(index) = self.gpus.iter().position(|(key, _)| *key == surface) {
+    /// The entry for the pass `id`, building it on first use.
+    fn pass(&mut self, scope: &Scope<'_>, ctx: RenderContext, id: PassId) -> usize {
+        if let Some(index) = self.gpus.iter().position(|(key, _)| *key == id) {
             return index;
         }
         let device = ctx
@@ -334,7 +335,7 @@ impl LineSource {
             })
         });
         self.gpus.push((
-            surface,
+            id,
             Gpu {
                 variants: Variants::new(&device),
                 recipe,
@@ -405,15 +406,15 @@ impl Default for LineSource {
     }
 }
 
-impl FrameSource for LineSource {
-    fn build_scene(
-        &mut self,
-        scope: &Scope<'_>,
-        ctx: RenderContext,
-        info: PassInfo,
-        scene: &mut Scene,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+impl SceneSource for LineSource {
+    fn build(&mut self, build: SceneBuild<'_>, scene: &mut Scene) {
+        let SceneBuild {
+            scope,
+            ctx,
+            info,
+            encoder,
+        } = build;
+        let scope = &scope;
         // The graph settles on every path out of this build, so the uniforms
         // and the group a first frame registers are realised when the scope
         // drops, whatever that frame goes on to do.
@@ -442,7 +443,7 @@ impl FrameSource for LineSource {
             return;
         }
 
-        let index = self.target(scope, ctx, info.surface);
+        let index = self.pass(scope, ctx, info.pass);
         let (width, height) = info
             .viewport
             .map_or((info.width as f32, info.height as f32), |viewport| {
@@ -566,6 +567,7 @@ impl FrameSource for LineSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unlit_wgpu::specialize::SurfaceKey;
 
     /// The declared attributes sit where the record fields do, so a record
     /// whose fields are reordered cannot silently feed the shader another.

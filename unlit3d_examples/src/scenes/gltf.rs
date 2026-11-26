@@ -106,7 +106,7 @@ fn build(
     source.register_lit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
-        .spawn(bundle![Source::new(FrameSourceOrder::MESH, source)]);
+        .spawn(bundle![Source::new(SourceOrder::MESH, source)]);
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so
