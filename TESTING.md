@@ -108,7 +108,7 @@ declarations, not function bodies; it does not verify implementation behavior.
 
 ## Skill documentation checks
 
-`cargo xtask skill-docs` checks the seven unlit3d skill pages. It validates
+`cargo xtask skill-docs` checks the unlit3d skill pages. It validates
 relative links and section anchors, headings, table widths, fence labels and
 languages, and trailing whitespace. It rejects fixed line anchors: link to the
 file and name the symbol instead. `cargo xtask check` runs it before the other lints.

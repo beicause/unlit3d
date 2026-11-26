@@ -4,7 +4,7 @@
 
 ## 提交前自检清单
 
-核对[可运行测试来源](EXAMPLES.md#示例索引)，使用当前版本与 feature 的[结构化索引](REFERENCE.md#查当前版本的-api) 核查调用；至少区分编译通过、实际绘制、现场宿主验证。
+核对[可运行测试来源](EXAMPLES.md#示例索引)，使用当前版本与 feature 的[结构化索引](SKILL.md#查当前版本的-api) 核查调用；至少区分编译通过、实际绘制、现场宿主验证。
 
 ## 症状 → 检查项
 
@@ -14,12 +14,12 @@
 | --- | --- |
 | 清屏正常但没有物体 | [pass 附件与 source 可达性](SCENE.md#最小骨架)，再查 mesh 资源与可见性 |
 | 某个视图拉伸或用了另一只相机 | [目标、viewport 与相机](SCENE.md#相机与-viewport) |
-| 多个 pass 下缓存互相污染 | [pass、目标、特化键的区别](REFERENCE.md#pass-与-source) |
+| 多个 pass 下缓存互相污染 | [pass、目标、特化键的区别](SCENE.md#绘制源缓存键) |
 | 面板不可见 | [egui 层级](SCENE.md#egui)：先核对 pass 绑定附件且能到达 source，再核对面板位于 source 子树 |
 
 ### 帧、输入、egui
 
-- 按键不触发或指针状态不符：核对[输入装配](SCENE.md#输入)、事件批次与 feature，再区分 [Blitz 输入限制](REFERENCE.md#blitz)。
+- 按键不触发或指针状态不符：核对[输入装配](SCENE.md#输入)、事件批次与 feature，再区分 [Blitz 输入限制](SCENE.md#blitz)。
 - 每帧似乎推进了多次：检查是否把逻辑放到了[可重复执行的 egui 回调](SCENE.md#egui)。
 
 ### 多 world 与通信

@@ -7,7 +7,6 @@ const PAGES: &[&str] = &[
     "SKILL.md",
     "SCENE.md",
     "MULTI_WORLD.md",
-    "REFERENCE.md",
     "MCP.md",
     "EXAMPLES.md",
     "TROUBLESHOOTING.md",

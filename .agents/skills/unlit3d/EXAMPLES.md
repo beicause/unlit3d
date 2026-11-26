@@ -26,4 +26,4 @@ cargo nextest run -p unlit3d -p unlit3dx_examples --all-features
 | 多 world App 与离屏 | [Demo](../../../unlit3dx_examples/src/demo.rs)、[帧和音频端到端测试](../../../unlit3dx_examples/tests/headless.rs) |
 | MCP 帧推进、图像与音频 | [进程级 MCP 测试](../../../unlit3dx_examples/tests/mcp_input/native.rs)、[原生渲染工具测试](../../../crates/unlit3d/tests/mcp_server/native.rs) |
 
-继续阅读：[结构化 API 查询](REFERENCE.md#查当前版本的-api) · [排查表](TROUBLESHOOTING.md)。
+继续阅读：[结构化 API 查询](SKILL.md#查当前版本的-api) · [排查表](TROUBLESHOOTING.md)。

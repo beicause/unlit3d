@@ -5,7 +5,7 @@ description: 用 unlit3d 写单 world 渲染场景，用 unlit3dx 装配多 worl
 
 # unlit3d / unlit3dx
 
-**用途**：为写代码或排查现场的 agent 选择库层级和下一篇资料。不在入口复制 API 签名、运行命令或工具参数。
+**用途**：为写代码或排查现场的 agent 选择库层级和下一篇资料。不在入口复制 API 签名、示例启动命令或工具参数。
 
 ## 先选层
 
@@ -18,7 +18,7 @@ description: 用 unlit3d 写单 world 渲染场景，用 unlit3dx 装配多 worl
 | 装配、跨 world 传值、步进与消费音频 | [多 world 教程](MULTI_WORLD.md) |
 | 连接调试宿主 | [MCP 连接与权限](MCP.md#服务器与驱动) |
 | 检查已有帧或按帧推进 | [取图选择](MCP.md#绘制)、[按帧驱动](MCP.md#按帧驱动) |
-| 查当前版本 API | [结构化索引与源码定位](REFERENCE.md#查当前版本的-api) |
+| 查当前版本 API | [结构化索引与源码定位](#查当前版本的-api) |
 | 找可编译范例或运行命令 | [示例索引](EXAMPLES.md) |
 | 画面、输入、通信或工具异常 | [排查表](TROUBLESHOOTING.md) |
 
@@ -32,8 +32,12 @@ description: 用 unlit3d 写单 world 渲染场景，用 unlit3dx 装配多 worl
 
 - 优先用 ECS 组件存状态，用行为组件推进；使用 [场景教程](SCENE.md#状态怎么放) 判断数据放在哪个 scope。
 - 优先使用库的 world 通信、app 驱动与离屏路径；只有需要改变调度或呈现所有权时再用底层部件。见 [多 world 教程](MULTI_WORLD.md#两种骨架)。
+- 自定义绘制源按归属选择[缓存键](SCENE.md#绘制源缓存键)。
+- 调试运行中的示例用引擎提供的 MCP 工具，大图、缓冲和录音优先落盘。见 [MCP 操作页](MCP.md)。
 
-## 扩展与限制
+## 查当前版本的 API
 
-- 自定义绘制源先决定 [缓存身份](REFERENCE.md#pass-与-source)；管线特化键并不是 pass 身份。
-- 调试运行中的示例用引擎提供的 MCP 工具。大图、缓冲和录音优先落盘；[取图选择](MCP.md#绘制) 区分已有纹理和主动重绘。只读取本次任务相关的小节和结果。
+- **本库仓库**：运行 `cargo xtask api-index`，按实际 feature 选用[索引选项](../../../xtask/README.md#cargo-xtask-api-index)。在 `target/api-index.json` 中按 `entries[].path` 筛选，只读匹配项的签名、文档首行和源码位置。
+- **下游项目**：用 `cargo metadata --format-version 1 --locked` 确认依赖的 `id`、`manifest_path` 和 `resolve.nodes` 中的实际 feature。已有 nightly 时，保留项目的 target 与 feature 选项，运行 `cargo +nightly doc -p unlit3d --no-deps -Z unstable-options --output-format json --message-format=json`，从 `compiler-artifact.filenames` 找到 JSON。多 world API 换用 `-p unlit3dx`；同名多版本时加 `@版本`。先核对 `format_version`，再用 `paths` 查名称、`index` 查声明。没有 nightly 就读依赖 `manifest_path` 所在目录的源码，不需要安装工具。
+
+Rustdoc JSON 不含函数体；判断副作用、取消、时序和错误传播时沿 `span` 回源码。查可运行的装配顺序见[示例索引](EXAMPLES.md#示例索引)。
