@@ -197,7 +197,11 @@ struct BuildAndroidArgs {
     name = "line-count",
     description = "print the line count of every Rust file in the workspace, marking the ones that reach 1000 lines"
 )]
-struct LineCountArgs {}
+struct LineCountArgs {
+    /// fail if any Rust file reaches the line limit.
+    #[argh(switch)]
+    check: bool,
+}
 
 /// Arguments of `cargo xtask print-gpu`.
 #[derive(FromArgs)]

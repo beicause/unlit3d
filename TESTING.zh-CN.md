@@ -90,8 +90,10 @@ WebGPU 画布读出来全是透明」。
 
 `cargo xtask skill-docs` 检查 unlit3d 技能页面，覆盖相对链接和小节锚点、标题层级、表格列数、
 代码块分类与语言、尾随空格。检查拒绝固定行号锚点；请链接到文件并注明符号。`cargo xtask check`
-会先运行该检查。技能描述的 API 和行为由
-各页面指向的文档测试与运行测试验证，而非 Markdown 检查本身。
+会先运行该检查。技能描述的 API 和行为由各页面指向的文档测试与运行测试验证，而非 Markdown 检查本身。
+
+两个 CI 档位均通过[共享工作流](.github/workflows/ci.yml)在 Linux 上运行 `cargo xtask skill-docs`
+和 `cargo xtask line-count --check`。任一 Rust 文件达到 1,000 行，行数检查即失败。
 
 ## 各 crate 的覆盖
 

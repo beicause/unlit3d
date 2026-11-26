@@ -160,6 +160,14 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
+      - name: Check Rust file lengths
+        if: runner.os == 'Linux'
+        run: cargo xtask line-count --check
+
+      - name: Check unlit3d skill documentation
+        if: runner.os == 'Linux'
+        run: cargo xtask skill-docs
+
       # Without any optional backend these crates compile down to their general
       # facilities, so the built-in pipelines stay something a caller could have
       # written. The crates are named one by one rather than picked with

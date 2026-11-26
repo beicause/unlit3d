@@ -106,14 +106,9 @@ repository holds, rather than by a list of directory names this task would have
 to keep in step with `.gitignore`. A file that is not yet added still counts: it
 is one `git add` away from joining the tree.
 
-The count is of newline bytes rather than of decoded lines, which is the same
-number for any UTF-8 file, since a byte inside a multi-byte sequence is never
-`\n`; a last line with no trailing newline still counts. Nothing is compiled, so
-this is cheap enough to run on a whim, and it is not part of `cargo xtask check`:
-reaching the ceiling is a design question rather than a diagnostic. For the same
-reason the task reports rather than fails — the files above the line today are
-the ones still to be split, and a task that stayed red until then would be
-ignored. It does need git, but so does everything else here.
+A last line with no trailing newline still counts. By default the task reports
+without failing; CI runs `cargo xtask line-count --check`, which fails if any
+Rust file reaches 1,000 lines.
 
 ### `cargo xtask api-index`
 

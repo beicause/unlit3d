@@ -115,6 +115,10 @@ file and name the symbol instead. `cargo xtask check` runs it before the other l
 The linked doctests and runtime tests, not this Markdown check, verify the APIs
 and behavior described by the skill.
 
+The [shared CI workflow](.github/workflows/ci.yml) runs `cargo xtask skill-docs`
+and `cargo xtask line-count --check` on Linux in both CI tiers. The line-count
+check fails when any Rust file reaches 1,000 lines.
+
 ## Per-crate coverage
 
 | Crate | What its tests cover |

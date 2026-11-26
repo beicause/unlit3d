@@ -27,9 +27,8 @@ const CEILING: usize = 1000;
 /// untracked file is still listed, because it is one `git add` from joining the
 /// tree.
 ///
-/// Reporting rather than failing: the files over the ceiling today are the ones
-/// still to be split, and a task that is red until then would be ignored.
-pub fn run(_task: &LineCountArgs) -> Result<(), String> {
+/// With `--check`, return an error after reporting if any file reaches the ceiling.
+pub fn run(task: &LineCountArgs) -> Result<(), String> {
     let root = step::workspace_root()?;
 
     let mut counted = Vec::new();
@@ -66,6 +65,11 @@ pub fn run(_task: &LineCountArgs) -> Result<(), String> {
         "{files} files, {total} lines, {over} at or over {CEILING}",
         files = counted.len()
     );
+    if task.check && over != 0 {
+        return Err(format!(
+            "{over} Rust file(s) reach or exceed {CEILING} lines"
+        ));
+    }
     Ok(())
 }
 
