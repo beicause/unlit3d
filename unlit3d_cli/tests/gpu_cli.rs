@@ -23,10 +23,15 @@ fn duration(path: &str, name: &str) -> f32 {
     let document = unlit3d::gltf::LitGltf::load(path).expect("the document loads");
     let index = (0..document.animation_count())
         .find(|&animation| {
-            document.animation_name(unlit3d::gltf::AnimationId::new(animation)) == Some(name)
+            document
+                .animation_name(unlit3d::gltf::AnimationId::new(animation))
+                .expect("the document carries the animation it counts")
+                == Some(name)
         })
         .expect("the animation exists");
-    document.animation_duration(unlit3d::gltf::AnimationId::new(index))
+    document
+        .animation_duration(unlit3d::gltf::AnimationId::new(index))
+        .expect("the document carries the animation it counts")
 }
 
 /// The tolerance the glTF frames are compared with, matching the example's

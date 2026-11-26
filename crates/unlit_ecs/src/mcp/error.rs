@@ -51,11 +51,15 @@ impl ToolErrorKind {
 ///
 /// The message is what a person reads; the kind is what a client branches on,
 /// and it survives the transport as the `kind` field of the structured
-/// content.
+/// content. A failure whose cause has structure of its own — the document that
+/// states two morph target counts for one mesh, the mesh and primitive that
+/// disagree — carries it as `details`, so a client corrects the input instead
+/// of matching the message.
 #[derive(Debug)]
 pub struct ToolError {
     kind: ToolErrorKind,
     message: String,
+    details: Option<serde_json::Value>,
 }
 
 impl ToolError {
@@ -65,6 +69,7 @@ impl ToolError {
         Self {
             kind,
             message: message.into(),
+            details: None,
         }
     }
 
@@ -104,13 +109,37 @@ impl ToolError {
         &self.message
     }
 
+    /// The detail a client acts on, if the failure carries any.
+    #[must_use]
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        self.details.as_ref()
+    }
+
+    /// Attach the detail a client acts on to this failure.
+    ///
+    /// The detail is the failure's cause in the shape the tool decided to
+    /// publish, not a restatement of [`Self::message`]: the same facts a person
+    /// reads in the message, addressed so a program can look them up.
+    #[must_use]
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
     /// The structured content this failure answers with.
     ///
     /// `kind` is the machine-readable half, spelled as
-    /// [`ToolErrorKind::as_str`]; `message` is the half a person reads.
+    /// [`ToolErrorKind::as_str`]; `message` is the half a person reads; and
+    /// `details` is present only where the cause has structure of its own.
     #[must_use]
     pub fn to_value(&self) -> serde_json::Value {
-        serde_json::json!({ "kind": self.kind.as_str(), "message": self.message })
+        let mut value = serde_json::json!({ "kind": self.kind.as_str(), "message": self.message });
+        if let Some(details) = &self.details
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("details".to_owned(), details.clone());
+        }
+        value
     }
 }
 
@@ -158,6 +187,32 @@ mod tests {
             json!({ "kind": "rejected", "message": "no entity 7" })
         );
         assert_eq!(error.to_string(), "no entity 7");
+    }
+
+    #[test]
+    fn a_failure_without_detail_states_no_detail() {
+        let error = ToolError::failed("the readback failed");
+        assert!(error.details().is_none());
+        assert_eq!(
+            error.to_value(),
+            json!({ "kind": "failed", "message": "the readback failed" })
+        );
+    }
+
+    #[test]
+    fn a_failure_carries_the_detail_a_client_acts_on() {
+        let error = ToolError::failed("the mesh's primitives disagree").with_details(
+            json!({ "gltf": { "kind": "MorphTargetCountMismatch", "mesh": 0, "primitive": 1 } }),
+        );
+        assert_eq!(error.message(), "the mesh's primitives disagree");
+        assert_eq!(
+            error.to_value(),
+            json!({
+                "kind": "failed",
+                "message": "the mesh's primitives disagree",
+                "details": { "gltf": { "kind": "MorphTargetCountMismatch", "mesh": 0, "primitive": 1 } },
+            })
+        );
     }
 
     #[test]

@@ -676,7 +676,7 @@ pub(crate) fn spawn_gltf(
         }
         (None, None) => return Err(ToolError::rejected("pass one of `path` and `document`")),
     }
-    .map_err(|error| ToolError::failed(error.to_string()))?;
+    .map_err(gltf_failure)?;
     // Content goes into the requested scope, which defaults to the source
     // entity itself, so the frame that draws the source also draws the scene.
     let scope = match scope {
@@ -689,17 +689,14 @@ pub(crate) fn spawn_gltf(
     world
         .try_scope(scope)
         .map_err(|_| ToolError::rejected(format!("no scope {scope:?}")))?;
-    let resources = with_mesh_source(world, source, |source, scope| {
-        gltf.insert_resources(source, scope)
+    let asset = with_mesh_source(world, source, |source, scope| {
+        gltf.insert_asset(source, scope)
     })?
-    .map_err(|error| ToolError::failed(error.to_string()))?;
-    let model = gltf
-        .to_model(&resources)
-        .map_err(|error| ToolError::failed(error.to_string()))?;
+    .map_err(gltf_failure)?;
     let root = world
         .try_scope_mut(scope)
         .map_err(|_| ToolError::rejected(format!("no scope {scope:?}")))?
-        .spawn_named("lit model", LitModelBundle::new(model));
+        .spawn_named("lit model", LitModelBundle::new(asset.model));
     let mut entities = vec![root];
     let mut cursor = 0;
     while cursor < entities.len() {
@@ -714,12 +711,25 @@ pub(crate) fn spawn_gltf(
     to_value(&SpawnedEntities { entities, names })
 }
 
+/// A glTF failure, with its own structure kept beside the message.
+///
+/// The message is what a person reads; the `gltf` detail says which check
+/// failed and which mesh, primitive or image to correct, so a client repairs
+/// the document instead of matching on prose.
+fn gltf_failure(error: crate::gltf::Error) -> ToolError {
+    let details = serde_json::json!({ "gltf": error.to_value() });
+    ToolError::failed(error.to_string()).with_details(details)
+}
+
 /// The bytes of an inline glTF document: JSON text as written, or a GLB's
 /// bytes decoded from base64.
 fn gltf_document_bytes(document: &str) -> Result<Vec<u8>, ToolError> {
     // A JSON document is the one form a caller can paste; anything else is
     // taken as base64, so the leading brace decides without guessing at the
-    // alphabet.
+    // alphabet. Some editors write a byte-order mark, which is legal UTF-8 but
+    // would hide the brace, so it is stripped before the decision — decoding
+    // the document would then fail on a byte that carries no data.
+    let document = document.strip_prefix('\u{feff}').unwrap_or(document);
     if document.trim_start().starts_with('{') {
         return Ok(document.as_bytes().to_vec());
     }
@@ -880,102 +890,4 @@ pub(crate) fn frame_clock(world: &mut World) -> Result<FrameClockReport, ToolErr
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_extension_names_the_image_format() {
-        assert_eq!(
-            ImageFormat::of("a.png").expect("Png is a known format"),
-            ImageFormat::Png
-        );
-        assert_eq!(
-            ImageFormat::of("a.webp").expect("Webp is a known format"),
-            ImageFormat::Webp
-        );
-        assert_eq!(
-            ImageFormat::of("a.jpg").expect("Jpeg is a known format"),
-            ImageFormat::Jpeg
-        );
-        assert_eq!(
-            ImageFormat::of("a.jpeg").expect("Jpeg is a known format"),
-            ImageFormat::Jpeg
-        );
-        assert_eq!(
-            ImageFormat::of("a.JPG").expect("Jpeg is a known format"),
-            ImageFormat::Jpeg
-        );
-        assert_eq!(
-            ImageFormat::of("a.PNG").expect("Png is a known format"),
-            ImageFormat::Png
-        );
-        assert_eq!(
-            ImageFormat::from_name("jpeg").expect("Jpeg is a known format"),
-            ImageFormat::Jpeg
-        );
-        assert!(ImageFormat::of("a").is_err());
-        assert!(ImageFormat::of("a.gif").is_err());
-    }
-
-    #[test]
-    fn the_frame_clock_averages_the_frames_after_its_first_call() {
-        let mut world = World::new();
-        world.root_scope_mut().spawn(bundle![FrameClock::default()]);
-        for index in 0..3u32 {
-            let mut frame = crate::frame::Frame {
-                delta_time: 1.0 / 60.0,
-                index,
-            };
-            dispatch_frame(&mut world, &mut frame);
-        }
-
-        // The first call spawns the monitor, which has seen no frame yet.
-        let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock.index, Some(2));
-        assert_eq!(clock.average_fps, None);
-
-        // The frames after it fold into the rolling window.
-        for index in 3..5u32 {
-            let mut frame = crate::frame::Frame {
-                delta_time: 1.0 / 30.0,
-                index,
-            };
-            dispatch_frame(&mut world, &mut frame);
-        }
-        let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock.index, Some(4));
-        assert_eq!(clock.average_window_frames, Some(2));
-        let fps = clock.fps.expect("the last frame states a rate");
-        assert!(
-            (fps - 30.0).abs() < 0.1,
-            "the instantaneous rate is the last frame's: {clock:?}"
-        );
-        let average = clock.average_fps.expect("an average exists");
-        assert!(
-            (average - 30.0).abs() < 0.1,
-            "the window is the two 30 Hz frames: {clock:?}"
-        );
-    }
-
-    #[test]
-    fn a_world_that_never_dispatched_a_frame_reports_none() {
-        let mut world = World::new();
-        let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock.index, None);
-        assert_eq!(clock.delta_time, None);
-        assert_eq!(clock.time, None);
-        assert_eq!(clock.fps, None);
-        assert_eq!(clock.average_fps, None);
-
-        // A world without a clock gains none behind the client's back, so a
-        // frame dispatched into it still reads as no frame rather than a zero
-        // the client would take for a real first frame.
-        let mut frame = crate::frame::Frame {
-            delta_time: 1.0 / 60.0,
-            index: 7,
-        };
-        dispatch_frame(&mut world, &mut frame);
-        let clock = frame_clock(&mut world).expect("the clock reports");
-        assert_eq!(clock.index, None);
-    }
-}
+mod tests;

@@ -96,7 +96,13 @@ fn a_short_draco_attribute_is_rejected_instead_of_zero_filled() {
     else {
         panic!("the malformed stream is reported against its primitive: {error:?}");
     };
-    assert_eq!((*mesh, *primitive), (0, 0));
+    assert_eq!(
+        (*mesh, *primitive),
+        (
+            super::super::MeshId::new(0),
+            super::super::PrimitiveId::new(0)
+        )
+    );
     assert_eq!(*detail, DracoPrimitiveError::TooFewComponents);
 }
 

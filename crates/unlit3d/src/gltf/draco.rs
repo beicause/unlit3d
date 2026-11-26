@@ -17,7 +17,7 @@
 //! be decoded reports Draco's own error rather than a glTF validation failure,
 //! because the bitstream is what is malformed and its reader is what says so.
 
-use super::{DracoPrimitiveError, Error};
+use super::{DracoPrimitiveError, Error, MeshId, PrimitiveId};
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::PointAttribute;
@@ -72,8 +72,8 @@ pub(super) fn fill_accessors(
             Entry::Vacant(entry) => entry.insert(decode_stream(
                 root,
                 buffers,
-                compressed.mesh_index,
-                compressed.primitive_index,
+                MeshId::new(compressed.mesh_index),
+                PrimitiveId::new(compressed.primitive_index),
                 compressed.stream_view,
             )?),
         };
@@ -81,8 +81,8 @@ pub(super) fn fill_accessors(
 
         for (semantic, unique_id, accessor_index) in &compressed.attributes {
             let detail = |detail| Error::DracoPrimitive {
-                mesh: compressed.mesh_index,
-                primitive: compressed.primitive_index,
+                mesh: MeshId::new(compressed.mesh_index),
+                primitive: PrimitiveId::new(compressed.primitive_index),
                 detail,
             };
             let attribute = geometry
@@ -148,8 +148,8 @@ pub(super) fn fill_accessors(
                 root.accessors
                     .get_mut(accessor_index)
                     .ok_or_else(|| Error::DracoPrimitive {
-                        mesh: compressed.mesh_index,
-                        primitive: compressed.primitive_index,
+                        mesh: MeshId::new(compressed.mesh_index),
+                        primitive: PrimitiveId::new(compressed.primitive_index),
                         detail: DracoPrimitiveError::MissingAccessor {
                             accessor: accessor_index,
                         },
@@ -325,8 +325,8 @@ fn data_type_name(data_type: DataType) -> &'static str {
 fn decode_stream(
     root: &json::Root,
     buffers: &[gltf::buffer::Data],
-    mesh: usize,
-    primitive: usize,
+    mesh: MeshId,
+    primitive: PrimitiveId,
     view_index: usize,
 ) -> Result<DracoMesh, Error> {
     let detail = |detail| Error::DracoPrimitive {
@@ -382,8 +382,8 @@ fn collect(root: &json::Root) -> Result<Vec<Compressed>, Error> {
                 continue;
             };
             let detail = |detail| Error::DracoPrimitive {
-                mesh: mesh_index,
-                primitive: primitive_index,
+                mesh: MeshId::new(mesh_index),
+                primitive: PrimitiveId::new(primitive_index),
                 detail,
             };
 

@@ -219,11 +219,11 @@
 
 ## glTF
 
-完整模型用 `insert_resources` → `to_model(&resources)` → 在 mesh source 下 spawn `LitModelBundle`。`to_model` 返回 `Result`：图元缺 mesh/材质得 `Error::MeshNotInserted` / `Error::MaterialNotInserted`，数据被 `LitModel::new` 拒绝得 `Error::Model`（越界索引、父链成环、关键时间非升序、值数量不够等）。
+用 `LitGltf::insert_asset(source, world)` 准备默认场景，再将 `asset.model` 放进 `LitModelBundle`，在同一个 mesh source 下 spawn。只要指定片段时，用 `insert_asset_with(source, world, clips)` 传入文档的 `AnimationId`，返回的模型按传入顺序编号。模型自己持有绘制所需的句柄，不需要保留文档或 `asset.resources`。自定义上传用 `GltfResources` 按类型化 ID 组织句柄，再调用 `to_model`；图元缺 mesh/材质会返回 `Error::MeshNotInserted` / `Error::MaterialNotInserted`，模型数据校验失败会返回 `Error::Model`。
 
-移动整个实例时改根实体的 `Transform`；选片段写 `LitModelAnimation::clip`（也可用 `LitModel::clip_index(name)` 按名字找，比位置稳），时间由 `LitModelAnimation::clock` 决定：`LitModelClock::Playing { speed, looping }` 由帧派发按 delta 推进，`LitModelClock::Manual` 只采样调用方写下的 `time`、从不改动它。
+移动整个实例时改根实体的 `Transform`；选片段写 `LitModelAnimation::clip`（也可用 `LitModel::clip_index(name)` 按名字找，比位置稳），时间由 `LitModelAnimation::clock` 决定：`LitModelClock::Playing { speed, looping }` 由帧派发按 delta 推进，`LitModelClock::Manual` 把播放交给调用方。
 
-帧派发在 `LIT_MODEL_UPDATE_ORDER = -10` 求值，那是唯一的自动求值点。**排在 `-10` 之后写 `time`（如示例的 `SCENE_ADVANCE_ORDER = 20`）时，本帧的绘制读到的仍是上一帧的时间**，需再调用 `LitModelBundle::evaluate(&scope, root)` 补一次采样；`Manual` 下这次补采样是幂等的（不推进、不回写时间），所以不会把时间推快或回绕。
+帧派发完全不管手动时钟的实例：它既不推进时间也不求值，姿态只由调用方的 `LitModelBundle::evaluate(&scope, root)` 产生。所以手动时钟下写完 `time` 必须自己调一次 `evaluate`，本帧才会画到这个时间；而帧序不再影响结果——排在 `LIT_MODEL_UPDATE_ORDER = -10`（`Playing` 唯一的自动求值点）之前还是之后写都一样。spawn 时的 `OnSpawn` 已采样一次，所以只想渲染一帧（如 CLI 的一次性离屏渲染）不必再 evaluate。手动时钟下改节点基准变换，要等到下一次采样才进画面，不是下一帧。
 
 模型节点、绘制实体、蒙皮姿态与权重实体都是模型自持的派生状态，`LitModelInstance`（`nodes()` / `draws()` / `poses()` / `weights()` / `matrices()`）只读。单独 despawn 一棵子树不受支持：失效的句柄会让那次求值静默跳过它们，留下半活的模型；要移除就 despawn 根。
 

@@ -78,7 +78,7 @@ impl LitGltf {
     /// `inverseBindMatrices` than it has joints binds the joints beyond them
     /// at the identity, so each of those poses by its own world matrix.
     pub fn skin_pose(&self, node: NodeId) -> SkinPose {
-        let Some(skin) = self.node(node.index()).skin() else {
+        let Some(skin) = self.node(node).and_then(|node| node.skin()) else {
             return SkinPose::default();
         };
         let skin = self.decode_skin(&skin);
@@ -101,7 +101,7 @@ impl LitGltf {
     /// `None` when the node names no skin, so a caller can walk a document
     /// without asking first.
     pub fn skin_joint_count(&self, node: NodeId) -> Option<usize> {
-        Some(self.node(node.index()).skin()?.joints().count())
+        Some(self.node(node)?.skin()?.joints().count())
     }
 
     /// The morph weights a node's mesh starts at, one per morph target.
@@ -117,17 +117,21 @@ impl LitGltf {
     ///
     /// Returns an empty vector for a node whose mesh has no morph targets.
     pub fn morph_weights(&self, node: NodeId) -> Vec<f32> {
-        let Some(mesh) = self.node(node.index()).mesh() else {
+        let Some(node) = self.node(node) else {
             return Vec::new();
         };
-        let node_weights = self.node(node.index()).weights();
+        let Some(mesh) = node.mesh() else {
+            return Vec::new();
+        };
+        let node_weights = node.weights();
         let mut weights = node_weights
             .or_else(|| mesh.weights())
             .map(<[f32]>::to_vec)
             .unwrap_or_default();
         // The counts were worked out once as the document loaded, by the same
         // rule the weights channels are sliced by.
-        weights.resize(self.morph_targets[node.index()], 0.0);
+        let targets = self.morph_targets.get(node.index()).copied().unwrap_or(0);
+        weights.resize(targets, 0.0);
         weights
     }
 }

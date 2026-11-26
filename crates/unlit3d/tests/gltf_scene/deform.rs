@@ -33,7 +33,13 @@ pub(super) async fn a_morphed_quad_follows_its_weights() {
             .expect("the embedded document uploads")
     });
     assert!(
-        resources.meshes[0].mesh.morph_targets > 0,
+        resources
+            .meshes()
+            .next()
+            .expect("the document uploads one primitive")
+            .mesh
+            .morph_targets
+            > 0,
         "the primitive declares targets, so the uploaded mesh reads displacements"
     );
 
@@ -127,9 +133,18 @@ pub(super) async fn an_animation_moves_the_drawn_mesh() {
         LitGltf::from_bytes(&animated_skinned_document()).expect("the embedded document parses");
 
     assert_eq!(gltf.animation_count(), 1, "the document carries one clip");
-    assert_eq!(gltf.animation_name(AnimationId::new(0)), Some("walk"));
+    assert_eq!(
+        gltf.animation_name(AnimationId::new(0))
+            .expect("the document carries animation 0"),
+        Some("walk")
+    );
     assert!(
-        (gltf.animation_duration(AnimationId::new(0)) - 2.0).abs() < 1e-6,
+        (gltf
+            .animation_duration(AnimationId::new(0))
+            .expect("the document carries animation 0")
+            - 2.0)
+            .abs()
+            < 1e-6,
         "the clip ends at its last keyframe"
     );
 
@@ -196,7 +211,13 @@ pub(super) async fn a_skinned_quad_follows_its_joint() {
             .expect("the embedded document uploads")
     });
     assert!(
-        resources.meshes[0].mesh.skin.is_some(),
+        resources
+            .meshes()
+            .next()
+            .expect("the document uploads one primitive")
+            .mesh
+            .skin
+            .is_some(),
         "the primitive declares JOINTS_0, so the uploaded mesh reads joints"
     );
 

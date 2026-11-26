@@ -534,11 +534,15 @@ panic，而不是读到上传数组尾部之外。它把实体的关节矩阵—
 这条导入路径与「每张图像上传成什么 GPU 格式」都归 `gltf` 模块自身的文档管；
 本节介绍导入会往你已经在渲染的 world 里添加什么。
 
-先用 `LitGltf::insert_resources` 上传，再调用 `LitGltf::to_model`，把 `LitModelBundle`
-生成在网格源下。根 `Transform` 放置整份模型，包括动画节点和世界空间的蒙皮姿态。
-bundle 在生成时求值一次，之后在每次帧派发中按 `LIT_MODEL_UPDATE_ORDER` 求值。写入
-`LitModelAnimation` 可选择片段，其 `LitModelClock` 说明时间由谁推进：`Playing` 按帧
-delta 推进，`Manual` 只采样调用方写下的时间。销毁根实体即可移除整份实例；它生成的节点
+用 `LitGltf::insert_asset` 上传文档并准备默认场景，再用 `asset.model` 在同一个网格源下生成
+`LitModelBundle`。`insert_asset_with` 只准备调用方指定的片段，并按指定顺序为模型片段编号。
+模型持有绘制所需的句柄，文档和资源表可以先释放。根 `Transform` 放置整份模型，包括动画节点和
+世界空间的蒙皮姿态。bundle 在生成时求值一次；`LIT_MODEL_UPDATE_ORDER` 的帧回调只求值播放时钟
+的实例。写入
+`LitModelAnimation` 可选择片段，其 `LitModelClock` 说明时间由谁推进：`Playing` 在每次
+帧派发中按帧 delta 推进；`Manual` 把播放交给调用方，调用方写 `LitModelAnimation::time`
+并用 `LitModelBundle::evaluate` 采样——帧派发既不推进也不求值手动时钟的实例，因此它画出的
+姿态就是调用方最近一次采样的时间，与调用方写入时间的先后顺序无关。销毁根实体即可移除整份实例；它生成的节点
 属于模型自己，单独销毁一棵子树不会留下有意义的东西。同一个 bundle 也接受不经 glTF 的
 手工 `LitModel` 数据；`LitModel::new` 会拒绝索引、关键时间或值数量互相矛盾的输入，
 而不是去采样一份画不出来的模型。
@@ -547,16 +551,11 @@ delta 推进，`Manual` 只采样调用方写下的时间。销毁根实体即�
   `PrimitiveId`、`NodeId` 与 `AnimationId`——节点下标因此不会误传给动画或图像。
   `images()`、`materials()`、`meshes()`、`primitives()`、`nodes()` 与
   `animations()` 迭代器给出文档实际携带的 id。
-- `insert_resources` 一次上传整份文档，返回持有全部句柄的 `gltf::GltfResources`；
-  `to_model` 接收的正是这个结构体，每个句柄都带有它来自的文档条目的类型化 id。想一次只插入一类资源的调用方
-  ——比如让两份文档共用一个纹理——也可以改用 `insert_image` / `insert_material` /
-  `insert_mesh` 上传单个图像、材质或网格，或用批量版本（`insert_images`、
-  `insert_materials`、`insert_meshes`）一次上传某一类全部资源（按文档顺序），
-  再自行拼出 `GltfResources`。分件插入意味着先把图像插好、再插采样它们的材质：
-  基础色图像不在传入的那一片里时，材质插入返回指明两者的
-  `Error::ImageNotInserted`，而不是绑一个空纹理。
-- 交出句柄只让其所指变得可回收：材质的绑定组与材质同寿，它采样的纹理视图也由材质
-  持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
+- 自定义上传可用 `insert_image`、`insert_material`、`insert_mesh` 或其批量版本写入
+  `GltfResources`，再调用 `to_model` 或 `to_model_with` 转换场景。资源表按类型化 ID 查找
+  GPU 句柄，不保证资源遍历顺序。先插入图像，再插入采样它们的材质；缺少基础色图像时返回
+  `Error::ImageNotInserted`，不会绑定空纹理。
+- 材质持有绑定组和采样的纹理视图。资源的最后一个句柄释放后，`maintain` 会回收该资源。
 - 带 `KHR_materials_unlit` 的材质按无光绘制，基础色就是文件所写；其余材质按受光绘制，
   由帧里的光照着色——文档声明的是退出着色，而不是选择受光。
 - 模型节点在自己下面为每个 primitive 生成一个实体，指出该节点的片段驱动它：各实体还携带已上传的

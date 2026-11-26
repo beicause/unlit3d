@@ -176,7 +176,13 @@ fn a_corrupt_draco_stream_reports_the_decoder_error() {
     else {
         panic!("the decode failure names the primitive it came from: {error:?}");
     };
-    assert_eq!((*mesh, *primitive), (0, 0));
+    assert_eq!(
+        (*mesh, *primitive),
+        (
+            super::super::MeshId::new(0),
+            super::super::PrimitiveId::new(0)
+        )
+    );
     assert!(
         !source.message().is_empty(),
         "the reported message is the decoder's own"

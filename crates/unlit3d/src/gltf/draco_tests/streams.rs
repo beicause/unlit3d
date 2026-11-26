@@ -197,8 +197,14 @@ fn two_primitives_sharing_one_stream_both_decode() {
         .iter()
         .enumerate()
         .map(|(index, primitive)| {
-            streams::from_reader(&gltf.buffers, 0, index, primitive, gltf.mesh_targets[0])
-                .expect("each primitive of the shared stream reads")
+            streams::from_reader(
+                &gltf.buffers,
+                super::super::MeshId::new(0),
+                super::super::PrimitiveId::new(index),
+                primitive,
+                gltf.mesh_targets[0],
+            )
+            .expect("each primitive of the shared stream reads")
         })
         .collect();
     assert_eq!(

@@ -29,8 +29,7 @@
 //! # Ok(()) }
 //! ```
 //!
-//! The document is inserted in one call, which returns every handle that keeps
-//! what it uploaded alive:
+//! Upload and prepare the default scene with [`LitGltf::insert_asset`]:
 //!
 //! ```rust,no_run
 //! # use unlit3d::gltf::LitGltf;
@@ -39,24 +38,21 @@
 //! # use unlit_ecs::ScopeMut;
 //! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), unlit3d::gltf::Error> {
 //! let gltf = LitGltf::load("model.glb")?;
-//! let resources = gltf.insert_resources(source, &world.readonly())?;
-//! let model = gltf.to_model(&resources)?;
+//! let asset = gltf.insert_asset(source, &world.readonly())?;
 //! // Spawn under the mesh source that will draw the model.
-//! let root = world.spawn(LitModelBundle::new(model));
+//! let root = world.spawn(LitModelBundle::new(asset.model));
 //! # Ok(()) }
 //! ```
 //!
-//! [`LitGltf::to_model`] adapts the uploaded default scene to the generic
-//! [`LitModelBundle`](crate::lit::LitModelBundle) API. The model keeps local
-//! node transforms, parent relationships, skins, morph weights and decoded
-//! clips; each bundle instance owns its root [`Transform`],
-//! so a caller can place and animate multiple instances without sharing ECS
-//! state.
-//! A caller that wants to insert one kind of resource at a time — to reuse a
-//! texture between documents, say — can still call
+//! Use [`LitGltf::insert_asset_with`] to prepare only selected clips, in the
+//! order the model should number them. The model retains its draw handles;
+//! neither the parsed document nor the resource table must outlive it. Each
+//! [`LitModelBundle`](crate::lit::LitModelBundle) instance has its own root
+//! [`Transform`] and playback state.
+//!
+//! To reuse a texture or customize the upload, build a [`GltfResources`] with
 //! [`LitGltf::insert_images`], [`LitGltf::insert_materials`] and
-//! [`LitGltf::insert_meshes`] directly and build a [`GltfResources`] of its
-//! own.
+//! [`LitGltf::insert_meshes`], then pass it to [`LitGltf::to_model`].
 //!
 //! A document's collections are addressed by typed ids — [`ImageId`],
 //! [`MaterialId`], [`MeshId`], [`PrimitiveId`], [`NodeId`] and
@@ -198,20 +194,25 @@
 //! see [`LitGltf::load`] and [`LitGltf::from_bytes`] for how a document
 //! reaches the module in the first place.
 
+use hashbrown::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use core::mem::size_of;
 
 use crate::components::{GpuMaterial, GpuMesh, Transform};
-use crate::lit::LitPipelineKey;
+use crate::lit::{LitModel, LitPipelineKey};
 use unlit_wgpu::resources::{ResHandle, TextureView};
 
 mod animation;
 mod draco;
 #[cfg(test)]
 mod draco_tests;
+mod error;
+mod ids;
 mod image;
+pub use self::error::{DracoPrimitiveError, Error};
+pub use self::ids::{AnimationId, ImageId, MaterialId, MeshId, NodeId, PrimitiveId};
 pub use self::image::MipChain;
 mod material;
 mod model;
@@ -226,282 +227,9 @@ mod topology;
 mod upload;
 
 use self::scene::{
-    first_primitives, mesh_morph_targets, node_children, node_locals, node_order, node_parents,
-    node_world_matrices, nodes_morph_targets,
+    mesh_morph_targets, node_children, node_locals, node_order, node_parents, node_world_matrices,
+    nodes_morph_targets,
 };
-
-/// Everything that can stop a load, a spawn or an animation of a glTF document.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// The document could not be read, validated or decoded — the glTF crate's
-    /// own report, which covers the file's JSON, its buffers and its images.
-    #[error(transparent)]
-    Parse(#[from] gltf::Error),
-    /// A primitive's mesh was never inserted into the
-    /// [`GltfResources`] the spawn draws from.
-    #[error("the mesh of node {node} was not inserted into the resources")]
-    MeshNotInserted {
-        /// The node that draws the missing mesh.
-        node: usize,
-    },
-    /// A primitive samples its material's base-color texture, but no material
-    /// was inserted for its document material.
-    #[error(
-        "the primitive {primitive} of mesh {mesh} samples a base-color texture, \
-         but no material was inserted for it"
-    )]
-    MaterialNotInserted {
-        /// The mesh the primitive belongs to.
-        mesh: usize,
-        /// The primitive that samples the texture.
-        primitive: usize,
-    },
-    /// The document declares no default scene, so [`LitGltf::to_model`] has no
-    /// root nodes to instantiate.
-    #[error("the glTF document declares no default scene")]
-    NoDefaultScene,
-    /// A skin's joint was left out of the node set the model carries.
-    ///
-    /// A joint and its whole ancestry join the model even when the default
-    /// scene leaves them outside, so this reports a document whose joint list
-    /// disagrees with the node list it is read against.
-    #[error("joint {joint} of the skin of node {node} is not a node of the model")]
-    JointOutsideModel {
-        /// The skinned node.
-        node: usize,
-        /// The joint index inside that skin.
-        joint: usize,
-    },
-    /// The document decoded into model data the model refused.
-    ///
-    /// The document is the source of the inconsistency, not the model: a skin
-    /// whose joints fall outside the nodes the default scene reaches, or an
-    /// accessor that states fewer values than its key times name, lands here.
-    #[error(transparent)]
-    Model(#[from] crate::lit::LitModelError),
-    /// A material samples its base-color texture, but the image the texture
-    /// names was not among the images the caller inserted.
-    ///
-    /// A caller that inserts a document piecewise has to insert the images
-    /// before the materials that name them; one that hands
-    /// [`LitGltf::insert_material`] a slice without them lands here.
-    #[error(
-        "material {material} samples the image {image}, \
-         which was not among the images it was inserted with"
-    )]
-    ImageNotInserted {
-        /// The document material that samples the missing image.
-        material: usize,
-        /// The document image the material names.
-        image: usize,
-    },
-    /// One mesh declares different morph target counts across its primitives.
-    ///
-    /// A weights channel slices one value per target per keyframe, so the count
-    /// has to be the same for every primitive of a mesh. The specification
-    /// requires it; a document that disagrees with itself cannot be read
-    /// consistently and is refused rather than resolved to one of the counts.
-    #[error(
-        "the primitive {primitive} of mesh {mesh} declares {targets} morph targets, \
-         but the mesh's first primitive declares {expected}"
-    )]
-    MorphTargetCountMismatch {
-        /// The mesh whose primitives disagree.
-        mesh: usize,
-        /// The primitive that declares the other count.
-        primitive: usize,
-        /// The number of targets that primitive declares.
-        targets: usize,
-        /// The number of targets the mesh's first primitive declares.
-        expected: usize,
-    },
-    /// A line loop or a triangle fan holds too few vertices to draw one
-    /// primitive, so its index stream cannot be expanded.
-    #[error(
-        "the primitive {primitive} of mesh {mesh} is a {mode} of {vertices} vertices, \
-         which is too short to draw"
-    )]
-    PrimitiveTooShort {
-        /// The mesh the primitive belongs to.
-        mesh: usize,
-        /// The primitive that is too short.
-        primitive: usize,
-        /// The glTF mode name the primitive declares.
-        mode: &'static str,
-        /// The number of vertices in the primitive's index stream.
-        vertices: usize,
-    },
-    /// A primitive's index stream names a vertex its vertex streams do not
-    /// carry.
-    #[error(
-        "the primitive {primitive} of mesh {mesh} indexes vertex {index}, \
-         but the primitive carries {vertices} vertices"
-    )]
-    IndexOutOfRange {
-        /// The mesh the primitive belongs to.
-        mesh: usize,
-        /// The primitive whose index stream overruns its vertices.
-        primitive: usize,
-        /// The first index past the end of the vertex streams.
-        index: u32,
-        /// The number of vertices the primitive carries.
-        vertices: usize,
-    },
-    /// An image's pixel buffer is too short for the dimensions it states.
-    #[error(
-        "image {image} states {width} by {height} pixels of {texel} bytes, \
-         which needs {expected} bytes of pixels, but it carries {actual}"
-    )]
-    ImagePixelsShort {
-        /// The image whose pixel buffer is short.
-        image: usize,
-        /// The width the image states.
-        width: u32,
-        /// The height the image states.
-        height: u32,
-        /// The bytes one texel of the image's format occupies.
-        texel: usize,
-        /// The bytes the stated dimensions need.
-        expected: usize,
-        /// The bytes the image actually carries.
-        actual: usize,
-    },
-    /// A decoded Draco stream could not be turned back into accessors.
-    ///
-    /// The document is malformed in a way the extension's own reader reports,
-    /// so the Draco error itself is carried: its kind and detail stay readable
-    /// rather than being restated as a glTF validation failure with no context.
-    #[error(
-        "the Draco stream of the primitive {primitive} of mesh {mesh} cannot be read: {source}"
-    )]
-    Draco {
-        /// The mesh the compressed primitive belongs to.
-        mesh: usize,
-        /// The compressed primitive.
-        primitive: usize,
-        /// The Draco reader's own report.
-        #[source]
-        source: draco_core::DracoError,
-    },
-    /// A Draco primitive states something the extension cannot express.
-    ///
-    /// The extension compresses a triangle primitive's attributes and indices
-    /// only, so a document that asks for anything else is refused rather than
-    /// silently decoded into the nearest supported shape.
-    #[error("the Draco primitive {primitive} of mesh {mesh}: {detail}")]
-    DracoPrimitive {
-        /// The mesh the compressed primitive belongs to.
-        mesh: usize,
-        /// The compressed primitive.
-        primitive: usize,
-        /// What the extension cannot express about it.
-        detail: DracoPrimitiveError,
-    },
-    /// A primitive carries no vertex positions.
-    ///
-    /// glTF validation rejects such a primitive, so a document that reaches this
-    /// error came through a path that skipped validation.
-    #[error("the primitive {primitive} of mesh {mesh} carries no POSITION attribute")]
-    PositionsMissing {
-        /// The mesh the primitive belongs to.
-        mesh: usize,
-        /// The primitive without positions.
-        primitive: usize,
-    },
-}
-
-/// What a Draco primitive states that the extension cannot express.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-#[non_exhaustive]
-pub enum DracoPrimitiveError {
-    /// The primitive's mode is neither a triangle list nor a triangle strip.
-    #[error("its mode is not a triangle primitive")]
-    NotTriangles,
-    /// Its extension names no buffer view to decode.
-    #[error("its extension names no buffer view")]
-    ExtensionNamesNoStream,
-    /// Its extension maps no semantic to a stream attribute.
-    #[error("its extension maps no semantic to a stream attribute")]
-    ExtensionMapsNoAttributes,
-    /// The buffer view the extension names is absent from the document.
-    #[error("its extension names buffer view {view}, which is missing")]
-    MissingStream {
-        /// The buffer view the extension names.
-        view: usize,
-    },
-    /// The buffer view the extension names reads a buffer the document lacks.
-    #[error("buffer view {view} reads buffer {buffer}, which is missing")]
-    MissingStreamBuffer {
-        /// The buffer view the extension names.
-        view: usize,
-        /// The buffer that view reads.
-        buffer: usize,
-    },
-    /// The stream's byte range overflows the address space.
-    #[error("the byte range of buffer view {view} overflows")]
-    StreamOverflowsBuffer {
-        /// The buffer view the extension names.
-        view: usize,
-    },
-    /// The stream's byte range extends past the buffer that holds it.
-    #[error("buffer view {view} extends past the buffer it reads")]
-    StreamPastBuffer {
-        /// The buffer view the extension names.
-        view: usize,
-    },
-    /// The extension compresses a semantic the primitive does not declare.
-    #[error("its stream supplies {semantic}, which the primitive does not declare")]
-    AttributeNotDeclared {
-        /// The semantic the extension supplies.
-        semantic: String,
-    },
-    /// An attribute id the extension names does not fit the stream's id space.
-    #[error("the attribute id {id} is too large")]
-    AttributeIdTooLarge {
-        /// The attribute id the extension names.
-        id: u64,
-    },
-    /// A morph target reads an accessor the extension also compresses, which
-    /// would leave the target with no data of its own.
-    #[error("morph target {target} names the accessor {accessor}, which is in the stream")]
-    MorphTargetInStream {
-        /// The morph target's position in the primitive's target list.
-        target: usize,
-        /// The accessor the target names.
-        accessor: usize,
-    },
-    /// Its accessor states a component type no accessor type names.
-    #[error("its accessor states no type the document can name")]
-    InvalidAccessorType,
-    /// Its accessor is missing from the document.
-    #[error("its accessor {accessor} is missing from the document")]
-    MissingAccessor {
-        /// The accessor id the primitive names.
-        accessor: usize,
-    },
-    /// The stream carries fewer components than its accessor declares.
-    #[error("it carries fewer components than its accessor declares")]
-    TooFewComponents,
-    /// An attribute id it names is absent from the stream.
-    #[error("the attribute id {id} is absent from the stream")]
-    MissingAttribute {
-        /// The attribute id the extension maps a semantic to.
-        id: u32,
-    },
-    /// A joint index does not fit the 16-bit joint stream.
-    #[error("it names joint {joint}, which the 16-bit joint stream cannot hold")]
-    JointOutOfRange {
-        /// The joint index the stream states.
-        joint: f32,
-    },
-    /// A normalized attribute's integer type cannot be normalized without
-    /// losing precision in the 32-bit float the accessor holds.
-    #[error("its {data_type} integers cannot be normalized without losing precision")]
-    NormalizationTooWide {
-        /// The component type the attribute holds.
-        data_type: &'static str,
-    },
-}
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
 /// out.
@@ -509,59 +237,6 @@ const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 
 /// The widest texel an upload format uses: four 32-bit float channels.
 const MAX_TEXEL_BYTES: usize = 4 * size_of::<f32>();
-
-/// An index into one of a glTF document's collections.
-///
-/// Each kind of thing a document holds has its own id type, so a node index
-/// cannot be passed where an animation or an image is expected. An id is a
-/// zero-based position; `LitGltf`'s iterator methods yield the ids a
-/// document actually carries.
-macro_rules! document_index {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name(usize);
-
-        impl $name {
-            /// The id at a zero-based position in the document.
-            #[must_use]
-            pub const fn new(index: usize) -> Self {
-                Self(index)
-            }
-
-            /// The zero-based position in the document.
-            #[must_use]
-            pub const fn index(self) -> usize {
-                self.0
-            }
-        }
-    };
-}
-
-document_index!(
-    /// An index into a document's images.
-    ImageId
-);
-document_index!(
-    /// An index into a document's materials.
-    MaterialId
-);
-document_index!(
-    /// An index into a document's meshes.
-    MeshId
-);
-document_index!(
-    /// An index into one mesh's primitives.
-    PrimitiveId
-);
-document_index!(
-    /// An index into a document's nodes.
-    NodeId
-);
-document_index!(
-    /// An index into a document's animations.
-    AnimationId
-);
 
 /// A loaded glTF document, ready to be patched into another world.
 ///
@@ -609,15 +284,6 @@ pub struct LitGltf {
     /// states on the other. [`mesh_morph_targets`] refuses a mesh whose
     /// primitives disagree, so one number describes the whole mesh.
     mesh_targets: Vec<usize>,
-    /// Where each mesh's first primitive sits in a document-mesh-major
-    /// primitive list, indexed by mesh index; one past the last primitive for
-    /// the last mesh.
-    ///
-    /// Every upload and every spawn walks a mesh's primitives in document
-    /// order, so a mesh's slot is its own start plus the primitive's index.
-    /// Deriving that from the document once turns the spawn's per-primitive
-    /// search of the uploaded handles into one lookup.
-    first_primitive: Vec<usize>,
     /// Whether each node states its transform as a matrix, indexed by node
     /// index.
     ///
@@ -647,6 +313,15 @@ impl LitGltf {
     pub fn mip_chain(mut self, mips: MipChain) -> Self {
         self.mips = mips;
         self
+    }
+
+    /// [`Self::mip_chain`] on a document that is already loaded.
+    ///
+    /// The choice is read when an image is uploaded, so setting it before
+    /// [`Self::insert_resources`] is what makes every texture of the document
+    /// carry the chain asked for.
+    pub fn set_mip_chain(&mut self, mips: MipChain) {
+        self.mips = mips;
     }
 }
 
@@ -713,30 +388,148 @@ pub struct GltfMesh {
     pub mesh: GpuMesh,
 }
 
-/// Every resource one document uploaded, in document order.
+/// A prepared glTF model and the resources its draws name.
 ///
-/// Produced by [`LitGltf::insert_resources`], which uploads the whole
-/// document in one call, and taken by [`LitGltf::to_model`] to draw it. Each
-/// vector is in document
-/// order — `images[i]` came from image `i`, `materials[m]` from material
-/// `m` (`None` when it names no base-color texture), and `meshes` holds every
-/// primitive of every mesh, document-mesh-major and then primitive-minor —
-/// and every handle carries the typed id of the document item it came from.
+/// `LitModel` owns the handles each draw needs, so a caller may move the model
+/// out and drop this value once the model is installed. The resource table is
+/// useful while inspecting what was uploaded or when a caller also needs the
+/// document-indexed image, material and primitive handles.
+#[derive(Clone, Debug)]
+pub struct GltfAsset {
+    /// The default scene and selected animation clips, ready to spawn.
+    pub model: LitModel,
+    /// The uploaded resources, indexed by their document ids.
+    pub resources: GltfResources,
+}
+
+/// GPU resources for one document and one mesh source, keyed by document id.
 ///
-/// Holding the struct is what keeps the uploaded resources alive: dropping it
-/// lets the next [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain)
-/// collect them.
+/// Unuploaded ids remain absent regardless of insertion order. An uploaded
+/// material without a base-color texture has an entry but no bind group.
+/// Dropping this table releases its handles; a prepared model retains the
+/// handles its draws need.
 ///
-/// A caller that inserts the pieces itself — to share textures between
-/// documents, say — builds one of these to spawn with.
+/// Use the same source for uploads into this table and for drawing its models.
+/// A caller that reuses an uploaded resource for a different document must
+/// key that resource by the id in the destination document.
 #[derive(Clone, Debug, Default)]
 pub struct GltfResources {
-    /// Every uploaded image, indexed by document image.
-    pub images: Vec<GltfImage>,
-    /// Every uploaded material, indexed by document material.
-    pub materials: Vec<Option<GltfMaterial>>,
-    /// Every uploaded primitive, document-mesh-major then primitive-minor.
-    pub meshes: Vec<GltfMesh>,
+    images: HashMap<ImageId, GltfImage>,
+    materials: HashMap<MaterialId, Option<GltfMaterial>>,
+    meshes: HashMap<(MeshId, PrimitiveId), GltfMesh>,
+    samplers: Vec<(wgpu::SamplerDescriptor<'static>, ResHandle<wgpu::Sampler>)>,
+}
+
+impl GltfResources {
+    /// Empty resources, for a caller that uploads the pieces itself.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Place an uploaded image under the id it carries, returning the previous handle.
+    pub fn insert_image(&mut self, image: GltfImage) -> Option<GltfImage> {
+        self.images.insert(image.image, image)
+    }
+
+    /// Place an uploaded material under `material`, replacing any previous entry.
+    ///
+    /// `entry` is `None` for a material with no base-color texture. A textured
+    /// handle is rekeyed to `material` when reused from another document.
+    pub fn insert_material(&mut self, material: MaterialId, mut entry: Option<GltfMaterial>) {
+        if let Some(entry) = &mut entry {
+            entry.material = material;
+        }
+        self.materials.insert(material, entry);
+    }
+
+    /// Place an uploaded primitive under the mesh and primitive it draws.
+    ///
+    /// Returns the handle it displaced, if that primitive was already there.
+    pub fn insert_mesh(&mut self, mesh: GltfMesh) -> Option<GltfMesh> {
+        self.meshes
+            .insert((mesh.mesh_index, mesh.primitive_index), mesh)
+    }
+
+    /// The uploaded image at `image`, or `None` when it was never inserted.
+    #[must_use]
+    pub fn image(&self, image: ImageId) -> Option<&GltfImage> {
+        self.images.get(&image)
+    }
+
+    /// Every uploaded image, in no particular order.
+    pub fn images(&self) -> impl Iterator<Item = &GltfImage> {
+        self.images.values()
+    }
+
+    /// The uploaded material at `material`, or `None` when it was never
+    /// inserted or names no base-color texture.
+    ///
+    /// [`Self::holds_material`] separates those two answers.
+    #[must_use]
+    pub fn material(&self, material: MaterialId) -> Option<&GltfMaterial> {
+        self.materials.get(&material)?.as_ref()
+    }
+
+    /// Whether the resources carry an entry for `material` at all.
+    ///
+    /// An entry that was uploaded without a base-color texture answers `true`
+    /// and [`Self::material`] answers `None`, which is the difference between
+    /// a material a document states untextured and one that was never
+    /// inserted.
+    #[must_use]
+    pub fn holds_material(&self, material: MaterialId) -> bool {
+        self.materials.contains_key(&material)
+    }
+
+    /// The uploaded primitive of `mesh`, or `None` when it was never inserted.
+    #[must_use]
+    pub fn mesh(&self, mesh: MeshId, primitive: PrimitiveId) -> Option<&GltfMesh> {
+        self.meshes.get(&(mesh, primitive))
+    }
+
+    /// Every uploaded primitive, in no particular order.
+    pub fn meshes(&self) -> impl Iterator<Item = &GltfMesh> {
+        self.meshes.values()
+    }
+
+    /// How many primitives were uploaded.
+    #[must_use]
+    pub fn mesh_count(&self) -> usize {
+        self.meshes.len()
+    }
+
+    /// The samplers uploaded for this document's materials, keyed by their
+    /// descriptors.
+    ///
+    /// A sampler is an immutable GPU object and documents repeat one across
+    /// their materials, so an upload that has already built a descriptor's
+    /// sampler reuses it rather than creating a second one the graph would keep
+    /// alive beside it. The cache lives as long as the resources, so a caller
+    /// inserting materials one at a time gets the same reuse a whole-document
+    /// upload does.
+    #[must_use]
+    pub fn samplers(&self) -> &[(wgpu::SamplerDescriptor<'static>, ResHandle<wgpu::Sampler>)] {
+        &self.samplers
+    }
+
+    /// Look up or upload the sampler a descriptor asks for.
+    pub fn sampler(
+        &mut self,
+        source: &mut crate::mesh_source::MeshSource,
+        world: &unlit_ecs::Scope<'_>,
+        descriptor: wgpu::SamplerDescriptor<'static>,
+    ) -> ResHandle<wgpu::Sampler> {
+        let known = self.samplers.iter().find(|(built, _)| *built == descriptor);
+        match known {
+            Some((_, sampler)) => sampler.clone(),
+            None => {
+                let sampler = source.register_sampler(world, Some(descriptor.clone()));
+                self.samplers.push((descriptor, sampler.clone()));
+                sampler
+            }
+        }
+    }
 }
 
 impl LitGltf {
@@ -828,7 +621,6 @@ impl LitGltf {
         let order = node_order(&children, &parents);
         let node_matrices = node_world_matrices(&document, &parents, &order);
         let morph_targets = nodes_morph_targets(&document, &mesh_targets);
-        let first_primitive = first_primitives(&document);
         let matrix_nodes = document
             .nodes()
             .map(|node| matches!(node.transform(), gltf::scene::Transform::Matrix { .. }))
@@ -843,7 +635,7 @@ impl LitGltf {
             let (texel, expected) = image::pixel_bytes(data);
             if data.pixels.len() != expected {
                 return Err(Error::ImagePixelsShort {
-                    image: index,
+                    image: ImageId::new(index),
                     width: data.width,
                     height: data.height,
                     texel,
@@ -861,7 +653,6 @@ impl LitGltf {
             locals,
             morph_targets,
             mesh_targets,
-            first_primitive,
             matrix_nodes,
             clips,
             mips: MipChain::default(),
@@ -884,8 +675,12 @@ impl LitGltf {
     }
 
     /// The ids of every primitive of `mesh`, in document order.
-    pub fn primitives(&self, mesh: MeshId) -> impl Iterator<Item = PrimitiveId> {
-        (0..self.mesh(mesh.index()).primitives().count()).map(PrimitiveId::new)
+    ///
+    /// `None` when the document carries no such mesh, so a caller that builds
+    /// ids itself cannot read a mesh list it guessed at.
+    pub fn primitives(&self, mesh: MeshId) -> Option<impl Iterator<Item = PrimitiveId>> {
+        let count = self.mesh(mesh)?.primitives().count();
+        Some((0..count).map(PrimitiveId::new))
     }
 
     /// The ids of every node in the document, in document order.
@@ -898,31 +693,23 @@ impl LitGltf {
         (0..self.document.animations().count()).map(AnimationId::new)
     }
 
-    fn node(&self, node: usize) -> gltf::scene::Node<'_> {
-        self.document
-            .nodes()
-            .nth(node)
-            .expect("glTF node index in bounds")
+    pub(super) fn node(&self, node: NodeId) -> Option<gltf::scene::Node<'_>> {
+        self.document.nodes().nth(node.index())
     }
 
-    fn mesh(&self, mesh: usize) -> gltf::Mesh<'_> {
-        self.document
-            .meshes()
-            .nth(mesh)
-            .expect("glTF mesh index in bounds")
+    pub(super) fn mesh(&self, mesh: MeshId) -> Option<gltf::Mesh<'_>> {
+        self.document.meshes().nth(mesh.index())
     }
 
-    fn primitive(&self, mesh: usize, primitive: usize) -> gltf::Primitive<'_> {
-        self.mesh(mesh)
-            .primitives()
-            .nth(primitive)
-            .expect("glTF primitive index in bounds")
+    pub(super) fn primitive(
+        &self,
+        mesh: MeshId,
+        primitive: PrimitiveId,
+    ) -> Option<gltf::Primitive<'_>> {
+        self.mesh(mesh)?.primitives().nth(primitive.index())
     }
 
-    fn material(&self, material: usize) -> gltf::Material<'_> {
-        self.document
-            .materials()
-            .nth(material)
-            .expect("glTF material index in bounds")
+    pub(super) fn material(&self, material: MaterialId) -> Option<gltf::Material<'_>> {
+        self.document.materials().nth(material.index())
     }
 }

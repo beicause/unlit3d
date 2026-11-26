@@ -7,6 +7,7 @@
 
 use super::material::base_color_uv_set;
 use super::topology;
+use super::{MeshId, PrimitiveId};
 use crate::lit::LitMeshDesc;
 use crate::mesh::MorphDeltas;
 
@@ -49,7 +50,7 @@ impl MeshStreams {
 
 /// Read a primitive's streams through glTF's accessor reader.
 ///
-/// `mesh` and `primitive` are the primitive's document position and `targets`
+/// `mesh` and `primitive_id` are the primitive's document position and `targets`
 /// the number of morph targets its mesh declares — the count
 /// [`mesh_morph_targets`](super::scene::mesh_morph_targets) validated, so the
 /// slots here and the weights a channel slices always agree.
@@ -59,8 +60,8 @@ impl MeshStreams {
 /// refused: uploading either would draw something the document never stated.
 pub(super) fn from_reader(
     buffers: &[gltf::buffer::Data],
-    mesh: usize,
-    primitive_index: usize,
+    mesh: MeshId,
+    primitive_id: PrimitiveId,
     primitive: &gltf::Primitive<'_>,
     targets: usize,
 ) -> Result<MeshStreams, super::Error> {
@@ -70,7 +71,7 @@ pub(super) fn from_reader(
         .read_positions()
         .ok_or(super::Error::PositionsMissing {
             mesh,
-            primitive: primitive_index,
+            primitive: primitive_id,
         })?
         .collect();
     let vertices = positions.len();
@@ -86,7 +87,7 @@ pub(super) fn from_reader(
     if stated < topology::minimum_vertices(mode) {
         return Err(super::Error::PrimitiveTooShort {
             mesh,
-            primitive: primitive_index,
+            primitive: primitive_id,
             mode: topology::name(mode),
             vertices: stated,
         });
@@ -96,7 +97,7 @@ pub(super) fn from_reader(
     {
         return Err(super::Error::IndexOutOfRange {
             mesh,
-            primitive: primitive_index,
+            primitive: primitive_id,
             index,
             vertices,
         });

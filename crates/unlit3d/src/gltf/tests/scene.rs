@@ -14,7 +14,11 @@ fn a_double_sided_material_culls_nothing() {
         LitGltf::from_bytes(&sided_document(false)).expect("the single-sided document parses");
     assert_eq!(
         single
-            .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+            .pipeline_key(
+                &super::GltfResources::new(),
+                MeshId::new(0),
+                PrimitiveId::new(0)
+            )
             .expect("the sided document samples no image")
             .options
             .primitive
@@ -26,7 +30,11 @@ fn a_double_sided_material_culls_nothing() {
     let double = LitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
     assert_eq!(
         double
-            .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+            .pipeline_key(
+                &super::GltfResources::new(),
+                MeshId::new(0),
+                PrimitiveId::new(0)
+            )
             .expect("the sided document samples no image")
             .options
             .primitive
@@ -40,11 +48,19 @@ fn a_double_sided_material_culls_nothing() {
 fn culling_alone_distinguishes_the_two_sided_variants() {
     let single = LitGltf::from_bytes(&sided_document(false))
         .expect("the single-sided document parses")
-        .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+        .pipeline_key(
+            &super::GltfResources::new(),
+            MeshId::new(0),
+            PrimitiveId::new(0),
+        )
         .expect("the sided document samples no image");
     let double = LitGltf::from_bytes(&sided_document(true))
         .expect("the double-sided document parses")
-        .pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
+        .pipeline_key(
+            &super::GltfResources::new(),
+            MeshId::new(0),
+            PrimitiveId::new(0),
+        )
         .expect("the sided document samples no image");
     assert_ne!(
         single, double,
@@ -71,7 +87,9 @@ fn culling_alone_distinguishes_the_two_sided_variants() {
 fn a_morph_target_makes_the_mesh_morph() {
     let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
         .expect("the morphed document parses");
-    let primitive = gltf.primitive(0, 0);
+    let primitive = gltf
+        .primitive(MeshId::new(0), PrimitiveId::new(0))
+        .expect("the document carries the quad");
     assert_eq!(morph_target_count(&primitive), 1);
 }
 
@@ -84,7 +102,9 @@ fn a_target_without_positions_still_owns_a_weight_slot() {
     // never states. The mesh therefore counts it and starts at zero.
     let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[None]))
         .expect("the morphed document parses");
-    let primitive = gltf.primitive(0, 0);
+    let primitive = gltf
+        .primitive(MeshId::new(0), PrimitiveId::new(0))
+        .expect("the document carries the quad");
     assert_eq!(morph_target_count(&primitive), 1);
     assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.0]);
 }
@@ -105,9 +125,11 @@ fn a_weight_lands_on_the_target_its_slot_names() {
     assert_eq!(gltf.morph_weights(NodeId::new(0)), vec![0.0, 1.0]);
     let streams = super::streams::from_reader(
         &gltf.buffers,
-        0,
-        0,
-        &gltf.primitive(0, 0),
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &gltf
+            .primitive(MeshId::new(0), PrimitiveId::new(0))
+            .expect("the document carries the quad"),
         gltf.mesh_targets[0],
     )
     .expect("the primitive's streams read");
@@ -170,7 +192,14 @@ fn a_mesh_without_targets_starts_undeformed() {
     let gltf = LitGltf::from_bytes(&morphed_document(None, None, &[]))
         .expect("the morphed document parses");
     assert!(gltf.morph_weights(NodeId::new(0)).is_empty());
-    assert_eq!(morph_target_count(&gltf.primitive(0, 0)), 0);
+    assert_eq!(
+        morph_target_count(
+            &gltf
+                .primitive(MeshId::new(0), PrimitiveId::new(0))
+                .expect("the document carries the quad")
+        ),
+        0
+    );
 }
 
 #[test]
@@ -215,7 +244,9 @@ fn a_skinned_primitive_declares_its_joint_stream() {
     // uploaded with them and the variant a draw resolves reads them.
     let gltf = LitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
         .expect("the skinned document parses");
-    let primitive = gltf.primitive(0, 0);
+    let primitive = gltf
+        .primitive(MeshId::new(0), PrimitiveId::new(0))
+        .expect("the document carries the quad");
     assert!(primitive.get(&gltf::Semantic::Joints(0)).is_some());
     assert!(primitive.get(&gltf::Semantic::Weights(0)).is_some());
     assert_eq!(base_color_uv_set(&primitive), None);

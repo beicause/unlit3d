@@ -121,8 +121,8 @@ pub(super) fn mesh_morph_targets(document: &gltf::Document) -> Result<Vec<usize>
                 let targets = super::material::morph_target_count(&primitive);
                 if targets != expected {
                     return Err(super::Error::MorphTargetCountMismatch {
-                        mesh: mesh.index(),
-                        primitive: primitive.index(),
+                        mesh: super::MeshId::new(mesh.index()),
+                        primitive: super::PrimitiveId::new(primitive.index()),
                         targets,
                         expected,
                     });
@@ -145,18 +145,4 @@ pub(super) fn nodes_morph_targets(document: &gltf::Document, meshes: &[usize]) -
         .nodes()
         .map(|node| node.mesh().map_or(0, |mesh| meshes[mesh.index()]))
         .collect()
-}
-
-/// A mesh's primitives are contiguous in that list, so a primitive's slot is
-/// its mesh's entry plus its own index. The table has one entry per mesh plus
-/// the total, which is what makes the last mesh's length readable too.
-pub(super) fn first_primitives(document: &gltf::Document) -> Vec<usize> {
-    let mut starts = Vec::with_capacity(document.meshes().len() + 1);
-    let mut count = 0;
-    for mesh in document.meshes() {
-        starts.push(count);
-        count += mesh.primitives().len();
-    }
-    starts.push(count);
-    starts
 }

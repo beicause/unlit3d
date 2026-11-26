@@ -113,37 +113,30 @@ fn build(
     // two documents sharing a frame share a source. Each document derives its
     // own pipeline keys, since a skinned primitive and a morphed one read
     // different streams.
-    let (fox_resources, morph_resources) =
+    let fox_clip = fox.animation_id(FOX_ANIMATION).expect("the fox can walk");
+    let morph_clip = morph
+        .animation_id(MORPH_ANIMATION)
+        .expect("the cube can pulse");
+    let (fox_model, morph_model) =
         super::with_mesh_source(world, source_entity, |source, world| {
-            let fox_resources = fox
-                .insert_resources(source, world)
-                .expect("the embedded document uploads");
-            let morph_resources = morph
-                .insert_resources(source, world)
-                .expect("the embedded document uploads");
-            (fox_resources, morph_resources)
+            let fox = fox
+                .insert_asset_with(source, world, [fox_clip])
+                .expect("the fox scene prepares");
+            let morph = morph
+                .insert_asset_with(source, world, [morph_clip])
+                .expect("the morph scene prepares");
+            (fox.model, morph.model)
         });
 
-    // The clips are resolved against the models the documents became, and the
-    // durations are read back from them: a clip keeps the length its document
-    // authored, so the model states the number playback has to cover.
-    let fox_model = fox
-        .to_model(&fox_resources)
-        .expect("the fox scene has uploaded resources");
-    let morph_model = morph
-        .to_model(&morph_resources)
-        .expect("the morph scene has uploaded resources");
-    let fox_animation = clip_index(&fox_model, FOX_ANIMATION);
-    let morph_animation = clip_index(&morph_model, MORPH_ANIMATION);
-    let fox_duration = fox_model.animations[fox_animation].duration;
-    let morph_duration = morph_model.animations[morph_animation].duration;
+    let fox_duration = fox_model.animations[0].duration;
+    let morph_duration = morph_model.animations[0].duration;
 
     let mut scope = world.scope_mut(source_entity);
     let fox_root = scope.spawn(LitModelBundle {
         transform: FOX_PLACEMENT,
         model: fox_model,
         animation: LitModelAnimation {
-            clip: Some(fox_animation),
+            clip: Some(0),
             clock: LitModelClock::Manual,
             ..Default::default()
         },
@@ -152,7 +145,7 @@ fn build(
         transform: MORPH_PLACEMENT,
         model: morph_model,
         animation: LitModelAnimation {
-            clip: Some(morph_animation),
+            clip: Some(0),
             clock: LitModelClock::Manual,
             ..Default::default()
         },
@@ -220,12 +213,11 @@ fn build(
                 };
                 (loop_time(fox_duration), loop_time(morph_duration))
             };
-            // The scene advances after the model's own ordered callback has
-            // sampled this frame, so the time written here reaches the draw
-            // only through an explicit sampling pass. A manual clock makes
-            // that pass idempotent: it samples the written time and leaves it
-            // alone, so the draw shows this frame's pose rather than the
-            // previous one.
+            // A manual clock is the caller's to sample: no frame evaluates it,
+            // so this pass is what turns the time written here into the pose
+            // the frame draws. It also makes the scene's own clock the only
+            // thing the drawn pose depends on, rather than where the scene
+            // sits in the frame's order.
             let scope = world.scope(source_entity);
             for (root, time) in [(fox_root, fox_time), (morph_root, morph_time)] {
                 scope.query_one::<&mut LitModelAnimation>(root).get().time = time;
@@ -246,14 +238,4 @@ fn build(
             (frame < FRAMES as u32).then(|| format!("gltf/frame_{frame:02}.webp"))
         }),
     }
-}
-
-/// The index of the clip `name` in `model`.
-///
-/// The assets name their animations, so the scene asks for one by name rather
-/// than by a position that a re-export could shuffle.
-fn clip_index(model: &LitModel, name: &str) -> usize {
-    model
-        .clip_index(name)
-        .unwrap_or_else(|| panic!("the document has an animation named `{name}`"))
 }

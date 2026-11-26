@@ -6,7 +6,7 @@
 //! plays them, not to the document they came from.
 
 use super::animation::channels;
-use super::{AnimationId, LitGltf};
+use super::{AnimationId, Error, LitGltf};
 use crate::lit::LitModelChannel;
 
 impl LitGltf {
@@ -15,52 +15,68 @@ impl LitGltf {
         self.document.animations().count()
     }
 
-    /// The name of an animation, or `None` when it carries none.
-    ///
-    /// # Panics
-    ///
-    /// If `animation` is out of bounds.
-    pub fn animation_name(&self, animation: AnimationId) -> Option<&str> {
-        self.animation(animation.index()).name()
+    /// The id of the first animation with `name`.
+    #[must_use]
+    pub fn animation_id(&self, name: &str) -> Option<AnimationId> {
+        self.document
+            .animations()
+            .enumerate()
+            .find_map(|(index, animation)| {
+                (animation.name() == Some(name)).then_some(AnimationId::new(index))
+            })
     }
 
-    /// The duration of an animation in seconds: the latest input keyframe
-    /// across all of its samplers.
+    /// The name of an animation, or `None` when it carries none.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If `animation` is out of bounds.
-    pub fn animation_duration(&self, animation: AnimationId) -> f32 {
-        self.clip(animation)
-            .iter()
-            .filter_map(|channel| channel.times.last())
-            .fold(0.0, |duration, last| duration.max(*last))
+    /// [`Error::AnimationOutsideDocument`] when the document carries no such
+    /// animation.
+    pub fn animation_name(&self, animation: AnimationId) -> Result<Option<&str>, Error> {
+        Ok(self.animation(animation)?.name())
+    }
+
+    /// The time of the last decoded keyframe in seconds, or zero for no keys.
+    ///
+    /// This includes decoded channels targeting nodes outside the default scene.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AnimationOutsideDocument`] when the document carries no such
+    /// animation.
+    pub fn animation_duration(&self, animation: AnimationId) -> Result<f32, Error> {
+        Ok(duration(self.clip(animation)?))
     }
 
     /// The decoded keyframes of an animation, decoding them on first use.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If `animation` is out of bounds.
-    pub(super) fn clip(&self, animation: AnimationId) -> &[LitModelChannel] {
+    /// [`Error::AnimationOutsideDocument`] when the document carries no such
+    /// animation.
+    pub(super) fn clip(&self, animation: AnimationId) -> Result<&[LitModelChannel], Error> {
         let index = animation.index();
-        // Resolved first, so an out-of-bounds index panics with the same
-        // message as every other accessor of an animation.
-        let animation = self.animation(index);
-        self.clips[index].get_or_init(|| {
-            channels(
-                animation,
-                &self.buffers,
-                &self.matrix_nodes,
-                &self.morph_targets,
-            )
-        })
+        let data = self.animation(animation)?;
+        Ok(self.clips[index]
+            .get_or_init(|| channels(data, &self.buffers, &self.matrix_nodes, &self.morph_targets)))
     }
 
-    fn animation(&self, animation: usize) -> gltf::animation::Animation<'_> {
+    fn animation(&self, animation: AnimationId) -> Result<gltf::animation::Animation<'_>, Error> {
         self.document
             .animations()
-            .nth(animation)
-            .expect("glTF animation index in bounds")
+            .nth(animation.index())
+            .ok_or(Error::AnimationOutsideDocument { animation })
     }
+}
+
+/// How long a clip lasts: the latest input keyframe across all of its samplers.
+///
+/// Zero for a clip whose channels carry no keyframes. The one place the length
+/// of a clip is computed, so [`LitGltf::animation_duration`] and the clips a
+/// model is built from cannot disagree about it.
+pub(super) fn duration(channels: &[LitModelChannel]) -> f32 {
+    channels
+        .iter()
+        .filter_map(|channel| channel.times.last().copied())
+        .fold(0.0, f32::max)
 }

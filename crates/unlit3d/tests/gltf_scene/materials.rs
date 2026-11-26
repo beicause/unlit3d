@@ -31,7 +31,7 @@ pub(super) async fn a_double_sided_material_draws_back_faces() {
             });
 
             let key = gltf
-                .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+                .pipeline_key(&resources, MeshId::new(0), PrimitiveId::new(0))
                 .expect("the quad's material samples the document's only image");
             if double_sided {
                 assert_eq!(
@@ -94,7 +94,7 @@ pub(super) async fn a_blended_material_composites_over_the_frame() {
             .expect("the embedded document uploads")
     });
     let key = gltf
-        .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+        .pipeline_key(&resources, MeshId::new(0), PrimitiveId::new(0))
         .expect("the quad's material samples no image it lacks");
     assert!(
         key.options.blend.is_some(),
@@ -169,7 +169,7 @@ pub(super) async fn a_blended_material_writes_no_depth() {
             .expect("the embedded document uploads")
     });
     let key = gltf
-        .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+        .pipeline_key(&resources, MeshId::new(0), PrimitiveId::new(0))
         .expect("the quad's material samples no image it lacks");
     assert!(
         key.options.blend.is_some(),
@@ -230,7 +230,7 @@ pub(super) async fn a_masked_material_discards_fragments_below_its_cutoff() {
                 .expect("the embedded document uploads")
         });
         let key = gltf
-            .pipeline_key(&resources.images, MeshId::new(0), PrimitiveId::new(0))
+            .pipeline_key(&resources, MeshId::new(0), PrimitiveId::new(0))
             .expect("the quad's material samples the document's only image");
         assert!(
             key.options.alpha_cutoff,
@@ -360,12 +360,14 @@ pub(super) async fn a_material_without_its_image_reports_it() {
 
     let material = unlit3d::gltf::MaterialId::new(0);
     let (error, inserted) = gpu.with_mesh_source(&world, |source, world| {
+        let mut resources = unlit3d::gltf::GltfResources::new();
         let error = gltf
-            .insert_material(source, world, material, &[])
+            .insert_material(source, world, material, &mut resources)
             .expect_err("the image the material samples was never inserted");
-        let images = gltf.insert_images(source, world);
+        gltf.insert_images(source, world, &mut resources)
+            .expect("the document's images upload");
         let inserted = gltf
-            .insert_material(source, world, material, &images)
+            .insert_material(source, world, material, &mut resources)
             .expect("the images are in place");
         (error.to_string(), inserted.is_some())
     });

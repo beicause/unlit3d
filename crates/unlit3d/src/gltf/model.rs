@@ -1,5 +1,6 @@
 //! Convert a loaded glTF document into the generic lit model representation.
 
+use super::playback::duration;
 use super::{AnimationId, GltfResources, LitGltf};
 use crate::lit::{LitModel, LitModelClip, LitModelMorph, LitModelNode, LitModelSkin};
 
@@ -11,7 +12,7 @@ use crate::lit::{LitModel, LitModelClip, LitModelMorph, LitModelNode, LitModelSk
 /// asserting a fact the caller cannot check.
 fn remapped_joints(
     joints: impl Iterator<Item = Option<usize>>,
-    node: usize,
+    node: super::NodeId,
 ) -> Result<Vec<usize>, super::Error> {
     joints
         .enumerate()
@@ -34,6 +35,43 @@ impl LitGltf {
     /// missing its uploaded mesh or material, or the document decodes into
     /// model data [`LitModel::new`] refuses — see [`super::Error::Model`].
     pub fn to_model(&self, resources: &GltfResources) -> Result<LitModel, super::Error> {
+        self.to_model_with(resources, self.animations())
+    }
+
+    /// [`Self::to_model`] over the clips a caller asks for.
+    ///
+    /// A document may carry hundreds of clips a scene never plays, and turning
+    /// one into model data copies its keyframes; this is how a caller that
+    /// knows which clip it plays pays for that one alone. The clips are turned
+    /// into the model in the order given, so the model's clip indices are
+    /// positions in `clips` rather than in the document — a caller that passes
+    /// `self.animations()` gets the document's indices, which is what
+    /// [`Self::to_model`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::to_model`], plus
+    /// [`Error::AnimationOutsideDocument`](super::Error::AnimationOutsideDocument)
+    /// when `clips` names an animation the document does not carry.
+    pub fn to_model_with(
+        &self,
+        resources: &GltfResources,
+        clips: impl IntoIterator<Item = AnimationId>,
+    ) -> Result<LitModel, super::Error> {
+        let (nodes, remap) = self.model_nodes(resources)?;
+        let animations = clips
+            .into_iter()
+            .map(|animation| self.clip_model(animation, &remap))
+            .collect::<Result<Vec<_>, super::Error>>()?;
+        Ok(LitModel::new(nodes, animations)?)
+    }
+
+    /// The nodes the default scene draws with, and the document-to-model node
+    /// remap they were built against.
+    fn model_nodes(
+        &self,
+        resources: &GltfResources,
+    ) -> Result<(Vec<LitModelNode>, Vec<Option<usize>>), super::Error> {
         let scene = self
             .document
             .default_scene()
@@ -76,7 +114,14 @@ impl LitGltf {
                 let primitives = match node.mesh().filter(|_| selected[index]) {
                     Some(mesh) => mesh
                         .primitives()
-                        .map(|primitive| self.draw_primitive(index, &mesh, &primitive, resources))
+                        .map(|primitive| {
+                            self.draw_primitive(
+                                super::NodeId::new(index),
+                                &mesh,
+                                &primitive,
+                                resources,
+                            )
+                        })
                         .collect::<Result<Vec<_>, _>>()?,
                     None => Vec::new(),
                 };
@@ -99,23 +144,23 @@ impl LitGltf {
                 })
             })
             .collect::<Result<Vec<_>, super::Error>>()?;
-        let animations = (0..self.document.animations().count())
-            .map(|index| self.clip_model(AnimationId::new(index), &remap))
-            .collect();
-        Ok(LitModel::new(nodes, animations)?)
+        Ok((nodes, remap))
     }
 
-    fn clip_model(&self, animation: AnimationId, remap: &[Option<usize>]) -> LitModelClip {
-        let source = self.clip(animation);
-        // The length is the document's, taken before any channel is dropped:
-        // a clip that drives a node this model leaves out was still authored as
-        // long as the document says, so a caller phases over the clip the
-        // author made rather than over the part of it that survived the remap.
-        // `animation_duration` answers the same number from the same channels.
-        let duration = source
-            .iter()
-            .filter_map(|channel| channel.times.last().copied())
-            .fold(0.0, f32::max);
+    /// One document animation as model data, over the nodes the model carries.
+    ///
+    /// The length is the document's, taken before any channel is dropped: a
+    /// clip that drives a node this model leaves out was still authored as long
+    /// as the document says, so a caller phases over the clip the author made
+    /// rather than over the part of it that survived the remap.
+    /// [`Self::animation_duration`] answers the same number from the same
+    /// channels.
+    fn clip_model(
+        &self,
+        animation: AnimationId,
+        remap: &[Option<usize>],
+    ) -> Result<LitModelClip, super::Error> {
+        let source = self.clip(animation)?;
         let channels: Vec<_> = source
             .iter()
             .filter_map(|channel| {
@@ -125,11 +170,11 @@ impl LitGltf {
                 })
             })
             .collect();
-        LitModelClip {
-            name: self.animation_name(animation).map(str::to_owned),
-            duration,
+        Ok(LitModelClip {
+            name: self.animation_name(animation)?.map(str::to_owned),
+            duration: duration(source),
             channels,
-        }
+        })
     }
 
     /// The skin a model node carries, or `None` when no drawn primitive of it
@@ -153,7 +198,10 @@ impl LitGltf {
         // with it, so the remapped set covers them. A joint it missed would
         // leave a skin indexing a node the model does not carry, which is what
         // the error names.
-        let joints = remapped_joints(skin.joints.iter().copied().map(|joint| remap[joint]), index)?;
+        let joints = remapped_joints(
+            skin.joints.iter().copied().map(|joint| remap[joint]),
+            super::NodeId::new(index),
+        )?;
         Ok(Some(LitModelSkin::new(joints, skin.inverse_bind)))
     }
 }

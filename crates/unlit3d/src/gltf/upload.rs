@@ -1,26 +1,66 @@
 //! Uploading a document's images, materials and meshes into a world.
 //!
 //! A document is parsed eagerly but uploads nothing until one of these calls
-//! names a world's [`MeshSource`]: each handle they return is what keeps the
-//! GPU resource alive, so a caller holds them for as long as the entities that
-//! draw them live. [`LitGltf::insert_resources`] does the whole document in one
-//! call; the per-kind calls are for a caller that shares textures or materials
-//! between documents.
+//! names a world's [`MeshSource`]. Uploads store their handles in a
+//! [`GltfResources`] table and [`LitGltf::insert_asset`] also prepares a model
+//! that retains its own draw handles.
 
 use super::image::{encode_mip_chain, image_format};
 use super::material::{alpha_cutoff, base_color_uv_set, sampler_descriptor, textured_key};
 use super::streams::from_reader;
 use super::{
-    GltfImage, GltfMaterial, GltfMesh, GltfResources, ImageId, LitGltf, MaterialId, MeshId,
-    PrimitiveId,
+    AnimationId, GltfAsset, GltfImage, GltfMaterial, GltfMesh, GltfResources, ImageId, LitGltf,
+    MaterialId, MeshId, PrimitiveId,
 };
 use crate::lit::LitPipelineKey;
 use crate::mesh_source::MeshSource;
 use unlit_ecs::Scope;
 use unlit_wgpu::pipeline::LitOptions;
-use unlit_wgpu::resources::ResHandle;
 
 impl LitGltf {
+    /// Upload the document and prepare its default scene with every animation.
+    ///
+    /// The returned value owns the uploaded resources and the model that draws
+    /// them. A caller may move out the model before spawning it; each draw keeps
+    /// its own mesh and material handles alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns the document, upload or model error that prevented preparation.
+    pub fn insert_asset(
+        &self,
+        source: &mut MeshSource,
+        world: &Scope<'_>,
+    ) -> Result<GltfAsset, super::Error> {
+        self.insert_asset_with(source, world, self.animations())
+    }
+
+    /// Upload the document and prepare its default scene with selected clips.
+    ///
+    /// Clip indices in the returned model follow the order of `clips`. Every
+    /// id is validated before resources are uploaded; a bad id therefore
+    /// cannot leave a partially inserted asset in the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::Error::AnimationOutsideDocument`] for an id the
+    /// document does not carry, or the document, upload or model error that
+    /// prevented preparation.
+    pub fn insert_asset_with(
+        &self,
+        source: &mut MeshSource,
+        world: &Scope<'_>,
+        clips: impl IntoIterator<Item = AnimationId>,
+    ) -> Result<GltfAsset, super::Error> {
+        let clips: Vec<_> = clips.into_iter().collect();
+        for &clip in &clips {
+            self.animation_name(clip)?;
+        }
+        let resources = self.insert_resources(source, world)?;
+        let model = self.to_model_with(&resources, clips)?;
+        Ok(GltfAsset { model, resources })
+    }
+
     /// The [`LitPipelineKey`] the primitive renders with.
     ///
     /// A material carrying `KHR_materials_unlit` shades nothing and draws its
@@ -39,17 +79,19 @@ impl LitGltf {
     ///
     /// # Errors
     ///
-    /// If the primitive samples a base-color texture through an image that is
-    /// not in `images`. The filtering that decides the bind-group layout is
+    /// If the primitive does not exist or samples a base-color image missing
+    /// from `resources`. The filtering that decides the bind-group layout is
     /// read off that uploaded handle rather than recomputed from the document,
     /// so a key and the group a material builds always agree on one image.
     pub fn pipeline_key(
         &self,
-        images: &[GltfImage],
+        resources: &GltfResources,
         mesh: MeshId,
         primitive: PrimitiveId,
     ) -> Result<LitPipelineKey, super::Error> {
-        let primitive = self.primitive(mesh.index(), primitive.index());
+        let primitive = self
+            .primitive(mesh, primitive)
+            .ok_or(super::Error::MeshOutsideDocument { mesh, primitive })?;
         let material = primitive.material();
         // A material carrying `KHR_materials_unlit` is drawn unlit, its base
         // colour exactly as the file states it; every other material shades
@@ -67,9 +109,11 @@ impl LitGltf {
             && let Some(info) = &texture
             && let Some(material_index) = material.index()
         {
-            let filtering = uploaded_image(images, info.texture().source().index())
-                .map_err(|image| super::Error::ImageNotInserted {
-                    material: material_index,
+            let image = super::ImageId::new(info.texture().source().index());
+            let filtering = resources
+                .image(image)
+                .ok_or(super::Error::ImageNotInserted {
+                    material: super::MaterialId::new(material_index),
                     image,
                 })?
                 .filtering;
@@ -125,8 +169,12 @@ impl LitGltf {
         source: &mut MeshSource,
         world: &Scope<'_>,
         image: ImageId,
-    ) -> GltfImage {
-        let data = &self.images[image.index()];
+        resources: &mut GltfResources,
+    ) -> Result<GltfImage, super::Error> {
+        let data = self
+            .images
+            .get(image.index())
+            .ok_or(super::Error::ImageOutsideDocument { image })?;
         let device = source.device(world);
         let format = image_format(data, &device);
         let (width, height) = (data.width, data.height);
@@ -171,60 +219,81 @@ impl LitGltf {
         }
 
         let (texture, view) = source.register_texture_and_default_view(world, texture);
-        GltfImage {
+        let uploaded = GltfImage {
             image,
             texture,
             view,
             filtering: format.filtering,
-        }
+        };
+        resources.insert_image(uploaded.clone());
+        Ok(uploaded)
     }
 
     /// Upload every image of the document.
     ///
-    /// The returned vector is aligned with the document's image indices: the
-    /// handle for image `i` sits at index `i`.
-    pub fn insert_images(&self, source: &mut MeshSource, world: &Scope<'_>) -> Vec<GltfImage> {
-        self.images()
-            .map(|image| self.insert_image(source, world, image))
+    /// Each handle is written into `resources` at the position its id names,
+    /// so a piecewise upload and a whole-document one leave the resources in
+    /// the same state.
+    ///
+    /// # Errors
+    ///
+    /// If a document image cannot be uploaded; see [`Self::insert_image`].
+    pub fn insert_images(
+        &self,
+        source: &mut MeshSource,
+        world: &Scope<'_>,
+        resources: &mut GltfResources,
+    ) -> Result<Vec<GltfImage>, super::Error> {
+        let images = self.images().collect::<Vec<_>>();
+        images
+            .into_iter()
+            .map(|image| self.insert_image(source, world, image, resources))
             .collect()
     }
 
-    /// Build the material bind group for `material` and return its handle.
+    /// Build the material bind group for `material` and write it into
+    /// `resources`.
     ///
     /// Returns `None` when the material declares no base-color texture: such a
-    /// material has nothing to bind and spawns with no `GpuMaterial`.
+    /// material has nothing to bind and spawns with no `GpuMaterial`. The
+    /// resources still carry an entry for it, which is what tells a primitive
+    /// that samples a texture the material does not have
+    /// ([`Error::MaterialWithoutTexture`](super::Error::MaterialWithoutTexture))
+    /// apart from one whose material was never inserted.
     ///
     /// # Errors
     ///
     /// If the material's base-color texture names an image that is not in
-    /// `images`. Inserting a document piecewise means inserting its images
+    /// `resources`. Inserting a document piecewise means inserting its images
     /// before the materials that sample them.
     pub fn insert_material(
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
         material: MaterialId,
-        images: &[GltfImage],
+        resources: &mut GltfResources,
     ) -> Result<Option<GltfMaterial>, super::Error> {
-        self.build_material(source, world, material, images, &mut Vec::new())
+        let entry = self.build_material(source, world, material, resources)?;
+        resources.insert_material(material, entry.clone());
+        Ok(entry)
     }
 
-    /// [Self::insert_material], sharing the samplers it has already built.
+    /// Build the material bind group, reusing the samplers the resources
+    /// already hold.
     ///
-    /// Documents overwhelmingly repeat one sampler across their materials, and
-    /// a sampler is an immutable GPU object: `samplers` maps a descriptor to
-    /// the handle already uploaded for it, so a material that asks for a
-    /// descriptor an earlier material asked for reuses that handle instead of
-    /// creating a second sampler the graph would keep alive beside it.
+    /// The cache lives in [`GltfResources`], so a caller inserting materials
+    /// one at a time reuses a sampler an earlier call uploaded rather than
+    /// creating a second one the graph would keep alive beside it.
     fn build_material(
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
         material: MaterialId,
-        images: &[GltfImage],
-        samplers: &mut Vec<(wgpu::SamplerDescriptor<'static>, ResHandle<wgpu::Sampler>)>,
+        resources: &mut GltfResources,
     ) -> Result<Option<GltfMaterial>, super::Error> {
-        let data = self.material(material.index());
+        let data = self
+            .material(material)
+            .ok_or(super::Error::MaterialOutsideDocument { material })?;
         let Some(info) = data.pbr_metallic_roughness().base_color_texture() else {
             return Ok(None);
         };
@@ -232,21 +301,19 @@ impl LitGltf {
         // inserted piecewise inserts its images first, so one that is missing
         // here is a call made in the wrong order rather than a document that
         // says something it cannot mean.
-        let source_index = info.texture().source().index();
-        let image = uploaded_image(images, source_index).map_err(|image| {
-            super::Error::ImageNotInserted {
-                material: material.index(),
-                image,
-            }
-        })?;
+        let image = ImageId::new(info.texture().source().index());
+        let filtering = resources
+            .image(image)
+            .ok_or(super::Error::ImageNotInserted { material, image })?
+            .filtering;
 
         // A material group exists only for a variant that samples a base-color
         // texture; build the bind group against exactly that variant. Its
         // layout is the filtering one only when the image can be filtered, and
         // the sampler has to be non-filtering in step with it.
-        let key = textured_key(image.filtering);
+        let key = textured_key(filtering);
         let descriptor = sampler_descriptor(&info.texture().sampler());
-        let descriptor = if image.filtering {
+        let descriptor = if filtering {
             descriptor
         } else {
             wgpu::SamplerDescriptor {
@@ -256,15 +323,12 @@ impl LitGltf {
                 ..descriptor
             }
         };
-        let sampler = match samplers.iter().find(|(built, _)| *built == descriptor) {
-            Some((_, sampler)) => sampler.clone(),
-            None => {
-                let sampler = source.register_sampler(world, Some(descriptor.clone()));
-                samplers.push((descriptor, sampler.clone()));
-                sampler
-            }
-        };
-        let view = image.view.clone();
+        let sampler = resources.sampler(source, world, descriptor);
+        let view = resources
+            .image(image)
+            .ok_or(super::Error::ImageNotInserted { material, image })?
+            .view
+            .clone();
 
         let bind_group =
             source.allocate_lit_material(world, &key.options, view.clone(), sampler.clone());
@@ -276,30 +340,31 @@ impl LitGltf {
         }))
     }
 
-    /// Build the bind group for every material of the document.
+    /// Build the bind group of every material of the document.
     ///
-    /// The returned vector is aligned with the document's material indices:
-    /// the entry for material `i` sits at index `i`, and is `None` for a
-    /// material with no base-color texture.
+    /// The resources carry an entry per document material, indexed by its own
+    /// id, and the returned vector is aligned with them.
     ///
     /// # Errors
     ///
     /// If a material's base-color texture names an image that is not in
-    /// `images`.
+    /// `resources`.
     pub fn insert_materials(
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
-        images: &[GltfImage],
+        resources: &mut GltfResources,
     ) -> Result<Vec<Option<GltfMaterial>>, super::Error> {
-        let mut samplers = Vec::new();
-        self.materials()
-            .map(|material| self.build_material(source, world, material, images, &mut samplers))
-            .collect()
+        let materials = self.materials().collect::<Vec<_>>();
+        let mut inserted = Vec::with_capacity(materials.len());
+        for material in materials {
+            inserted.push(self.insert_material(source, world, material, resources)?);
+        }
+        Ok(inserted)
     }
 
-    /// Upload the primitive into `source`'s resource graph and return its
-    /// handle.
+    /// Upload the primitive into `source`'s resource graph and write its handle
+    /// into `resources`.
     ///
     /// Which streams are uploaded follows the primitive's own attributes:
     /// the UV set its material samples a base-color texture through enables the
@@ -321,42 +386,41 @@ impl LitGltf {
     ///
     /// # Errors
     ///
-    /// If the primitive carries no `POSITION` attribute, states fewer vertices
-    /// than its topology needs, indexes a vertex it does not carry, or samples
-    /// a base-color texture whose image is not in `images`.
+    /// If the document carries no such primitive, the primitive carries no
+    /// `POSITION` attribute, states fewer vertices than its topology needs,
+    /// indexes a vertex it does not carry, or samples a base-color texture
+    /// whose image is not in `resources`.
     pub fn insert_mesh(
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
-        images: &[GltfImage],
+        resources: &mut GltfResources,
         mesh: MeshId,
         primitive: PrimitiveId,
     ) -> Result<GltfMesh, super::Error> {
-        let key = self.pipeline_key(images, mesh, primitive)?;
-        let primitive_id = primitive;
-        let primitive = self.primitive(mesh.index(), primitive_id.index());
-        let targets = self.mesh_targets[mesh.index()];
-        let mut streams = from_reader(
-            &self.buffers,
-            mesh.index(),
-            primitive_id.index(),
-            &primitive,
-            targets,
-        )?;
+        let key = self.pipeline_key(resources, mesh, primitive)?;
+        let data = self
+            .primitive(mesh, primitive)
+            .ok_or(super::Error::MeshOutsideDocument { mesh, primitive })?;
+        let targets = self
+            .mesh_targets
+            .get(mesh.index())
+            .copied()
+            .ok_or(super::Error::MeshOutsideDocument { mesh, primitive })?;
+        let mut streams = from_reader(&self.buffers, mesh, primitive, &data, targets)?;
         let gpu_mesh = source.allocate_lit_mesh(world, &key.options, streams.desc());
 
-        Ok(GltfMesh {
+        let uploaded = GltfMesh {
             mesh_index: mesh,
-            primitive_index: primitive_id,
+            primitive_index: primitive,
             key,
             mesh: gpu_mesh,
-        })
+        };
+        resources.insert_mesh(uploaded.clone());
+        Ok(uploaded)
     }
 
     /// Upload every primitive of every mesh of the document.
-    ///
-    /// The vector is ordered document-mesh-major, then primitive-minor: first
-    /// all of mesh 0's primitives, then mesh 1's, and so on.
     ///
     /// # Errors
     ///
@@ -366,20 +430,23 @@ impl LitGltf {
         &self,
         source: &mut MeshSource,
         world: &Scope<'_>,
-        images: &[GltfImage],
+        resources: &mut GltfResources,
     ) -> Result<Vec<GltfMesh>, super::Error> {
-        let count: usize = self
-            .document
-            .meshes()
-            .map(|mesh| mesh.primitives().len())
-            .sum();
-        let mut meshes = Vec::with_capacity(count);
-        for mesh in self.meshes() {
-            for primitive in self.primitives(mesh) {
-                meshes.push(self.insert_mesh(source, world, images, mesh, primitive)?);
+        let meshes = self.meshes().collect::<Vec<_>>();
+        let mut uploaded = Vec::new();
+        for mesh in meshes {
+            let primitives = self
+                .primitives(mesh)
+                .ok_or(super::Error::MeshOutsideDocument {
+                    mesh,
+                    primitive: PrimitiveId::new(0),
+                })?
+                .collect::<Vec<_>>();
+            for primitive in primitives {
+                uploaded.push(self.insert_mesh(source, world, resources, mesh, primitive)?);
             }
         }
-        Ok(meshes)
+        Ok(uploaded)
     }
 
     /// Insert the whole document and return every handle that keeps it alive.
@@ -392,10 +459,10 @@ impl LitGltf {
     ///
     /// A caller that inserts the pieces itself — to share a texture between
     /// documents, say — can call [`Self::insert_images`],
-    /// [`Self::insert_materials`] and [`Self::insert_meshes`] instead and
-    /// build a [`GltfResources`] of its own. The meshes read their texture
-    /// filtering off the image handles, so they are inserted after the images
-    /// they sample.
+    /// [`Self::insert_materials`] and [`Self::insert_meshes`] on a
+    /// [`GltfResources::new`] instead. The meshes read their texture filtering
+    /// off the image handles, so they are inserted after the images they
+    /// sample.
     ///
     /// # Errors
     ///
@@ -407,27 +474,10 @@ impl LitGltf {
         source: &mut MeshSource,
         world: &Scope<'_>,
     ) -> Result<GltfResources, super::Error> {
-        let images = self.insert_images(source, world);
-        let materials = self.insert_materials(source, world, &images)?;
-        let meshes = self.insert_meshes(source, world, &images)?;
-        Ok(GltfResources {
-            images,
-            materials,
-            meshes,
-        })
+        let mut resources = GltfResources::new();
+        self.insert_images(source, world, &mut resources)?;
+        self.insert_materials(source, world, &mut resources)?;
+        self.insert_meshes(source, world, &mut resources)?;
+        Ok(resources)
     }
-}
-
-/// The uploaded handle of document image `index` among `images`.
-///
-/// The filtering a pipeline key needs is a property of the uploaded texture —
-/// whether the device may filter its format — so it is read off the handle the
-/// material samples rather than recomputed from the document; one image, one
-/// answer, whichever caller asks.
-fn uploaded_image(images: &[GltfImage], index: usize) -> Result<&GltfImage, usize> {
-    let image = ImageId::new(index);
-    images
-        .iter()
-        .find(|uploaded| uploaded.image == image)
-        .ok_or(index)
 }

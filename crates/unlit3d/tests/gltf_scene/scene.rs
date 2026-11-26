@@ -24,12 +24,34 @@ pub(super) async fn textured_quad_renders_four_colours() {
     }))
     .expect("the embedded document parses");
 
-    let resources = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_resources(source, world)
-            .expect("the embedded document uploads")
+    let asset = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_asset(source, world)
+            .expect("the embedded document prepares")
     });
-    let _entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
+    let mesh = gltf.meshes().next().expect("the quad has a mesh");
+    let primitive = gltf.primitives(mesh).unwrap().next().unwrap();
+    assert!(asset.resources.mesh(mesh, primitive).is_some());
+    let image = gltf.images().next().expect("the quad has a texture");
+    let original = asset
+        .resources
+        .image(image)
+        .expect("the texture was uploaded");
+    let mut sparse = unlit3d::gltf::GltfResources::new();
+    let far = unlit3d::gltf::ImageId::new(usize::MAX);
+    sparse.insert_image(unlit3d::gltf::GltfImage {
+        image: far,
+        ..original.clone()
+    });
+    sparse.insert_image(original.clone());
+    assert_eq!(sparse.images().count(), 2);
+    assert!(sparse.image(image).is_some());
+    assert!(sparse.image(far).is_some());
+    drop(sparse);
+    drop(asset.resources);
+    drop(gltf);
+    gpu.spawn(&mut world, unlit3d::lit::LitModelBundle::new(asset.model));
     gpu.spawn(&mut world, bundle![camera()]);
+    gpu.maintain(&world);
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_textured_quad");
     gpu.render(&world);
@@ -127,7 +149,9 @@ pub(super) async fn untextured_material_draws_flat() {
             .expect("the embedded document uploads")
     });
     assert!(
-        resources.materials.iter().all(Option::is_none),
+        (0..2).all(|material| resources
+            .material(unlit3d::gltf::MaterialId::new(material))
+            .is_none()),
         "a textureless material binds nothing"
     );
 

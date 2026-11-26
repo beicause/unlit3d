@@ -282,7 +282,7 @@ fn a_clip_is_found_by_the_name_the_document_gave_it() {
 }
 
 #[test]
-fn a_manual_clock_leaves_the_stored_time_alone() {
+fn a_manual_clock_is_sampled_only_by_the_caller() {
     let model = LitModel::new(
         vec![node(None, Vec3::ZERO)],
         vec![LitModelClip {
@@ -307,6 +307,24 @@ fn a_manual_clock_leaves_the_stored_time_alone() {
             clock: LitModelClock::Manual,
         },
     });
+    let x = |world: &World| {
+        world
+            .root_scope()
+            .query_one::<&LitModelInstance>(root)
+            .get()
+            .matrices()[0]
+            .transform_point3(Vec3::ZERO)
+            .x
+    };
+    // The spawn sampled the time it was written with.
+    assert_eq!(x(&world), 0.5);
+    // A frame neither advances a manual clock nor re-samples it, so the time
+    // written here reaches the draw only through the caller's own pass.
+    world
+        .root_scope()
+        .query_one::<&mut LitModelAnimation>(root)
+        .get()
+        .time = 0.75;
     dispatch_frame(
         &mut world,
         &mut Frame {
@@ -314,13 +332,17 @@ fn a_manual_clock_leaves_the_stored_time_alone() {
             index: 0,
         },
     );
-    let scope = world.root_scope();
-    assert_eq!(scope.query_one::<&LitModelAnimation>(root).get().time, 0.25);
-    let mut instance_query = scope.query_one::<&LitModelInstance>(root);
     assert_eq!(
-        instance_query.get().matrices()[0].transform_point3(Vec3::ZERO),
-        Vec3::new(0.5, 0.0, 0.0)
+        world
+            .root_scope()
+            .query_one::<&LitModelAnimation>(root)
+            .get()
+            .time,
+        0.75
     );
+    assert_eq!(x(&world), 0.5);
+    LitModelBundle::evaluate(&world.root_scope(), root);
+    assert_eq!(x(&world), 1.5);
 }
 
 #[test]

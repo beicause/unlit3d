@@ -808,13 +808,21 @@ decoding of it. The import and the GPU format each image is uploaded in are the
 `gltf` module's own subject; what follows is what the module patches into the
 world you already render.
 
-Upload with `LitGltf::insert_resources`, then use `LitGltf::to_model` and
-spawn a `LitModelBundle` under the mesh source. Its root `Transform` places the
+Use `LitGltf::insert_asset` to upload a document and prepare its default scene,
+then spawn a `LitModelBundle` with `asset.model` under the same mesh source.
+Use `insert_asset_with` to prepare only the requested clips, in model clip
+order. The model retains its draw handles, so the document and the asset's
+resource table need not outlive it. The bundle's root `Transform` places the
 whole model, including animated nodes and world-space skin poses. The bundle
-evaluates once at spawn and on each dispatched frame at `LIT_MODEL_UPDATE_ORDER`.
+evaluates once at spawn; the callback at `LIT_MODEL_UPDATE_ORDER` evaluates
+only instances with a playing clock.
 Write `LitModelAnimation` to select a clip, and its `LitModelClock` to say who
-drives the time: `Playing` advances it by the frame's delta, `Manual` samples
-whatever time the caller wrote. Despawn the root to remove the whole instance;
+drives the time: `Playing` advances it by the frame's delta on every dispatched
+frame, while `Manual` leaves playback to the caller, who writes
+`LitModelAnimation::time` and samples it with `LitModelBundle::evaluate` — no
+frame advances or evaluates a manual instance, so its pose is exactly the time
+the caller last sampled, whatever order the caller wrote it in. Despawn the root
+to remove the whole instance;
 the nodes it spawned are the model's own, so a subtree despawned on its own
 leaves nothing meaningful behind. The same bundle accepts hand-authored
 `LitModel` data without glTF, and `LitModel::new` refuses data whose indices,
@@ -826,22 +834,14 @@ model that cannot draw.
   so a node index cannot be handed to an animation or an image by mistake. The
   `images()`, `materials()`, `meshes()`, `primitives()`, `nodes()` and
   `animations()` iterators yield the ids a document carries.
-- `insert_resources` uploads the whole document in one call and returns a
-  `gltf::GltfResources` holding every handle it made; that is the struct
-  `to_model` takes, and every handle carries the typed id of the document item
-  it came from. A caller that wants one
-  kind of resource at a time — to share a texture between two documents, say —
-  can instead call `insert_image` / `insert_material` / `insert_mesh` for a
-  single image, material or mesh, or the batch versions (`insert_images`,
-  `insert_materials`, `insert_meshes`) for everything of one kind, in document
-  order, and assemble a `GltfResources` of its own. Inserting piecewise means
-  inserting the images before the materials that sample them: a material whose
-  base-color image is not in the slice it was handed returns
-  `Error::ImageNotInserted` naming both, rather than binding no texture.
-- Giving up a handle makes exactly what it names collectable: the material's
-  bind group lives while the material does, and the texture view it samples is
-  held by the material too, so dropping the material's handle is enough to
-  release both. The next `maintain` reclaims them.
+- For a custom upload, use `insert_image`, `insert_material` and `insert_mesh`
+  (or their plural forms) to populate a `GltfResources` table, then convert the
+  scene with `to_model` or `to_model_with`. The table looks up GPU handles by
+  typed id, with no resource iteration order guarantee. Insert images before
+  the materials that sample them; a missing base-color image returns
+  `Error::ImageNotInserted` rather than binding an empty texture.
+- A material retains its bind group and sampled texture view. `maintain`
+  reclaims a resource after its last handle is dropped.
 - A material carrying `KHR_materials_unlit` draws unlit, its base colour
   exactly as the file states it; every other material draws lit, shaded by the
   lights the frame carries — a document opts out of shading, it does not opt

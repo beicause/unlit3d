@@ -345,16 +345,20 @@ pub enum LitModelClock {
         /// Whether the time wraps at the clip's duration instead of stopping there.
         looping: bool,
     },
-    /// The caller writes [`LitModelAnimation::time`] itself.
+    /// The caller writes [`LitModelAnimation::time`] and samples it.
     ///
-    /// The frame dispatcher samples that time every frame and never changes it,
-    /// which is what a caller driving playback from its own clock — a fixed
-    /// sequence of frames, or a scrubber — wants.
+    /// The frame dispatcher leaves an instance on a manual clock alone: it
+    /// neither advances the time nor evaluates the instance, so a frame samples
+    /// a manual clip exactly once, when the caller passes the instance to
+    /// [`LitModelBundle::evaluate`]. That is what a caller driving playback
+    /// from its own clock — a fixed sequence of frames, or a scrubber — wants:
+    /// the pose it draws is the time it wrote, whichever order it wrote it in
+    /// and whichever frame order it was spawned at.
     ///
-    /// A caller that writes [`LitModelAnimation::time`] after the model's own
-    /// ordered callback has run samples again with
-    /// [`LitModelBundle::evaluate`]: the pass is idempotent here, since a
-    /// manual clock neither advances the time nor writes it back.
+    /// A caller that spawns the model and never evaluates it draws the pose the
+    /// spawn sampled, which is the time the [`LitModelAnimation`] was written
+    /// with. Node base edits made under a manual clock reach the draw on the
+    /// next sampling pass, not on the next frame.
     Manual,
 }
 
@@ -489,9 +493,12 @@ impl LitModelBundle {
     ///
     /// Use this when rendering outside the frame dispatcher or after writing
     /// inputs yourself. The sampling wraps or clamps the time only for its own
-    /// lookup; the stored time is left as the caller wrote it. The ordered
-    /// [`OnFrame`] callback is the only path that advances playback, and it
-    /// advances it only for [`LitModelClock::Playing`].
+    /// lookup; the stored time is left as the caller wrote it.
+    ///
+    /// This is the one path that samples a [`LitModelClock::Manual`] instance,
+    /// since the frame dispatcher leaves those to their caller. A playing one is
+    /// sampled both here and by the ordered [`OnFrame`] callback, which is the
+    /// only path that advances playback.
     pub fn evaluate(scope: &Scope<'_>, root: Entity) {
         evaluate_model(scope, root, Step::Sample);
     }
@@ -635,38 +642,47 @@ fn evaluate_model(scope: &Scope<'_>, root: Entity, step: Step) {
         );
         return;
     }
+    // A manual clock is the caller's to sample. The frame dispatcher neither
+    // advances it nor evaluates the instance, so the pose a frame draws is the
+    // one the caller last sampled, whatever order it wrote the time in and
+    // wherever the model sits in the frame's own order.
+    if animation.clock == LitModelClock::Manual && matches!(step, Step::Advance(_)) {
+        return;
+    }
     let clip = animation.clip.and_then(|index| model.animations.get(index));
-    let sample_time = clip.map(|clip| match (animation.clock, step) {
-        (LitModelClock::Playing { speed, looping }, Step::Advance(delta)) => {
-            animation.time += delta * speed;
-            let time = if clip.duration > 0.0 {
+    let sample_time = clip.map(|clip| match animation.clock {
+        LitModelClock::Playing { speed, looping } => match step {
+            Step::Advance(delta) => {
+                animation.time += delta * speed;
+                let time = if clip.duration > 0.0 {
+                    if looping {
+                        animation.time.rem_euclid(clip.duration)
+                    } else {
+                        animation.time.clamp(0.0, clip.duration)
+                    }
+                } else {
+                    animation.time
+                };
+                animation.time = time;
+                time
+            }
+            // A one-off sampling pass of a playing clip brings the stored time
+            // into the clip's range without advancing it, so sampling twice in a
+            // frame reads the same pose.
+            Step::Sample if clip.duration > 0.0 => {
                 if looping {
                     animation.time.rem_euclid(clip.duration)
                 } else {
                     animation.time.clamp(0.0, clip.duration)
                 }
-            } else {
-                animation.time
-            };
-            animation.time = time;
-            time
-        }
-        // A one-off sampling pass of a playing clip brings the stored time into
-        // the clip's range without advancing it, so sampling twice in a frame
-        // reads the same pose.
-        (LitModelClock::Playing { looping, .. }, Step::Sample) if clip.duration > 0.0 => {
-            if looping {
-                animation.time.rem_euclid(clip.duration)
-            } else {
-                animation.time.clamp(0.0, clip.duration)
             }
-        }
+            Step::Sample => animation.time,
+        },
         // A manual clock's time is the caller's to choose: it is sampled as
         // written, and a time past the last keyframe holds that keyframe rather
-        // than wrapping to the start of the clip.
-        (LitModelClock::Manual, _) | (LitModelClock::Playing { .. }, Step::Sample) => {
-            animation.time
-        }
+        // than wrapping to the start of the clip. Only a sampling pass reaches
+        // here, since a frame's advance returns above.
+        LitModelClock::Manual => animation.time,
     });
     // Batch reads and writes resolve each archetype's columns once. A handle
     // that is dead, out of view, or lacks the component is left out of its

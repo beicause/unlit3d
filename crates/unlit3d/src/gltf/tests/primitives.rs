@@ -57,11 +57,15 @@ fn the_uploaded_primitive_draws_the_topology_its_mode_names() {
         let gltf = LitGltf::from_bytes(&mode_document(mode, &positions, Some(&[0, 1, 2, 3])))
             .expect("the mode document parses");
         assert_eq!(
-            gltf.pipeline_key(&[], MeshId::new(0), PrimitiveId::new(0))
-                .expect("the mode document samples no image")
-                .options
-                .primitive
-                .topology,
+            gltf.pipeline_key(
+                &super::GltfResources::new(),
+                MeshId::new(0),
+                PrimitiveId::new(0)
+            )
+            .expect("the mode document samples no image")
+            .options
+            .primitive
+            .topology,
             topology,
             "{mode:?}"
         );
@@ -87,9 +91,11 @@ fn a_triangle_fan_is_expanded_with_the_centre_last() {
     .expect("the fan document parses");
     let streams = super::streams::from_reader(
         &gltf.buffers,
-        0,
-        0,
-        &gltf.primitive(0, 0),
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &gltf
+            .primitive(MeshId::new(0), PrimitiveId::new(0))
+            .expect("the document carries the quad"),
         gltf.mesh_targets[0],
     )
     .expect("the primitive's streams read");
@@ -111,9 +117,11 @@ fn a_fan_without_indices_expands_its_implicit_stream() {
         .expect("the fan document parses");
     let streams = super::streams::from_reader(
         &gltf.buffers,
-        0,
-        0,
-        &gltf.primitive(0, 0),
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &gltf
+            .primitive(MeshId::new(0), PrimitiveId::new(0))
+            .expect("the document carries the quad"),
         gltf.mesh_targets[0],
     )
     .expect("the primitive's streams read");
@@ -133,9 +141,11 @@ fn a_line_loop_is_expanded_back_to_its_first_vertex() {
     .expect("the loop document parses");
     let streams = super::streams::from_reader(
         &gltf.buffers,
-        0,
-        0,
-        &gltf.primitive(0, 0),
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &gltf
+            .primitive(MeshId::new(0), PrimitiveId::new(0))
+            .expect("the document carries the quad"),
         gltf.mesh_targets[0],
     )
     .expect("the primitive's streams read");
@@ -156,9 +166,11 @@ fn a_strip_reaches_the_draw_untouched() {
             .expect("the strip document parses");
         let streams = super::streams::from_reader(
             &gltf.buffers,
-            0,
-            0,
-            &gltf.primitive(0, 0),
+            MeshId::new(0),
+            PrimitiveId::new(0),
+            &gltf
+                .primitive(MeshId::new(0), PrimitiveId::new(0))
+                .expect("the document carries the strip"),
             gltf.mesh_targets[0],
         )
         .expect("the primitive's streams read");
@@ -176,11 +188,18 @@ fn a_primitive_samples_the_uv_set_its_material_names() {
     // holding a constant that names itself: a loader that always read
     // TEXCOORD_0 would upload 0.25 rather than 1.25.
     let gltf = LitGltf::from_bytes(&uv_document(1, &[0, 1])).expect("the UV document parses");
-    let primitive = gltf.primitive(0, 0);
+    let primitive = gltf
+        .primitive(MeshId::new(0), PrimitiveId::new(0))
+        .expect("the document carries the quad");
     assert_eq!(base_color_uv_set(&primitive), Some(1));
-    let streams =
-        super::streams::from_reader(&gltf.buffers, 0, 0, &primitive, gltf.mesh_targets[0])
-            .expect("the primitive's streams read");
+    let streams = super::streams::from_reader(
+        &gltf.buffers,
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &primitive,
+        gltf.mesh_targets[0],
+    )
+    .expect("the primitive's streams read");
     let uvs = streams
         .uvs
         .expect("the primitive carries the set it samples");
@@ -197,10 +216,17 @@ fn a_primitive_missing_the_set_its_material_names_draws_untextured() {
     // fallback, so the draw drops the texture rather than failing the load or
     // sampling a set the document never meant to use.
     let gltf = LitGltf::from_bytes(&uv_document(2, &[0, 1])).expect("the UV document parses");
-    let primitive = gltf.primitive(0, 0);
+    let primitive = gltf
+        .primitive(MeshId::new(0), PrimitiveId::new(0))
+        .expect("the document carries the quad");
     assert_eq!(base_color_uv_set(&primitive), None);
-    let streams =
-        super::streams::from_reader(&gltf.buffers, 0, 0, &primitive, gltf.mesh_targets[0])
-            .expect("the primitive's streams read");
+    let streams = super::streams::from_reader(
+        &gltf.buffers,
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &primitive,
+        gltf.mesh_targets[0],
+    )
+    .expect("the primitive's streams read");
     assert!(streams.uvs.is_none(), "no UV stream is uploaded");
 }

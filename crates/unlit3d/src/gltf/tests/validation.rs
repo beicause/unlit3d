@@ -59,7 +59,7 @@ fn primitives_of_one_mesh_must_agree_on_their_morph_targets() {
             targets,
             expected,
         } => {
-            assert_eq!((mesh, primitive), (0, 1));
+            assert_eq!((mesh, primitive), (MeshId::new(0), PrimitiveId::new(1)));
             assert_eq!(targets, 0);
             assert_eq!(expected, 1);
         }
@@ -77,7 +77,15 @@ fn a_primitive_too_short_for_its_topology_is_refused() {
         Some(&[0, 1]),
     ))
     .expect("the short document parses");
-    let error = match super::streams::from_reader(&gltf.buffers, 0, 0, &gltf.primitive(0, 0), 0) {
+    let error = match super::streams::from_reader(
+        &gltf.buffers,
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &gltf
+            .primitive(MeshId::new(0), PrimitiveId::new(0))
+            .expect("the document carries the quad"),
+        0,
+    ) {
         Ok(_) => panic!("a two-vertex triangle is refused"),
         Err(error) => error,
     };
@@ -88,7 +96,7 @@ fn a_primitive_too_short_for_its_topology_is_refused() {
             mode,
             vertices,
         } => {
-            assert_eq!((mesh, primitive), (0, 0));
+            assert_eq!((mesh, primitive), (MeshId::new(0), PrimitiveId::new(0)));
             assert_eq!(mode, "TRIANGLES");
             assert_eq!(vertices, 2);
         }
@@ -106,7 +114,15 @@ fn an_index_past_the_vertices_is_refused() {
         Some(&[0, 1, 3]),
     ))
     .expect("the out-of-range index parses");
-    let error = match super::streams::from_reader(&gltf.buffers, 0, 0, &gltf.primitive(0, 0), 0) {
+    let error = match super::streams::from_reader(
+        &gltf.buffers,
+        MeshId::new(0),
+        PrimitiveId::new(0),
+        &gltf
+            .primitive(MeshId::new(0), PrimitiveId::new(0))
+            .expect("the document carries the quad"),
+        0,
+    ) {
         Ok(_) => panic!("an index past the vertices is refused"),
         Err(error) => error,
     };
@@ -117,7 +133,7 @@ fn an_index_past_the_vertices_is_refused() {
             index,
             vertices,
         } => {
-            assert_eq!((mesh, primitive), (0, 0));
+            assert_eq!((mesh, primitive), (MeshId::new(0), PrimitiveId::new(0)));
             assert_eq!(index, 3);
             assert_eq!(vertices, 3);
         }
@@ -153,7 +169,7 @@ fn an_image_whose_pixels_cannot_fill_its_size_is_refused() {
             expected,
             actual,
         } => {
-            assert_eq!((image, width, height, texel), (0, 2, 2, 4));
+            assert_eq!((image, width, height, texel), (ImageId::new(0), 2, 2, 4));
             assert_eq!(expected, 16);
             assert_eq!(actual, 3);
         }

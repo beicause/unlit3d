@@ -7,8 +7,7 @@ use unlit_ecs::bundle;
 use glam::Mat4;
 use unlit_wgpu::context::{GpuContext, RenderDevice};
 use unlit_wgpu::resources::ResourceGraph;
-use unlit3d::gltf::LitGltf;
-use unlit3d::lit::LitModel;
+use unlit3d::gltf::{AnimationId, LitGltf};
 use unlit3d::prelude::*;
 
 pub mod cli;
@@ -186,26 +185,26 @@ pub fn build_world(
 
     for document in &config.documents {
         let gltf = LitGltf::load(&document.path)?;
-        let resources = with_mesh_source(&world, source_entity, |source, world| {
-            gltf.insert_resources(source, world)
-        })?;
-        let model = gltf.to_model(&resources)?;
         let clip = document
             .animation
             .as_ref()
-            .map(|animation| clip_index(&model, animation))
+            .map(|animation| animation_id(&gltf, animation))
             .transpose()?;
+        let asset = with_mesh_source(&world, source_entity, |source, world| {
+            gltf.insert_asset_with(source, world, clip)
+        })?;
+        let animation = LitModelAnimation {
+            clip: clip.map(|_| 0),
+            time: document.time,
+            clock: LitModelClock::Manual,
+        };
         world.scope_mut(source_entity).spawn(LitModelBundle {
             transform: document
                 .placement
                 .as_ref()
                 .map_or_else(Transform::default, PlacementConfig::transform),
-            model,
-            animation: LitModelAnimation {
-                clip,
-                time: document.time,
-                clock: LitModelClock::Manual,
-            },
+            model: asset.model,
+            animation,
         });
     }
 
@@ -526,46 +525,37 @@ fn camera(config: &CameraConfig, render_size: (u32, u32)) -> Camera {
     }
 }
 
-/// Resolve the animation a document reference names.
+/// Resolve an animation reference against the loaded document.
 ///
-/// The reference is resolved against the model the document became, not
-/// against the document itself: `to_model` drops the nodes the default scene
-/// does not reach, and a clip index has to mean the same thing on both sides.
-fn clip_index(model: &LitModel, reference: &AnimationRef) -> Result<usize, Error> {
+/// Selecting before model preparation lets the uploader decode only the
+/// selected clip, and the returned one-clip model numbers it zero.
+fn animation_id(document: &LitGltf, reference: &AnimationRef) -> Result<AnimationId, Error> {
     match reference {
-        AnimationRef::Index(index) => {
-            if *index < model.animations.len() {
-                Ok(*index)
-            } else {
-                Err(Error::Animation(format!(
-                    "animation index {index} is out of range: the document has {} animations",
-                    model.animations.len()
-                )))
-            }
+        AnimationRef::Index(index) if *index < document.animation_count() => {
+            Ok(AnimationId::new(*index))
         }
-        AnimationRef::Name(name) => model.clip_index(name).ok_or_else(|| {
+        AnimationRef::Index(index) => Err(Error::Animation(format!(
+            "animation index {index} is out of range: the document has {} animations",
+            document.animation_count()
+        ))),
+        AnimationRef::Name(name) => document.animation_id(name).ok_or_else(|| {
+            let names = document
+                .animations()
+                .map(|id| {
+                    document
+                        .animation_name(id)
+                        .expect("the document yields an in-range animation")
+                        .map_or_else(|| format!("#{}", id.index()), str::to_owned)
+                })
+                .collect::<Vec<_>>();
+            let names = if names.is_empty() {
+                "none".to_owned()
+            } else {
+                names.join(", ")
+            };
             Error::Animation(format!(
-                "the document has no animation named {name}; it has {}",
-                clip_list(model)
+                "the document has no animation named {name}; it has {names}"
             ))
         }),
     }
-}
-
-/// The comma-separated animation names of a model.
-fn clip_list(model: &LitModel) -> String {
-    let mut list = String::new();
-    for (index, clip) in model.animations.iter().enumerate() {
-        if index > 0 {
-            list.push_str(", ");
-        }
-        match &clip.name {
-            Some(name) => list.push_str(name),
-            None => list.push_str(&format!("#{index}")),
-        }
-    }
-    if list.is_empty() {
-        list.push_str("none");
-    }
-    list
 }

@@ -1,7 +1,33 @@
 //! Decoding a clip: the channels a document states, and the ones it cannot.
 
+use super::documents::{add_view, bytes, glb};
 use super::*;
 use crate::lit::{LitModelInterpolation, LitModelOutput};
+
+fn animation_only_document() -> Vec<u8> {
+    let mut bin = Vec::new();
+    let mut views = Vec::new();
+    let input = add_view(&mut bin, &mut views, &bytes(&[0.0f32, 1.0]), None);
+    let output = add_view(
+        &mut bin,
+        &mut views,
+        &bytes(&[[0.0f32, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+        None,
+    );
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        "scenes":[{{"nodes":[0]}}],"nodes":[{{}}],
+        "animations":[{{"name":"walk","channels":[{{"sampler":0,
+        "target":{{"node":0,"path":"translation"}}}}],
+        "samplers":[{{"input":0,"interpolation":"LINEAR","output":1}}]}}],
+        "accessors":[{{"bufferView":{input},"componentType":5126,"count":2,"type":"SCALAR"}},
+        {{"bufferView":{output},"componentType":5126,"count":2,"type":"VEC3"}}],
+        "bufferViews":[{}],"buffers":[{{"byteLength":{}}}]}}"#,
+        views.join(","),
+        bin.len(),
+    );
+    glb(json, &bin)
+}
 
 #[test]
 fn an_animation_reports_its_name_and_duration() {
@@ -13,8 +39,32 @@ fn an_animation_reports_its_name_and_duration() {
     ))
     .expect("the animated document parses");
     assert_eq!(gltf.animation_count(), 1);
-    assert_eq!(gltf.animation_name(AnimationId::new(0)), Some("walk"));
-    assert!((gltf.animation_duration(AnimationId::new(0)) - 4.0).abs() < 1e-6);
+    assert_eq!(
+        gltf.animation_name(AnimationId::new(0))
+            .expect("the document carries animation 0"),
+        Some("walk")
+    );
+    assert!(
+        (gltf
+            .animation_duration(AnimationId::new(0))
+            .expect("the document carries animation 0")
+            - 4.0)
+            .abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn an_animation_name_resolves_to_its_document_id() {
+    let gltf = LitGltf::from_bytes(&parented_animated_document(
+        "LINEAR",
+        &[0.0, 1.0],
+        &[[0.0; 3]; 2],
+        &[[0.0, 0.0, 0.0, 1.0]; 2],
+    ))
+    .expect("the animated document parses");
+    assert_eq!(gltf.animation_id("walk"), Some(AnimationId::new(0)));
+    assert_eq!(gltf.animation_id("missing"), None);
 }
 
 #[test]
@@ -26,7 +76,9 @@ fn a_clip_states_the_channels_and_keyframes_its_document_carries() {
         &[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]],
     ))
     .expect("the animated document parses");
-    let clip = gltf.clip(AnimationId::new(0));
+    let clip = gltf
+        .clip(AnimationId::new(0))
+        .expect("the document carries animation 0");
     assert_eq!(clip.len(), 2, "one channel per animated property");
     assert_eq!(clip[0].node, 0);
     assert_eq!(clip[0].times, [0.0, 2.0]);
@@ -43,6 +95,44 @@ fn a_clip_states_the_channels_and_keyframes_its_document_carries() {
 }
 
 #[test]
+fn a_model_keeps_only_the_clips_the_caller_selected() {
+    let gltf =
+        LitGltf::from_bytes(&animation_only_document()).expect("the animated document parses");
+    let model = gltf
+        .to_model_with(&GltfResources::new(), [])
+        .expect("the document has no meshes to upload");
+    assert!(model.animations.is_empty());
+    assert!(
+        gltf.clips[0].get().is_none(),
+        "an unselected clip stays undecoded"
+    );
+
+    let model = gltf
+        .to_model_with(&GltfResources::new(), [AnimationId::new(0)])
+        .expect("the selected clip is decoded");
+    assert_eq!(model.animations.len(), 1);
+    assert_eq!(model.animations[0].name.as_deref(), Some("walk"));
+    assert!(gltf.clips[0].get().is_some());
+}
+
+#[test]
+fn a_model_rejects_a_clip_outside_its_document() {
+    let gltf =
+        LitGltf::from_bytes(&animation_only_document()).expect("the animated document parses");
+    let error = gltf
+        .to_model_with(&GltfResources::new(), [AnimationId::new(1)])
+        .expect_err("the document has only animation zero");
+    assert!(matches!(
+        error,
+        Error::AnimationOutsideDocument { animation } if animation == AnimationId::new(1)
+    ));
+    assert!(
+        gltf.clips[0].get().is_none(),
+        "an invalid selection decodes no clip"
+    );
+}
+
+#[test]
 fn a_weights_channel_short_of_its_keyframes_is_dropped() {
     // One weight where two keyframes and one target ask for two: the channel
     // cannot be sampled, so decoding drops it rather than stating a channel
@@ -50,7 +140,9 @@ fn a_weights_channel_short_of_its_keyframes_is_dropped() {
     let gltf = LitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.5]))
         .expect("the animated morphed document parses");
     assert!(
-        gltf.clip(AnimationId::new(0)).is_empty(),
+        gltf.clip(AnimationId::new(0))
+            .expect("the document carries animation 0")
+            .is_empty(),
         "a channel whose values fall short of its keyframes is not part of the clip"
     );
 }
@@ -68,7 +160,9 @@ fn a_matrix_node_ignores_the_channels_it_cannot_animate() {
         &[0.0, 1.0],
     ))
     .expect("the matrix document parses");
-    let clip = gltf.clip(AnimationId::new(0));
+    let clip = gltf
+        .clip(AnimationId::new(0))
+        .expect("the document carries animation 0");
     assert_eq!(
         clip.len(),
         1,
@@ -97,7 +191,9 @@ fn a_single_keyframe_channel_holds_its_one_value() {
         &[[0.0, 0.0, 0.0, 1.0]],
     ))
     .expect("the single-keyframe document parses");
-    let clip = gltf.clip(AnimationId::new(0));
+    let clip = gltf
+        .clip(AnimationId::new(0))
+        .expect("the document carries animation 0");
     assert_eq!(clip.len(), 2, "both constant channels survive");
     assert_eq!(clip[0].times, [0.0]);
     assert_eq!(
