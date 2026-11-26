@@ -18,6 +18,7 @@ cargo xtask check          # typos, tombi, clippy and the doc build, then `cargo
 cargo xtask test           # nextest over unit and integration tests, then the doctests
 cargo xtask line-count     # print every Rust file's line count, marking the ones at 1000 lines
 cargo xtask api-index      # index source-backed workspace API declarations as JSON
+cargo xtask skill-docs     # check the unlit3d skill's Markdown and local links
 cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
 cargo xtask miri           # run the ECS's tests under Miri, which is what checks its unsafe
 cargo xtask test-wasm      # run the GPU tests in a browser, on WebGPU and on WebGL2
@@ -28,10 +29,10 @@ cargo xtask publish        # publish the workspace's crates to crates.io, in dep
 
 ### `cargo xtask check`
 
-Runs `typos` and `tombi`, then clippy three times, then the doc build, then
-`cargo fmt --all -- --check`. The two tools that need no compiler go
-first, so a misspelling or an unsorted feature table costs a second rather than
-the minutes clippy takes. Clippy comes next because its diagnostics may leave
+Checks the skill Markdown, runs `typos` and `tombi`, then clippy three times,
+then the doc build, then `cargo fmt --all -- --check`. The checks that need no
+compiler go first, so a broken link, misspelling or unsorted feature table costs
+less than compiling the workspace. Clippy comes next because its diagnostics may leave
 the tree in a state `rustfmt` would rewrite, so formatting is the last word; the
 doc build sits between them because a rustdoc warning is a lint like clippy's,
 and a doc comment rustdoc would rewrite is still rustfmt's to settle. Accepts

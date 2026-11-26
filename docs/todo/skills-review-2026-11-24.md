@@ -4,9 +4,7 @@
 
 完整通读 [技能入口](../../.agents/skills/unlit3d/SKILL.md) 及其六份附件，对照当前源码、锁定依赖和已有测试核验关键规则。目录的「短入口 + 按任务路由 + 专题附件」结构方向合理，但不是无需整理：本次补充发现入口、教程、参考和 MCP 手册存在职责重叠、权威来源不够明确、代码片段分类和检索层级不统一的问题。主要 API 错误与结构问题分别列为 S1–S10、S11–S13，均需实施。
 
-本文件的十三项发现全部纳入[主计划的统一排程](agent-implementation-plan-2026-11-24.md#补充任务的统一排程)，编号 `SK-1`–`SK-10` 分别对应下文 S1–S10，初始状态均为**待实施**。本文件负责技能任务的实施步骤和验收，与[四会话实施计划](agent-implementation-plan-2026-11-24.md)、[Blitz 与纹理数组补审](supplemental-review-2026-11-24.md) 分开维护；审查成文不代表技能或生产源码已经修复。
-
-截至 2026-11-25，主计划的 P0-A–P0-J 与 P1-A–P1-D 已实施并提交，`SK-1`–`SK-10` 纠错所需的新签名已就位（`WorldEndpoint`、`TickOutcome`、`RunShape`、`ToolError`、`StepOutcome::Failed(WorldError)`），但本文件的十三项均未开始。
+本文件的十三项发现全部纳入[主计划的统一排程](agent-implementation-plan-2026-11-24.md#补充任务的统一排程)，`SK-1`–`SK-13` 分别对应下文 S1–S13。实施与本机验收见[交付记录](#交付记录)；下文的问题描述保留审查时的状态。
 
 ## 分工与交付要求
 
@@ -259,4 +257,22 @@
 
 ### 已排除的疑点
 
-`context().egui_wants_pointer_input()` 不是过期方法：[锁定依赖](../../Cargo.lock#L1468-L1469) 是 egui 0.37.0，该版本提供此方法。不能根据其他 egui 版本的记忆把它改成旧名称。技能内部本地链接无断链，也没有必要为了审查改掉现有路由设计。
+`context().egui_wants_pointer_input()` 不是过期方法：[锁文件](../../Cargo.lock) 中的 `egui` 为 0.37.0，该版本提供此方法。不能根据其他 egui 版本的记忆把它改成旧名称。技能内部本地链接无断链，也没有必要为了审查改掉现有路由设计。
+
+## 交付记录
+
+| 任务 | 交付与本机验收 |
+| --- | --- |
+| SK-1 | [场景](../../.agents/skills/unlit3d/SCENE.md#相机与-viewport) 区分目标、内容 viewport 与相机；[pass 测试](../../crates/unlit3d/tests/passes.rs)的 `a_pass_uses_its_own_camera_and_content_size` 验证两个目标分别使用自己的尺寸、viewport 和相机。 |
+| SK-2 | [场景骨架](../../.agents/skills/unlit3d/SCENE.md#最小骨架)与[多 world 骨架](../../.agents/skills/unlit3d/MULTI_WORLD.md#两种骨架)指向实际 README doctest、示例应用和无头测试，不维护平行的手抄 Rust 实现。 |
+| SK-3 | [egui 模块 doctest](../../crates/unlit3d/src/egui.rs) 将 source 挂在 pass 下；[GPU 测试](../../crates/unlit3d/tests/gpu_egui_source.rs)的 `egui_only_with_two_panels` 读回两块面板的像素。 |
+| SK-4 | [多 world](../../.agents/skills/unlit3d/MULTI_WORLD.md#展示路径与离线取帧)区分推进、绘制和音频消费；[无头测试](../../unlit3dx_examples/tests/headless.rs)覆盖正常终止、失败保因、不捕获终止帧、跳过中间绘制和用真实音源消费离线混音。 |
+| SK-5 | [身份与缓存键](../../.agents/skills/unlit3d/REFERENCE.md#pass-与-source)区分 pass、帧、附件组合和管线特化；由 [pass 测试](../../crates/unlit3d/tests/passes.rs)的 `a_build_is_told_the_pass_target_and_frame_it_belongs_to` 和 `one_colour_view_is_two_targets_when_the_depth_differs` 验证。 |
+| SK-6 | [通信协议](../../.agents/skills/unlit3d/MULTI_WORLD.md#通信协议)集中说明拒绝、安装、快照、流终止、请求及取消；[订阅集成测试](../../crates/unlit3dx/tests/subscriptions.rs)和[请求单测](../../crates/unlit3dx/src/request.rs)验证区分终态与迟到响应。 |
+| SK-7 | [装配规则](../../.agents/skills/unlit3d/MULTI_WORLD.md#装配规则)使用 `World::remote` 和 `World::resolve`；[ECS 测试](../../crates/unlit_ecs/src/world/tests.rs)的 `a_handle_from_another_world_is_turned_down` 验证跨 world 拒绝。 |
+| SK-8 | [MCP 连接指引](../../.agents/skills/unlit3d/MCP.md#服务器与驱动)遵循已有客户端、审批与认证流程，不建议安装或更改 `HOME` 绕过拒绝；静态核对通过，本机无 `mcpdo`。 |
+| SK-9 | [取图表](../../.agents/skills/unlit3d/MCP.md#绘制)分开是否重绘、内联或落盘。[真实 stdio 宿主测试](../../unlit3dx_examples/tests/mcp_input.rs)的 `the_mcp_input_and_audio_match_the_snapshots` 在步进后保存现有纹理，核对路径、像素、无内联图片和不推进帧；[读回实现](../../crates/unlit3d/src/mcp/host/readback.rs)的 `save_texture_as_image` 不进入 `screenshot_frame` 的重绘路径。 |
+| SK-10 | [egui 回调](../../.agents/skills/unlit3d/SCENE.md#egui)、[Blitz 输入与字体](../../.agents/skills/unlit3d/REFERENCE.md#blitz)和[技能入口](../../.agents/skills/unlit3d/SKILL.md)区分前置条件、建议与能力边界；原生输入与字体隔离回归复验通过。 |
+| SK-11–SK-13 | 七页职责分离；[API 定位](../../.agents/skills/unlit3d/REFERENCE.md#查当前版本的-api)优先结构化数据，源码按文件和符号定位；[Markdown 检查](../../xtask/src/skill_docs.rs)验证围栏、表格、标题和链接，拒绝手写行号锚点。 |
+
+本机原生验收：`cargo nextest run --workspace --all-features` 通过 1,405 项；之后补入的无头终止捕获回归和固定行号检查分别定向通过。`cargo test --workspace --all-features --doc` 通过 49 项、忽略 11 项。全工作区全目标全特性严格 Clippy、格式检查与 `cargo xtask skill-docs` 通过；393 个 Rust 文件无达到 1000 行。未验证浏览器、WebGL2 档位、Android/Windows、`mcpdo` 客户端或跨平台系统字体一致性。

@@ -67,6 +67,40 @@ pub async fn run() {
         "the initial mix stays stopped"
     );
     let first_image = mcp.image(&status);
+    let directory =
+        std::env::temp_dir().join(format!("unlit3dx-stepped-image-{}", std::process::id()));
+    let saved = mcp.call(
+        "save_texture_as_image",
+        json!({
+            "world": status["render_world"],
+            "id": status["target"],
+            "directory": directory.to_str().expect("a UTF-8 output path"),
+            "file_name": "stepped.png",
+        }),
+    );
+    let path = directory.join("stepped.png");
+    let pixels = image::open(&path)
+        .expect("the saved frame decodes")
+        .into_rgba8();
+    std::fs::remove_file(&path).expect("remove the saved frame");
+    std::fs::remove_dir(&directory).expect("remove the capture directory");
+    assert_eq!(
+        saved["structuredContent"]["path"].as_str(),
+        path.to_str(),
+        "the tool names the file it wrote"
+    );
+    assert!(
+        saved["content"]
+            .as_array()
+            .is_none_or(|blocks| { blocks.iter().all(|block| block["type"] != "image") }),
+        "saving a texture does not return an inline image"
+    );
+    assert_eq!(
+        pixels.into_raw(),
+        first_image,
+        "save the already stepped image"
+    );
+    assert_eq!(mcp.status()["frame"], status["frame"]);
     let [first, second, third] = snapshots![
         "unlit3dx/mcp_input_1.webp",
         "unlit3dx/mcp_input_2.webp",

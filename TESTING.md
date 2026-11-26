@@ -106,6 +106,15 @@ export traversal and source-span fixtures. Run `cargo xtask api-index
 output. The [API index task](xtask/README.md#cargo-xtask-api-index) indexes
 declarations, not function bodies; it does not verify implementation behavior.
 
+## Skill documentation checks
+
+`cargo xtask skill-docs` checks the seven unlit3d skill pages. It validates
+relative links and section anchors, headings, table widths, fence labels and
+languages, and trailing whitespace. It rejects fixed line anchors: link to the
+file and name the symbol instead. `cargo xtask check` runs it before the other lints.
+The linked doctests and runtime tests, not this Markdown check, verify the APIs
+and behavior described by the skill.
+
 ## Per-crate coverage
 
 | Crate | What its tests cover |

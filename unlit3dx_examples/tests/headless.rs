@@ -271,13 +271,101 @@ async fn audio_matches_the_baseline() {
     support::check_audio_baseline("unlit3dx/audio.flac", &samples);
 }
 
-// The frame check runs wherever the harness does. The audio check needs a
-// filesystem and the real soundfont, so it is host-only: a browser and an
-// activity have neither, and the wasm suite would otherwise list a trial
-// the page has no test for.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+async fn an_ended_or_failed_turn_does_not_capture_a_frame() {
+    use unlit_ecs::World;
+    use unlit3dx::app::{App, NoArgs, RenderPorts, RenderSetup, RunError, ScenePorts, SceneWorlds};
+    use unlit3dx::turn::{TickOutcome, WorldError, WorldStage};
+    use unlit3dx::world::WorldRunner;
+    use unlit3dx_examples::scene::setup_render_world;
+
+    struct EndOnSecondTurn {
+        fail: bool,
+    }
+
+    impl App for EndOnSecondTurn {
+        type Args = NoArgs;
+
+        fn spawn_scene<R: WorldRunner>(
+            &mut self,
+            host: &mut World,
+            _: ScenePorts<'_>,
+        ) -> SceneWorlds {
+            let fail = self.fail;
+            let gameplay = R::spawn(
+                host,
+                "gameplay",
+                1,
+                |_| false,
+                move |_, _, ran, _| {
+                    if !core::mem::replace(ran, true) {
+                        return TickOutcome::Running;
+                    }
+                    assert!(!fail, "the gameplay tick failed");
+                    TickOutcome::Finished
+                },
+            )
+            .expect("the gameplay world starts");
+            let mut idle = |name| {
+                R::spawn(host, name, 1, |_| (), |_, _, _, _| TickOutcome::Running)
+                    .expect("the idle world starts")
+            };
+            SceneWorlds {
+                gameplay,
+                physics: idle("physics"),
+                audio: idle("audio"),
+            }
+        }
+
+        fn setup_render(&mut self, host: &mut World, ports: RenderPorts<'_>) -> RenderSetup {
+            let (renderer, pass) =
+                setup_render_world(host, ports.world, ports.device.clone(), None);
+            RenderSetup { renderer, pass }
+        }
+    }
+
+    let ctx = Ctx::headless().await;
+    for fail in [false, true] {
+        let dir = std::env::temp_dir().join(format!(
+            "unlit3dx-ended-capture-{}-{fail}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).expect("a fresh capture directory");
+        let mut config = config(2, vec![]);
+        config.size = (16, 16);
+        config.shape.capture = Some(Capture::new(vec![0, 1], Some(dir.clone())));
+        let result = headless_run(EndOnSecondTurn { fail }, &config, ctx.render_device()).await;
+        let captured = std::fs::read_dir(&dir)
+            .expect("the capture directory is readable")
+            .map(|entry| {
+                let entry = entry.expect("a capture directory entry is readable");
+                std::fs::remove_file(entry.path()).expect("the test capture is removable");
+                entry.file_name()
+            })
+            .collect::<Vec<_>>();
+        std::fs::remove_dir(&dir).expect("the now empty test directory is removable");
+        assert_eq!(captured, ["frame_0.png"]);
+        if fail {
+            assert!(matches!(
+                result,
+                Err(RunError::Scene(WorldError::Panic { stage: WorldStage::Body, message }))
+                    if &*message == "the gameplay tick failed"
+            ));
+        } else {
+            let output = result.expect("the scene finishes normally");
+            assert_eq!(output.advanced, 1);
+            assert_eq!(output.frames.len(), 1);
+            assert_eq!(output.frames[0].0, 0);
+        }
+    }
+}
+
+// Filesystem capture and the real soundfont are available only on the host.
 gpu_tests! {
     frames_match_the_baselines,
     an_undrawn_frame_matches_a_drawn_one,
+    #[host_only]
+    an_ended_or_failed_turn_does_not_capture_a_frame,
     #[host_only]
     audio_matches_the_baseline,
 }

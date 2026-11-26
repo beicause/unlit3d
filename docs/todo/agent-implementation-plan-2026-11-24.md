@@ -1,12 +1,12 @@
 # unlit3d / unlit3dx 审查结果实施计划
 
-本文位于 `docs/todo/`，随实施推进更新。P0-A–P0-J、P1-A–P1-D、P2-A–P2-D 与 P3-A–P3-B 已实施；P3-C–P3-D 与 SK-1–SK-13 尚未交付。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
+P0-A–P0-J、P1-A–P1-D、P2-A–P2-D、P3-A–P3-D 与 SK-1–SK-13 已实施。逐包交付与尚未覆盖的环境见[实施进度](#实施进度)；下文保留各包审查范围与验收条件。
 
 ## 实施进度
 
 ### 已完成的包
 
-每个包一个提交，提交边界与下文「建议的提交边界」的分组不完全一致：本次按包提交，便于逐包回退。改动规模一列是「文件数 +增行/−删行」。
+按工作包提交，便于独立回退；表中另列跨包复验与针对性补修。改动规模一列是「文件数 +增行/−删行」。
 
 | 包 | 提交 | 改动规模 | 新增回归测试 | 状态 |
 | --- | --- | --- | --- | --- |
@@ -25,10 +25,14 @@
 | P1-C `RunShape` | `754c3a8` | 13 文件 +472/−223 | 8 条开关组合解析、`TurnOutcome` 区分 `Suspended` 与 `Unprepared` | 已验收 |
 | P1-D `WorldEndpoint` | `0ab3d7b` | 38 文件 +1792/−1297 | endpoint 排队、三种 world 的 ownership/driving、`NoHandle`/`Detached`/二次等待、setup panic 报因且不留半成品 | 已验收 |
 | P2-A mesh 资源模型 | `d34701a` | 28 文件 +991/−426 | `MeshDescriptor` 的 8 类拒绝（无图元、索引/顶点缓冲过短、slot 越界、零 stride、无 morph target、位移不足、pose 短于 joints） | 已验收 |
-
 | P2-B Pass、帧与渲染目标身份 | `517c85b`、`f8b2970` | 65 文件 +1283/−639，补修 11 文件 +181/−39 | 自定义源收到三类身份、共享目标上的 pass、resize 后单一尺寸、同颜色视图但不同深度的目标 | 已验收 |
 | P2-C glTF 资源与错误 | `758be6b` | 33 文件 +1782/−1017 | 稀疏资源 ID、独立模型资源寿命、选择性解码、越界 clip、手动时钟、带 BOM 的 JSON 与结构化 MCP 错误 | 已验收 |
-| P2-D 快照、事件流、请求与时间域 | 本包提交 | — | 快照独立读游标、缓冲溢出后先排空、停止与失败终态、确认取消、拒绝 job 不串答 | 已通过本机验收 |
+| P2-D 快照、事件流、请求与时间域 | `5f565b3` | 57 文件 +1494/−692 | 快照独立读游标、缓冲溢出后先排空、停止与失败终态、确认取消、拒绝 job 不串答 | 已验收 |
+| P3-A 热路径 | `829c94e` | 37 文件 +653/−486 | 输入负载不拷贝、合成与 FLAC 缓冲复用、dirty 计数、MIDI 调度边界 | 已验收 |
+| P3-B 共享布局与默认值 | `9f3adff` | 76 文件 +813/−915 | 共享 binding 顺序、帧行为排序、多个 singleton key 原子认领与释放 | 已验收 |
+| P3-C 契约与文件拆分 | `8ebad80` | 27 文件 +1436/−1675 | 镜像、零轴及 shear，egui 文案符合既有快照 | 已验收 |
+| P3-D 结构化 API 索引 | `2a6f6df` | 12 文件 +738/−3 | rustdoc schema、别名及 glob、签名与源码位置、排除合成 impl | 已验收 |
+| SK-1–SK-13 技能 | 技能包提交 | — | [技能交付记录](skills-review-2026-11-24.md#交付记录) | 本机验收 |
 
 ### 验收命令与结果
 
@@ -50,11 +54,12 @@ P2-C 的集中验收包含 `cargo fmt --all --check`、工作区全目标全特�
 
 ### 未验收项
 
-- **wasm 与 WebGL2 档位**：`cargo xtask test-wasm` 与 `UNLIT3D_DEVICE_TIER=webgl2` 未在本机运行，因此 P0-C、P0-D、P0-F–P0-I 在 wasm 目标下的行为只经 `cargo check` 覆盖。
-- **非 Linux 平台**：`target_os = "android"` 与 Windows 的 `cfg` 分支未运行，`RunShape` 在这些平台上把 ownership 定为 `Hosted` 的路径未实测。
-- **真实音频设备**：本机只有 PipeWire 提供的 sink，音频用例按 `has_output_device()` 分支运行，两种分支均通过；但未在无声卡环境验证「永久静音」那条诊断路径的日志文本。
-- **`blitz_system_fonts`**：只做了 `cargo check`，未运行宿主字体枚举下的排版用例。
-- **P2-D / P3 / SK**：P2-D 的 wasm 运行行为未经验证；P3 与技能审查尚未开始。SK-1–SK-10 的 API 纠错所需的新签名已经就位（`WorldEndpoint`、`TickOutcome`、`RunShape`、`ToolError`、`StepOutcome::Failed(WorldError)`、`MeshDescriptor`），但技能页面尚未按这些签名复核。
+- **wasm 与 WebGL2 档位**：未运行 `cargo xtask test-wasm`，也未以 `UNLIT3D_DEVICE_TIER=webgl2` 复跑快照。输入重放、音频、异步通信及渲染行为以 Linux 原生验收为准。
+- **非 Linux 平台**：Android 和 Windows 的目标专用分支未实测；Android 专用 Clippy 未复验。
+- **音频设备**：本机以 PipeWire sink 和实际离线混音作验证；没有在独立的物理设备/无设备环境做对照。
+- **系统字体**：全特性构建与原生测试通过，但未在不同系统的字体清单上单独做排版或像素一致性验证。字体隔离不承诺跨系统像素相同。
+- **MCP 客户端**：仓库测试实际驱动了 stdio 宿主，但本机未安装 `mcpdo`，未复验该客户端的安装、认证或 daemon 行为。
+- **索引环境**：使用本机 nightly 实际生成了 rustdoc JSON 和索引；未在缺少 nightly 的独立环境运行，未知 schema 由 fixture 覆盖。
 
 ## 目标与执行原则
 
@@ -1083,4 +1088,4 @@ P3-D 已实施。用本机 `nightly`（rustdoc JSON schema 61）运行 `cargo xt
 
 每个提交只包含一个工作包及其测试；不要把未相关的格式化、文档重排或性能改动混入正确性修复。
 
-已交付的 14 个包按包各自提交，未按上面的分组合并：逐包提交让每个包可以单独回退，代价是提交数多于上表；具体提交见[实施进度](#实施进度)。
+实施提交按工作包划分，未按上面的分组合并，便于独立回退；具体提交与补修见[实施进度](#实施进度)。

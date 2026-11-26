@@ -1,6 +1,6 @@
 //! An egui overlay, drawn as a draw source.
 //!
-//! [`EguiSource`] is a [`DrawSource`] that renders the world's egui interfaces
+//! [`EguiSource`] is a [`DrawSource`](crate::source::DrawSource) that renders the world's egui interfaces
 //! over whatever the frame already holds. The interfaces themselves are
 //! [`EguiPanel`] behaviour components: the source is only their driver, and it
 //! runs whatever panels its own scope carries, in query order.
@@ -18,10 +18,10 @@
 //!     ResourceGraph::new(),
 //! );
 //!
-//! // The source, and one interface held as a behaviour component. More
-//! // panels are more entities under the same source, each with its own
-//! // sibling state.
-//! let ui = world.root_scope_mut().spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
+//! // Mount the source under the pass and the panel under the source.
+//! // This mounts the overlay; bind attachments before drawing the pass.
+//! let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
+//! let ui = world.scope_mut(pass).spawn(bundle![Source::new(SourceOrder::EGUI, EguiSource::new())]);
 //! world.scope_mut(ui).spawn(bundle![
 //!     EguiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
@@ -199,7 +199,7 @@ impl EguiSource {
     ///
     /// No GPU state is built here: the pipeline is specialized on the frame's
     /// target, which is not known until the first frame. Everything is built
-    /// then, on the device the frame's [`RenderContext`] names.
+    /// then, on the device the frame's [`RenderContext`](crate::source::RenderContext) names.
     pub fn new() -> Self {
         Self {
             ctx: egui::Context::default(),

@@ -371,12 +371,14 @@ async fn a_shared_source_draws_into_every_pass() {
 }
 
 /// What one build of a source was told about where it draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Seen {
     pass: PassId,
     target: RenderTargetId,
     frame: FrameId,
     size: (u32, u32),
+    camera: Option<Entity>,
+    viewport: Option<ViewportRect>,
 }
 
 /// A source that records what each build was told, and draws nothing.
@@ -395,8 +397,86 @@ impl SceneSource for RecordingSource {
             target: info.target,
             frame: info.frame,
             size: (info.width, info.height),
+            camera: info.camera,
+            viewport: info.viewport,
         });
     }
+}
+
+async fn a_pass_uses_its_own_camera_and_content_size() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let root = world.root_scope().entity();
+    let passes = [gpu.pass(), spawn_pass(&mut world, root, 1)];
+    let shared = world.shared();
+    let device = gpu
+        .context
+        .device(&world.root_scope())
+        .expect("the context's device");
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    world.scope_mut(shared).spawn(bundle![Source::new(
+        SourceOrder::MESH,
+        RecordingSource { seen: seen.clone() }
+    )]);
+
+    let mut cases = Vec::new();
+    for (pass, size, viewport) in [
+        (passes[0], (128, 64), None),
+        (
+            passes[1],
+            (64, 128),
+            Some(ViewportRect::new(64.0, 96.0).at(0.0, 16.0)),
+        ),
+    ] {
+        let target = PersistentTarget::bind(
+            &world,
+            gpu.context,
+            pass,
+            &device,
+            size,
+            TargetConfig {
+                samples: 1,
+                depth: None,
+                ..TargetConfig::default()
+            },
+        )
+        .expect("the pass entity exists");
+        let scope = world.root_scope();
+        let mut row = scope.query_one::<&FramePass>(pass);
+        let (width, height) = row
+            .get()
+            .target_size(&world)
+            .expect("the pass target is bound");
+        drop(row);
+        let aspect = viewport.map_or(width as f32 / height as f32, |rect| {
+            rect.width / rect.height
+        });
+        let camera = world.scope_mut(shared).spawn(bundle![Camera {
+            view_from_world: glam::Mat4::IDENTITY,
+            clip_from_view: glam::camera::rh::proj::directx::perspective_infinite_reverse(
+                1.0, aspect, 0.1,
+            ),
+            active: false,
+        }]);
+        let scope = world.root_scope();
+        let mut row = scope.query_one::<&mut FramePass>(pass);
+        let state = row.get();
+        state.camera = Some(camera);
+        state.viewport = viewport;
+        cases.push((target, camera, size, viewport));
+    }
+
+    gpu.render(&world);
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 2);
+    for ((_, camera, size, viewport), build) in cases.iter().zip(seen.iter()) {
+        assert_eq!(build.camera, Some(*camera));
+        assert_eq!(build.size, *size);
+        assert_eq!(build.viewport, *viewport);
+    }
+    assert_ne!(seen[0].pass, seen[1].pass);
+    assert_ne!(seen[0].target, seen[1].target);
 }
 
 /// A source in the shared subtree is built once per pass, and each build names
@@ -647,6 +727,7 @@ async fn one_colour_view_is_two_targets_when_the_depth_differs() {
 // it with its siblings', and `gpu_test_main!` there runs the result under
 // `cargo nextest` natively and in a browser through the wasm export it adds.
 gpu_tests! {
+    a_pass_uses_its_own_camera_and_content_size,
     a_build_is_told_the_pass_target_and_frame_it_belongs_to,
     a_target_applies_its_size_policy_to_the_size_it_is_told,
     a_resize_leaves_one_size_behind,

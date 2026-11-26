@@ -84,7 +84,14 @@ WebGPU 画布读出来全是透明」。
 
 用 `cargo nextest run -p xtask -E 'test(api_index)'` 验证 rustdoc schema、重导出遍历和源码位置。
 有兼容的 nightly 时，另运行 `cargo xtask api-index --all-features`，核验实际 rustdoc 输出。
-[API 索引任务](xtask/README.md#cargo-xtask-api-index) 只索引声明，不含函数体，也不验证实现行为。
+[API 索引任务](xtask/README.zh-CN.md#cargo-xtask-api-index) 只索引声明，不含函数体，也不验证实现行为。
+
+## 技能文档检查
+
+`cargo xtask skill-docs` 检查 unlit3d 技能的七个页面，覆盖相对链接和小节锚点、标题层级、表格列数、
+代码块分类与语言、尾随空格。检查拒绝固定行号锚点；请链接到文件并注明符号。`cargo xtask check`
+会先运行该检查。技能描述的 API 和行为由
+各页面指向的文档测试与运行测试验证，而非 Markdown 检查本身。
 
 ## 各 crate 的覆盖
 

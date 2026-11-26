@@ -39,6 +39,7 @@ use crate::step;
 /// warning CI turns into an error, which is the same gap in a different guise.
 pub fn run(release: bool) -> Result<(), String> {
     let root = step::workspace_root()?;
+    crate::skill_docs::check(&root)?;
 
     // Both tools take the directory to work on as their only argument, and both
     // are run from here rather than from the working directory: a task may be

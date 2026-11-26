@@ -15,6 +15,8 @@
 cargo xtask check          # typos、tombi、clippy 与文档构建，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
 cargo xtask line-count     # 打印每个 Rust 文件的行数，标记达到 1000 行的
+cargo xtask api-index      # 将有源码的工作区 API 声明索引为 JSON
+cargo xtask skill-docs     # 检查 unlit3d 技能的 Markdown 和本地链接
 cargo xtask print-gpu      # 以 JSON 打印测试所用的 GPU 设备
 cargo xtask miri           # 在 Miri 下跑 ECS 的测试，那是校验其 unsafe 的门禁
 cargo xtask test-wasm      # 经由 wasm，在浏览器的两个 GPU 后端上各跑一遍 GPU 测试
@@ -25,9 +27,9 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask check`
 
-先跑 `typos` 与 `tombi`，再跑三趟 clippy，然后跑文档构建，最后运行
-`cargo fmt --all -- --check`。两个不需要编译器的工具排在最前，因此一处拼写错误或一张
-没排序的 feature 表只花一秒钟，而不是 clippy 那几分钟。clippy 紧随其后，因为它的诊断
+先检查技能 Markdown，再跑 `typos` 与 `tombi`，随后跑三趟 clippy、构建文档并运行
+`cargo fmt --all -- --check`。不需要编译器的检查优先，遇到断链、拼写错误或未排序的 feature 表
+时，无需等工作区编译完成。clippy 紧随其后，因为它的诊断
 可能让代码树处于 `rustfmt` 会重写的状态，因此格式化拥有最后发言权；文档构建夹在两者
 之间，因为 rustdoc 的警告与 clippy 的一样属于 lint，而它可能重写的文档注释仍归 rustfmt
 收尾。接受 `--release`。
@@ -88,6 +90,19 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 `cargo xtask check`：撞上上限是设计问题，不是一条诊断。同理，这个任务只报告而不失败——
 今天在上限之上的文件正是还没拆的那些，一个一直红着的任务只会被无视。它要用 git，但本仓库
 的其他事情也一样。
+
+### `cargo xtask api-index`
+
+使用已安装的 `nightly` 为工作区生成 rustdoc JSON，再写入 `target/api-index.json`。
+`--all-features` 包含可选 API，`--document-private-items` 包含私有声明。重复运行会复用
+`target/api-index-rustdoc` 的构建产物；两处输出都不纳入版本控制。
+
+索引记录实际 rustc 版本、选项和 rustdoc schema 版本。每条包含 Rust 路径、声明类型、源码位置、
+可从源码提取的签名、文档首条非空行、可见性与弃用信息。不包含合成 impl、blanket impl 或没有
+工作区源码位置的声明。Rustdoc JSON 不含函数体，判断行为须沿源码位置阅读实现。
+
+只接受 rustdoc JSON 格式 61。格式变化时，使用兼容的 nightly，或同步更新解析器与 schema 测试数据，
+再运行 `cargo nextest run -p xtask -E 'test(api_index)'` 并重新生成索引核对声明路径。
 
 ### `cargo xtask print-gpu`
 

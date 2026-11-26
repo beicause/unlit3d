@@ -1,74 +1,36 @@
-# 排查
+# 排查表
 
-先过自检清单，再按症状查。心智模型见 [SKILL.md](SKILL.md)；写场景的细节见 [SCENE.md](SCENE.md)，多 world 见 [MULTI_WORLD.md](MULTI_WORLD.md)，MCP 宿主见 [MCP.md](MCP.md)。
+**用途**：为 agent 按症状缩小范围。前提是知道当前 world、pass 或宿主；不替代专题契约和编译验证。
 
 ## 提交前自检清单
 
-1. 渲染实体与相机 spawn 在**画它的那个 source** 之下？pass 的 `set_attachments` 调了？
-2. reverse-z 三件套齐了（`Greater` + 清 0.0 + `perspective_infinite_reverse`）？自定义 family 在自己的管线描述符上调了 `set_surface`？
-3. 相机每帧按 `frame.size` 重建 aspect；viewport 宽高比与相机一致？
-4. 一个 mesh 多份实例用 `InstanceColor` / `InstanceCutoff`，没有为每种颜色重建 mesh？
-5. 透明物件用了第二个 key（blend + 不写深度 + 仍测深度 + 背面剔除）+ `ZSortedDrawing`？
-6. egui source 在场景构建之前挂到 pass 下，面板在它的子树里？可复现截图把 egui style 的 `animation_time` 设 0 了（`context_mut().all_styles_mut(..)`）？
-7. 行为回调里没有再取自己这个组件类型；结构变更走 `queue` + `apply`；帧行为有依赖时两端都声明了 `with_order`？
-8. `spawn_context` 每个 world 只调一次；同一 key 类型只注册一次 family？
-9. 跨 world 通信只用 job + `watch` / `subscribe` / `Pending`；`send` 的 `Full` / `Closed` 没被 unwrap 掉；跨 world 实体用 newtype 包了？
-10. 要截图 / 快照 / MCP 就开了 offscreen 展示路径？
-11. 指针用 `OnPointer`，面板先问 `egui_wants_pointer_input()`？
-12. 要明暗就用 `unlit: false` 的 key，且灯 spawn 在画 mesh 的那个 source 子树里、朝向对（沿 `-Z`）？
-13. MCP 大结果先落盘或挑字段读，不整表内联；所有 id 与坐标从 `list_worlds` / `scene_status` / `list_resources` 取？
+核对[可运行测试来源](EXAMPLES.md#示例索引)，使用当前版本与 feature 的[结构化索引](REFERENCE.md#查当前版本的-api) 核查调用；至少区分编译通过、实际绘制、现场宿主验证。
 
 ## 症状 → 检查项
 
 ### 画面与渲染
 
-| 现象                                                        | 检查什么                                                                                                                                                                             |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 什么都不画                                                  | 渲染实体或相机不在 source 的子树里；`Renderer` 只画 source 自己的子树                                                                                                                   |
-| pass 完全不画                                               | 没 `set_attachments`：`FramePass` 在拿到颜色附件之前不画任何东西                                                                                                                         |
-| 整片被裁掉 / 深度反了                                       | forward-z 投影配 `Greater`，或 reverse-z 投影配 `Less`                                                                                                                                   |
-| pipeline 创建失败                                           | 自定义 family 没在自己的管线描述符上 `set_surface`，`SurfaceKey` 的 `sample_count` / `color_format` / `depth_stencil_format` 与这一帧的附件不一致（内建 lit family 已自动覆盖）                   |
-| panic: `a pipeline family is already registered for this key type` | 同一个 world 里 `register_lit_family` 调了两次                                                                                                                                      |
-| `allocate_lit_mesh` panic                                   | slice 为空、通道长度不一致、joints/weights 只给一边、morph 数量不对                                                                                                                      |
-| 透明面发黑 / 错位                                           | 没开 blend、`depth_write_enabled` 没关，或没加 `ZSortedDrawing`                                                                                                                          |
-| 画面拉伸                                                    | viewport 的宽高比与相机的不一致                                                                                                                                                       |
-| 面板看不见                                                  | `EguiPanel` 不在 `EguiSource` 子树里，或 egui source 挂在场景构建之后                                                                                                                         |
-| 有画面但整块纯色、没有明暗                                   | key 的 `unlit` 还是 `true`（示例的 `default_options()` 就是），或灯没 spawn 在画它的 source 子树里，或 `intensity` 为 0、朝向背了                                                  |
+| 症状 | 先看 |
+| --- | --- |
+| 清屏正常但没有物体 | [pass 附件与 source 可达性](SCENE.md#最小骨架)，再查 mesh 资源与可见性 |
+| 某个视图拉伸或用了另一只相机 | [目标、viewport 与相机](SCENE.md#相机与-viewport) |
+| 多个 pass 下缓存互相污染 | [pass、目标、特化键的区别](REFERENCE.md#pass-与-source) |
+| 面板不可见 | [egui 层级](SCENE.md#egui)：先核对 pass 绑定附件且能到达 source，再核对面板位于 source 子树 |
 
 ### 帧、输入、egui
 
-| 现象                             | 检查什么                                                                                                                                                     |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 借用 panic                       | 行为回调里取自己这个组件类型；或同一实体同时 `query_one` 两次                                                                                                  |
-| 结构变更没生效                   | 回调里 spawn/despawn 没走 `queue`，或没调 `apply`                                                                                                              |
-| 面板有 draw 但一个材质都没有     | 发布方比绘制方快，携带纹理增量的那一帧被下一帧顶掉了。`ExternalFrames::publish` 会把被顶掉帧的 `textures` 交给继任者；自己绕过它换帧就会丢图集               |
-| 点了按钮但场景没变               | 坐标不是物理像素、world 指错，或同一帧里连点多次（egui 每帧只结算一次）                                                                                       |
+- 按键不触发或指针状态不符：核对[输入装配](SCENE.md#输入)、事件批次与 feature，再区分 [Blitz 输入限制](REFERENCE.md#blitz)。
+- 每帧似乎推进了多次：检查是否把逻辑放到了[可重复执行的 egui 回调](SCENE.md#egui)。
 
 ### 多 world 与通信
 
-| 现象                                                     | 检查什么                                                                                                                         |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| job 丢了                                                 | `send` 的 `Full` / `Closed` 被忽略                                                                                              |
-| 想把 `World` 装进 `Arc<Mutex<..>>` 或传去别的线程        | `World` 是 `!Send`，编不过；一个关注点一个 world，通信走 job + snapshot / stream                                            |
-| 跨 world 数据时序怪、偶发竞争                           | 自造 mpsc / 锁 / 回答式 job 绕过内置时机：job 在 tick 前 drain，发布在 tick 后，单槽快照本就免锁                               |
-| 处处借用冲突、状态要手动到处同步                         | 状态堆在一个巨大组件或大 enum 状态机里；按数据归属拆实体与组件，行为放行为组件，跨事件标志用兄弟组件                           |
-| snapshot 一直是 `None`                                   | 目标 world 还没跑完一次 tick（发布在 tick 之后），或 reader 已 drop（drop 即退订）                                            |
-| 集成测试没跑                                             | 本仓库用 `cargo nextest run`；带 required-features 的套件要 `--all-features` 或点名 feature                                  |
+- Pass/renderer 句柄被拒：检查[实体的来源校验](MULTI_WORLD.md#装配规则)，不要只比实体位模式。
+- 值迟迟不来、排队拒绝或溢出：按[通信表](MULTI_WORLD.md#通信协议) 区分未安装、未首次发布、队列积压、超时和 world 终态。
+- 失败后仍有「成功帧」、文件中没有样本：检查[无头循环的终止、读回与消费](MULTI_WORLD.md#展示路径与离线取帧)。
 
 ### MCP
 
-| 现象                                                     | 检查什么                                                                                                                     |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `failed to deserialize parameters: missing field 'directory'` | `save_*` 系列必须给 `directory`                                                                                              |
-| `the world has no renderer` / `the world has no render context` | 指名的 world 不带 `Renderer`。`unlit3dx_examples --mcp-stdio` 下要指名渲染子 world，不是 `Host`                             |
-| `entity N carries no world`                              | 该实体既不带 `World` 也不带 `WorldSender`，不是可调度的 world                                                             |
-| 某个 world 不在 `list_worlds` 里                         | 它没带 `WorldName`，桥接层无法给它命名，于是不报告                                                                          |
-| `the world on entity N has stopped`                      | 那个 world 已经结束，job 不会再跑                                                                                            |
-| 无响应                                                   | 宿主没起来（缺 DISPLAY 会 panic），或宿主没带 `--mcp-stdio`，或宿主没泵命令（无窗口宿主必须每轮调 `pump_mcp`）                 |
-| 发给 stepped world 的命令一直不回                        | 宿主没在泵，或没跑 `pump_mcp` 的 job 阶段；stepped world 的队列只在推进帧时被 drain                                        |
-| `the host has no exit request`                           | 该宿主没挂 `ExitRequest` 组件，`request_exit` 对它无效                                                                      |
-| `the host is not an interactive headless scene`          | 这条来自写捕获与 `scene_status`：它们只认 `unlit3dx_examples --headless --interactive --mcp-stdio` 这样的交互式无头宿主。`step_frames` 在客户端配速的窗口宿主上也管用 |
-| `the host paces its own frames and takes no stepping`    | 该宿主没带 `--interactive`：它自己推进帧，`step_frames` 无从插入。要客户端配速就加 `--interactive` 并配一个传输 |
-| `the world has no input writer`                          | 指名的 world 没挂 `InputWriter`；给玩法 world 发输入，不是 `Host`                                                          |
-| `failed to deserialize parameters: missing field 'target'` | `read_screenshot` / `save_screenshot` 必须点名纹理，没有默认目标 |
-| `resource id N is a texture no one can read back` | 那张纹理没带 `COPY_SRC`；用 `list_resources` 里 `label` 为 `scene color` 的那条，或 `scene_status` 的 `target` |
+- 工具找不到或连接不 ready：从[连接与权限](MCP.md#服务器与驱动) 开始，确认实际宿主、feature 与工具发现结果。
+- 图片空白、读错帧或输出太大：核对 [world 与资源定位](MCP.md#worldref-与世界名) 以及[重绘／输出方式](MCP.md#绘制)。
+
+继续阅读：[示例索引](EXAMPLES.md) · [技能入口](SKILL.md)。
