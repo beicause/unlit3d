@@ -1,10 +1,11 @@
 use super::{
-    BUILT_IN_MODULE, BUILT_IN_SHADER_LABEL, BaseColorChannels, ChannelEncoding, FEATURE_COUNT,
-    FS_MAIN, GlobalBindings, Hashed, LitBindGroupLayouts, LitOptions, LitVertexChannels,
-    PipelineDescriptor, PipelineVariant, PositionStreamWriter, SecondaryFlags,
-    SecondaryStreamWriter, Shader, ShaderCache, ShaderRecipe, SurfaceKey, VS_MAIN,
-    VertexBufferLayoutDesc, global_bind_group_layout, location, supports_storage_buffers,
+    BUILT_IN_SHADER_LABEL, BaseColorChannels, ChannelEncoding, FEATURE_COUNT, FS_MAIN,
+    GlobalBindings, Hashed, LitBindGroupLayouts, LitFeature, LitOptions, LitVertexChannels,
+    PipelineDescriptor, PipelineVariant, SecondaryFlags, Shader, ShaderCache, ShaderRecipe,
+    SurfaceKey, VS_MAIN, VertexBufferLayoutDesc, global_bind_group_layout, location,
+    supports_storage_buffers,
 };
+use crate::compose::LIT_MODULE;
 
 /// The complete identity of a built-in lit pipeline, and its blueprint.
 ///
@@ -69,58 +70,44 @@ impl LitVariant {
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
     fn features(&self, texel_arrays: bool) -> [(&'static str, bool); FEATURE_COUNT] {
-        [
-            ("VERTEX_POSITION", self.channels.position.position.is_some()),
-            (
-                "UNCOMPRESSED_POSITION",
-                matches!(
+        LitFeature::ALL.map(|feature| {
+            let enabled = match feature {
+                LitFeature::VertexPosition => self.channels.position.position.is_some(),
+                LitFeature::UncompressedPosition => matches!(
                     self.channels.position.position,
                     Some(ChannelEncoding::UncompressedPosition | ChannelEncoding::PlanarPosition)
                 ),
-            ),
-            (
-                "PLANAR_POSITION",
-                matches!(
+                LitFeature::PlanarPosition => matches!(
                     self.channels.position.position,
                     Some(ChannelEncoding::PlanarPosition)
                 ),
-            ),
-            (
-                "VERTEX_UV",
-                self.channels.secondary.contains(SecondaryFlags::UV),
-            ),
-            (
-                "UNCOMPRESSED_UV",
-                self.channels
+                LitFeature::VertexUv => self.channels.secondary.contains(SecondaryFlags::UV),
+                LitFeature::UncompressedUv => self
+                    .channels
                     .secondary
                     .contains(SecondaryFlags::UNCOMPRESSED_UV),
-            ),
-            (
-                "VERTEX_COLOR",
-                self.channels.secondary.contains(SecondaryFlags::COLOR),
-            ),
-            (
-                "VERTEX_NORMAL",
-                self.channels.secondary.contains(SecondaryFlags::NORMAL),
-            ),
-            ("BASE_COLOR_TEXTURE", self.base_color_texture),
-            ("SRGB_TO_LINEAR_OUTPUT", self.options.srgb_to_linear_output),
-            ("VERTEX_JOINTS", self.channels.position.joints),
-            ("MORPH_POSITIONS", self.morph),
-            ("COMPRESSED_CHANNEL_OR_MORPH", self.needs_metadata()),
-            ("TEXEL_ARRAY", texel_arrays),
-            (
-                "BASE_COLOR_LUMINANCE",
-                self.options.base_color == BaseColorChannels::Luminance,
-            ),
-            (
-                "BASE_COLOR_LUMINANCE_ALPHA",
-                self.options.base_color == BaseColorChannels::LuminanceAlpha,
-            ),
-            ("ALPHA_CUTOFF", self.options.alpha_cutoff),
-            ("EXPANDED", self.options.expanded),
-            ("LIT", !self.options.unlit),
-        ]
+                LitFeature::VertexColor => self.channels.secondary.contains(SecondaryFlags::COLOR),
+                LitFeature::VertexNormal => {
+                    self.channels.secondary.contains(SecondaryFlags::NORMAL)
+                }
+                LitFeature::BaseColorTexture => self.base_color_texture,
+                LitFeature::SrgbToLinearOutput => self.options.srgb_to_linear_output,
+                LitFeature::VertexJoints => self.needs_joints(),
+                LitFeature::MorphPositions => self.needs_morphs(),
+                LitFeature::CompressedChannelOrMorph => self.needs_metadata(),
+                LitFeature::TexelArray => texel_arrays,
+                LitFeature::BaseColorLuminance => {
+                    self.options.base_color == BaseColorChannels::Luminance
+                }
+                LitFeature::BaseColorLuminanceAlpha => {
+                    self.options.base_color == BaseColorChannels::LuminanceAlpha
+                }
+                LitFeature::AlphaCutoff => self.options.alpha_cutoff,
+                LitFeature::Expanded => self.options.expanded,
+                LitFeature::Lit => !self.options.unlit,
+            };
+            (feature.name(), enabled)
+        })
     }
 
     /// Whether the variant deforms its vertices by joint matrices and so reads
@@ -153,28 +140,6 @@ impl LitVariant {
                 .secondary
                 .contains(SecondaryFlags::UNCOMPRESSED_UV);
         compressed_position || compressed_uv || self.needs_morphs()
-    }
-
-    /// The secondary vertex stream this variant expects.
-    ///
-    /// The stream is described in [`crate::mesh`]'s own terms: this variant's
-    /// channels are translated into the ones that make up a vertex stream, so
-    /// packing meshes for this pipeline needs nothing specific to it.
-    pub fn secondary_stream(&self) -> SecondaryStreamWriter {
-        SecondaryStreamWriter {
-            flags: self.channels.secondary,
-        }
-    }
-
-    /// The position vertex stream this variant expects.
-    ///
-    /// The joint indices and weights the variant deforms with belong to this
-    /// stream rather than one of their own, so a skinned variant's stream is
-    /// wider by the joint pair and nothing else changes.
-    pub fn position_stream(&self) -> PositionStreamWriter {
-        PositionStreamWriter {
-            channels: self.channels.position,
-        }
     }
 
     /// Reject a variant whose array path the device cannot serve.
@@ -261,8 +226,8 @@ impl LitVariant {
         // Each stream describes its own layout, so the attributes a pipeline
         // declares and the bytes a packed mesh writes come from one
         // description and cannot drift apart.
-        let position = self.position_stream().channels.channels();
-        let secondary = self.secondary_stream().channels();
+        let position = self.channels.position_stream().channels.channels();
+        let secondary = self.channels.secondary_stream().channels();
         [
             (!position.is_empty()).then(|| position.layout()),
             (!secondary.is_empty()).then(|| secondary.layout()),
@@ -393,7 +358,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for LitVariant {
         // The variant is finer than the module: two variants that differ only
         // in pipeline state — a depth write, a blend — compose one module.
         self.assert_consistent();
-        let key = ShaderRecipe::new(BUILT_IN_MODULE, &self.features(texel_arrays), shader);
+        let key = ShaderRecipe::new(LIT_MODULE, &self.features(texel_arrays), shader);
         let module = cache.get_or_create(device, &key, label, || {
             compose_shader(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"))
         });
@@ -498,7 +463,7 @@ pub(super) fn compose_shader(
         .shader
         .as_ref()
         .map(|shader| shader.source());
-    crate::compose::compose(BUILT_IN_MODULE, &features, replacement)
+    crate::compose::compose(LIT_MODULE, &features, replacement)
 }
 
 impl LitVariant {

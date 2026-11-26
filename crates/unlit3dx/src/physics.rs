@@ -26,13 +26,10 @@ use unlit3d::frame::{Frame, dispatch_frame};
 
 use crate::endpoint::WorldEndpoint;
 use crate::thread::{FixedClock, ThreadError, fixed_steps};
-use crate::time::{SimulationDelta, SimulationTime};
+use crate::time::{DEFAULT_PHYSICS_HZ, SimulationDelta, SimulationTime};
 use crate::turn::TickOutcome;
 use crate::world::WorldRunner;
 use unlit_ecs::bundle;
-
-/// The simulation's default step rate, in hertz.
-pub const PHYSICS_HZ: f64 = 60.0;
 
 /// How the physics world is set up before its first step.
 #[derive(Clone, Debug)]
@@ -48,7 +45,7 @@ pub struct PhysicsConfig {
 impl Default for PhysicsConfig {
     fn default() -> Self {
         Self {
-            hz: PHYSICS_HZ,
+            hz: DEFAULT_PHYSICS_HZ,
             gravity: Vec3::Y * -9.81,
             command_capacity: 64,
         }

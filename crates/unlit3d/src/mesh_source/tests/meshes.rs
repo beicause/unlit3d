@@ -113,10 +113,8 @@ fn an_index_pool_that_grows_keeps_every_meshes_slice() {
 #[test]
 fn a_non_indexed_mesh_holds_no_index_allocation() {
     let mut h = harness();
-    let key = LitPipelineKey::new(unlit_options());
     let mesh = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -243,7 +241,6 @@ fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
     // tells their draws apart is the slice each one names.
     let first = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -254,7 +251,6 @@ fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
     );
     let second = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),

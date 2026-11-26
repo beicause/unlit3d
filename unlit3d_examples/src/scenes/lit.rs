@@ -215,8 +215,8 @@ fn build(
     // positions give it, which is what the relief needs; the floor is a plane,
     // so the mesh's own normal is exactly right for it.
     floor.normals = Some(vec![glam::Vec3::Y.to_array(); floor.positions.len()]);
-    let floor_mesh = allocate_surface(world, source_entity, &key, &floor);
-    let wall_mesh = allocate_surface(world, source_entity, &relief_key, &wall);
+    let floor_mesh = allocate_surface(world, source_entity, &floor);
+    let wall_mesh = allocate_surface(world, source_entity, &wall);
     let pipeline = GpuRenderPipeline::new(key);
     let relief_pipeline = GpuRenderPipeline::new(relief_key);
 

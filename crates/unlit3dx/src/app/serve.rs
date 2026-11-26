@@ -20,9 +20,7 @@ use unlit3d::winit::builtin::ExitRequest;
 use super::App;
 use super::capture::Capture;
 use super::error::RunError;
-use super::headless::{
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, UNBOUNDED_MIX_SECONDS,
-};
+use super::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, UNBOUNDED_MIX_SECONDS};
 use super::interactive::{Interactive, interactive};
 use super::pace::Pacing;
 use super::scene::RunFrames;
@@ -30,6 +28,7 @@ use super::shape::RunShape;
 use super::window_frame::{FrameOutcome, WindowFrames};
 use crate::audio::AudioFormat;
 use crate::mcp::{pump_mcp, serve_mcp};
+use crate::time::FIXED_FRAME_DELTA;
 use crate::world::StepOutcome;
 
 /// Serve an application's scene over MCP.
@@ -88,7 +87,7 @@ pub fn serve<A: App>(
         {
             let interactive = interactive.get();
             let seconds = match pacing.frames {
-                Some(count) => count as f32 * FIXED_FRAME_SECONDS as f32,
+                Some(count) => count as f32 * FIXED_FRAME_DELTA.as_secs_f32(),
                 // A client-paced run has no length to read here, so what
                 // bounds the mix is the same cap an unbounded run uses.
                 None => UNBOUNDED_MIX_SECONDS,
@@ -132,16 +131,11 @@ fn interactive_host<A: App>(
 ) -> Result<World, RunError> {
     let (mut host, interactive) = interactive(app, device)?;
     host.root_scope_mut().spawn(bundle![ExitRequest(false)]);
-    // The pacing is part of the host rather than of the loop that reads it:
-    // the stepping tool answers how far the run may still go, and it reaches
-    // the host through the same world the client does.
-    host.root_scope_mut()
-        .spawn(bundle![pacing].singleton::<Pacing>());
-    // One scene per served host: a second interactive scene would be a second
-    // driver of the same frames, so the key makes that a panic rather than a
-    // silently ignored second scene.
-    host.root_scope_mut()
-        .spawn(bundle![interactive].singleton::<Interactive>());
+    host.root_scope_mut().spawn(
+        bundle![pacing, interactive]
+            .singleton::<Pacing>()
+            .singleton::<Interactive>(),
+    );
     Ok(host)
 }
 
@@ -208,7 +202,7 @@ fn pump_until_done(host: &mut World, pacing: Pacing) -> Result<(), RunError> {
 /// pace. The count ends the run, and so does a client's exit request; a
 /// host with no count runs until one of those happens.
 fn pump_self_paced(host: &mut World, pacing: Pacing) -> Result<(), RunError> {
-    let step = Duration::from_secs_f64(FIXED_FRAME_SECONDS);
+    let step = Duration::from_secs_f64(FIXED_FRAME_DELTA.as_secs());
     let mut next = Instant::now() + step;
     while !pacing.is_spent(advanced(host)) {
         {
@@ -423,10 +417,7 @@ async fn step_frames(commands: CommandSender, args: StepFrames) -> ToolResult {
         };
         let mut stepped = 0;
         while stepped < frames {
-            match window.submit(
-                host,
-                crate::time::FrameDelta::from_secs(FIXED_FRAME_SECONDS),
-            ) {
+            match window.submit(host, FIXED_FRAME_DELTA) {
                 // A frame that drew, and one the surface had no image for,
                 // both count as stepped: the run moved on either way, and the
                 // client asked for frames of the run, not of the display.

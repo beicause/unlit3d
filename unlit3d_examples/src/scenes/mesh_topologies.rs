@@ -220,7 +220,7 @@ fn build(
         ),]);
 
     let mut entities = Vec::new();
-    for (column, key) in keys.iter().enumerate() {
+    for column in 0..keys.len() {
         for row in 0..2 {
             // The indexed row stores the shuffled order; the bottom row has no
             // index buffer to reorder with, so it stores what it draws.
@@ -236,7 +236,6 @@ fn build(
             let mesh = super::with_mesh_source(world, source_entity, |source, world| {
                 source.allocate_lit_mesh(
                     world,
-                    &key.options,
                     LitMeshDesc {
                         positions: &positions,
                         uvs: Some(&uvs),

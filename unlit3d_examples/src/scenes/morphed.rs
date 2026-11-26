@@ -55,7 +55,6 @@ fn build(
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_lit_mesh(
             world,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),

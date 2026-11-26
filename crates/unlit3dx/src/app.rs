@@ -69,10 +69,7 @@ pub mod serve;
 pub use capture::{Capture, CaptureError, CaptureWriteError, WriteWhat};
 pub use error::{AppConfigError, ConfigError, RunError};
 pub use frames::RunFrames;
-pub use headless::{
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, FIXED_FRAME_SECONDS, HEADLESS_HZ, HeadlessConfig,
-    HeadlessOutput, headless,
-};
+pub use headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HeadlessConfig, HeadlessOutput, headless};
 pub use interactive::{Interactive, Recording, interactive};
 pub use logging::init as init_logging;
 pub use offscreen::OffscreenError;
@@ -89,10 +86,6 @@ pub use windowed::{WindowOptions, windowed};
 ))]
 #[cfg_attr(docsrs, doc(cfg(feature = "mcp")))]
 pub use serve::serve;
-
-/// The rate a scene's physics world runs at when its application says
-/// nothing else, in hertz.
-pub const DEFAULT_PHYSICS_HZ: f64 = 60.0;
 
 /// The slot a run publishes its panels into.
 ///
@@ -119,7 +112,7 @@ pub trait App: 'static {
     /// The run turns it into the period [`Stepping`] steps physics by; a
     /// scene whose physics world runs at another rate states it here rather
     /// than letting the run guess.
-    const PHYSICS_HZ: f64 = DEFAULT_PHYSICS_HZ;
+    const PHYSICS_HZ: f64 = crate::time::DEFAULT_PHYSICS_HZ;
 
     /// The command line arguments the application reads, alongside the
     /// switches the run owns.

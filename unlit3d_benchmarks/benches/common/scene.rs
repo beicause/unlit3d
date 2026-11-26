@@ -89,7 +89,6 @@ impl Frame {
         source.register_lit_family(&world.root_scope());
         let mesh = source.allocate_lit_mesh(
             &world.root_scope(),
-            &key.options,
             LitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 colors: Some(&[[255; 4], [0, 255, 0, 255], [0, 0, 255, 255]]),

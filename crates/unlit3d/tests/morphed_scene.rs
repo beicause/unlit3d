@@ -53,7 +53,7 @@ async fn mismatched_morph_weight_count_panics() {
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
-    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, None, None, Some(deltas));
     let weights_entity = gpu.spawn(&mut world, bundle![MorphWeights { weights: vec![0.5] }]);
 
     gpu.spawn(&mut world, bundle![camera()]);
@@ -80,7 +80,7 @@ async fn morphing_without_a_weight_binding_panics() {
     let key = LitPipelineKey::new(default_options());
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
-    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, None, None, Some(deltas));
 
     gpu.spawn(&mut world, bundle![camera()]);
     gpu.spawn(&mut world, bundle![mesh, GpuRenderPipeline::new(key)]);
@@ -96,8 +96,8 @@ async fn meshes_can_share_one_morph_weights() {
     let key = LitPipelineKey::new(default_options());
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
-    let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas.clone()));
-    let second = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
+    let first = gpu.allocate_deformed_cube_mesh(&world, None, None, Some(deltas.clone()));
+    let second = gpu.allocate_deformed_cube_mesh(&world, None, None, Some(deltas));
 
     // One weight entity, named by both meshes: a crowd of copies of one mesh
     // shares one blended pose instead of holding a copy each.

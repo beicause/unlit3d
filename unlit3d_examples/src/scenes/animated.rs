@@ -171,7 +171,7 @@ fn build(
                 // The allocation's offset is baked into the vertices, so every
                 // mesh draws different geometry even at the same transform.
                 let offset = glam::Vec3::splat(0.06 * allocated as f32);
-                let mesh = super::allocate_offset_cube_mesh(world, source_entity, &key, offset);
+                let mesh = super::allocate_offset_cube_mesh(world, source_entity, offset);
                 let entity = world.scope_mut(source_entity).spawn(LitMeshBundle {
                     transform: cell_transform(cell, step_index),
                     primitive: LitMeshPrimitive {

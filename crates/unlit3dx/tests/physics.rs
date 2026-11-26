@@ -114,12 +114,8 @@ fn a_dropped_ball_settles_in_its_snapshots() {
     let mut poses_reader = None;
     let mut rested = false;
     for _ in 0..STEPS {
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
         let reader = poses_reader.get_or_insert_with(|| installed(&poses));
         rested = reader.latest().is_some_and(|poses| settled(&poses));
         if rested {
@@ -199,16 +195,16 @@ fn a_physics_tick_dispatches_its_frame() {
         }))
         .expect("the physics world accepts jobs");
     for _ in 0..3 {
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
     }
     assert_eq!(
         *seen.lock().unwrap(),
-        [(0, FRAME_SECONDS), (1, FRAME_SECONDS), (2, FRAME_SECONDS)],
+        [
+            (0, FIXED_FRAME_DELTA.as_secs_f32()),
+            (1, FIXED_FRAME_DELTA.as_secs_f32()),
+            (2, FIXED_FRAME_DELTA.as_secs_f32())
+        ],
         "a frame per tick, indexed by the tick it ran in"
     );
 }
@@ -284,12 +280,8 @@ fn a_collector_sees_contacts_from_every_step() {
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
     for _ in 0..STEPS {
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
         while let Ok((one, two, _speed)) = contacts.try_recv() {
             for body in [one, two] {
                 if !landed.contains(&body) {

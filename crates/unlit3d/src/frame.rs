@@ -191,8 +191,7 @@ macro_rules! frame_behaviour {
             ///
             /// It joins the band that states no order: it runs after every
             /// behaviour ordered before that band and before every behaviour
-            /// ordered after it, and the dispatch promises nothing about the
-            /// order within the band. State an order with `with_order` when
+            /// ordered after it. Entities break ties within the band. State an order with `with_order` when
             /// another behaviour's reads or writes depend on it.
             pub fn new(
                 f: impl FnMut(
@@ -302,11 +301,9 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 }
 
-/// Run every `B` in `world`, sorted by order alone.
+/// Run every `B` in `world`, sorted by `(order, entity)`.
 ///
-/// Behaviours that state no order sort equal, and the sort is unstable, so the
-/// dispatch promises nothing about which of them runs first: a behaviour that
-/// depends on another states a different order. A callback must not change the
+/// A callback must not change the
 /// frame's behaviour set: the list is resolved before the first one runs, and a
 /// change landing inside the dispatch would leave it stale. Queue structural
 /// work instead; the driver applies it after the dispatch.
@@ -326,7 +323,7 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
             .iter()
             .map(|(behaviour, entity)| (behaviour.order(), entity)),
     );
-    order.sort_unstable_by_key(|(order, _entity)| *order);
+    order.sort_unstable();
     for (_, entity) in order.iter() {
         // The list was resolved before the first behaviour ran, and a
         // behaviour may queue structural work but cannot apply it, so a name
@@ -414,8 +411,7 @@ mod tests {
     }
 
     /// The band that states no order runs between the orders that state one,
-    /// whatever order the three were spawned in. Nothing is asserted about the
-    /// order within the band: the dispatch promises none.
+    /// whatever order the three were spawned in.
     #[test]
     fn the_default_band_runs_between_the_stated_orders() {
         let mut world = World::new();
@@ -432,6 +428,39 @@ mod tests {
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec!["start", "update", "end"]);
+    }
+
+    #[test]
+    fn equal_orders_use_entity_order_not_archetype_order() {
+        let mut world = World::new();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let first = world.reserve_entity("first");
+        let second = world.reserve_entity("second");
+        for entity in [second, first] {
+            let seen = seen.clone();
+            world
+                .root_scope_mut()
+                .spawn_at(
+                    entity,
+                    bundle![OnFrame::new(move |_, entity, _| {
+                        seen.borrow_mut().push(entity);
+                    })],
+                )
+                .expect("the reserved entity accepts its behaviour");
+        }
+        assert_eq!(
+            world
+                .root_scope()
+                .query::<(&OnFrame, Entity)>()
+                .iter()
+                .map(|(_, entity)| entity)
+                .collect::<Vec<_>>(),
+            [second, first]
+        );
+        dispatch_frame(&mut world, &mut frame());
+        let mut expected = [first, second];
+        expected.sort_unstable();
+        assert_eq!(seen.borrow().as_slice(), expected);
     }
 
     #[test]

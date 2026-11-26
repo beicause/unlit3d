@@ -121,7 +121,7 @@
 | 时钟 | `FrameClock { time, delta_time, index }` + `advance` |
 | 派发 | `dispatch_frame`：先 reset `FrameSkip`、推进所有 `FrameClock`，再把 `OnFrame` 按 order 跑一遍（只按 order 排序，实体不参与比较），最后 `world.apply()`——**apply 失败只 `log::error!`，不返回错误** |
 | 行为 | `OnFrame::new(f)` 不带顺序、`OnFrame::with_order(order, f)` 带顺序。回调是 `FnMut(&World, Entity, &mut Frame) + 'static`——**是 `&mut Frame`，不是 `&Frame`** |
-| 顺序 | `FrameBehaviourOrder(pub i32)`，低者先跑，**同序无序**；dispatch 期间不得增删行为 |
+| 顺序 | `FrameBehaviourOrder(pub i32)`，低者先跑，**同序按实体排序**；dispatch 期间不得增删行为 |
 | 跳过 | `FrameSkip`：**必须用单例键 spawn**（`bundle![FrameSkip::default()].singleton::<FrameSkip>()`），`skip`/`is_skipped`/reset 都只认那把键，不带键的实例读不到也写不到；由声明了更晚顺序的行为去读 |
 
 ## 输入
@@ -213,7 +213,7 @@
 | --- | --- | --- |
 | 物理 | `Physics::new(gravity)`、`init_physics_world`、`spawn_physics_world_with::<R>` | `crates/unlit3dx/src/physics.rs` |
 | 刚体 | `spawn_body`、`spawn_fixed_cuboid`、`despawn_body`、`step_once` | 同上 |
-| 常量 | `PHYSICS_HZ = 60.0`、`FRAME_SECONDS` | 同上 / `crates/unlit3dx/src/lib.rs` |
+| 常量 | `DEFAULT_PHYSICS_HZ = 60.0`、`FIXED_FRAME_DELTA` | `crates/unlit3dx/src/time.rs` |
 | 音频 | `spawn_audio_world_with::<R>`、`dispatch_audio_fill`、`OnAudioFill::new(order, f)`（**第一个参数是 `AudioFillOrder`**）、`AudioFillOrder`、`OnAudioPostFill::new(f)`（观察 `AudioMix`，不可改样本）、`AudioMix`、`GlobalAudioGain`（**每 world 一份，分发器取查询交回的第一份**）、`AudioConfig` | `crates/unlit3dx/src/audio.rs` |
 | 合成 | `load_soundfont`、`load_midi_file_with_loop_type(bytes, loop_type)`（**没有无 loop_type 的 `load_midi_file`**；手搓事件序列用 `midi_file`）、`SynthVoice::from_font`（**一台音色绑一份字体；`from_font` 可对同一 `Arc<SoundFont>` 生成多台，各持独立 16 通道**；共用一台音色的文件须分占互不相交的通道）、`MidiSequencer::new` / `advance` / `rewind`、`midi_job` | `crates/unlit3dx/src/synth.rs` |
 

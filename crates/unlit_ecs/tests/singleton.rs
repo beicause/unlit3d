@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, EntityAccessError, Has, OnDespawn, World};
+use unlit_ecs::{Entity, EntityAccessError, Has, OnDespawn, OnSpawn, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Name(&'static str);
@@ -137,6 +137,51 @@ fn a_queued_second_spawn_with_the_key_is_refused_at_apply() {
         world.release_entity(second),
         "the refused handle stays reserved",
     );
+}
+
+#[test]
+fn a_taken_key_refuses_the_entire_bundle_and_preserves_the_reservation() {
+    let mut world = World::new();
+    let first = world.root_scope_mut().spawn(bundle![].singleton::<Tasks>());
+    let reserved = world.reserve_entity("both");
+    assert_eq!(
+        world.root_scope_mut().spawn_at(
+            reserved,
+            bundle![].singleton::<Other>().singleton::<Tasks>(),
+        ),
+        Err(taken()),
+    );
+    assert_eq!(world.root_scope().singleton::<Other>(), None);
+    world.root_scope_mut().despawn(first).unwrap();
+    world
+        .root_scope_mut()
+        .spawn_at(
+            reserved,
+            bundle![].singleton::<Other>().singleton::<Tasks>(),
+        )
+        .unwrap();
+    assert_eq!(world.root_scope().singleton::<Other>(), Some(reserved));
+    assert_eq!(world.root_scope().singleton::<Tasks>(), Some(reserved));
+}
+
+#[test]
+fn all_keys_are_claimed_before_callbacks_and_released_after_despawn() {
+    let mut world = World::new();
+    let holder = world.root_scope_mut().spawn(bundle![
+        ..bundle![OnSpawn::new(|scope, entity| {
+            assert_eq!(scope.readonly().singleton::<Tasks>(), Some(entity));
+            assert_eq!(scope.readonly().singleton::<Other>(), Some(entity));
+        })]
+        .singleton::<Tasks>(),
+        ..bundle![OnDespawn::new(|scope, entity| {
+            assert_eq!(scope.readonly().singleton::<Tasks>(), Some(entity));
+            assert_eq!(scope.readonly().singleton::<Other>(), Some(entity));
+        })]
+        .singleton::<Other>(),
+    ]);
+    world.root_scope_mut().despawn(holder).unwrap();
+    assert_eq!(world.root_scope().singleton::<Tasks>(), None);
+    assert_eq!(world.root_scope().singleton::<Other>(), None);
 }
 
 #[test]

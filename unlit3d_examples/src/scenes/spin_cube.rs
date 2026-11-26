@@ -78,7 +78,6 @@ fn build(
         let (positions, uvs, colors, indices) = super::cube();
         let mesh = source.allocate_lit_mesh(
             &root,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),

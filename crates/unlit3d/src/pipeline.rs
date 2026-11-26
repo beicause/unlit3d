@@ -49,10 +49,8 @@ use glam::Affine3A;
 use unlit_ecs::{Entity, Scope};
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
-    CAMERA_BINDING, CLUSTER_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING,
-    LIGHT_CELLS_BINDING, LIGHT_VERTICES_BINDING, LIGHTING_BINDING, LIGHTS_BINDING,
-    MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, VIEW_BINDING,
-    global_bind_group_layout, supports_storage_buffers,
+    GlobalBindings, GlobalSlot, MAX_GLOBAL_BINDINGS, global_bind_group_layout,
+    supports_storage_buffers,
 };
 use unlit_wgpu::resources::{ResHandle, Resource, ResourceGraph};
 use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
@@ -63,14 +61,6 @@ use crate::global_uniforms::{FrameUniforms, UniformGroups};
 use crate::mesh::SkinShape;
 
 pub use unlit_wgpu::resources::Rebuild;
-
-/// How many bindings one global group can hold at once.
-///
-/// The three uniforms every pipeline binds, plus the mesh metadata, the joints,
-/// the two morph arrays and the five lighting buffers an optional entry each. A
-/// pipeline that adds a binding has to raise this too, which is why the count is
-/// spelled out here rather than inline where the array is built.
-const MAX_GLOBAL_BINDINGS: usize = 3 + 1 + 1 + 2 + 5;
 
 /// The ids of the source's global arrays and buffers.
 ///
@@ -173,85 +163,35 @@ impl GlobalResources {
         bindings: GlobalBindings,
         uniforms: &FrameUniforms,
     ) -> wgpu::BindGroup {
-        // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
-        // whenever a global buffer is replaced, and the optional entries depend
-        // on the pipeline, so the group is assembled rather than truncated.
-        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, MAX_GLOBAL_BINDINGS>::new();
-        entries.extend(uniform_entries(graph, uniforms));
-        if bindings.metadata {
-            entries.push(wgpu::BindGroupEntry {
-                binding: MESH_METADATA_BINDING,
-                resource: graph
-                    .get(&self.metadata)
-                    .expect("metadata array exists")
-                    .binding_resource(),
-            });
-        }
-        // The pose arrays are the frame's, not a mesh's: binding them here
-        // rather than in the mesh group is what lets two instances of one mesh
-        // deform differently.
-        if bindings.joints {
-            entries.push(wgpu::BindGroupEntry {
-                binding: JOINTS_BINDING,
-                resource: graph
-                    .get(&self.joints)
-                    .expect("joints array exists")
-                    .binding_resource(),
-            });
-        }
-        if bindings.morphs {
-            entries.push(wgpu::BindGroupEntry {
-                binding: MORPH_WEIGHTS_BINDING,
-                resource: graph
-                    .get(&self.morph_weights)
-                    .expect("morph weights array exists")
-                    .binding_resource(),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: MORPH_DELTAS_BINDING,
-                resource: graph
-                    .get(&self.morph_deltas)
-                    .expect("morph deltas array exists")
-                    .binding_resource(),
-            });
-        }
-        if bindings.lights {
-            entries.push(wgpu::BindGroupEntry {
-                binding: LIGHTS_BINDING,
-                resource: graph
-                    .get(&self.lights)
-                    .expect("lights array exists")
-                    .binding_resource(),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: LIGHT_CELLS_BINDING,
-                resource: graph
-                    .get(&self.light_cells)
-                    .expect("light cells array exists")
-                    .binding_resource(),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: LIGHT_VERTICES_BINDING,
-                resource: graph
-                    .get(&self.light_vertices)
-                    .expect("light vertices array exists")
-                    .binding_resource(),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: CLUSTER_BINDING,
-                resource: graph
-                    .get(&self.cluster)
-                    .expect("cluster buffer exists")
-                    .as_entire_binding(),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: LIGHTING_BINDING,
-                resource: graph
-                    .get(&self.lighting)
-                    .expect("lighting buffer exists")
-                    .as_entire_binding(),
-            });
-        }
+        let entries: ArrayVec<_, MAX_GLOBAL_BINDINGS> = bindings
+            .slots()
+            .map(|slot| {
+                let resource = match slot {
+                    GlobalSlot::Camera => uniform_resource(graph, slot, &uniforms.camera),
+                    GlobalSlot::Frame => uniform_resource(graph, slot, &uniforms.globals),
+                    GlobalSlot::View => uniform_resource(graph, slot, &uniforms.view),
+                    GlobalSlot::Cluster => uniform_resource(graph, slot, &self.cluster),
+                    GlobalSlot::Lighting => uniform_resource(graph, slot, &self.lighting),
+                    slot => graph
+                        .get(match slot {
+                            GlobalSlot::Metadata => &self.metadata,
+                            GlobalSlot::Joints => &self.joints,
+                            GlobalSlot::MorphWeights => &self.morph_weights,
+                            GlobalSlot::MorphDeltas => &self.morph_deltas,
+                            GlobalSlot::Lights => &self.lights,
+                            GlobalSlot::LightCells => &self.light_cells,
+                            GlobalSlot::LightVertices => &self.light_vertices,
+                            _ => unreachable!("uniforms are bound as buffers"),
+                        })
+                        .unwrap_or_else(|| panic!("the {slot:?} array is missing"))
+                        .binding_resource(),
+                };
+                wgpu::BindGroupEntry {
+                    binding: slot.binding(),
+                    resource,
+                }
+            })
+            .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::global"),
             layout,
@@ -282,34 +222,37 @@ impl GlobalResources {
     }
 }
 
-/// The three uniform entries every global bind group starts with: the camera
-/// the draw is made through, the frame globals, and the pass's view.
-///
-/// They come first because both [GlobalResources::bind_group] and the frame's
-/// own recipes name the same three, and a group's entries have to be in
-/// binding order. A source with no arrays of its own — the line source, the
-/// egui — builds its group from these alone.
+fn uniform_resource<'a>(
+    graph: &'a ResourceGraph,
+    slot: GlobalSlot,
+    handle: &ResHandle<wgpu::Buffer>,
+) -> wgpu::BindingResource<'a> {
+    graph
+        .get(handle)
+        .unwrap_or_else(|| panic!("the {slot:?} buffer is missing"))
+        .as_entire_binding()
+}
+
+/// The global entries for a source that binds only the frame uniforms.
 pub(crate) fn uniform_entries<'a>(
     graph: &'a ResourceGraph,
     uniforms: &FrameUniforms,
-) -> [wgpu::BindGroupEntry<'a>; 3] {
-    let camera = graph.get(&uniforms.camera).expect("camera buffer exists");
-    let globals = graph.get(&uniforms.globals).expect("globals buffer exists");
-    let view = graph.get(&uniforms.view).expect("view buffer exists");
-    [
-        wgpu::BindGroupEntry {
-            binding: CAMERA_BINDING,
-            resource: camera.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-            binding: FRAME_BINDING,
-            resource: globals.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-            binding: VIEW_BINDING,
-            resource: view.as_entire_binding(),
-        },
-    ]
+) -> ArrayVec<wgpu::BindGroupEntry<'a>, MAX_GLOBAL_BINDINGS> {
+    GlobalBindings::default()
+        .slots()
+        .map(|slot| {
+            let handle = match slot {
+                GlobalSlot::Camera => &uniforms.camera,
+                GlobalSlot::Frame => &uniforms.globals,
+                GlobalSlot::View => &uniforms.view,
+                _ => unreachable!("default bindings contain only the frame uniforms"),
+            };
+            wgpu::BindGroupEntry {
+                binding: slot.binding(),
+                resource: uniform_resource(graph, slot, handle),
+            }
+        })
+        .collect()
 }
 
 /// Assembles one group's `wgpu::BindGroup` from the graph and the draw's

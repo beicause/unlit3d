@@ -64,7 +64,7 @@ world.root_scope().query_one::<&mut Renderer>(renderer).get().render(&world);
 
 | 想做     | 做法                                                                                                                                                                 |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 建 mesh  | `source.allocate_lit_mesh(&scope, &key.options, LitMeshDesc { .. })` 返回 `GpuMesh`；顶点通道由你给的 slice 决定（positions 必填，uvs/colors/normals/indices/joints/weights/morph 可选；`expanded` 外扩壳需要 normals） |
+| 建 mesh  | `source.allocate_lit_mesh(&scope, LitMeshDesc { .. })` 返回 `GpuMesh`；顶点通道由你给的 slice 决定（positions 必填，uvs/colors/normals/indices/joints/weights/morph 可选；`expanded` 外扩壳需要 normals） |
 | 建材质   | 纹理 `register_texture_and_default_view`、采样器 `register_sampler`，再 `allocate_lit_material(&scope, &key.options, view, sampler)`                                          |
 | 画一份   | `spawn(LitMeshBundle { transform, primitive: LitMeshPrimitive { mesh, pipeline, color, cutoff, hull_width, material, z_sorted }, skin, morph })`；多 mesh/层级/动画模型用 `LitModelBundle` |
 | 画多份   | 同一个 `key` / `mesh` / `material` clone 到多个实体；每份差异用 `InstanceColor` / `InstanceCutoff` / `Transform`，**不要**为每个颜色重建 mesh                          |
@@ -148,6 +148,6 @@ world.apply().expect("the queue is drained");
 
 ## 帧行为与顺序
 
-- `OnFrame::new` 不带顺序，所有不带顺序的构成一个 band，**band 内无序**；依赖别人的读或写，就用 `OnFrame::with_order(FrameBehaviourOrder(n))` 两端都声明。
+- `OnFrame::new` 不带顺序，所有不带顺序的构成一个 band，**band 内按实体排序**；依赖别人的读或写，就用 `OnFrame::with_order(FrameBehaviourOrder(n))` 两端都声明。
 - 库只给**它自己装配的帧**定顺序：`LIT_MODEL_UPDATE_ORDER = -10` 先求值模型层级、动画和变形输出；presenter 侧 `PRESENT_ORDER = 10`（默认 band 之后，好让喂帧的行为都跑完）；unlit3dx 内部 `REQUEST_GPU_ORDER = -1`（默认 band 之前，GPU 先就绪），pass 侧另有两个 `FramePassOrder` 常量 `SCENE_PASS_ORDER` / `BLIT_PASS_ORDER`。修改模型输入且要本帧生效的行为须排在 `-10` 之前，排在其后的修改在下一次模型求值观察到。其余顺序都是应用的约定，示例的排法是：默认 band 建资产（不带顺序），玩法 tick 在它**之后**（`BALLS_ORDER = 100`，因为 tick 读的就是建好的资产），发布面板最后（`PUBLISH_ORDER = 200`）。
 - 「这一帧跳过」用兄弟组件做标志，让声明了顺序的行为去读，不要在回调里删行为（dispatch 期间增删行为是未定义顺序）。

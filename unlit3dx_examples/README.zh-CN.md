@@ -55,8 +55,8 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
 `--headless` 运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
 宿主自己的 world，骨架的 `Stepping` 一帧一帧地推进它们：物理按它自己的频率
-（`PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
-时长就是这个运行给定的 `FIXED_FRAME_SECONDS`（即 `HEADLESS_HZ` 的倒数）。`--max-frames` 让运行在走满这么多帧后结束，
+（`DEFAULT_PHYSICS_HZ`，60 Hz）到期才步进，合成器按采样率填块，玩法则每帧 tick 一次，
+时长就是这个运行给定的 `FIXED_FRAME_DELTA`（六十分之一秒）。`--max-frames` 让运行在走满这么多帧后结束，
 `--capture-frames` 点名要留哪几帧：每帧在 `--capture-out` 下写成
 `frame_<index>.png`，运行真的播放过东西时再写一段 `audio.flac`。两个开关在窗口运行上
 同样生效，只是窗口上的捕获还会把呈现切到离屏路径——交换链的图读不回来——而窗口只
@@ -106,7 +106,7 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
   drain 可能执行任何 job。资源服务器本身——网格、材质与实例的分配，回收镜头看不见
   的实例的那一轮清扫，以及相机辅助——就是本 crate 自己的 `src/render.rs`，
   建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
-- **物理 world** 以固定频率（`PHYSICS_HZ`，60 Hz）步进 rapier，每一步排空碰撞事件。
+- **物理 world** 以固定频率（`DEFAULT_PHYSICS_HZ`，60 Hz）步进 rapier，每一步排空碰撞事件。
   球们用自己的收集闭包
   订阅它——`GamePhysics` 载荷属于本 crate，不属于库——闭包在姿态未变时什么都不
   返回，因此刚体都睡着的场景根本不发布快照。地面是它的第一个 job。
@@ -117,7 +117,7 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
   读它来应答安装）与流带来的 `AudioOutputOpen` 标记。
 - **玩法 world** 是唯一知道其余三者的地方，它是一组对象而不是一坨状态。每个对象都以
   一个 bundle 生成：一个组件携带它自己拥有的东西，外加一个推进它的 `OnFrame`
-  行为。其中大多数不声明顺序，跑在默认顺序带里，派发不保证带内的先后；真正读取
+  行为。其中大多数不声明顺序，跑在默认顺序带里，带内按实体排序；真正读取
   别人写入的两个才声明顺序——球排在它所读的资源之后，面板的发布排在它展示的每个
   对象之后：
 

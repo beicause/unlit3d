@@ -117,7 +117,7 @@ impl World {
         }
         self.tree_mut().detach(entity);
         self.remove_row(location);
-        self.release_singleton(entity);
+        self.release_singletons(entity);
         self.free_entity(entity);
     }
 
@@ -138,14 +138,16 @@ impl World {
         }
     }
 
-    /// Release the singleton key `entity` holds, if it holds one.
+    /// Release every singleton key `entity` holds.
     ///
     /// Called once the row is gone, which is after the entity's `OnDespawn` has
-    /// run: the key stays held through the callback, so nothing can claim it
+    /// run: the keys stay held through the callback, so nothing can claim them
     /// while its holder is still being removed.
-    pub(super) fn release_singleton(&mut self, entity: Entity) {
-        if let Some(type_id) = self.singleton_keys.remove(&entity) {
-            self.singleton_holders.remove(&type_id);
+    fn release_singletons(&mut self, entity: Entity) {
+        if let Some(keys) = self.singleton_keys.remove(&entity) {
+            for key in keys {
+                self.singleton_holders.remove(&key.type_id);
+            }
         }
     }
 

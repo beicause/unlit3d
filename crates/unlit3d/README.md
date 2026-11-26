@@ -1231,7 +1231,6 @@ let (mesh, material) = {
         let indices = [0u32, 1, 2];
         let mesh = source.allocate_lit_mesh(
             &scope,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
@@ -1453,7 +1452,7 @@ negative and non-finite input supplies zero elapsed time. That is the same
 shape as the event families, with
 the frame context in place of an event. A behaviour spawned with
 [`OnFrame::new`](frame::OnFrame::new) states no order: the behaviours that state
-none form a band, and the dispatch promises nothing about the order within it.
+none form the default band. Behaviours with equal orders run in entity order.
 One whose reads or writes another behaviour depends on states the order at both
 ends, with [`OnFrame::with_order`](frame::OnFrame::with_order) and a
 [`FrameBehaviourOrder`](frame::FrameBehaviourOrder), and the library declares two ordering points: [`LIT_MODEL_UPDATE_ORDER`](lit::LIT_MODEL_UPDATE_ORDER)

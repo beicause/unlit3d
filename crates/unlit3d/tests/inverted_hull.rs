@@ -100,7 +100,6 @@ fn hull(ctx: &Ctx, width: f32) -> Hull {
     let mesh = gpu.with_mesh_source(&world, |source, scope| {
         source.allocate_lit_mesh(
             scope,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 normals: Some(&normals),

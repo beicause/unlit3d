@@ -55,7 +55,6 @@ fn build(
         let (positions, uvs, colors, indices) = cube();
         source.allocate_lit_mesh(
             world,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),

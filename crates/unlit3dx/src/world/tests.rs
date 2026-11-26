@@ -1,6 +1,6 @@
 use super::*;
-use crate::FRAME_SECONDS;
 use crate::job::SendErrorKind;
+use crate::time::FIXED_FRAME_DELTA;
 use std::time::Duration;
 use unlit_ecs::bundle;
 
@@ -148,20 +148,12 @@ fn a_stepped_world_runs_on_its_owner_s_calls() {
     // Nothing has run yet: the host has not stepped the world.
     assert_eq!(count(&host), Ok(0));
     assert_eq!(
-        step_stepped_world(
-            &host,
-            handle.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, handle.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Ran)
     );
     assert_eq!(count(&host), Ok(1));
     assert_eq!(
-        step_stepped_world(
-            &host,
-            handle.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, handle.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Ran)
     );
     assert_eq!(count(&host), Ok(2));
@@ -299,20 +291,12 @@ fn a_stepped_tick_ends_the_world() {
     )
     .expect("the stepped world starts");
     assert_eq!(
-        step_stepped_world(
-            &host,
-            handle.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, handle.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Finished)
     );
     assert!(handle.is_finished(), "a false tick ends a stepped world");
     assert_eq!(
-        step_stepped_world(
-            &host,
-            handle.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, handle.entity(), FIXED_FRAME_DELTA),
         Err(StepError::Unavailable),
         "a stopped world is reported the same way by every entry point",
     );
@@ -348,11 +332,7 @@ fn stepping_a_threaded_world_is_refused() {
     })
     .expect("the world thread starts");
     assert_eq!(
-        step_stepped_world(
-            &host,
-            handle.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, handle.entity(), FIXED_FRAME_DELTA),
         Err(StepError::NotStepped)
     );
     handle.stop();
@@ -376,11 +356,7 @@ fn a_stepped_tick_commits_its_queued_commands() {
     )
     .expect("the stepped world starts");
     assert_eq!(
-        step_stepped_world(
-            &host,
-            handle.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, handle.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Ran)
     );
     let count = with_stepped_world(&host, handle.entity(), |world| {

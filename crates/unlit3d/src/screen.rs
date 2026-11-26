@@ -17,6 +17,7 @@
 //! sampler produced.
 
 use unlit_ecs::Scope;
+use unlit_wgpu::compose::{BLIT_FRAGMENT_MODULE, FULLSCREEN_VERTEX_MODULE};
 use unlit_wgpu::pipeline::{ShaderCache, ShaderRecipe};
 use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawOrder, DrawRange, Scene};
@@ -29,12 +30,8 @@ use crate::pass::PassInfo;
 use crate::source::RenderContext;
 use crate::target::FrameId;
 
-/// The WESL module whose fullscreen vertex the composite draws.
-const VERTEX_MODULE: &str = "fullscreen_vertex";
 /// The entry point of the vertex module.
 const VERTEX_ENTRY: &str = "fullscreen_vertex_shader";
-/// The WESL module whose fragment samples the composited texture.
-const FRAGMENT_MODULE: &str = "blit_fragment";
 /// The entry point of the fragment module.
 const FRAGMENT_ENTRY: &str = "fs_main";
 /// The vertex the fullscreen triangle is drawn from: its three corners are
@@ -344,10 +341,16 @@ fn pipeline(
     // The vertex takes no flag or caller's source, so it composes once per
     // device however many targets the composite is specialized on.
     let vertex_label = "unlit3d::screen::vertex";
-    let vertex = get_or_create(cache, device, VERTEX_MODULE, &[], vertex_label);
+    let vertex = get_or_create(cache, device, FULLSCREEN_VERTEX_MODULE, &[], vertex_label);
     let fragment_label = "unlit3d::screen::fragment";
     let features = [("SRGB_TO_LINEAR_OUTPUT", variant.srgb_to_linear_output)];
-    let fragment = get_or_create(cache, device, FRAGMENT_MODULE, &features, fragment_label);
+    let fragment = get_or_create(
+        cache,
+        device,
+        BLIT_FRAGMENT_MODULE,
+        &features,
+        fragment_label,
+    );
     let layout = bind_group_layout(device);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("unlit3d::screen::pipeline_layout"),

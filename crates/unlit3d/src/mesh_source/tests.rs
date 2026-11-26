@@ -49,7 +49,6 @@ impl Harness {
     fn tri_mesh_at(&mut self, z: f32) -> GpuMesh {
         self.source.allocate_lit_mesh(
             &self.world.root_scope(),
-            &self.key.options,
             LitMeshDesc {
                 positions: &[[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -231,13 +230,11 @@ fn alternative_options() -> LitOptions {
 /// A triangle mesh with one morph target, for the tests that need the
 /// mesh group a morphing variant binds.
 fn morph_mesh(harness: &mut Harness) -> GpuMesh {
-    let key = LitPipelineKey::new(unlit_options());
     // One target displacing all three vertices by the same amount, packed
     // vertex-major: three components per vertex.
     let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
     harness.source.allocate_lit_mesh(
         &harness.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             indices: Some(&[0u32, 1, 2]),

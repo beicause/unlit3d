@@ -51,16 +51,16 @@ windowed(
 // 示意骨架：render_world/pass/device 来自 setup_render_world 返回的装配（ctx 是它的
 // RenderContext），size 是你要的离屏尺寸；名字对应该文其它片段。捕获帧的进程给
 // setup_render_world 的 panel 参数传 None，pass 下就只有 mesh source。
-let step = FrameDelta::from_secs(FIXED_FRAME_SECONDS);
+let step = FIXED_FRAME_DELTA;
 // 目标建在它在的那个 world 里；pass 由 setup_render_world 建好。
 let target = PersistentTarget::bind(&render_world, ctx, pass.0, &device, size, TargetConfig::default())
     .expect("the offscreen target is bound");
 let mut frame = Frame { delta_time: step, index: 0 };
-// Stepping 只记物理一笔账：按 PHYSICS_HZ 攒步。
+// Stepping 只记物理一笔账：按 DEFAULT_PHYSICS_HZ 攒步。
 // 音频拉取是另一件事，交给自己要消费样本的进程：
 // AudioPull::new(sample_rate) 按采样周期攒块，audio_format 由音频 world
 // 打开设备后自己 spawn，先取它再拉。
-let mut stepping = Stepping::new(worlds.clone(), PHYSICS_HZ);
+let mut stepping = Stepping::new(worlds.clone(), DEFAULT_PHYSICS_HZ);
 for index in 0..frames {
     frame.index = index;
     stepping.step(&host, step);                               // 玩法 → 物理 → 音频

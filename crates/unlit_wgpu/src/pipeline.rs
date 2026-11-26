@@ -7,10 +7,7 @@
 //! creating meshes. Each variant contains exactly the bindings and attributes
 //! the selected channels need, so nothing unused reaches the GPU.
 
-use crate::mesh::{
-    ChannelEncoding, PositionStreamChannels, PositionStreamWriter, SecondaryFlags,
-    SecondaryStreamWriter,
-};
+use crate::mesh::{ChannelEncoding, PositionStreamChannels, SecondaryFlags};
 use crate::specialize::{PipelineDescriptor, PipelineVariant, SurfaceKey, VertexBufferLayoutDesc};
 use crate::util::Hashed;
 use std::sync::Arc;
@@ -169,9 +166,10 @@ pub const FS_MAIN: &str = "fs_main";
 /// a composition error is reported under.
 const BUILT_IN_SHADER_LABEL: &str = "unlit_wgpu::lit";
 
-/// Name of the WESL module the built-in entry shader is composed from: the file
-/// `shaders/lit.wesl` of this crate's package.
-const BUILT_IN_MODULE: &str = "lit";
+mod lit_features {
+    include!(concat!(env!("OUT_DIR"), "/lit_features.rs"));
+}
+use lit_features::LitFeature;
 
 mod channels;
 mod layouts;

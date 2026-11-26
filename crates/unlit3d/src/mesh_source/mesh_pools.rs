@@ -4,6 +4,9 @@ use super::{
     BufferPool, HashMap, ResHandle, ResourceGraph, VertexBufferLayoutDesc, VertexStreamPool,
 };
 
+/// Initial element capacity per index or vertex stream.
+const INITIAL_MESH_ELEMENTS: u32 = 1024;
+
 /// The vertex and index pools every mesh uploaded through
 /// [`MeshSource::allocate_pooled_mesh`](crate::mesh_source::MeshSource::allocate_pooled_mesh)
 /// draws out of.
@@ -36,21 +39,21 @@ pub(crate) struct MeshPools {
 impl MeshPools {
     /// Create both pools and the graph node the index pool's buffer lives under.
     ///
-    /// The pools start out the size of the first mesh's worth of data and grow
+    /// Each stream starts with capacity for `INITIAL_MESH_ELEMENTS` and grows
     /// as meshes are allocated.
     pub(super) fn new(device: &wgpu::Device, graph: &mut ResourceGraph) -> Self {
         let index_pool = BufferPool::new(
             device,
             "unlit3d::mesh::indices",
             wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            size_of::<u32>() as u64 * 1024,
+            size_of::<u32>() as u64 * u64::from(INITIAL_MESH_ELEMENTS),
         );
         let index_pool_id = graph.insert(index_pool.buffer().clone(), None);
         let vertex_pool = VertexStreamPool::new(
             device,
             "unlit3d::mesh::vertices",
             wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            1024,
+            INITIAL_MESH_ELEMENTS,
         );
 
         Self {

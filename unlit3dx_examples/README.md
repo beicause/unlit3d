@@ -68,9 +68,9 @@ cargo run -p unlit3dx_examples -- --headless --max-frames 300 --capture-frames 2
 device. It is the browser's path with the frames handed over by
 the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
 in the host's own world, and the skeleton's `Stepping` advances them one
-frame at a time: physics steps as its own rate (`PHYSICS_HZ`, 60 Hz) comes
+frame at a time: physics steps as its own rate (`DEFAULT_PHYSICS_HZ`, 60 Hz) comes
 due, the synth fills as its sample rate does, and gameplay ticks once per
-frame with the duration the run gives it (`FIXED_FRAME_SECONDS`, the inverse of `HEADLESS_HZ`). `--max-frames`
+frame with the duration the run gives it (`FIXED_FRAME_DELTA`, one sixtieth of a second). `--max-frames`
 ends the run once it has advanced that many frames, and `--capture-frames`
 names the frames to keep: each one lands in `--capture-out` as
 `frame_<index>.png`, and the run's whole audio mix as `audio.flac` when it
@@ -147,7 +147,7 @@ it is paced differs.
   that retires what the camera cannot see, and the camera helpers — is this
   crate's own, built over `unlit3d`'s generic `MeshSource` registry;
   `unlit3dx` ships no render bridge.
-- The **physics world** steps rapier at a fixed rate (`PHYSICS_HZ`, 60 Hz)
+- The **physics world** steps rapier at a fixed rate (`DEFAULT_PHYSICS_HZ`, 60 Hz)
   and drains its contacts each step. The balls subscribe to it with a
   collector of their own — the
   `GamePhysics` payload lives in this crate, not in the library — and the
@@ -165,8 +165,7 @@ it is paced differs.
   is a set of objects rather than one state blob. Each object is spawned as a
   bundle holding the component that carries what it owns and the `OnFrame`
   behaviour that advances it. Most of them state no order and tick in the
-  default band, where the dispatch promises nothing about which of them goes
-  first; the two that read what another object wrote state one — the balls after
+  default band in entity order; the two that read what another object wrote state one — the balls after
   the assets they read, the panel's publish after every object it shows.
 
   - `SceneState` builds the scene's assets — meshes and patterned

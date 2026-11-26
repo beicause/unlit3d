@@ -96,7 +96,7 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RemoteEntity, LitPipelineKey
 /// This is the mesh allocation a job that builds several things in one step
 /// makes for itself. Panics when the world carries no `MeshSource`.
 pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> RemoteEntity {
-    let Some((source_entity, key)) = mesh_source(world) else {
+    let Some((source_entity, _)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
     let root = world.root_scope();
@@ -106,7 +106,7 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> Remot
             .get()
             .as_mut::<MeshSource>()
             .expect("the source carries a MeshSource")
-            .allocate_lit_mesh(&root, &key.options, desc.borrowed())
+            .allocate_lit_mesh(&root, desc.borrowed())
     };
     // The asset hangs under the source that draws it, so the world holds
     // one subtree per source rather than asset entities at its root.

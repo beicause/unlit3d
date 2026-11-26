@@ -203,7 +203,6 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| {
             source.allocate_lit_mesh(
                 world,
-                &self.key.options,
                 LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -225,7 +224,6 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| {
             source.allocate_lit_mesh(
                 world,
-                &self.key.options,
                 LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -258,9 +256,6 @@ impl TestGpu {
     /// Allocate a cube through the source under `key`, carrying the joint
     /// stream and morph displacements the variant reads.
     ///
-    /// The key is pure policy: which channels the mesh ends up with is decided
-    /// here, from the joints and displacements the caller passes.
-    ///
     /// The pose itself is not here: the joints and weights a frame deforms by
     /// live in components of their own, so a test that animates one attaches
     /// [`SkinPose`]/[`MorphWeights`] and the binding components to its
@@ -268,7 +263,6 @@ impl TestGpu {
     pub fn allocate_deformed_cube_mesh(
         &self,
         world: &World,
-        key: &LitPipelineKey,
         joints: Option<&[[u16; 4]]>,
         weights: Option<&[[f32; 4]]>,
         morph_deltas: Option<MorphDeltas>,
@@ -277,7 +271,6 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| {
             source.allocate_lit_mesh(
                 world,
-                &key.options,
                 LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -297,18 +290,12 @@ impl TestGpu {
     ///
     /// The skin is derived from the very positions the mesh is built from, so
     /// its per-vertex blend cannot drift from the geometry it deforms.
-    pub fn allocate_bent_cube_mesh(
-        &self,
-        world: &World,
-        key: &LitPipelineKey,
-        angle: f32,
-    ) -> (GpuMesh, BendSkin) {
+    pub fn allocate_bent_cube_mesh(&self, world: &World, angle: f32) -> (GpuMesh, BendSkin) {
         let (positions, uvs, colors, indices) = cube();
         let skin = BendSkin::new(&positions, angle);
         let mesh = self.with_mesh_source(world, |source, world| {
             source.allocate_lit_mesh(
                 world,
-                &key.options,
                 LitMeshDesc {
                     positions: &positions,
                     uvs: Some(&uvs),
@@ -329,13 +316,8 @@ impl TestGpu {
     /// The weights that blend the targets are not part of the mesh: they live
     /// in a [`MorphWeights`] component the test attaches to an entity and names
     /// with a [`MorphBinding`].
-    pub fn allocate_morphed_cube_mesh(
-        &self,
-        world: &World,
-        key: &LitPipelineKey,
-        deltas: MorphDeltas,
-    ) -> GpuMesh {
-        self.allocate_deformed_cube_mesh(world, key, None, None, Some(deltas))
+    pub fn allocate_morphed_cube_mesh(&self, world: &World, deltas: MorphDeltas) -> GpuMesh {
+        self.allocate_deformed_cube_mesh(world, None, None, Some(deltas))
     }
 
     /// Allocate an offscreen colour target and a matching depth-stencil target,

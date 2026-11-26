@@ -4,6 +4,12 @@ use std::time::Duration;
 
 pub use unlit3d::time::FrameDelta;
 
+/// The exact 60 Hz step used by runs without a display.
+pub const FIXED_FRAME_DELTA: FrameDelta = FrameDelta::from_secs(1.0 / 60.0);
+
+/// The default rate of physics steps, independent of the frame rate, in hertz.
+pub const DEFAULT_PHYSICS_HZ: f64 = 60.0;
+
 /// A duration of simulation work. Zero accrues no simulation debt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
 pub struct SimulationDelta(f32);

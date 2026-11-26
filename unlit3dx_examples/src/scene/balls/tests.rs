@@ -231,7 +231,7 @@ fn a_clear_takes_the_halves_a_fold_just_landed() {
     stall(&scene);
     balls.clear = true;
 
-    BallDrops::tick(&mut balls, &world, &scene, FRAME_SECONDS);
+    BallDrops::tick(&mut balls, &world, &scene, FIXED_FRAME_DELTA.as_secs_f32());
     let _ = world.apply();
 
     assert_eq!(
@@ -281,7 +281,7 @@ fn an_answer_without_its_ball_is_cleaned_up() {
     answer(&world, &render);
     answer(&world, &physics);
     stall(&scene);
-    BallDrops::tick(&mut balls, &world, &scene, FRAME_SECONDS);
+    BallDrops::tick(&mut balls, &world, &scene, FIXED_FRAME_DELTA.as_secs_f32());
 
     assert_eq!(
         balls.orphans,

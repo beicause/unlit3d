@@ -16,6 +16,9 @@
 //! mounted at exactly the path of the copy it replaces, which is why its own
 //! imports still resolve to the package.
 
+mod modules;
+pub use self::modules::{BLIT_FRAGMENT_MODULE, FULLSCREEN_VERTEX_MODULE, LINE_MODULE, LIT_MODULE};
+
 /// Compose `module` of the built-in WESL package into one WGSL module.
 ///
 /// `module` names a top-level module of the package (`lit`, `line`,
@@ -86,13 +89,14 @@ mod tests {
     #[test]
     fn each_module_keeps_its_entry_point_names() {
         let vertex =
-            compose("fullscreen_vertex", &[], None).expect("the fullscreen vertex composes");
+            compose(FULLSCREEN_VERTEX_MODULE, &[], None).expect("the fullscreen vertex composes");
         assert!(vertex.contains("fn fullscreen_vertex_shader"));
 
-        let fragment = compose("blit_fragment", &[], None).expect("the blit fragment composes");
+        let fragment =
+            compose(BLIT_FRAGMENT_MODULE, &[], None).expect("the blit fragment composes");
         assert!(fragment.contains("fn fs_main"));
 
-        let line = compose("line", &[], None).expect("the line module composes");
+        let line = compose(LINE_MODULE, &[], None).expect("the line module composes");
         assert!(line.contains("fn vs_main"));
         assert!(line.contains("fn fs_main"));
     }

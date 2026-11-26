@@ -127,7 +127,7 @@ fn build_clusters(
         (1, 1),
     );
     floor.normals = Some(vec![glam::Vec3::Y.to_array(); floor.positions.len()]);
-    let mesh = allocate_surface(world, source_entity, &key, &floor);
+    let mesh = allocate_surface(world, source_entity, &floor);
     let pipeline = GpuRenderPipeline::new(key);
 
     let camera_entity = world

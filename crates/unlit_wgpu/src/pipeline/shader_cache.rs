@@ -1,16 +1,13 @@
-use super::Shader;
+use super::{LitFeature, Shader};
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
 /// The capacity a feature list is stored with: the widest flag set the built-in
 /// families compose with.
 ///
-/// It is a capacity hint rather than a limit — [`ShaderRecipe`] grows past it
-/// when a caller composes with more — so the only thing it has to keep up
-/// with is the largest list a family returns: the [`LitVariant`](crate::pipeline::LitVariant)
-/// `features`
-/// list, which is declared with this same constant.
-pub const FEATURE_COUNT: usize = 18;
+/// A caller can compose with more flags; the recipe spills to the heap when it
+/// exceeds the feature count generated from the built-in lit shader.
+pub const FEATURE_COUNT: usize = LitFeature::ALL.len();
 
 /// The identity of one composed shader module: everything the WGSL depends on
 /// and nothing else.

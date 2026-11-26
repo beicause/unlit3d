@@ -33,9 +33,7 @@ use unlit_wgpu::pipeline::{
     LitOptions, LitVariant, LitVertexChannels, PRIMARY_SLOT, SECONDARY_SLOT,
 };
 use unlit_wgpu::resources::{ResHandle, TextureView};
-use unlit_wgpu::specialize::{
-    SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc,
-};
+use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::util::Hashed;
 use zerocopy::IntoBytes;
 

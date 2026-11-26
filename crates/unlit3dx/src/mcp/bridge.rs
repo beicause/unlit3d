@@ -377,8 +377,8 @@ mod tests {
     use unlit_ecs::mcp::Output;
 
     use super::*;
-    use crate::FRAME_SECONDS;
     use crate::thread::ThreadControl;
+    use crate::time::FIXED_FRAME_DELTA;
     use crate::world::{
         TickOutcome, spawn_stepped_world_with_init, spawn_threaded_world, step_stepped_world,
     };
@@ -722,12 +722,8 @@ mod tests {
         let command = command.with_world(WorldRef::handle(stepped.entity()));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
-        step_stepped_world(
-            &host,
-            stepped.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, stepped.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
 
         let answer = receive(reply);
         let Ok(Output::Json(value)) = answer else {
@@ -760,12 +756,8 @@ mod tests {
             .try_send(queued.with_world(WorldRef::handle(stepped.entity())))
             .expect("the inbox takes the second command");
         run_turn(&mut host);
-        let outcome = step_stepped_world(
-            &host,
-            stepped.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world can run its first turn");
+        let outcome = step_stepped_world(&host, stepped.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world can run its first turn");
 
         let crate::world::StepOutcome::Failed(ref error) = outcome else {
             panic!("the panicking command fails the world, not {outcome:?}");
@@ -780,11 +772,7 @@ mod tests {
         // The failed world ended with that turn, so a later call finds
         // nothing left to step.
         assert_eq!(
-            step_stepped_world(
-                &host,
-                stepped.entity(),
-                crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-            ),
+            step_stepped_world(&host, stepped.entity(), FIXED_FRAME_DELTA),
             Err(crate::world::StepError::Unavailable),
         );
         let Err(message) = reply.try_recv().expect("the command was answered") else {
@@ -823,12 +811,8 @@ mod tests {
             |_, _: &ThreadControl, (), _: crate::time::FrameDelta| TickOutcome::Finished,
         )
         .expect("the stepped world starts");
-        step_stepped_world(
-            &host,
-            stepped.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, stepped.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
         assert!(stepped.is_finished(), "the tick ended the world");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
@@ -940,12 +924,8 @@ mod tests {
         run_turn(&mut host);
         drop(reply);
 
-        let outcome = step_stepped_world(
-            &host,
-            stepped.entity(),
-            crate::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world runs the queued command");
+        let outcome = step_stepped_world(&host, stepped.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world runs the queued command");
         assert_eq!(outcome, crate::world::StepOutcome::Ran);
         assert!(*sync::lock(&answered), "the job ran with nobody listening");
     }

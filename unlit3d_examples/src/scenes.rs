@@ -379,17 +379,11 @@ pub fn grid(
 }
 
 /// Upload a rectangle and return its mesh.
-pub fn allocate_surface(
-    world: &mut World,
-    source_entity: Entity,
-    key: &unlit3d::lit::LitPipelineKey,
-    grid: &Grid,
-) -> GpuMesh {
+pub fn allocate_surface(world: &mut World, source_entity: Entity, grid: &Grid) -> GpuMesh {
     let colors = vec![grid.albedo; grid.positions.len()];
     with_mesh_source(world, source_entity, |source, world| {
         source.allocate_lit_mesh(
             world,
-            &key.options,
             LitMeshDesc {
                 positions: &grid.positions,
                 uvs: Some(&grid.uvs),
@@ -683,7 +677,6 @@ pub fn with_mesh_source<R>(
 pub fn allocate_offset_cube_mesh(
     world: &World,
     source_entity: Entity,
-    key: &LitPipelineKey,
     offset: glam::Vec3,
 ) -> GpuMesh {
     let (positions, uvs, colors, indices) = cube();
@@ -700,7 +693,6 @@ pub fn allocate_offset_cube_mesh(
     with_mesh_source(world, source_entity, |source, world| {
         source.allocate_lit_mesh(
             world,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),

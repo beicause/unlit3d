@@ -1,6 +1,6 @@
 # unlit3d / unlit3dx 审查结果实施计划
 
-本文位于 `docs/todo/`，随实施推进更新。截至 2026-11-26，P0-A–P0-J、P1-A–P1-D 与 P2-A–P2-D 已实施并通过本机验收；P3-A–P3-D 与 SK-1–SK-13 未开始。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
+本文位于 `docs/todo/`，随实施推进更新。P0-A–P0-J、P1-A–P1-D、P2-A–P2-D 与 P3-A–P3-B 已实施；P3-C–P3-D 与 SK-1–SK-13 尚未交付。逐包交付记录与未验收项见[实施进度](#实施进度)；各包的步骤与验收条件仍以下文正文为准。
 
 ## 实施进度
 
@@ -1004,6 +1004,8 @@ binding 数量、feature 数量、帧/物理常量、排序规则、模块 key �
 5. 合并 `FRAME_SECONDS` / `FIXED_FRAME_SECONDS`、`PHYSICS_HZ` / `DEFAULT_PHYSICS_HZ` 等重复常量。
 6. 统一排序策略：frame dispatch 与 `Ordering::resolve` 使用相同 tie-break 规则。
 7. `DynamicBundle` 支持一个 bundle 声明多个 singleton key，或引入 `WorldTemplate`，消除初始化序列的重复散落。
+
+P3-B 已实施。全目标全特性严格 Clippy 通过；全特性 Nextest 通过 1393/1395 项。`egui_only_matches_its_snapshot` 与 `mesh_and_ui_matches_its_snapshot` 在实施前的 `829c94e` 亦以相同分数（23.88、28.41）失败；保存的快照仍显示 `frame source egui`，场景显示 `draw source egui`。快照和阈值未改动。
 
 ### P3-C：文档、测试和文件拆分
 

@@ -186,7 +186,6 @@ fn entities_are_drawn_in_pipeline_id_order() {
     let standard_mesh = h.tri_mesh();
     let alternative_mesh = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &alternative_key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -326,7 +325,6 @@ fn rendering_a_world_twice_reuses_every_per_frame_cache() {
     let key = LitPipelineKey::new(alternative_options());
     let mesh = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -654,7 +652,6 @@ fn z_sorted_entries_of_different_variants_sort_by_depth() {
     let other_key = LitPipelineKey::new(alternative_options());
     let other = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &other_key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             indices: Some(&[0u32, 1, 2]),

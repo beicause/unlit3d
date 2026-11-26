@@ -61,7 +61,6 @@ fn floor(ctx: &Ctx) -> Floor {
     let mesh = with_mesh_source(&world, source, |source, scope| {
         source.allocate_lit_mesh(
             scope,
-            &key.options,
             LitMeshDesc {
                 positions: &floor_positions(),
                 normals: Some(&floor_normals()),

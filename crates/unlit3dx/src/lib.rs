@@ -100,13 +100,6 @@ pub mod turn;
 /// Threaded worlds, which run on their own thread.
 pub mod world;
 
-/// The duration of a frame at 60 Hz, in seconds.
-///
-/// A stepped world takes the duration of the frame it is stepped with, so a
-/// caller driving one at the display's rate passes the real frame time; this
-/// is the round number the tests and the runs without a window use.
-pub const FRAME_SECONDS: f32 = 1.0 / 60.0;
-
 /// The types most callers of the multi-world model need.
 pub mod prelude {
     #[cfg(feature = "audio")]
@@ -131,7 +124,7 @@ pub mod prelude {
     pub use crate::mcp::serve_mcp;
     #[cfg(feature = "physics")]
     pub use crate::physics::{
-        BodyDesc, BodyShape, PHYSICS_HZ, Physics, PhysicsConfig, PhysicsContacts, RigidBodyHandle,
+        BodyDesc, BodyShape, Physics, PhysicsConfig, PhysicsContacts, RigidBodyHandle,
         despawn_body, init_physics_world, spawn_body, spawn_fixed_cuboid, spawn_physics_world_with,
         step_once,
     };
@@ -147,7 +140,6 @@ pub mod prelude {
         load_midi_file_with_loop_type, load_soundfont, midi_file, midi_job,
     };
     pub use crate::{
-        FRAME_SECONDS,
         channel::{
             InstallError, Snapshot, SnapshotPoll, SnapshotReader, Stream, StreamEnd, StreamReader,
             Subscription, publish_collected,
@@ -161,7 +153,10 @@ pub mod prelude {
             FixedClock, JoinOutcome, MAX_CATCH_UP_STEPS, ThreadControl, ThreadError, WorldState,
             WorldThread, fixed_steps,
         },
-        time::{AudioSampleTime, FrameDelta, SimulationDelta, SimulationTime, WallTimeout},
+        time::{
+            AudioSampleTime, DEFAULT_PHYSICS_HZ, FIXED_FRAME_DELTA, FrameDelta, SimulationDelta,
+            SimulationTime, WallTimeout,
+        },
         world::{
             StepError, StepOutcome, Stepped, Threaded, TickOutcome, WorldName, WorldRunner,
             spawn_stepped_world_with_init, spawn_threaded_world, spawn_threaded_world_with_init,

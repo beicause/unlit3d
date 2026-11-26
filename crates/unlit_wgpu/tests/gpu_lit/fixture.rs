@@ -63,7 +63,7 @@ impl GpuMesh {
         normals: &[[f32; 3]],
         indices: &[u32],
     ) -> Self {
-        let stream = variant.secondary_stream();
+        let stream = variant.channels.secondary_stream();
         let mut metadata = MeshMetadata::default();
         let compressed_positions = matches!(
             variant.channels.position.position,

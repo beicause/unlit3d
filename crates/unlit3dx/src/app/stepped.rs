@@ -9,12 +9,12 @@ use unlit_ecs::{Entity, World};
 use unlit3d::frame::Frame;
 use unlit3d::input::refresh_input;
 
-use super::headless::{AUDIO_CHANNELS, FIXED_FRAME_SECONDS};
+use super::headless::AUDIO_CHANNELS;
 use super::offscreen;
 use super::scene::{AudioPull, RunFrames, SceneWorlds, Stepping};
 use crate::audio::AudioFormat;
 use crate::host::tick_sub_world;
-use crate::time::FrameDelta;
+use crate::time::FIXED_FRAME_DELTA;
 use crate::world::StepOutcome;
 
 use super::error::RunError;
@@ -52,7 +52,7 @@ impl SteppedRun {
             stepper: Stepping::new(worlds, physics_hz),
             frames,
             frame: Frame {
-                delta_time: FrameDelta::from_secs(FIXED_FRAME_SECONDS),
+                delta_time: FIXED_FRAME_DELTA,
                 index: 0,
             },
             mix: AudioPull::new(sample_rate),

@@ -754,12 +754,8 @@ mod tests {
         // input arriving, no frame is laid out at all.
         let mut settled = 0;
         for _ in 0..8 {
-            step_stepped_world(
-                &host,
-                worlds.gameplay.entity(),
-                unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-            )
-            .expect("the stepped world starts");
+            step_stepped_world(&host, worlds.gameplay.entity(), FIXED_FRAME_DELTA)
+                .expect("the stepped world starts");
             let now = runs.load(Ordering::Relaxed);
             if now == settled {
                 break;
@@ -776,12 +772,8 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(
-            &host,
-            worlds.gameplay.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, worlds.gameplay.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
 
         assert!(
             runs.load(Ordering::Relaxed) > settled,
@@ -840,12 +832,8 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        step_stepped_world(
-            &host,
-            worlds.gameplay.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-        )
-        .expect("the stepped world starts");
+        step_stepped_world(&host, worlds.gameplay.entity(), FIXED_FRAME_DELTA)
+            .expect("the stepped world starts");
 
         assert_eq!(
             pressed.load(Ordering::Relaxed),

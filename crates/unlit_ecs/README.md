@@ -51,6 +51,9 @@ It is at an **early stage of development** and its API changes freely.
   refused, and [`Scope::singleton`] finds the holder from any scope that can see
   it. The key is a type that is never stored, so it adds no component. It is
   released once the holder's row is removed, after its `OnDespawn` has run.
+  Chain `singleton::<K>().singleton::<L>()` to claim distinct keys together.
+  If any key is occupied the spawn claims none; both are visible before
+  `OnSpawn` and remain claimed through `OnDespawn`.
 - **Every `'static` type is a component.** No derive, no registration: a tuple
   is a component too. A *bundle* is therefore not a tuple of components but the
   list [`bundle!`] builds or a [`DynamicBundle`] gathers, and a plain

@@ -111,8 +111,14 @@ impl FrustumPlanes {
     }
 
     fn normalize_plane(row: glam::Vec4) -> glam::Vec4 {
+        // Keep degenerate planes unscaled rather than dividing by a near-zero normal.
+        const MIN_NORMAL_LENGTH: f32 = 1e-10;
         let len = Vec3::new(row.x, row.y, row.z).length();
-        if len > 1e-10 { row / len } else { row }
+        if len > MIN_NORMAL_LENGTH {
+            row / len
+        } else {
+            row
+        }
     }
 
     /// Whether `obb` is at least partly inside the frustum.

@@ -44,7 +44,6 @@
 //! - [`storage`]: plain reads of the entity table and archetype pool
 //! - [`identity`]: telling one world's handles from another's
 
-use core::any::TypeId;
 use core::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -114,9 +113,9 @@ pub struct World {
     /// once its entity's row is in and released once the row is removed, after
     /// the entity's `OnDespawn` callback has run.
     singleton_holders: TypeIdHashMap<Entity>,
-    /// The key each singleton holder claimed, so removing a holder finds its key
+    /// The keys each singleton holder claimed, so removing a holder finds them
     /// without searching `singleton_holders`.
-    singleton_keys: EntityHashMap<TypeId>,
+    singleton_keys: EntityHashMap<Vec<crate::bundle::SingletonKey>>,
     /// What tells this world's handles from another world's.
     id: WorldId,
 }

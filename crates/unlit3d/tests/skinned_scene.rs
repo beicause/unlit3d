@@ -28,7 +28,7 @@ async fn skinning_without_a_pose_binding_panics() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = LitPipelineKey::new(default_options());
-    let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
+    let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, 0.0);
 
     gpu.spawn(&mut world, bundle![camera()]);
     gpu.spawn(&mut world, bundle![mesh, GpuRenderPipeline::new(key)]);
@@ -42,8 +42,8 @@ async fn meshes_can_share_one_skin_pose() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = LitPipelineKey::new(default_options());
-    let (first, skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
-    let (second, _) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
+    let (first, skin) = gpu.allocate_bent_cube_mesh(&world, 0.0);
+    let (second, _) = gpu.allocate_bent_cube_mesh(&world, 0.0);
 
     // One pose entity, named by both meshes: a crowd of copies of one mesh
     // shares one skeleton instead of uploading a pose each.

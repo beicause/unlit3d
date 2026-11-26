@@ -1,3 +1,5 @@
+use crate::mesh::{PositionStreamWriter, SecondaryStreamWriter};
+
 use super::{
     ChannelEncoding, PRIMARY_SLOT, PositionStreamChannels, SECONDARY_SLOT, SecondaryFlags,
     VertexBufferLayoutDesc, location,
@@ -30,6 +32,20 @@ pub struct LitVertexChannels {
 }
 
 impl LitVertexChannels {
+    /// The writer and vertex layout for positions and the optional joint pair.
+    pub const fn position_stream(self) -> PositionStreamWriter {
+        PositionStreamWriter {
+            channels: self.position,
+        }
+    }
+
+    /// The writer and vertex layout for UV, color, and normal channels.
+    pub const fn secondary_stream(self) -> SecondaryStreamWriter {
+        SecondaryStreamWriter {
+            flags: self.secondary,
+        }
+    }
+
     /// The channels of a layout that carries none: no position, no joints, and
     /// an empty secondary stream.
     ///

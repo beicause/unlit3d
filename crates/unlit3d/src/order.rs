@@ -65,8 +65,7 @@ impl<K: OrderKey> Ordering<K> {
     pub(crate) fn resolve(&mut self, keys: impl IntoIterator<Item = (K, Entity)>) {
         self.keys.clear();
         self.keys.extend(keys);
-        self.keys
-            .sort_unstable_by_key(|(order, entity)| (*order, *entity));
+        self.keys.sort_unstable();
 
         self.order.clear();
         self.ambiguous.clear();

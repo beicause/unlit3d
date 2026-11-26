@@ -816,7 +816,6 @@ let (mesh, material) = {
         let indices = [0u32, 1, 2];
         let mesh = source.allocate_lit_mesh(
             &scope,
-            &key.options,
             LitMeshDesc {
                 positions: &positions,
                 uvs: Some(&uvs),
@@ -993,7 +992,7 @@ resume 状态都是单例键，因此一个 world 各只有一份：宿主在循
 用 `FrameDelta::from_secs` 构造帧时长；负数及非有限值按零处理。形状与事件族完全一致，
 只是把「事件」换成了「这一帧的上下文」。用
 [`OnFrame::new`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html#method.new) 生成的行为不声明顺序，这些不声明顺序的行为构成一个
-顺序带，带内的先后不做任何保证。若某个行为的读写被另一个行为依赖，就用
+顺序带；顺序值相同时按实体排序。若某个行为的读写被另一个行为依赖，就用
 [`OnFrame::with_order`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.OnFrame.html#method.with_order) 配一个
 [`FrameBehaviourOrder`](https://docs.rs/unlit3d/latest/unlit3d/frame/struct.FrameBehaviourOrder.html) 在两端都把顺序声明出来。库自身声明两个顺序点：[`LIT_MODEL_UPDATE_ORDER`](https://docs.rs/unlit3d/latest/unlit3d/lit/constant.LIT_MODEL_UPDATE_ORDER.html)（`-10`）先求值模型层级与动画，以及 [`PRESENT_ORDER`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/winit/presenter.rs) 把 [`present_frames`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/src/winit/presenter.rs) 排在默认带之后。要让修改模型输入的行为在本帧生效，应使用低于 `-10` 的顺序；排在它之后的修改会等下一次模型求值才观察到。除此之外的先后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
 所以场景侧也用同样的方式组件化。用 [`ScopeMut::spawn`](https://docs.rs/unlit_ecs/latest/unlit_ecs/struct.ScopeMut.html#method.spawn)

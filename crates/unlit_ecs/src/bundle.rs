@@ -11,7 +11,7 @@
 //! bundle only spreads when it is written as `..value`.
 //!
 //! The same component cannot appear twice in a bundle; spawning with duplicates
-//! panics. A bundle declares at most one singleton key, with
+//! panics. A bundle declares singleton keys with
 //! [`DynamicBundle::singleton`], which adds no component.
 
 use core::any::{Any, TypeId};
@@ -54,8 +54,7 @@ pub(crate) type Components = Vec<BundleComponent>;
 /// source position of the [`crate::bundle!`] that built it.
 pub struct DynamicBundle {
     components: Components,
-    /// The singleton key the bundle declares, if any.
-    pub(crate) singleton_key: Option<SingletonKey>,
+    pub(crate) singleton_keys: Vec<SingletonKey>,
     name: &'static str,
 }
 
@@ -75,7 +74,7 @@ impl DynamicBundle {
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
-            singleton_key: None,
+            singleton_keys: Vec::new(),
             name: "",
         }
     }
@@ -113,10 +112,11 @@ impl DynamicBundle {
     #[track_caller]
     pub fn push_bundle<B: Bundle>(&mut self, bundle: B) {
         let bundle = bundle.into_bundle();
-        self.components.extend(bundle.components);
-        if let Some(key) = bundle.singleton_key {
-            self.declare(key);
+        for &key in &bundle.singleton_keys {
+            self.assert_new_key(key);
         }
+        self.components.extend(bundle.components);
+        self.singleton_keys.extend(bundle.singleton_keys);
     }
 
     /// Declare the entity the bundle spawns to be the only live holder, in its
@@ -130,7 +130,7 @@ impl DynamicBundle {
     ///
     /// # Panics
     ///
-    /// When the bundle already declares a key.
+    /// When the bundle already declares this key.
     ///
     /// ````rust
     /// # use unlit_ecs::{Has, World, bundle};
@@ -143,22 +143,25 @@ impl DynamicBundle {
     #[must_use]
     #[track_caller]
     pub fn singleton<K: 'static>(mut self) -> Self {
-        self.declare(SingletonKey {
+        let key = SingletonKey {
             type_id: TypeId::of::<K>(),
             name: core::any::type_name::<K>(),
-        });
+        };
+        self.assert_new_key(key);
+        self.singleton_keys.push(key);
         self
     }
 
-    /// Record `key` as the bundle's singleton key, refusing a second one.
     #[track_caller]
-    fn declare(&mut self, key: SingletonKey) {
+    fn assert_new_key(&self, key: SingletonKey) {
         assert!(
-            self.singleton_key.is_none(),
-            "a bundle declares at most one singleton key, so `{}` cannot join the one it has",
+            !self
+                .singleton_keys
+                .iter()
+                .any(|existing| existing.type_id == key.type_id),
+            "a bundle cannot declare singleton key `{}` twice",
             key.name,
         );
-        self.singleton_key = Some(key);
     }
 
     /// Mark the entity as one the world holds for itself rather than as
@@ -401,24 +404,19 @@ mod tests {
         bundle.finish();
     }
 
-    /// A bundle declares at most one singleton key, however it is assembled.
     #[test]
-    #[should_panic(expected = "at most one singleton key")]
-    fn a_bundle_declares_one_singleton_key() {
-        struct First;
-        struct Second;
-        let _ = crate::bundle![1u32]
-            .singleton::<First>()
-            .singleton::<Second>();
+    #[should_panic(expected = "twice")]
+    fn declaring_the_same_key_twice_panics() {
+        struct Key;
+        let _ = crate::bundle![1u32].singleton::<Key>().singleton::<Key>();
     }
 
     #[test]
-    #[should_panic(expected = "at most one singleton key")]
-    fn gathering_a_second_singleton_key_panics() {
-        struct First;
-        struct Second;
-        let mut bundle = DynamicBundle::new().singleton::<First>();
-        bundle.push_bundle(DynamicBundle::new().singleton::<Second>());
+    #[should_panic(expected = "twice")]
+    fn gathering_the_same_key_twice_panics() {
+        struct Key;
+        let mut bundle = DynamicBundle::new().singleton::<Key>();
+        bundle.push_bundle(DynamicBundle::new().singleton::<Key>());
     }
 
     /// A key rides along when a bundle is gathered into another.
@@ -427,7 +425,7 @@ mod tests {
         struct Key;
         let mut bundle = DynamicBundle::new();
         bundle.push_bundle(DynamicBundle::new().singleton::<Key>());
-        assert!(bundle.singleton_key.is_some());
+        assert_eq!(bundle.singleton_keys.len(), 1);
     }
 
     /// A wide bundle still finishes in type order, each component whole.

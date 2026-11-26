@@ -58,155 +58,200 @@ pub fn array_entry(
     }
 }
 
-/// Build the global bind-group layout a pipeline with `bindings` declares.
+/// The resources in the shared global bind group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalSlot {
+    /// The camera uniform.
+    Camera,
+    /// The frame uniform.
+    Frame,
+    /// The pass's view uniform.
+    View,
+    /// The mesh metadata array.
+    Metadata,
+    /// The joint matrix array.
+    Joints,
+    /// The morph weight array.
+    MorphWeights,
+    /// The morph displacement array.
+    MorphDeltas,
+    /// The light records.
+    Lights,
+    /// The light cluster cells.
+    LightCells,
+    /// The polygon-light vertices.
+    LightVertices,
+    /// The cluster grid uniform.
+    Cluster,
+    /// The ambient and directional light uniform.
+    Lighting,
+}
+
+impl GlobalSlot {
+    /// The shader binding number of this resource.
+    pub const fn binding(self) -> u32 {
+        match self {
+            Self::Camera => CAMERA_BINDING,
+            Self::Frame => FRAME_BINDING,
+            Self::View => VIEW_BINDING,
+            Self::Metadata => MESH_METADATA_BINDING,
+            Self::Joints => JOINTS_BINDING,
+            Self::MorphWeights => MORPH_WEIGHTS_BINDING,
+            Self::MorphDeltas => MORPH_DELTAS_BINDING,
+            Self::Lights => LIGHTS_BINDING,
+            Self::LightCells => LIGHT_CELLS_BINDING,
+            Self::LightVertices => LIGHT_VERTICES_BINDING,
+            Self::Cluster => CLUSTER_BINDING,
+            Self::Lighting => LIGHTING_BINDING,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BindingKind {
+    Uniform(core::num::NonZeroU64),
+    Array(u64),
+}
+
+use BindingKind::{Array, Uniform};
+use GlobalSlot::{
+    Camera, Cluster, Frame, Joints, LightCells, LightVertices, Lighting, Lights, Metadata,
+    MorphDeltas, MorphWeights, View,
+};
+use const_shader_layout::ShaderLayout;
+use wgpu::ShaderStages as Stages;
+
+const VERTEX_FRAGMENT: Stages = Stages::VERTEX.union(Stages::FRAGMENT);
+const UNIFORMS: &[(GlobalSlot, Stages, BindingKind)] = &[
+    (
+        Camera,
+        VERTEX_FRAGMENT,
+        Uniform(crate::globals::Camera::SIZE),
+    ),
+    (
+        Frame,
+        Stages::VERTEX,
+        Uniform(crate::globals::Globals::SIZE),
+    ),
+    (View, VERTEX_FRAGMENT, Uniform(crate::globals::View::SIZE)),
+];
+const MESH: &[(GlobalSlot, Stages, BindingKind)] = &[(
+    Metadata,
+    Stages::VERTEX,
+    Array(crate::mesh::MeshMetadata::SIZE.get()),
+)];
+const SKIN: &[(GlobalSlot, Stages, BindingKind)] = &[(
+    Joints,
+    Stages::VERTEX,
+    Array(crate::mesh::JointMatrix::SIZE.get()),
+)];
+const MORPH: &[(GlobalSlot, Stages, BindingKind)] = &[
+    (MorphWeights, Stages::VERTEX, Array(size_of::<f32>() as u64)),
+    (MorphDeltas, Stages::VERTEX, Array(size_of::<f32>() as u64)),
+];
+const LIGHT: &[(GlobalSlot, Stages, BindingKind)] = &[
+    (
+        Lights,
+        Stages::FRAGMENT,
+        Array(crate::light::LightGpu::SIZE.get()),
+    ),
+    (
+        LightCells,
+        Stages::FRAGMENT,
+        Array((crate::light::CELL_WORDS * size_of::<u32>()) as u64),
+    ),
+    (
+        LightVertices,
+        Stages::FRAGMENT,
+        Array(size_of::<glam::Vec4>() as u64),
+    ),
+    (
+        Cluster,
+        Stages::FRAGMENT,
+        Uniform(crate::light::ClusterUniform::SIZE),
+    ),
+    (
+        Lighting,
+        Stages::FRAGMENT,
+        Uniform(crate::light::LightingUniform::SIZE),
+    ),
+];
+
+/// Inline capacity for all shared global bindings enabled together.
+pub const MAX_GLOBAL_BINDINGS: usize =
+    UNIFORMS.len() + MESH.len() + SKIN.len() + MORPH.len() + LIGHT.len();
+
+impl GlobalBindings {
+    fn descriptors(self) -> impl Iterator<Item = (GlobalSlot, Stages, BindingKind)> {
+        [
+            Some(UNIFORMS),
+            self.metadata.then_some(MESH),
+            self.joints.then_some(SKIN),
+            self.morphs.then_some(MORPH),
+            self.lights.then_some(LIGHT),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .copied()
+    }
+
+    /// The enabled resources, in shader binding order.
+    pub fn slots(self) -> impl Iterator<Item = GlobalSlot> {
+        self.descriptors().map(|(slot, _, _)| slot)
+    }
+}
+
+/// Build the shared global bind-group layout for the requested resources.
 ///
-/// The camera, frame-globals and view uniforms are always present; the arrays
-/// are present exactly when `bindings` names them. The array path is the
-/// device's answer rather than the pipeline's, so `texel_arrays` is passed in: a
-/// device with storage buffers binds each array as one, a device without them —
-/// WebGL2 — binds the same bytes as a texture.
-///
-/// The built-in lit variants build their global layout here, so a caller's own
-/// pipeline declares the same group by the same rules.
+/// The camera, frame and view uniforms are always present. `texel_arrays`
+/// selects texture-backed arrays instead of storage buffers on devices that
+/// do not support the latter, or when explicitly requested.
 pub fn global_bind_group_layout(
     device: &wgpu::Device,
     bindings: GlobalBindings,
     texel_arrays: bool,
 ) -> wgpu::BindGroupLayout {
-    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 12>::new();
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: CAMERA_BINDING,
-        // The near plane and the eye position are view values a fragment stage
-        // may want to reason with: the lit pipeline derives its depth slices
-        // and its fallback geometric normal from them.
-        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: Some(
-                <crate::globals::Camera as const_shader_layout::ShaderLayout>::SIZE,
-            ),
-        },
-        count: None,
-    });
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: FRAME_BINDING,
-        visibility: wgpu::ShaderStages::VERTEX,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: Some(
-                <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
-            ),
-        },
-        count: None,
-    });
-    // The pass's view. Every pipeline declares it beside the camera and the
-    // frame clock, because the group is the frame's shared one and the viewport
-    // belongs to it as much as the other two: a pipeline that never measures in
-    // pixels simply does not name the binding in its shader.
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: VIEW_BINDING,
-        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: Some(
-                <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
-            ),
-        },
-        count: None,
-    });
-    if bindings.metadata {
-        entries.push(array_entry(
-            MESH_METADATA_BINDING,
-            <crate::mesh::MeshMetadata as const_shader_layout::ShaderLayout>::SIZE.get(),
-            wgpu::ShaderStages::VERTEX,
-            texel_arrays,
-        ));
-    }
-    if bindings.joints {
-        entries.push(array_entry(
-            JOINTS_BINDING,
-            <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
-            wgpu::ShaderStages::VERTEX,
-            texel_arrays,
-        ));
-    }
-    if bindings.morphs {
-        entries.push(array_entry(
-            MORPH_WEIGHTS_BINDING,
-            wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
-            wgpu::ShaderStages::VERTEX,
-            texel_arrays,
-        ));
-        // One position component of one target: like every other array entry
-        // the storage binding minimum is a single element, so a mesh joining or
-        // leaving the pool never invalidates the layout.
-        entries.push(array_entry(
-            MORPH_DELTAS_BINDING,
-            wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
-            wgpu::ShaderStages::VERTEX,
-            texel_arrays,
-        ));
-    }
-    if bindings.lights {
-        // Lighting happens in the fragment stage, where the view-space position
-        // and normal are; the vertex stage reads none of these, so declaring
-        // them there would only spend the vertex stage's array quota.
-        let visibility = wgpu::ShaderStages::FRAGMENT;
-        entries.push(array_entry(
-            LIGHTS_BINDING,
-            <crate::light::LightGpu as const_shader_layout::ShaderLayout>::SIZE.get(),
-            visibility,
-            texel_arrays,
-        ));
-        // One cell is a fixed number of words rather than one: the record lists
-        // the lights assigned to the cell, so the binding minimum is a whole
-        // record and a fragment reads the cell's own slice.
-        entries.push(array_entry(
-            LIGHT_CELLS_BINDING,
-            wgpu::BufferAddress::from(
-                (crate::light::CELL_WORDS * core::mem::size_of::<u32>()) as u64,
-            ),
-            visibility,
-            texel_arrays,
-        ));
-        entries.push(array_entry(
-            LIGHT_VERTICES_BINDING,
-            wgpu::BufferAddress::from(core::mem::size_of::<glam::Vec4>() as u64),
-            visibility,
-            texel_arrays,
-        ));
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: CLUSTER_BINDING,
-            visibility,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: Some(
-                    <crate::light::ClusterUniform as const_shader_layout::ShaderLayout>::SIZE,
-                ),
-            },
-            count: None,
-        });
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: LIGHTING_BINDING,
-            visibility,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: Some(
-                    <crate::light::LightingUniform as const_shader_layout::ShaderLayout>::SIZE,
-                ),
-            },
-            count: None,
-        });
-    }
+    let entries: arrayvec::ArrayVec<_, MAX_GLOBAL_BINDINGS> = bindings
+        .descriptors()
+        .map(|(slot, visibility, kind)| {
+            let binding = slot.binding();
+            match kind {
+                Array(size) => array_entry(binding, size, visibility, texel_arrays),
+                Uniform(size) => wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(size),
+                    },
+                    count: None,
+                },
+            }
+        })
+        .collect();
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("unlit_wgpu::lit::globals"),
         entries: &entries,
     })
+}
+
+#[cfg(test)]
+#[test]
+fn the_shared_layout_contains_each_binding_once_in_shader_order() {
+    let bindings = GlobalBindings {
+        metadata: true,
+        joints: true,
+        morphs: true,
+        lights: true,
+    };
+    assert!(
+        bindings
+            .slots()
+            .map(GlobalSlot::binding)
+            .eq(0..MAX_GLOBAL_BINDINGS as u32)
+    );
 }
 
 /// The bind-group layouts a [`SpecializedLitPipeline`] variant declares.

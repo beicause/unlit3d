@@ -44,7 +44,6 @@ fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
     // policy, so the key declares no channels for the mesh to follow.
     let textured = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -55,7 +54,6 @@ fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
     );
     let bare = h.source.allocate_lit_mesh(
         &h.world.root_scope(),
-        &key.options,
         LitMeshDesc {
             positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             indices: Some(&[0u32, 1, 2]),

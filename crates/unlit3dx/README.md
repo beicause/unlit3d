@@ -308,7 +308,7 @@ derived from the mesh source's device.
 The bridges:
 
 - **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
-  `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 60 Hz). A world on a thread of
+  `PhysicsWorld` at a fixed rate (`DEFAULT_PHYSICS_HZ`, 60 Hz). A world on a thread of
   its own catches up to the time that really passed, at most four steps a
   tick; a world the host steps takes one step per step it is given. Each step
   drains rapier's contacts into a `PhysicsContacts` component — the collision

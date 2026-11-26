@@ -243,7 +243,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
 
 各桥如下：
 
-- **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，60 Hz）
+- **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`DEFAULT_PHYSICS_HZ`，60 Hz）
   驱动 rapier 的 `PhysicsWorld`。自驱动的 world 按实际流逝的时间追赶，一次 tick 至多四步；
   由宿主步进的 world 每被步进一次就走一步。每一步把 rapier 的碰撞事件排空进 `PhysicsContacts`
   组件——这一步开始的碰撞对（含每对相互接近的速度）与结束的碰撞对。它自己不发布

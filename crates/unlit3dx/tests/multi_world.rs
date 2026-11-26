@@ -223,12 +223,7 @@ fn despawning_a_stepped_world_ends_it() {
         |_, _, (), _| TickOutcome::Running,
     )
     .expect("the stepped world starts");
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
     assert!(!world.is_finished(), "the world is still running");
 
     assert!(
@@ -306,12 +301,7 @@ fn a_finished_stepped_world_refuses_jobs() {
         |_, _, (), _| TickOutcome::Finished,
     )
     .expect("the stepped world starts");
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
 
     assert!(world.is_finished(), "the tick ended the world");
     assert_eq!(

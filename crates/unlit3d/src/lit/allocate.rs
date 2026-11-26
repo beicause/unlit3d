@@ -2,10 +2,9 @@
 
 use super::{
     ArrayVec, BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, ChannelEncoding, GpuMaterial,
-    GpuMesh, Hashed, LitFactory, LitInstance, LitMeshDesc, LitOptions, LitPipelineKey, LitVariant,
+    GpuMesh, Hashed, LitFactory, LitInstance, LitMeshDesc, LitOptions, LitPipelineKey,
     LitVertexChannels, MeshSource, PRIMARY_SLOT, PositionStreamChannels, ResHandle, SECONDARY_SLOT,
-    Scope, SecondaryFlags, SurfaceKey, TextureView, VertexAttributes, VertexBufferLayoutDesc,
-    compress_weights,
+    Scope, SecondaryFlags, TextureView, compress_weights,
 };
 use crate::mesh::SkinShape;
 use crate::mesh_source::{PooledMeshDesc, PooledStream};
@@ -20,12 +19,9 @@ impl MeshSource {
     /// The family specializes each entity's options on the frame's render
     /// target and the mesh's vertex layout: two draws that agree on both share
     /// one compiled pipeline, and a draw whose mesh layout implies different
-    /// channels compiles its own. The options are the entity's: a mesh or
-    /// material is built against the [LitOptions] it will be drawn with,
-    /// through [`MeshSource::allocate_lit_mesh`] and
-    /// [`MeshSource::allocate_lit_material`]. Those take the options
-    /// rather than the key, so any pipeline whose variant reads the same
-    /// channels can draw the mesh.
+    /// channels compiles its own. [`MeshSource::allocate_lit_mesh`] packs mesh
+    /// channels independently of the options; [`MeshSource::allocate_lit_material`]
+    /// takes the options that determine its texture layout.
     ///
     /// This compiles nothing; like any family, its first concrete pipeline is
     /// built when an entity that uses it is first drawn.
@@ -83,12 +79,7 @@ impl MeshSource {
     /// [`LitMeshDesc::joints`] and [`LitMeshDesc::weights`] is `Some`; or
     /// if [`LitMeshDesc::morph_deltas`] is present but does not hold three
     /// components per vertex and target.
-    pub fn allocate_lit_mesh(
-        &mut self,
-        world: &Scope<'_>,
-        options: &Hashed<LitOptions>,
-        desc: LitMeshDesc<'_>,
-    ) -> GpuMesh {
+    pub fn allocate_lit_mesh(&mut self, world: &Scope<'_>, desc: LitMeshDesc<'_>) -> GpuMesh {
         let LitMeshDesc {
             positions,
             uvs,
@@ -131,32 +122,9 @@ impl MeshSource {
             },
             secondary,
         };
-        // The variant is built only to read the streams and layouts the
-        // channels imply. Its surface, material and strip index format play no
-        // part in any of those, so they are left at placeholders.
-        let variant = LitVariant {
-            options: options.clone(),
-            surface: SurfaceKey {
-                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                depth_stencil_format: None,
-                sample_count: 1,
-            },
-            channels,
-            base_color_texture: false,
-            morph: morph_deltas.is_some(),
-            strip_index_format: None,
-            reversed_winding: false,
-        };
-        let position_stream = variant.position_stream();
-        let secondary_stream = variant.secondary_stream();
-
-        // The joint pair belongs to the position stream, so a skinned mesh's
-        // stream is wider by it and no separate buffer exists. A variant that
-        // deforms by joints reads them from that stream, so it needs the
-        // caller's joint indices and weights exactly as a compressed variant
-        // needs its UVs. A variant that reads none ignores joints it was
-        // handed, as it ignores UVs it does not declare.
-        let skinned = variant.needs_joints();
+        let position_stream = channels.position_stream();
+        let secondary_stream = channels.secondary_stream();
+        let skinned = channels.position.joints;
         let skin = if skinned {
             let joints = joints.expect("a variant that reads joints needs the mesh's joints");
             // The pose the mesh is drawn with has to hold a matrix for every
@@ -194,10 +162,7 @@ impl MeshSource {
         // per-instance pose state the frame's global group binds. The source
         // pools them into the frame-wide array, so what it hands over is the
         // raw data rather than a resource.
-        let morph_deltas = variant.needs_morphs().then(|| {
-            let morph_deltas = morph_deltas.expect(
-                "a variant that reads morph positions needs the mesh's morph displacements",
-            );
+        if let Some(morph_deltas) = &morph_deltas {
             assert_ne!(
                 morph_deltas.target_count, 0,
                 "a morphing mesh needs at least one target"
@@ -207,27 +172,11 @@ impl MeshSource {
                 positions.len() * morph_deltas.target_count as usize * 3,
                 "a morph displacement array must hold three components per vertex and target"
             );
-            morph_deltas
-        });
+        }
 
-        // The vertex layout the channels declare, slot for slot. An empty
-        // stream still gets a buffer entry — the pipeline simply declares no
-        // attributes for that slot — so the mesh's layout matches the key's.
-        let vertex_layouts = variant.vertex_buffer_layouts();
-        let layout_of = |slot: u32| -> VertexBufferLayoutDesc {
-            vertex_layouts
-                .get(slot as usize)
-                .and_then(|layout| layout.as_ref())
-                .cloned()
-                .unwrap_or(VertexBufferLayoutDesc {
-                    array_stride: 0,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: VertexAttributes::new(),
-                })
-        };
         let streams = [
-            (PRIMARY_SLOT, layout_of(PRIMARY_SLOT)),
-            (SECONDARY_SLOT, layout_of(SECONDARY_SLOT)),
+            (PRIMARY_SLOT, position_stream.channels.channels().layout()),
+            (SECONDARY_SLOT, secondary_stream.channels().layout()),
         ];
 
         // The compression derives the mesh's metadata as it packs, so each

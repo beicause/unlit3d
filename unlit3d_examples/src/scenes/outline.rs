@@ -313,7 +313,6 @@ fn built(
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_lit_mesh(
             world,
-            &body_key.options,
             LitMeshDesc {
                 positions: &positions,
                 normals: Some(&normals),
@@ -331,7 +330,6 @@ fn built(
     let faceted = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_lit_mesh(
             world,
-            &body_key.options,
             LitMeshDesc {
                 positions: &positions,
                 indices: Some(&indices),

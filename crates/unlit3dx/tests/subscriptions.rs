@@ -66,12 +66,7 @@ fn several_subscribers_each_get_their_own_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
 
     let one_reader = installed(one);
     let two_reader = installed(two);
@@ -85,12 +80,7 @@ fn several_subscribers_each_get_their_own_snapshot() {
 fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
 
     let reader = world
         .commands()
@@ -109,12 +99,7 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
         "a queued subscription is not an installed one"
     );
 
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
     let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(0));
 }
@@ -135,34 +120,19 @@ fn dropping_the_reader_prunes_the_subscription() {
             Some(1u32)
         })
         .expect("the world accepts a subscription");
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
     let reader = installed(reader);
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the collector ran once");
 
     drop(reader);
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
         "a dropped reader must stop its collector"
     );
 
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
     let live =
         with_stepped_world(&host, world.entity(), publish_collected).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
@@ -185,18 +155,8 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
-    step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    )
-    .expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
+    step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
 
     let reader = installed(reader);
     assert_eq!(reader.latest().map(|value| *value), Some(1));
@@ -255,11 +215,7 @@ fn a_failed_world_ends_its_subscriptions_without_dropping_the_world() {
         .subscribe(NonZeroUsize::MIN, |_, out| out.push(2u32))
         .unwrap();
     assert_eq!(
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Ran)
     );
     let mut snapshot = installed(watched);
@@ -269,11 +225,9 @@ fn a_failed_world_ends_its_subscriptions_without_dropping_the_world() {
         .commands()
         .send(Box::new(|_: &mut World| panic!("test failure")))
         .unwrap();
-    let Ok(StepOutcome::Failed(error)) = step_stepped_world(
-        &host,
-        world.entity(),
-        unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS)),
-    ) else {
+    let Ok(StepOutcome::Failed(error)) =
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA)
+    else {
         panic!("the world should report the failed job");
     };
     assert_eq!(snapshot.poll(), SnapshotPoll::Failed(error.clone()));
@@ -296,29 +250,17 @@ fn a_stopped_world_closes_its_subscriptions_after_the_final_publish() {
         })
         .unwrap();
     assert_eq!(
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Ran)
     );
     let mut snapshot = installed(watched);
     world.stop();
     assert_eq!(
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA),
         Ok(StepOutcome::Stopped)
     );
     assert_eq!(
-        step_stepped_world(
-            &host,
-            world.entity(),
-            unlit3dx::time::FrameDelta::from_secs(f64::from(FRAME_SECONDS))
-        ),
+        step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA),
         Err(StepError::Unavailable)
     );
     assert_eq!(snapshot.poll(), SnapshotPoll::Closed);

@@ -17,6 +17,7 @@ use super::scene::{Mode, RenderPorts, RunFrames, ScenePorts};
 use super::shape::{RunShape, WorldOwnership};
 use super::stepped::SteppedRun;
 use crate::host::spawn_sub_world;
+use crate::time::FIXED_FRAME_DELTA;
 use crate::world::{StepOutcome, Stepped};
 
 /// The audio sample rate a run renders at when its configuration names no
@@ -26,16 +27,6 @@ pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 /// How many channels a run mixes: the interleaved samples the audio world's
 /// fill dispatch writes, and the stream an encoder reads.
 pub const AUDIO_CHANNELS: usize = 2;
-
-/// The frame rate a run without a display steps at, in hertz.
-///
-/// Nothing measures it: it is the exact step each frame asks for, which is
-/// what makes a run reproducible.
-pub const HEADLESS_HZ: f64 = 60.0;
-
-/// The duration of one frame a run without a display steps at, in seconds:
-/// the single source of the fixed step every such run hands its frames.
-pub const FIXED_FRAME_SECONDS: f64 = 1.0 / HEADLESS_HZ;
 
 /// The capacity a render sub-world's mailbox gets when a configuration names
 /// no other.
@@ -171,7 +162,7 @@ pub async fn headless<A: App>(
     // length, at most `UNBOUNDED_MIX_SECONDS` when it plays until killed. The
     // bound is whole interleaved frames, so a cut never lands mid-frame.
     let mix_seconds = pacing.frames.map_or(UNBOUNDED_MIX_SECONDS, |frames| {
-        frames as f32 * FIXED_FRAME_SECONDS as f32
+        frames as f32 * FIXED_FRAME_DELTA.as_secs_f32()
     });
     let mix_limit = (mix_seconds * config.audio_sample_rate as f32) as usize * AUDIO_CHANNELS;
     let mut mix_capped = false;

@@ -29,12 +29,9 @@
 //! The label names the shader: it is the shader module's label, and a
 //! composition error is reported under it.
 
+use crate::compose::LINE_MODULE;
 use crate::pipeline::{ShaderCache, ShaderRecipe};
 use crate::specialize::{PipelineDescriptor, SurfaceTarget};
-
-/// Name of the WESL module the built-in stroke shader is composed from: the
-/// file `shaders/line.wesl` of this crate's package.
-const LINE_MODULE: &str = "line";
 
 /// The byte width of one instance the line pipeline reads: the sum of the
 /// attribute sizes below.
