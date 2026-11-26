@@ -187,7 +187,7 @@ impl Example {
         // The secondary slot uses the same path, except that the stream
         // compresses the raw attributes and interleaves them in attribute
         // order as it writes, so they are never materialized in a `Vec<u8>`.
-        let stream = variant.secondary_stream();
+        let stream = variant.channels.secondary_stream();
         let secondary = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("secondary"),
             size: stream.byte_len(packed_positions.len()) as u64,

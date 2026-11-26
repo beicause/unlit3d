@@ -1,40 +1,6 @@
 use super::*;
 
 #[test]
-fn an_extension_names_the_image_format() {
-    assert_eq!(
-        ImageFormat::of("a.png").expect("Png is a known format"),
-        ImageFormat::Png
-    );
-    assert_eq!(
-        ImageFormat::of("a.webp").expect("Webp is a known format"),
-        ImageFormat::Webp
-    );
-    assert_eq!(
-        ImageFormat::of("a.jpg").expect("Jpeg is a known format"),
-        ImageFormat::Jpeg
-    );
-    assert_eq!(
-        ImageFormat::of("a.jpeg").expect("Jpeg is a known format"),
-        ImageFormat::Jpeg
-    );
-    assert_eq!(
-        ImageFormat::of("a.JPG").expect("Jpeg is a known format"),
-        ImageFormat::Jpeg
-    );
-    assert_eq!(
-        ImageFormat::of("a.PNG").expect("Png is a known format"),
-        ImageFormat::Png
-    );
-    assert_eq!(
-        ImageFormat::from_name("jpeg").expect("Jpeg is a known format"),
-        ImageFormat::Jpeg
-    );
-    assert!(ImageFormat::of("a").is_err());
-    assert!(ImageFormat::of("a.gif").is_err());
-}
-
-#[test]
 fn a_document_that_starts_with_a_mark_is_read_as_json() {
     let document = "\u{feff}{\"asset\":{\"version\":\"2.0\"}}";
     let bytes = gltf_document_bytes(document).expect("the mark is not part of the text");

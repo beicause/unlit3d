@@ -19,8 +19,8 @@ use crate::Entity;
 
 /// What tells one world from another.
 ///
-/// The number behind it is assigned in creation order and is not stable across
-/// runs; [`Debug`] prints it, so an id reads as `WorldId(3)` in a log.
+/// Only equality and hashing identify a world. Its [`Debug`] representation
+/// is for diagnostics, not ordering or persistence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WorldId(u64);
 

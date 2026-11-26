@@ -796,178 +796,25 @@ camera.
 
 ## Loading glTF documents
 
-The `gltf` module (cargo feature `gltf`, off by default) loads a
-[glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) document —
-`.glb` or `.gltf` — into a `LitGltf`. The document, its buffers and its
-images are parsed and decoded eagerly in the constructor, and every node's
-world-space transform is computed up front, so `LitGltf` is a *record* of the
-model, not a GPU resource: it owns no `World` and no
-[`MeshSource`](mesh_source::MeshSource).
+Enable the `gltf` feature and open a `.glb` or `.gltf` with `LitGltf::load`,
+or use `LitGltf::from_bytes` for a self-contained document. Call
+`insert_asset` to upload resources and prepare the default scene, then spawn
+`LitModelBundle::new(asset.model)` under the same mesh source. The pass still
+needs a camera of its own. The model keeps its draw handles, so you can drop
+both the parsed document and the resource table after preparing it. Despawn
+the root to remove an instance.
 
-Compressed primitives are decoded at import with `draco-core`, a pure-Rust
-decoder, so a document carrying `KHR_draco_mesh_compression` loads on every
-target the engine runs on, wasm32 included. Primitives that name the same
-buffer view — the extension has no notion of a per-primitive stream — share one
-decoding of it. The import and the GPU format each image is uploaded in are the
-`gltf` module's own subject; what follows is what the module patches into the
-world you already render.
+Use `insert_asset_with` to choose clips by document `AnimationId`; their
+order in the selection determines their indices in the model. Select a clip
+in `LitModelAnimation`. `Playing` advances and samples it on dispatched
+frames; `Manual` requires writing the `AnimationTime` and calling
+`LitModelBundle::evaluate`. Both sample once at spawn.
 
-Use `LitGltf::insert_asset` to upload a document and prepare its default scene,
-then spawn a `LitModelBundle` with `asset.model` under the same mesh source.
-Use `insert_asset_with` to prepare only the requested clips, in model clip
-order. The model retains its draw handles, so the document and the asset's
-resource table need not outlive it. The bundle's root `Transform` places the
-whole model, including animated nodes and world-space skin poses. The bundle
-evaluates once at spawn; the callback at `LIT_MODEL_UPDATE_ORDER` evaluates
-only instances with a playing clock.
-Write `LitModelAnimation` to select a clip, and its `LitModelClock` to say who
-drives the time: `Playing` advances it by the frame's delta on every dispatched
-frame, while `Manual` leaves playback to the caller, who writes
-`LitModelAnimation::time` with an `AnimationTime` and samples it with
-`LitModelBundle::evaluate` — no
-frame advances or evaluates a manual instance, so its pose is exactly the time
-the caller last sampled, whatever order the caller wrote it in. Despawn the root
-to remove the whole instance;
-the nodes it spawned are the model's own, so a subtree despawned on its own
-leaves nothing meaningful behind. The same bundle accepts hand-authored
-`LitModel` data without glTF, and `LitModel::new` refuses data whose indices,
-key times or value counts do not agree with each other rather than sampling a
-model that cannot draw.
-
-- A document's collections are addressed by typed ids — `ImageId`,
-  `MaterialId`, `MeshId`, `PrimitiveId`, `NodeId` and `AnimationId` —
-  so a node index cannot be handed to an animation or an image by mistake. The
-  `images()`, `materials()`, `meshes()`, `primitives()`, `nodes()` and
-  `animations()` iterators yield the ids a document carries.
-- For a custom upload, use `insert_image`, `insert_material` and `insert_mesh`
-  (or their plural forms) to populate a `GltfResources` table, then convert the
-  scene with `to_model` or `to_model_with`. The table looks up GPU handles by
-  typed id, with no resource iteration order guarantee. Insert images before
-  the materials that sample them; a missing base-color image returns
-  `Error::ImageNotInserted` rather than binding an empty texture.
-- A material retains its bind group and sampled texture view. `maintain`
-  reclaims a resource after its last handle is dropped.
-- A material carrying `KHR_materials_unlit` draws unlit, its base colour
-  exactly as the file states it; every other material draws lit, shaded by the
-  lights the frame carries — a document opts out of shading, it does not opt
-  in.
-- A model node puts one entity per primitive under itself, and the clip that
-  names the node moves it: each such entity carries the uploaded
-  [`GpuMesh`](components::GpuMesh), the
-  [`GpuRenderPipeline`](components::GpuRenderPipeline)
-  for the mesh, an [`InstanceColor`](lit::InstanceColor) tinted with the
-  material's base-color factor, and — when the mesh reads a base-color texture —
-  the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
-  material is `alphaMode: BLEND` is also marked
-  [`ZSortedDrawing`](components::ZSortedDrawing), so the pass's composite blends
-  it back-to-front together with every source's blended draws, after the
-  sequenced geometry, and its pipeline writes no depth, so
-  fragments it leaves behind for later ones to composite over stay visible. An
-  `alphaMode: MASK` material instead draws binary coverage: the fragment shader
-  discards every fragment whose alpha falls below the material's `alphaCutoff`
-  (0.5 when the document leaves it out), so the pipeline's
-  `LitOptions::alpha_cutoff` is set, the spawned entity carries an
-  [`InstanceCutoff`](lit::InstanceCutoff) whose value travels in the
-  per-instance stream, and the primitive needs neither blending nor a sort.
-- A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its
-  joint stream and drawn skinned: the model creates a
-  [`SkinPose`](components::SkinPose) entity for the node's skin and puts a
-  [`SkinBinding`](components::SkinBinding) on the mesh, so writing that pose's
-  matrices is how a caller animates the skeleton.
-  `LitGltf::skin_pose` builds the document's rest pose — one matrix per
-  joint, from the joint nodes' world transforms and the skin's inverse bind
-  matrices — as a starting point, and `LitGltf::skin_joint_count` reports how
-  many joints a node's skin has. A skin whose `inverseBindMatrices` list falls
-  short of the joints it names binds the joints it leaves out at the identity,
-  and one that runs past them drops the extra matrices: the pose always states
-  one matrix per joint, both on the document and in the
-  [`LitModelSkin`](lit::LitModelSkin) a model import builds, because
-  `LitModelSkin::new` is what pairs the two lists.
-- A primitive whose mesh declares any morph target is uploaded with the
-  positional displacements of the targets that state them and drawn morphed:
-  the model creates a
-  [`MorphWeights`](components::MorphWeights) entity for the node and puts a
-  [`MorphBinding`](components::MorphBinding) on the mesh, so writing that
-  entity's weights is how a caller morphs the mesh. `LitGltf::morph_weights`
-  returns the node's starting weights — the node's own `weights` when it states
-  them, the mesh's otherwise, and zero for a target left unweighted — padded or
-  truncated to the length of the primitive's `targets` array, which is the
-  length the renderer requires. Weights are indexed by a target's slot in that
-  array, so a target that displaces only normals keeps its slot and morphs
-  nothing; counting it out would shift every later target's weight one slot
-  down and deform the mesh into a shape the document never states. One count
-  describes a whole mesh, so the loader checks the primitives of each mesh
-  against each other and refuses a document whose primitives disagree.
-- A primitive whose material is `doubleSided` is drawn from either side: the
-  pipeline variant drops its cull mode, so the back faces the single-sided
-  variant would discard are rasterized instead. Nothing else about the variant
-  changes: a back face takes the geometric normal turned towards the eye, the
-  same equation the front draws by.
-- Every primitive draws with the topology its own `mode` names, so a
-  `LINE_STRIP`, a `TRIANGLE_STRIP`, a `POINTS` or a `LINES` primitive reaches
-  the rasterizer untouched. The two modes `wgpu` has no topology for are
-  expanded at upload into the list that draws the same primitives —
-  `LINE_LOOP` into a line list that closes back to its first vertex, and
-  `TRIANGLE_FAN` into a triangle list whose every triangle keeps the document's
-  winding — which is the only place this loader rewrites geometry.
-- An instance whose composed transform has a negative determinant — a negative
-  scale being the ordinary way to state one — draws with the reversed winding
-  the specification gives it, so a negative scale mirrors the geometry rather
-  than turning it inside out and culling it. The sign is read from the matrix
-  the frame draws the entity with — not from the key the mesh was uploaded
-  with — so a `Transform` a caller or a clip turns negative mid-frame flips the
-  winding with it; a `doubleSided` material needs no flip because it culls
-  nothing. A skinned mesh ignores its entity's transform in the shader: its
-  vertices are produced in world space by the joint matrices, so neither the
-  placement nor a negative scale on the mesh entity changes the geometry. Its
-  winding is read from the pose's joint matrices instead, so a mirrored pose
-  (and the placement that is composed into every joint) still draws its front
-  faces with the right winding.
-- The UV stream is the `TEXCOORD_n` set the material's base-color texture
-  names, so a primitive that samples through `TEXCOORD_1` is textured by it. A
-  primitive whose material names a set it does not carry draws untextured
-  rather than failing the load.
-- A clip is decoded on the frame that first samples it and kept, so the
-  keyframes a channel addresses are not re-read from the document's buffers
-  every frame. `LitGltf::animation_count`, `LitGltf::animation_name` and
-  `LitGltf::animation_duration` describe the clips a document carries, and
-  `LitModel::clip_index` finds one by the name the document gave it, which is
-  steadier than a position a re-export could shuffle. A clip's `duration` is
-  the length it was authored at even when the model leaves out a node the clip
-  drives, so playback runs as long as the document says rather than stopping
-  short. A channel that states a single keyframe is kept as a constant: it has
-  no interval to interpolate over, so the clip holds the one value it names.
-
-The pipeline key a mesh is uploaded with is always derived from the primitive's
-own attributes (see `LitGltf::pipeline_key`), so the variant it draws with never
-asks for a stream the mesh does not have. The full list of what the loader reads
-and what it ignores is the `gltf` module's supported subset; a document that
-states something undrawable — a primitive too short for its `mode`, an index
-past its own vertices, a mesh whose primitives disagree about their morph
-targets, an image short of the pixels its size needs, a Draco stream that
-cannot serve what it names — is refused with an `Error` naming the document's
-own indices rather than drawn as something else.
-
-An image is uploaded in the four-channel GPU format of its bit depth, widened
-where the source carries fewer channels — which is what lets an 8-bit grayscale
-texture decode its sRGB encoding in the sampler, the way an RGB one already
-could. The normalized format clamps a sample into `0..=1`; the two float
-formats keep the range their samples state, so a highlight above one survives
-the upload and only a NaN folds to zero. The mapping, and the one format a
-device may refuse to filter (`Rgba32Float`), are in the `gltf` module. That
-filtering answer is decided once, when the image is uploaded, and carried in
-`GltfImage::filtering`: the material's bind-group layout and the pipeline key
-its primitive uploads with read that one flag, so they cannot disagree.
-
-Every upload comes with a mip chain, averaged at load time rather than left
-to a sampler reading a texture that has only its base level: a minified texture
-with one level aliases whatever the sampler is set to. Each level is the box
-average of the one above it, taken in the representation that makes an average
-mean what it does to light — an sRGB image averages in linear light, a
-half-float one in single precision, and a single-precision one in its own
-texels. Averaging a stored encoding instead would shift the level's
-brightness, which is the error the chain exists to avoid. How much of the
-chain a document builds follows `MipChain`, set with `LitGltf::mip_chain`.
+For a custom upload, populate a `GltfResources` table with `insert_image`,
+`insert_material`, and `insert_mesh` before calling `to_model` or
+`to_model_with`. Insert images before their materials; look up handles by
+typed ID, not by the table's iteration order. See the [module contract](src/gltf.rs)
+for supported materials, geometry, texture formats, deformation and errors.
 
 ## Blitz
 

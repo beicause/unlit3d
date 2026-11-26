@@ -102,7 +102,7 @@ pub(crate) fn rich_panel() -> EguiPanel {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
             |ui| {
                 ui.heading("unlit3d");
-                ui.label("draw source egui");
+                ui.label("frame source egui");
                 ui.separator();
                 ui.checkbox(&mut spin, "spin");
                 ui.add(egui::Slider::new(&mut blend, 0.0..=1.0));

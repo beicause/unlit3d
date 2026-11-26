@@ -1,6 +1,7 @@
 use super::*;
 use crate::frame::{Frame, dispatch_frame};
 use glam::{Mat4, Vec3};
+use unlit_ecs::World;
 
 fn node(parent: Option<usize>, translation: Vec3) -> LitModelNode {
     LitModelNode {

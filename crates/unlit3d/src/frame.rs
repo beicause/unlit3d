@@ -288,14 +288,9 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 
 thread_local! {
     /// The behaviour list [`dispatch`] reuses across frames.
-    ///
-    /// The initializer is already a const block. Clippy's `thread_local`
-    /// analysis differs by target and reports a candidate anyway on Android,
-    /// so the lint is silenced here rather than expected: an expectation goes
-    /// unfulfilled on every target where it does not fire.
-    #[allow(
-        clippy::missing_const_for_thread_local,
-        reason = "the initializer is already a const block"
+    #[cfg_attr(
+        target_os = "android",
+        expect(clippy::missing_const_for_thread_local, reason = "the initializer is already const")
     )]
     static BEHAVIOURS: RefCell<Vec<(FrameBehaviourOrder, Entity)>> =
         const { RefCell::new(Vec::new()) };

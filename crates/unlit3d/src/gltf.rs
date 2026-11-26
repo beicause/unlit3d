@@ -65,134 +65,55 @@
 //! states, or through the first active [`Camera`](crate::components::Camera) a
 //! source reaches, so one belongs to the caller.
 //!
-//! # Texture formats
-//!
-//! An image is uploaded in the four-channel GPU format of its bit depth: an
-//! 8-bit layout lands in `Rgba8UnormSrgb`, a 16-bit one in `Rgba16Float`,
-//! and a 32-bit float one in `Rgba32Float`. Source channels the format does
-//! not carry widen — a three-channel image gains an opaque alpha, and a
-//! one- or two-channel one fans its luma out to every color slot, with its
-//! alpha (the second channel, for a two-channel image) or opacity kept.
-//!
-//! The widening is what makes an 8-bit upload correct: WebGPU attaches the
-//! sRGB transfer function only to four-channel formats, so a grayscale texture
-//! could not decode itself, but a widened one does — the sampler decodes the
-//! texel exactly as it would an RGB one, which is the encoding the glTF spec
-//! asks of a base-color texture. The float formats are linear data, which the
-//! spec asks no transfer function of, and they upload without one.
-//!
-//! `Rgba8UnormSrgb` holds `0..=1`, so a sample outside it is clamped into that
-//! range. The two float formats keep the range their samples state, so a
-//! highlight above one reaches the shader as a highlight; only a NaN folds to
-//! zero. A decoded image carries exactly one pixel per texel of the size it
-//! states, and a document whose pixel buffer cannot fill that size is refused
-//! at load, where the image's own index is still known.
-//!
-//! Every upload carries a mip chain by default, averaged at load time rather
-//! than sampled from a texture that has only its base level: a minified
-//! texture with one level aliases whatever the sampler is set to. Each level
-//! is the box average of the one above it, taken in the representation that
-//! makes an average mean what it does to light — an sRGB image averages in
-//! linear light, a half-float one in single precision, and a single-precision
-//! one in its own texels. Averaging a stored encoding instead would shift the
-//! level's brightness, which is the error the chain exists to avoid. How much
-//! of a chain a document builds follows [`MipChain`], set with
-//! [`LitGltf::mip_chain`].
-//!
-//! `Rgba32Float` is also the only upload a device may refuse to filter: it is
-//! `unfilterable-float` without `Features::FLOAT32_FILTERABLE`, and then the
-//! material that samples it binds a non-filtering sampler — a different
-//! bind-group layout from the filtering one. The answer is decided once, when
-//! the image is uploaded, and carried in [`GltfImage::filtering`]: both the
-//! material's bind-group layout and the pipeline key its primitive uploads
-//! with read that one flag, so a material always fits the pipeline its
-//! primitive drew with.
-//!
 //! # Supported subset
 //!
-//! A material carrying `KHR_materials_unlit` draws unlit, its base colour
-//! exactly as the file states it; every other material draws lit, shaded by
-//! the lights the frame carries. A mesh draws with its base-color texture and
-//! its instance tint, and a material whose `alphaMode` is `BLEND` composites
-//! with straight alpha, drawn z-sorted so overlapping surfaces layer correctly.
-//! A `MASK` material cuts its fragments off below its `alphaCutoff` instead,
-//! so it draws binary coverage: opaque where the texel is opaque enough and
-//! absent everywhere else, blending with nothing. A primitive carrying both
-//! `JOINTS_0` and `WEIGHTS_0` uploads its actual joint stream and draws
-//! skinned; [`LitGltf::skin_pose`] turns the node's skin into the
-//! [`SkinPose`](crate::components::SkinPose) its joints deform by, and spawning
-//! such a node creates the pose entity its mesh binds to. A primitive whose mesh
-//! declares any morph target uploads the positional displacements of the ones
-//! that state them and spawns with a [`MorphBinding`](crate::components::MorphBinding)
-//! to a [`MorphWeights`](crate::components::MorphWeights) entity holding the
-//! node's starting weights — see [`LitGltf::morph_weights`] — so writing that
-//! entity is how a caller morphs the mesh. The weights are indexed by the
-//! target's slot in the primitive's `targets` array, which is the index the
-//! shader reads, so a target that displaces only normals keeps its slot and
-//! morphs nothing rather than shifting the weights of the targets after it.
-//! One count describes a whole mesh: a document whose primitives declare
-//! different numbers of targets states no single length for a weights channel,
-//! so it is refused at load rather than letting the channel and the geometry
-//! disagree.
-//! A `doubleSided` material rasterizes its back faces instead of culling them,
-//! so its geometry draws from either side.
-//! A document's animations become clips of the model [`LitGltf::to_model`]
-//! prepares: [`LitGltf::animation_count`], [`LitGltf::animation_name`] and
-//! [`LitGltf::animation_duration`] describe what the document carries, and the
-//! model samples them into its own subtree when its playback state asks for
-//! one. Nothing plays by itself; the caller selects a clip and either lets the
-//! frame dispatcher advance it or writes the time itself — see
-//! [`LitModelAnimation`](crate::lit::LitModelAnimation). A channel that states
-//! a single keyframe is kept as a constant: it has no interval to interpolate
-//! over, so it holds the one value it names for the whole clip, which is what
-//! a document means by writing only one.
-//! A primitive that carries normals uploads them, so a lit surface is shaded by
-//! the normals the document gives it rather than by the ones screen-space
-//! derivatives infer from its positions. A primitive compressed with
-//! `KHR_draco_mesh_compression` is decoded on import into the same accessors,
-//! so morph target displacements, skins and animations apply to it exactly as
-//! to an uncompressed one; its `TRIANGLE_STRIP` mode, which the extension
-//! permits, is normalized to a triangle list as the stream is decoded, and
-//! primitives naming one buffer view — the extension has no per-primitive
-//! stream — share a single decoding of it.
-//! Every other primitive draws with the topology its own mode names, with one
-//! exception: `LINE_LOOP` and `TRIANGLE_FAN` have no wgpu topology, so their
-//! index stream is rewritten at upload into the `LINE_LIST` and
-//! `TRIANGLE_LIST` of the same primitives — the only place this loader rewrites
-//! geometry. A `LINE_STRIP` or `TRIANGLE_STRIP` reaches the rasterizer
-//! untouched. An instance whose composed transform has a negative determinant
-//! draws with the reversed winding the specification gives it, so a negative
-//! scale mirrors the geometry instead of turning it inside out.
-//! Every primitive uploads its positions; its indices, `COLOR_0` and normals
-//! when the document declares them; UVs only when it samples a base-color
-//! texture, so a mesh that samples nothing carries no unused channel; and its
-//! joints and weights when it declares `JOINTS_0` and `WEIGHTS_0` both. Morph
-//! targets contribute positional displacements only. The UV stream is the set
-//! the material's base-color texture names, so a primitive that samples through
-//! `TEXCOORD_1` is textured by it; one whose material names a set it does not
-//! carry draws untextured rather than failing the load. Tangents are the one
-//! attribute a primitive can declare that the loader drops.
-//! Everything else a glTF document can carry is ignored. A mesh whose
-//! primitive uses techniques outside this subset still uploads and spawns — it
-//! just renders without them.
+//! Materials use base-color factors and textures. `KHR_materials_unlit` opts
+//! out of lighting; other PBR texture channels are not imported. `BLEND` uses
+//! straight alpha and sorts back to front without writing depth; `MASK` uses
+//! the declared cutoff (default 0.5). `doubleSided` disables culling. The
+//! renderer corrects winding for a mirrored instance at draw time; skinned
+//! geometry and its winding use the world-space joint pose, not the mesh
+//! entity's transform.
 //!
-//! A document that describes something undrawable is refused at load or at
-//! upload rather than drawn as something else: a primitive too short for its
-//! own `mode`, an index past the vertices the primitive carries, a mesh whose
-//! primitives disagree about their morph targets, an image short of the pixels
-//! its size needs, and a Draco stream that names an attribute, an accessor or a
-//! morph target it cannot serve. Each [`Error`] names the document's own
-//! indices — the mesh, primitive, image or accessor — so a caller can point at
-//! what the file got wrong.
+//! Primitives carry positions, optional indices, normals and `COLOR_0`, the
+//! base-color texture's `TEXCOORD_n` when present, and paired `JOINTS_0` and
+//! `WEIGHTS_0`. Missing UVs leave a primitive untextured. Tangents are ignored.
+//! `LINE_LOOP` and `TRIANGLE_FAN` are expanded at upload; Draco triangle
+//! strips are normalized to triangle lists at import. Other modes retain
+//! their topology.
 //!
-//! Every handle returned here keeps what it names alive: the next
-//! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
-//! a resource once the last handle to it — and the last resource depending on
-//! it — is gone, so giving up a handle is the unload.
+//! [`LitGltf::skin_pose`] and model import agree on missing inverse bind
+//! matrices (identity) and extra matrices (ignored). Morph targets move
+//! positions only; normal-only targets retain their weight slots. Initial
+//! weights come from the node, then the mesh, with missing entries zeroed.
+//! Clips are decoded on demand and cached by the document. Asset preparation
+//! decodes the selected clips before spawning; single keyframes give constant
+//! channels, and clip duration includes channels targeting omitted nodes.
+//! Instances sample at spawn; for subsequent playback see
+//! [`LitModelAnimation`](crate::lit::LitModelAnimation).
 //!
-//! `LitGltf::load("model.glb")` in the examples above opens a local file —
-//! see [`LitGltf::load`] and [`LitGltf::from_bytes`] for how a document
-//! reaches the module in the first place.
+//! # Texture formats
+//!
+//! Base-color images are widened to RGBA, replicating luma and supplying opaque
+//! alpha where absent. Eight-bit images use `Rgba8UnormSrgb`; 16-bit and 32-bit
+//! images use linear `Rgba16Float` and `Rgba32Float`, respectively. Normalized
+//! samples are clamped; float uploads preserve HDR within the target format's
+//! range and replace NaN with zero. Each upload generates the levels requested
+//! by [`MipChain`] from the decoded image, averaging sRGB in linear light.
+//! Without `FLOAT32_FILTERABLE`, an `Rgba32Float` image uses a non-filtering
+//! sampler; its [`GltfImage::filtering`] value governs both the material binding
+//! and the primitive's pipeline.
+//!
+//! # Errors and resource lifetime
+//!
+//! [`Error`] distinguishes parsing, malformed streams or images, missing
+//! dependencies, and invalid document IDs. Invalid indices, primitives too
+//! short for their topology, inconsistent morph counts and unsupported Draco
+//! stream references report the affected document IDs. An upload that samples
+//! a base-color image requires its handle in the same [`GltfResources`] table.
+//! Dropping the last handle permits the next
+//! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) to reclaim
+//! the resource once no other resource depends on it.
 
 use hashbrown::HashMap;
 use std::path::Path;

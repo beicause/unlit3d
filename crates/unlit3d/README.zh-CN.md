@@ -525,108 +525,20 @@ panic，而不是读到上传数组尾部之外。它把实体的关节矩阵—
 
 ## 加载 glTF 文档
 
-`gltf` 模块（cargo feature `gltf`，默认关闭）把一个
-[glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) 文档——`.glb`
-或 `.gltf`——加载为 `LitGltf`。文档、缓冲与图像在构造函数里被急切地解析和解码，
-每个节点的世界空间变换也提前算好，因此 `LitGltf` 是模型的**记录**，而不是 GPU
-资源：它既不拥有 `World`，也不拥有 `MeshSource`。
+启用 `gltf` 特性，用 `LitGltf::load` 打开 `.glb` 或 `.gltf`，或用
+`LitGltf::from_bytes` 读取自包含文档。调用 `insert_asset` 上传资源并准备默认场景，
+再在同一个网格源下生成 `LitModelBundle::new(asset.model)`。pass 仍需调用方提供
+相机。模型持有绘制所需的句柄，准备完成后可以释放解析后的文档和资源表。销毁根实体即可
+移除实例。
 
-压缩 primitive 在导入时用 `draco-core` 解码——一个纯 Rust 解码器——因此带
-`KHR_draco_mesh_compression` 的文档在本引擎运行的每个目标上都能加载，包括 wasm32。
-指向同一 bufferView 的多个 primitive——扩展里没有「逐 primitive 流」这个概念——共用一次解码。
-这条导入路径与「每张图像上传成什么 GPU 格式」都归 `gltf` 模块自身的文档管；
-本节介绍导入会往你已经在渲染的 world 里添加什么。
+用 `insert_asset_with` 按文档的 `AnimationId` 选择片段；选择顺序决定模型中的片段索引。
+在 `LitModelAnimation` 中选择片段。`Playing` 在帧派发时推进并采样；`Manual` 需要调用方
+写入 `AnimationTime`，再调用 `LitModelBundle::evaluate`。两种时钟都在生成时采样一次。
 
-用 `LitGltf::insert_asset` 上传文档并准备默认场景，再用 `asset.model` 在同一个网格源下生成
-`LitModelBundle`。`insert_asset_with` 只准备调用方指定的片段，并按指定顺序为模型片段编号。
-模型持有绘制所需的句柄，文档和资源表可以先释放。根 `Transform` 放置整份模型，包括动画节点和
-世界空间的蒙皮姿态。bundle 在生成时求值一次；`LIT_MODEL_UPDATE_ORDER` 的帧回调只求值播放时钟
-的实例。写入
-`LitModelAnimation` 可选择片段，其 `LitModelClock` 说明时间由谁推进：`Playing` 在每次
-帧派发中按 `FrameDelta` 推进；`Manual` 把播放交给调用方，调用方写 `LitModelAnimation::time`
-（`AnimationTime`）并用 `LitModelBundle::evaluate` 采样——帧派发既不推进也不求值手动时钟的实例，因此它画出的
-姿态就是调用方最近一次采样的时间，与调用方写入时间的先后顺序无关。销毁根实体即可移除整份实例；它生成的节点
-属于模型自己，单独销毁一棵子树不会留下有意义的东西。同一个 bundle 也接受不经 glTF 的
-手工 `LitModel` 数据；`LitModel::new` 会拒绝索引、关键时间或值数量互相矛盾的输入，
-而不是去采样一份画不出来的模型。
-
-- 文档的集合用类型化 id 寻址——`ImageId`、`MaterialId`、`MeshId`、
-  `PrimitiveId`、`NodeId` 与 `AnimationId`——节点下标因此不会误传给动画或图像。
-  `images()`、`materials()`、`meshes()`、`primitives()`、`nodes()` 与
-  `animations()` 迭代器给出文档实际携带的 id。
-- 自定义上传可用 `insert_image`、`insert_material`、`insert_mesh` 或其批量版本写入
-  `GltfResources`，再调用 `to_model` 或 `to_model_with` 转换场景。资源表按类型化 ID 查找
-  GPU 句柄，不保证资源遍历顺序。先插入图像，再插入采样它们的材质；缺少基础色图像时返回
-  `Error::ImageNotInserted`，不会绑定空纹理。
-- 材质持有绑定组和采样的纹理视图。资源的最后一个句柄释放后，`maintain` 会回收该资源。
-- 带 `KHR_materials_unlit` 的材质按无光绘制，基础色就是文件所写；其余材质按受光绘制，
-  由帧里的光照着色——文档声明的是退出着色，而不是选择受光。
-- 模型节点在自己下面为每个 primitive 生成一个实体，指出该节点的片段驱动它：各实体还携带已上传的
-  `GpuMesh`、该网格的 `components::GpuRenderPipeline`、以材质基础色因子着色的 `lit::InstanceColor`，
-  以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
-  primitive 还会带上 `ZSortedDrawing` 标记，于是 pass 的合成把它与各源的混合绘制一起
-  按由远及近的顺序混在顺次绘制之后，且其管线不写深度，使它留给后续片元混合的像素仍可见。
-  `alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
-  `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `LitOptions::alpha_cutoff` 被置位，
-  生成的实体带上 `lit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
-- 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：
-  模型为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
-  放置 `SkinBinding`，因此写入该 pose 的矩阵就是调用方驱动骨架的方式。
-  `LitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
-  pose（每个关节一个矩阵）作为起点，`LitGltf::skin_joint_count` 报告某节点的 skin 有几个
-  关节。`inverseBindMatrices` 列表短于其所命名关节时，余下关节按单位矩阵绑定；长于关节
-  时多出的矩阵被丢弃：不论在文档路径还是模型导入构建出的 `LitModelSkin` 里，pose 都
-  恰好为每个关节给出一个矩阵，因为配对两个列表的就是 `LitModelSkin::new`。
-- 网格只要声明了形变目标，该 primitive 就会连其中带位置的位移一起上传并按形变绘制：
-  模型为该节点生成一个 `MorphWeights` 实体，并在网格上放置
-  `MorphBinding`，因此写入该实体的权重就是调用方形变网格的方式。`LitGltf::morph_weights`
-  返回节点的起始权重——节点自身给出 `weights` 时用它，否则用网格的，未加权的目标为零——
-  并按 primitive 的 `targets` 数组长度补齐或截断，这正是渲染器要求的长度。权重按目标在
-  该数组中的槽位索引，因此只位移法线的目标仍占着自己的槽位、只是形变不出效果；把它排除
-  在外会让其后每个目标的权重整体前移一个槽位，把网格形变成文档从未声明的形状。一个计数
-  描述整个网格，因此加载器逐网格比对其各 primitive，不一致的文档在加载时即被拒绝。
-- 材质为 `doubleSided` 的 primitive 从两面绘制：该管线变体去掉剔除模式，于是单面变体本会
-  丢弃的背面会被光栅化。变体的其他部分都不变：背面用转向眼睛的几何法线着色，与正面走
-  同一个光照方程。
-- 每个 primitive 都用它自身 `mode` 所指的拓扑绘制，因此 `LINE_STRIP`、`TRIANGLE_STRIP`、
-  `POINTS` 与 `LINES` 都原样到达光栅器。`wgpu` 没有对应拓扑的两种模式在上传时展开成绘制
-  同样图元的列表——`LINE_LOOP` 展开为末端回到首顶点的线段列表，`TRIANGLE_FAN` 展开为每个
-  三角形都保持文档绕序的三角形列表——这是加载器唯一改写几何的地方。
-- 复合变换行列式为负的实例（负缩放是声明镜像的常用方式）按规范给出的反向绕序绘制，因此
-  负缩放是镜像几何，而不是让几何里外翻转后被剔除。符号取自该帧实际用来绘制该实体的矩阵，
-  而不取自网格上传时的管线键，因此调用方或片段在运行中把 `Transform` 改负，绕序也随之翻转；
-  `doubleSided` 材质本就什么都不剔除，无需翻转。蒙皮网格在着色器里忽略实体的变换：顶点由
-  关节矩阵直接在世界空间产出，因此网格实体的放置或负缩放都不会改变几何。它的绕序改为从姿态的
-  关节矩阵读取，所以镜像的姿态（以及复合进每个关节的放置）仍能以正确的绕序绘制正面。
-- UV 流是材质基础色纹理所指的那个 `TEXCOORD_n` 集，因此通过 `TEXCOORD_1` 采样的 primitive
-  就用它贴图。材质所指的集而 primitive 并未携带时，该 primitive 按无贴图绘制，而不是加载失败。
-- 片段在第一次采样它的那一帧解码并保留，因此通道指向的关键帧不会逐帧从文档缓冲区重读。
-  `LitGltf::animation_count`、`LitGltf::animation_name` 与 `LitGltf::animation_duration`
-  描述文档携带的片段，`LitModel::clip_index` 按文档给出的名字找到一个，
-  比一个可能被重新导出打乱的位置更稳。片段的 `duration` 始终是它被创作时的长度，
-  即使模型漏掉了该片段驱动的某个节点，因此播放长度按文档所述，而不是提前结束。
-  只声明一个关键帧的通道作为常量保留：它没有可供插值的区间，因此整个片段都持有它给出的
-  那一个值。
-
-网格上传所用的管线 key 总是由 primitive 自身的属性推导（见 `LitGltf::pipeline_key`），
-所以它绘制所用的变体绝不会要求网格不存在的流。加载器读取什么、忽略什么，完整清单见
-`gltf` 模块的支持范围；文档声明了无法绘制的东西——primitive 顶点数不足其 `mode`、索引越过
-自身顶点、同一网格的各 primitive 声明了不同的形变目标数、图像像素缓冲填不满它声明的大小、
-Draco 流无法提供它所命名的东西——会以指名文档自身索引的 `Error` 被拒绝，而不是被画成
-别的样子。
-
-图像按其位深的四通道 GPU 格式上传，源通道不足处就地拓宽——正是这一步让 8 位灰度纹理能在
-采样器里解码自己的 sRGB 编码，如同 RGB 图像一直可以的那样。归一化格式把样本夹到 `0..=1`；
-两种浮点格式保留样本声明的范围，因此高于 1 的高光原样上传，只有 NaN 归零。具体映射，以及
-设备可能拒绝过滤的唯一格式（`Rgba32Float`），见 `gltf` 模块。那个过滤答案在上传图像时确定
-一次并记在 `GltfImage::filtering`，材质绑定组布局与 primitive 上传所用的管线键都读这一个
-标志，因此两者不可能互相矛盾。
-
-每次上传都带有 mip 链，在加载时就平均出来，而不是留给采样器去读一张只有基础级的纹理：
-只有一级的纹理被缩小时，无论采样器怎么设都会走样。每一级是上一级的盒式平均值，并在「让平均
-对光而言名副其实」的表示下取得——sRGB 图像在线性光下平均，半浮点图像在单精度下平均，单精度
-图像就在自己的 texel 里平均。改为对存储编码平均会让该级亮度发生偏移，而 mip 链存在的意义正是
-避免这个误差。文档构建多长的链由 `MipChain` 决定，用 `LitGltf::mip_chain` 设置。
+自定义上传时，先用 `insert_image`、`insert_material` 和 `insert_mesh` 填充
+`GltfResources` 表，再调用 `to_model` 或 `to_model_with`。先插入图像，再插入采样
+它们的材质；按类型化 ID 查找句柄，不依赖表的遍历顺序。支持的材质、几何、纹理格式、
+变形与错误见 [模块文档](src/gltf.rs)。
 
 ## Blitz
 

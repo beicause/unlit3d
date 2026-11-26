@@ -288,7 +288,8 @@ impl Renderer {
     ///
     /// # Panics
     ///
-    /// If the context's device, queue or graph resource is gone.
+    /// If the context's device or queue is unavailable, or frame globals
+    /// cannot be read. A draw source may require additional resources.
     pub fn render(&mut self, world: &World) {
         profiling::scope!("renderer.frame");
 

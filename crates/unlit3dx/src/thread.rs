@@ -281,10 +281,9 @@ impl ThreadStatus {
 
     /// Mark the world as finished.
     ///
-    /// A world on its own thread marks itself when its loop ends; a stepped
-    /// world's host calls this when its tick returns `false`, and a world
-    /// dropped by its owner marks itself as it goes. A world that has already
-    /// ended keeps the state it ended with: a panic stays the last word.
+    /// Drivers and owners publish a normal end through this method. If the
+    /// world has already ended, it keeps its terminal state, including any
+    /// recorded failure. This does not close the command queue.
     pub(crate) fn finish(&self) {
         if self.is_finished() {
             return;

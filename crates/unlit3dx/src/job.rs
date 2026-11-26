@@ -114,10 +114,9 @@ impl From<async_channel::TrySendError<Job>> for SendError {
 
 /// A cloneable handle to a world's job queue.
 ///
-/// A world is reached either through the [`WorldHandle`](crate::handle::WorldHandle)
-/// it was spawned with or through the [`WorldSender`](crate::world::WorldSender)
-/// its proxy entity carries; both hold one of these. Sends never block: a full
-/// or stopped queue reports [`SendError`] carrying the job.
+/// Its [`WorldEndpoint`](crate::endpoint::WorldEndpoint) owns one. The
+/// [`WorldSender`](crate::world::WorldSender) on a proxy entity uses the same
+/// queue. Sends never block; a refused send returns the unrun job.
 #[derive(Clone)]
 pub struct JobSender {
     queue: async_channel::Sender<Job>,
@@ -132,10 +131,9 @@ impl JobSender {
 
     /// Queue a job. Never blocks.
     ///
-    /// An `Ok` means the job is in the queue; whether it runs is the world's
-    /// business. A world its owner has asked to stop keeps accepting jobs
-    /// until its driver's next turn, and drops them when it ends, so a caller
-    /// that must know the job ran reads the world's state instead.
+    /// An `Ok` acknowledges queueing, not execution. A stop request can race
+    /// with enqueueing, and any unstarted jobs are discarded when the driver
+    /// closes the queue. Use [`Pending`](crate::request::Pending) for a reply.
     ///
     /// A refused job comes back in the error, unrun: the queue was full, or
     /// the world had stopped. Sending it again is safe because it never

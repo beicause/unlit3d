@@ -1027,6 +1027,8 @@ P3-B 已实施。全目标全特性严格 Clippy 通过；全特性 Nextest 通�
 5. 清理 `#[allow]`，改用有理由的 `#[expect]`。维护实现审查覆盖清单：`session-86e5fd52-0e09-4b43-887e-1c31f09c5681` 原报告未逐行细读的 [`blitz/events.rs`](../../crates/unlit3d/src/blitz/events.rs)、[`blitz/fonts.rs`](../../crates/unlit3d/src/blitz/fonts.rs) 和 [`texel_array.rs`](../../crates/unlit_wgpu/src/texel_array.rs) 已完成正文及关键调用链补审，发现与实施步骤单独记录在[补审及实施计划](supplemental-review-2026-11-24.md)。这不代表已执行完整 GPU/浏览器测试。原报告另外列出的 unlit3dx app 已由 `session-dbf05a96-3b38-4f17-84be-550a326aeb20` 的全源码报告覆盖；ECS MCP host、wgpu light 和两个未指名的 tests.rs 仍标记为「尚未确认完整实现审查覆盖」。不要用 Cargo Doc JSON 的 API 审查替代函数实现审查。
 6. 若实施中确需绕开驱动或后端 bug，在触发问题的位置实施绕过，将症状、成因、绕法与代价同步记录到 [`WORKAROUND.md`](../../WORKAROUND.md) 与 [`WORKAROUND.zh-CN.md`](../../WORKAROUND.zh-CN.md)，并在绕过代码旁留注释指向对应条目。普通逻辑缺陷应直接修复，不作为绕过记录；没有新增或变更的驱动/后端绕过时，无需修改这两份文档。
 
+P3-C 已实施。全特性 Nextest 1398/1398、严格 Clippy 通过。两项 egui 快照沿用既有基线与阈值，只校正了文案；全特性 doctest 发现 README 仍调用旧顶点流方法，两版同步更正后，受影响的 `unlit_wgpu` doctest 8 项通过、1 项忽略。行数检查无达到 1000 行的文件。未复验 Android 专用 lint 或浏览器；实现审查覆盖仍按上文记录。
+
 ### P3-D：加入 Cargo Doc JSON agent API 索引
 
 **问题**

@@ -758,9 +758,8 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
 
 /// Adds a stereo block onto the chunk's interleaved frames.
 ///
-/// A mono stream gets the two channels averaged, so neither is lost; a stream
-/// wider than stereo gets them in its first two channels and nothing in the
-/// rest, which keeps whatever other sources added.
+/// For mono, add the average of left and right. Otherwise add left and right
+/// to channels 0 and 1 respectively; all other channels remain unchanged.
 fn add_stereo(left: &[f32], right: &[f32], chunk: &mut AudioChunk) {
     let channels = usize::from(chunk.channels.max(1));
     for (frame, samples) in chunk.out.chunks_mut(channels).enumerate() {

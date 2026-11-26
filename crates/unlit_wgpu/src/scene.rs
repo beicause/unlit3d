@@ -31,14 +31,10 @@
 //! or sets [`DrawEntry::scissor`] on every draw. In a composite,
 //! [`DrawOrder::After`] is that last stretch: nothing outside the trailing
 //! tier follows the clipped draws, so their rectangle cannot leak into one.
-//! The stencil reference is the
-//! same kind of pass state, but it is set on every draw (from
-//! [`DrawEntry::stencil_reference`]), so it never leaks from one draw to the
-//! next. Both are per-[`Scene`] state: [`Scene::record`] starts from the pass's
-//! own defaults, so nothing a scene leaves behind is seen by the next one. A
-//! scene's recorded stencil reference starts out unstated rather than at zero,
-//! because the pass's own starting reference is whatever its creator set — so
-//! the first draw always writes its value, even when that value is zero.
+//! Each draw states its own [`DrawEntry::stencil_reference`]. Recording
+//! writes it on the first draw, even if it is zero, and on subsequent draws
+//! only when the value changes. Scissor state is not restored between scenes
+//! recorded into the same pass.
 //!
 //! The viewport is pass state of the same kind — wgpu has no call that resets
 //! it either — but it covers a whole scene rather than one draw, so a scene
@@ -324,8 +320,8 @@ pub struct DrawEntry {
     pub scissor: Option<ScissorRect>,
     /// The stencil reference value the draw tests against.
     ///
-    /// Set on every draw (defaulting to `0`, the pass's own default), so a
-    /// draw that does not name one resets a value an earlier draw left behind.
+    /// Defaults to zero. Recording writes the first reference and writes it
+    /// again whenever the value differs from the last one recorded.
     pub stencil_reference: u32,
     /// Where the draw sits in the composite of a pass's scenes.
     ///

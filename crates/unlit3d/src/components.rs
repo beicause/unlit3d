@@ -62,53 +62,52 @@ impl Transform {
     /// comes back here: `Transform::from_matrix(placement.compute_matrix() *
     /// current.compute_matrix())`.
     ///
-    /// Two shapes a `Transform` cannot hold are lost, since it stores
-    /// translation, rotation and scale and nothing else: a sheared matrix loses
-    /// its shear, and an axis scaled to zero keeps an arbitrary rotation (there
-    /// is no direction to preserve along a collapsed axis). A mirror survives:
-    /// a reflection is not a rotation, so a matrix of negative determinant
-    /// states its sign as a negative scale on the x axis, the axis
-    /// `Affine3A::to_scale_rotation_translation` also picks, and the three
-    /// normalized axes then form a proper rotation — the result recomposes to a
-    /// matrix of the same determinant.
-    ///
-    /// Unlike `Affine3A::to_scale_rotation_translation`, a degenerate matrix is
-    /// answered rather than rejected: a zero axis keeps an arbitrary rotation
-    /// instead of failing, so no matrix an entity may carry panics here.
+    /// For finite affine matrices, scale is the length of each input axis, with
+    /// a negative X scale for a negative determinant. A rotation plus scale
+    /// round-trips even when one or more scales are zero; the rotation around
+    /// any remaining unconstrained directions is chosen deterministically.
+    /// Shear does not round-trip: the first independent directions in X, Y, Z
+    /// order determine a right-handed orthonormal basis.
     #[must_use]
     pub fn from_matrix(matrix: glam::Affine3A) -> Self {
         let translation: glam::Vec3 = matrix.translation.into();
-        let x: glam::Vec3 = matrix.matrix3.x_axis.into();
-        let y: glam::Vec3 = matrix.matrix3.y_axis.into();
-        let z: glam::Vec3 = matrix.matrix3.z_axis.into();
-        let (sx, sy, sz) = (x.length(), y.length(), z.length());
-        // A reflection states itself as a negative scale on one axis; naming x
-        // keeps the choice the same as glam's own decomposition.
-        let sign = match matrix.matrix3.determinant() < 0.0 {
-            true => -1.0,
-            false => 1.0,
+        let x = glam::Vec3::from(matrix.matrix3.x_axis).as_dvec3();
+        let y = glam::Vec3::from(matrix.matrix3.y_axis).as_dvec3();
+        let z = glam::Vec3::from(matrix.matrix3.z_axis).as_dvec3();
+        let sign = if x.dot(y.cross(z)) < 0.0 { -1.0 } else { 1.0 };
+        let scale = glam::DVec3::new(x.length() * sign, y.length(), z.length()).as_vec3();
+        let (x, y, z) = (x * sign, y, z);
+        let rotation = match (x.try_normalize(), y.try_normalize(), z.try_normalize()) {
+            (Some(x_dir), _, _) => {
+                if let Some(z_dir) = x.cross(y).try_normalize() {
+                    [x_dir, z_dir.cross(x_dir), z_dir]
+                } else if let Some(y_dir) = z.cross(x).try_normalize() {
+                    [x_dir, y_dir, x_dir.cross(y_dir)]
+                } else {
+                    let (y, z) = x_dir.any_orthonormal_pair();
+                    [x_dir, y, z]
+                }
+            }
+            (None, Some(y_dir), _) => {
+                if let Some(x_dir) = y.cross(z).try_normalize() {
+                    [x_dir, y_dir, x_dir.cross(y_dir)]
+                } else {
+                    let (z, x) = y_dir.any_orthonormal_pair();
+                    [x, y_dir, z]
+                }
+            }
+            (None, None, Some(z)) => {
+                let (x, y) = z.any_orthonormal_pair();
+                [x, y, z]
+            }
+            (None, None, None) => [glam::DVec3::X, glam::DVec3::Y, glam::DVec3::Z],
         };
+        let [x, y, z] = rotation.map(glam::DVec3::as_vec3);
         Self {
             translation,
-            rotation: glam::Quat::from_mat3(&glam::Mat3::from_cols(
-                axis_or_identity(x, sx * sign),
-                axis_or_identity(y, sy),
-                axis_or_identity(z, sz),
-            )),
-            scale: glam::Vec3::new(sx * sign, sy, sz),
+            rotation: glam::Quat::from_mat3(&glam::Mat3::from_cols(x, y, z)).normalize(),
+            scale,
         }
-    }
-}
-
-/// A unit-length axis, keeping its direction; identity when collapsed.
-///
-/// The signed length is what the caller passes, so an axis a reflection turned
-/// round divides back to the direction the rotation holds.
-fn axis_or_identity(axis: glam::Vec3, length: f32) -> glam::Vec3 {
-    if length.abs() > f32::EPSILON {
-        axis / length
-    } else {
-        glam::Vec3::X // direction is meaningless along a zero-length axis
     }
 }
 
@@ -615,6 +614,60 @@ mod tests {
             glam::Vec3::new(1.0, 2.0, 3.0),
         );
         assert_eq!(t.compute_matrix(), expected);
+    }
+
+    #[test]
+    fn mirrored_transform_keeps_its_reflection_on_the_x_scale() {
+        let matrix = glam::Affine3A::from_scale_rotation_translation(
+            glam::Vec3::new(2.0, -3.0, 4.0),
+            glam::Quat::from_rotation_y(0.7),
+            glam::Vec3::new(1.0, 2.0, 3.0),
+        );
+        let transform = Transform::from_matrix(matrix);
+        assert!(
+            transform
+                .scale
+                .abs_diff_eq(glam::Vec3::new(-2.0, 3.0, 4.0), 1e-6)
+        );
+        assert!(transform.rotation.is_normalized());
+        assert!(transform.compute_matrix().abs_diff_eq(matrix, 1e-6));
+    }
+
+    #[test]
+    fn collapsed_axes_keep_every_uncollapsed_axis() {
+        for mask in 0..7 {
+            let scales = glam::Vec3::new(
+                if mask & 1 == 0 { 0.0 } else { 2.0 },
+                if mask & 2 == 0 { 0.0 } else { 3.0 },
+                if mask & 4 == 0 { 0.0 } else { 4.0 },
+            );
+            let matrix = glam::Affine3A::from_scale_rotation_translation(
+                scales,
+                glam::Quat::from_euler(glam::EulerRot::XYZ, 0.4, 0.7, 1.1),
+                glam::Vec3::new(1.0, 2.0, 3.0),
+            );
+            let transform = Transform::from_matrix(matrix);
+            assert!(transform.rotation.is_normalized(), "{mask:b}");
+            assert!(
+                transform.compute_matrix().abs_diff_eq(matrix, 1e-6),
+                "{mask:b}"
+            );
+        }
+    }
+
+    #[test]
+    fn sheared_transform_keeps_lengths_but_orthogonalizes_directions() {
+        let matrix = glam::Affine3A::from_cols(
+            glam::Vec3A::X,
+            glam::Vec3A::new(3.0, 4.0, 0.0),
+            glam::Vec3A::Z,
+            glam::Vec3A::ONE,
+        );
+        let transform = Transform::from_matrix(matrix);
+        assert!(transform.rotation.is_normalized());
+        assert!(transform.rotation.abs_diff_eq(glam::Quat::IDENTITY, 1e-6));
+        assert_eq!(transform.scale, glam::Vec3::new(1.0, 5.0, 1.0));
+        assert_eq!(transform.translation, glam::Vec3::ONE);
     }
 
     #[test]

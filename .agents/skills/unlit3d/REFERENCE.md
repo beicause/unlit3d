@@ -227,7 +227,7 @@
 
 模型节点、绘制实体、蒙皮姿态与权重实体都是模型自持的派生状态，`LitModelInstance`（`nodes()` / `draws()` / `poses()` / `weights()` / `matrices()`）只读。单独 despawn 一棵子树不受支持：失效的句柄会让那次求值静默跳过它们，留下半活的模型；要移除就 despawn 根。
 
-低层 API：`LitGltf`（`crates/unlit3d/src/gltf.rs`，`gltf/` 目录下的子模块由它声明）：`load` / `from_bytes`、`pipeline_key`、`insert_resources`、`to_model`（装配整份模型为 `LitModel`，放置交给 `LitModelBundle` 的根 `Transform`，不要在节点上另写变换）、`animation_count` / `animation_name` / `animation_duration`、`skin_pose` / `morph_weights`、`insert_image` / `insert_material` / `insert_mesh`（`insert_resources` / `insert_materials` / `insert_material` 都返回 `Result`：图像没插就插材质得 `Error::ImageNotInserted`）。`pipeline_key` 按材质决定无光与否：材质带 `KHR_materials_unlit` 就 unlit，否则 lit。镜像绕序在绘制时按该帧实体变换的行列式符号特化，不在 spawn 时定死；蒙皮网格在着色器里忽略实体变换、顶点由骨骼矩阵直接在世界空间产出，因此实体变换不影响蒙皮网格的绕序。
+低层 API：`LitGltf`（[模块文档](../../../crates/unlit3d/src/gltf.rs)）提供 `load` / `from_bytes`、`pipeline_key`、`insert_resources` / `to_model`、`animation_id` / `animation_name` / `animation_duration`、`skin_pose` / `morph_weights`。单项上传用 `insert_image` / `insert_material` / `insert_mesh`；先插图像，再插材质，否则返回 `Error::ImageNotInserted`。上传时生成 mip，准备模型时解码选中的片段，而不是在第一次绘制时解码。
 
 ## 常用常量
 
