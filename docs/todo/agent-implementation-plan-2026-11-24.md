@@ -24,7 +24,7 @@
 | P1-B 失败原因 | `b599b75` | 34 文件 +1441/−538 | `WorldError` 到达场景/step 出口、`ToolError` 的 kind 可分支、拒绝与入队后停机分别结算 | 已验收 |
 | P1-C `RunShape` | `754c3a8` | 13 文件 +472/−223 | 8 条开关组合解析、`TurnOutcome` 区分 `Suspended` 与 `Unprepared` | 已验收 |
 | P1-D `WorldEndpoint` | `0ab3d7b` | 38 文件 +1792/−1297 | endpoint 排队、三种 world 的 ownership/driving、`NoHandle`/`Detached`/二次等待、setup panic 报因且不留半成品 | 已验收 |
-| P2-A mesh 资源模型 | `3a0b77a` | 28 文件 +991/−426 | `MeshDescriptor` 的 8 类拒绝（无图元、索引/顶点缓冲过短、slot 越界、零 stride、无 morph target、位移不足、pose 短于 joints） | 已验收 |
+| P2-A mesh 资源模型 | `d34701a` | 28 文件 +991/−426 | `MeshDescriptor` 的 8 类拒绝（无图元、索引/顶点缓冲过短、slot 越界、零 stride、无 morph target、位移不足、pose 短于 joints） | 已验收 |
 
 ### 验收命令与结果
 
