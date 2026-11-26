@@ -2,7 +2,14 @@
 
 **这是一份索引，不是签名抄本。** 每条只告诉你「有这个符号、它干什么、去哪个文件搜」，参数与返回类型一律回源码读——项目极早期、API 常改，手抄的签名表每一轮都会漏几条，抄错比抄不到更糟。
 
-排序：可抄的骨架看 `crates/unlit3d/README.md` 的「Example」doctest（`cargo xtask test` 每趟编译它，不会过时）→ 确切签名看源码 → 本文只解决「该搜什么」。
+## 查当前版本的 API
+
+先用下文确定要查的符号，再用结构化索引缩小范围；字段、trait 约束和行为以相同版本、相同 feature 下的源码和 rustdoc 为准。可复用的骨架见 [unlit3d README 的 Example](../../../crates/unlit3d/README.md#example) doctest。
+
+- **在本库仓库**：用 [API 索引命令](../../../xtask/README.md#cargo-xtask-api-index) 生成 `target/api-index.json`，按 `entries[].path` 筛选，只读命中的签名、文档首行及 `file` / `line`。
+- **在下游项目**：先用 `cargo metadata --format-version 1 --locked` 查 `packages` 中的 `id`、`manifest_path`，并按对应 `resolve.nodes` 查实际 feature。需要结构化文档且已有 nightly 时，在下游项目运行 `cargo +nightly doc -p unlit3d --no-deps -Z unstable-options --output-format json --message-format=json`，从 `compiler-artifact` 的 `filenames` 找到 JSON。查多 world 换成 `-p unlit3dx`，有多个版本时写 `-p unlit3d@版本`；沿用下游实际构建的 target 和 feature 选项。直接读取 rustdoc JSON 时先确认 `format_version`，用 `paths` 查名称、`index` 查声明和 `span`。无 nightly 时，直接读取 `manifest_path` 所在目录的源码，不需要安装工具或打开浏览器。
+
+Rustdoc JSON 不含函数体；判断副作用、取消、时序与错误传播时沿 `span` 回源码，不把 API 索引当作实现审查。
 
 决策与约束见 [SKILL.md](SKILL.md)，用法见 [SCENE.md](SCENE.md) / [MULTI_WORLD.md](MULTI_WORLD.md)，示例与命令见 [EXAMPLES.md](EXAMPLES.md)。
 

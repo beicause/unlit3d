@@ -17,6 +17,7 @@ cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
 cargo xtask check          # typos, tombi, clippy and the doc build, then `cargo fmt --check`
 cargo xtask test           # nextest over unit and integration tests, then the doctests
 cargo xtask line-count     # print every Rust file's line count, marking the ones at 1000 lines
+cargo xtask api-index      # index source-backed workspace API declarations as JSON
 cargo xtask print-gpu      # print the GPU devices the tests draw with, as JSON
 cargo xtask miri           # run the ECS's tests under Miri, which is what checks its unsafe
 cargo xtask test-wasm      # run the GPU tests in a browser, on WebGPU and on WebGL2
@@ -112,6 +113,26 @@ reaching the ceiling is a design question rather than a diagnostic. For the same
 reason the task reports rather than fails — the files above the line today are
 the ones still to be split, and a task that stayed red until then would be
 ignored. It does need git, but so does everything else here.
+
+### `cargo xtask api-index`
+
+Builds the workspace's rustdoc JSON with the installed `nightly`, then writes
+`target/api-index.json`. If needed, install it with `rustup toolchain install nightly`.
+`--all-features` includes optional APIs; `--document-private-items` includes
+private declarations. Cargo reuses build artifacts in `target/api-index-rustdoc`
+on subsequent runs. Neither output is version-controlled.
+
+The index records the actual rustc version, options, and rustdoc schema version.
+Each entry contains a Rust path, kind, source file and line, signature when it
+can be recovered from source, first nonempty doc line, visibility, and deprecation.
+The index omits synthetic and blanket impls and declarations without workspace
+source locations. Rustdoc JSON contains no function bodies; follow the source
+location to inspect behavior.
+
+Only rustdoc JSON format 61 is accepted. On a format change, use a compatible
+nightly or update the parser and its schema fixtures together; then run
+`cargo nextest run -p xtask -E 'test(api_index)'` and regenerate the index to
+check paths against their source declarations.
 
 ### `cargo xtask print-gpu`
 

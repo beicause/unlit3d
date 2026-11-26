@@ -98,6 +98,14 @@ SwiftShader's, which a bare image has to install. Which check needs which is in
 [`WORKAROUND.md`](WORKAROUND.md), "A WebGPU canvas reads back transparent
 without a window and a GL driver".
 
+## API index checks
+
+Run `cargo nextest run -p xtask -E 'test(api_index)'` for the rustdoc schema,
+export traversal and source-span fixtures. Run `cargo xtask api-index
+--all-features` with a compatible nightly to also test against real rustdoc
+output. The [API index task](xtask/README.md#cargo-xtask-api-index) indexes
+declarations, not function bodies; it does not verify implementation behavior.
+
 ## Per-crate coverage
 
 | Crate | What its tests cover |

@@ -80,6 +80,12 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 [`WORKAROUND.zh-CN.md`](WORKAROUND.zh-CN.md) 的「没有窗口、系统又没有 GL 驱动时，
 WebGPU 画布读出来全是透明」。
 
+## API 索引检查
+
+用 `cargo nextest run -p xtask -E 'test(api_index)'` 验证 rustdoc schema、重导出遍历和源码位置。
+有兼容的 nightly 时，另运行 `cargo xtask api-index --all-features`，核验实际 rustdoc 输出。
+[API 索引任务](xtask/README.md#cargo-xtask-api-index) 只索引声明，不含函数体，也不验证实现行为。
+
 ## 各 crate 的覆盖
 
 | Crate | 测试覆盖的内容 |

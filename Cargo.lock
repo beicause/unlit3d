@@ -7575,8 +7575,10 @@ dependencies = [
  "futures-lite",
  "http-body-util",
  "hyper",
+ "quote",
  "serde_json",
  "smol-hyper",
+ "syn 2.0.119",
  "ureq",
 ]
 

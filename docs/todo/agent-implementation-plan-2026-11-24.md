@@ -1042,7 +1042,7 @@ Cargo Doc JSON 能提供大量 API、签名和源码 span 信息，但当前没�
 
 **实施步骤**
 
-1. 增加 `cargo xtask api-index`：固定 nightly/toolchain 版本，执行 `cargo +nightly doc --workspace --no-deps -Z unstable-options --output-format json`。
+1. 增加 `cargo xtask api-index`：使用已安装的 `nightly`，不固定日期；执行 `cargo +nightly doc --workspace --no-deps -Z unstable-options --output-format json`，在输出中记录实际工具链。
 2. 解析 `format_version`，若与工具支持版本不匹配则明确失败；不要静默解析未知 schema。
 3. 剥掉 synthetic/blanket impl 后输出 `target/api-index.tsv` 或等价结构化索引，至少包含：完整路径、签名、源文件与行号、文档首行、可见性、弃用信息。
 4. 文档说明 JSON 不含函数体，需按 `span` 回到源码；`--document-private-items` 仅在需要实现索引的模式启用。
@@ -1054,6 +1054,8 @@ Cargo Doc JSON 能提供大量 API、签名和源码 span 信息，但当前没�
 - 新环境能按文档生成 JSON 与索引；稳定版不误报为支持 `-Z`，nightly 缺失时给出可操作错误。
 - 索引路径可定位到实际源码行，且不把 synthetic impl 当作主要 API。
 - toolchain/schema 变更有失败提示和更新步骤。
+
+P3-D 已实施。用本机 `nightly`（rustdoc JSON schema 61）运行 `cargo xtask api-index --all-features --document-private-items`，生成 41,121 条声明；抽查 prelude 重导出及 `WorldEndpoint::stop` 的路径和源码定位。四项索引测试与严格 xtask Clippy 通过。生成命令仍报告代码中既有的 rustdoc 链接警告。未在缺少 nightly 的独立环境复跑；未知 schema 的拒绝由 fixture 覆盖。
 
 ## 集成验收清单
 

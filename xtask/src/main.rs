@@ -8,6 +8,7 @@
     reason = "reporting to the terminal is this binary's job"
 )]
 
+mod api_index;
 mod build_android;
 mod check;
 mod http;
@@ -32,6 +33,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let args: Args = argh::from_env();
     match args.task {
+        Task::ApiIndex(task) => api_index::run(&task),
         Task::Check(task) => check::run(task.release),
         Task::Test(task) => test::run(task.release),
         Task::TestWasm(task) => test_wasm::run(&task),
@@ -59,6 +61,8 @@ struct Args {
 #[derive(FromArgs)]
 #[argh(subcommand)]
 enum Task {
+    /// Index workspace API declarations from rustdoc JSON.
+    ApiIndex(api_index::Args),
     /// Run the typo and TOML checks, then clippy and the doc build over the
     /// whole workspace, then check formatting.
     Check(CheckArgs),
