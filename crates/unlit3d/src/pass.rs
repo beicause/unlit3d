@@ -205,12 +205,22 @@ impl FramePass {
 
     /// What names the target this pass draws into, while it is bound.
     ///
-    /// The color attachment names it; a pass that states only a depth view —
-    /// a prepass — is named by that instead. Either node keeps its id for the
-    /// target's whole life, so the id survives a resize.
+    /// Every attachment the pass states is part of the name: the color view,
+    /// the depth view and the multisample view. Two passes that resolve into
+    /// one color view but differ in depth or sample count therefore draw into
+    /// different targets, which is what a source keyed per target needs — the
+    /// pipeline it builds depends on all three. `None` while the pass draws
+    /// nowhere.
+    ///
+    /// Each node keeps its id for the target's whole life, so the id survives
+    /// a resize.
     pub(crate) fn target_id(&self, world: &World) -> Option<RenderTargetId> {
-        let view = self.color.as_ref().or(self.depth.as_ref())?;
-        Some(RenderTargetId::of(world, view))
+        RenderTargetId::of(
+            world,
+            self.color.as_ref(),
+            self.depth.as_ref(),
+            self.msaa.as_ref(),
+        )
     }
 
     /// The attachments this pass records into, read out of the frame's graph.

@@ -12,6 +12,7 @@ use std::rc::Rc;
 use crate::common::{COLOR_FORMAT, Ctx, HEIGHT, TestGpu, WIDTH};
 use unlit_ecs::Scope;
 use unlit_ecs::bundle;
+use unlit_wgpu::resources::{ResHandle, TextureView};
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
@@ -82,6 +83,25 @@ fn bind_shared_target(
         .expect("the context's device");
     let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
     let (_, color_view) = gpu.register_texture(world, color.clone());
+    for &pass in passes {
+        bind_over(world, gpu, pass, color_view.clone(), samples, with_depth);
+    }
+    color
+}
+
+/// State `pass`'s attachments over an existing colour view.
+///
+/// Two passes may draw into one colour view with different depth or sample
+/// counts; this is what a test of target identity uses to keep the view out of
+/// the difference.
+fn bind_over(
+    world: &World,
+    gpu: &TestGpu,
+    pass: Entity,
+    color_view: ResHandle<TextureView>,
+    samples: u32,
+    with_depth: bool,
+) {
     let attachments = FrameAttachments::new(
         world,
         gpu.context,
@@ -92,11 +112,8 @@ fn bind_shared_target(
             depth: with_depth.then_some(DepthAttachment::Transient),
         },
     );
-    for &pass in passes {
-        let mut row = world.root_scope().query_one::<&mut FramePass>(pass);
-        row.get().set_attachments(&attachments, color_view.clone());
-    }
-    color
+    let mut row = world.root_scope().query_one::<&mut FramePass>(pass);
+    row.get().set_attachments(&attachments, color_view);
 }
 
 /// Bind a fresh offscreen target to `pass`, and return the colour texture.
@@ -580,6 +597,52 @@ async fn a_resize_leaves_one_size_behind() {
     );
 }
 
+/// Two passes over one colour view draw into different targets when their
+/// other attachments differ.
+///
+/// The colour view is what pixels land in, but depth and multisampling belong
+/// to the attachment set: a source keyed per target would otherwise build one
+/// pipeline for a pass that depth-tests and one for a pass that does not.
+async fn one_colour_view_is_two_targets_when_the_depth_differs() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let first_pass = gpu.pass();
+    let root = world.root_scope().entity();
+    let second_pass = spawn_pass(&mut world, root, 1);
+    let device = gpu
+        .context
+        .device(&world.root_scope())
+        .expect("the context's device");
+    let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
+    let (_, color_view) = gpu.register_texture(&world, color);
+    bind_over(&world, &gpu, first_pass, color_view.clone(), 1, false);
+    bind_over(&world, &gpu, second_pass, color_view, 1, true);
+
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let shared = world.shared();
+    world.scope_mut(shared).spawn(bundle![Source::new(
+        SourceOrder::MESH,
+        RecordingSource { seen: seen.clone() }
+    )]);
+
+    gpu.render(&world);
+    let seen = seen.borrow().clone();
+    assert_eq!(seen.len(), 2, "both passes reach the shared source");
+    assert_eq!(
+        seen[0].target.color, seen[1].target.color,
+        "both passes resolve into the one colour view"
+    );
+    assert_ne!(
+        seen[0].target.depth, seen[1].target.depth,
+        "only one of the passes depth-tests, so the targets differ, got {seen:?}"
+    );
+    assert_ne!(
+        seen[0].target, seen[1].target,
+        "a target is its whole attachment set, not the view it resolves into"
+    );
+}
+
 // This file's share of the suite's registry: the suite root concatenates
 // it with its siblings', and `gpu_test_main!` there runs the result under
 // `cargo nextest` natively and in a browser through the wasm export it adds.
@@ -587,6 +650,7 @@ gpu_tests! {
     a_build_is_told_the_pass_target_and_frame_it_belongs_to,
     a_target_applies_its_size_policy_to_the_size_it_is_told,
     a_resize_leaves_one_size_behind,
+    one_colour_view_is_two_targets_when_the_depth_differs,
     two_passes_draw_their_own_sources,
     a_nested_source_is_built_by_every_pass_above_it,
     a_source_no_pass_reaches_draws_nowhere,

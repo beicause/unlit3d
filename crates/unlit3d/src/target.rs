@@ -38,12 +38,18 @@ pub struct PassId {
 
 /// One render target, in one world.
 ///
-/// A target is identified by its color attachment: the resource node the pass
-/// binds as color. That node keeps its id for the target's whole life — a
-/// window's swap chain replaces the view in place each frame, and an offscreen
-/// target replaces its color and its view in place on a resize — so the id
-/// survives the resize and the frames in between, and changes only when the
-/// pass starts drawing somewhere else.
+/// A target is the whole set of attachments a pass draws into, so the id names
+/// each of them: the color node, the depth node and the multisample node. A
+/// pass that adds depth or multisampling to a color view draws into another
+/// target than one that does not, even though both resolve into the same view
+/// — depth loads, clears and sample counts belong to the attachment set, not
+/// to the view it resolves into.
+///
+/// Each node keeps its id for the target's whole life: a window's swap chain
+/// replaces the view in place each frame, and an offscreen target replaces its
+/// color and its views in place on a resize. The id therefore survives the
+/// resize and the frames in between, and changes only when the pass starts
+/// drawing somewhere else.
 ///
 /// Two passes that draw into one target share an id and do not share a
 /// [`PassId`]: that is the difference a source keying per-target state needs,
@@ -52,18 +58,38 @@ pub struct PassId {
 pub struct RenderTargetId {
     /// The world the target's resource graph belongs to.
     pub world: WorldId,
-    /// The color attachment's resource node.
-    pub color: ResId,
+    /// The color attachment's resource node, if the pass has one.
+    pub color: Option<ResId>,
+    /// The depth attachment's resource node, if the pass has one.
+    pub depth: Option<ResId>,
+    /// The multisample attachment's resource node, if the pass has one.
+    pub msaa: Option<ResId>,
 }
 
 impl RenderTargetId {
-    /// Name the target whose color attachment is `color`.
+    /// Name the target a pass drawing into these attachments draws into, or
+    /// `None` when it draws nowhere.
+    ///
+    /// The handles are the pass's own attachment views, in the order a pass
+    /// states them: color, depth, multisample. Any subset may be present — a
+    /// prepass has only depth, an unmultisampled pass has no third — but at
+    /// least one has to be, since a pass with no attachment records nothing.
     #[must_use]
-    pub fn of(world: &World, color: &ResHandle<TextureView>) -> Self {
-        Self {
-            world: world.id(),
-            color: color.id(),
+    pub fn of(
+        world: &World,
+        color: Option<&ResHandle<TextureView>>,
+        depth: Option<&ResHandle<TextureView>>,
+        msaa: Option<&ResHandle<TextureView>>,
+    ) -> Option<Self> {
+        if color.is_none() && depth.is_none() && msaa.is_none() {
+            return None;
         }
+        Some(Self {
+            world: world.id(),
+            color: color.map(ResHandle::id),
+            depth: depth.map(ResHandle::id),
+            msaa: msaa.map(ResHandle::id),
+        })
     }
 }
 
@@ -118,19 +144,46 @@ mod tests {
     fn one_worlds_entity_is_not_anothers_target() {
         let one = World::new();
         let two = World::new();
+        let named = |world: &World| RenderTargetId {
+            world: world.id(),
+            color: Some(ResId::from_bits(1)),
+            depth: None,
+            msaa: None,
+        };
 
         // Two worlds never hand out the same id, so a target named in one is
         // never mistaken for a target named in the other.
         assert_ne!(one.id(), two.id());
-        assert_ne!(
-            RenderTargetId {
-                world: one.id(),
-                color: ResId::from_bits(1),
-            },
-            RenderTargetId {
-                world: two.id(),
-                color: ResId::from_bits(1),
-            }
+        assert_ne!(named(&one), named(&two));
+    }
+
+    #[test]
+    fn a_target_is_its_whole_attachment_set() {
+        let world = World::new();
+        let color = Some(ResId::from_bits(1));
+        let depth = Some(ResId::from_bits(2));
+        let target = |color, depth| RenderTargetId {
+            world: world.id(),
+            color,
+            depth,
+            msaa: None,
+        };
+
+        // The same color view with and without depth is two targets: what a
+        // pass clears and depth-tests through belongs to the set, not to the
+        // view it resolves into.
+        assert_ne!(target(color, None), target(color, depth));
+        assert_eq!(target(color, depth), target(color, depth));
+    }
+
+    #[test]
+    fn a_pass_that_draws_nowhere_names_no_target() {
+        let world = World::new();
+
+        assert_eq!(
+            RenderTargetId::of(&world, None, None, None),
+            None,
+            "a parked pass draws into no target"
         );
     }
 

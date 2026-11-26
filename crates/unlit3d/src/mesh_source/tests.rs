@@ -178,7 +178,8 @@ fn bind_test_target(world: &World, scope: &Scope<'_>, ctx: RenderContext) -> Pas
             world: world.id(),
             entity: Entity::from_bits(0),
         },
-        target: RenderTargetId::of(world, &color),
+        target: RenderTargetId::of(world, Some(&color), Some(&depth), None)
+            .expect("a pass with a colour and a depth view draws somewhere"),
         frame: FrameId::default(),
         surface: attachments.surface_key(),
         width: TEST_SIZE,

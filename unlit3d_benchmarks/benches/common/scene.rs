@@ -135,7 +135,9 @@ impl Frame {
             },
             target: RenderTargetId {
                 world: world.id(),
-                color: unlit_wgpu::resources::ResId::from_bits(0),
+                color: Some(unlit_wgpu::resources::ResId::from_bits(0)),
+                depth: None,
+                msaa: None,
             },
             frame: FrameId::default(),
             surface: SURFACE,

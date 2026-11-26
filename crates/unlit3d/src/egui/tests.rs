@@ -43,7 +43,9 @@ fn test_target(world: &World) -> PassInfo {
         },
         target: RenderTargetId {
             world: world.id(),
-            color: ResId::from_bits(0),
+            color: Some(ResId::from_bits(0)),
+            depth: None,
+            msaa: None,
         },
         frame: FrameId::default(),
         surface: SurfaceKey {

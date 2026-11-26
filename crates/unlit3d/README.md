@@ -269,6 +269,10 @@ passes reuse their own entry instead of rebuilding it every frame. Two passes ma
 draw into one target, and two targets may share a
 [`SurfaceKey`](unlit_wgpu::specialize::SurfaceKey), which is only a pipeline
 specialization key; state cached by the pair needs the identities, not the key.
+A target is the whole attachment set, not the view it resolves into: two passes
+that render into one colour view but differ in depth or sample count name two
+[`RenderTargetId`](target::RenderTargetId)s, since what a pass clears and
+depth-tests through belongs to the set.
 The "main 3D scene" is just the scene the first recorded source produced, not a
 special case of the renderer.
 
