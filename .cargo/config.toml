@@ -1,10 +1,6 @@
 [alias]
 xtask = "run -p xtask --"
 
-[profile.dev]
-debug = 1
-split-debuginfo = "unpacked"
-
 # Every wasm build of this repository enables `simd128`: every browser that
 # runs WebAssembly also runs fixed-width SIMD, and rapier's physics and
 # rustysynth's mixing both vectorize under it. This section is what a local
