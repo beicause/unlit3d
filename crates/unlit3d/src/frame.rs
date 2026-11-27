@@ -288,6 +288,10 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 
 thread_local! {
     /// The behaviour list [`dispatch`] reuses across frames.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
     static BEHAVIOURS: RefCell<Vec<(FrameBehaviourOrder, Entity)>> =
         const { RefCell::new(Vec::new()) };
 }

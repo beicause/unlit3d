@@ -253,9 +253,17 @@ impl OnAudioPostFill {
 
 thread_local! {
     /// The source list [`dispatch_audio_fill`] reuses across fills.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
     static SOURCES: RefCell<Vec<(AudioFillOrder, Entity)>> = const { RefCell::new(Vec::new()) };
 
     /// The post-fill list [`dispatch_audio_fill`] reuses across fills.
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "the initializer is already a const block"
+    )]
     static POST_SOURCES: RefCell<Vec<Entity>> = const { RefCell::new(Vec::new()) };
 }
 

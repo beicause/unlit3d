@@ -65,6 +65,7 @@
 - **跑测试用 `cargo nextest run`，不用 `cargo test`**。`nextest` 比 `test` 更快，输出格式更友好。唯一例外是 `cargo test --doc`，因为 `nextest` 不跑 doctest。`cargo xtask test` 快捷命令会跑 nextest 和 doctest 两者。
 - **只支持最新稳定版 Rust，不考虑 MSRV**：不设 `rust-version`，不为旧版编译器保留兼容性，可以直接使用当前 stable 的工具链特性与标准库 API，CI 也只用 `stable`。
 - **本地跑 cargo 时，不用设 RUSTFLAGS**，遵循本地 cargo 配置即可，不要照抄 CI 设置 RUSTFLAGS `debuginfo=0`，设置它会让编译缓存失效。
+- **检查或编译 Android 目标时，一律用 `cargo ndk`**，不用 `cargo check --target aarch64-linux-android` 或给 cargo 传 `--target` 的其他形式。原因：`cargo ndk` 把 NDK 的 clang 与链接器接到该目标上，直接调用 cargo 只用缺省链接器，C 依赖（如 `blake3`）的构建脚本会因找不到 `gnu/stubs-32.h` 而失败。CI 的 `check-android` 与 `build-android` 也是这么调的：`cargo ndk -t arm64-v8a -P 26 clippy ...`。
 - **常用命令见 `cargo xtask --help`**，以及 `xtask` 包目录的 [`README.md`](./xtask/README.md)。
 - **优化二进制程序编译/链接的时间和空间**：本库为编译时间和产物磁盘占用做以下优化：
   1. 把 `include_bytes!` 放进单独的 crate，并导出带 `#[inline(never)]` 的、返回静态切片的函数，如 `unlit3d_asset_bytes`、`unlit3dx_asset_bytes`。原因：避免修改库或应用程序时重复编译 `include_bytes!` 部分——`include_bytes!` 大文件编译较慢。
