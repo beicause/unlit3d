@@ -598,7 +598,83 @@ impl SceneSource for LineSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::spawn_context;
+    use crate::target::RenderTargetId;
+    use unlit_ecs::{Entity, World};
+    use unlit_wgpu::context::RenderDevice;
+    use unlit_wgpu::resources::{ResId, ResourceGraph};
     use unlit_wgpu::specialize::SurfaceKey;
+
+    /// A world holding a frame context on wgpu's noop backend, and that
+    /// context.
+    fn test_context() -> (World, RenderContext) {
+        let mut world = World::new();
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let ctx = spawn_context(
+            &mut world,
+            RenderDevice::unwatched(device, queue),
+            ResourceGraph::new(),
+        );
+        (world, ctx)
+    }
+
+    /// A pass target in `world`, numbered `pass` and built in `frame`.
+    fn test_info(world: &World, pass: u64, frame: u32) -> PassInfo {
+        let world_id = world.id();
+        PassInfo {
+            pass: PassId {
+                world: world_id,
+                entity: Entity::from_bits(pass),
+            },
+            target: RenderTargetId {
+                world: world_id,
+                color: Some(ResId::from_bits(0)),
+                depth: None,
+                msaa: None,
+            },
+            frame: FrameId(frame),
+            surface: SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+            width: 64,
+            height: 64,
+            viewport: None,
+            camera: None,
+        }
+    }
+
+    /// The instance stream belongs to the pass that uploads through it, and a
+    /// pass that stops drawing gives it back: a scene that adds and drops
+    /// passes would otherwise keep one stream per pass it ever had.
+    #[test]
+    fn a_pass_that_stops_drawing_loses_its_instance_stream() {
+        let (world, ctx) = test_context();
+        let scope = world.root_scope();
+        let mut source = LineSource::new();
+
+        let first = source.pass(&scope, ctx, test_info(&world, 1, 7));
+        assert_eq!(source.gpus.len(), 1, "one pass is one stream");
+
+        // The same pass in the frame after: the entry is reused, so the
+        // buffer it uploaded last frame is the one it reuses.
+        let again = source.pass(&scope, ctx, test_info(&world, 1, 8));
+        assert_eq!(again, first, "the next frame's build finds its entry");
+        assert_eq!(source.gpus.len(), 1);
+
+        // Another pass two frames later: the first one missed a whole frame,
+        // and its stream is dropped rather than kept for a pass nobody builds.
+        let second = source.pass(&scope, ctx, test_info(&world, 2, 10));
+        assert_eq!(source.gpus.len(), 1, "a stale entry is let go");
+        assert_eq!(
+            source.gpus[second].id,
+            PassId {
+                world: world.id(),
+                entity: Entity::from_bits(2),
+            }
+        );
+    }
 
     /// The declared attributes sit where the record fields do, so a record
     /// whose fields are reordered cannot silently feed the shader another.
