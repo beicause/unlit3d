@@ -21,9 +21,10 @@
 
 use super::{
     BendSkin, PlacedLight, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE,
-    aim_camera, camera_looking_at, cube_with_normals, default_options, with_mesh_source,
+    aim_camera, camera_looking_at, cube_with_normals, with_mesh_source,
 };
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
 const FRAMES: usize = 6;
@@ -55,7 +56,7 @@ fn build(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    let mut options = default_options();
+    let mut options = LitOptions::unlit_tinted();
     options.unlit = false;
     let key = LitPipelineKey::new(options);
     let source_entity = world

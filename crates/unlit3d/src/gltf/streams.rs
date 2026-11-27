@@ -1,52 +1,14 @@
-//! Owned vertex streams, however a glTF primitive supplied them.
+//! Decoding a glTF primitive into owned vertex streams.
 //!
-//! A lit mesh is uploaded from borrowed slices, so the decoded data has to
-//! outlive the `allocate_lit_mesh` call. [`from_reader`] fills this one struct
-//! from glTF's accessor reader, and [`MeshStreams::desc`] hands its streams to
-//! the allocator as a [`LitMeshDesc`].
+//! [`from_reader`] fills a [`OwnedLitMeshDesc`] from glTF's accessor reader; the
+//! struct itself lives in [`crate::lit`], because a lit mesh that comes from
+//! anywhere else fills the same channels.
 
 use super::material::base_color_uv_set;
 use super::topology;
 use super::{MeshId, PrimitiveId};
-use crate::lit::LitMeshDesc;
+use crate::lit::OwnedLitMeshDesc;
 use crate::mesh::MorphDeltas;
-
-/// Every vertex stream a glTF primitive can upload.
-///
-/// `positions` is the only stream a mesh cannot do without; the rest are
-/// optional and are left absent when the primitive does not declare them, so a
-/// missing channel never changes the pipeline the draw picks.
-#[derive(Default)]
-pub(super) struct MeshStreams {
-    pub positions: Vec<[f32; 3]>,
-    pub uvs: Option<Vec<[f32; 2]>>,
-    pub colors: Option<Vec<[u8; 4]>>,
-    pub normals: Option<Vec<[f32; 3]>>,
-    pub indices: Option<Vec<u32>>,
-    pub joints: Option<Vec<[u16; 4]>>,
-    pub weights: Option<Vec<[f32; 4]>>,
-    pub morph_deltas: Option<MorphDeltas>,
-}
-
-impl MeshStreams {
-    /// Take the streams as the description `allocate_lit_mesh` consumes.
-    ///
-    /// The description owns its morph displacements, so they are moved out
-    /// rather than cloned; a stream is spent on one allocation anyway.
-    pub fn desc(&mut self) -> LitMeshDesc<'_> {
-        let morph_deltas = self.morph_deltas.take();
-        LitMeshDesc {
-            positions: &self.positions,
-            uvs: self.uvs.as_deref(),
-            colors: self.colors.as_deref(),
-            normals: self.normals.as_deref(),
-            indices: self.indices.as_deref(),
-            joints: self.joints.as_deref(),
-            weights: self.weights.as_deref(),
-            morph_deltas,
-        }
-    }
-}
 
 /// Read a primitive's streams through glTF's accessor reader.
 ///
@@ -64,7 +26,7 @@ pub(super) fn from_reader(
     primitive_id: PrimitiveId,
     primitive: &gltf::Primitive<'_>,
     targets: usize,
-) -> Result<MeshStreams, super::Error> {
+) -> Result<OwnedLitMeshDesc, super::Error> {
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
     let positions: Vec<[f32; 3]> = reader
@@ -186,7 +148,7 @@ pub(super) fn from_reader(
         }
     });
 
-    Ok(MeshStreams {
+    Ok(OwnedLitMeshDesc {
         positions,
         uvs,
         colors,

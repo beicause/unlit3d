@@ -402,6 +402,7 @@ mod allocate;
 
 mod bundle;
 mod model;
+mod owned;
 pub(crate) mod sampling;
 
 pub use bundle::{LitMeshBundle, LitMeshPrimitive};
@@ -411,6 +412,7 @@ pub use model::{
     LitModelInterpolation, LitModelMorph, LitModelNode, LitModelNodeState, LitModelOutput,
     LitModelSkin,
 };
+pub use owned::OwnedLitMeshDesc;
 
 #[cfg(test)]
 mod tests;

@@ -123,6 +123,12 @@ keyboard-types = { version = "0.8.0", default-features = false, features = ["std
 # proxy sends each test to the browser's runner with.
 libtest-mimic = "0.8.2"
 log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
+# The CSG kernel behind the `manifold` feature: a pure-Rust port of the C++
+# library of the same name, so booleans on procedural solids need no C++
+# toolchain and build for wasm. Its `parallel` feature would pull `rayon` in,
+# which the mobile and wasm targets this engine supports do not build, so it
+# stays off and the single-threaded path is the one the snapshots pin.
+manifold-rust = { version = "0.19.6", default-features = false }
 # The font collection a page is laid out with. `blitz-dom` re-exports only the
 # `FontContext` it builds, so the crate that registers more than one font builds
 # the collection itself; the two crates are pinned to the version underneath.

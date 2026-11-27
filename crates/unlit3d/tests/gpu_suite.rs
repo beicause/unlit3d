@@ -29,6 +29,7 @@ mod inverted_hull;
 mod letterbox;
 mod line_source;
 mod lit_scene;
+mod manifold_scene;
 mod mcp_server;
 mod morphed_scene;
 mod passes;
@@ -47,6 +48,7 @@ unlit_wgpu_test_util::gpu_test_main!(
         letterbox::all_tests(),
         line_source::all_tests(),
         lit_scene::all_tests(),
+        manifold_scene::all_tests(),
         mcp_server::all_tests(),
         morphed_scene::all_tests(),
         passes::all_tests(),

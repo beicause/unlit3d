@@ -46,6 +46,9 @@ pub mod line;
 /// The built-in lit pipeline: the shader, the family it registers and the
 /// meshes it draws.
 pub mod lit;
+#[cfg(feature = "manifold")]
+#[cfg_attr(docsrs, doc(cfg(feature = "manifold")))]
+pub mod manifold;
 /// The rendering tools a world answers through the Model Context Protocol
 /// server in [`unlit_ecs::mcp`].
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
@@ -92,7 +95,7 @@ pub mod prelude {
         LitMeshBundle, LitMeshDesc, LitMeshPrimitive, LitModel, LitModelAnimation, LitModelBundle,
         LitModelChannel, LitModelClip, LitModelClock, LitModelData, LitModelError,
         LitModelInstance, LitModelInterpolation, LitModelMorph, LitModelNode, LitModelNodeState,
-        LitModelOutput, LitModelSkin, LitPipelineKey,
+        LitModelOutput, LitModelSkin, LitPipelineKey, OwnedLitMeshDesc,
     };
     #[cfg(feature = "winit")]
     pub use crate::winit::SurfaceOptions;

@@ -20,7 +20,7 @@
 //! pool offset on a device without `base_vertex`. The top row's strip cells
 //! are what exercise the specializer that derives it from the mesh.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, default_options};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
 use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
@@ -145,7 +145,7 @@ pub static SCENE: SceneDef = SceneDef {
 /// test would drop every other one and the snapshot could no longer show the
 /// topology whole. Pinning culling is the opaque scenes' job.
 fn options_for(topology: wgpu::PrimitiveTopology) -> LitOptions {
-    let mut options = default_options();
+    let mut options = LitOptions::unlit_tinted();
     options.primitive.topology = topology;
     options.primitive.cull_mode = None;
     options

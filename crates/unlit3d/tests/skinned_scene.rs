@@ -4,8 +4,9 @@
 //! Multi-frame snapshots of the same frames are verified by the `skinned`
 //! scene in `unlit3d_examples`.
 
-use crate::common::{Ctx, HEIGHT, TestGpu, WIDTH, camera_looking_at, default_options};
+use crate::common::{Ctx, HEIGHT, TestGpu, WIDTH, camera_looking_at};
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
@@ -27,7 +28,7 @@ async fn skinning_without_a_pose_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::new(default_options());
+    let key = LitPipelineKey::new(LitOptions::unlit_tinted());
     let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, 0.0);
 
     gpu.spawn(&mut world, bundle![camera()]);
@@ -41,7 +42,7 @@ async fn meshes_can_share_one_skin_pose() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = LitPipelineKey::new(default_options());
+    let key = LitPipelineKey::new(LitOptions::unlit_tinted());
     let (first, skin) = gpu.allocate_bent_cube_mesh(&world, 0.0);
     let (second, _) = gpu.allocate_bent_cube_mesh(&world, 0.0);
 

@@ -79,7 +79,7 @@ pub fn spawn_floor(scene: &Scene) {
 /// The job that builds the ground's instance in the render world.
 fn ground_job() -> Job {
     Box::new(|world: &mut World| {
-        let mesh = allocate_mesh(world, &cuboid_mesh(GROUND_HALF));
+        let mesh = allocate_mesh(world, cuboid_mesh(GROUND_HALF));
         let material = allocate_rgba_material(
             world,
             (GROUND_CHECKER_SIZE, GROUND_CHECKER_SIZE),

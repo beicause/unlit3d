@@ -5,7 +5,7 @@ use super::fixture::*;
 use crate::gltf::LitGltf;
 use crate::gltf::draco;
 use crate::gltf::streams;
-use crate::gltf::streams::MeshStreams;
+use crate::lit::OwnedLitMeshDesc;
 use serde_json::json;
 
 #[test]
@@ -193,7 +193,7 @@ fn two_primitives_sharing_one_stream_both_decode() {
             .all(|primitive| primitive.extension_value(draco::EXTENSION).is_none()),
         "both primitives consume the extension"
     );
-    let streams: Vec<MeshStreams> = primitives
+    let streams: Vec<OwnedLitMeshDesc> = primitives
         .iter()
         .enumerate()
         .map(|(index, primitive)| {

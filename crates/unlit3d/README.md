@@ -25,13 +25,16 @@ directly, and you are expected to know WebGPU to use it well.
 | `gltf` | no | the `gltf` module: load a glTF document (including `KHR_draco_mesh_compression` primitives) into a `LitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 | `mcp` | no | the `mcp` module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
+| `manifold` | no | the `manifold` module: build closed solids with [manifold-rust](https://crates.io/crates/manifold-rust), combine them with union, difference and intersection, and read the result back as the streams a lit mesh is uploaded from |
 
 With `--no-default-features` the crate keeps the ECS components, the frame
 sources, the mesh path, the pipeline abstraction and the portable [`input`]
 module — none of which depend on egui or winit. Enabling `gltf` adds the glTF
 loader on top of the same ECS and mesh path; see below. Enabling `reflect`
 derives the reflection a JSON bridge needs, and nothing else in the engine
-changes.
+changes. Enabling `manifold` adds the CSG kernel that procedural geometry is
+cut with; it is an assembly-time dependency, so a caller that loads its geometry
+never pays for it.
 
 ## What this layer is for
 
@@ -815,6 +818,57 @@ For a custom upload, populate a `GltfResources` table with `insert_image`,
 `to_model_with`. Insert images before their materials; look up handles by
 typed ID, not by the table's iteration order. See the [module contract](src/gltf.rs)
 for supported materials, geometry, texture formats, deformation and errors.
+
+## Procedural solids
+
+Enable the `manifold` feature to build geometry instead of loading it. The
+kernel's own constructors state a closed solid — `Manifold::cube`,
+`Manifold::sphere`, `Manifold::cylinder`, `Manifold::extrude` over a cross
+section — and `boolean` combines two of them into one:
+
+```rust,ignore
+use unlit3d::manifold::{BooleanOp, boolean, streams};
+use unlit3d::manifold::manifold_rust::linalg::Vec3;
+use unlit3d::manifold::manifold_rust::manifold::Manifold;
+
+let block = Manifold::cube(Vec3::splat(2.0), true);
+let bore = Manifold::sphere(0.75, 48);
+let bored = boolean(&block, &bore, BooleanOp::Difference)?;
+let mut mesh = streams(&bored)?;
+source.allocate_lit_mesh(world, mesh.borrowed());
+```
+
+`streams` answers the same `OwnedLitMeshDesc` a glTF primitive or a hand-written
+generator fills, so a procedural solid and a loaded model take one upload path.
+`from_mesh` goes the other way, turning streams into a solid for a caller whose
+geometry a generator produced; it moves the positions into the kernel rather
+than copying them.
+
+Only positions and indices cross that boundary. A boolean rewrites the vertex
+set, so a per-vertex channel supplied on the way in would come back either
+missing or interpolated across a cut where it means nothing, and `from_mesh`
+refuses one rather than dropping it. UVs are the channel worth naming: the
+kernel has no notion of them, and a procedural mesh almost always derives them
+from the vertex position anyway — a box, cylinder or triplanar projection is
+cheaper to run after the boolean than to carry through it. Assign them to the
+returned `uvs` at that point.
+
+Normals follow the same rule but are worth having when the shape calls for
+them: call `Manifold::calculate_normals(0, angle)` before `streams` and they
+come back smooth across every edge flatter than `angle`, split at the ones
+sharper than it, with `0.0` giving one normal per face. Leaving them out is
+often better for low-poly work: the lit pipeline then infers a geometric normal
+per triangle from screen-space derivatives, which is a hard edge at every face
+and costs no extra vertex.
+
+`boolean` is CPU work over the whole mesh, so build solids in the assembly that
+produces a `GpuMesh` rather than in a frame. It answers `Result` because the
+kernel reports a failure by returning an empty solid: a solid with no volume to
+combine is `Error::EmptyInput`, a kernel that cannot decide the operation is
+`Error::Rejected`, and two solids that genuinely do not meet are
+`Error::EmptyResult` — an answer rather than a bug. See the [module
+contract](src/manifold.rs) for the crease angle, the channels, and what the
+export guarantees about winding.
 
 ## Blitz
 

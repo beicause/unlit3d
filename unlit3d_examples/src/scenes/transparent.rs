@@ -17,6 +17,7 @@
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
 /// How far in front of the panes the camera sits.
@@ -85,8 +86,8 @@ fn build(
     // scene draws with, and a translucent one that blends straight-alpha
     // output over the target. Both read the instance tint: the backdrop is
     // tinted through it, and every pane's tint is its own.
-    let opaque_key = LitPipelineKey::new(super::default_options());
-    let mut translucent = super::default_options();
+    let opaque_key = LitPipelineKey::new(LitOptions::unlit_tinted());
+    let mut translucent = LitOptions::unlit_tinted();
     translucent.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::SrcAlpha,

@@ -71,6 +71,12 @@ treat every crate as work in progress.
   time you choose — and `KHR_draco_mesh_compression` primitives, all come across.
   Cameras do not: the renderer draws with
   the world's own `Camera`, so the caller places it.
+- **Optional CSG.** The `unlit3d` `manifold` feature builds closed solids with
+  [manifold-rust](https://crates.io/crates/manifold-rust) — cuboids, spheres,
+  cylinders, extrusions over a cross section — combines them with union,
+  difference and intersection, and reads a result back as the same vertex
+  streams a loaded model arrives in. A cut surface comes out as real geometry,
+  so the same upload path draws it.
 - **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
   they live across frames, are rebuilt only when needed, and share and reuse the
   buffers uploads go through.

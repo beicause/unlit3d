@@ -8,8 +8,9 @@
 //! comparing one frame against the frame the same scene draws with the ambient
 //! term alone.
 
-use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_looking_at, default_options};
+use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_looking_at};
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu_test_util::gpu_tests;
 use unlit3d::prelude::*;
 
@@ -54,7 +55,7 @@ fn floor(ctx: &Ctx) -> Floor {
     let mut source = MeshSource::new(&world.root_scope(), gpu.context);
     source.register_lit_family(&world.root_scope());
     let source = gpu.spawn_source(&mut world, SourceOrder::MESH, source);
-    let mut options = default_options();
+    let mut options = LitOptions::unlit_tinted();
     options.unlit = false;
     let key = LitPipelineKey::new(options);
 

@@ -186,7 +186,7 @@ impl Bundle for SceneBuild {
 fn build_assets(world: &mut World) -> SceneAssets {
     let mut meshes = Vec::with_capacity(SHAPE_KINDS.len());
     for kind in SHAPE_KINDS {
-        meshes.push(allocate_mesh(world, &shape_mesh(kind)));
+        meshes.push(allocate_mesh(world, shape_mesh(kind)));
     }
     // One patterned material per shape kind and color, kind-major.
     let mut materials = Vec::with_capacity(SHAPE_KINDS.len() * BALL_COLORS.len());

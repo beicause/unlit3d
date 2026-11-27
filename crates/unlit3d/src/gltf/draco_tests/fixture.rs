@@ -7,8 +7,8 @@
 
 use crate::gltf::LitGltf;
 use crate::gltf::streams;
-use crate::gltf::streams::MeshStreams;
 use crate::gltf::tests::documents::PNG;
+use crate::lit::OwnedLitMeshDesc;
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
@@ -325,7 +325,7 @@ pub(super) fn build_glb(
     glb(root.to_string(), &bin)
 }
 
-pub(super) fn streams_of(gltf: &LitGltf) -> MeshStreams {
+pub(super) fn streams_of(gltf: &LitGltf) -> OwnedLitMeshDesc {
     let mesh = gltf
         .document
         .meshes()
@@ -342,7 +342,7 @@ pub(super) fn streams_of(gltf: &LitGltf) -> MeshStreams {
     .expect("the decoded primitive's streams read")
 }
 
-pub(super) fn decoded(textured: bool, color_components: u8, method: i32) -> MeshStreams {
+pub(super) fn decoded(textured: bool, color_components: u8, method: i32) -> OwnedLitMeshDesc {
     let bytes = build_glb(textured, color_components, method, false);
     let gltf = LitGltf::from_bytes(&bytes).expect("a Draco GLB imports as validated accessors");
     streams_of(&gltf)

@@ -24,40 +24,12 @@ use unlit3d::components::{
     Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceVisibility, Transform,
 };
 use unlit3d::culling::is_culled;
-use unlit3d::lit::{LitMeshDesc, LitPipelineKey};
+use unlit3d::lit::{LitPipelineKey, OwnedLitMeshDesc};
 use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 
 use unlit_ecs::bundle;
 use unlit3dx::job::Job;
-
-/// A mesh description that owns its vertex data, so it can cross a thread
-/// inside a job; [`LitMeshDesc`] is what the render world finally sees.
-#[derive(Clone, Debug, Default)]
-pub struct OwnedLitMeshDesc {
-    /// Per-vertex positions, in the mesh's local space.
-    pub positions: Vec<[f32; 3]>,
-    /// Per-vertex UVs, for a variant that reads them.
-    pub uvs: Option<Vec<[f32; 2]>>,
-    /// Per-vertex linear RGBA colors, for a variant that reads them.
-    pub colors: Option<Vec<[u8; 4]>>,
-    /// Triangle indices, for an indexed draw.
-    pub indices: Option<Vec<u32>>,
-}
-
-impl OwnedLitMeshDesc {
-    /// The borrowed view the allocation API takes.
-    #[must_use]
-    fn borrowed(&self) -> LitMeshDesc<'_> {
-        LitMeshDesc {
-            positions: &self.positions,
-            uvs: self.uvs.as_deref(),
-            colors: self.colors.as_deref(),
-            indices: self.indices.as_deref(),
-            ..Default::default()
-        }
-    }
-}
 
 /// The render world's mesh source and the pipeline key its server jobs
 /// use.
@@ -95,7 +67,7 @@ pub(crate) fn mesh_source(world: &World) -> Option<(RemoteEntity, LitPipelineKey
 ///
 /// This is the mesh allocation a job that builds several things in one step
 /// makes for itself. Panics when the world carries no `MeshSource`.
-pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedLitMeshDesc) -> RemoteEntity {
+pub(crate) fn allocate_mesh(world: &mut World, mut desc: OwnedLitMeshDesc) -> RemoteEntity {
     let Some((source_entity, _)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
@@ -536,6 +508,7 @@ pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> OwnedLitMeshDesc 
         uvs: Some(uvs),
         colors: Some(colors),
         indices: Some(indices),
+        ..Default::default()
     }
 }
 
@@ -604,5 +577,6 @@ pub fn cuboid_mesh(half: Vec3) -> OwnedLitMeshDesc {
         uvs: Some(uvs),
         colors: Some(colors),
         indices: Some(indices),
+        ..Default::default()
     }
 }

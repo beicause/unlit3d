@@ -193,6 +193,22 @@ impl LitOptions {
         }
     }
 
+    /// The standard options with the light left out, so a draw states its
+    /// instance tint and nothing shades it.
+    ///
+    /// This is what a scene or a test wants when it has no lights to state: the
+    /// variant compiles no lighting bindings and the fragment stage answers the
+    /// base color unchanged, which is one flat tint rather than a shading of
+    /// geometry the caller never lit. Everything else — the compressed vertex
+    /// layout, the culling, the reverse-z depth — is [`Self::standard`], because
+    /// an unlit draw is still a draw.
+    pub fn unlit_tinted() -> Self {
+        Self {
+            unlit: true,
+            ..Self::standard()
+        }
+    }
+
     /// The outline shell that goes behind a mesh drawn with [`Self::standard`].
     ///
     /// The inverted-hull trick draws the same mesh twice: once as itself, and

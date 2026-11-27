@@ -6,8 +6,9 @@
 //! composes over them, then the overlay. The snapshot `mesh_and_ui.webp`
 //! freezes the second frame.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, default_options};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube};
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
 /// The colour the scene clears to.
@@ -46,7 +47,7 @@ fn build(
 ) -> SceneControl {
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
-    let key = LitPipelineKey::new(default_options());
+    let key = LitPipelineKey::new(LitOptions::unlit_tinted());
     let source_entity = world
         .scope_mut(pass)
         .spawn(bundle![Source::new(SourceOrder::MESH, source)]);

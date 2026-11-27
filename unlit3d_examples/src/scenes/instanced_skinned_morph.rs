@@ -10,10 +10,10 @@
 //! sequence is what proves a merged draw still reads each instance's own pose.
 
 use super::{
-    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, default_options,
-    morph_deltas,
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas,
 };
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -63,7 +63,7 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
     // The variant that reads both the joint stream and the morph bindings.
-    let key = LitPipelineKey::new(default_options());
+    let key = LitPipelineKey::new(LitOptions::unlit_tinted());
     let source_entity = world
         .scope_mut(pass)
         .spawn(bundle![Source::new(SourceOrder::MESH, source)]);

@@ -9,6 +9,7 @@
 
 use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit3d::prelude::*;
 
 /// The grid of cells a cube can occupy, in the XZ plane.
@@ -107,7 +108,7 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_lit_family(&world.root_scope());
     // Every cell is tinted through its instance colour.
-    let key = LitPipelineKey::new(super::default_options());
+    let key = LitPipelineKey::new(LitOptions::unlit_tinted());
     let source_entity = world
         .scope_mut(pass)
         .spawn(bundle![Source::new(SourceOrder::MESH, source)]);

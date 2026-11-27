@@ -7,7 +7,9 @@
 use glam::Vec3;
 use unlit3dx::prelude::*;
 
-use crate::render::{OwnedLitMeshDesc, WHITE_COLOR, cuboid_mesh, uv_sphere};
+use unlit3d::lit::OwnedLitMeshDesc;
+
+use crate::render::{WHITE_COLOR, cuboid_mesh, uv_sphere};
 
 /// Every ball's radius, in metres.
 pub const BALL_RADIUS: f32 = 0.8;
@@ -128,6 +130,7 @@ fn into_desc(mesh: RawMesh) -> OwnedLitMeshDesc {
         uvs: Some(uvs),
         colors: Some(colors),
         indices: Some(indices),
+        ..Default::default()
     }
 }
 

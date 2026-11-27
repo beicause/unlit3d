@@ -23,6 +23,7 @@ cargo nextest run -p unlit3d -p unlit3dx_examples --all-features
 | 单 world egui、Blitz 与 mesh 组合 | [示例合成](../../../unlit3d_examples/src/scenes/mesh_and_ui.rs)、[Blitz GPU 测试](../../../crates/unlit3d/tests/blitz.rs) |
 | glTF 导入、动画与出图 | [glTF 场景](../../../unlit3d_examples/src/scenes/gltf.rs)、[CLI 用法](../../../unlit3d_cli/README.md) |
 | 自定义管线与光照 | [自定义 family](../../../unlit3d_examples/src/scenes/custom_pipeline.rs)、[光照示例](../../../unlit3d_examples/src/scenes/lit.rs) |
+| 程序化几何与布尔 | [CSG 场景](../../../unlit3d_examples/src/scenes/csg_boolean.rs)、[CSG GPU 测试](../../../crates/unlit3d/tests/manifold_scene.rs) |
 | 多 world App 与离屏 | [Demo](../../../unlit3dx_examples/src/demo.rs)、[帧和音频端到端测试](../../../unlit3dx_examples/tests/headless.rs) |
 | MCP 帧推进、图像与音频 | [进程级 MCP 测试](../../../unlit3dx_examples/tests/mcp_input/native.rs)、[原生渲染工具测试](../../../crates/unlit3d/tests/mcp_server/native.rs) |
 

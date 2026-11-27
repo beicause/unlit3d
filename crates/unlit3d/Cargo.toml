@@ -24,13 +24,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 # One binary for the whole integration suite: the tests share the harness in
 # tests/common and link the same GPU stack, so a link per file would repeat
 # both. The required features are those its cases use -- glTF documents, the
-# MCP server, the egui-backed overlay and the Blitz page -- so the binary is
-# skipped whole while any of them is off.
+# MCP server, the egui-backed overlay, the Blitz page and the geometric solids
+# -- so the binary is skipped whole while any of them is off.
 [[test]]
 harness = false
 name = "unlit3d"
 path = "tests/gpu_suite.rs"
-required-features = ["blitz_epaint_fonts", "egui", "gltf", "mcp"]
+required-features = ["blitz_epaint_fonts", "egui", "gltf", "manifold", "mcp"]
 
 [dependencies]
 anyrender = { workspace = true, optional = true }
@@ -60,6 +60,7 @@ hashbrown.workspace = true
 inventory = { workspace = true, optional = true }
 keyboard-types = { workspace = true, optional = true }
 log.workspace = true
+manifold-rust = { workspace = true, optional = true }
 parley = { workspace = true, optional = true }
 profiling.workspace = true
 schemars = { workspace = true, optional = true }
@@ -141,6 +142,14 @@ egui = ["dep:egui", "dep:web-time", "unlit_wgpu/egui"]
 ## an existing resource graph, unload them again, and spawn entities that draw
 ## the document's default scene.
 gltf = ["dep:draco-core", "dep:fast_image_resize", "dep:gltf", "dep:half"]
+## Procedural solids and booleans through
+## [manifold-rust](https://crates.io/crates/manifold-rust), in the
+## [`manifold`](crate::manifold) module: build a closed solid, combine solids
+## with union, difference and intersection, and read the result back as the
+## vertex streams a lit mesh is uploaded from. Not enabled by default: the CSG
+## kernel is only worth its build time to a caller that generates geometry
+## instead of loading it.
+manifold = ["dep:manifold-rust"]
 ## The [mcp](crate::mcp) module: the rendering tools a world answers through the
 ## Model Context Protocol server defined by [unlit_ecs]. Implies `reflect`,
 ## whose registry is the codec those tools use, and `gltf`, so the spawn_gltf tool

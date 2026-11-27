@@ -11,6 +11,7 @@ use super::{
     PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface, camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::pipeline::Shader;
 use unlit3d::prelude::*;
 
@@ -105,7 +106,7 @@ fn build_clusters(
         far: CLUSTER_FAR,
         ..ClusterConfig::DEFAULT
     };
-    let mut options = super::default_options();
+    let mut options = LitOptions::unlit_tinted();
     options.unlit = false;
     options.shader = Some(Shader::new("lit::cluster_grid", cluster_grid()));
     let key = LitPipelineKey::new(options);

@@ -22,11 +22,13 @@
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档（含 `KHR_draco_mesh_compression` 压缩的 primitive）加载为 `LitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
 | `mcp` | 否 | `mcp` 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
+| `manifold` | 否 | `manifold` 模块：用 [manifold-rust](https://crates.io/crates/manifold-rust) 构建封闭实体，以并、差、交组合它们，再把结果读回为 lit 网格上传所用的顶点流 |
 
 使用 `--no-default-features` 时，本 crate 保留 ECS 组件、绘制源、mesh 路径、管线抽象
 与可移植的 `input` 模块——它们都不依赖 egui 或 winit。开启 `gltf` 则在同一套 ECS 与
 mesh 路径之上增加 glTF 加载器，见下文。开启 `reflect` 会派生 JSON 桥所需的反射，引擎
-其余部分不变。
+其余部分不变。开启 `manifold` 会增加程序化几何被切割所用的 CSG 内核；它是装配期的依赖，
+因此加载几何的调用方无需为它付出代价。
 
 ## 这一层的定位
 
@@ -539,6 +541,45 @@ panic，而不是读到上传数组尾部之外。它把实体的关节矩阵—
 `GltfResources` 表，再调用 `to_model` 或 `to_model_with`。先插入图像，再插入采样
 它们的材质；按类型化 ID 查找句柄，不依赖表的遍历顺序。支持的材质、几何、纹理格式、
 变形与错误见 [模块文档](src/gltf.rs)。
+
+## 程序化实体
+
+开启 `manifold` 可以构建几何而不是加载几何。内核自带的构造器描述一个封闭实体——
+`Manifold::cube`、`Manifold::sphere`、`Manifold::cylinder`，以及在截面之上
+`Manifold::extrude`——`boolean` 把两个实体合成一个：
+
+```rust,ignore
+use unlit3d::manifold::{BooleanOp, boolean, streams};
+use unlit3d::manifold::manifold_rust::linalg::Vec3;
+use unlit3d::manifold::manifold_rust::manifold::Manifold;
+
+let block = Manifold::cube(Vec3::splat(2.0), true);
+let bore = Manifold::sphere(0.75, 48);
+let bored = boolean(&block, &bore, BooleanOp::Difference)?;
+let mut mesh = streams(&bored)?;
+source.allocate_lit_mesh(world, mesh.borrowed());
+```
+
+`streams` 给出的 `OwnedLitMeshDesc`，与 glTF primitive 或手写生成器填充的是同一个，
+因此程序化实体与加载进来的模型走同一条上传路径。`from_mesh` 走反方向，把顶点流变成
+实体，供几何由生成器产生的调用方使用；它把位置移进内核，而不是复制。
+
+只有位置与索引跨过这条边界。布尔会重写顶点集合，因此传进去的逐顶点通道要么回来时已经
+消失，要么在切口上被插值成没有意义的值，`from_mesh` 因此选择拒绝而不是丢弃。UV 是其中
+最值得说明的一个：内核没有 UV 的概念，而程序化网格几乎总是按顶点位置推导 UV——盒投影、
+柱面投影或三平面投影，在布尔之后运行比带着它穿过布尔更便宜、更可预测。在那一步把它们
+赋给返回值的 `uvs` 即可。
+
+法线遵循同一条规则，但按形状需要时值得带上：在 `streams` 之前调用
+`Manifold::calculate_normals(0, angle)`，比 `angle` 平缓的边会得到平滑法线，比它锐利的
+边会被拆开，传 `0.0` 则每个面一条。低多边形作品往往留空更好：lit 管线随后用屏幕空间
+导数推出每三角的几何法线，每个面都是硬边，且不增加任何顶点。
+
+`boolean` 是对整个网格的 CPU 计算，应在产出 `GpuMesh` 的装配阶段构建实体，而不是在帧里。
+它返回 `Result`，因为内核用返回空实体的方式报告失败：没有体积可组合的实体是
+`Error::EmptyInput`，内核无法判定该操作是 `Error::Rejected`，而两个确实不相交的实体是
+`Error::EmptyResult`——那是一个答案，不是 bug。锐角、通道与导出对绕序的保证见
+[模块文档](src/manifold.rs)。
 
 ## Blitz
 

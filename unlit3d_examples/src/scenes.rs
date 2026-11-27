@@ -16,6 +16,7 @@
 
 pub mod animated;
 pub mod blitz_only;
+pub mod csg_boolean;
 pub mod custom_pipeline;
 pub mod egui_only;
 pub mod gltf;
@@ -32,7 +33,6 @@ pub mod spin_cube;
 pub mod transparent;
 
 use unlit_ecs::{Bundle, DynamicBundle, bundle};
-use unlit_wgpu::pipeline::{DepthStencilPolicy, LitOptions};
 use unlit_wgpu::scene::ViewportRect;
 use unlit3d::prelude::*;
 
@@ -164,6 +164,7 @@ pub static SCENES: &[&SceneDef] = &[
     &custom_pipeline::SCENE,
     &outline::SCENE,
     &outline::MSAA_SCENE,
+    &csg_boolean::SCENE,
 ];
 
 /// The scene whose id is `id`, if any.
@@ -520,30 +521,6 @@ pub fn aim_camera(
     let mut current = world.scope(scope).query_one::<&mut Camera>(entity);
     camera.active = current.get().active;
     *current.get() = camera;
-}
-
-/// Default options for the ECS scenes: per-instance transform and tint,
-/// no texture, no MSAA, with reverse-z depth.
-///
-/// The options are pure policy, so they say nothing about the geometry a draw
-/// carries: which vertex channels a mesh packs follows the slices its caller
-/// uploads, and which of them a draw reads follows the mesh it draws. The tint
-/// rides the same per-instance record as the transform, so a draw that reads
-/// instances reads the tint too.
-pub fn default_options() -> LitOptions {
-    LitOptions {
-        primitive: wgpu::PrimitiveState {
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: DepthStencilPolicy::default(),
-        blend: None,
-        write_mask: wgpu::ColorWrites::ALL,
-        // These scenes state no lights, so their variants draw their base
-        // colour unchanged.
-        unlit: true,
-        ..LitOptions::standard()
-    }
 }
 
 /// A rig of `joint_count` joints, all at rest, returned as joint matrices.

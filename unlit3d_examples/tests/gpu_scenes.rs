@@ -569,6 +569,22 @@ async fn outline_matches_its_multisampled_snapshot() {
     .await;
 }
 
+/// The scene whose geometry the engine generated rather than loaded.
+///
+/// A boolean over two procedural solids is the one path in the example whose
+/// vertices exist nowhere in the source: the kernel states them, the export
+/// flattens them, and the mesh source uploads them. A frame that lost the cut
+/// surface, the winding or the depth test would still draw three solids, so
+/// this is what pins that the three operations really answered three shapes.
+async fn csg_boolean_matches_its_snapshot() {
+    compare_scene(
+        &scenes::csg_boolean::SCENE,
+        SCENE_TOLERANCE,
+        &snapshots!["csg_boolean.webp"],
+    )
+    .await;
+}
+
 async fn mesh_topologies_matches_its_snapshot() {
     compare_scene(
         &scenes::mesh_topologies::SCENE,
@@ -681,6 +697,7 @@ gpu_tests! {
     outline_matches_its_snapshot,
     outline_matches_its_multisampled_snapshot,
     mesh_topologies_matches_its_snapshot,
+    csg_boolean_matches_its_snapshot,
     custom_pipeline_matches_its_snapshots,
     custom_pipeline_animates_between_frames,
     the_default_scene_letterboxes_into_a_narrow_target,

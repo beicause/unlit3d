@@ -408,7 +408,7 @@ impl LitGltf {
             .copied()
             .ok_or(super::Error::MeshOutsideDocument { mesh, primitive })?;
         let mut streams = from_reader(&self.buffers, mesh, primitive, &data, targets)?;
-        let gpu_mesh = source.allocate_lit_mesh(world, streams.desc());
+        let gpu_mesh = source.allocate_lit_mesh(world, streams.borrowed());
 
         let uploaded = GltfMesh {
             mesh_index: mesh,

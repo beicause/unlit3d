@@ -7,6 +7,7 @@ pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_o
 
 use unlit_ecs::bundle;
 use unlit_ecs::{Entity, QueryOne, Scope, World};
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
@@ -81,7 +82,7 @@ impl TestGpu {
         // carries the tint as well as the transform: the ECS tests tint their
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
-        let key = LitPipelineKey::new(default_options());
+        let key = LitPipelineKey::new(LitOptions::unlit_tinted());
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
         let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
@@ -437,30 +438,6 @@ impl TestGpu {
         for _ in 0..count {
             self.render(world);
         }
-    }
-}
-
-/// Default options for the ECS tests: vertex colour + per-instance transform,
-/// no texture, no MSAA, with reverse-z depth.
-///
-/// The per-instance tint an ECS entity may carry rides the same stream as the
-/// transform, and one record carries every field, so there is nothing to add
-/// for a test that tints: the variant reads the tint because it reads
-/// instances at all.
-///
-/// The options are pure policy: they say nothing about the channels a mesh
-/// carries. Those follow the slices `allocate_deformed_cube_mesh` uploads, so a
-/// deformed test and a plain one share these options.
-pub fn default_options() -> unlit_wgpu::pipeline::LitOptions {
-    unlit_wgpu::pipeline::LitOptions {
-        primitive: wgpu::PrimitiveState {
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        // These tests state no lights, so their variants draw their base
-        // colour unchanged.
-        unlit: true,
-        ..unlit_wgpu::pipeline::LitOptions::standard()
     }
 }
 

@@ -288,7 +288,7 @@ fn built(
 
     // The default options draw unlit; these bodies are lit, so the flag is the
     // one thing that differs.
-    let mut lit = super::default_options();
+    let mut lit = LitOptions::unlit_tinted();
     lit.unlit = false;
     let body_key = LitPipelineKey::new(lit);
     // The shell is a second variant of the same family: the one that spreads

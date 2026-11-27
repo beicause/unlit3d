@@ -43,6 +43,7 @@ use super::{
     PlacedLight, SceneControl, SceneDef, SceneOptions, allocate_surface, camera_looking_at, grid,
 };
 use unlit_ecs::bundle;
+use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu::pipeline::Shader;
 use unlit3d::prelude::*;
 
@@ -183,7 +184,7 @@ fn build(
     // below is the unlit pipeline's own.
     source.register_lit_family(&world.root_scope());
     // The default options draw unlit; this scene is the one that lights.
-    let mut options = super::default_options();
+    let mut options = LitOptions::unlit_tinted();
     options.unlit = false;
     let key = LitPipelineKey::new(options.clone());
     // The wall's own key: the relief rides in the vertex stage, and a shader

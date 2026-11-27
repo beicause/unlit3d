@@ -33,6 +33,7 @@ description: 用 unlit3d 写单 world 渲染场景，用 unlit3dx 装配多 worl
 - 优先用 ECS 组件存状态，用行为组件推进；使用 [场景教程](SCENE.md#状态怎么放) 判断数据放在哪个 scope。
 - 优先使用库的 world 通信、app 驱动与离屏路径；只有需要改变调度或呈现所有权时再用底层部件。见 [多 world 教程](MULTI_WORLD.md#两种骨架)。
 - 自定义绘制源按归属选择[缓存键](SCENE.md#绘制源缓存键)。
+- 程序化几何优先写函数直接产出顶点与索引；需要挖洞、切割或求并时，开 `manifold` feature 用 `boolean` 组合实体，再经 `streams` 走同一条上传路径。法线默认不传，让 lit 管线用屏幕空间导数出硬边。见 [CSG 示例](EXAMPLES.md#示例索引)。
 - 调试运行中的示例用引擎提供的 MCP 工具，大图、缓冲和录音优先落盘。见 [MCP 操作页](MCP.md)。
 
 ## 查当前版本的 API
