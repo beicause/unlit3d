@@ -112,10 +112,9 @@ and borrowing it cannot read a finished world as still alive.
 ## Jobs
 
 `Job` is a boxed `FnOnce(&mut World)`. `WorldEndpoint::commands` queues one and
-never blocks: a full queue returns `Err(SendError::Full)` and a stopped
-world `Err(SendError::Closed)`, so a world thread that sends to its own queue
-cannot deadlock against itself. The world thread drains its queue before
-every tick, so a job never races a tick.
+never blocks: a full queue and a stopped world both answer `Err(SendError)`, so
+a world thread that sends to its own queue cannot deadlock against itself. The
+world thread drains its queue before every tick, so a job never races a tick.
 
 The error carries the job back, unrun: `SendErrorKind` says why the queue
 refused it and `into_job` gives the work back. A refused job never started,

@@ -313,7 +313,7 @@ impl SceneSource for BlitzSource {
         let frame = info.frame;
         if self.frame != frame {
             self.frame = frame;
-            self.targets.retain(|target| target.frame.0 + 1 >= frame.0);
+            self.targets.retain(|target| target.frame.keeps(frame));
         }
 
         let mut graph = ctx.graph(scope);

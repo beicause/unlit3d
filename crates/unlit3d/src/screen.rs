@@ -197,7 +197,7 @@ impl ScreenBlit {
         // A view no pass read for a whole frame is one the frame no longer
         // draws through, so its group and the view it binds are let go.
         let frame = info.frame;
-        core.views.retain(|group| group.frame.0 + 1 >= frame.0);
+        core.views.retain(|group| group.frame.keeps(frame));
 
         // Drop the scope so the graph maintains before the group is read back
         // out: a replace this build made must be visible to the draw.

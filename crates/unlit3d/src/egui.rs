@@ -57,7 +57,7 @@ use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::relay::Snapshot;
 use crate::source::{SceneBuild, SceneSource};
-use crate::target::RenderTargetId;
+use crate::target::{FrameId, RenderTargetId};
 /// egui, re-exported because an [`EguiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
@@ -149,6 +149,8 @@ struct Target {
     id: RenderTargetId,
     /// The state built for it.
     gpu: Gpu,
+    /// The last frame a build drew into this target.
+    frame: FrameId,
 }
 
 /// A draw source that draws the world's egui interfaces as an overlay.
@@ -258,7 +260,7 @@ impl EguiSource {
         })
     }
 
-    /// The index of the entry for `id`, building it on first use.
+    /// The index of the entry for `info.target`, building it on first use.
     ///
     /// A source may be recorded by several passes, and the passes of one frame
     /// need not share a target — a multisampled offscreen pass and a single-
@@ -266,12 +268,23 @@ impl EguiSource {
     /// per target rather than rebuilt as the passes alternate: one shared entry
     /// would otherwise specialize the pipeline, and drop the material table with
     /// it, on every pass.
+    ///
+    /// Every build goes through here, which is also where a target the frame no
+    /// longer draws into is let go: an entry that missed a whole frame is
+    /// dropped with its integration, the same rule [`ScreenSource`] and
+    /// [`BlitSource`] keep.
+    ///
+    /// [`ScreenSource`]: crate::screen::ScreenSource
+    /// [`BlitSource`]: crate::blit::BlitSource
     fn target_index(&mut self, device: &wgpu::Device, info: PassInfo) -> usize {
+        let frame = info.frame;
+        self.targets.retain(|target| target.frame.keeps(frame));
         if let Some(index) = self
             .targets
             .iter()
             .position(|target| target.id == info.target)
         {
+            self.targets[index].frame = frame;
             return index;
         }
         let surface = info.surface;
@@ -298,6 +311,7 @@ impl EguiSource {
                 groups: UniformGroups::new(),
                 integration: EguiIntegration::new(device, pipeline),
             },
+            frame,
         });
         self.targets.len() - 1
     }

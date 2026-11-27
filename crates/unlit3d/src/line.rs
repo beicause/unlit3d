@@ -71,9 +71,10 @@ use zerocopy::IntoBytes;
 use crate::components::Camera as SceneCamera;
 use crate::components::{InstanceVisibility, Transform, frame_camera};
 use crate::global_uniforms::{CameraKey, UniformGroups, ViewKey};
+use crate::pass::PassInfo;
 use crate::pipeline::{GlobalRecipe, uniform_entries};
 use crate::source::{RenderContext, SceneBuild, SceneSource};
-use crate::target::PassId;
+use crate::target::{FrameId, PassId};
 
 /// The vertex-buffer slot the instance stream binds at.
 ///
@@ -263,6 +264,22 @@ struct Gpu {
     segments: InstanceBuffer,
 }
 
+/// One pass's entry in [`LineSource`], with the frame that last drew through
+/// it.
+///
+/// The frame is what lets a source let go of a pass no frame draws any more: a
+/// pass entity that is gone, or a camera that stopped reaching this source,
+/// otherwise leaves its pipelines and its instance stream behind for as long as
+/// the source lives.
+struct PassState {
+    /// The pass the state was built for.
+    id: PassId,
+    /// The state built for it.
+    gpu: Gpu,
+    /// The last frame a build drew through this pass.
+    frame: FrameId,
+}
+
 /// A draw source drawing the [Line]s of its scope.
 ///
 /// The strokes belong to the entities: the source collects the [Line]s its
@@ -278,7 +295,11 @@ pub struct LineSource {
     /// pass rather than by the target's specialization key, because the
     /// pipelines, the uniform groups and the depth the strokes sorted by all
     /// belong to the pass alone.
-    gpus: Vec<(PassId, Gpu)>,
+    ///
+    /// An entry no frame drew through for a whole frame is let go, the same
+    /// rule [`BlitSource`](crate::blit::BlitSource) and
+    /// [`ScreenSource`](crate::screen::ScreenSource) keep for their targets.
+    gpus: Vec<PassState>,
     /// The records collected this frame, packed for the instance stream.
     ///
     /// A scratch rather than a field the caller fills: a source draws many
@@ -314,9 +335,18 @@ impl LineSource {
         }
     }
 
-    /// The entry for the pass `id`, building it on first use.
-    fn pass(&mut self, scope: &Scope<'_>, ctx: RenderContext, id: PassId) -> usize {
-        if let Some(index) = self.gpus.iter().position(|(key, _)| *key == id) {
+    /// The entry for the pass `info.pass`, building it on first use.
+    ///
+    /// Every build goes through here, which is also where a pass no longer in
+    /// the frame is let go: the entries are stamped with the frame that drew
+    /// through them, and one that missed a whole frame is dropped with its
+    /// instance stream.
+    fn pass(&mut self, scope: &Scope<'_>, ctx: RenderContext, info: PassInfo) -> usize {
+        let id = info.pass;
+        let frame = info.frame;
+        self.gpus.retain(|state| state.frame.keeps(frame));
+        if let Some(index) = self.gpus.iter().position(|state| state.id == id) {
+            self.gpus[index].frame = frame;
             return index;
         }
         let device = ctx
@@ -334,9 +364,9 @@ impl LineSource {
                 entries: &uniform_entries(graph, uniforms),
             })
         });
-        self.gpus.push((
+        self.gpus.push(PassState {
             id,
-            Gpu {
+            gpu: Gpu {
                 variants: Variants::new(&device),
                 recipe,
                 groups: UniformGroups::new(),
@@ -346,7 +376,8 @@ impl LineSource {
                     label: Some("unlit3d::line::segments"),
                 }),
             },
-        ));
+            frame,
+        });
         self.gpus.len() - 1
     }
 
@@ -443,7 +474,7 @@ impl SceneSource for LineSource {
             return;
         }
 
-        let index = self.pass(scope, ctx, info.pass);
+        let index = self.pass(scope, ctx, info);
         let (width, height) = info
             .viewport
             .map_or((info.width as f32, info.height as f32), |viewport| {
@@ -476,7 +507,7 @@ impl SceneSource for LineSource {
                     ViewKey::new(width, height),
                 )
             };
-            let gpu = &mut self.gpus[index].1;
+            let gpu = &mut self.gpus[index].gpu;
             let recipe = gpu.recipe.clone();
             let mut graph_holder = ctx.graph(scope);
             let graph = graph_holder.get();
@@ -498,7 +529,7 @@ impl SceneSource for LineSource {
         drop(maintain);
         let mut graph_holder = ctx.graph(scope);
         let graph = graph_holder.get();
-        let gpu = &mut self.gpus[index].1;
+        let gpu = &mut self.gpus[index].gpu;
 
         // A draw specializes only when it drew something this frame: a frame
         // of one policy alone never builds another's pipeline. A second frame

@@ -101,6 +101,23 @@ impl RenderTargetId {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameId(pub u32);
 
+impl FrameId {
+    /// Whether a cache entry last used in `self` is still worth keeping while
+    /// the frame `current` is built.
+    ///
+    /// The passes of one frame are recorded one after another, so an entry is
+    /// only provably unused once a whole frame has passed without a build
+    /// reaching it: sweeping the entries stamped with the frame being built
+    /// would take an entry from the pass recorded before this one. An entry is
+    /// therefore kept through the frame after the one that used it, and let go
+    /// by the frame after that — which rebuilds it if a build reaches it again,
+    /// the same price a first use pays.
+    #[must_use]
+    pub fn keeps(self, current: Self) -> bool {
+        self.0.saturating_add(1) >= current.0
+    }
+}
+
 impl core::fmt::Display for FrameId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)
@@ -193,5 +210,19 @@ mod tests {
         assert_eq!(FrameId(7), FrameId::default().max(FrameId(7)));
         assert!(FrameId(7) > FrameId(6));
         assert_eq!(FrameId(7).to_string(), "7");
+    }
+
+    #[test]
+    fn a_cache_entry_outlives_the_frame_that_used_it_by_one() {
+        // Two passes of one frame build the same source, so the entry the
+        // first build touched has to survive the second build's sweep.
+        assert!(FrameId(7).keeps(FrameId(7)));
+        // A source the frame after next stops drawing through keeps its entry
+        // for the frame in between, because the passes of that frame are
+        // recorded one at a time.
+        assert!(FrameId(7).keeps(FrameId(8)));
+        // A whole frame without a build is what proves the entry unused.
+        assert!(!FrameId(7).keeps(FrameId(9)));
+        assert!(!FrameId(7).keeps(FrameId(20)));
     }
 }

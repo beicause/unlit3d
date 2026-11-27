@@ -345,9 +345,17 @@ fn decode_stream(
             buffer: buffer_index,
         })
     })?;
-    let start = view.byte_offset.map_or(0, |offset| offset.0) as usize;
+    // A byte range is stated in 64 bits, so a document may name one this
+    // target cannot address; such a range is refused rather than truncated
+    // onto some other bytes of the buffer.
+    let too_large = || detail(DracoPrimitiveError::StreamRangeTooLarge { view: view_index });
+    let start = match view.byte_offset {
+        Some(offset) => usize::try_from(offset.0).map_err(|_| too_large())?,
+        None => 0,
+    };
+    let length = usize::try_from(view.byte_length.0).map_err(|_| too_large())?;
     let end = start
-        .checked_add(view.byte_length.0 as usize)
+        .checked_add(length)
         .ok_or_else(|| detail(DracoPrimitiveError::StreamOverflowsBuffer { view: view_index }))?;
     let bytes = buffer
         .0
@@ -399,8 +407,10 @@ fn collect(root: &json::Root) -> Result<Vec<Compressed>, Error> {
             let stream_view = extension
                 .get("bufferView")
                 .and_then(Value::as_u64)
-                .ok_or_else(|| detail(DracoPrimitiveError::ExtensionNamesNoStream))?
-                as usize;
+                .ok_or_else(|| detail(DracoPrimitiveError::ExtensionNamesNoStream))?;
+            let stream_view = usize::try_from(stream_view).map_err(|_| {
+                detail(DracoPrimitiveError::StreamViewTooLarge { view: stream_view })
+            })?;
             let ids = extension
                 .get("attributes")
                 .and_then(Value::as_object)

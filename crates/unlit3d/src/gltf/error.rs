@@ -398,6 +398,13 @@ pub enum DracoPrimitiveError {
         /// The buffer view the extension names.
         view: usize,
     },
+    /// The buffer view index the extension names is too large for this target
+    /// to address.
+    #[error("its extension names buffer view {view}, which this target cannot address")]
+    StreamViewTooLarge {
+        /// The buffer view index the extension states.
+        view: u64,
+    },
     /// The buffer view the extension names reads a buffer the document lacks.
     #[error("buffer view {view} reads buffer {buffer}, which is missing")]
     MissingStreamBuffer {
@@ -409,6 +416,13 @@ pub enum DracoPrimitiveError {
     /// The stream's byte range overflows the address space.
     #[error("the byte range of buffer view {view} overflows")]
     StreamOverflowsBuffer {
+        /// The buffer view the extension names.
+        view: usize,
+    },
+    /// A byte offset or length of the stream's buffer view is too large for
+    /// this target to address.
+    #[error("the byte range of buffer view {view} is too large for this target to address")]
+    StreamRangeTooLarge {
         /// The buffer view the extension names.
         view: usize,
     },

@@ -97,9 +97,9 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 ## Job
 
 `Job` 是装箱的 `FnOnce(&mut World)`。`WorldEndpoint::commands` 把一个 job 排入
-队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
-`Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
-world 的线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
+队列且从不阻塞：队列满了与 world 已停都回答 `Err(SendError)`，因此一个向自己的
+队列发送的 world 线程不会与自己死锁。world 的线程在每次 tick 之前先清空队列，
+因此 job 永不与 tick 竞争。
 
 错误会把 job 原样带回来——没跑过的那个：`SendErrorKind` 说明队列为何拒绝它，
 `into_job` 把这份工作交回。被拒绝的 job 从未开始，因此重发它是安全的；宁可放弃的
