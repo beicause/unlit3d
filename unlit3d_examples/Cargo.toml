@@ -52,8 +52,8 @@ unlit3d = {
   version = "0.1.0-dev.3",
   default-features = false,
   features = [
-    "blitz_epaint_fonts",
-    "blitz_sc_fonts",
+    "fonts",
+    "sc_fonts",
     "egui",
     "gltf",
     "manifold",
@@ -96,8 +96,8 @@ unlit3d = {
   version = "0.1.0-dev.3",
   default-features = false,
   features = [
-    "blitz_epaint_fonts",
-    "blitz_sc_fonts",
+    "fonts",
+    "sc_fonts",
     "egui",
     "gltf",
     "manifold",

@@ -416,7 +416,9 @@ The bridges:
   for comparison does not depend on how busy the machine was. The two sides
   keep separate contexts, and texture ids are never renumbered (the why is in
   [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
-  egui section).
+  egui section). The panels are laid out with the fonts the workspace carries,
+  so the `sc_fonts` feature is what lets one hold Chinese text; egui's own
+  fonts cover the Latin and Cyrillic alphabets.
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
   over the

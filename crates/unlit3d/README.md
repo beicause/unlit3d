@@ -17,8 +17,8 @@ directly, and you are expected to know WebGPU to use it well.
 | Feature | Default | Provides |
 |---------|---------|----------|
 | `blitz` | no | the `blitz` module: an HTML document laid out by [Blitz](https://crates.io/crates/blitz-dom) and drawn as a draw source |
-| `blitz_epaint_fonts` | no | the font a page is laid out with: egui's default font, so the same markup paints the same glyphs on every target |
-| `blitz_sc_fonts` | no | adds a Noto Sans SC subset to the bundled fonts, covering the level-1 and level-2 characters of the Table of General Standard Chinese Characters |
+| `fonts` | no | the `fonts` module: the fonts the crate carries, which a page and an overlay both lay their text out with, so the same markup paints the same glyphs on every target |
+| `sc_fonts` | no | adds a Noto Sans SC subset to the bundled fonts, covering the level-1 and level-2 characters of the Table of General Standard Chinese Characters |
 | `blitz_system_fonts` | no | lets a page fall back to the fonts the host has installed for whatever the bundled ones do not cover |
 | `egui` | yes | the `egui` module (an egui overlay drawn as a draw source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; `presenter`, the ready-made windowed loop built on it; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
@@ -870,6 +870,25 @@ combine is `Error::EmptyInput`, a kernel that cannot decide the operation is
 contract](src/manifold.rs) for the crease angle, the channels, and what the
 export guarantees about winding.
 
+## Fonts
+
+A build that draws text needs the font bytes from somewhere. The `fonts`
+feature carries them in the crate: [`fonts::latin`](src/fonts.rs) is egui's
+default font for the Latin text, and `sc_fonts` adds a Noto Sans SC subset for
+the Chinese characters. Both a Blitz page and an egui overlay lay their text out
+with them, so one binary paints the same glyphs whichever backend draws it.
+
+The two backends read different formats. `blitz-dom` decompresses WOFF2 itself;
+epaint reads only TTF and OTF. The subset is therefore stored as WOFF2, the
+smaller form, and [`fonts::chinese_ttf`](src/fonts.rs) inflates it once for
+egui. `set_egui_fonts` installs the result into a context, and `EguiSource::new`
+calls it, so an overlay has Chinese without the caller doing anything.
+
+Neither backend gains the host's fonts this way: a page paints the glyphs the
+crate carries and nothing else, which is what lets one snapshot hold across
+machines. `blitz_system_fonts` opts a page out of that guarantee for the glyphs
+the bundled fonts do not cover.
+
 ## Blitz
 
 `blitz::BlitzSource` draws an HTML document: it lays the page out with
@@ -973,12 +992,11 @@ page that blocks on a stylesheet nobody replies to would never paint at all.
 
 The fonts come from the crate rather than the host, so the same markup paints
 the same glyphs on every target. The default font is egui's, which carries the
-Latin text; `blitz_sc_fonts` adds a Noto Sans SC subset for the Chinese
-characters, listed after it in every generic family and in the Han script's
-fallback list, so the Latin glyphs stay the ones a page already painted while a
-character the default font lacks still finds one. `blitz_system_fonts` adds
-the host's fonts behind both, at the cost of the painting depending on what the
-host installed.
+Latin text; `sc_fonts` adds a Noto Sans SC subset for the Chinese characters,
+listed after it in every generic family and in the Han script's fallback list,
+so the Latin glyphs stay the ones a page already painted while a character the
+default font lacks still finds one. `blitz_system_fonts` adds the host's fonts
+behind both, at the cost of the painting depending on what the host installed.
 
 The bundled fonts are read once for the process, but each page is laid out with
 a font collection of its own: a `@font-face` rule registers into the collection
@@ -1014,6 +1032,10 @@ only when the host enables it.
 an interface is an entity — a frame can hold as many panels as entities, and the
 `egui::EguiSource` driver runs whatever panels the world carries, in
 query order.
+
+`EguiSource::new` lays the overlay out with the fonts the crate carries, so a
+build with `sc_fonts` shows Chinese without the caller installing anything. A
+context built elsewhere takes the same fonts through `fonts::set_egui_fonts`.
 
 A panel can only be built where its egui context runs, because the callback is
 handed a `&mut egui::Ui` that belongs to the pass building it. An overlay whose
@@ -1475,7 +1497,7 @@ cargo nextest run -p unlit3d --all-features  # just this crate
 ```
 
 The integration tests are one binary, and its `required-features` are
-`blitz_epaint_fonts`, `gltf`, `mcp` and `egui` — the features its cases reach.
+`fonts`, `sc_fonts`, `gltf`, `mcp` and `egui` — the features its cases reach.
 A run without them does not fail: Cargo skips the target whole, so
 `cargo nextest run -p unlit3d` reports the unit tests and nothing else.
 `--all-features` (or naming all four) is what puts the suite in the run.

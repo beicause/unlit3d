@@ -203,8 +203,11 @@ impl EguiSource {
     /// target, which is not known until the first frame. Everything is built
     /// then, on the device the frame's [`RenderContext`](crate::source::RenderContext) names.
     pub fn new() -> Self {
+        let ctx = egui::Context::default();
+        #[cfg(feature = "fonts")]
+        crate::fonts::set_egui_fonts(&ctx);
         Self {
-            ctx: egui::Context::default(),
+            ctx,
             start: Instant::now(),
             targets: Vec::new(),
             event_scratch: Vec::new(),

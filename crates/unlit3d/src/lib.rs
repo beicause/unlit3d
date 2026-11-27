@@ -28,6 +28,9 @@ pub mod culling;
 #[cfg(feature = "egui")]
 #[cfg_attr(docsrs, doc(cfg(feature = "egui")))]
 pub mod egui;
+#[cfg(feature = "fonts")]
+#[cfg_attr(docsrs, doc(cfg(feature = "fonts")))]
+pub mod fonts;
 pub mod frame;
 /// The frame's shared uniform records: one camera, one globals and one view
 /// buffer per distinct record, uploaded once however many draws read them.

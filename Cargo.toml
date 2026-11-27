@@ -185,6 +185,10 @@ wesl = { version = "0.6.0", default-features = false }
 wesl-core = { version = "0.1.0", default-features = false }
 wgpu = { version = "30.0.0", default-features = false, features = ["dx12", "gles", "metal", "std", "vulkan", "webgl", "webgpu", "wgsl"] }
 winit = { version = "0.30.13", default-features = false, features = ["default"] }
+# WOFF2 decompression for the bundled Chinese subset: epaint reads only TTF and
+# OTF, so the subset is stored in the smaller format and inflated once for egui.
+# `blitz-dom` does the same through its own `woff` feature.
+wuff = { version = "0.2.10", default-features = false, features = ["brotli"] }
 zerocopy = { version = "0.8.56", default-features = false, features = ["alloc", "std"] }
 zerocopy-derive = { version = "0.8.56", default-features = false }
 

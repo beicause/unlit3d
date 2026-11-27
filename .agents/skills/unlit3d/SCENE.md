@@ -42,6 +42,6 @@
 
 输入从批初状态逐事件重放，同一文档由多个 pass 绘制时每 tick 只消费一次。鼠标、笔和各触点的按键独立，失焦会取消活动指针并清除修饰键。字符按下与对应文本合成一次事件，保留可用的 code、location 与 repeat；独立文本（如粘贴）没有物理键。文档接收预编辑和提交，但不接管平台输入法启停、剪贴板或光标形状。见 [Blitz 输入 GPU 测试](../../../crates/unlit3d/tests/blitz.rs)。
 
-`blitz_epaint_fonts` 提供内置默认字体，`blitz_sc_fonts` 添加中文回退，`blitz_system_fonts` 才加载系统字体。跨平台比较像素时核对 feature、系统字体与页面资源；不要假定它们一致。页面通过 `@font-face` 注册的字体仅在该文档内匹配，见[字体隔离测试](../../../crates/unlit3d/src/blitz/fonts.rs)。
+`fonts` 提供 crate 自带的字体（blitz 页面与 egui 叠加层共用同一份），`sc_fonts` 添加中文子集，`blitz_system_fonts` 才加载系统字体。跨平台比较像素时核对 feature、系统字体与页面资源；不要假定它们一致。页面通过 `@font-face` 注册的字体仅在该文档内匹配，见[字体隔离测试](../../../crates/unlit3d/src/blitz/fonts.rs)。
 
 继续阅读：[运行示例](EXAMPLES.md) · [画面排查](TROUBLESHOOTING.md#画面与渲染)。

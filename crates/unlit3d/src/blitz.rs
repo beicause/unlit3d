@@ -23,7 +23,8 @@
 //! so the same markup paints the same glyphs on every target. The default font
 //! carries the Latin text and the bundled Noto Sans SC subset the Chinese
 //! characters; `blitz_system_fonts` adds the host's fonts behind them for
-//! whatever they do not cover.
+//! whatever they do not cover. The bytes are [`fonts`](crate::fonts)'s, which
+//! an egui overlay draws from as well.
 //!
 //! ```rust
 //! use unlit3d::prelude::*;

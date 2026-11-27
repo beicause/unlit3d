@@ -2,8 +2,9 @@
 //!
 //! A page draws from the fonts the crate carries rather than the host's, so the
 //! same markup paints the same glyphs wherever it runs, which is what lets one
-//! snapshot hold across machines. Enabling `blitz_system_fonts` adds the host's
-//! fonts behind them for whatever they do not cover, at the cost of that
+//! snapshot hold across machines. The bytes are the
+//! [`fonts`](crate::fonts) module's; enabling `blitz_system_fonts` adds the
+//! host's fonts behind them for whatever they do not cover, at the cost of that
 //! guarantee.
 //!
 //! The collection is built here rather than by
@@ -17,22 +18,22 @@
 //! page registers the faces its `@font-face` rules name, and a family one page
 //! names must not be matched by another page built before or after it.
 
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 use std::sync::{Arc, OnceLock};
 
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 use blitz_dom::decode_font_bytes;
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 use parley::FontContext;
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, GenericFamily, SourceCache};
-#[cfg(feature = "blitz_sc_fonts")]
+#[cfg(feature = "sc_fonts")]
 use parley::fontique::{FallbackKey, Script};
 
 /// No font is carried, so the collection is left to `blitz-dom`: it registers
 /// nothing beyond the font it draws list markers with, and a page paints what
 /// the host supplies, or no glyphs at all where the host supplies nothing.
-#[cfg(not(feature = "blitz_epaint_fonts"))]
+#[cfg(not(feature = "fonts"))]
 pub(crate) fn fonts() -> Option<blitz_dom::FontContext> {
     None
 }
@@ -50,7 +51,7 @@ pub(crate) fn fonts() -> Option<blitz_dom::FontContext> {
 /// The store is created per copy rather than shared, which costs one walk of the
 /// baseline's families; the font bytes behind them, the host's font list and the
 /// decoded source cache are the baseline's and are shared.
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 pub(crate) fn fonts() -> Option<blitz_dom::FontContext> {
     static FONTS: OnceLock<FontContext> = OnceLock::new();
     let mut fonts = FONTS.get_or_init(build).clone();
@@ -58,7 +59,7 @@ pub(crate) fn fonts() -> Option<blitz_dom::FontContext> {
     Some(fonts)
 }
 
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 fn build() -> FontContext {
     let mut collection = Collection::new(CollectionOptions {
         shared: false,
@@ -68,9 +69,9 @@ fn build() -> FontContext {
     // itself, and the family that font is named after is what a list item falls
     // back through, so the page's own collection carries it too.
     register(&mut collection, blitz_dom::BULLET_FONT);
-    let default = register(&mut collection, epaint_default_fonts::HACK_REGULAR);
-    #[cfg(feature = "blitz_sc_fonts")]
-    let sc = register(&mut collection, sc_font());
+    let default = register(&mut collection, crate::fonts::latin());
+    #[cfg(feature = "sc_fonts")]
+    let sc = register(&mut collection, crate::fonts::chinese());
     for generic in [
         GenericFamily::SansSerif,
         GenericFamily::Serif,
@@ -80,14 +81,14 @@ fn build() -> FontContext {
         // The default font comes first in every family, so a page that sets no
         // font of its own paints the glyphs it always painted.
         collection.append_generic_families(generic, default.iter().copied());
-        #[cfg(feature = "blitz_sc_fonts")]
+        #[cfg(feature = "sc_fonts")]
         collection.append_generic_families(generic, sc.iter().copied());
     }
     // A glyph run consults the fallback list after the families the markup
     // names, and the shaper asks for the Han script's list whatever the text's
     // own script is, so one entry covers the Chinese in a page that declares no
     // font family at all.
-    #[cfg(feature = "blitz_sc_fonts")]
+    #[cfg(feature = "sc_fonts")]
     collection.append_fallbacks(
         FallbackKey::new(Script::from_bytes(*b"Hani"), None),
         sc.iter().copied(),
@@ -101,7 +102,7 @@ fn build() -> FontContext {
 }
 
 /// The families a font file registers, in the order the file names them.
-#[cfg(feature = "blitz_epaint_fonts")]
+#[cfg(feature = "fonts")]
 fn register(collection: &mut Collection, bytes: &[u8]) -> Vec<FamilyId> {
     let decoded = decode_font_bytes(bytes).into_owned();
     collection
@@ -111,17 +112,7 @@ fn register(collection: &mut Collection, bytes: &[u8]) -> Vec<FamilyId> {
         .collect()
 }
 
-/// The bundled Chinese subset.
-///
-/// Read behind a function rather than held in a constant so the bytes are not
-/// copied into the crate's metadata, which every dependent would then rebuild.
-#[cfg(feature = "blitz_sc_fonts")]
-#[inline(never)]
-fn sc_font() -> &'static [u8] {
-    include_bytes!("../../assets/NotoSansSC-Regular-subset.woff2")
-}
-
-#[cfg(all(test, feature = "blitz_epaint_fonts"))]
+#[cfg(all(test, feature = "fonts"))]
 mod tests {
     use super::*;
     use parley::fontique::FontInfoOverride;
@@ -147,11 +138,7 @@ mod tests {
         let mut before = fonts().expect("the bundled fonts build");
         let baseline = before.collection.family_names().count();
         let mut loader = fonts().expect("the bundled fonts build");
-        register_under(
-            &mut loader,
-            "Only This Page",
-            epaint_default_fonts::HACK_REGULAR,
-        );
+        register_under(&mut loader, "Only This Page", crate::fonts::latin());
         let mut after = fonts().expect("the bundled fonts build");
 
         assert!(
@@ -185,11 +172,7 @@ mod tests {
     fn two_pages_naming_one_family_each_keep_their_own_face() {
         let mut page_a = fonts().expect("the bundled fonts build");
         let mut page_b = fonts().expect("the bundled fonts build");
-        register_under(
-            &mut page_a,
-            "Shared Family",
-            epaint_default_fonts::HACK_REGULAR,
-        );
+        register_under(&mut page_a, "Shared Family", crate::fonts::latin());
         register_under(
             &mut page_b,
             "Shared Family",

@@ -102,8 +102,11 @@ impl EguiPanelHost {
     /// `render`, against the target `screen` carries.
     #[must_use]
     pub fn new(render: JobSender, screen: SnapshotReader<EguiTarget>, slot: usize) -> Self {
+        let ctx = egui::Context::default();
+        #[cfg(feature = "sc_fonts")]
+        unlit3d::fonts::set_egui_fonts(&ctx);
         Self {
-            ctx: egui::Context::default(),
+            ctx,
             time: 0.0,
             render,
             screen,

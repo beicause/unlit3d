@@ -14,8 +14,8 @@
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
 | `blitz` | 否 | `blitz` 模块：由 [Blitz](https://crates.io/crates/blitz-dom) 布局的 HTML 文档，作为绘制源绘制 |
-| `blitz_epaint_fonts` | 否 | 页面布局所用的字体：egui 的默认字体，使同一份标记在每个目标上画出同样的字形 |
-| `blitz_sc_fonts` | 否 | 给内置字体加上 Noto Sans SC 子集，覆盖通用规范汉字表一级与二级汉字 |
+| `fonts` | 否 | `fonts` 模块：crate 自带的字体，页面与叠加层都按它排版，使同一份标记在每个目标上画出同样的字形 |
+| `sc_fonts` | 否 | 给内置字体加上 Noto Sans SC 子集，覆盖通用规范汉字表一级与二级汉字 |
 | `blitz_system_fonts` | 否 | 让页面回退到宿主已装的字体，补上内置字体没有覆盖的部分 |
 | `egui` | 是 | `egui` 模块（作为绘制源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；`presenter`，建在它之上的现成窗口循环；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
@@ -581,6 +581,21 @@ source.allocate_lit_mesh(world, mesh.borrowed());
 `Error::EmptyResult`——那是一个答案，不是 bug。锐角、通道与导出对绕序的保证见
 [模块文档](src/manifold.rs)。
 
+## 字体
+
+绘制文字的构建需要字形数据有个来源。`fonts` 把这份数据装进 crate：
+[`fonts::latin`](src/fonts.rs) 是 egui 的默认字体，承载拉丁文，`sc_fonts` 另加一份
+Noto Sans SC 子集承载汉字。Blitz 页面与 egui 叠加层都按它排版，所以同一个二进制无论由哪个后端
+绘制，画出的字形都相同。
+
+两个后端读的格式不同。`blitz-dom` 自己解 WOFF2，epaint 只吃 TTF 和 OTF。子集因此以 WOFF2
+这份更小的形式存放，由 [`fonts::chinese_ttf`](src/fonts.rs) 为 egui 解压一次。
+`set_egui_fonts` 把结果装进 context，`EguiSource::new` 会调用它，因此叠加层不必由调用方做任何
+事就有中文。
+
+两个后端都不会因此拿到宿主的字体：页面只画 crate 携带的字形，这正是同一份快照能跨机器的
+原因。`blitz_system_fonts` 让页面为了内置字体没覆盖的字形放弃这条保证。
+
 ## Blitz
 
 `blitz::BlitzSource` 绘制一个 HTML 文档：它用 [Blitz](https://crates.io/crates/blitz-dom)
@@ -650,7 +665,7 @@ CSS 滤镜只在画场有对应图元时才画：单原语图里的 flood、高�
 出来。
 
 字体来自 crate 自身而不是宿主，因此同一份标记在每个目标上都画出同样的字形。默认字体是
-egui 的，承载拉丁文；`blitz_sc_fonts` 另加一份 Noto Sans SC 子集承载汉字，它在每个通用字
+egui 的，承载拉丁文；`sc_fonts` 另加一份 Noto Sans SC 子集承载汉字，它在每个通用字
 体族里排在默认字体之后、也挂在汉字脚本的回退表上，于是拉丁字形仍是页面原本画出的那些，而
 默认字体没有的汉字照样能找到字形。`blitz_system_fonts` 再把宿主的字体加在两者之后，
 代价是绘制结果取决于宿主装了什么。
@@ -675,6 +690,9 @@ Blitz 用来组字的预编辑与提交两种事件送到页面，但窗口从�
 
 `egui::EguiPanel` 本身就是一个持有闭包的行为组件，所以一个界面就是一个实体——一帧可以有
 与实体数量相同的面板，`egui::EguiSource` 驱动器会按查询顺序运行 world 携带的所有面板。
+
+`EguiSource::new` 用 crate 自带的字体排布叠加层，所以开了 `sc_fonts` 的构建不必由调用方装
+任何东西就有中文。在别处建的 context 通过 `fonts::set_egui_fonts` 拿到同一份字体。
 
 面板只能在它自己的 egui context 所运行的地方构建，因为回调拿到的是属于正在构建它的那一趟
 pass 的 `&mut egui::Ui`。因此「面板住在一个 world、绘制属于另一个 world」的 egui 以**数据**
@@ -1031,7 +1049,7 @@ cargo xtask test                          # 整个工作区
 cargo nextest run -p unlit3d --all-features  # 只跑本 crate
 ```
 
-集成测试是一个二进制，它的 `required-features` 是 `blitz_epaint_fonts`、`gltf`、`mcp`
+集成测试是一个二进制，它的 `required-features` 是 `fonts`、`sc_fonts`、`gltf`、`mcp`
 与 `egui`——其用例会用到的功能。不带这些功能跑并不会报错：Cargo 会把整个 target 跳过，因此
 `cargo nextest run -p unlit3d` 只报单元测试。要把 suite 放进这一趟，得加
 `--all-features`（或把这四项都点名）。

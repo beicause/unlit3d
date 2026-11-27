@@ -130,6 +130,11 @@ mcp-http = [
   "mcp",
   "unlit_ecs/mcp-http",
 ]
+## Lay the egui panels a host world builds out with the fonts the workspace
+## carries, including the bundled Noto Sans SC subset, so a panel can show
+## Chinese text. Off by default: it is 977 kB of the binary, and egui's own
+## fonts already cover the Latin and Cyrillic alphabets.
+sc_fonts = ["unlit3d/sc_fonts"]
 ## The physics world on its own thread, backed by rapier.
 physics = ["dep:rapier3d"]
 ## The window-facing half: a GPU context and a presenter over a sub-world

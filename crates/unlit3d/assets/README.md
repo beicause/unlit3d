@@ -2,7 +2,8 @@
 
 ## NotoSansSC-Regular-subset.woff2
 
-The Chinese font a page is laid out with when `blitz_sc_fonts` is on. It is
+The Chinese font a page and an overlay are laid out with when `sc_fonts` is on.
+It is
 Noto Sans SC instantiated at weight 400 and subset to:
 
 - every character of the 3500 level-1 and 3000 level-2 entries of the Table of

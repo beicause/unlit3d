@@ -313,7 +313,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，`app`
   里动画在同样的帧上走到同样的位置，与这一趟实际跑了多久无关，为此截下的帧也就不取决于
   机器当时有多忙。两侧保持独立的 context，纹理 id 也从不重编号（缘由见
   [unlit3d](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
-  的 egui 一节）。
+  的 egui 一节）。面板用工作区自带的字体布局，所以能让面板显示中文的是 `sc_fonts`
+  feature；egui 自己的字体只覆盖拉丁与西里尔字母。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的
   子 world，或自有一条线程的 world——通过
   [模型上下文协议](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md)
