@@ -102,16 +102,12 @@ fn build(
     SceneControl {
         // Static: egui needs no per-frame advance, and the camera only has to
         // keep the frame's aspect so a resized window does not stretch it.
-        advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(
-                world,
-                source_entity,
-                camera_entity,
-                super::DEFAULT_EYE,
-                super::DEFAULT_TARGET,
-                frame_size,
-            );
-        }),
+        advance: super::aiming(
+            source_entity,
+            camera_entity,
+            super::DEFAULT_EYE,
+            super::DEFAULT_TARGET,
+        ),
         snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_ui.webp".to_owned())),
     }
 }

@@ -159,7 +159,7 @@ impl SecondaryStreamWriter {
     ) {
         use zerocopy::IntoBytes;
 
-        let vertex_count = self.raw_vertex_count(uvs, colors, normals);
+        let vertex_count = self.channel_vertex_count(uvs.len(), colors.len(), normals.len());
         assert_eq!(
             out.len(),
             self.byte_len(vertex_count),
@@ -243,7 +243,7 @@ impl SecondaryStreamWriter {
     ) {
         use zerocopy::IntoBytes;
 
-        let vertex_count = self.compressed_vertex_count(uvs, colors, normals);
+        let vertex_count = self.channel_vertex_count(uvs.len(), colors.len(), normals.len());
         assert_eq!(
             out.len(),
             self.byte_len(vertex_count),
@@ -275,36 +275,18 @@ impl SecondaryStreamWriter {
         }));
     }
 
-    /// Number of vertices the raw channel slices describe.
+    /// Number of vertices the enabled channels describe, from their lengths.
     ///
     /// Every enabled channel describes the same vertices, so the first one
     /// sets the count and the rest must agree; a stream whose channels
-    /// disagree has no length that would pack them together.
-    fn raw_vertex_count(
-        &self,
-        uvs: &[[f32; 2]],
-        colors: &[CompressedColor],
-        normals: &[[f32; 3]],
-    ) -> usize {
+    /// disagree has no length that would pack them together. The lengths are
+    /// taken rather than the slices so the raw and the compressed form share
+    /// this count.
+    fn channel_vertex_count(&self, uvs: usize, colors: usize, normals: usize) -> usize {
         let lengths: [(&str, Option<usize>); 3] = [
-            ("UV", self.uv().then_some(uvs.len())),
-            ("color", self.color().then_some(colors.len())),
-            ("normal", self.normal().then_some(normals.len())),
-        ];
-        vertex_count_of(&lengths)
-    }
-
-    /// Number of vertices the compressed channel slices describe.
-    fn compressed_vertex_count(
-        &self,
-        uvs: &[CompressedUv],
-        colors: &[CompressedColor],
-        normals: &[CompressedNormal],
-    ) -> usize {
-        let lengths: [(&str, Option<usize>); 3] = [
-            ("UV", self.uv().then_some(uvs.len())),
-            ("color", self.color().then_some(colors.len())),
-            ("normal", self.normal().then_some(normals.len())),
+            ("UV", self.uv().then_some(uvs)),
+            ("color", self.color().then_some(colors)),
+            ("normal", self.normal().then_some(normals)),
         ];
         vertex_count_of(&lengths)
     }

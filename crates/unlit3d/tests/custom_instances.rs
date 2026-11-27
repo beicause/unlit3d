@@ -8,6 +8,7 @@
 //! not a privilege of the built-in shader.
 
 use crate::common::{COLOR_FORMAT, Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view};
+use crate::vertex_fixture::{Vertex, aabb_of, vertex_buffer, vertex_layout};
 use arrayvec::ArrayVec;
 use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{
@@ -20,14 +21,6 @@ use unlit3d::pipeline::{
 };
 use unlit3d::prelude::*;
 use zerocopy::IntoBytes;
-
-/// An interleaved `position + colour` vertex, matching `VertexInput` below.
-#[repr(C)]
-#[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
-struct Vertex {
-    position: [f32; 3],
-    color: [f32; 4],
-}
 
 /// The shader the custom pipeline compiles.
 ///
@@ -90,18 +83,6 @@ const SQUARE: [Vertex; 6] = [
     },
 ];
 
-/// The vertex layout of `Vertex`.
-const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
-
-fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    wgpu::VertexBufferLayout {
-        array_stride: core::mem::size_of::<Vertex>() as u64,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &ATTRIBUTES,
-    }
-}
-
 /// The vertex-buffer slot the family's instance stream binds at.
 ///
 /// The slot is the index into the pipeline's vertex-buffer list, so it is 1:
@@ -126,31 +107,6 @@ fn instance_layout() -> wgpu::VertexBufferLayout<'static> {
         step_mode: wgpu::VertexStepMode::Instance,
         attributes: &INSTANCE_ATTRIBUTES,
     }
-}
-
-/// A [VertexBufferDesc] for the mesh's own vertices in slot 0.
-fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
-    let layout = vertex_layout();
-    VertexBufferDesc {
-        slot: 0,
-        buffer,
-        array_stride: layout.array_stride,
-        step_mode: layout.step_mode,
-        attributes: layout.attributes.into(),
-    }
-}
-
-/// The axis-aligned box the vertices actually span.
-fn aabb_of(vertices: &[Vertex]) -> Aabb {
-    let mut min = [f32::MAX; 3];
-    let mut max = [f32::MIN; 3];
-    for vertex in vertices {
-        for axis in 0..3 {
-            min[axis] = min[axis].min(vertex.position[axis]);
-            max[axis] = max[axis].max(vertex.position[axis]);
-        }
-    }
-    Aabb::new(min.into(), max.into())
 }
 
 /// Build the pipeline descriptor for the family from `shader`.

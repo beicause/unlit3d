@@ -221,16 +221,7 @@ fn build_clusters(
     });
 
     SceneControl {
-        advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(
-                world,
-                source_entity,
-                camera_entity,
-                CLUSTER_EYE,
-                CLUSTER_TARGET,
-                frame_size,
-            );
-        }),
+        advance: super::aiming(source_entity, camera_entity, CLUSTER_EYE, CLUSTER_TARGET),
         snapshot: Box::new(move |frame| (frame == 0).then(|| "lit_clusters.webp".to_owned())),
     }
 }

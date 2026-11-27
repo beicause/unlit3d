@@ -12,6 +12,7 @@ use crate::common::{Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_looking_at};
 use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::LitOptions;
 use unlit_wgpu_test_util::gpu_tests;
+use unlit3d::mesh_source::with_mesh_source;
 use unlit3d::prelude::*;
 
 /// How far above the centre the floor reaches, along x and z.
@@ -331,23 +332,6 @@ async fn the_ambient_term_reaches_every_lit_pixel() {
         "the ambient term belongs to the frame, so raising it lifts every lit pixel: \
          {lifted} lifted, {kept} kept of {lit}"
     );
-}
-
-/// Allocate a mesh through `source` rather than through the harness's own
-/// source, which is what a test with a source of its own needs.
-fn with_mesh_source<R>(
-    world: &World,
-    source: Entity,
-    f: impl FnOnce(&mut MeshSource, &unlit_ecs::Scope<'_>) -> R,
-) -> R {
-    let mut source_row = world.root_scope().query_one::<&mut Source>(source);
-
-    let handle = source_row.get();
-    let mesh = handle
-        .as_mut::<MeshSource>()
-        .expect("the source is a MeshSource");
-    let scope = world.scope(source);
-    f(mesh, &scope)
 }
 
 gpu_tests! {

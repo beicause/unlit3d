@@ -14,6 +14,8 @@ use unlit3d::input::{
 };
 use unlit3dx::prelude::*;
 
+use crate::common::{installed, wait_for};
+
 /// A threaded world that idles between ticks, for the tests to drive.
 fn idle_host() -> (World, WorldEndpoint) {
     let mut host = World::new();
@@ -23,25 +25,6 @@ fn idle_host() -> (World, WorldEndpoint) {
     })
     .expect("the world thread starts");
     (host, world)
-}
-
-/// Waits until `probe` answers `true`, giving up after two seconds.
-fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
-    for _ in 0..2_000 {
-        if probe() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    false
-}
-
-/// The reader of a subscription the world has installed.
-fn installed<R: Clone>(subscription: Subscription<R>) -> R {
-    subscription
-        .poll()
-        .expect("the world installed the subscription")
-        .expect("the subscription outlet is reachable")
 }
 
 /// Sub-world jobs drain in queue order.
@@ -351,7 +334,7 @@ fn threaded_world_state_persists_between_jobs() {
 
     // The newest snapshot is kept, so the answer stays readable.
     assert!(
-        wait_for(|| reader.latest().is_some()),
+        wait_for(|| reader.latest().is_some(), 2_000),
         "the counting job never published"
     );
     assert_eq!(reader.latest().map(|count| *count), Some(5));
@@ -366,7 +349,7 @@ fn a_finished_world_drops_jobs_quietly() {
         .expect("the world thread starts");
 
     assert!(
-        wait_for(|| world.is_finished()),
+        wait_for(|| world.is_finished(), 2_000),
         "the thread kept running after its tick declined"
     );
     assert_eq!(
@@ -403,7 +386,7 @@ fn despawning_the_proxy_stops_the_world() {
     // The receiver lives inside the thread closure, so it drops only when
     // the thread does; until then the channel has room and accepts jobs.
     assert!(
-        wait_for(|| sender.send(Box::new(|_: &mut World| {})).is_err()),
+        wait_for(|| sender.send(Box::new(|_: &mut World| {})).is_err(), 2_000),
         "the thread kept accepting jobs after its proxy was dropped"
     );
 }
@@ -436,18 +419,21 @@ fn subscriptions_flow_from_thread_to_host() {
         .expect("the world accepts a subscription");
     let mut ready = None;
     assert!(
-        wait_for(|| match reader.poll() {
-            Some(installed_reader) => {
-                ready = Some(installed_reader.expect("the subscription outlet is reachable"));
-                true
-            }
-            None => false,
-        }),
+        wait_for(
+            || match reader.poll() {
+                Some(installed_reader) => {
+                    ready = Some(installed_reader.expect("the subscription outlet is reachable"));
+                    true
+                }
+                None => false,
+            },
+            2_000
+        ),
         "the world never installed the subscription"
     );
     let reader = ready.expect("the world installed the subscription");
     assert!(
-        wait_for(|| reader.latest().is_some_and(|value| *value >= 3)),
+        wait_for(|| reader.latest().is_some_and(|value| *value >= 3), 2_000),
         "the reader never saw the collected values"
     );
     assert!(

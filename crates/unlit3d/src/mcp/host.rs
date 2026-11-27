@@ -106,27 +106,44 @@ fn with_mesh_source<R>(
     Ok(f(mesh_source, &scope))
 }
 
-/// The device the context names, cloned out of the world.
-fn graph_of<'w>(
-    world: &'w World,
-    context: RenderContext,
-) -> Result<unlit_ecs::QueryOne<'w, &'w ResourceGraph>, ToolError> {
-    world
-        .root_scope()
-        .try_query_one::<&ResourceGraph>(context.graph)
-        .map_err(|_| ToolError::rejected("the render context has no resource graph"))
+/// Declares the shared and mutable accessors for one resource the context names.
+///
+/// Both accessors differ only in mutability, and both must report the same
+/// message when the resource is gone, so the lookup is written once.
+macro_rules! resource_of {
+    ($shared:ident, $exclusive:ident, $resource:ty, $missing:literal) => {
+        /// Borrow the resource the context names, shared.
+        #[doc(hidden)]
+        fn $shared<'w>(
+            world: &'w World,
+            context: RenderContext,
+        ) -> Result<unlit_ecs::QueryOne<'w, &'w $resource>, ToolError> {
+            world
+                .root_scope()
+                .try_query_one::<&$resource>(context.graph)
+                .map_err(|_| ToolError::rejected($missing))
+        }
+
+        /// Borrow the resource the context names, exclusively.
+        #[doc(hidden)]
+        fn $exclusive<'w>(
+            world: &'w World,
+            context: RenderContext,
+        ) -> Result<unlit_ecs::QueryOne<'w, &'w mut $resource>, ToolError> {
+            world
+                .root_scope()
+                .try_query_one::<&mut $resource>(context.graph)
+                .map_err(|_| ToolError::rejected($missing))
+        }
+    };
 }
 
-/// The graph the context names, mutably borrowed from the world.
-fn graph_of_mut<'w>(
-    world: &'w World,
-    context: RenderContext,
-) -> Result<unlit_ecs::QueryOne<'w, &'w mut ResourceGraph>, ToolError> {
-    world
-        .root_scope()
-        .try_query_one::<&mut ResourceGraph>(context.graph)
-        .map_err(|_| ToolError::rejected("the render context has no resource graph"))
-}
+resource_of!(
+    graph_of,
+    graph_of_mut,
+    ResourceGraph,
+    "the render context has no resource graph"
+);
 
 /// Whether input events were delivered.
 #[derive(facet::Facet)]

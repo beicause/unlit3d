@@ -6,6 +6,7 @@
 //! pipeline family and drawing with it needs nothing from the built-in shader.
 
 use crate::common::{COLOR_FORMAT, Ctx, Frame, HEIGHT, TestGpu, WIDTH, camera_view};
+use crate::vertex_fixture::{Vertex, aabb_of, vertex_buffer, vertex_layout};
 use arrayvec::ArrayVec;
 use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{
@@ -16,15 +17,6 @@ use unlit3d::pipeline::{
     DrawContext, FamilyContext, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
 };
 use unlit3d::prelude::*;
-
-/// An interleaved `position + colour` vertex, matching `VERTEX` in the WGSL
-/// below.
-#[repr(C)]
-#[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
-struct Vertex {
-    position: [f32; 3],
-    color: [f32; 4],
-}
 
 /// The shader the custom pipeline compiles: a plain vertex passthrough with a
 /// hard-coded transform, and a fragment stage writing the vertex colour.
@@ -69,45 +61,6 @@ const TRIANGLE: [Vertex; 3] = [
         color: [0.0, 0.0, 1.0, 1.0],
     },
 ];
-
-/// The vertex layout of `Vertex`, declared once so both the pipeline and the
-/// uploaded bytes agree on it.
-const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
-
-fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    wgpu::VertexBufferLayout {
-        array_stride: core::mem::size_of::<Vertex>() as u64,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &ATTRIBUTES,
-    }
-}
-
-/// A [VertexBufferDesc] for one interleaved vertex buffer in slot 0, carrying
-/// the layout [vertex_layout] declares.
-fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
-    let layout = vertex_layout();
-    VertexBufferDesc {
-        slot: 0,
-        buffer,
-        array_stride: layout.array_stride,
-        step_mode: layout.step_mode,
-        attributes: layout.attributes.into(),
-    }
-}
-
-/// The axis-aligned box the vertices actually span.
-fn aabb_of(vertices: &[Vertex]) -> Aabb {
-    let mut min = [f32::MAX; 3];
-    let mut max = [f32::MIN; 3];
-    for vertex in vertices {
-        for axis in 0..3 {
-            min[axis] = min[axis].min(vertex.position[axis]);
-            max[axis] = max[axis].max(vertex.position[axis]);
-        }
-    }
-    Aabb::new(min.into(), max.into())
-}
 
 /// The pipeline key a custom family draws with.
 ///

@@ -8,6 +8,7 @@ use glam::Mat4;
 use unlit_wgpu::context::{GpuContext, RenderDevice};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::gltf::{AnimationId, LitGltf};
+use unlit3d::mesh_source::with_mesh_source;
 use unlit3d::prelude::*;
 
 pub mod cli;
@@ -479,23 +480,6 @@ fn bind_target(
         .get(&target.texture)
         .cloned()
         .expect("the target texture is a resource node")
-}
-
-/// Run f with the mesh source mounted at source_entity, borrowing both at once.
-fn with_mesh_source<R>(
-    world: &World,
-    source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
-) -> R {
-    // The scope is the source's own, so what its closure reads is the subtree
-    // the source draws.
-    let scope = world.scope(source_entity);
-    let mut source = scope.query_one::<&mut Source>(source_entity);
-    let mesh = source
-        .get()
-        .as_mut::<MeshSource>()
-        .expect("the source is a MeshSource");
-    f(mesh, &scope)
 }
 
 /// Build the camera from the configuration and the render size's aspect ratio.

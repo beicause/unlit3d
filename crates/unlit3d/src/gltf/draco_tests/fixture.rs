@@ -8,6 +8,7 @@
 use crate::gltf::LitGltf;
 use crate::gltf::streams;
 use crate::gltf::tests::documents::PNG;
+pub(super) use crate::gltf::tests::documents::glb;
 use crate::lit::OwnedLitMeshDesc;
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
@@ -169,25 +170,6 @@ pub(super) fn u8_color_attribute() -> PointAttribute {
         attribute.buffer_mut().write(index * 4, &row[..]);
     }
     attribute
-}
-
-/// Wrap a JSON document and its binary chunk into a GLB.
-pub(super) fn glb(json: String, bin: &[u8]) -> Vec<u8> {
-    let mut json = json.into_bytes();
-    while !json.len().is_multiple_of(4) {
-        json.push(b' ');
-    }
-    let mut out = Vec::new();
-    out.extend_from_slice(&0x4654_6C67u32.to_le_bytes());
-    out.extend_from_slice(&2u32.to_le_bytes());
-    out.extend_from_slice(&((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
-    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
-    out.extend_from_slice(&json);
-    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0x004E_4942u32.to_le_bytes());
-    out.extend_from_slice(bin);
-    out
 }
 
 /// The JSON and binary chunk of a Draco GLB whose accessors have no buffer

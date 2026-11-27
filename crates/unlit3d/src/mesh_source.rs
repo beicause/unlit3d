@@ -34,7 +34,7 @@ use core::cell::RefCell;
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use unlit_ecs::{Scope, TypeIdHashMap};
+use unlit_ecs::{Entity, Scope, TypeIdHashMap, World};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::Camera as CameraUniform;
@@ -64,7 +64,7 @@ use crate::scene::{
     AnyFamily, DrawHandlesKey, EntryHandles, Family, FamilyId, RenderPipelineHandles, SceneFrame,
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
-use crate::source::{RenderContext, SceneBuild, SceneSource};
+use crate::source::{RenderContext, SceneBuild, SceneSource, Source};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The capacity that covers `needed` after growing from `current`.
@@ -171,6 +171,34 @@ pub struct MeshSource {
     /// handles and the per-family bindings.
     pub(crate) caches: FrameCaches,
 }
+
+/// Run `f` on the [`MeshSource`] the entity names, with the source's own scope.
+///
+/// A source entity is its own scope, and a source only ever sees the subtree it
+/// draws, so the closure receives that scope rather than the world's. The
+/// source borrowed here starts every allocation that reads the world's device,
+/// queue or resource graph — [`MeshSource::allocate_lit_mesh`] and the
+/// allocators beside it — so a setup pass that reaches a source through the
+/// world calls this instead of opening the query itself.
+///
+/// # Panics
+///
+/// If `entity` names no live entity, is not visible from the root scope, or its
+/// source is not a [`MeshSource`].
+pub fn with_mesh_source<R>(
+    world: &World,
+    entity: Entity,
+    f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
+) -> R {
+    let scope = world.scope(entity);
+    let mut source = scope.query_one::<&mut Source>(entity);
+    let mesh_source = source
+        .get()
+        .as_mut::<MeshSource>()
+        .expect("the source is a MeshSource");
+    f(mesh_source, &scope)
+}
+
 impl MeshSource {
     /// Create the source and the GPU resources the mesh path shares.
     ///
@@ -351,7 +379,7 @@ pub(crate) struct MeshEntry {
     pub(crate) morph_targets: u32,
 }
 
-use self::arrays::{FrameArrays, grow_array_to_fit};
+use self::arrays::{ArraySlot, FrameArrays, upload_array};
 use self::storage::StorageTicket;
 
 impl SceneSource for MeshSource {

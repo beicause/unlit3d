@@ -251,7 +251,7 @@ impl VertexStreamPool {
                 .streams
                 .entry(layout.clone())
                 .or_insert_with(|| Stream {
-                    buffer: create_buffer(device, self.label, self.usage, 0),
+                    buffer: crate::util::pool_buffer(device, self.label, self.usage, 0),
                     water_mark: 0,
                 });
             // A stream that already covers the allocation's end needs nothing;
@@ -312,7 +312,7 @@ fn copy_into_larger(
     old_size: u64,
     new_size: u64,
 ) -> wgpu::Buffer {
-    let larger = create_buffer(device, label, usage, new_size);
+    let larger = crate::util::pool_buffer(device, label, usage, new_size);
     if old_size > 0 {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
@@ -328,21 +328,6 @@ fn copy_into_larger(
 /// frame, and never rounds below the minimum the pool needs.
 fn growth_step(current: u32, count: u32) -> u32 {
     count.max(current + current / 2).max(MIN_ELEMENTS)
-}
-
-/// Creates a buffer of `size` bytes with the usages the pool needs.
-fn create_buffer(
-    device: &wgpu::Device,
-    label: &'static str,
-    usage: wgpu::BufferUsages,
-    size: u64,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: usage | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
 }
 
 #[cfg(test)]

@@ -47,6 +47,17 @@ use unlit3d::prelude::*;
 /// this every frame, so a window that changes shape never stretches the scene.
 pub type Advance = Box<dyn FnMut(&mut World, u32, f32, (u32, u32))>;
 
+/// An [`Advance`] that only keeps the scene's camera on its target.
+///
+/// The projection follows the frame's own aspect, so a window that changes
+/// shape never stretches what the camera sees; a scene whose content is static
+/// hands its snapshot control this instead of writing the closure out.
+pub fn aiming(scope: Entity, entity: Entity, eye: glam::Vec3, target: glam::Vec3) -> Advance {
+    Box::new(move |world, _frame, _delta, size| {
+        aim_camera(world, scope, entity, eye, target, size);
+    })
+}
+
 /// Names the snapshot a frame verifies against, if it has one.
 pub type Snapshot = Box<dyn Fn(u32) -> Option<String>>;
 
@@ -625,25 +636,7 @@ pub fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
     }
 }
 
-/// Run `f` on the world's `MeshSource`, which lives on the source entity.
-///
-/// A shared-world entry point, so the scene's own `&mut World` can
-/// reborrow it next to the mutable borrow of the source.
-pub fn with_mesh_source<R>(
-    world: &World,
-    source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
-) -> R {
-    // The scope is the source's own, so what its closure reads is the subtree
-    // the source draws.
-    let scope = world.scope(source_entity);
-    let mut source = scope.query_one::<&mut Source>(source_entity);
-    let mesh = source
-        .get()
-        .as_mut::<MeshSource>()
-        .expect("the source is a MeshSource");
-    f(mesh, &scope)
-}
+pub use unlit3d::mesh_source::with_mesh_source;
 
 /// Allocate the unit cube through the source, its vertices offset by `offset`
 /// in mesh space.

@@ -130,17 +130,7 @@ impl TestGpu {
         world: &World,
         f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
     ) -> R {
-        let entity = self.mesh_source();
-        let mut source_row = world.root_scope().query_one::<&mut Source>(entity);
-
-        let source = source_row.get();
-        let mesh = source
-            .as_mut::<MeshSource>()
-            .expect("the source is a MeshSource");
-        // The closure works through the source's own scope: a source entity is
-        // its own scope, which is what a frame hands it too.
-        let scope = world.scope(entity);
-        f(mesh, &scope)
+        unlit3d::mesh_source::with_mesh_source(world, self.mesh_source(), f)
     }
 
     /// Run `f` on the frame driver.

@@ -198,17 +198,7 @@ pub struct LineOptions {
 impl Default for LineOptions {
     /// A stroke blended over the frame, testing depth without writing it.
     fn default() -> Self {
-        Self {
-            shader: None,
-            hard_edge: false,
-            depth_stencil: crate::pipeline::DepthStencilPolicy {
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Greater,
-            },
-            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-            write_mask: wgpu::ColorWrites::ALL,
-            a2c_hint: false,
-        }
+        Self::blended()
     }
 }
 

@@ -112,6 +112,26 @@ pub fn shader_module(device: &wgpu::Device, wgsl: &str, label: &str) -> wgpu::Sh
     device.create_shader_module(desc)
 }
 
+/// Creates a buffer a pool owns and grows.
+///
+/// `COPY_SRC` is added to `usage` because growing a pool means creating a
+/// larger buffer and copying the used prefix across, which needs the old buffer
+/// readable as a copy source. Every buffer a pool hands out is therefore a
+/// source up front, rather than one that has to be re-created once written to.
+pub(crate) fn pool_buffer(
+    device: &wgpu::Device,
+    label: &'static str,
+    usage: wgpu::BufferUsages,
+    size: u64,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: usage | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
+}
+
 /// A shader module's label with the characters DXC reads as path syntax
 /// replaced by a hyphen.
 ///

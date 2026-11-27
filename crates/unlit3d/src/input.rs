@@ -82,6 +82,8 @@ use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle, sync};
 use crate::behaviour::behaviour;
 
 mod event;
+#[cfg(any(feature = "winit", feature = "blitz"))]
+pub(crate) mod keymap;
 mod state;
 
 pub use event::{

@@ -2,10 +2,10 @@
 //! and the uniforms that describe the clustering.
 
 use super::{
-    Array, ArrayHandle, CELL_WORDS, Camera, ClusterConfig, ClusterUniform, DirectionalGpu,
-    IntoBytes, LightClusters, LightGpu, LightingUniform, MAX_DIRECTIONAL_LIGHTS, PackedLight,
-    RenderContext, ResHandle, ResourceGraph, Scope, StagingBuffer, grow_array_to_fit,
-    is_perspective,
+    Array, ArrayHandle, ArraySlot, CELL_WORDS, Camera, ClusterConfig, ClusterUniform,
+    DirectionalGpu, IntoBytes, LightClusters, LightGpu, LightingUniform, MAX_DIRECTIONAL_LIGHTS,
+    PackedLight, RenderContext, ResHandle, ResourceGraph, Scope, StagingBuffer, is_perspective,
+    upload_array,
 };
 
 /// The frame's lights, the cluster assignment they are read through and the two
@@ -179,41 +179,44 @@ impl Lights {
         self.light_records
             .extend(self.packed_lights.iter().map(|light| light.gpu));
 
-        grow_array_to_fit(
+        upload_array(
             world,
             ctx,
-            "unlit3d::lights",
-            &mut self.lights_array,
-            &self.lights_buf,
-            &device,
-            self.light_records.len().max(1) as u64,
+            encoder,
+            ArraySlot {
+                label: "unlit3d::lights",
+                array: &mut self.lights_array,
+                node: &self.lights_buf,
+            },
+            self.light_records.len(),
+            self.light_records.as_bytes(),
         );
         // A cell is one element, and the clusterer stores each as a word per
         // slot: sizing by the words would ask for sixteen times the room.
-        grow_array_to_fit(
+        upload_array(
             world,
             ctx,
-            "unlit3d::light_cells",
-            &mut self.light_cells_array,
-            &self.light_cells_buf,
-            &device,
-            (self.light_clusters.cells.len() / CELL_WORDS).max(1) as u64,
+            encoder,
+            ArraySlot {
+                label: "unlit3d::light_cells",
+                array: &mut self.light_cells_array,
+                node: &self.light_cells_buf,
+            },
+            self.light_clusters.cells.len() / CELL_WORDS,
+            self.light_clusters.cells.as_bytes(),
         );
-        grow_array_to_fit(
+        upload_array(
             world,
             ctx,
-            "unlit3d::light_vertices",
-            &mut self.light_vertices_array,
-            &self.light_vertices_buf,
-            &device,
-            self.light_vertices.len().max(1) as u64,
+            encoder,
+            ArraySlot {
+                label: "unlit3d::light_vertices",
+                array: &mut self.light_vertices_array,
+                node: &self.light_vertices_buf,
+            },
+            self.light_vertices.len(),
+            self.light_vertices.as_bytes(),
         );
-        self.lights_array
-            .upload(&device, encoder, self.light_records.as_bytes());
-        self.light_cells_array
-            .upload(&device, encoder, self.light_clusters.cells.as_bytes());
-        self.light_vertices_array
-            .upload(&device, encoder, self.light_vertices.as_bytes());
 
         let uniform = self
             .clustering

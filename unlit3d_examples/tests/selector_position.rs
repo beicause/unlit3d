@@ -94,7 +94,8 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
     let size = (960, 720);
 
     for (a, b) in [(0usize, 7usize), (7, 0)] {
-        let (mut first_world, mut first) = scene_at(&ctx, size, None, scenes::SCENES[a]);
+        let (mut first_world, mut first) =
+            scene_at(&ctx, size, scenes::SCENES[a], selector_only(None));
         bind(&mut first_world, &mut first, &ctx, size);
         for _ in 0..4 {
             first.advance(&mut first_world, FIXED_STEP);
@@ -103,7 +104,8 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
         }
         let opened = rect(&first_world).expect("laid out");
 
-        let (mut second_world, mut second) = scene_at(&ctx, size, Some(opened), scenes::SCENES[b]);
+        let (mut second_world, mut second) =
+            scene_at(&ctx, size, scenes::SCENES[b], selector_only(Some(opened)));
         bind(&mut second_world, &mut second, &ctx, size);
         for _ in 0..4 {
             second.advance(&mut second_world, FIXED_STEP);
@@ -188,11 +190,13 @@ fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
         })
 }
 
+/// The scene `def` draws with the selector over it, its panels carried from
+/// `panels`.
 fn scene_at(
     ctx: &Ctx,
     size: (u32, u32),
-    initial: Option<egui::Rect>,
     def: &'static scenes::SceneDef,
+    panels: PanelRects,
 ) -> (World, Scene) {
     Scene::new(
         ctx.render_device(),
@@ -206,48 +210,22 @@ fn scene_at(
             own_input: true,
         },
         def,
-        selector_only(initial),
+        panels,
     )
 }
 
-/// A scene whose GPU-info panel opens at `gpu_info`.
+/// The first scene with its GPU-info panel opened at `gpu_info`.
 fn scene_with_gpu_info(
     ctx: &Ctx,
     size: (u32, u32),
     gpu_info: Option<egui::Rect>,
 ) -> (World, Scene) {
-    Scene::new(
-        ctx.render_device(),
-        size,
-        SceneOptions {
-            egui: true,
-            selector: true,
-            reproducible: true,
-            letterbox: false,
-            sequence_step: None,
-            own_input: true,
-        },
-        scenes::SCENES[0],
-        gpu_info_only(gpu_info),
-    )
+    scene_at(ctx, size, scenes::SCENES[0], gpu_info_only(gpu_info))
 }
 
-/// A scene with the selector mounted, opened at `initial`.
+/// The first scene with the selector mounted, opened at `initial`.
 fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Scene) {
-    Scene::new(
-        ctx.render_device(),
-        size,
-        SceneOptions {
-            egui: true,
-            selector: true,
-            reproducible: true,
-            letterbox: false,
-            sequence_step: None,
-            own_input: true,
-        },
-        scenes::SCENES[0],
-        selector_only(initial),
-    )
+    scene_at(ctx, size, scenes::SCENES[0], selector_only(initial))
 }
 
 /// Bind an offscreen target the way the snapshot tests do, so `render` draws.

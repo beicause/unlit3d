@@ -12,43 +12,27 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use unlit_ecs::{Entity, World, bundle};
 use unlit3d::frame::{Frame, OnFrame};
 use unlit3dx::prelude::*;
 use unlit3dx::synth::{MidiFile, MidiFileLoopType, MidiMessage};
 
-/// Waits until `probe` answers `true`, giving up after five seconds.
-fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
-    for _ in 0..5_000 {
-        if probe() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    false
-}
-
-/// The reader of a subscription the world has installed, which a world the
-/// caller steps has already done by the time it is asked for.
-fn installed<R: Clone>(subscription: &Subscription<R>) -> R {
-    subscription
-        .poll()
-        .expect("the world installed the subscription")
-        .expect("the subscription outlet is reachable")
-}
+use crate::common::{installed, wait_for};
 
 /// The reader of a subscription the world installs on a tick of its own.
-fn wait_installed<R: Clone>(subscription: &Subscription<R>) -> R {
+fn wait_installed<R: Clone>(subscription: Subscription<R>) -> R {
     let mut ready = None;
-    let arrived = wait_for(|| match subscription.poll() {
-        Some(result) => {
-            ready = Some(result.expect("the subscription outlet is reachable"));
-            true
-        }
-        None => false,
-    });
+    let arrived = wait_for(
+        || match subscription.poll() {
+            Some(result) => {
+                ready = Some(result.expect("the subscription outlet is reachable"));
+                true
+            }
+            None => false,
+        },
+        5_000,
+    );
     assert!(arrived, "the world never installed the subscription");
     ready.expect("the world installed the subscription")
 }
@@ -280,7 +264,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
         }))
         .expect("the audio world accepts jobs");
     assert!(
-        wait_for(|| reader.latest().is_some_and(|found| *found)),
+        wait_for(|| reader.latest().is_some_and(|found| *found), 5_000),
         "the audio world never ran the marker job"
     );
 
@@ -288,7 +272,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     // be filling; without one the world stays alive and silent instead.
     if has_output_device() {
         assert!(
-            wait_for(|| fills.load(Ordering::SeqCst) > 0),
+            wait_for(|| fills.load(Ordering::SeqCst) > 0, 5_000),
             "the output device exists but the source was never filled"
         );
     } else {
@@ -339,20 +323,20 @@ fn the_audio_world_reports_its_output_opening() {
                 .map(|_audio_output_open| ())
         })
         .expect("the audio world accepts a subscription");
-    let format = wait_installed(&format);
-    let opened = wait_installed(&opened);
-    let installed = wait_for(|| format.latest().is_some());
+    let format = wait_installed(format);
+    let opened = wait_installed(opened);
+    let installed = wait_for(|| format.latest().is_some(), 5_000);
     if !has_output_device() {
         assert!(!installed, "a device-less world published a format");
         assert!(
-            !wait_for(|| opened.latest().is_some()),
+            !wait_for(|| opened.latest().is_some(), 5_000),
             "a world without an output announced it is open"
         );
         return;
     }
     assert!(installed, "the output opened but no format was published");
     assert!(
-        wait_for(|| opened.latest().is_some()),
+        wait_for(|| opened.latest().is_some(), 5_000),
         "the output opened but the marker never landed"
     );
 }
@@ -386,7 +370,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
         step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA)
             .expect("the stepped world starts");
     }
-    let opened = installed(&opened);
+    let opened = installed(opened);
     assert!(
         opened.latest().is_none(),
         "a stepped OnRequest world opened its output without a request"
@@ -408,7 +392,7 @@ fn a_stepped_world_opens_nothing_until_asked() {
     }
     step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
     assert!(
-        wait_for(|| opened.latest().is_some()),
+        wait_for(|| opened.latest().is_some(), 5_000),
         "the request landed but the output never opened"
     );
 }
@@ -438,7 +422,7 @@ fn a_requested_output_opens_the_tick_the_job_lands() {
         })
         .expect("the audio world accepts a subscription");
     step_stepped_world(&host, world.entity(), FIXED_FRAME_DELTA).expect("the stepped world starts");
-    let opened = installed(&opened);
+    let opened = installed(opened);
     assert!(
         opened.latest().is_none(),
         "the world opened before being asked"

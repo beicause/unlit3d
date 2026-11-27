@@ -261,16 +261,12 @@ fn build(
     SceneControl {
         // Static: nothing about the frame animates, but the camera keeps the
         // frame's aspect so a resized window does not stretch the patches.
-        advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(
-                world,
-                source_entity,
-                camera_entity,
-                glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
-                glam::Vec3::ZERO,
-                frame_size,
-            );
-        }),
+        advance: super::aiming(
+            source_entity,
+            camera_entity,
+            glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
+            glam::Vec3::ZERO,
+        ),
         snapshot: Box::new(|frame| (frame == 0).then(|| "mesh_topologies.webp".to_owned())),
     }
 }

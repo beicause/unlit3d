@@ -16,7 +16,22 @@ use super::{
 
 use crate::mesh::MorphDeltas;
 
-/// Grow `array` to hold at least `capacity` elements, publishing the new
+/// One of the frame's arrays together with where it is published.
+///
+/// The three travel together everywhere: an array is only useful to a draw once
+/// its handle is in the graph, and a replaced resource is labelled so a
+/// capture names it. Keeping them in one value also keeps the operations below
+/// from growing an argument list per detail.
+pub(super) struct ArraySlot<'a> {
+    /// The label a replaced resource carries.
+    pub(super) label: &'a str,
+    /// The array itself.
+    pub(super) array: &'a mut Array,
+    /// The graph node the array's current handle is published into.
+    pub(super) node: &'a ResHandle<ArrayHandle>,
+}
+
+/// Grow `slot`'s array to hold at least `needed` elements, publishing the new
 /// resource into the graph when it had to be replaced.
 ///
 /// A replaced array leaves every bind group built from the old one stale; the
@@ -27,25 +42,56 @@ use crate::mesh::MorphDeltas;
 pub(super) fn grow_array_to_fit(
     world: &Scope<'_>,
     ctx: RenderContext,
-    label: &str,
-    array: &mut Array,
-    node: &ResHandle<ArrayHandle>,
     device: &wgpu::Device,
+    slot: ArraySlot<'_>,
     needed: u64,
 ) {
     // Grow only when the array is genuinely too small: growing by a factor
     // on every call would inflate the capacity without bound.
-    if needed <= array.capacity() {
+    if needed <= slot.array.capacity() {
         return;
     }
-    let capacity = u64::from(grown_capacity(array.capacity() as u32, needed as u32));
-    if !array.grow_to(device, Some(label), capacity) {
+    let capacity = u64::from(grown_capacity(slot.array.capacity() as u32, needed as u32));
+    if !slot.array.grow_to(device, Some(slot.label), capacity) {
         return;
     }
     ctx.graph(world)
         .get()
-        .replace(node, array.handle())
+        .replace(slot.node, slot.array.handle())
         .expect("the array's node exists");
+}
+
+/// Grow `array` to hold `elements` elements and upload `bytes` through it.
+///
+/// The grown array is published into the graph by [`grow_array_to_fit`], so a
+/// caller need not know whether the array was replaced or rewritten in place.
+/// `elements` is counted in elements rather than bytes because the array's
+/// capacity is: the two differ once an element is wider than one byte.
+pub(super) fn upload_array(
+    world: &Scope<'_>,
+    ctx: RenderContext,
+    encoder: &mut wgpu::CommandEncoder,
+    slot: ArraySlot<'_>,
+    elements: usize,
+    bytes: &[u8],
+) {
+    let device = ctx
+        .device(world)
+        .expect("the context's device resource exists");
+    // No array may be empty: a shader reads at least one element of each.
+    let ArraySlot { label, array, node } = slot;
+    grow_array_to_fit(
+        world,
+        ctx,
+        &device,
+        ArraySlot {
+            label,
+            array: &mut *array,
+            node,
+        },
+        elements.max(1) as u64,
+    );
+    array.upload(&device, encoder, bytes);
 }
 
 /// The arrays of one frame that are not lights: a metadata entry per live mesh,
@@ -239,21 +285,18 @@ impl FrameArrays {
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        let device = ctx
-            .device(world)
-            .expect("the context's device resource exists");
-        let needed = self.packed_joints.len().max(1) as u64;
-        grow_array_to_fit(
+        upload_array(
             world,
             ctx,
-            "unlit3d::pose::joints",
-            &mut self.joints_array,
-            &self.joints_buf,
-            &device,
-            needed,
+            encoder,
+            ArraySlot {
+                label: "unlit3d::pose::joints",
+                array: &mut self.joints_array,
+                node: &self.joints_buf,
+            },
+            self.packed_joints.len(),
+            self.packed_joints.as_bytes(),
         );
-        self.joints_array
-            .upload(&device, encoder, self.packed_joints.as_bytes());
     }
 
     /// Grow the frame's morph-displacement array if a mesh outgrew it, and
@@ -294,21 +337,18 @@ impl FrameArrays {
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        let device = ctx
-            .device(world)
-            .expect("the context's device resource exists");
-        let needed = self.packed_morph_weights.len().max(1) as u64;
-        grow_array_to_fit(
+        upload_array(
             world,
             ctx,
-            "unlit3d::pose::morph_weights",
-            &mut self.morph_weights_array,
-            &self.morph_weights_buf,
-            &device,
-            needed,
+            encoder,
+            ArraySlot {
+                label: "unlit3d::pose::morph_weights",
+                array: &mut self.morph_weights_array,
+                node: &self.morph_weights_buf,
+            },
+            self.packed_morph_weights.len(),
+            self.packed_morph_weights.as_bytes(),
         );
-        self.morph_weights_array
-            .upload(&device, encoder, self.packed_morph_weights.as_bytes());
     }
 
     /// Grow the metadata buffer if the array outgrew it, and upload the array
@@ -329,22 +369,19 @@ impl FrameArrays {
         }
         self.metadata_dirty = false;
 
-        let device = ctx
-            .device(world)
-            .expect("the context's device resource exists");
-        let needed = self.metadata.len().max(1) as u64;
         // Replace rather than resize: neither a buffer nor a texture has a size
         // that can change.
-        grow_array_to_fit(
+        upload_array(
             world,
             ctx,
-            "unlit3d::mesh_metadata",
-            &mut self.metadata_array,
-            &self.metadata_buf,
-            &device,
-            needed,
+            encoder,
+            ArraySlot {
+                label: "unlit3d::mesh_metadata",
+                array: &mut self.metadata_array,
+                node: &self.metadata_buf,
+            },
+            self.metadata.len(),
+            self.metadata.as_bytes(),
         );
-        self.metadata_array
-            .upload(&device, encoder, self.metadata.as_bytes());
     }
 }

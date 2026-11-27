@@ -9,6 +9,8 @@ use unlit_ecs::World;
 use unlit_ecs::bundle;
 use unlit3dx::prelude::*;
 
+use crate::common::installed;
+
 /// A stepped world with no tick of its own.
 ///
 /// A stepped world is the deterministic one: nothing runs until the test
@@ -30,19 +32,6 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldEndpoint {
 
 /// The component the subscriptions read.
 struct Marker(u32);
-
-/// The reader of a subscription the world has installed.
-///
-/// A subscription is queued, not installed: the reader it fills only exists
-/// once a tick has run the job that installs the collector. The handle is
-/// given up on the way out, so what is left is the reader the world collects
-/// for and nothing else.
-fn installed<R: Clone>(subscription: Subscription<R>) -> R {
-    subscription
-        .poll()
-        .expect("the world installed the subscription")
-        .expect("the subscription outlet is reachable")
-}
 
 /// Each subscription collects for its own reader: two subscribers on one
 /// world see two different snapshots, and neither overwrites the other.

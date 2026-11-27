@@ -327,55 +327,43 @@ impl<U: 'static> Default for WinitHost<U> {
     }
 }
 
-impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
-    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        for (on_new_events, entity) in self
+/// Run one callback family over the root scope, then settle.
+///
+/// Every `ApplicationHandler` callback does exactly this: walk the root scope
+/// for the entities carrying its behaviour family and run each with the event.
+/// The families are distinct types, so the shape is written once here rather
+/// than once per callback.
+macro_rules! dispatch {
+    ($host:ident, $event_loop:ident, $family:ty, $event:expr) => {{
+        for (behaviour, entity) in $host
             .world
             .root_scope()
-            .query::<(&mut OnNewEvents, Entity)>()
+            .query::<(&mut $family, Entity)>()
             .iter()
         {
-            on_new_events.run(&self.world, entity, &cause);
+            behaviour.run(&$host.world, entity, $event);
         }
-        self.settle(event_loop);
+        $host.settle($event_loop);
+    }};
+}
+
+impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        dispatch!(self, event_loop, OnNewEvents, &cause);
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.set_resumed(true);
-        for (on_resumed, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnResumed, Entity)>()
-            .iter()
-        {
-            on_resumed.run(&self.world, entity, &());
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnResumed, &());
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        for (on_suspended, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnSuspended, Entity)>()
-            .iter()
-        {
-            on_suspended.run(&self.world, entity, &());
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnSuspended, &());
         self.set_resumed(false);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, mut event: U) {
-        for (on_user_event, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnUserEvent<U>, Entity)>()
-            .iter()
-        {
-            on_user_event.run(&self.world, entity, &mut event);
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnUserEvent<U>, &mut event);
     }
 
     fn window_event(
@@ -385,15 +373,7 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: WindowEvent,
     ) {
         let event = WinitWindowEvent { window_id, event };
-        for (on_window_event, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnWindowEvent, Entity)>()
-            .iter()
-        {
-            on_window_event.run(&self.world, entity, &event);
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnWindowEvent, &event);
     }
 
     fn device_event(
@@ -403,51 +383,19 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: DeviceEvent,
     ) {
         let event = WinitDeviceEvent { device_id, event };
-        for (on_device_event, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnDeviceEvent, Entity)>()
-            .iter()
-        {
-            on_device_event.run(&self.world, entity, &event);
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnDeviceEvent, &event);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        for (on_about_to_wait, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnAboutToWait, Entity)>()
-            .iter()
-        {
-            on_about_to_wait.run(&self.world, entity, &());
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnAboutToWait, &());
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        for (on_exiting, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnExiting, Entity)>()
-            .iter()
-        {
-            on_exiting.run(&self.world, entity, &());
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnExiting, &());
     }
 
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        for (on_memory_warning, entity) in self
-            .world
-            .root_scope()
-            .query::<(&mut OnMemoryWarning, Entity)>()
-            .iter()
-        {
-            on_memory_warning.run(&self.world, entity, &());
-        }
-        self.settle(event_loop);
+        dispatch!(self, event_loop, OnMemoryWarning, &());
     }
 }
 #[cfg(test)]

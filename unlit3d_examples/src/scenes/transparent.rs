@@ -192,16 +192,7 @@ fn build(
     SceneControl {
         // A single frame: the composite is static, so only the camera's aspect
         // is advanced, keeping a resized window from stretching the panes.
-        advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(
-                world,
-                source_entity,
-                camera_entity,
-                CAMERA_EYE,
-                CAMERA_TARGET,
-                frame_size,
-            );
-        }),
+        advance: super::aiming(source_entity, camera_entity, CAMERA_EYE, CAMERA_TARGET),
         // The first frame is the snapshot; whichever frame is drawn, the
         // picture is the same.
         snapshot: Box::new(|frame| (frame == 0).then(|| "transparent.webp".to_owned())),

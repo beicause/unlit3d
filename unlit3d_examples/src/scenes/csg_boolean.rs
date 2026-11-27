@@ -169,16 +169,7 @@ fn build(
     SceneControl {
         // Static: nothing animates, but the camera keeps the frame's aspect so
         // a resized window does not stretch the row.
-        advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(
-                world,
-                source_entity,
-                camera_entity,
-                CAMERA_EYE,
-                CAMERA_TARGET,
-                frame_size,
-            );
-        }),
+        advance: super::aiming(source_entity, camera_entity, CAMERA_EYE, CAMERA_TARGET),
         snapshot: Box::new(|frame| (frame == 0).then(|| "csg_boolean.webp".to_owned())),
     }
 }

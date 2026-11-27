@@ -175,43 +175,38 @@ pub struct Threaded;
 /// A world the host steps, with no thread of its own.
 pub struct Stepped;
 
-impl WorldRunner for Threaded {
-    const SELF_DRIVEN: bool = true;
+/// Implements [`WorldRunner`] for a runner that delegates to one spawn function.
+///
+/// The two runners differ only in whether they drive themselves and in which
+/// function they hand the world to, so the forwarding — including the bounds on
+/// `init` and `tick` — is written once.
+macro_rules! runner {
+    ($runner:ident, $self_driven:expr, $spawn:path) => {
+        impl WorldRunner for $runner {
+            const SELF_DRIVEN: bool = $self_driven;
 
-    fn spawn<I, S, T>(
-        host: &mut World,
-        name: &'static str,
-        command_capacity: usize,
-        init: I,
-        tick: T,
-    ) -> Result<WorldEndpoint, ThreadError>
-    where
-        I: FnOnce(&mut World) -> S + Send + 'static,
-        S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + Send + 'static,
-    {
-        spawn_threaded_world_with_init(host, name, command_capacity, init, tick)
-    }
+            fn spawn<I, S, T>(
+                host: &mut World,
+                name: &'static str,
+                command_capacity: usize,
+                init: I,
+                tick: T,
+            ) -> Result<WorldEndpoint, ThreadError>
+            where
+                I: FnOnce(&mut World) -> S + Send + 'static,
+                S: 'static,
+                T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome
+                    + Send
+                    + 'static,
+            {
+                $spawn(host, name, command_capacity, init, tick)
+            }
+        }
+    };
 }
 
-impl WorldRunner for Stepped {
-    const SELF_DRIVEN: bool = false;
-
-    fn spawn<I, S, T>(
-        host: &mut World,
-        name: &'static str,
-        command_capacity: usize,
-        init: I,
-        tick: T,
-    ) -> Result<WorldEndpoint, ThreadError>
-    where
-        I: FnOnce(&mut World) -> S + Send + 'static,
-        S: 'static,
-        T: FnMut(&mut World, &ThreadControl, &mut S, FrameDelta) -> TickOutcome + Send + 'static,
-    {
-        spawn_stepped_world_with_init(host, name, command_capacity, init, tick)
-    }
-}
+runner!(Threaded, true, spawn_threaded_world_with_init);
+runner!(Stepped, false, spawn_stepped_world_with_init);
 
 /// Spawn a threaded world on a fresh thread, driven by `tick`.
 ///

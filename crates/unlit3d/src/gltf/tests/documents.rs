@@ -32,7 +32,7 @@ pub(super) fn pad(bin: &mut Vec<u8>) {
 }
 
 /// Wraps a JSON document and its binary chunk into a GLB.
-pub(super) fn glb(json: String, bin: &[u8]) -> Vec<u8> {
+pub(crate) fn glb(json: String, bin: &[u8]) -> Vec<u8> {
     let mut json = json.into_bytes();
     while !json.len().is_multiple_of(4) {
         json.push(b' ');

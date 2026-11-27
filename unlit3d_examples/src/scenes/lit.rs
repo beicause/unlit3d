@@ -319,16 +319,7 @@ fn build(
     SceneControl {
         // A single frame: the lights do not move, so only the camera's aspect
         // is advanced, keeping a resized window from stretching the floor.
-        advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(
-                world,
-                source_entity,
-                camera_entity,
-                CAMERA_EYE,
-                CAMERA_TARGET,
-                frame_size,
-            );
-        }),
+        advance: super::aiming(source_entity, camera_entity, CAMERA_EYE, CAMERA_TARGET),
         snapshot: Box::new(move |frame| (frame == 0).then(|| "lit.webp".to_owned())),
     }
 }

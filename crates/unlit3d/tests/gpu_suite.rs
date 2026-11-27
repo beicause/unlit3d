@@ -34,6 +34,7 @@ mod mcp_server;
 mod morphed_scene;
 mod passes;
 mod skinned_scene;
+pub mod vertex_fixture;
 
 unlit_wgpu_test_util::gpu_test_main!(
     [

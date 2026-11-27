@@ -122,7 +122,7 @@ impl BufferPool {
         );
 
         let size = round_up_size(size);
-        let buffer = create_buffer(device, label, usage, size);
+        let buffer = crate::util::pool_buffer(device, label, usage, size);
         Self {
             buffer,
             label,
@@ -236,7 +236,7 @@ impl BufferPool {
         }
         debug_assert_eq!(self.allocator.size(), target);
 
-        let new_buffer = create_buffer(
+        let new_buffer = crate::util::pool_buffer(
             device,
             self.label,
             self.usage,
@@ -277,21 +277,6 @@ fn round_up_size(size: u64) -> u64 {
         "a pool cannot be larger than u32::MAX bytes"
     );
     rounded
-}
-
-/// Creates the pool's buffer with the usages it needs to grow.
-fn create_buffer(
-    device: &wgpu::Device,
-    label: &'static str,
-    usage: wgpu::BufferUsages,
-    size: u64,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: usage | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
 }
 
 #[cfg(test)]
