@@ -18,9 +18,9 @@ hyper = { version = "1.11.1", features = ["http1", "server"] }
 quote = "1.0.47"
 # Cargo messages and rustdoc JSON for test discovery and API indexing.
 serde_json = "1.0.145"
-syn = { version = "2.0.119", features = ["full"] }
 # Bridges `async-io`'s futures-io types to hyper's runtime traits.
 smol-hyper = "0.1.1"
+syn = { version = "2.0.119", features = ["full"] }
 # Asking the wasm test runner to shut down when a run is over.
 ureq = { version = "3.4.0", default-features = false }
 
