@@ -390,18 +390,25 @@ fn a_threaded_tick_commits_its_queued_commands() {
     let mut answer = None;
     for _ in 0..2_000 {
         let publish = counted.clone();
-        handle
-            .commands()
-            .send(Box::new(move |world: &mut World| {
-                let count = world
-                    .root_scope()
-                    .query::<&Count>()
-                    .iter()
-                    .next()
-                    .map(|count| count.0);
-                publish.publish(count);
-            }))
-            .expect("the world accepts jobs");
+        let probe = handle.commands().send(Box::new(move |world: &mut World| {
+            let count = world
+                .root_scope()
+                .query::<&Count>()
+                .iter()
+                .next()
+                .map(|count| count.0);
+            publish.publish(count);
+        }));
+        // A platform whose sleep is coarser than the tick leaves the queue
+        // full between turns. The probe only asks what the tick committed, so
+        // a full queue delays the answer instead of failing the world.
+        if let Err(error) = probe {
+            assert_eq!(
+                error.kind(),
+                SendErrorKind::Full,
+                "the world is still running and takes jobs"
+            );
+        }
         std::thread::sleep(Duration::from_millis(1));
         if let Some(Some(count)) = reader.latest().map(|count| *count) {
             answer = Some(count);
